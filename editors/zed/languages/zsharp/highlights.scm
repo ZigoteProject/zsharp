@@ -25,6 +25,8 @@
   ".." "^"
 ] @operator
 
+[(compare_operator) (cons_operator) (add_operator) (multiply_operator) (power_operator)] @operator
+
 ["(" ")" "[" "]" "[|" "|]" "{" "}" "[<" ">]"] @punctuation.bracket
 ["," ";" ":" "." "|"] @punctuation.delimiter
 

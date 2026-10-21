@@ -88,6 +88,7 @@ let sumTo n =                            // imperative code is fine; mutation st
 - **Data:** tuples, records (`{ p with x = 1.0 }`), unions; library types `option`, `result`, `list`, `array`, `Buffer`, `ref`, `Map`, `Set`, `HashMap`.
 - **Functions:**
   - Curried, with closures (`fun x -> …`), `|>`, `>>` and partial application.
+  - **Custom operators:** `let (>>=) r f = …` defines one, and `(op)` is the function (`(+)` too). Precedence comes from the first character after any dots, as in F#: `|>`, `>>`, the comparisons and operators starting with `< > = | & $ !` share one level above `&&`; `@ ^` group like `::`, `+ -` like `+`, `* / %` like `*`, and `**` is right-associative.
   - Known calls pass all arguments at once, so currying costs nothing at run time.
   - Tail calls: a call to itself becomes a loop, and other tail calls with the same signature use LLVM `musttail`. Recursion in tail position runs in constant stack.
 - **Loops:** `for i in a .. b do`, `for i in a .. step .. b do`, `for pattern in xs do` (lists and arrays), `while c do`.
@@ -630,5 +631,6 @@ checker, so tools can't drift from the compiler.
 | 35 | Kept in v1 though not yet needed | `ptr<'a>` + `unsafe`, `Arena`, `dyn Trait`, `weak` references | decided |
 | 36 | Optimizations that change evaluation order | only for pure code (list fusion requires pure lambdas; printing pieces evaluates them all first) | decided |
 | 37 | Library organization | prelude (global names) / Core (no OS: every target) / Std (needs an OS); .NET-style namespaces open everywhere at the lowest precedence; .NET module names, F# function names | decided |
+| 38 | Operator precedence | F#'s: custom operators by their first character; `\|>` and `>>` at the comparison level, above `&&` and `\|\|` (they used to be the loosest) | decided |
 
 "Default" means chosen by me and open to change until the phase that implements it begins.

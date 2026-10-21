@@ -1,0 +1,7 @@
+Ok 42 Error not positive: -4 Error odd: 21 Error not a number: x
+Ok 42 Ok 2 Ok 10
+Ok 42
+Some (40, []) Some (7, []) None
+true [6; 4; 2] 62 512
+6 [2; 4] 7 [false; true] Ok 2
+123 (14, 16) true

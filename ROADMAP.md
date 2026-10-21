@@ -172,7 +172,8 @@ first.
   3. **`let rec … and …` (done):** at the top level (generalized jointly, `private` allowed per function) and locally (lifted with the group's shared captures).
   4. **`char` (done):** a Unicode scalar with literals (`'a'`, `'\u{e9}'`), patterns, conversions, the `Char` functions (ASCII), and `for c in s` decoding UTF-8 in Z#. Strings gained the `\r`, `\'` and `\u{…}` escapes.
   5. **Nested modules (done):** `module Inner =` with an indented block; enclosing modules' names are in scope, `private` reaches nested modules, `open` is scoped to the block.
-  6. **Multi-line lambdas inside parentheses**, and `[<Wrapping>]` on a function.
+  6. **Custom operators (done):** `let (>>=) r f = …`, `(op)` as a function (built-in operators too), and F#'s precedence by first character; `|>` and `>>` moved to the comparison level, as in F#. A line starting with an operator continues the previous one.
+  7. **Multi-line lambdas inside parentheses**, and `[<Wrapping>]` on a function.
 - **Exit tests:**
   - The guide's examples use each feature.
   - `examples/mcu/uart.zs` declares its registers as constants.

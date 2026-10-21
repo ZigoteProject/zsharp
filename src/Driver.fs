@@ -824,7 +824,7 @@ let docItems (file: string) : DocItem list =
             container <- ""
             containerKind <- ""
 
-            let m = rx @"^let\s+(rec\s+)?(private\s+)?([A-Za-z_][A-Za-z0-9_.]*|\(\|[^)]*\|\))" l
+            let m = rx @"^let\s+(rec\s+)?(private\s+)?([A-Za-z_][A-Za-z0-9_.]*|\(\|[^)]*\|\)|\([!%&*+\-./<=>?@^|~$]+\))" l
             let header = rx @"^(module|namespace)\s+([A-Za-z_][A-Za-z0-9_.]*)\s*$" l
 
             if header.Success then
@@ -832,7 +832,10 @@ let docItems (file: string) : DocItem list =
                 prefix <- header.Groups[2].Value + "."
                 add header.Groups[1].Value header.Groups[2].Value i
             elif m.Success then
-                if not m.Groups[2].Success then add "function" (prefix + m.Groups[3].Value) i // private: not API
+                // an operator's name is the operator: (>>=) is >>=
+                let name = m.Groups[3].Value
+                let name = if name.StartsWith "(" && not (name.StartsWith "(|") then name.Trim('(', ')') else name
+                if not m.Groups[2].Success then add "function" (prefix + name) i // private: not API
             else
                 let m = rx @"^type\s+(private\s+)?([A-Za-z_][A-Za-z0-9_]*)(<[^>]*>)?\s*(with)?" l
 

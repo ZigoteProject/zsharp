@@ -217,6 +217,55 @@ let symbols =
     [ "&&&"; "|||"; "^^^"; "<<<"; ">>>"; "~~~"; "..."; ".."; "->"; "<-"; "|>"; "|]"; "[|"; "[<"; ">]"; "::"; ">>"; "<>"; "<="; ">="; "&&"; "||"
       "?"; "("; ")"; "{"; "}"; "["; "]"; ","; ";"; "|"; "."; ":"; "="; "<"; ">"; "+"; "-"; "*"; "/"; "%"; "@"; "^" ]
 
+let private symbolSet = set symbols
+let private opChars = set "!%&*+-./<=>?@^|~$"
+
+/// The built-in binary operators that `(op)` turns into a function: (+) is fun a b -> a + b.
+let private builtinOperators =
+    set [ "+"; "-"; "*"; "/"; "%"; "="; "<>"; "<"; ">"; "<="; ">="; "&&&"; "|||"; "^^^"; "<<<"; ">>>"; "@"; "::" ]
+let isOpChar (c: char) = opChars.Contains c
+
+/// The run of operator characters at line[at], stopping at a // comment or a $"…" string.
+let private opRun (line: string) (at: int) =
+    let mutable j = at
+
+    while j < line.Length
+          && isOpChar line[j]
+          && not (line[j] = '/' && j + 1 < line.Length && line[j + 1] = '/')
+          && not (line[j] = '$' && j + 1 < line.Length && line[j + 1] = '"') do
+        j <- j + 1
+
+    line.Substring(at, j - at)
+
+/// A custom operator: operator characters that aren't one of the language's own symbols,
+/// such as >>=, <|> or .>>.
+let isCustomOp (s: string) =
+    s <> "" && not (symbolSet.Contains s) && Seq.forall isOpChar s && not (Seq.forall ((=) '.') s)
+
+/// How tightly a custom operator binds, from its first character after any dots, as in F#:
+/// 0 with |> and the comparisons (< > = | & $ ! ? ~), 1 with :: (@ ^, right-associative),
+/// 2 with + (+ -), 3 with * (* / %), 4 power (**, right-associative).
+let opLevel (s: string) =
+    let t = s.TrimStart '.'
+
+    if t.StartsWith "**" then
+        4
+    else
+        match t[0] with
+        | '@'
+        | '^' -> 1
+        | '+'
+        | '-' -> 2
+        | '*'
+        | '/'
+        | '%' -> 3
+        | _ -> 0
+
+/// A line starting with |> or a custom operator continues the previous one.
+let private continuesLine (rest: string) =
+    let run = opRun rest 0
+    run.StartsWith "|>" || isCustomOp run
+
 /// An escape after a backslash at line[i]: its code point and the index after it. \n \r \t \0
 /// \\ \" \' and \u{hex} (any Unicode scalar value).
 let private unescapeAt ln (line: string) (i: int) : int * int =
@@ -285,7 +334,7 @@ and private lexWith (src: string) (keepComments: bool) : Token[] =
         let rest = line.Substring i
         let blank = rest = "" || rest.StartsWith "//"
 
-        if not blank && brackets.Count = 0 && not (rest.StartsWith "|>") then
+        if not blank && brackets.Count = 0 && not (continuesLine rest) then
             if rest[0] = '\t' then
                 fail ln "tabs are not allowed for indentation"
 
@@ -475,15 +524,29 @@ and private lexWith (src: string) (keepComments: bool) : Token[] =
                     add (KStr(sb.ToString()))
             else
                 let at = i
+                let two = if at + 1 < line.Length then line.Substring(at, 2) else ""
 
-                let sym =
-                    symbols
-                    |> List.tryFind (fun s -> at + s.Length <= line.Length && line.Substring(at, s.Length) = s)
+                let s =
+                    if two = "|]" || two = ">]" then
+                        two
+                    elif isOpChar c then
+                        // the longest run of operator characters: a symbol, or a custom operator
+                        let run = opRun line at
+                        let next = at + run.Length
 
-                if sym.IsNone then
-                    fail ln (sprintf "unexpected character '%c'" c)
-
-                let s = sym.Value
+                        // a symbol and then the sign of its operand: x=-1, a*-b
+                        if run.Length > 1
+                           && (run.EndsWith "-" || run.EndsWith "+")
+                           && symbolSet.Contains(run.Substring(0, run.Length - 1))
+                           && next < line.Length
+                           && not (Char.IsWhiteSpace line[next]) then
+                            run.Substring(0, run.Length - 1)
+                        else
+                            run
+                    else
+                        match symbols |> List.tryFind (fun s -> at + s.Length <= line.Length && line.Substring(at, s.Length) = s) with
+                        | Some s -> s
+                        | None -> fail ln (sprintf "unexpected character '%c'" c)
 
                 // F#: `f -x` (space before, none after, following an operand) negates an argument
                 let prefixMinus =
@@ -949,39 +1012,15 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                 expect (KSym "=") "'='"
                 let v = block ()
                 stmt(ln, LetMut(x, ann, v, rest ln))
+            | KSym "(", _ when operatorAhead () ->
+                // a local operator: let (<+>) a b = …
+                advance ()
+                let fi, f = operatorName ()
+                localFun ln isRec stmt f fi
             | KId f, next when (isRec || Char.IsLower f[0] || f[0] = '_') && f <> "_" && startsParam next ->
                 let fi = pos.Value
                 advance ()
-                let ps = parameters ()
-                let ret = optTy ()
-                expect (KSym "=") "'='"
-                let body = block ()
-
-                if peek () = KNewline && peek2 () = KKw "and" then
-                    // let rec f … and g …: functions that call each other
-                    if not isRec then
-                        fail (line ()) "functions joined with 'and' call each other: write 'let rec f … and g …'"
-
-                    let members = ResizeArray [ mark fi (LetFun(f, true, ps, ret, body, UnitLit)) ]
-
-                    while peek () = KNewline && peek2 () = KKw "and" do
-                        advance ()
-                        advance ()
-                        let gi = pos.Value
-                        let g = ident ()
-                        let gps = parameters ()
-
-                        if gps.IsEmpty then
-                            fail (line ()) "'and' defines a function: and g x = …"
-
-                        let gret = optTy ()
-                        expect (KSym "=") "'='"
-                        let gbody = block ()
-                        members.Add(mark gi (LetFun(g, true, gps, gret, gbody, UnitLit)))
-
-                    stmt(ln, LetRecGroup(List.ofSeq members, rest ln))
-                else
-                    stmt(ln, mark fi (LetFun(f, isRec, ps, ret, body, rest ln)))
+                localFun ln isRec stmt f fi
             | _ ->
                 let p = pattern ()
                 let ann = optTy ()
@@ -1005,6 +1044,62 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                     Seq(e, seq ())
                 else
                     e
+
+    /// At `let (`: whether an operator and `)` follow (a built-in one too, to say it can't be
+    /// redefined; `(|` starts an active pattern instead).
+    and operatorAhead () =
+        match peek2 () with
+        | KSym s when s <> "|" && Seq.forall isOpChar s -> toks[min (pos.Value + 2) (toks.Length - 1)].tok = KSym ")"
+        | _ -> false
+
+    /// The operator of `(op)` after its `(`, and its token's index; a built-in one can't be defined.
+    and operatorName () =
+        let oi = pos.Value
+
+        let s =
+            match peek () with
+            | KSym s -> s
+            | _ -> ""
+
+        if not (isCustomOp s) then
+            fail (line ()) (sprintf "'%s' is built in and can't be redefined; give the custom operator another name, such as '%s.'" s s)
+
+        advance ()
+        expect (KSym ")") "')'"
+        oi, s
+
+    /// A local function after its name: parameters, body, and any `and` functions joined to it.
+    and localFun ln isRec stmt (f: string) (fi: int) =
+        let ps = parameters ()
+        let ret = optTy ()
+        expect (KSym "=") "'='"
+        let body = block ()
+
+        if peek () = KNewline && peek2 () = KKw "and" then
+            // let rec f … and g …: functions that call each other
+            if not isRec then
+                fail (line ()) "functions joined with 'and' call each other: write 'let rec f … and g …'"
+
+            let members = ResizeArray [ mark fi (LetFun(f, true, ps, ret, body, UnitLit)) ]
+
+            while peek () = KNewline && peek2 () = KKw "and" do
+                advance ()
+                advance ()
+                let gi = pos.Value
+                let g = ident ()
+                let gps = parameters ()
+
+                if gps.IsEmpty then
+                    fail (line ()) "'and' defines a function: and g x = …"
+
+                let gret = optTy ()
+                expect (KSym "=") "'='"
+                let gbody = block ()
+                members.Add(mark gi (LetFun(g, true, gps, gret, gbody, UnitLit)))
+
+            stmt(ln, LetRecGroup(List.ofSeq members, rest ln))
+        else
+            stmt(ln, mark fi (LetFun(f, isRec, ps, ret, body, rest ln)))
 
     and expr () =
         match peek () with
@@ -1106,32 +1201,12 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                 For(x, a, step, b, block ())
         | _ -> pipe ()
 
-    // x |> f a  ==>  f a x
-    and pipe () =
-        let mutable l = compose ()
+    // an expression without sequencing: the loosest level is ||
+    and pipe () = orE ()
 
-        while isSym "|>" do
-            advance ()
-
-            l <-
-                match compose () with
-                | Var f as v -> copyPos v (Call(f, [ l ]))
-                | Call(f, args) -> Call(f, args @ [ l ])
-                | App(h, args) -> App(h, args @ [ l ])
-                | f -> App(f, [ l ])
-
-        l
-
-    // f >> g  ==>  fun x -> g (f x)
-    and compose () =
-        let mutable l = orE ()
-
-        while isSym ">>" do
-            advance ()
-            let r = orE ()
-            l <- Lambda([ PIdent("$c", None), None ], App(r, [ App(l, [ Var "$c" ]) ]))
-
-        l
+    /// The right operand of a binary operator: a lambda there extends to the end, as in
+    /// `m >>= fun x -> …`.
+    and operand (next: unit -> Expr) = if peek () = KKw "fun" then expr () else next ()
 
     and orE () =
         let l = andE ()
@@ -1151,42 +1226,97 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         else
             l
 
-    and binary ops sub =
+    /// Left-associative operators at one level: `ops`, and the custom operators of `level`
+    /// (-1 for none).
+    and binary ops level sub =
         let mutable l = sub ()
         let mutable go = true
 
         while go do
+            let oi = pos.Value
+
             match peek () with
             | KSym s when List.contains s ops ->
                 advance ()
                 l <- Bin(s, l, sub ())
+            | KSym s when level >= 0 && isCustomOp s && opLevel s = level ->
+                advance ()
+                l <- mark oi (Call(s, [ l; operand sub ]))
             | _ -> go <- false
 
         l
 
-    and cmpE () = binary [ "="; "<>"; "<"; ">"; "<="; ">=" ] bitOrE
+    // as in F#, |>, >>, the comparisons and custom operators starting with < > = | & $ share
+    // one left-associative level: x |> parse >>= validate is (x |> parse) >>= validate
+    and cmpE () =
+        let mutable l = bitOrE ()
+        let mutable go = true
+
+        while go do
+            let oi = pos.Value
+
+            match peek () with
+            | KSym "|>" ->
+                // x |> f a  ==>  f a x
+                advance ()
+
+                l <-
+                    match operand bitOrE with
+                    | Var f as v -> copyPos v (Call(f, [ l ]))
+                    | Call(f, args) -> Call(f, args @ [ l ])
+                    | App(h, args) -> App(h, args @ [ l ])
+                    | f -> App(f, [ l ])
+            | KSym ">>" ->
+                // f >> g  ==>  fun x -> g (f x)
+                advance ()
+                let r = operand bitOrE
+                l <- Lambda([ PIdent("$c", None), None ], App(r, [ App(l, [ Var "$c" ]) ]))
+            | KSym(("=" | "<>" | "<" | ">" | "<=" | ">=") as s) ->
+                advance ()
+                l <- Bin(s, l, bitOrE ())
+            | KSym s when isCustomOp s && opLevel s = 0 ->
+                advance ()
+                l <- mark oi (Call(s, [ l; operand bitOrE ]))
+            | _ -> go <- false
+
+        l
 
     // bitwise operators on integers, tighter than comparison (so x &&& m = 0 needs no parentheses)
-    and bitOrE () = binary [ "|||" ] bitXorE
-    and bitXorE () = binary [ "^^^" ] bitAndE
-    and bitAndE () = binary [ "&&&" ] shiftE
-    and shiftE () = binary [ "<<<"; ">>>" ] consE
+    and bitOrE () = binary [ "|||" ] -1 bitXorE
+    and bitXorE () = binary [ "^^^" ] -1 bitAndE
+    and bitAndE () = binary [ "&&&" ] -1 shiftE
+    and shiftE () = binary [ "<<<"; ">>>" ] -1 consE
 
-    // right-associative :: and @
+    // right-associative ::, @ and custom operators starting with @ or ^
     and consE () =
         let l = addE ()
+        let oi = pos.Value
 
-        if isSym "::" then
+        match peek () with
+        | KSym "::" ->
             advance ()
             cons l (consE ())
-        elif isSym "@" then
+        | KSym "@" ->
             advance ()
             Call("Collections.List.append", [ l; consE () ])
-        else
-            l
+        | KSym s when isCustomOp s && opLevel s = 1 ->
+            advance ()
+            mark oi (Call(s, [ l; operand consE ]))
+        | _ -> l
 
-    and addE () = binary [ "+"; "-" ] mulE
-    and mulE () = binary [ "*"; "/"; "%" ] unary
+    and addE () = binary [ "+"; "-" ] 2 mulE
+    and mulE () = binary [ "*"; "/"; "%" ] 3 powE
+
+    // right-associative custom operators starting with **
+    and powE () =
+        let l = unary ()
+        let oi = pos.Value
+
+        match peek () with
+        | KSym s when isCustomOp s && opLevel s = 4 ->
+            advance ()
+            mark oi (Call(s, [ l; operand powE ]))
+        | _ -> l
 
     and unary () =
         if isSym "-" || isSym "~-" then
@@ -1315,6 +1445,32 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         | KSym "~-" -> Neg(atom ())
         | KSym "[" -> List.foldBack cons (items "]") (Var "[]")
         | KSym "[|" -> ArrayLit(items "|]")
+        | KSym "(" when peek2 () = KSym ")" && (match peek () with
+                                                | KSym s -> isCustomOp s || builtinOperators.Contains s
+                                                | _ -> false) ->
+            // an operator as a function: (>>=), or (+) for fun a b -> a + b
+            let oi = pos.Value
+
+            let s =
+                match peek () with
+                | KSym s -> s
+                | _ -> ""
+
+            advance ()
+            advance ()
+
+            if isCustomOp s then
+                mark oi (Var s)
+            else
+                let a, b = Var "$a", Var "$b"
+
+                let body =
+                    match s with
+                    | "::" -> cons a b
+                    | "@" -> Call("Collections.List.append", [ a; b ])
+                    | _ -> Bin(s, a, b)
+
+                Lambda([ PIdent("$a", None), None; PIdent("$b", None), None ], body)
         | _ when isSym ")" ->
             advance ()
             UnitLit
@@ -1809,10 +1965,10 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
             if isPrivate then
                 advance ()
 
-            // an active pattern: (|Even|Odd|) or (|Int|_|)
+            // an active pattern: (|Even|Odd|) or (|Int|_|); an operator: (>>=)
             let ni = pos.Value
 
-            let name =
+            let ni, name =
                 if isSym "(" && peek2 () = KSym "|" then
                     advance ()
                     advance ()
@@ -1824,9 +1980,12 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
 
                     expect (KSym "|") "'|'"
                     expect (KSym ")") "')'"
-                    "|" + String.concat "|" names + "|"
+                    ni, "|" + String.concat "|" names + "|"
+                elif isSym "(" && operatorAhead () then
+                    advance ()
+                    operatorName ()
                 else
-                    ident ()
+                    ni, ident ()
             let ps = parameters ()
 
             if ps.IsEmpty then

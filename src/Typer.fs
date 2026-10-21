@@ -279,6 +279,7 @@ let private unknown (what: string) (x: string) =
 
     match unavailable |> Seq.tryFind inModule with
     | Some m -> fail 0 (sprintf "'%s' is in %s, part of Std, which needs an operating system; this target has none" x m)
+    | None when x <> "" && isOpChar x[0] -> fail 0 (sprintf "unknown operator '%s'; define it with: let (%s) a b = …" x x)
     | None -> fail 0 (sprintf "unknown %s '%s'" what x)
 
 let check (requireMain: bool) (collect: bool) (modules: (string * string option * (int * Decl) list) list) : Program =
@@ -1706,7 +1707,8 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
     and call' env depth f args : CExpr =
         if not (env.ContainsKey f || globals.ContainsKey f) && (staticMember f).IsSome then
             memberCall env depth (staticMember f).Value None args f
-        elif env.ContainsKey f || globals.ContainsKey f then
+        elif env.ContainsKey f || globals.ContainsKey f || globalValues.ContainsKey f || consts.ContainsKey f then
+            // a function, or a top-level value holding one: let validate = parse >=> check
             apply env depth (value env depth f) args (Some f)
         elif ctors.ContainsKey f then
             ctor env depth f args

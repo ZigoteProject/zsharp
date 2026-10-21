@@ -1,0 +1,1 @@
+tests/err_operator_builtin.zs:2: error: '+' is built in and can't be redefined; give the custom operator another name, such as '+.'

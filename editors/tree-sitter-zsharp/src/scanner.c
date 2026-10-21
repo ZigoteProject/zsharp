@@ -48,6 +48,23 @@ void tree_sitter_zsharp_external_scanner_deserialize(void *payload, const char *
 
 static void skip(TSLexer *lexer) { lexer->advance(lexer, true); }
 
+static bool is_op_char(int32_t c) { return c > 0 && c < 128 && strchr("!%&*+-./<=>?@^|~$", (int)c) != NULL; }
+
+// the language's own symbols made of operator characters; another run of them is a custom
+// operator (as in the compiler's lexer)
+static const char *const SYMBOLS[] = {"&&&", "|||", "^^^", "<<<", ">>>", "~~~", "...", "..", "->", "<-", "|>",
+                                      ">>",  "<>",  "<=",  ">=",  "&&",  "||",  "?",   "|",  ".",  "=",  "<",
+                                      ">",   "+",   "-",   "*",   "/",   "%",   "@",   "^",  NULL};
+
+static bool is_custom_operator(const char *run) {
+    if (!*run) return false;
+    for (int i = 0; SYMBOLS[i]; i++)
+        if (strcmp(run, SYMBOLS[i]) == 0) return false;
+    for (const char *c = run; *c; c++)
+        if (*c != '.') return true;
+    return false;
+}
+
 bool tree_sitter_zsharp_external_scanner_scan(void *payload, TSLexer *lexer, const bool *valid) {
     Scanner *s = payload;
     bool recovering = valid[ERROR_SENTINEL];
@@ -86,10 +103,18 @@ bool tree_sitter_zsharp_external_scanner_scan(void *payload, TSLexer *lexer, con
 
     if (!at_line_start || recovering) return false;
 
-    // a line starting with |> continues the previous one
-    if (lexer->lookahead == '|') {
-        skip(lexer);
-        if (lexer->lookahead == '>') return false;
+    // a line starting with |> or a custom operator (>>=, <|>, .>>) continues the previous one
+    if (is_op_char(lexer->lookahead)) {
+        char run[16];
+        int n = 0;
+        while (n < 15 && is_op_char(lexer->lookahead)) {
+            char c = (char)lexer->lookahead;
+            skip(lexer);
+            if ((c == '$' && lexer->lookahead == '"') || (c == '/' && lexer->lookahead == '/')) break; // $"…", //
+            run[n++] = c;
+        }
+        run[n] = 0;
+        if ((n >= 2 && run[0] == '|' && run[1] == '>') || is_custom_operator(run)) return false;
     }
 
     uint16_t current = s->indents[s->count - 1];

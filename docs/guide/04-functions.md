@@ -50,6 +50,53 @@ let main () =
 42 35 HI!
 ```
 
+## Custom operators
+
+**Defining one:** `let (>>=) r f = …` defines an operator, a function with a symbolic name.
+- **Using it:** it goes between its two arguments: `r >>= f`.
+- **As a function:** `(>>=)` is the function itself, and so is `(+)` for a built-in operator.
+
+**Precedence:** an operator binds like the built-in ones that start with the same character, as in F#. Leading dots don't count, so `.>>` binds like `>>`.
+
+| Starts with | Binds like | Groups |
+|---|---|---|
+| `<` `>` `=` `\|` `&` `$` `!` | `\|>`, `>>` and `=` | from the left |
+| `@` `^` | `::` | from the right |
+| `+` `-` | `+` | from the left |
+| `*` `/` `%` | `*` | from the left |
+| `**` | | from the right |
+
+So `x |> parse >>= check` is `(x |> parse) >>= check`, and `a =~ b && c` is `(a =~ b) && c`. A line that starts with an operator continues the one above, as a line starting with `|>` does. This is what railway-style error handling and parser combinators (`p <|> q`, `p .>>. q |>> f`) are written with.
+
+```zsharp
+let (>>=) r f = Result.bind f r
+let (>=>) f g x = f x >>= g
+
+let parse (s: string) =
+  match String.parseInt s with
+  | Some n -> Ok n
+  | None -> Error $"not a number: {s}"
+
+let positive n = if n > 0 then Ok n else Error $"not positive: {n}"
+let even n = if n % 2 = 0 then Ok n else Error $"odd: {n}"
+
+let check = parse >=> positive >=> even
+
+let main () =
+  println $"{check "42"} {check "-2"} {check "7"} {check "x"}"
+  let next =
+    "20"
+    |> parse
+    >>= fun n -> Ok (n + 1)
+  println $"{next} {List.fold (+) 0 [ 1; 2; 3 ]}"
+  0
+```
+
+```text
+Ok 42 Error not positive: -2 Error odd: 7 Error not a number: x
+Ok 21 6
+```
+
 ## Recursion
 
 **Recursive functions:**

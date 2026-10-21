@@ -473,6 +473,10 @@
               {
                 "type": "SYMBOL",
                 "name": "active_pattern_name"
+              },
+              {
+                "type": "SYMBOL",
+                "name": "operator_name"
               }
             ]
           }
@@ -2296,8 +2300,17 @@
           "type": "FIELD",
           "name": "name",
           "content": {
-            "type": "SYMBOL",
-            "name": "identifier"
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "SYMBOL",
+                "name": "identifier"
+              },
+              {
+                "type": "SYMBOL",
+                "name": "operator_name"
+              }
+            ]
           }
         },
         {
@@ -2845,56 +2858,6 @@
       "type": "CHOICE",
       "members": [
         {
-          "type": "PREC_LEFT",
-          "value": 2,
-          "content": {
-            "type": "SEQ",
-            "members": [
-              {
-                "type": "SYMBOL",
-                "name": "_expression"
-              },
-              {
-                "type": "FIELD",
-                "name": "operator",
-                "content": {
-                  "type": "STRING",
-                  "value": "|>"
-                }
-              },
-              {
-                "type": "SYMBOL",
-                "name": "_expression"
-              }
-            ]
-          }
-        },
-        {
-          "type": "PREC_LEFT",
-          "value": 3,
-          "content": {
-            "type": "SEQ",
-            "members": [
-              {
-                "type": "SYMBOL",
-                "name": "_expression"
-              },
-              {
-                "type": "FIELD",
-                "name": "operator",
-                "content": {
-                  "type": "STRING",
-                  "value": ">>"
-                }
-              },
-              {
-                "type": "SYMBOL",
-                "name": "_expression"
-              }
-            ]
-          }
-        },
-        {
           "type": "PREC_RIGHT",
           "value": 4,
           "content": {
@@ -2962,6 +2925,14 @@
                   "members": [
                     {
                       "type": "STRING",
+                      "value": "|>"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": ">>"
+                    },
+                    {
+                      "type": "STRING",
                       "value": "="
                     },
                     {
@@ -2983,6 +2954,10 @@
                     {
                       "type": "STRING",
                       "value": ">="
+                    },
+                    {
+                      "type": "SYMBOL",
+                      "name": "compare_operator"
                     }
                   ]
                 }
@@ -3126,6 +3101,10 @@
                     {
                       "type": "STRING",
                       "value": "@"
+                    },
+                    {
+                      "type": "SYMBOL",
+                      "name": "cons_operator"
                     }
                   ]
                 }
@@ -3160,6 +3139,10 @@
                     {
                       "type": "STRING",
                       "value": "-"
+                    },
+                    {
+                      "type": "SYMBOL",
+                      "name": "add_operator"
                     }
                   ]
                 }
@@ -3198,8 +3181,37 @@
                     {
                       "type": "STRING",
                       "value": "%"
+                    },
+                    {
+                      "type": "SYMBOL",
+                      "name": "multiply_operator"
                     }
                   ]
+                }
+              },
+              {
+                "type": "SYMBOL",
+                "name": "_expression"
+              }
+            ]
+          }
+        },
+        {
+          "type": "PREC_RIGHT",
+          "value": 14,
+          "content": {
+            "type": "SEQ",
+            "members": [
+              {
+                "type": "SYMBOL",
+                "name": "_expression"
+              },
+              {
+                "type": "FIELD",
+                "name": "operator",
+                "content": {
+                  "type": "SYMBOL",
+                  "name": "power_operator"
                 }
               },
               {
@@ -3339,6 +3351,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "operator_value"
+        },
+        {
+          "type": "SYMBOL",
           "name": "typed_expression"
         },
         {
@@ -3433,6 +3449,181 @@
           "value": ")"
         }
       ]
+    },
+    "operator_value": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "("
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SYMBOL",
+              "name": "_custom_operator"
+            },
+            {
+              "type": "STRING",
+              "value": "+"
+            },
+            {
+              "type": "STRING",
+              "value": "-"
+            },
+            {
+              "type": "STRING",
+              "value": "*"
+            },
+            {
+              "type": "STRING",
+              "value": "/"
+            },
+            {
+              "type": "STRING",
+              "value": "%"
+            },
+            {
+              "type": "STRING",
+              "value": "="
+            },
+            {
+              "type": "STRING",
+              "value": "<>"
+            },
+            {
+              "type": "STRING",
+              "value": "<"
+            },
+            {
+              "type": "STRING",
+              "value": ">"
+            },
+            {
+              "type": "STRING",
+              "value": "<="
+            },
+            {
+              "type": "STRING",
+              "value": ">="
+            },
+            {
+              "type": "STRING",
+              "value": "&&&"
+            },
+            {
+              "type": "STRING",
+              "value": "|||"
+            },
+            {
+              "type": "STRING",
+              "value": "^^^"
+            },
+            {
+              "type": "STRING",
+              "value": "<<<"
+            },
+            {
+              "type": "STRING",
+              "value": ">>>"
+            },
+            {
+              "type": "STRING",
+              "value": "@"
+            },
+            {
+              "type": "STRING",
+              "value": "::"
+            }
+          ]
+        },
+        {
+          "type": "STRING",
+          "value": ")"
+        }
+      ]
+    },
+    "operator_name": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "("
+        },
+        {
+          "type": "SYMBOL",
+          "name": "_custom_operator"
+        },
+        {
+          "type": "STRING",
+          "value": ")"
+        }
+      ]
+    },
+    "_custom_operator": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "SYMBOL",
+          "name": "compare_operator"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "cons_operator"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "add_operator"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "multiply_operator"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "power_operator"
+        }
+      ]
+    },
+    "compare_operator": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PATTERN",
+        "value": "\\.*[<>=|&$!?~][!%&*+\\-./<=>?@^|~$]*"
+      }
+    },
+    "cons_operator": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PATTERN",
+        "value": "\\.*[@^][!%&*+\\-./<=>?@^|~$]*"
+      }
+    },
+    "add_operator": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PATTERN",
+        "value": "\\.*[+\\-][!%&*+\\-./<=>?@^|~$]*"
+      }
+    },
+    "multiply_operator": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PATTERN",
+        "value": "\\.*[*/%][!%&*+\\-./<=>?@^|~$]*"
+      }
+    },
+    "power_operator": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PREC",
+        "value": 1,
+        "content": {
+          "type": "PATTERN",
+          "value": "\\.*\\*\\*[!%&*+\\-./<=>?@^|~$]*"
+        }
+      }
     },
     "typed_expression": {
       "type": "SEQ",

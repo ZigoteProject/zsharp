@@ -145,6 +145,10 @@
             "named": true
           },
           {
+            "type": "operator_value",
+            "named": true
+          },
+          {
             "type": "parenthesized_expression",
             "named": true
           },
@@ -289,6 +293,10 @@
             "named": true
           },
           {
+            "type": "operator_value",
+            "named": true
+          },
+          {
             "type": "parenthesized_expression",
             "named": true
           },
@@ -364,6 +372,10 @@
           },
           {
             "type": "number",
+            "named": true
+          },
+          {
+            "type": "operator_value",
             "named": true
           },
           {
@@ -472,6 +484,10 @@
         },
         {
           "type": "number",
+          "named": true
+        },
+        {
+          "type": "operator_value",
           "named": true
         },
         {
@@ -669,6 +685,10 @@
           "named": true
         },
         {
+          "type": "operator_value",
+          "named": true
+        },
+        {
           "type": "parenthesized_expression",
           "named": true
         },
@@ -845,6 +865,26 @@
             "named": false
           },
           {
+            "type": "add_operator",
+            "named": true
+          },
+          {
+            "type": "compare_operator",
+            "named": true
+          },
+          {
+            "type": "cons_operator",
+            "named": true
+          },
+          {
+            "type": "multiply_operator",
+            "named": true
+          },
+          {
+            "type": "power_operator",
+            "named": true
+          },
+          {
             "type": "|>",
             "named": false
           },
@@ -925,6 +965,10 @@
         },
         {
           "type": "number",
+          "named": true
+        },
+        {
+          "type": "operator_value",
           "named": true
         },
         {
@@ -1060,6 +1104,10 @@
         },
         {
           "type": "number",
+          "named": true
+        },
+        {
+          "type": "operator_value",
           "named": true
         },
         {
@@ -1390,6 +1438,10 @@
             "named": true
           },
           {
+            "type": "operator_value",
+            "named": true
+          },
+          {
             "type": "parenthesized_expression",
             "named": true
           },
@@ -1653,6 +1705,10 @@
           "named": true
         },
         {
+          "type": "operator_value",
+          "named": true
+        },
+        {
           "type": "parenthesized_expression",
           "named": true
         },
@@ -1889,6 +1945,10 @@
           "named": true
         },
         {
+          "type": "operator_value",
+          "named": true
+        },
+        {
           "type": "parenthesized_expression",
           "named": true
         },
@@ -2013,6 +2073,10 @@
           },
           {
             "type": "number",
+            "named": true
+          },
+          {
+            "type": "operator_value",
             "named": true
           },
           {
@@ -2198,6 +2262,10 @@
         },
         {
           "type": "number",
+          "named": true
+        },
+        {
+          "type": "operator_value",
           "named": true
         },
         {
@@ -2402,6 +2470,10 @@
             "named": true
           },
           {
+            "type": "operator_value",
+            "named": true
+          },
+          {
             "type": "parenthesized_expression",
             "named": true
           },
@@ -2524,6 +2596,10 @@
             "named": true
           },
           {
+            "type": "operator_value",
+            "named": true
+          },
+          {
             "type": "parenthesized_expression",
             "named": true
           },
@@ -2643,6 +2719,10 @@
           },
           {
             "type": "number",
+            "named": true
+          },
+          {
+            "type": "operator_value",
             "named": true
           },
           {
@@ -2836,6 +2916,10 @@
           "named": true
         },
         {
+          "type": "operator_value",
+          "named": true
+        },
+        {
           "type": "parenthesized_expression",
           "named": true
         },
@@ -2978,6 +3062,10 @@
           "named": true
         },
         {
+          "type": "operator_value",
+          "named": true
+        },
+        {
           "type": "parenthesized_expression",
           "named": true
         },
@@ -3106,6 +3194,10 @@
         },
         {
           "type": "number",
+          "named": true
+        },
+        {
+          "type": "operator_value",
           "named": true
         },
         {
@@ -3322,6 +3414,10 @@
             "named": true
           },
           {
+            "type": "operator_value",
+            "named": true
+          },
+          {
             "type": "parenthesized_expression",
             "named": true
           },
@@ -3460,6 +3556,10 @@
             "named": true
           },
           {
+            "type": "operator_value",
+            "named": true
+          },
+          {
             "type": "parenthesized_expression",
             "named": true
           },
@@ -3515,6 +3615,10 @@
           },
           {
             "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "operator_name",
             "named": true
           },
           {
@@ -3648,6 +3752,10 @@
             "named": true
           },
           {
+            "type": "operator_value",
+            "named": true
+          },
+          {
             "type": "parenthesized_expression",
             "named": true
           },
@@ -3699,6 +3807,10 @@
         "types": [
           {
             "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "operator_name",
             "named": true
           }
         ]
@@ -3838,6 +3950,10 @@
             "named": true
           },
           {
+            "type": "operator_value",
+            "named": true
+          },
+          {
             "type": "parenthesized_expression",
             "named": true
           },
@@ -3965,6 +4081,10 @@
         },
         {
           "type": "number",
+          "named": true
+        },
+        {
+          "type": "operator_value",
           "named": true
         },
         {
@@ -4162,6 +4282,10 @@
             "named": true
           },
           {
+            "type": "operator_value",
+            "named": true
+          },
+          {
             "type": "parenthesized_expression",
             "named": true
           },
@@ -4304,6 +4428,10 @@
             "named": true
           },
           {
+            "type": "operator_value",
+            "named": true
+          },
+          {
             "type": "parenthesized_expression",
             "named": true
           },
@@ -4415,6 +4543,10 @@
           },
           {
             "type": "number",
+            "named": true
+          },
+          {
+            "type": "operator_value",
             "named": true
           },
           {
@@ -4633,6 +4765,10 @@
           "named": true
         },
         {
+          "type": "operator_value",
+          "named": true
+        },
+        {
           "type": "parenthesized_expression",
           "named": true
         },
@@ -4745,6 +4881,10 @@
           },
           {
             "type": "number",
+            "named": true
+          },
+          {
+            "type": "operator_value",
             "named": true
           },
           {
@@ -4910,6 +5050,10 @@
         },
         {
           "type": "number",
+          "named": true
+        },
+        {
+          "type": "operator_value",
           "named": true
         },
         {
@@ -5153,6 +5297,68 @@
     }
   },
   {
+    "type": "operator_name",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "add_operator",
+          "named": true
+        },
+        {
+          "type": "compare_operator",
+          "named": true
+        },
+        {
+          "type": "cons_operator",
+          "named": true
+        },
+        {
+          "type": "multiply_operator",
+          "named": true
+        },
+        {
+          "type": "power_operator",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "operator_value",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": false,
+      "types": [
+        {
+          "type": "add_operator",
+          "named": true
+        },
+        {
+          "type": "compare_operator",
+          "named": true
+        },
+        {
+          "type": "cons_operator",
+          "named": true
+        },
+        {
+          "type": "multiply_operator",
+          "named": true
+        },
+        {
+          "type": "power_operator",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "or_pattern",
     "named": true,
     "fields": {},
@@ -5297,6 +5503,10 @@
         },
         {
           "type": "number",
+          "named": true
+        },
+        {
+          "type": "operator_value",
           "named": true
         },
         {
@@ -5533,6 +5743,10 @@
           "named": true
         },
         {
+          "type": "operator_value",
+          "named": true
+        },
+        {
           "type": "parenthesized_expression",
           "named": true
         },
@@ -5701,6 +5915,10 @@
           "named": true
         },
         {
+          "type": "operator_value",
+          "named": true
+        },
+        {
           "type": "parenthesized_expression",
           "named": true
         },
@@ -5825,6 +6043,10 @@
           },
           {
             "type": "number",
+            "named": true
+          },
+          {
+            "type": "operator_value",
             "named": true
           },
           {
@@ -6124,6 +6346,10 @@
         },
         {
           "type": "number",
+          "named": true
+        },
+        {
+          "type": "operator_value",
           "named": true
         },
         {
@@ -6544,6 +6770,10 @@
           "named": true
         },
         {
+          "type": "operator_value",
+          "named": true
+        },
+        {
           "type": "parenthesized_expression",
           "named": true
         },
@@ -6674,6 +6904,10 @@
           "named": true
         },
         {
+          "type": "operator_value",
+          "named": true
+        },
+        {
           "type": "parenthesized_expression",
           "named": true
         },
@@ -6794,6 +7028,10 @@
         },
         {
           "type": "number",
+          "named": true
+        },
+        {
+          "type": "operator_value",
           "named": true
         },
         {
@@ -6970,6 +7208,10 @@
             "named": true
           },
           {
+            "type": "operator_value",
+            "named": true
+          },
+          {
             "type": "parenthesized_expression",
             "named": true
           },
@@ -7081,6 +7323,10 @@
           },
           {
             "type": "number",
+            "named": true
+          },
+          {
+            "type": "operator_value",
             "named": true
           },
           {
@@ -7293,6 +7539,10 @@
     "named": false
   },
   {
+    "type": "add_operator",
+    "named": true
+  },
+  {
     "type": "and",
     "named": false
   },
@@ -7312,6 +7562,14 @@
     "type": "comment",
     "named": true,
     "extra": true
+  },
+  {
+    "type": "compare_operator",
+    "named": true
+  },
+  {
+    "type": "cons_operator",
+    "named": true
   },
   {
     "type": "derive",
@@ -7386,6 +7644,10 @@
     "named": false
   },
   {
+    "type": "multiply_operator",
+    "named": true
+  },
+  {
     "type": "mutable",
     "named": false
   },
@@ -7408,6 +7670,10 @@
   {
     "type": "open",
     "named": false
+  },
+  {
+    "type": "power_operator",
+    "named": true
   },
   {
     "type": "private",

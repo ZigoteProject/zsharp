@@ -9,11 +9,9 @@
 
 const PREC = {
   assign: 1,
-  pipe: 2,
-  compose: 3,
   or: 4,
   and: 5,
-  compare: 6,
+  compare: 6, // also |>, >> and custom operators starting with < > = | & $ ! ? ~, as in F#
   bitor: 7, // ||| ^^^ &&& <<< >>>: tighter than comparison, looser than :: and +
   bitxor: 8,
   bitand: 9,
@@ -29,6 +27,11 @@ const PREC = {
 };
 
 const sep1 = (rule, separator) => seq(rule, repeat(seq(separator, rule)));
+
+// custom operators: runs of these characters that aren't a built-in symbol (a string token
+// wins over a regex of the same length); the first character after any dots sets precedence
+const OP = '[!%&*+\\-./<=>?@^|~$]*';
+const customOp = (first) => token(new RegExp('\\.*' + first + OP));
 const sep = (rule, separator) => optional(sep1(rule, separator));
 
 module.exports = grammar({
@@ -92,7 +95,7 @@ module.exports = grammar({
       'let',
       optional('rec'),
       optional('private'),
-      field('name', choice($.identifier, $.qualified_identifier, $.active_pattern_name)),
+      field('name', choice($.identifier, $.qualified_identifier, $.active_pattern_name, $.operator_name)),
       repeat($._parameter),
       optional($.type_annotation),
       '=',
@@ -195,7 +198,7 @@ module.exports = grammar({
 
     _statement: $ => choice($.let_binding, $.let_function, $.let_mutable, $.assignment, $._expression),
     let_binding: $ => seq('let', field('pattern', $._pattern), optional($.type_annotation), '=', field('value', $._body)),
-    let_function: $ => seq('let', optional('rec'), field('name', $.identifier), repeat1($._parameter), optional($.type_annotation), '=', field('body', $._body),
+    let_function: $ => seq('let', optional('rec'), field('name', choice($.identifier, $.operator_name)), repeat1($._parameter), optional($.type_annotation), '=', field('body', $._body),
       repeat(seq($._newline, $.and_definition))),
     let_mutable: $ => seq('let', 'mutable', field('name', $.identifier), optional($.type_annotation), '=', field('value', $._body)),
     assignment: $ => prec.right(PREC.assign, seq($._expression, '<-', $._expression)),
@@ -249,18 +252,17 @@ module.exports = grammar({
     while_expression: $ => seq('while', field('condition', $._expression), 'do', field('body', $._body)),
 
     binary_expression: $ => choice(
-      prec.left(PREC.pipe, seq($._expression, field('operator', '|>'), $._expression)),
-      prec.left(PREC.compose, seq($._expression, field('operator', '>>'), $._expression)),
       prec.right(PREC.or, seq($._expression, field('operator', '||'), $._expression)),
       prec.right(PREC.and, seq($._expression, field('operator', '&&'), $._expression)),
-      prec.left(PREC.compare, seq($._expression, field('operator', choice('=', '<>', '<', '>', '<=', '>=')), $._expression)),
+      prec.left(PREC.compare, seq($._expression, field('operator', choice('|>', '>>', '=', '<>', '<', '>', '<=', '>=', $.compare_operator)), $._expression)),
       prec.left(PREC.bitor, seq($._expression, field('operator', '|||'), $._expression)),
       prec.left(PREC.bitxor, seq($._expression, field('operator', '^^^'), $._expression)),
       prec.left(PREC.bitand, seq($._expression, field('operator', '&&&'), $._expression)),
       prec.left(PREC.shift, seq($._expression, field('operator', choice('<<<', '>>>')), $._expression)),
-      prec.right(PREC.cons, seq($._expression, field('operator', choice('::', '@')), $._expression)),
-      prec.left(PREC.add, seq($._expression, field('operator', choice('+', '-')), $._expression)),
-      prec.left(PREC.multiply, seq($._expression, field('operator', choice('*', '/', '%')), $._expression)),
+      prec.right(PREC.cons, seq($._expression, field('operator', choice('::', '@', $.cons_operator)), $._expression)),
+      prec.left(PREC.add, seq($._expression, field('operator', choice('+', '-', $.add_operator)), $._expression)),
+      prec.left(PREC.multiply, seq($._expression, field('operator', choice('*', '/', '%', $.multiply_operator)), $._expression)),
+      prec.right(PREC.power, seq($._expression, field('operator', $.power_operator), $._expression)),
     ),
     unary_expression: $ => prec(PREC.unary, seq(choice('-', 'not', '~~~'), $._expression)),
     question: $ => prec(PREC.question, seq($._expression, '?')),
@@ -280,6 +282,7 @@ module.exports = grammar({
       $.boolean,
       $.unit,
       $.parenthesized_expression,
+      $.operator_value,
       $.typed_expression,
       $.tuple,
       $.list,
@@ -291,6 +294,15 @@ module.exports = grammar({
     member_access: $ => prec.left(PREC.member, seq($._primary, '.', field('member', $.identifier))),
     index_access: $ => prec.left(PREC.member, seq($._primary, '.', '[', $._expression, ']')),
     parenthesized_expression: $ => seq('(', $._expression, ')'),
+    // (>>=), or a built-in operator as a function: (+)
+    operator_value: $ => seq('(', choice($._custom_operator, '+', '-', '*', '/', '%', '=', '<>', '<', '>', '<=', '>=', '&&&', '|||', '^^^', '<<<', '>>>', '@', '::'), ')'),
+    operator_name: $ => seq('(', $._custom_operator, ')'),
+    _custom_operator: $ => choice($.compare_operator, $.cons_operator, $.add_operator, $.multiply_operator, $.power_operator),
+    compare_operator: $ => customOp('[<>=|&$!?~]'),
+    cons_operator: $ => customOp('[@^]'),
+    add_operator: $ => customOp('[+\\-]'),
+    multiply_operator: $ => customOp('[*/%]'),
+    power_operator: $ => token(prec(1, new RegExp('\\.*\\*\\*' + OP))),
     typed_expression: $ => seq('(', $._expression, ':', field('type', $._type), ')'),
     tuple: $ => seq('(', $._expression, repeat1(seq(',', $._expression)), ')'),
     list: $ => seq('[', sep($._expression, choice(';', $._newline)), optional(choice(';', $._newline)), ']'),
