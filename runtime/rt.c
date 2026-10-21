@@ -1,6 +1,5 @@
 // Z# runtime: allocation, panics, strings. Linked into every Z# program.
 #define _GNU_SOURCE
-#include <execinfo.h>
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -8,6 +7,9 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+#ifdef __GLIBC__
+#include <execinfo.h> // backtraces; musl (cross-compiled builds) has none
+#endif
 
 // Every heap object starts with an int64 reference count: 1+ = live, 0 = static (never freed).
 typedef struct {
@@ -31,9 +33,11 @@ _Noreturn void zs_panic_c(const char *msg) {
     fprintf(stderr, "panic: %s\n", msg);
     const char *bt = getenv("ZS_BACKTRACE");
     if (bt && strcmp(bt, "0") == 0) stop();
+#ifdef __GLIBC__
     void *frames[64];
     int n = backtrace(frames, 64);
     backtrace_symbols_fd(frames + 1, n - 1, 2);
+#endif
     stop();
 }
 

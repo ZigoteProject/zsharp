@@ -127,9 +127,11 @@ syntax, only fixes. Both decisions came from the design review.
     - Arguments and locals of number and bool types are shown, `for` variables included.
     - **Next:** strings, records and unions as gdb values (DWARF composite types).
   - `zs test` and better error messages (code snippets, carets). **Done:** `[<Test>]` functions, one process per test; a failed assert names its file and line.
-  - **Cross-compilation:** `zs build --target <triple>` via `zig cc` and Zig's bundled libc.
+  - **Cross-compilation (done):** `zs build --target <triple>`. clang compiles the IR for the target, and `zig cc` compiles the runtime and links against Zig's bundled musl, giving static binaries.
+    - `./test.sh --target aarch64-linux-musl` runs the tests under qemu-user.
+    - The C ABI follows AAPCS64 on aarch64: HFAs in float registers, structs up to 16 bytes in integer registers, larger ones by reference. `tests/cimport/abi.zs` checks each shape on both architectures.
   - **For C libraries:**
-    - The aarch64 AAPCS calling convention (HFAs, register rules).
+    - **Done:** the aarch64 AAPCS calling convention (HFAs, register rules).
     - Running out of argument registers, modelled on x86-64.
     - Headers that are better documented, with `const` where it applies.
     - A stable naming scheme for exported symbols.
@@ -141,7 +143,7 @@ syntax, only fixes. Both decisions came from the design review.
     - **Done:** a `zs.toml` manifest with name, version, entry point and path dependencies.
       - `zs build`, `zs run` and `zs test` with no file use it, and `zs new` creates a project.
       - Modules are found in dependencies for the CLI, the LSP and MCP alike.
-    - **Next:** git dependencies, with a lockfile.
+    - **Done:** git dependencies (`{ git = "…", rev = "…" }`), with `zs.lock`, `zs fetch` and `zs update`.
 - **Exit tests:**
   - A raylib window demo written only against `import c "raylib.h"`.
   - `tests/` cross-compiles to aarch64-linux-musl and passes under qemu-user. This includes `tests/cexport`, so the C ABI is checked on both architectures.

@@ -540,9 +540,18 @@ import c "raylib.h"                              // like Zig's @cImport
 
   [dependencies]
   text = { path = "../text" } # another project; its modules are found in the folder of its main
+  json = { git = "https://github.com/someone/json", rev = "v1.2" } # rev: tag, branch or commit
   ```
+  - **Git dependencies:** checked out into `.zs-cache/deps/<name>` by `zs fetch`, or automatically by `zs build`/`run`/`test`/`check`.
+    - `zs.lock` records each one's commit, so builds are reproducible and offline once fetched. Commit it.
+    - `zs update` moves dependencies to the newest commit of their `rev`. Their own git dependencies are fetched the same way.
+    - The language server never fetches; it reads what's checked out.
   - **Commands:** `zs build` (to `build/<name>`), `zs run [args…]` and `zs test` work on the nearest manifest. `zs new <name>` creates one.
   - **Modules:** found next to the importing file, then in each dependency, transitively. This is the same for the compiler, `zs lsp` and `zs mcp`.
+- **Cross-compiling:** `zs build --target aarch64-linux-musl` (or any triple Zig knows) builds for another machine:
+  - **How:** clang compiles the program for the target, and `zig cc` builds the runtime and links with Zig's bundled libc, so no sysroot is needed.
+  - **Output:** musl targets give static binaries.
+  - **C structs by value:** these follow the target's convention (x86-64 System V, or AAPCS64).
 - **Debugging:** `zs build -g` (or `zs run -g`) builds without optimization and with DWARF debug info, so gdb can work with Z# source:
   - break on functions or `file.zs:line`, step, and show backtraces;
   - show arguments and locals of number and bool types, which are kept in stack slots in debug builds.

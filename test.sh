@@ -2,23 +2,34 @@
 # Builds the compiler, then checks every tests/**/*.zs that has an expected .out (run output) or
 # .err (compile error) next to it; other .zs files are modules those tests use.
 # --valgrind: also run each program under valgrind (memory errors or leaks fail the test).
+# --target <triple>: cross-compile the programs and C interop tests (zs build --target) and run
+#   them under qemu-user, e.g. --target aarch64-linux-musl; the host-only tool checks are skipped.
 set -u
 cd "$(dirname "$0")"
 dotnet build src -c Release -o bin --nologo -v q || exit 1
 export ZS_LEAKCHECK=1 ZS_BACKTRACE=0  # report leaked objects at exit; deterministic panic output
-valgrind=0; [ "${1:-}" = "--valgrind" ] && valgrind=1
+valgrind=0; target=""; tgt=(); qemu=()
+while [ $# -gt 0 ]; do
+  case $1 in
+    --valgrind) valgrind=1 ;;
+    --target) target=$2; tgt=(--target "$2"); qemu=("qemu-${2%%-*}"); shift ;;
+  esac
+  shift
+done
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 fail=0
 for t in $(find tests -name '*.zs' | sort); do
   base=${t%.zs}
   [ -f "$base.out" ] || [ -f "$base.err" ] || continue
+  # base.host-only: the reason it can't run cross-compiled under qemu-user
+  if [ -n "$target" ] && [ -f "$base.host-only" ]; then echo "skip $t ($(cat "$base.host-only"))"; continue; fi
   if [ -f "$base.err" ]; then
     # compare the error lines, not the source snippets under them
-    actual=$(bin/zs build "$t" -o "$tmp/exe" 2>&1 | grep -v '^ [ 0-9]* | '); expected=$(cat "$base.err")
-  elif ! bin/zs build "$t" -o "$tmp/exe" 2>"$tmp/build.log"; then
+    actual=$(bin/zs build "$t" "${tgt[@]}" -o "$tmp/exe" 2>&1 | grep -v '^ [ 0-9]* | '); expected=$(cat "$base.err")
+  elif ! bin/zs build "$t" "${tgt[@]}" -o "$tmp/exe" 2>"$tmp/build.log"; then
     actual=$(cat "$tmp/build.log"); expected=$(cat "$base.out")
   else
-    run=("$tmp/exe")
+    run=("${qemu[@]}" "$tmp/exe")
     # panics abort without cleanup by design, so only exit-normally programs are leak-checked
     [ $valgrind = 1 ] && ! grep -q "^panic:" "$base.out" && run=(valgrind -q --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=all --error-exitcode=99 "$tmp/exe")
     actual=$("${run[@]}" < /dev/null 2>&1); code=$?
@@ -36,6 +47,8 @@ for t in $(find tests -name '*.zs' | sort); do
   if [ "$actual" == "$expected" ]; then echo "ok   $t"
   else echo "FAIL $t"; diff <(echo "$expected") <(echo "$actual") | head -20; fail=1; fi
 done
+# the tools (fmt, LSP, MCP, editors, projects, gdb) are checked on the host only
+if [ -z "$target" ]; then
 # compile time of a mid-sized program, per phase (watched, not enforced)
 bin/zs build tests/json.zs -o "$tmp/time-exe" --time 2>"$tmp/time.log" >/dev/null
 echo "time tests/json.zs: $(grep -E '^(parse|total)' "$tmp/time.log" | tr -s ' ' | tr '\n' ';' | sed 's/;$//')"
@@ -61,6 +74,10 @@ Hello, Z#!'
 if [ "$proj" = "$expected" ]; then echo "ok   projects (zs.toml, path dependency, zs run/test/new)"
 else echo "FAIL projects"; diff <(echo "$proj") <(echo "$expected"); fail=1; fi
 rm -rf tests/project/wc/build
+
+# git dependencies against a local repository: tags, branches, zs.lock, zs update, re-fetching
+if diff <(tests/project/git.sh 2>&1) tests/project/git.expected >"$tmp/git.diff"; then echo "ok   tests/project/git.sh (git dependencies)"
+else echo "FAIL tests/project/git.sh"; cat "$tmp/git.diff"; fail=1; fi
 
 # import c in the editor: hover shows the Z# type, C prototype and header comment; definition
 # opens the header. Then the same file checks with clang unavailable, from the saved import.
@@ -132,11 +149,14 @@ if command -v tree-sitter >/dev/null; then
   else echo "FAIL editors/tree-sitter-zsharp"; echo "$ts" | tail -20; fail=1; fi
 else echo "skip editors/tree-sitter-zsharp (no tree-sitter CLI; rebuild the dev image)"; fi
 
+fi
+
 # C interop: a directory with main.c links the static library built from its lib.zs
+cc=(clang); [ -n "$target" ] && cc=(zig cc -target "$target")
 for c in $(find tests -name main.c | sort); do
   d=$(dirname "$c")
-  if bin/zs build "$d/lib.zs" --lib -o "$tmp/lib.a" 2>"$tmp/build.log" && clang -I"$tmp" "$c" "$tmp/lib.a" -lm -o "$tmp/cexe" 2>>"$tmp/build.log"; then
-    run=("$tmp/cexe"); [ $valgrind = 1 ] && run=(valgrind -q --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=all --error-exitcode=99 "$tmp/cexe")
+  if bin/zs build "$d/lib.zs" "${tgt[@]}" --lib -o "$tmp/lib.a" 2>"$tmp/build.log" && "${cc[@]}" -I"$tmp" "$c" "$tmp/lib.a" -lm -o "$tmp/cexe" 2>>"$tmp/build.log"; then
+    run=("${qemu[@]}" "$tmp/cexe"); [ $valgrind = 1 ] && run=(valgrind -q --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=all --error-exitcode=99 "$tmp/cexe")
     actual=$("${run[@]}" 2>&1); [ $? = 99 ] && actual="$actual
 (valgrind reported memory errors or leaks)"
   else actual=$(cat "$tmp/build.log"); fi

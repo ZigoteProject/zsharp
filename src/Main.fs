@@ -59,6 +59,25 @@ let private project () =
 
 let private isFile (a: string) = a.EndsWith ".zs"
 
+/// Fetches the git dependencies of the project around `dir` (if any) before a build; false on
+/// failure, with the reasons printed.
+let private fetched (dir: string) =
+    try
+        match findProject dir with
+        | Some m ->
+            let errors = fetchDeps m false
+
+            for e in errors do
+                eprintfn "zs: %s" e
+
+            errors.IsEmpty
+        | None -> true
+    with CompileErrorAt(file, line, col, msg) ->
+        printError file line col msg
+        false
+
+let private dirOf (src: string) = Path.GetDirectoryName(Path.GetFullPath src)
+
 /// Builds a file's [<Test>] functions and runs each in its own process, so a failed assert or
 /// panic fails that test only. Returns (passed, failed), or None when it didn't build.
 let private runTests (src: string) (filter: string list) =
@@ -122,6 +141,14 @@ let private newProject (name: string) =
 let main argv =
     Codegen.debugInfo <- Array.contains "-g" argv
 
+    // --target <triple> (e.g. aarch64-linux-musl): a cross build, taken out of the arguments
+    let argv =
+        match Array.tryFindIndex ((=) "--target") argv with
+        | Some i when i + 1 < argv.Length ->
+            Codegen.target <- argv[i + 1]
+            Array.append argv[.. i - 1] argv[i + 2 ..]
+        | _ -> argv
+
     match List.ofArray argv |> List.filter ((<>) "-g") with
     | "build" :: rest when not (List.exists isFile rest) ->
         // the project: its main, built as build/<name>
@@ -129,6 +156,7 @@ let main argv =
         | Error msg ->
             eprintfn "zs: %s" msg
             1
+        | Ok m when not (fetched m.root) -> 1
         | Ok m ->
             let out = Path.Combine(m.root, "build", m.name)
             Directory.CreateDirectory(Path.GetDirectoryName out) |> ignore
@@ -144,6 +172,7 @@ let main argv =
         | Error msg ->
             eprintfn "zs: %s" msg
             1
+        | Ok m when not (fetched m.root) -> 1
         | Ok m ->
             let exe = Path.Combine(Path.GetTempPath(), "zs-" + Guid.NewGuid().ToString("N"))
 
@@ -164,6 +193,7 @@ let main argv =
         | Error msg ->
             eprintfn "zs: %s" msg
             1
+        | Ok m when not (fetched m.root) -> 1
         | Ok m ->
             let files =
                 [ "src"; "tests" ]
@@ -184,6 +214,21 @@ let main argv =
             printfn "%d passed, %d failed%s" passed failed (if broken > 0 then sprintf ", %d file(s) didn't build" broken else "")
             if failed = 0 && broken = 0 then 0 else 1
     | [ "new"; name ] -> newProject name
+    | [ ("fetch" | "update") as cmd ] ->
+        // fetch: check out git dependencies at their locked commits; update: move them to the
+        // newest commit of their rev, and rewrite zs.lock
+        match project () with
+        | Error msg ->
+            eprintfn "zs: %s" msg
+            1
+        | Ok m ->
+            let errors = fetchDeps m (cmd = "update")
+
+            for e in errors do
+                eprintfn "zs: %s" e
+
+            if errors.IsEmpty then 0 else 1
+    | ("build" | "run" | "check" | "test") :: src :: _ when isFile src && not (fetched (dirOf src)) -> 1
     | "build" :: src :: rest ->
         let out =
             match List.tryFindIndex ((=) "-o") rest with
@@ -323,5 +368,5 @@ let main argv =
             Rpc.input <- new Rpc.PrefixedStream([| byte first |], stdin)
             if char first = '{' then Mcp.serve () else Lsp.serve ()
     | _ ->
-        eprintfn "usage: zs new <name>\n       zs build [<file.zs> [-o <out>] [--lib]] [-g] [--emit-llvm] [--sanitize] [--time]\n       zs run [<file.zs> [-g] [--sanitize] --] [program arguments…]\n       zs check <file.zs>\n       zs test [<file.zs>] [name filters…]\n       zs doc <file.zs>\n       zs fmt [--check] <files…>\n       zs lsp\n       zs mcp"
+        eprintfn "usage: zs new <name>\n       zs fetch | zs update\n       zs build [<file.zs> [-o <out>] [--lib]] [-g] [--target <triple>] [--emit-llvm] [--sanitize] [--time]\n       zs run [<file.zs> [-g] [--sanitize] --] [program arguments…]\n       zs check <file.zs>\n       zs test [<file.zs>] [name filters…]\n       zs doc <file.zs>\n       zs fmt [--check] <files…>\n       zs lsp\n       zs mcp"
         2

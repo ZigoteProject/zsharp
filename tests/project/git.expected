@@ -1,0 +1,10 @@
+words 3
+zs.lock pins v1
+(v1 still) words 3
+zs.lock still pins v1
+words 3 HI
+zs.lock pins main
+a build keeps the locked commit
+zs update moves to the newest main
+re-fetched from zs.lock
+zs: git dependency 'text' (file:///nonexistent/text main):

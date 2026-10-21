@@ -1,0 +1,1 @@
+Re-executes itself (Process.exit test); qemu-user can't, without binfmt_misc.

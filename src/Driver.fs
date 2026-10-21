@@ -28,13 +28,39 @@ let parseFile (path: string) =
 
 /// A zs.toml manifest:
 ///   [package]  name = "wc"  version = "0.1.0"  main = "src/main.zs" (the default)
-///   [dependencies]  text = { path = "../text" }
+///   [dependencies]  text = { path = "../text" }  json = { git = "https://…", rev = "v1" }
+type Dep =
+    | PathDep of string // full path of the dependency's directory
+    | GitDep of url: string * rev: string // rev: a tag, branch or commit ("" = the default branch)
+
 type Manifest =
     { root: string // the directory holding zs.toml
       name: string
       version: string
       main: string // full path
-      deps: (string * string) list } // name, full path of the dependency's directory
+      deps: (string * Dep) list }
+
+/// { k = "v", … } as a dictionary, or the problem with it.
+let private tableFields (value: string) : Result<Dictionary<string, string>, string> =
+    let unquote (v: string) =
+        let v = v.Trim()
+        if v.Length >= 2 && v.StartsWith "\"" && v.EndsWith "\"" then Some(v.Substring(1, v.Length - 2)) else None
+
+    if not (value.StartsWith "{" && value.EndsWith "}") then
+        Error "expected a table such as { path = \"../text\" }"
+    else
+        let d = Dictionary<string, string>()
+        let mutable bad = None
+
+        for f in value.Trim('{', '}').Split ',' do
+            if f.Trim() <> "" then
+                match f.Split('=', 2) with
+                | [| k; v |] when (unquote v).IsSome -> d[k.Trim()] <- (unquote v).Value
+                | _ -> bad <- Some f
+
+        match bad with
+        | Some f -> Error(sprintf "expected key = \"value\" inside { }, found %s" (f.Trim()))
+        | None -> Ok d
 
 /// Reads the subset of TOML a manifest uses: [sections], key = "string", key = { k = "v", … }.
 let readManifest (root: string) : Manifest =
@@ -42,7 +68,7 @@ let readManifest (root: string) : Manifest =
     let fail (n: int) msg = raise (CompileErrorAt(file, n, 0, msg))
     let mutable section = ""
     let package = Dictionary<string, string>()
-    let deps = ResizeArray<string * string>()
+    let deps = ResizeArray<string * Dep>()
     let unquote (n: int) (v: string) =
         let v = v.Trim()
         if v.Length >= 2 && v.StartsWith "\"" && v.EndsWith "\"" then v.Substring(1, v.Length - 2)
@@ -64,22 +90,23 @@ let readManifest (root: string) : Manifest =
                 match section with
                 | "package" -> package[key] <- unquote n value
                 | "dependencies" ->
-                    if not (value.StartsWith "{" && value.EndsWith "}") then
-                        fail n (sprintf "dependency '%s' needs a table, such as { path = \"../%s\" }" key key)
-
                     let fields =
-                        value.Trim('{', '}').Split ','
-                        |> Array.filter (fun f -> f.Trim() <> "")
-                        |> Array.map (fun f ->
-                            match f.Split('=', 2) with
-                            | [| k; v |] -> k.Trim(), unquote n v
-                            | _ -> fail n "expected key = value inside { }")
-                        |> dict
+                        match tableFields value with
+                        | Ok f -> f
+                        | Error msg -> fail n (sprintf "dependency '%s': %s" key msg)
 
-                    match fields.TryGetValue "path" with
-                    | true, p -> deps.Add(key, Path.GetFullPath(Path.Combine(root, p)))
-                    | _ when fields.ContainsKey "git" -> fail n "git dependencies are not supported yet; use { path = ... }"
-                    | _ -> fail n (sprintf "dependency '%s' needs a path" key)
+                    match fields.TryGetValue "path", fields.TryGetValue "git" with
+                    | (true, p), _ -> deps.Add(key, PathDep(Path.GetFullPath(Path.Combine(root, p))))
+                    | _, (true, url) ->
+                        let rev =
+                            [ "rev"; "tag"; "branch" ]
+                            |> List.tryPick (fun k ->
+                                match fields.TryGetValue k with
+                                | true, v -> Some v
+                                | _ -> None)
+
+                        deps.Add(key, GitDep(url, defaultArg rev ""))
+                    | _ -> fail n (sprintf "dependency '%s' needs a path or a git URL" key)
                 | s -> fail n (sprintf "unknown section [%s]" s))
 
     let get k d =
@@ -99,28 +126,185 @@ let rec findProject (dir: string) : Manifest option =
     elif File.Exists(Path.Combine(dir, "zs.toml")) then Some(readManifest dir)
     else findProject (Path.GetDirectoryName dir)
 
+/// Where a git dependency is checked out: <project>/.zs-cache/deps/<name>.
+let gitDir (top: Manifest) (name: string) = Path.Combine(top.root, ".zs-cache", "deps", name)
+
+let private depPath (top: Manifest) (name: string) (d: Dep) =
+    match d with
+    | PathDep p -> p
+    | GitDep _ -> gitDir top name
+
 /// Where a file's modules are looked up: its own directory, then (inside a project) the
-/// source directory (the one holding `main`) of each dependency, transitively.
+/// source directory (the one holding `main`) of each dependency, transitively. Git
+/// dependencies must have been fetched (zs fetch, or any zs build/run/test/check).
 let moduleDirs (file: string) : string list =
     let dir = Path.GetDirectoryName(Path.GetFullPath file)
 
-    let rec depDirs (seen: Set<string>) (m: Manifest) =
+    let rec depDirs (top: Manifest) (seen: Set<string>) (m: Manifest) =
         m.deps
         |> List.fold
-            (fun (seen: Set<string>, acc) (name, path) ->
+            (fun (seen: Set<string>, acc) (name, dep) ->
+                let path = depPath top name dep
+
                 if seen.Contains path then
                     seen, acc
                 elif not (File.Exists(Path.Combine(path, "zs.toml"))) then
-                    raise (CompileErrorAt(Path.Combine(m.root, "zs.toml"), 0, 0, sprintf "dependency '%s': no zs.toml in %s" name path))
+                    let msg =
+                        match dep with
+                        | GitDep _ when not (Directory.Exists path) -> sprintf "git dependency '%s' isn't fetched yet: run zs fetch" name
+                        | _ -> sprintf "dependency '%s': no zs.toml in %s" name path
+
+                    raise (CompileErrorAt(Path.Combine(m.root, "zs.toml"), 0, 0, msg))
                 else
                     let dm = readManifest path
-                    let seen, more = depDirs (seen.Add path) dm
+                    let seen, more = depDirs top (seen.Add path) dm
                     seen, acc @ [ Path.GetDirectoryName dm.main ] @ more)
             (seen, [])
 
     match findProject dir with
-    | Some m -> dir :: (snd (depDirs (Set.singleton m.root) m) |> List.filter ((<>) dir)) |> List.distinct
+    | Some m -> dir :: (snd (depDirs m (Set.singleton m.root) m) |> List.filter ((<>) dir)) |> List.distinct
     | None -> [ dir ]
+
+/// Runs git; Ok stdout or Error with its message.
+let private git (args: string list) =
+    let psi = ProcessStartInfo "git"
+
+    for a in args do
+        psi.ArgumentList.Add a
+
+    psi.RedirectStandardOutput <- true
+    psi.RedirectStandardError <- true
+    psi.Environment["GIT_TERMINAL_PROMPT"] <- "0" // fail instead of asking for a password
+
+    try
+        use p = Process.Start psi
+        let out = p.StandardOutput.ReadToEndAsync()
+        let err = p.StandardError.ReadToEndAsync()
+        p.WaitForExit()
+        if p.ExitCode = 0 then Ok(out.Result.Trim()) else Error(err.Result.Trim())
+    with :? ComponentModel.Win32Exception ->
+        Error "git isn't installed"
+
+/// zs.lock: the commit each git dependency resolved to, with the URL and rev it came from.
+///   [dependencies]
+///   json = { git = "https://…", rev = "v1", commit = "<sha>" }
+let private readLock (root: string) =
+    let file = Path.Combine(root, "zs.lock")
+    let lock = Dictionary<string, string * string * string>()
+
+    if File.Exists file then
+        for line in File.ReadAllLines file do
+            match line.IndexOf '=' with
+            | eq when eq > 0 && not (line.TrimStart().StartsWith "#") ->
+                match tableFields (line.Substring(eq + 1).Trim()) with
+                | Ok fields when fields.ContainsKey "git" && fields.ContainsKey "commit" ->
+                    let rev =
+                        match fields.TryGetValue "rev" with
+                        | true, r -> r
+                        | _ -> ""
+
+                    lock[line.Substring(0, eq).Trim()] <- (fields["git"], rev, fields["commit"])
+                | _ -> ()
+            | _ -> ()
+
+    lock
+
+let private writeLock (root: string) (entries: (string * (string * string * string)) list) =
+    let lines =
+        [ "# zs.lock: the exact commits of git dependencies. zs update moves them to the newest"
+          "# commit of their rev; commit this file so every build uses the same code."
+          "[dependencies]" ]
+        @ (entries
+           |> List.sortBy fst
+           |> List.map (fun (name, (url, rev, commit)) ->
+               sprintf "%s = { git = \"%s\", rev = \"%s\", commit = \"%s\" }" name url rev commit))
+
+    File.WriteAllText(Path.Combine(root, "zs.lock"), String.concat "\n" lines + "\n")
+
+/// Checks out every git dependency of the project (and of its dependencies) at the commit in
+/// zs.lock. A new dependency, a changed URL or rev, or update = true resolves the rev again
+/// (fetching when needed) and records the new commit. Returns error messages.
+let fetchDeps (top: Manifest) (update: bool) : string list =
+    let lock = readLock top.root
+    let resolved = Dictionary<string, string * string * string>()
+    let errors = ResizeArray<string>()
+    let visited = HashSet<string>()
+
+    let checkout (name: string) (url: string) (rev: string) =
+        let dir = gitDir top name
+
+        let locked =
+            match lock.TryGetValue name with
+            | true, (u, r, c) when u = url && r = rev && not update -> Some c
+            | _ -> None
+
+        let head () = git [ "-C"; dir; "rev-parse"; "HEAD" ]
+
+        let cloned =
+            if Directory.Exists(Path.Combine(dir, ".git")) then
+                Ok()
+            else
+                if Directory.Exists dir then
+                    Directory.Delete(dir, true)
+
+                Directory.CreateDirectory(Path.GetDirectoryName dir) |> ignore
+                eprintfn "fetching %s from %s" name url
+                git [ "clone"; "--quiet"; "--"; url; dir ] |> Result.map ignore
+
+        let result =
+            cloned
+            |> Result.bind (fun () ->
+                match locked with
+                | Some c when head () = Ok c -> Ok c // already checked out: no network
+                | Some c ->
+                    // the locked commit: fetch only if this clone doesn't have it
+                    let have = git [ "-C"; dir; "cat-file"; "-e"; c + "^{commit}" ]
+                    let fetched = if Result.isOk have then Ok "" else git [ "-C"; dir; "fetch"; "--quiet"; "--tags"; "origin" ]
+                    fetched |> Result.bind (fun _ -> git [ "-C"; dir; "checkout"; "--quiet"; "--detach"; c ]) |> Result.bind (fun _ -> head ())
+                | None ->
+                    // resolve the rev on the remote's current state: a branch means origin's branch
+                    eprintfn "resolving %s %s" name (if rev = "" then "(default branch)" else rev)
+
+                    git [ "-C"; dir; "fetch"; "--quiet"; "--tags"; "--force"; "origin" ]
+                    |> Result.bind (fun _ ->
+                        let target =
+                            if rev = "" then "origin/HEAD"
+                            elif Result.isOk (git [ "-C"; dir; "rev-parse"; "--verify"; "--quiet"; "refs/remotes/origin/" + rev ]) then "origin/" + rev
+                            else rev
+
+                        git [ "-C"; dir; "checkout"; "--quiet"; "--detach"; target ])
+                    |> Result.bind (fun _ -> head ()))
+
+        match result with
+        | Ok commit ->
+            resolved[name] <- (url, rev, commit)
+            true
+        | Error e ->
+            errors.Add(sprintf "git dependency '%s' (%s%s): %s" name url (if rev = "" then "" else " " + rev) e)
+            false
+
+    let rec visit (m: Manifest) =
+        for name, dep in m.deps do
+            match dep with
+            | GitDep(url, rev) ->
+                match resolved.TryGetValue name with
+                | true, (u, _, _) when u <> url -> errors.Add(sprintf "two git dependencies are named '%s': %s and %s" name u url)
+                | true, _ -> ()
+                | _ ->
+                    let dir = gitDir top name
+
+                    if checkout name url rev && File.Exists(Path.Combine(dir, "zs.toml")) && visited.Add dir then
+                        visit (readManifest dir)
+            | PathDep p ->
+                if File.Exists(Path.Combine(p, "zs.toml")) && visited.Add p then
+                    visit (readManifest p)
+
+    visit top
+
+    if errors.Count = 0 && (resolved.Count > 0 || File.Exists(Path.Combine(top.root, "zs.lock"))) then
+        writeLock top.root [ for KeyValue(n, v) in resolved -> n, v ]
+
+    List.ofSeq errors
 
 /// What [<Link "...">] on an `import c` asked for: library names (-lname) and C, object or
 /// archive files (full paths), collected while loading the program's modules.
@@ -350,15 +534,34 @@ let build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) (isLib: 
             let code, output = exec exe args true
             if code = 0 then None else Some(sprintf "%s failed: %s" exe (output.Trim()))
 
+        // a cross build (--target): clang compiles the IR for the target, and zig cc compiles the
+        // runtime and links against Zig's bundled libc (musl: a static binary, no sysroot needed)
+        let cross = Codegen.target <> ""
+        let tclang = if cross then [ "--target=" + Codegen.target ] else []
+        let cc args = if cross then run "zig" ([ "cc"; "-target"; Codegen.target ] @ args) else run "clang" args
+
         let failure =
-            if isLib then
+            if cross && not isLib then
+                let obj = Path.ChangeExtension(ll, ".o")
+
+                let failure =
+                    timed "clang" (fun () -> run "clang" (opt @ tclang @ [ "-c"; "-Wno-override-module" ] @ san @ [ ll; "-o"; obj ]))
+                    |> Option.orElseWith (fun () ->
+                        let linked = links |> Seq.map (fun l -> if l.Contains "/" then l else "-l" + l) |> List.ofSeq
+                        timed "zig cc" (fun () -> cc (opt @ [ obj; runtimeFile "rt.c" ] @ linked @ [ "-o"; out; "-lm" ])))
+
+                if File.Exists obj then
+                    File.Delete obj
+
+                failure
+            elif isLib then
                 // objects for the program and the runtime, archived, plus the header
                 let obj = Path.ChangeExtension(ll, ".o")
                 let rt = Path.ChangeExtension(ll, ".rt.o")
 
                 let failure =
-                    run "clang" (opt @ [ "-c"; "-Wno-override-module" ] @ san @ [ ll; "-o"; obj ])
-                    |> Option.orElseWith (fun () -> run "clang" (opt @ [ "-c" ] @ san @ [ runtimeFile "rt.c"; "-o"; rt ]))
+                    run "clang" (opt @ tclang @ [ "-c"; "-Wno-override-module" ] @ san @ [ ll; "-o"; obj ])
+                    |> Option.orElseWith (fun () -> cc (opt @ [ "-c" ] @ san @ [ runtimeFile "rt.c"; "-o"; rt ]))
                     |> Option.orElseWith (fun () ->
                         if File.Exists out then
                             File.Delete out

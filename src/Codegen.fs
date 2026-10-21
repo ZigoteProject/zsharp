@@ -215,6 +215,11 @@ let private floatConst (ty: string) (f: float) =
 /// number and bool types.
 let mutable debugInfo = false
 
+/// The target triple (zs build --target), "" for the host (x86-64 Linux). It decides the C ABI.
+let mutable target = ""
+
+let private isArm64 () = target.StartsWith "aarch64"
+
 /// Compiles closure-converted, RC-annotated functions to textual LLVM IR, plus a C header for
 /// the exported functions.
 let compile
@@ -278,9 +283,9 @@ let compile
     let cloTy (env: Ty list) =
         "{ i64, ptr, ptr" + (env |> List.map (fun f -> ", " + llty f) |> String.concat "") + " }"
 
-    // ------------------------------------------------------------ C ABI (x86-64 System V)
-    // ponytail: x86-64 System V only, and running out of argument registers (a struct then goes
-    // to the stack whole) isn't modelled; aarch64 AAPCS comes with cross-compilation (Phase 4)
+    // ------------------------------------------------------------ C ABI (x86-64 System V, AAPCS64)
+    // ponytail: running out of argument registers isn't modelled (x86-64 then passes a struct on
+    // the stack whole; AAPCS64 HFAs then need alignstack(8)), which matters only past 6-8 struct args
 
     /// Size, alignment and scalar fields (offset, LLVM type) of a C-representable type.
     let rec cLayout (t: Ty) : int * int * (int * string) list =
@@ -318,9 +323,23 @@ let compile
 
             (off + al - 1) / al * al, al, List.ofSeq scalars
 
-    let abiOf (t: Ty) : Abi =
+    /// AAPCS64 (aarch64): an HFA (1-4 fields, all float or all double) goes in float registers as
+    /// an array; up to 16 bytes in one or two integer registers; anything bigger by reference.
+    let abiArm64 (t: Ty) (isResult: bool) : Abi =
+        let size, _, scalars = cLayout t
+        let kinds = scalars |> List.map snd |> List.distinct
+
+        match kinds with
+        | [ ("float" | "double") as k ] when scalars.Length <= 4 -> Pieces [ sprintf "[%d x %s]" scalars.Length k ]
+        | _ when size > 16 -> Memory
+        | _ when size > 8 -> Pieces [ "[2 x i64]" ]
+        | _ when isResult -> Pieces [ sprintf "i%d" (8 * size) ]
+        | _ -> Pieces [ "i64" ]
+
+    let abiFor (t: Ty) (isResult: bool) : Abi =
         match llty t with
         | lt when not (lt.StartsWith "{") -> Scalar
+        | _ when isArm64 () -> abiArm64 t isResult
         | _ ->
             let size, _, scalars = cLayout t
 
@@ -339,27 +358,31 @@ let compile
                           else
                               sprintf "i%d" (8 * min 8 (size - 8 * k)) ]
 
+    let abiOf (t: Ty) = abiFor t false
     let cParam (t: Ty) = if llty t = "i1" then "i1 zeroext" else llty t
 
+    /// A struct passed in memory: x86-64 copies it onto the stack (byval); AAPCS64 passes a
+    /// pointer to a copy the caller made.
     let byval (t: Ty) =
         let _, a, _ = cLayout t
-        sprintf "ptr byval(%s) align %d" (llty t) a
+        if isArm64 () then "ptr" else sprintf "ptr byval(%s) align %d" (llty t) a
 
     /// LLVM return type for a C result, and whether it is returned through an sret pointer.
     let cRet (t: Ty) : string * bool =
         match prune t with
         | TCon("unit", []) -> "void", false
         | _ ->
-            match abiOf t with
+            match abiFor t true with
             | Scalar -> (if llty t = "i1" then "zeroext i1" else llty t), false
             | Pieces [ p ] -> p, false
             | Pieces ps -> "{ " + String.concat ", " ps + " }", false
             | Memory -> "void", true
 
-    /// A struct in memory, read or written as its eightbytes.
+    /// A struct in memory, read or written as its eightbytes (padded: a piece may be read
+    /// whole past a struct's last byte, such as an i64 for a 4-byte struct).
     let slotFor (em: Emitter) (t: Ty) =
         let slot = "%" + em.Fresh "abi"
-        em.Alloca(sprintf "%s = alloca %s, align 8" slot (llty t))
+        em.Alloca(sprintf "%s = alloca { %s, [16 x i8] }, align 8" slot (llty t))
         slot
 
     let toPieces (em: Emitter) (t: Ty) (v: string) (pieces: string list) =
@@ -1304,7 +1327,7 @@ let compile
                     else
                         let c = em.Instr call
 
-                        match abiOf s.ret with
+                        match abiFor s.ret true with
                         | Scalar -> c
                         | Pieces [ p ] -> fromPieces em s.ret [ p, c ]
                         | Pieces ps -> fromPieces em s.ret (ps |> List.mapi (fun k p -> p, em.Instr(sprintf "extractvalue %s %s, %d" ret c k)))
@@ -1698,7 +1721,7 @@ let compile
         let argv = args |> List.map (fun (t, v) -> sprintf "%s %s" (llty t) v) |> String.concat ", "
         let r = em.Instr(sprintf "call %s %s(%s)" (llty fd.ret) (sym e.fname) argv)
 
-        match prune e.ret, abiOf e.ret with
+        match prune e.ret, abiFor e.ret true with
         | TCon("unit", []), _ -> em.Emit "ret void"
         | _, Memory ->
             em.Emit(sprintf "store %s %s, ptr %%ret" (llty e.ret) r)
