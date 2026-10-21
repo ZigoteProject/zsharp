@@ -345,6 +345,82 @@ let private expandImports (path: string) (decls: (int * Decl) list) =
             imported header
         | _ -> [ ln, d ])
 
+/// A bare-metal microcontroller target (zs build --target cortex-m4): how clang and zig cc are
+/// told about the chip, the QEMU board whose memory map the program is linked for, and the
+/// heap size. The program uses runtime/rt-embedded.c instead of the OS runtime.
+type Mcu =
+    { triple: string // for clang
+      cflags: string list
+      zigTarget: string
+      zigCpu: string
+      board: string // runtime/boards/<board>.ld; also the QEMU machine
+      heap: int }
+
+let mcus =
+    dict
+        [ "cortex-m4",
+          { triple = "thumbv7em-none-eabihf"
+            cflags = [ "-mcpu=cortex-m4"; "-mfpu=fpv4-sp-d16"; "-mfloat-abi=hard" ]
+            zigTarget = "thumb-freestanding-eabihf"
+            zigCpu = "cortex_m4+vfp4d16sp" // the M4F: Zig's cortex_m4 alone has no FPU
+            board = "mps2-an386"
+            heap = 64 * 1024 }
+          "cortex-m0plus",
+          { triple = "thumbv6m-none-eabi"
+            cflags = [ "-mcpu=cortex-m0plus"; "-mfloat-abi=soft" ]
+            zigTarget = "thumb-freestanding-eabi"
+            zigCpu = "cortex_m0plus"
+            board = "microbit"
+            heap = 8 * 1024 } ]
+
+/// The microcontroller being built for (zs build --target cortex-m4), if any; Codegen.target
+/// then holds its triple.
+let mutable mcu: Mcu option = None
+
+/// The library that ships with zs: lib/ next to it.
+let libraryDir = runtimeFile "lib"
+
+/// The library's files after the prelude, in dependency order; a file's module is its path
+/// (core/Collections/List.zs is Collections.List). Core needs no operating system, so every
+/// target has it; Std is for targets that have one.
+let private coreFiles =
+    [ "Option"; "Result"; "Math"; "Int"; "Runtime"; "Mmio"; "Collections/List"; "Collections/Array"; "Collections/Buffer"
+      "Text/String"; "Text/Char"; "Collections/Map"; "Collections/Set"; "Collections/HashMap" ]
+
+let private stdFiles =
+    [ "Console"; "Environment"; "IO/File"; "IO/Directory"; "IO/Path"; "Diagnostics/Process"; "Diagnostics/Stopwatch" ]
+
+/// The library rooted at `root` for one check: (path, module name, declarations), the prelude
+/// first (its names are global), then Core, then (when hosted) Std.
+let libraryModules (root: string) (hosted: bool) : (string * string option * (int * Decl) list) list =
+    let load (file: string) =
+        let path = Path.Combine(root, file)
+        let _, decls = parseFile path
+
+        let modName =
+            match decls with
+            | (_, ModuleHeader h) :: _ -> Some h
+            | _ -> None
+
+        path, modName, decls
+
+    load "prelude.zs"
+    :: [ for f in coreFiles -> load ("core/" + f + ".zs") ]
+    @ (if hosted then [ for f in stdFiles -> load ("std/" + f + ".zs") ] else [])
+
+/// The library a file belongs to (the installed one, or lib/ in a checkout of zs): the lib/
+/// directory above it that has prelude.zs and core/.
+let libraryRootOf (file: string) : string option =
+    let rec up (dir: string) =
+        if isNull dir then None
+        elif Path.GetFileName dir = "lib" && File.Exists(Path.Combine(dir, "prelude.zs")) && Directory.Exists(Path.Combine(dir, "core")) then Some dir
+        else up (Path.GetDirectoryName dir)
+
+    up (Path.GetDirectoryName(Path.GetFullPath file))
+
+/// Whether a file is part of a library rather than a program.
+let isLibrary (file: string) = (libraryRootOf file).IsSome
+
 /// The main file and the modules it uses (`open M` or `M.name`, found as M.zs or m.zs next to
 /// it or in a dependency), dependencies first. Each module is named after its file unless it
 /// has a `module` header.
@@ -419,20 +495,22 @@ let loadModules (mainPath: string) : (string * string option * (int * Decl) list
 let check (mainPath: string) (requireMain: bool) (collect: bool) : Core.Program =
     positions.Clear()
     links.Clear()
-    let full = Path.GetFullPath mainPath
+    Typer.unavailable.Clear()
 
-    // checking the prelude itself (the installed one, or runtime/prelude.zs in a checkout):
-    // it is the prelude, not a program that would define everything a second time
-    let isPrelude =
-        full = Path.GetFullPath(runtimeFile "prelude.zs")
-        || (Path.GetFileName full = "prelude.zs" && Path.GetFileName(Path.GetDirectoryName full) = "runtime")
+    match libraryRootOf mainPath with
+    | Some root ->
+        // a file of the library itself (an editor opening it): that library, checked on its
+        // own rather than as a program that would define everything a second time
+        Typer.check false collect (libraryModules root true)
+    | None ->
+        // a microcontroller has no operating system, so no Std
+        let hosted = mcu.IsNone
 
-    if isPrelude then
-        let _, decls = parseFile mainPath
-        Typer.check false collect [ mainPath, None, decls ]
-    else
-        let _, prelude = parseFile (runtimeFile "prelude.zs")
-        Typer.check requireMain collect (("prelude.zs", None, prelude) :: loadModules mainPath)
+        if not hosted then
+            for f in stdFiles do
+                Typer.unavailable.Add(f.Replace('/', '.')) |> ignore
+
+        Typer.check requireMain collect (libraryModules libraryDir hosted @ loadModules mainPath)
 
 /// Source files -> typed Core -> monomorphic -> closure-converted -> RC-annotated -> LLVM IR
 /// (and a C header for [<Export>] functions). A library doesn't need `main`.
@@ -497,38 +575,6 @@ let exec (exe: string) (args: string list) (capture: bool) : int * string =
     else
         p.WaitForExit()
         p.ExitCode, ""
-
-/// A bare-metal microcontroller target (zs build --target cortex-m4): how clang and zig cc are
-/// told about the chip, the QEMU board whose memory map the program is linked for, and the
-/// heap size. The program uses runtime/rt-embedded.c instead of the OS runtime.
-type Mcu =
-    { triple: string // for clang
-      cflags: string list
-      zigTarget: string
-      zigCpu: string
-      board: string // runtime/boards/<board>.ld; also the QEMU machine
-      heap: int }
-
-let mcus =
-    dict
-        [ "cortex-m4",
-          { triple = "thumbv7em-none-eabihf"
-            cflags = [ "-mcpu=cortex-m4"; "-mfpu=fpv4-sp-d16"; "-mfloat-abi=hard" ]
-            zigTarget = "thumb-freestanding-eabihf"
-            zigCpu = "cortex_m4+vfp4d16sp" // the M4F: Zig's cortex_m4 alone has no FPU
-            board = "mps2-an386"
-            heap = 64 * 1024 }
-          "cortex-m0plus",
-          { triple = "thumbv6m-none-eabi"
-            cflags = [ "-mcpu=cortex-m0plus"; "-mfloat-abi=soft" ]
-            zigTarget = "thumb-freestanding-eabi"
-            zigCpu = "cortex_m0plus"
-            board = "microbit"
-            heap = 8 * 1024 } ]
-
-/// The microcontroller being built for (zs build --target cortex-m4), if any; Codegen.target
-/// then holds its triple.
-let mutable mcu: Mcu option = None
 
 /// The optimization level for clang: -O2, or -Os (zs build -Os) for size.
 let mutable optLevel = "-O2"
@@ -669,13 +715,11 @@ let build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) (isLib: 
         | Some msg -> Error(toolError msg)
 
 /// The `///` comment lines right above a definition (attribute lines in between are skipped),
-/// without the slashes; None if there are none. `prelude.zs` means the installed prelude.
+/// without the slashes; None if there are none.
 let docAbove (file: string) (line: int) : string option =
-    let path = if file = "prelude.zs" then runtimeFile "prelude.zs" else file
-
     let lines =
         try
-            (readSource path).Replace("\r\n", "\n").Split '\n'
+            (readSource file).Replace("\r\n", "\n").Split '\n'
         with _ ->
             [||]
 
@@ -705,22 +749,23 @@ let builtinDocs =
           "assert", "Panics with \"assertion failed\" when the condition is false."
           "ignore", "Discards a value."
           "ref", "A mutable cell holding the value; read and write it with `r.Value`."
-          "Array.create", "An array of `n` copies of `x`."
-          "Array.length", "The number of elements."
-          "String.length", "The length in bytes (UTF-8)."
-          "String.sub", "The `len` bytes of `s` starting at byte `start`. Panics if out of range."
-          "String.byte", "The byte at index `i`. Panics if out of range."
-          "String.ofByte", "A one-byte string."
-          "String.trim", "`s` without leading and trailing spaces, tabs and line breaks."
-          "String.toUpper", "`s` with ASCII letters in upper case."
-          "String.toLower", "`s` with ASCII letters in lower case."
-          "String.replace", "`s` with every occurrence of `old` replaced by `by`."
-          "String.ofCStr", "A Z# string copied from a C string (`const char*`)."
-          "Array.set", "`a` with element `i` replaced by `x`. Arrays are values: `a` itself is unchanged (it is reused in place when nothing else refers to it)."
-          "Buffer.create", "A Buffer of `n` copies of `x`. A Buffer is shared and mutable: a write is seen through every reference."
-          "Buffer.length", "The number of elements."
-          "Buffer.ofArray", "A new Buffer with the array's elements."
-          "Buffer.toArray", "An array copy of the Buffer's current elements."
+          "Collections.Array.create", "An array of `n` copies of `x`."
+          "Collections.Array.length", "The number of elements."
+          "Text.String.length", "The length in bytes (UTF-8)."
+          "Text.String.sub", "The `len` bytes of `s` starting at byte `start`. Panics if out of range."
+          "Text.String.byte", "The byte at index `i`. Panics if out of range."
+          "Text.String.ofByte", "A one-byte string."
+          "Text.String.trim", "`s` without leading and trailing spaces, tabs and line breaks."
+          "Text.String.toUpper", "`s` with ASCII letters in upper case."
+          "Text.String.toLower", "`s` with ASCII letters in lower case."
+          "Text.String.replace", "`s` with every occurrence of `old` replaced by `by`."
+          "Text.String.ofCStr", "A Z# string copied from a C string (`const char*`)."
+          "Text.String.indexOfFrom", "The byte index of the first `sub` in `s` at or after byte `from`, or -1."
+          "Collections.Array.set", "`a` with element `i` replaced by `x`. Arrays are values: `a` itself is unchanged (it is reused in place when nothing else refers to it)."
+          "Collections.Buffer.create", "A Buffer of `n` copies of `x`. A Buffer is shared and mutable: a write is seen through every reference."
+          "Collections.Buffer.length", "The number of elements."
+          "Collections.Buffer.ofArray", "A new Buffer with the array's elements."
+          "Collections.Buffer.toArray", "An array copy of the Buffer's current elements."
           "Int.wrappingAdd", "`a + b`, wrapping around on overflow instead of panicking."
           "Int.wrappingSub", "`a - b`, wrapping around on overflow instead of panicking."
           "Int.wrappingMul", "`a * b`, wrapping around on overflow instead of panicking."
@@ -730,13 +775,13 @@ let builtinDocs =
           "Mmio.write32", "Writes the 32-bit hardware register at an address (a volatile store)."
           "Mmio.read8", "Reads the 8-bit hardware register at an address (a volatile load)."
           "Mmio.write8", "Writes the 8-bit hardware register at an address (a volatile store)."
-          "Process.exit", "Ends the program now with the exit code (output is flushed; nothing else is cleaned up)."
-          "File.exists", "Whether `path` names an existing regular file."
-          "Dir.exists", "Whether `path` names an existing directory." ]
+          "Environment.exit", "Ends the program now with the exit code (output is flushed; nothing else is cleaned up)."
+          "IO.File.exists", "Whether `path` names an existing regular file."
+          "IO.Directory.exists", "Whether `path` names an existing directory." ]
 
 /// A documented item of a source file, found by reading its declarations.
 type DocItem =
-    { kind: string // function, type, case, trait, method, derive, impl, member
+    { kind: string // module or namespace (a file's header), function, type, case, trait, method, derive, impl, member
       key: string // what hovers refer to: List.map, option, Some, Show.show, show, string#Length
       title: string // the declaration as written, without its body
       line: int
@@ -745,11 +790,9 @@ type DocItem =
 /// The declarations of a file with their doc comments: top-level `let`, `type`, `trait`,
 /// `derive`, `impl`, plus union cases, trait methods and members under them.
 let docItems (file: string) : DocItem list =
-    let path = if file = "prelude.zs" then runtimeFile "prelude.zs" else file
-
     let lines =
         try
-            (readSource path).Replace("\r\n", "\n").Split '\n'
+            (readSource file).Replace("\r\n", "\n").Split '\n'
         with _ ->
             [||]
 
@@ -760,7 +803,8 @@ let docItems (file: string) : DocItem list =
         if m.Success then t.Substring(0, m.Index).Trim() else t
 
     let items = ResizeArray<DocItem>()
-    let mutable container = "" // the type, extension or trait whose block we are in
+    let mutable prefix = "" // the file's module or namespace, as names inside start: "Collections.List."
+    let mutable container = "" // the type, extension, trait or module whose block we are in
     let mutable containerKind = ""
 
     let add kind key (i: int) =
@@ -781,14 +825,21 @@ let docItems (file: string) : DocItem list =
             containerKind <- ""
 
             let m = rx @"^let\s+(rec\s+)?(private\s+)?([A-Za-z_][A-Za-z0-9_.]*|\(\|[^)]*\|\))" l
+            let header = rx @"^(module|namespace)\s+([A-Za-z_][A-Za-z0-9_.]*)\s*$" l
 
-            if m.Success then
-                if not m.Groups[2].Success then add "function" m.Groups[3].Value i // private: not API
+            if header.Success then
+                // module Collections.List / namespace Collections: what the file's names start with
+                prefix <- header.Groups[2].Value + "."
+                add header.Groups[1].Value header.Groups[2].Value i
+            elif m.Success then
+                if not m.Groups[2].Success then add "function" (prefix + m.Groups[3].Value) i // private: not API
             else
                 let m = rx @"^type\s+(private\s+)?([A-Za-z_][A-Za-z0-9_]*)(<[^>]*>)?\s*(with)?" l
 
                 if m.Success then
-                    container <- m.Groups[2].Value
+                    let name = m.Groups[2].Value
+                    // an extension of a built-in type (string, list) keeps the type's own name
+                    container <- if m.Groups[4].Success && Char.IsLower name[0] then name else prefix + name
 
                     if m.Groups[1].Success then
                         containerKind <- "private"
@@ -801,7 +852,7 @@ let docItems (file: string) : DocItem list =
                     let m = rx @"^trait\s+([A-Za-z_][A-Za-z0-9_]*)" l
 
                     if m.Success then
-                        container <- m.Groups[1].Value
+                        container <- prefix + m.Groups[1].Value
                         containerKind <- "trait"
                         add "trait" container i
                     else
@@ -819,17 +870,19 @@ let docItems (file: string) : DocItem list =
                                 let m = rx @"^module\s+([A-Za-z_][A-Za-z0-9_]*)\s*=" l
 
                                 if m.Success then
-                                    container <- m.Groups[1].Value
+                                    container <- prefix + m.Groups[1].Value
                                     containerKind <- "module"
         elif container <> "" then
             let t = l.Trim()
             let m = rx @"^\|\s*([A-Z][A-Za-z0-9_]*)" t
             let fm = rx @"^let\s+(rec\s+)?(private\s+)?([A-Za-z_][A-Za-z0-9_]*)" t
 
-            if containerKind = "module" && fm.Success then
-                if not fm.Groups[2].Success then add "function" (container + "." + fm.Groups[3].Value) i
+            if containerKind = "module" then
+                // the module's own definitions, at the block's indentation (not local lets)
+                if fm.Success && not fm.Groups[2].Success && l.StartsWith "  " && not (Char.IsWhiteSpace l[2]) then
+                    add "function" (container + "." + fm.Groups[3].Value) i
             elif m.Success && containerKind = "type" then
-                add "case" m.Groups[1].Value i
+                add "case" (prefix + m.Groups[1].Value) i
             else
                 let m = rx @"^abstract\s+([A-Za-z_][A-Za-z0-9_]*)" t
 

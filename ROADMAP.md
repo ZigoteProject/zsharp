@@ -27,7 +27,7 @@ clang/LLVM 22, zig, valgrind, gdb, qemu-user, qemu-system-arm, raylib).
 **Works today:**
 - **Language:** inference, records with defaults, unions, exhaustive matching, active patterns, units of measure, traits, derives, members with named and optional arguments, modules, closures, generics.
 - **Memory and performance:** Perceus RC with borrowing and reuse, copy-on-write arrays, checked arithmetic. On compute code it's as fast as C on a Cortex-M.
-- **Libraries:** lists, arrays, `Buffer`, `Map`/`Set`/`HashMap`, strings, files, processes.
+- **Library:** a prelude, Core (collections, text, options, results: every target) and Std (console, environment, files, paths, processes, timing: targets with an OS), in .NET-style namespaces.
 - **C:** C import and export.
 - **Targets:** x86-64, aarch64 (cross), Cortex-M4 and M0+ (bare metal).
 - **Tooling:** projects with path and git dependencies, `zs test`/`fmt`/`doc`, gdb debug info, and an LSP, MCP server and Zed extension.
@@ -40,7 +40,7 @@ clang/LLVM 22, zig, valgrind, gdb, qemu-user, qemu-system-arm, raylib).
    - matches are tested clause by clause;
    - fusion only starts from `List.init`;
    - no host benchmark suite in CI;
-   - the prelude is re-checked on every build.
+   - the library is re-checked on every build: about 200 ms of each compile, and 20 ms more since it is split into modules (caching each module's checked Core removes it).
 3. **C ABI:**
    - running out of argument registers isn't modelled (x86-64 then passes a struct on the stack whole);
    - 32-bit ARM passes structs by value with the x86-64 rules;
@@ -144,6 +144,19 @@ patterns with guards, or-patterns and `as`, and the exhaustiveness and redundanc
   - **Details:** [the report](docs/reports/microcontrollers.md).
 - `examples/mcu/uart.zs`: a UART driver in Z#.
 - `tests/fusion.zs`, `tests/bitwise.zs`.
+
+### Library organization ✅
+- **Layers:** the one prelude file became `lib/`: the prelude (global names), Core (no OS needed, so every target) and Std (needs an OS). A microcontroller build leaves Std out, and using it there is a compile error instead of a link error.
+- **Namespaces, as in .NET:** `Collections`, `Text`, `IO` and `Diagnostics`, open everywhere at the lowest precedence; full names work too. `namespace X` file headers put types and same-named modules side by side (`Collections.Map`).
+- **Names:** .NET's module names (`Directory`, `Environment`) and F#-style functions (`File.readAllText`, `Environment.getVariable`, `Environment.exit`). The old names are gone.
+- **New:** `IO.Path`, `Diagnostics.Stopwatch`, `File.writeAllLines`, `String.lastIndexOf`, `Console.Error.writeLine`, and `Show` for `Map` and `Set` (`map [(1, a)]`, `set [1; 2]`).
+- **Reference:** one page per module in `docs/reference`, built-in functions included.
+- **Fixed on the way:** an `impl` inside a module was registered under the type's short name, so it never applied.
+
+**Exit tests:**
+- `tests/library.zs`: namespaces, precedence, full names, `Path`, `Stopwatch`.
+- `tests/mcu/std.zs`: Std on a microcontroller is a compile error.
+- `./test.sh` checks the library on its own and keeps `docs/reference` current.
 
 ## Next
 

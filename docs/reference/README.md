@@ -1,0 +1,25 @@
+# Library reference
+
+One page per module, generated from the library's doc comments by `zs doc` (`tests/reference.sh` regenerates them). How the library is organized is in the guide: [The library](../guide/08-programs.md#the-library).
+
+## Prelude
+
+The names every program has without qualification: the operator traits and their derives, `option` and `result`, and functions such as `print`, `ignore`, `fst` and `min`.
+
+- [prelude](prelude.md)
+
+## Core: every target, microcontrollers included
+
+| Namespace | Modules |
+|---|---|
+| `Collections` | [List](Collections.List.md), [Array](Collections.Array.md), [Buffer](Collections.Buffer.md), [Map](Collections.Map.md), [Set](Collections.Set.md), [HashMap](Collections.HashMap.md) |
+| `Text` | [String](Text.String.md), [Char](Text.Char.md) |
+| none | [Option](Option.md), [Result](Result.md), [Math](Math.md), [Int](Int.md), [Runtime](Runtime.md), [Mmio](Mmio.md) |
+
+## Std: targets with an operating system
+
+| Namespace | Modules |
+|---|---|
+| none | [Console](Console.md), [Environment](Environment.md) |
+| `IO` | [File](IO.File.md), [Directory](IO.Directory.md), [Path](IO.Path.md) |
+| `Diagnostics` | [Process](Diagnostics.Process.md), [Stopwatch](Diagnostics.Stopwatch.md) |

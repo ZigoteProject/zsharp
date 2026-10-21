@@ -9,7 +9,8 @@ exists true false
 list Ok [a.txt]
 missing: error: cannot open /tmp/zs-cli-test/nope: No such file or directory
 delete ok false
+writeAllLines ok Ok [x; y] ok
 echo -> code 0 output hi there a;b
 sh -> code 3
 no such program: error: cannot run zs-no-such-program: No such file or directory
-Process.exit -> code 7
+Environment.exit -> code 7

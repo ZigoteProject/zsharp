@@ -25,7 +25,7 @@ let mangle (name: string) (inst: Ty list) =
     if shown.IsEmpty then
         name
     else
-        name + "<" + (shown |> List.map show |> String.concat ",") + ">"
+        name + "<" + (shown |> List.map showFull |> String.concat ",") + ">"
 
 /// Concrete type: quantified variables replaced, everything else resolved (defaulted).
 let rec private concrete (inst: Ty list) t =
@@ -91,7 +91,7 @@ let run (prog: Program) : MFun list =
         let tn =
             match prune t with
             | TCon(n, _) -> n
-            | t -> show t
+            | t -> showFull t
 
         match prog.impls.TryGetValue((tr, tn)) with
         | true, table ->
@@ -151,7 +151,7 @@ let run (prog: Program) : MFun list =
             | TTuple _ -> true
             | _ -> false
 
-        if not (isPrim t || isTuple) || prog.impls.ContainsKey((tm.owner, show t)) then
+        if not (isPrim t || isTuple) || prog.impls.ContainsKey((tm.owner, showFull t)) then
             let f = implFn tm.owner tm.name t headTy
             if args.IsEmpty then f else mk (CApp(f, args)) resTy
         elif args.Length = arity then
@@ -356,9 +356,9 @@ let fuse (funs: MFun list) : MFun list =
     /// The producer chain under a consumer: stages (outermost last) down to List.init n g.
     let rec chain (xs: CExpr) (stages: Stage list) =
         match call xs with
-        | Some("List.map", [ f; ys ]) when pureLambda f 1 -> chain ys (MapS f :: stages)
-        | Some("List.filter", [ p; ys ]) when pureLambda p 1 -> chain ys (FilterS p :: stages)
-        | Some("List.init", [ n; g ]) when pureLambda g 1 -> Some(n, g, stages)
+        | Some("Collections.List.map", [ f; ys ]) when pureLambda f 1 -> chain ys (MapS f :: stages)
+        | Some("Collections.List.filter", [ p; ys ]) when pureLambda p 1 -> chain ys (FilterS p :: stages)
+        | Some("Collections.List.init", [ n; g ]) when pureLambda g 1 -> Some(n, g, stages)
         | _ -> None
 
     /// The fused loop: acc starts at `start`; for each element x surviving the stages, acc <- step acc x.
@@ -386,13 +386,13 @@ let fuse (funs: MFun list) : MFun list =
     let rec ex (e: CExpr) : CExpr =
         let fused =
             match call e with
-            | Some("List.sum", [ xs ]) when numeric e.ty ->
+            | Some("Collections.List.sum", [ xs ]) when numeric e.ty ->
                 chain xs [] |> Option.map (fun (n, g, st) -> loop n g st (zeroOf e.ty) (fun a x -> mk (CBin("+", a, x)) e.ty))
-            | Some("List.sumBy", [ f; xs ]) when numeric e.ty && pureLambda f 1 ->
+            | Some("Collections.List.sumBy", [ f; xs ]) when numeric e.ty && pureLambda f 1 ->
                 chain xs [] |> Option.map (fun (n, g, st) -> loop n g st (zeroOf e.ty) (fun a x -> mk (CBin("+", a, beta f [ x ])) e.ty))
-            | Some("List.length", [ xs ]) ->
+            | Some("Collections.List.length", [ xs ]) ->
                 chain xs [] |> Option.map (fun (n, g, st) -> loop n g st (mk (CInt 0L) tInt) (fun a _ -> mk (CBin("+", a, mk (CInt 1L) tInt)) tInt))
-            | Some("List.fold", [ f; s; xs ]) when pureLambda f 2 && pure s -> // s is now evaluated after n
+            | Some("Collections.List.fold", [ f; s; xs ]) when pureLambda f 2 && pure s -> // s is now evaluated after n
                 chain xs [] |> Option.map (fun (n, g, st) -> loop n g st s (fun a x -> beta f [ a; x ]))
             | _ -> None
 

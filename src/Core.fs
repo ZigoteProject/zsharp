@@ -147,7 +147,21 @@ let measOf (args: Ty list) =
 let measMul (a: Ty) (b: Ty) = TMeas(normMeas (TMeas([], [ a, 1; b, 1 ])))
 let measDiv (a: Ty) (b: Ty) = TMeas(normMeas (TMeas([], [ a, 1; b, -1 ])))
 
-let rec show t =
+/// The library's namespaces, open in every module at the lowest precedence: `List.map` is
+/// Collections.List.map and `File.exists` IO.File.exists, unless the program defines its own.
+let autoOpens = [ "Collections"; "Text"; "IO"; "Diagnostics" ]
+
+/// A name as programs write it: without an auto-opened namespace (Collections.Map -> Map).
+let shortName (q: string) =
+    match autoOpens |> List.tryFind (fun ns -> q.StartsWith(ns + ".")) with
+    | Some ns -> q.Substring(ns.Length + 1)
+    | None -> q
+
+/// A type as text. With full, names keep their namespaces (for symbol names and lookup keys,
+/// which must tell a program's own Map from Collections.Map); without, they read as written.
+let rec showWith (full: bool) t =
+    let show = showWith full
+
     match prune t with
     | TMeas _ as m ->
         let us, vs = normMeas m
@@ -167,8 +181,9 @@ let rec show t =
         | _, [] -> String.concat " " pos
         | [], _ -> "1/" + String.concat " " neg
         | _ -> String.concat " " pos + "/" + String.concat " " neg
-    | TCon(n, []) -> n
-    | TCon(n, args) -> n + "<" + (args |> List.map show |> String.concat ", ") + ">"
+    | TCon(n, args) ->
+        let n = if full then n else shortName n
+        if args.IsEmpty then n else n + "<" + (args |> List.map show |> String.concat ", ") + ">"
     | TFun(a, b) ->
         match prune a with
         | TFun _ -> "(" + show a + ") -> " + show b
@@ -189,6 +204,9 @@ let rec show t =
         | Unbound(_, { allowed = Some k }) when k.Contains "string" -> "string"
         | Unbound(id, _) -> sprintf "'t%d" id
         | Link t -> show t
+
+let show = showWith false
+let showFull = showWith true
 
 /// Fully resolves a type, defaulting unconstrained variables (int, f64 or string by kind).
 let rec resolve t =

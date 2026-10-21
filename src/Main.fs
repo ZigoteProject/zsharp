@@ -16,7 +16,7 @@ let private printError (file: string) (line: int) (col: int) (msg: string) =
 
     let text =
         try
-            if file = "prelude.zs" then None else Some(readSource file)
+            Some(readSource file)
         with _ ->
             None
 
@@ -130,7 +130,7 @@ let private newProject (name: string) =
 
         File.WriteAllText(
             Path.Combine(name, "src", "main.zs"),
-            "let greeting (who: string) = $\"Hello, {who}!\"\n\nlet main () =\n  match Env.args () with\n  | [] -> println (greeting \"world\")\n  | who :: _ -> println (greeting who)\n  0\n\n[<Test>]\nlet greets () =\n  assert (greeting \"Z#\" = \"Hello, Z#!\")\n"
+            "let greeting (who: string) = $\"Hello, {who}!\"\n\nlet main () =\n  match Environment.args () with\n  | [] -> println (greeting \"world\")\n  | who :: _ -> println (greeting who)\n  0\n\n[<Test>]\nlet greets () =\n  assert (greeting \"Z#\" = \"Hello, Z#!\")\n"
         )
 
         File.WriteAllText(Path.Combine(name, ".gitignore"), "build/\n")
@@ -310,10 +310,46 @@ let main argv =
                 |> List.filter (fun h -> h.decl)
                 |> List.map (fun h ->
                     let needs = if h.constraints = "" then "" else " when " + h.constraints
-                    h.name, sprintf "%s : %s%s" h.name (Core.show h.hty) needs)
+                    h.name, sprintf "%s : %s%s" (Core.shortName h.name) (Core.show h.hty) needs)
                 |> dict
 
-            let items = docItems src
+            let stem = Path.GetFileNameWithoutExtension full
+            let header = docItems src |> List.tryFind (fun d -> d.kind = "module" || d.kind = "namespace")
+
+            // the page's module: a namespace file holds the one named after the file
+            let moduleName =
+                match header with
+                | Some h when h.kind = "namespace" -> Some(h.key + "." + stem)
+                | Some h -> Some h.key
+                | None -> None
+
+            // functions built into the compiler that belong to this module (the prelude's: the
+            // global ones), after the file's own
+            let builtins =
+                [ for KeyValue(name, doc) in builtinDocs do
+                      let inModule =
+                          match moduleName with
+                          | Some m -> name.StartsWith(m + ".") && not (name.Substring(m.Length + 1).Contains ".")
+                          | None -> stem = "prelude" && not (name.Contains ".")
+
+                      match Typer.builtinType name with
+                      | Some t when inModule ->
+                          yield
+                              { kind = "function"
+                                key = name
+                                title = ""
+                                line = 0
+                                doc = Some doc },
+                              sprintf "%s : %s" (Core.shortName name) (Core.show t)
+                      | _ -> () ]
+
+            let signatures = Dictionary<string, string>(signatures)
+
+            for d, s in builtins do
+                signatures[d.key] <- s
+
+            let items = docItems src @ (builtins |> List.map fst |> List.sortBy (fun d -> d.key))
+
             let section (title: string) (kinds: string list) =
                 let chosen = items |> List.filter (fun d -> List.contains d.kind kinds)
 
@@ -327,13 +363,16 @@ let main argv =
                             | _ -> d.title
 
                         let heading = if List.contains d.kind [ "case"; "method"; "member" ] then "####" else "###"
-                        printfn "%s `%s`\n\n```zsharp\n%s\n```\n" heading d.key shown
+                        printfn "%s `%s`\n\n```zsharp\n%s\n```\n" heading (Core.shortName d.key) shown
 
                         match d.doc with
                         | Some doc -> printfn "%s\n" doc
                         | None -> printfn "_Undocumented._\n"
 
-            printfn "# %s\n" (Path.GetFileNameWithoutExtension full)
+            // the page is the file's module, with the doc comment above its header
+            printfn "# %s\n" (defaultArg moduleName stem)
+            header |> Option.bind (fun h -> h.doc) |> Option.iter (printfn "%s\n")
+
             section "Traits" [ "trait"; "method" ]
             section "Types" [ "type"; "case"; "member" ]
             section "Derives and impls" [ "derive"; "impl" ]

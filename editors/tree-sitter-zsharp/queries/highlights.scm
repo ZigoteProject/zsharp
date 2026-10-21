@@ -16,7 +16,7 @@
 
 [
   "let" "rec" "and" "mutable" "private" "type" "of" "with" "member" "static" "extern" "import" "open"
-  "module" "trait" "impl" "abstract" "derive" "fun" "match" "when" "as" "if" "then" "else"
+  "module" "namespace" "trait" "impl" "abstract" "derive" "fun" "match" "when" "as" "if" "then" "else"
   "for" "in" "do" "while" "not"
 ] @keyword
 

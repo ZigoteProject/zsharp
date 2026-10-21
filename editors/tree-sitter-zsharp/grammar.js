@@ -73,6 +73,7 @@ module.exports = grammar({
       $.derive_declaration,
       $.open_declaration,
       $.module_declaration,
+      $.namespace_declaration,
     )),
 
     attributes: $ => seq('[<', sep1($.attribute, ';'), '>]'),
@@ -81,8 +82,10 @@ module.exports = grammar({
       optional(choice($.string, seq('(', sep(choice($.identifier, $.string), ','), ')'))),
     ),
 
-    open_declaration: $ => seq('open', field('module', $.identifier)),
-    module_declaration: $ => seq('module', field('name', $.identifier),
+    open_declaration: $ => seq('open', field('module', choice($.identifier, $.qualified_identifier))),
+    // namespace Collections: the file's types and modules are Collections.Name
+    namespace_declaration: $ => seq('namespace', field('name', choice($.identifier, $.qualified_identifier))),
+    module_declaration: $ => seq('module', field('name', choice($.identifier, $.qualified_identifier)),
       optional(seq('=', $._indent, sep1($._declaration, $._newline), optional($._newline), $._dedent))), // module Inner = …
 
     let_declaration: $ => seq(

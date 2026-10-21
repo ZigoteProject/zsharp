@@ -104,7 +104,7 @@ let private analyze (path: string) =
 
     let mine =
         diags
-        |> List.filter (fun d -> d.file <> "prelude.zs" && Path.GetFullPath d.file = path)
+        |> List.filter (fun d -> Path.GetFullPath d.file = path)
         |> List.map (fun d ->
             let line = max 1 d.line
             let text = lineText path line
@@ -120,7 +120,7 @@ let private analyze (path: string) =
     // an error in an imported module shows on the first line of this file
     let elsewhere =
         diags
-        |> List.filter (fun d -> d.file <> "prelude.zs" && Path.GetFullPath d.file <> path)
+        |> List.filter (fun d -> Path.GetFullPath d.file <> path)
         |> List.map (fun d ->
             obj
                 [ "range", range (0, 0) (0, 1)
@@ -134,7 +134,7 @@ let private hoversAt (path: string) =
     match results.TryGetValue path with
     | true, prog ->
         prog.hovers
-        |> List.filter (fun h -> h.hfile <> "prelude.zs" && Path.GetFullPath h.hfile = path && not (h.name.StartsWith "$"))
+        |> List.filter (fun h -> Path.GetFullPath h.hfile = path && not (h.name.StartsWith "$"))
     | _ -> []
 
 /// Documented items per file, recomputed when the file's text changes.
@@ -143,7 +143,7 @@ let private docCache = Dictionary<string, string * Driver.DocItem list>()
 let private docIndex (file: string) =
     let text =
         try
-            Driver.readSource (if file = "prelude.zs" then Driver.runtimeFile "prelude.zs" else file)
+            Driver.readSource file
         with _ ->
             ""
 
@@ -173,14 +173,16 @@ let private zsDocOf (path: string) (h: Hover) =
     match def |> Option.bind (fun d -> Driver.docAbove d.hfile d.hline) with
     | Some doc -> Some doc
     | None ->
-        match Driver.builtinDocs.TryGetValue h.name with
-        | true, doc -> Some doc
-        | _ ->
+        match [ h.key; h.name ] |> List.tryPick (fun k -> match Driver.builtinDocs.TryGetValue k with
+                                                          | true, doc -> Some doc
+                                                          | _ -> None) with
+        | Some doc -> Some doc
+        | None ->
             // constructors, trait methods and members: by name in the files of this program
             let files =
                 match results.TryGetValue path with
                 | true, prog -> prog.hovers |> List.map (fun x -> x.hfile) |> List.distinct
-                | _ -> [ "prelude.zs" ]
+                | _ -> []
 
             let keys =
                 [ h.key; h.name ]
@@ -218,12 +220,11 @@ let private hover (path: string) (line: int) (ch: int) : JsonNode =
               "range", range (h.hline - 1, h.hcol - 1) (h.hline - 1, h.hcol - 1 + h.hlen) ]
     | [] -> null
 
-/// The file a hover's position is in (the prelude ships next to zs).
-let private hoverPath (h: Hover) =
-    if h.hfile = "prelude.zs" then Driver.runtimeFile "prelude.zs" else Path.GetFullPath h.hfile
+/// The file a hover's position is in.
+let private hoverPath (h: Hover) = Path.GetFullPath h.hfile
 
 let private location (h: Hover) : JsonNode =
-    obj [ "uri", str (toUri (hoverPath h)); "range", range (h.hline - 1, h.hcol - 1) (h.hline - 1, h.hcol - 1 + h.name.Length) ]
+    obj [ "uri", str (toUri (hoverPath h)); "range", range (h.hline - 1, h.hcol - 1) (h.hline - 1, h.hcol - 1 + h.hlen) ]
 
 /// The name under the cursor, and everything else that refers to the same thing.
 let private related (path: string) (line: int) (ch: int) =
@@ -309,9 +310,12 @@ let private completion (path: string) (line: int) (ch: int) : JsonNode =
             |> List.filter (fun h -> h.decl && not (h.name.Contains "$"))
             |> List.distinctBy (fun h -> h.name)
             |> List.map (fun h ->
+                // as programs write it: List.map, not Collections.List.map
+                let label = shortName h.name
+
                 match Driver.docAbove h.hfile h.hline with
-                | Some d -> obj [ "label", str h.name; "kind", num 3; "detail", str (show h.hty); "documentation", obj [ "kind", str "markdown"; "value", str d ] ]
-                | None -> item h.name 3 (show h.hty))
+                | Some d -> obj [ "label", str label; "kind", num 3; "detail", str (show h.hty); "documentation", obj [ "kind", str "markdown"; "value", str d ] ]
+                | None -> item label 3 (show h.hty))
 
         let cNames =
             [ for KeyValue(n, i) in Syntax.cInfo ->
@@ -327,14 +331,14 @@ let private completion (path: string) (line: int) (ch: int) : JsonNode =
         let typesAndCases =
             [ for KeyValue(n, info) in prog.types do
                   if not (n.Contains "$") then
-                      yield item n (match info.def with
-                                    | RecordDef _ -> 22
-                                    | UnionDef _ -> 13) ""
+                      yield item (shortName n) (match info.def with
+                                                | RecordDef _ -> 22
+                                                | UnionDef _ -> 13) ""
 
                       match info.def with
                       | UnionDef cs ->
                           for c, _ in cs do
-                              yield item c 20 n
+                              yield item (shortName c) 20 (shortName n)
                       | RecordDef _ -> () ]
 
         arr (locals @ globals @ cNames @ typesAndCases @ (keywords |> List.map (fun k -> item k 14 "keyword")))

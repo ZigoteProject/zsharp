@@ -183,55 +183,55 @@ let private builtins =
           b "assert" "assert" [] (f tBool tUnit) 1
           b "print" "print" [] (f tStr tUnit) 1
           b "println" "println" [] (f tStr tUnit) 1
-          b "String.length" "String.length" [] (f tStr tInt) 1
-          b "String.ofCStr" "String.ofCStr" [] (f tCStr tStr) 1
-          b "String.sub" "String.sub" [] (f tStr (f tInt (f tInt tStr))) 3
-          b "String.byte" "String.byte" [] (f tStr (f tInt (tcon "u8"))) 2
-          b "String.ofByte" "String.ofByte" [] (f (tcon "u8") tStr) 1
-          b "String.indexOfFrom" "String.indexOfFrom" [] (f tStr (f tStr (f tInt tInt))) 3
-          b "String.trim" "String.trim" [] (f tStr tStr) 1
-          b "String.toUpper" "String.toUpper" [] (f tStr tStr) 1
-          b "String.toLower" "String.toLower" [] (f tStr tStr) 1
-          b "String.replace" "String.replace" [] (f tStr (f tStr (f tStr tStr))) 3
-          b "String.isFloat" "String.isFloat" [] (f tStr tBool) 1
-          b "String.toFloat" "String.toFloat" [] (f tStr (tcon "f64")) 1
-          b "Console.readLineRaw" "Console.readLineRaw" [] (f tUnit tStr) 1
-          b "Console.eof" "Console.eof" [] (f tUnit tBool) 1
+          b "Text.String.length" "String.length" [] (f tStr tInt) 1
+          b "Text.String.ofCStr" "String.ofCStr" [] (f tCStr tStr) 1
+          b "Text.String.sub" "String.sub" [] (f tStr (f tInt (f tInt tStr))) 3
+          b "Text.String.byte" "String.byte" [] (f tStr (f tInt (tcon "u8"))) 2
+          b "Text.String.ofByte" "String.ofByte" [] (f (tcon "u8") tStr) 1
+          b "Text.String.indexOfFrom" "String.indexOfFrom" [] (f tStr (f tStr (f tInt tInt))) 3
+          b "Text.String.trim" "String.trim" [] (f tStr tStr) 1
+          b "Text.String.toUpper" "String.toUpper" [] (f tStr tStr) 1
+          b "Text.String.toLower" "String.toLower" [] (f tStr tStr) 1
+          b "Text.String.replace" "String.replace" [] (f tStr (f tStr (f tStr tStr))) 3
+          b "Text.String.isFloat" "String.isFloat" [] (f tStr tBool) 1
+          b "Text.String.toFloat" "String.toFloat" [] (f tStr (tcon "f64")) 1
+          b "Native.readLine" "Console.readLineRaw" [] (f tUnit tStr) 1
+          b "Native.eof" "Console.eof" [] (f tUnit tBool) 1
           b "eprintln" "eprintln" [] (f tStr tUnit) 1
           b "ref" "ref" [ kAny ] (f a (TCon("ref", [ a ]))) 1
-          b "Array.create" "Array.create" [ kAny ] (f tInt (f a (TCon("array", [ a ])))) 2
-          b "Array.set" "array.update" [ kAny ] (f (TCon("array", [ a ])) (f tInt (f a (TCon("array", [ a ]))))) 3
-          b "Buffer.create" "Array.create" [ kAny ] (f tInt (f a (TCon("Buffer", [ a ])))) 2
-          b "Buffer.length" "Array.length" [ kAny ] (f (TCon("Buffer", [ a ])) tInt) 1
-          b "Buffer.ofArray" "array.copy" [ kAny ] (f (TCon("array", [ a ])) (TCon("Buffer", [ a ]))) 1
-          b "Buffer.toArray" "array.copy" [ kAny ] (f (TCon("Buffer", [ a ])) (TCon("array", [ a ]))) 1
+          b "Collections.Array.create" "Array.create" [ kAny ] (f tInt (f a (TCon("array", [ a ])))) 2
+          b "Collections.Array.set" "array.update" [ kAny ] (f (TCon("array", [ a ])) (f tInt (f a (TCon("array", [ a ]))))) 3
+          b "Collections.Buffer.create" "Array.create" [ kAny ] (f tInt (f a (TCon("Buffer", [ a ])))) 2
+          b "Collections.Buffer.length" "Array.length" [ kAny ] (f (TCon("Buffer", [ a ])) tInt) 1
+          b "Collections.Buffer.ofArray" "array.copy" [ kAny ] (f (TCon("array", [ a ])) (TCon("Buffer", [ a ]))) 1
+          b "Collections.Buffer.toArray" "array.copy" [ kAny ] (f (TCon("Buffer", [ a ])) (TCon("array", [ a ]))) 1
           b "Int.wrappingAdd" "wrap+" [ kInt ] (f a (f a a)) 2
           b "Int.wrappingSub" "wrap-" [ kInt ] (f a (f a a)) 2
           b "Int.wrappingMul" "wrap*" [ kInt ] (f a (f a a)) 2
           b "Runtime.allocations" "Runtime.allocations" [] (f tUnit tInt) 1
-          b "Process.exit" "Process.exit" [ kAny ] (f tInt a) 1
+          b "Environment.exit" "Process.exit" [ kAny ] (f tInt a) 1
           b "Mmio.read32" "mmio.read.u32" [] (f (tcon "usize") (tcon "u32")) 1
           b "Mmio.write32" "mmio.write.u32" [] (f (tcon "usize") (f (tcon "u32") tUnit)) 2
           b "Mmio.read8" "mmio.read.u8" [] (f (tcon "usize") (tcon "u8")) 1
           b "Mmio.write8" "mmio.write.u8" [] (f (tcon "usize") (f (tcon "u8") tUnit)) 2
           b "Runtime.ticks" "Runtime.ticks" [] (f tUnit (tcon "u64")) 1
-          b "Env.argc" "Env.argc" [] (f tUnit tInt) 1
-          b "Env.arg" "Env.arg" [] (f tInt tStr) 1
-          b "Env.has" "Env.has" [] (f tStr tBool) 1
-          b "Env.get" "Env.get" [] (f tStr tStr) 1
-          b "Io.ok" "Io.ok" [] (f tUnit tBool) 1
-          b "Io.error" "Io.error" [] (f tUnit tStr) 1
-          b "File.readRaw" "File.readRaw" [] (f tStr tStr) 1
-          b "File.writeRaw" "File.writeRaw" [] (f tStr (f tStr tUnit)) 2
-          b "File.appendRaw" "File.appendRaw" [] (f tStr (f tStr tUnit)) 2
-          b "File.exists" "File.exists" [] (f tStr tBool) 1
-          b "File.deleteRaw" "File.deleteRaw" [] (f tStr tUnit) 1
-          b "Dir.exists" "Dir.exists" [] (f tStr tBool) 1
-          b "Dir.createRaw" "Dir.createRaw" [] (f tStr tUnit) 1
-          b "Dir.listRaw" "Dir.listRaw" [] (f tStr tStr) 1
-          b "Process.runRaw" "Process.runRaw" [] (f tStr (f tStr tStr)) 2
-          b "Process.code" "Process.code" [] (f tUnit tInt) 1
-          b "Array.length" "Array.length" [ kAny ] (f (TCon("array", [ a ])) tInt) 1 ]
+          b "Native.argc" "Env.argc" [] (f tUnit tInt) 1
+          b "Native.arg" "Env.arg" [] (f tInt tStr) 1
+          b "Native.hasVariable" "Env.has" [] (f tStr tBool) 1
+          b "Native.getVariable" "Env.get" [] (f tStr tStr) 1
+          b "Native.ioOk" "Io.ok" [] (f tUnit tBool) 1
+          b "Native.ioError" "Io.error" [] (f tUnit tStr) 1
+          b "Native.readFile" "File.readRaw" [] (f tStr tStr) 1
+          b "Native.writeFile" "File.writeRaw" [] (f tStr (f tStr tUnit)) 2
+          b "Native.appendFile" "File.appendRaw" [] (f tStr (f tStr tUnit)) 2
+          b "IO.File.exists" "File.exists" [] (f tStr tBool) 1
+          b "Native.deleteFile" "File.deleteRaw" [] (f tStr tUnit) 1
+          b "IO.Directory.exists" "Dir.exists" [] (f tStr tBool) 1
+          b "Native.createDirectory" "Dir.createRaw" [] (f tStr tUnit) 1
+          b "Native.listDirectory" "Dir.listRaw" [] (f tStr tStr) 1
+          b "Native.runProcess" "Process.runRaw" [] (f tStr (f tStr tStr)) 2
+          b "Native.exitCode" "Process.code" [] (f tUnit tInt) 1
+          b "Collections.Array.length" "Array.length" [ kAny ] (f (TCon("array", [ a ])) tInt) 1 ]
         @ [ for t in Seq.append nums [ "float"; "c_int" ] ->
                 let target =
                     match typeAliases.TryGetValue t with
@@ -263,6 +263,24 @@ type private Global =
 /// modules: (file, module name, declarations) in dependency order; the prelude and the main
 /// file have no module name (their declarations are global).
 /// collect: report every declaration's error (editors) instead of stopping at the first.
+/// The type of a function built into the compiler, by full name (for `zs doc`).
+let builtinType (name: string) =
+    match builtins.TryGetValue name with
+    | true, b -> Some b.ty
+    | _ -> None
+
+/// Modules the target doesn't have, by full name (Std's on a microcontroller, set by the
+/// driver): a name in one is reported as such rather than as unknown.
+let unavailable = HashSet<string>()
+
+/// The error for a name nothing defines.
+let private unknown (what: string) (x: string) =
+    let inModule (m: string) = [ m; shortName m ] |> List.exists (fun p -> x.StartsWith(p + "."))
+
+    match unavailable |> Seq.tryFind inModule with
+    | Some m -> fail 0 (sprintf "'%s' is in %s, part of Std, which needs an operating system; this target has none" x m)
+    | None -> fail 0 (sprintf "unknown %s '%s'" what x)
+
 let check (requireMain: bool) (collect: bool) (modules: (string * string option * (int * Decl) list) list) : Program =
     let decls = modules |> List.collect (fun (_, _, ds) -> ds)
     let types = Dictionary<string, TypeInfo>()
@@ -272,6 +290,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
     let recordDefaults = Dictionary<string, Expr option list>() // record -> default per field
     let ctorFieldNames = Dictionary<string, string option list>() // constructor -> field names
     let members = Dictionary<string, Dictionary<string, MemberInfo>>() // type -> member name -> info
+    let memberTypeNames = HashSet<string>() // the last part of each type in members, a quick test for staticMember
     let traitMethods = Dictionary<string, TraitMethod>() // "Show.show" -> method
     let traitAliases = Dictionary<string, string>() // "show" -> "Show.show"
     let impls = Dictionary<string * string, Dictionary<string, string>>() // (trait, type) -> method -> function
@@ -325,7 +344,8 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                 { hfile = currentFile.Value
                   hline = l
                   hcol = c
-                  hlen = max len name.Length
+                  // a definition spans its name as written (`length`, though named Collections.List.length)
+                  hlen = if isDef && len > 0 then len else max len name.Length
                   name = name
                   hty = t
                   constraints = ""
@@ -371,8 +391,17 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
     let currentModule = ref (None: string option)
     let opens = ref ([]: string list) // most recent first
     let privates = Dictionary<string, string option>() // qualified name -> owning module
-    let moduleNames = HashSet<string>(modules |> List.choose (fun (_, m, _) -> m)) // files' and nested modules
+    // files' and nested modules, and the namespaces they are in (Collections from Collections.List)
+    let moduleNames =
+        HashSet<string>(
+            modules
+            |> List.choose (fun (_, m, _) -> m)
+            |> List.collect (fun m ->
+                let parts = m.Split '.'
+                [ for k in 1 .. parts.Length -> String.concat "." parts[.. k - 1] ])
+        )
     let mainNested = HashSet<string>() // modules nested in the main file (it has no module name)
+    let nestedModules = HashSet<string>() // every `module X =` so far, to catch a second one
 
     /// The name a declaration gets in the current module.
     let qualify (name: string) =
@@ -380,22 +409,31 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
         | Some m -> m + "." + name
         | None -> name
 
-    /// Unqualified names resolve in the current module, then opened modules, then globally.
+    // each module's enclosing modules, innermost first (A.B.C: A.B.C, A.B, A)
+    let enclosingOf = Dictionary<string, string list>()
+
+    /// Unqualified names resolve in the current module and the modules it is nested in, then
+    /// opened modules, then globally, then in the auto-opened namespaces. Candidates are tried
+    /// in that order and built only as needed: this runs for every name.
     let resolveWith (exists: string -> bool) (x: string) : string option =
-        // the current module, then each module it is nested in (A.B.C: A.B.C.x, A.B.x, A.x)
         let enclosing =
             match currentModule.Value with
             | Some m ->
-                let parts = m.Split '.'
-                [ for k in parts.Length .. -1 .. 1 -> String.concat "." parts[.. k - 1] ]
+                match enclosingOf.TryGetValue m with
+                | true, e -> e
+                | _ ->
+                    let parts = m.Split '.'
+                    let e = [ for k in parts.Length .. -1 .. 1 -> String.concat "." parts[.. k - 1] ]
+                    enclosingOf[m] <- e
+                    e
             | None -> []
 
-        let candidates =
-            [ for m in enclosing do
-                  yield m + "." + x
-              for o in opens.Value do
-                  yield o + "." + x
-              yield x ]
+        let rec tryIn (prefixes: string list) =
+            match prefixes with
+            | [] -> None
+            | p :: rest ->
+                let q = p + "." + x
+                if exists q then Some q else tryIn rest
 
         // a private name is visible in its module and in the modules nested in it
         let visibleTo (owner: string option) =
@@ -405,8 +443,15 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
             | None, Some c -> mainNested.Contains c
             | _ -> false
 
-        candidates
-        |> List.tryFind exists
+        let found =
+            match tryIn enclosing with
+            | Some q -> Some q
+            | None ->
+                match tryIn opens.Value with
+                | Some q -> Some q
+                | None -> if exists x then Some x else tryIn autoOpens
+
+        found
         |> Option.map (fun q ->
             match privates.TryGetValue q with
             | true, owner when not (visibleTo owner) ->
@@ -698,7 +743,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
             // the location goes into the message: "assertion failed at file:line"
             let cc = infer env depth c
             expect "assert" tBool cc.ty
-            let file = if currentFile.Value = "prelude.zs" then "prelude.zs" else System.IO.Path.GetFileName currentFile.Value
+            let file = System.IO.Path.GetFileName currentFile.Value
             mk (CPrim(sprintf "assert:%s:%d" file currentLine.Value, [ cc ])) tUnit
         | Call(f, args) ->
             let r = at node (fun () -> call env depth f args)
@@ -1056,7 +1101,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
             let loop =
                 match prune cxs.ty with
                 | TCon(("array" | "Buffer") as c, _) ->
-                    let len = if c = "array" then "Array.length" else "Buffer.length"
+                    let len = if c = "array" then "Collections.Array.length" else "Collections.Buffer.length"
                     For("$i", Lit 0L, None, Bin("-", Call(len, [ Var "$coll" ]), Lit 1L), Let(PIdent(x, None), None, Index(Var "$coll", Var "$i"), body))
                 | TCon("list", _) ->
                     // a while loop over a cursor, so the body may assign outer mutable variables
@@ -1087,11 +1132,11 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                         None,
                         Lit 0L,
                         While(
-                            Bin("<", Var "$pos", Call("String.length", [ Var "$coll" ])),
+                            Bin("<", Var "$pos", Call("Text.String.length", [ Var "$coll" ])),
                             Let(
                                 PTuple [ PIdent("$ch", None); PIdent("$next", None) ],
                                 None,
-                                Call("String.decodeAt", [ Var "$coll"; Var "$pos" ]),
+                                Call("Text.String.decodeAt", [ Var "$coll"; Var "$pos" ]),
                                 Seq(Assign(Var "$pos", Var "$next"), Let(PIdent(x, None), None, Var "$ch", body))
                             )
                         )
@@ -1292,7 +1337,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
     and typeName (t: Ty) =
         match prune t with
         | TCon(n, _) -> n
-        | t -> show t
+        | t -> showFull t
 
     and memberOf (t: Ty) (f: string) : MemberInfo option =
         match prune t with
@@ -1309,7 +1354,14 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
     and staticMember (name: string) : MemberInfo option =
         let i = name.LastIndexOf '.'
 
-        if i <= 0 then
+        // most names aren't T.M for a type with members (by T's last part, or an alias), so
+        // they are rejected before T is resolved
+        let mayHaveMembers () =
+            let t = name.Substring(0, i)
+            let last = t.Substring(t.LastIndexOf '.' + 1)
+            memberTypeNames.Contains last || typeAliases.ContainsKey t
+
+        if i <= 0 || not (mayHaveMembers ()) then
             None
         else
             let t = name.Substring(0, i)
@@ -1644,7 +1696,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                     match splitQualified env x with
                     | Some e -> infer env depth e
                     | None when skippedC.ContainsKey x -> fail 0 (sprintf "C name '%s' wasn't imported: %s" x skippedC[x])
-                    | None -> fail 0 (sprintf "unknown name '%s'" x)
+                    | None -> unknown "name" x
 
     and call env depth f args : CExpr =
         match env.TryFind f, resolveName f with
@@ -1668,7 +1720,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
             match splitQualified env f with
             | Some e -> infer env depth (App(e, args))
             | None when skippedC.ContainsKey f -> fail 0 (sprintf "C function '%s' wasn't imported: %s" f skippedC[f])
-            | None -> fail 0 (sprintf "unknown function '%s'" f)
+            | None -> unknown "function" f
 
     /// Type-checks arguments against a (curried) function type; returns them and the result type.
     and checkArgs env depth (fty: Ty) (args: Expr list) (name: string option) =
@@ -2053,6 +2105,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
             | _ ->
                 let t = Dictionary<string, MemberInfo>()
                 members[tname] <- t
+                memberTypeNames.Add(tname.Substring(tname.LastIndexOf '.' + 1)) |> ignore
                 t
 
         let items =
@@ -2124,9 +2177,14 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
         let hn, hargs =
             match head with
             | STName(n, args) ->
-                (match typeAliases.TryGetValue n with
-                 | true, c -> c
-                 | _ -> n),
+                let n =
+                    match typeAliases.TryGetValue n with
+                    | true, c -> c
+                    | _ -> n
+
+                // the type's full name, as annotations resolve it (Set in Collections: Collections.Set)
+                (resolveWith (fun q -> prims.Contains q || builtinCons.ContainsKey q || types.ContainsKey q) n
+                 |> Option.defaultValue n),
                 args
             | _ -> fail 0 "an impl is for a named type, such as Show<Point> or Show<list<'a>>"
 
@@ -2558,7 +2616,9 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                 // names, and an open inside it lasts to its end
                 let full = qualify name
 
-                if moduleNames.Contains full then
+                // a program's module may share a name with a library namespace (Text); the
+                // names in both are still distinct
+                if not (nestedModules.Add full) then
                     fail 0 (sprintf "module '%s' is already defined" full)
 
                 moduleNames.Add full |> ignore

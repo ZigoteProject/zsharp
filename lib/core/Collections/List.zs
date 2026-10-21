@@ -1,0 +1,254 @@
+/// Functions on lists, immutable singly linked lists: `[ 1; 2; 3 ]`, `x :: rest`. They are
+/// tail-recursive (loops after compilation), so long lists don't exhaust the stack.
+module Collections.List
+
+// ponytail: map/filter build reversed then List.rev; tail recursion modulo cons would save the pass
+
+/// The list in reverse order. Reuses the cells when the list is unique.
+let rev xs =
+  let rec go acc xs =
+    match xs with
+    | [] -> acc
+    | x :: rest -> go (x :: acc) rest
+  go [] xs
+
+/// The number of elements. O(n).
+let length xs =
+  let rec go n xs =
+    match xs with
+    | [] -> n
+    | _ :: rest -> go (n + 1) rest
+  go 0 xs
+
+/// Whether the list has no elements.
+let isEmpty xs =
+  match xs with
+  | [] -> true
+  | _ -> false
+
+/// The first element. Panics on an empty list; see `List.tryHead`.
+let head xs =
+  match xs with
+  | x :: _ -> x
+  | [] -> panic "List.head: empty list"
+
+/// Everything after the first element. Panics on an empty list.
+let tail xs =
+  match xs with
+  | _ :: rest -> rest
+  | [] -> panic "List.tail: empty list"
+
+/// Applies `f` to every element: `List.map f [a; b] = [f a; f b]`.
+let map f xs =
+  let rec go acc xs =
+    match xs with
+    | [] -> List.rev acc
+    | x :: rest -> go (f x :: acc) rest
+  go [] xs
+
+/// The elements for which `f` returns true, in order.
+let filter f xs =
+  let rec go acc xs =
+    match xs with
+    | [] -> List.rev acc
+    | x :: rest -> if f x then go (x :: acc) rest else go acc rest
+  go [] xs
+
+/// Combines the elements from the left: `List.fold f s [a; b] = f (f s a) b`.
+let fold f state xs =
+  let rec go acc xs =
+    match xs with
+    | [] -> acc
+    | x :: rest -> go (f acc x) rest
+  go state xs
+
+/// Calls `f` on every element, in order.
+let iter f xs =
+  let rec go xs =
+    match xs with
+    | [] -> ()
+    | x :: rest ->
+      f x
+      go rest
+  go xs
+
+/// The elements of `xs` followed by those of `ys` (also written `xs @ ys`).
+let append xs ys =
+  let rec go acc xs =
+    match xs with
+    | [] -> acc
+    | x :: rest -> go (x :: acc) rest
+  go ys (List.rev xs)
+
+/// Whether `f` is true for some element. Stops at the first.
+let exists f xs =
+  let rec go xs =
+    match xs with
+    | [] -> false
+    | x :: rest -> if f x then true else go rest
+  go xs
+
+/// Whether `f` is true for every element. Stops at the first false.
+let forall f xs =
+  let rec go xs =
+    match xs with
+    | [] -> true
+    | x :: rest -> if f x then go rest else false
+  go xs
+
+/// Whether the list contains `x` (compared with `=`).
+let contains x xs = List.exists (fun y -> y = x) xs
+
+/// The first element for which `f` is true, or `None`.
+let tryFind f xs =
+  let rec go xs =
+    match xs with
+    | [] -> None
+    | x :: rest -> if f x then Some x else go rest
+  go xs
+
+/// The sum of the elements (`Add.zero` for an empty list).
+let sum xs = List.fold (fun acc x -> acc + x) Add.zero xs
+
+/// A list of `n` elements: `[f 0; f 1; …; f (n - 1)]`.
+let init n f =
+  let rec go acc i =
+    if i < 0 then acc else go (f i :: acc) (i - 1)
+  go [] (n - 1)
+
+/// Like `List.map`, with each element's index: `f i x`.
+let mapi f xs =
+  let rec go acc i xs =
+    match xs with
+    | [] -> List.rev acc
+    | x :: rest -> go (f i x :: acc) (i + 1) rest
+  go [] 0 xs
+
+/// Each element paired with its index: `[(0, a); (1, b)]`.
+let indexed xs = List.mapi (fun i x -> (i, x)) xs
+
+/// Applies `f` to every element and keeps the values of the `Some` results.
+let choose f xs =
+  let rec go acc xs =
+    match xs with
+    | [] -> List.rev acc
+    | x :: rest ->
+      match f x with
+      | Some y -> go (y :: acc) rest
+      | None -> go acc rest
+  go [] xs
+
+/// Applies `f` to every element and concatenates the resulting lists.
+let collect f xs = List.fold (fun acc x -> List.append acc (f x)) [] xs
+
+/// Pairs up the elements of two lists; stops at the end of the shorter one.
+let zip xs ys =
+  let rec go acc xs ys =
+    match (xs, ys) with
+    | (x :: xr, y :: yr) -> go ((x, y) :: acc) xr yr
+    | _ -> List.rev acc
+  go [] xs ys
+
+/// Splits a list of pairs into a pair of lists.
+let unzip xs = (List.map fst xs, List.map snd xs)
+
+/// The first element, or `None` for an empty list.
+let tryHead xs =
+  match xs with
+  | x :: _ -> Some x
+  | [] -> None
+
+/// The last element. Panics on an empty list.
+let last xs =
+  let rec go x xs =
+    match xs with
+    | [] -> x
+    | y :: rest -> go y rest
+  match xs with
+  | x :: rest -> go x rest
+  | [] -> panic "List.last: empty list"
+
+/// The element at index `n` (from 0). Panics if the list is too short. O(n).
+let item n xs =
+  let rec go i xs =
+    match xs with
+    | x :: rest -> if i = 0 then x else go (i - 1) rest
+    | [] -> panic "List.item: index out of range"
+  go n xs
+
+/// The first `n` elements (fewer if the list is shorter).
+let take n xs =
+  let rec go acc n xs =
+    if n <= 0 then List.rev acc
+    else
+      match xs with
+      | x :: rest -> go (x :: acc) (n - 1) rest
+      | [] -> List.rev acc
+  go [] n xs
+
+/// The list without its first `n` elements.
+let rec skip n xs =
+  if n <= 0 then xs
+  else
+    match xs with
+    | _ :: rest -> List.skip (n - 1) rest
+    | [] -> []
+
+/// Combines the elements from the left, starting with the first. Panics on an empty list.
+let reduce f xs =
+  match xs with
+  | x :: rest -> List.fold f x rest
+  | [] -> panic "List.reduce: empty list"
+
+/// The elements for which `f` is true, and the others, both in order.
+let partition f xs =
+  let rec go yes no xs =
+    match xs with
+    | [] -> (List.rev yes, List.rev no)
+    | x :: rest -> if f x then go (x :: yes) no rest else go yes (x :: no) rest
+  go [] [] xs
+
+/// The largest element. Panics on an empty list.
+let max xs = List.reduce (fun a b -> if b > a then b else a) xs
+
+/// The smallest element. Panics on an empty list.
+let min xs = List.reduce (fun a b -> if b < a then b else a) xs
+
+/// The sum of `f x` over the elements.
+let sumBy f xs = List.fold (fun acc x -> acc + f x) Add.zero xs
+
+// ponytail: quadratic; fine for short lists, use a hash set when one exists
+/// The list without repeated elements, keeping first occurrences.
+let distinct xs =
+  List.rev (List.fold (fun acc x -> if List.contains x acc then acc else x :: acc) [] xs)
+
+// stable merge sort
+/// The list sorted with `cmp` (negative, zero or positive, like `compare`). Stable.
+let sortWith cmp xs =
+  let rec merge acc a b =
+    match (a, b) with
+    | ([], _) -> List.append (List.rev acc) b
+    | (_, []) -> List.append (List.rev acc) a
+    | (x :: xr, y :: yr) -> if cmp x y <= 0 then merge (x :: acc) xr b else merge (y :: acc) a yr
+  let rec sort n xs =
+    if n < 2 then xs
+    else
+      let half = n / 2
+      merge [] (sort half (List.take half xs)) (sort (n - half) (List.skip half xs))
+  sort (List.length xs) xs
+
+/// The list sorted in ascending order. Stable.
+let sort xs = List.sortWith compare xs
+
+/// The list sorted by the key `f x`. Stable.
+let sortBy f xs = List.sortWith (fun a b -> compare (f a) (f b)) xs
+
+type list<'a> with
+  /// The number of elements. O(n).
+  member xs.Length = List.length xs
+  /// The first element. Panics on an empty list.
+  member xs.Head = List.head xs
+  /// Everything after the first element. Panics on an empty list.
+  member xs.Tail = List.tail xs
+  /// Whether the list has no elements.
+  member xs.IsEmpty = List.isEmpty xs

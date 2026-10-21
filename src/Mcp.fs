@@ -57,7 +57,7 @@ let private check (file: string) =
 
 let private signature (h: Hover) =
     let needs = if h.constraints = "" then "" else " when " + h.constraints
-    sprintf "%s : %s%s" h.name (show h.hty) needs
+    sprintf "%s : %s%s" (shortName h.name) (show h.hty) needs
 
 let private schema (props: (string * string * string) list) (required: string list) : JsonNode =
     obj
@@ -73,7 +73,7 @@ let private tools: (string * string * JsonNode) list =
       "The inferred type of the name at a position in a Z# file (1-based line and column), with trait constraints for generic functions.",
       schema [ fileArg; "line", "integer", "1-based line"; "column", "integer", "1-based column" ] [ "file"; "line"; "column" ]
       "docs",
-      "Search the Z# prelude and standard library: functions whose name contains the query, with their types.",
+      "Search the Z# library (prelude, Core and Std): functions whose name contains the query, with their types and docs.",
       schema [ "query", "string", "Part of a name, such as List.map, sort or String" ] [ "query" ]
       "build", "Compile a Z# program to a native executable next to it.", schema [ fileArg ] [ "file" ]
       "run",
@@ -99,8 +99,7 @@ let private call (name: string) (args: JsonNode) : string =
 
         prog.hovers
         |> List.filter (fun h ->
-            h.hfile <> "prelude.zs"
-            && Path.GetFullPath h.hfile = Path.GetFullPath file
+            Path.GetFullPath h.hfile = Path.GetFullPath file
             && h.hline = line
             && col >= h.hcol
             && col < h.hcol + h.hlen)
@@ -118,7 +117,7 @@ let private call (name: string) (args: JsonNode) : string =
 
         let found =
             prog.hovers
-            |> List.filter (fun h -> h.decl && h.hfile = "prelude.zs" && h.name.Contains(query, StringComparison.OrdinalIgnoreCase))
+            |> List.filter (fun h -> h.decl && Driver.isLibrary h.hfile && (shortName h.name).Contains(query, StringComparison.OrdinalIgnoreCase))
             |> List.distinctBy (fun h -> h.name)
             |> List.map (fun h ->
                 match Driver.docAbove h.hfile h.hline with

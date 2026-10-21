@@ -21,6 +21,6 @@ its exact output.
 11. [Microcontrollers](11-microcontrollers.md): bare-metal Cortex-M, hardware registers, fast and small code
 
 **Reference:**
-- [The standard library](../reference/prelude.md), generated from its doc comments by `zs doc`.
+- [The library reference](../reference/README.md), generated from its doc comments by `zs doc`.
 - [DESIGN.md](../../DESIGN.md), the language design and the reasons behind it.
 - [ROADMAP.md](../../ROADMAP.md), what's done and what's next.

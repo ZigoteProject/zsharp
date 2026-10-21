@@ -101,6 +101,7 @@ let sumTo n =                            // imperative code is fine; mutation st
   - Panics can't be caught. So there are no landing pads, and nothing unwinds through C frames.
 - **Strings:** `$"x = {p.x}"` interpolation, where any expression with `Show` can go in a hole. `+` joins strings.
 - **Modules:** one file is one module, with `open`, qualified names and `private`. `module Name` on the first line renames it.
+  - **Namespaces:** `namespace X` on the first line makes the file's types and modules `X.Name`, as in F#. The library uses it to put `type Map` and `module Map` side by side in `Collections`.
   - **Nested modules:** `module Inner =` and an indented block. Names inside are `Outer.Inner.x`; the block sees the names of its enclosing modules, `private` reaches the modules nested inside, and an `open` lasts until the block ends.
 - **Type annotations in expressions:** `(e: T)`, which also gives a literal or a record literal its type.
 - **Mutual recursion:** `let rec f … and g …`, at the top level or locally. A top-level group is generalized jointly, so generic members share their type variables.
@@ -469,7 +470,13 @@ There are three levels, from free to manual.
   - **How they're used:** a dependency's modules are type-checked with the program and monomorphized at the program's types.
   - **Speed:** comes from caching each module's checked Core, keyed by its content hash **(planned, phase 5)**.
   - **No IR format:** there's no binary format to version. Closed-source code ships as an `[<Export>]` C library.
-- **The prelude** (`runtime/prelude.zs`) is Z#: lists, arrays, options, results, strings, maps, files and processes.
+- **The library** (`lib/`) is Z#, in three layers:
+  - **Prelude** (`lib/prelude.zs`): the global names: the operator traits and their derives, `option`, `result`, `id`, `fst`, `min`, ….
+  - **Core** (`lib/core`): what needs no operating system, so every target has it: collections, text, options, results, `Math`, `Mmio`.
+  - **Std** (`lib/std`): what needs one: `Console`, `Environment`, `IO` and `Diagnostics`. A microcontroller build doesn't load it, and a name from it is a compile error that says why.
+  - **Namespaces, as in .NET:** `Collections` (`List`, `Array`, `Buffer`, `Map`, `Set`, `HashMap`), `Text` (`String`, `Char`), `IO` (`File`, `Directory`, `Path`) and `Diagnostics` (`Process`, `Stopwatch`). They are open in every module at the lowest precedence, so `List.map` is `Collections.List.map` unless a program defines its own, and full names work too.
+  - **Names:** modules have .NET's names (`Directory`, `Environment`, `Stopwatch`) and functions F#'s style (`File.readAllText`, `Directory.list`, `Environment.getVariable`).
+  - **Built-in functions:** what the runtime provides is built into the compiler under its full name (`Text.String.length`, `IO.File.exists`). The operating-system calls the library wraps are under `Native`, which programs don't use.
 
 ### 9.1 Optimization strategy
 
@@ -573,7 +580,7 @@ checker, so tools can't drift from the compiler.
   - Number and bool locals and arguments are visible. Strings, records and unions are **(planned)**.
 - **Documentation:** `///` comments above a declaration document it.
   - **Where they show:** hover, completion, the MCP `docs` tool, and `zs doc <file>`, which writes Markdown.
-  - **The prelude:** fully documented, and `./test.sh` keeps `docs/reference/prelude.md` current.
+  - **The library:** fully documented, with one reference page per module in `docs/reference` (built-in functions included), which `./test.sh` keeps current.
 - **Formatting:** `zs fmt` has one canonical style and no options. Today it's token-based: it re-indents, spaces operators and keeps comments, and the result must lex to the same tokens. Reflowing long lines to 100 columns needs a lossless syntax tree **(planned)**.
 - **Editors:**
   - **Grammar:** a tree-sitter grammar (`editors/tree-sitter-zsharp`), for highlighting, indentation and outlines.
@@ -622,5 +629,6 @@ checker, so tools can't drift from the compiler.
 | 34 | Surface syntax | the freeze is lifted. Missing F# syntax comes first (phase L); new non-F# syntax needs a design discussion | decided |
 | 35 | Kept in v1 though not yet needed | `ptr<'a>` + `unsafe`, `Arena`, `dyn Trait`, `weak` references | decided |
 | 36 | Optimizations that change evaluation order | only for pure code (list fusion requires pure lambdas; printing pieces evaluates them all first) | decided |
+| 37 | Library organization | prelude (global names) / Core (no OS: every target) / Std (needs an OS); .NET-style namespaces open everywhere at the lowest precedence; .NET module names, F# function names | decided |
 
 "Default" means chosen by me and open to change until the phase that implements it begins.

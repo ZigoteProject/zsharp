@@ -22,6 +22,6 @@ let main () =
   let (p, q) = ((1, "a"), (1, "b"))
   println $"{p = p} {p = q} {compare p q} {p < q} {hash p = hash p}"
   match Console.readLine () with
-  | Some line -> Console.println $"read: {line}"
-  | None -> Console.println "no input"
+  | Some line -> Console.writeLine $"read: {line}"
+  | None -> Console.writeLine "no input"
   0

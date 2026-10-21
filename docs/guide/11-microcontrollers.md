@@ -19,7 +19,7 @@ qemu-system-arm -M mps2-an386 -nographic -semihosting-config enable=on -kernel b
 - **Startup:** the vector table, a reset handler that sets up RAM, enables the FPU and starts SysTick, and `main`.
 - **Heap:** a fixed-size heap inside the image, 64 KB on `cortex-m4` and 8 KB on `cortex-m0plus`. When a program exits, it prints its heap peak and stack use.
 - **Output:** `println` and panics go through semihosting, the debug channel to a debugger or QEMU. A panic stops the chip and reports exit status 134.
-- **Not available:** things that need an OS: `File`, `Dir`, `Process`, `Env`. Using one fails at link time, naming the function.
+- **Not available:** Std, the part of the library that needs an operating system: `Console`, `Environment`, `IO` (`File`, `Directory`, `Path`) and `Diagnostics`. Using it is a compile error that says so. Core (lists, arrays, maps, strings, `Mmio`, …) is all there.
 
 ## Hardware registers
 

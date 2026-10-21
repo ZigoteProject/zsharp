@@ -169,7 +169,7 @@ Some 42 None 3.5
   - **Iterating:** `for c in s` goes over a string's characters, decoding its UTF-8. `String.length` counts bytes and `String.charCount` counts characters.
   - **Converting:** `int c` gives the code point, and `char 65` the character.
   - **Testing and changing:** `Char.isDigit`, `isLetter`, `isWhitespace`, `toUpper` and the others work on ASCII.
-- **String functions:** the `String.*` functions and the members (`s.Length`, `s.Trim()`, `s.Split(sep)`, …) are listed in [the standard library](../reference/prelude.md).
+- **String functions:** the `String.*` functions and the members (`s.Length`, `s.Trim()`, `s.Split(sep)`, …) are listed in [the reference](../reference/Text.String.md).
 
 **Printing:**
 - `print` and `println` write to standard output.

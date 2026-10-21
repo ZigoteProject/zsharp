@@ -4974,6 +4974,10 @@
           {
             "type": "identifier",
             "named": true
+          },
+          {
+            "type": "qualified_identifier",
+            "named": true
           }
         ]
       }
@@ -5008,6 +5012,10 @@
         },
         {
           "type": "module_declaration",
+          "named": true
+        },
+        {
+          "type": "namespace_declaration",
           "named": true
         },
         {
@@ -5105,6 +5113,26 @@
     }
   },
   {
+    "type": "namespace_declaration",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "qualified_identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "open_declaration",
     "named": true,
     "fields": {
@@ -5114,6 +5142,10 @@
         "types": [
           {
             "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "qualified_identifier",
             "named": true
           }
         ]
@@ -5948,6 +5980,10 @@
         },
         {
           "type": "module_declaration",
+          "named": true
+        },
+        {
+          "type": "namespace_declaration",
           "named": true
         },
         {
@@ -7351,6 +7387,10 @@
   },
   {
     "type": "mutable",
+    "named": false
+  },
+  {
+    "type": "namespace",
     "named": false
   },
   {

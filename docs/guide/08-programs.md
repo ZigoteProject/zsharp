@@ -43,6 +43,29 @@ let main () =
 radius 3: area 27
 ```
 
+## The library
+
+**Three layers:**
+- **Prelude:** the names every program has without qualification: the operator traits (`Eq`, `Ord`, `Show`, …), `option` and `result`, and functions such as `print`, `ignore`, `fst` and `min`.
+- **Core:** what needs no operating system, so every target has it, microcontrollers included: lists, arrays, maps, sets, strings, characters, options and results.
+- **Std:** what needs an operating system: the console, the environment, files, directories, paths, processes and timing. On a microcontroller, using it is a compile error that says so.
+
+**Namespaces:** modules are grouped in namespaces, as in .NET.
+
+| Namespace | Core | Std |
+|---|---|---|
+| `Collections` | `List`, `Array`, `Buffer`, `Map`, `Set`, `HashMap` | |
+| `Text` | `String`, `Char` | |
+| `IO` | | `File`, `Directory`, `Path` |
+| `Diagnostics` | | `Process`, `Stopwatch` |
+| none | `Option`, `Result`, `Math`, `Int`, `Runtime`, `Mmio` | `Console`, `Environment` |
+
+- **Opened everywhere:** these namespaces are open in every module, so `List.map` is `Collections.List.map` and `File.readAllText` is `IO.File.readAllText`.
+- **Your names come first:** the library's names have the lowest precedence. A program's own `List.top` or `Text.wrap` is found before them, and `List.map` still finds the library's.
+- **Full names:** `Collections.Map.add` works too.
+
+The [reference](../reference/README.md) documents every module.
+
 ## Projects
 
 A project is a folder with a `zs.toml` manifest:
@@ -73,21 +96,22 @@ json = { git = "https://github.com/someone/json", rev = "v1.2" }  # tag, branch 
 
 ## Arguments, files and processes
 
-The standard library has what command-line tools need. Failures are `result`s with a readable message, such as `cannot open data.txt: No such file or directory`.
+Std has what command-line tools need. Failures are `result`s with a readable message, such as `cannot open data.txt: No such file or directory`.
 
 ```zsharp
 let main () =
-  let args = Env.args ()
-  println $"{List.length args} arguments, HOME set: {Option.isSome (Env.var "HOME")}"
-  match File.write "notes.txt" "one\ntwo\n" with
-  | Ok () -> println $"{File.lines "notes.txt"}"
+  let args = Environment.args ()
+  println $"{List.length args} arguments, HOME set: {Option.isSome (Environment.getVariable "HOME")}"
+  match File.writeAllText "notes.txt" "one\ntwo\n" with
+  | Ok () -> println $"{File.readAllLines "notes.txt"}"
   | Error e -> eprintln e
-  File.append "notes.txt" "three\n" |> ignore
-  println $"{File.read "notes.txt" |> Result.map String.length} {File.exists "notes.txt"}"
-  println $"{File.read "missing.txt"}"
+  File.appendAllText "notes.txt" "three\n" |> ignore
+  println $"{File.readAllText "notes.txt" |> Result.map String.length} {File.exists "notes.txt"}"
+  println $"{File.readAllText "missing.txt"}"
   match Process.run "echo" [ "hi"; "there" ] with
   | Ok r -> println $"echo said {String.trim r.output} (code {r.code})"
   | Error e -> eprintln e
+  println $"{Path.combine "src" "main.zs"} {Path.getExtension "main.zs"} {Path.changeExtension "notes.txt" "md"}"
   File.delete "notes.txt" |> ignore
   0
 ```
@@ -98,13 +122,16 @@ Ok [one; two]
 Ok 14 true
 Error cannot open missing.txt: No such file or directory
 echo said hi there (code 0)
+src/main.zs .zs notes.md
 ```
 
-**More of the standard library:**
-- **Directories:** `Dir.list`, `Dir.create` and `Dir.exists` handle directories.
-- **Standard input:** `Console.readLine ()` and `Console.readLines ()` read it.
-- **Exit codes:** `Process.exit code` ends the program at once with that code. Returning a number from `main` sets the exit code too.
+**More of Std:**
+- **Directories:** `Directory.list`, `Directory.create` and `Directory.exists`.
+- **Paths:** `Path.combine`, `getFileName`, `getDirectoryName`, `getExtension` and the others work on the text alone; they don't touch the file system.
+- **The console:** `Console.readLine ()` and `Console.readLines ()` read standard input, and `Console.Error.writeLine` writes to standard error.
+- **Exit codes:** `Environment.exit code` ends the program at once with that code. Returning a number from `main` sets the exit code too.
 - **Processes:** `Process.run` starts the program directly, without a shell, so arguments are passed exactly as given.
+- **Timing:** `let sw = Stopwatch.startNew ()`, then `sw.ElapsedMilliseconds`.
 
 ## Tests
 

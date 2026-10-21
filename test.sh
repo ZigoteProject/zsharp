@@ -105,21 +105,30 @@ else echo "skip tests/debug/gdb.sh (no gdb)"; fi
 if tests/docs.sh >"$tmp/docs.log" 2>&1; then echo "ok   docs/guide examples ($(tail -1 "$tmp/docs.log"))"
 else echo "FAIL docs/guide examples"; cat "$tmp/docs.log"; fail=1; fi
 
-# the prelude checks on its own (an editor opening it must not see everything defined twice)
-if bin/zs check runtime/prelude.zs >"$tmp/prelude.log" 2>&1; then echo "ok   zs check runtime/prelude.zs"
-else echo "FAIL zs check runtime/prelude.zs"; head -5 "$tmp/prelude.log"; fail=1; fi
+# Std needs an operating system: built for a microcontroller, using it is a compile error
+actual=$(bin/zs build tests/mcu/std.zs --target cortex-m4 -o "$tmp/std.elf" 2>&1 | head -1)
+if [ "$actual" = "tests/mcu/std.zs:2:15: error: 'File.readAllText' is in IO.File, part of Std, which needs an operating system; this target has none" ]; then
+  echo "ok   tests/mcu/std.zs (no Std on a microcontroller)"
+else echo "FAIL tests/mcu/std.zs"; echo "$actual"; fail=1; fi
 
-# the prelude is fully documented, and docs/reference/prelude.md is its current reference
-bin/zs doc runtime/prelude.zs > "$tmp/prelude.md" 2>&1
-if grep -q "_Undocumented._" "$tmp/prelude.md"; then
-  echo "FAIL runtime/prelude.zs has undocumented items:"; grep -B4 "_Undocumented._" "$tmp/prelude.md" | grep '^#'; fail=1
-elif ! cmp -s "$tmp/prelude.md" docs/reference/prelude.md; then
-  echo "FAIL docs/reference/prelude.md is out of date (run: bin/zs doc runtime/prelude.zs > docs/reference/prelude.md)"; fail=1
-else echo "ok   prelude documented; docs/reference/prelude.md current"; fi
+# the library checks on its own (an editor opening one of its files must not see everything
+# defined twice)
+if bin/zs check lib/core/Collections/List.zs >"$tmp/lib.log" 2>&1; then echo "ok   zs check lib (the library on its own)"
+else echo "FAIL zs check lib"; head -5 "$tmp/lib.log"; fail=1; fi
+
+# the library is fully documented, and docs/reference has its current pages, all in the index
+tests/reference.sh "$tmp/ref" 2>&1
+if grep -q "_Undocumented._" "$tmp/ref"/*.md; then
+  echo "FAIL undocumented library items:"; grep -B4 "_Undocumented._" "$tmp/ref"/*.md | grep '#'; fail=1
+elif ! diff -rq -x README.md "$tmp/ref" docs/reference >/dev/null; then
+  echo "FAIL docs/reference is out of date (run: tests/reference.sh)"; diff -rq -x README.md "$tmp/ref" docs/reference; fail=1
+elif missing=$(for p in "$tmp/ref"/*.md; do grep -q "($(basename "$p"))" docs/reference/README.md || basename "$p"; done) && [ -n "$missing" ]; then
+  echo "FAIL docs/reference/README.md doesn't link: $missing"; fail=1
+else echo "ok   library documented; docs/reference current"; fi
 
 # the repository's own Z# code is formatted (zs fmt)
-if bin/zs fmt --check $(find tests runtime -name '*.zs') 2>"$tmp/fmt.log"; then echo "ok   zs fmt --check"
-else echo "FAIL zs fmt --check (run: bin/zs fmt \$(find tests runtime -name '*.zs'))"; cat "$tmp/fmt.log"; fail=1; fi
+if bin/zs fmt --check $(find tests lib -name '*.zs') 2>"$tmp/fmt.log"; then echo "ok   zs fmt --check"
+else echo "FAIL zs fmt --check (run: bin/zs fmt \$(find tests lib -name '*.zs'))"; cat "$tmp/fmt.log"; fail=1; fi
 
 # the language server: a scripted session (tests/lsp/session.sh) against its expected transcript
 actual=$(tests/lsp/session.sh bin/zs 2>&1); expected=$(cat tests/lsp/session.out)

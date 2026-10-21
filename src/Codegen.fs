@@ -554,7 +554,7 @@ let compile
 
     /// dup/drop for a struct value: applies to each field that holds a reference.
     and structHelper (kind: string) (t: Ty) =
-        let name = sprintf "@\"%s.%s\"" kind (show t)
+        let name = sprintf "@\"%s.%s\"" kind (showFull t)
 
         if generated.Add name then
             let fields =
@@ -587,7 +587,7 @@ let compile
             | TCon("array", [ el ]) -> el
             | _ -> failwith "not an array"
 
-        let name = sprintf "@\"%s.%s\"" (if always then "copy" else "unique") (show t)
+        let name = sprintf "@\"%s.%s\"" (if always then "copy" else "unique") (showFull t)
 
         if not always && generated.Add name then
             // inlined at every write: a count test, and the copy (out of line, cold) only if shared
@@ -641,7 +641,7 @@ let compile
                            | true, { def = RecordDef _ } -> true
                            | _ -> false) -> structHelper "drop" t
         | pt ->
-            let name = sprintf "@\"drop.%s\"" (show pt)
+            let name = sprintf "@\"drop.%s\"" (showFull pt)
 
             if generated.Add name then
                 let em = Emitter()
@@ -813,7 +813,7 @@ let compile
             | TFun(a, r) -> a, r
             | _ -> failwith "callback type"
 
-        let name = sprintf "@\"cb.%s\"" (show f)
+        let name = sprintf "@\"cb.%s\"" (showFull f)
 
         if generated.Add name then
             let em = Emitter()
@@ -857,9 +857,7 @@ let compile
         match diFiles.TryGetValue file with
         | true, id -> id
         | _ ->
-            let full =
-                if file = "prelude.zs" then Path.Combine(AppContext.BaseDirectory, file)
-                else Path.GetFullPath file
+            let full = Path.GetFullPath file
 
             let id = meta (sprintf "!DIFile(filename: \"%s\", directory: \"%s\")" (Path.GetFileName full) (Path.GetDirectoryName full))
             diFiles[file] <- id

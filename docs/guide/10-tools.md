@@ -44,7 +44,7 @@
 
 `///` comments above a declaration document it. They work on functions, types, union cases, traits and their methods, and members.
 - **Where they show:** in hover and completion in the editor, in the MCP `docs` tool, and in `zs doc`'s Markdown output.
-- **The standard library:** it's fully documented this way. [Its reference](../reference/prelude.md) is generated with `zs doc runtime/prelude.zs`.
+- **The library:** it's fully documented this way. [Its reference](../reference/README.md) is generated with `zs doc`, one page per module.
 
 ```zsharp
 /// A point on the screen, in pixels.

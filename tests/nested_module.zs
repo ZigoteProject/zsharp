@@ -20,6 +20,10 @@ module Geometry =
 
   let biggest shapes = shapes |> List.map area |> List.fold max 0
 
+  /// Shapes print by their size.
+  impl Show<Shape> =
+    let show s = $"shape of area {area s}"
+
 module Text =
   open Geometry
 
@@ -29,4 +33,5 @@ let main () =
   let shapes = [ Geometry.Circle 2; Geometry.Square 5 ]
   println $"{Geometry.area (Geometry.Circle 1)} {Geometry.biggest shapes} {Geometry.Units.toBig 2}"
   println (Text.describe (Geometry.Square 3))
+  println $"{Geometry.Circle 1}"
   0

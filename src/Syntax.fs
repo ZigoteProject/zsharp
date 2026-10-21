@@ -210,7 +210,7 @@ let showTok =
 let keywords =
     set
         [ "let"; "rec"; "if"; "then"; "else"; "extern"; "true"; "false"; "not"; "match"; "with"; "when"
-          "type"; "of"; "as"; "fun"; "for"; "in"; "do"; "while"; "mutable"; "member"; "static"; "trait"; "impl"; "abstract"; "derive"; "open"; "module"; "private"; "and" ]
+          "type"; "of"; "as"; "fun"; "for"; "in"; "do"; "while"; "mutable"; "member"; "static"; "trait"; "impl"; "abstract"; "derive"; "open"; "module"; "namespace"; "private"; "and" ]
 
 // longest first
 let symbols =
@@ -1181,7 +1181,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
             cons l (consE ())
         elif isSym "@" then
             advance ()
-            Call("List.append", [ l; consE () ])
+            Call("Collections.List.append", [ l; consE () ])
         else
             l
 
@@ -1604,6 +1604,11 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         | KKw "open" ->
             advance ()
             ln, Open(ident ())
+        | KKw "namespace" ->
+            // namespace Collections: the file's types and modules are Collections.Name (one
+            // namespace can span files, like a module header that several files share)
+            advance ()
+            ln, ModuleHeader(ident ())
         | KKw "module" ->
             advance ()
             let name = ident ()
