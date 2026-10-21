@@ -9,5 +9,5 @@ if [ "${1:-}" = "--rebuild" ] || ! podman image exists "$image"; then
 fi
 tty=(); [ -t 0 ] && tty=(-it)
 mkdir -p bin
-exec podman run --rm "${tty[@]}" --userns=keep-id -v "$PWD":/work:Z -v zsharp-home:/tmp/home:U \
+exec podman run --rm "${tty[@]}" --userns=keep-id -v "$PWD":/work:z -v zsharp-home:/tmp/home:U \
   -e HOME=/tmp/home -w /work "$image" "${@:-bash}"
