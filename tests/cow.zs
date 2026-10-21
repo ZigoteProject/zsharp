@@ -4,6 +4,12 @@ let fill (a: array<int>) =
   b.[0] <- 99
   b
 
+// small enough to be inlined: `a <- bump a` must still hand over a's own reference
+let bump (a: array<int>) =
+  let mutable a = a
+  a.[0] <- a.[0] + 1
+  a
+
 let main () =
   let a = [| 1; 2; 3 |]
   let mutable b = a
@@ -30,4 +36,9 @@ let main () =
   let snapshot = Buffer.toArray buf
   alias.[0] <- 6
   println $"toArray copies: {snapshot.[0]} {buf.[0]}"
+  let mutable counter = Array.create 100 0
+  let start = Runtime.allocations ()
+  for _ in 1 .. 1000 do
+    counter <- bump counter
+  println $"inlined update: {Runtime.allocations () - start} allocations, {counter.[0]}"
   0

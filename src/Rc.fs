@@ -447,10 +447,19 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
                 let take (args: CExpr list) =
                     args |> List.map (fun a -> if a.k = CLocal x then mk (CPrim("slot.take", [ a ])) a.ty else a)
 
+                // x <- (let p = x in …), as an inlined call is: p gets x's own reference
+                let rec viaLets (e: CExpr) =
+                    match e.k with
+                    | CLet(p, ({ k = CLocal y } as a), body) when y = x && not ((freeVars body).Contains x) ->
+                        Some(mk (CLet(p, mk (CPrim("slot.take", [ a ])) a.ty, body)) e.ty)
+                    | CLet(p, pv, body) when not ((freeVars pv).Contains x) -> viaLets body |> Option.map (fun b -> mk (CLet(p, pv, b)) e.ty)
+                    | _ -> None
+
                 let moved =
                     match v.k with
                     | CCallDirect(f, args) when direct args -> Some(mk (CCallDirect(f, take args)) v.ty)
                     | CPrim(op, args) when direct args -> Some(mk (CPrim(op, take args)) v.ty)
+                    | CLet _ -> viaLets v
                     | _ -> None
 
                 match moved with

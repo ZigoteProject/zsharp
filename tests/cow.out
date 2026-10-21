@@ -5,3 +5,4 @@ in place: 0 allocations, last 1998
 strings: y xz
 Buffer: 5 length 3
 toArray copies: 5 6
+inlined update: 0 allocations, 1000
