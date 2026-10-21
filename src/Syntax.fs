@@ -542,12 +542,13 @@ and private lexWith (src: string) (keepComments: bool) : Token[] =
                         let run = opRun line at
                         let next = at + run.Length
 
-                        // a symbol and then the sign of its operand: x=-1, a*-b
+                        // a symbol and then the sign of its operand: x=-1, a*-b (but not (<+) or
+                        // (++), operators that end in a sign)
                         if run.Length > 1
                            && (run.EndsWith "-" || run.EndsWith "+")
                            && symbolSet.Contains(run.Substring(0, run.Length - 1))
                            && next < line.Length
-                           && not (Char.IsWhiteSpace line[next]) then
+                           && (Char.IsLetterOrDigit line[next] || line[next] = '_' || line[next] = '(') then
                             run.Substring(0, run.Length - 1)
                         else
                             run

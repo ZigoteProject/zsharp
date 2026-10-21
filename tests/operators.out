@@ -5,4 +5,4 @@ Some (40, []) Some (7, []) None
 true [6; 4; 2] 62 512
 6 [2; 4] 7 [false; true] Ok 2
 123 (14, 16) true
-42 42 -5 true [1; 2]
+42 42 -5 true [1; 2] 4
