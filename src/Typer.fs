@@ -358,6 +358,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
     let exports = ResizeArray<Export>()
     let tests = ResizeArray<string>()
     let consts = Dictionary<string, Expr>() // C constants from import c
+    let recordHints = Dictionary<Expr, Ty>(HashIdentity.Reference) // record literal -> expected type
     let currentModule = ref (None: string option)
     let opens = ref ([]: string list) // most recent first
     let privates = Dictionary<string, string option>() // qualified name -> owning module
@@ -892,7 +893,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
         | Tuple xs ->
             let cs = List.map inf xs
             mk (CTuple cs) (TTuple(cs |> List.map (fun c -> c.ty)))
-        | RecordLit fields -> recordLit env depth None fields
+        | RecordLit fields -> recordLit env depth (takeHint node) fields
         | Update(r, fields) ->
             let cr = inf r
             let rname = recordOf cr.ty (fst fields.Head)
@@ -1649,23 +1650,55 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
 
         mk (CCtor(u, tag, cargs)) uty
 
-    /// Like infer, but a record literal may use the expected type to pick its record.
+    /// Like infer, but the record literals that produce the value may use the expected type to
+    /// pick their record.
     and inferHint env depth (hint: Ty) (e: Expr) : CExpr =
+        pushHint hint e
+        infer env depth e
+
+    /// Notes the expected type on the record literals that produce e's value: through if and
+    /// match branches, the tails of let and sequences, and tuple, list and array elements.
+    and pushHint (hint: Ty) (e: Expr) =
         match e with
-        | At(ln, inner) ->
-            try
-                let c = inferHint env depth hint inner
-                mk (CLine(ln, c)) c.ty
-            with CompileError(0, msg) ->
-                raise (CompileErrorPos(ln, colOf e, msg))
-        | RecordLit fields -> recordLit env depth (Some hint) fields
+        | At(_, a) -> pushHint hint a
+        | RecordLit _ ->
+            // only a record type helps (a generic 'a from a constructor mustn't replace it)
+            match prune hint with
+            | TCon(n, _) when records.Contains n -> recordHints[e] <- hint
+            | _ -> ()
+        | If(_, t, Some f) ->
+            pushHint hint t
+            pushHint hint f
+        | Match(_, cases) ->
+            for _, _, b in cases do
+                pushHint hint b
+        | Seq(_, b)
+        | Let(_, _, _, b)
+        | LetMut(_, _, _, b)
+        | LetFun(_, _, _, _, _, b) -> pushHint hint b
         | Tuple xs ->
             match prune hint with
-            | TTuple ts when ts.Length = xs.Length ->
-                let cs = List.map2 (inferHint env depth) ts xs
-                mk (CTuple cs) (TTuple(cs |> List.map (fun c -> c.ty)))
-            | _ -> infer env depth e
-        | _ -> infer env depth e
+            | TTuple ts when ts.Length = xs.Length -> List.iter2 pushHint ts xs
+            | _ -> ()
+        | Call("::", [ Tuple [ h; t ] ]) -> // a list literal is a chain of ::
+            match prune hint with
+            | TCon("list", [ el ]) ->
+                pushHint el h
+                pushHint hint t
+            | _ -> ()
+        | ArrayLit xs ->
+            match prune hint with
+            | TCon(("array" | "Buffer"), [ el ]) -> List.iter (pushHint el) xs
+            | _ -> ()
+        | _ -> ()
+
+    /// The expected type noted on a record literal, used once (C constants share one node).
+    and takeHint (e: Expr) =
+        match recordHints.TryGetValue e with
+        | true, t ->
+            recordHints.Remove e |> ignore
+            Some t
+        | _ -> None
 
     /// The record a literal builds: the expected type if it is a record; otherwise the only
     /// record whose fields fit (all given fields exist, all missing ones have defaults).

@@ -1,4 +1,8 @@
 argument 3
 tuple 6
 annotated 7
+if 2 1
+match 3
+list 6
+array 10
 no expected type: Pair 15
