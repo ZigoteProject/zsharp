@@ -113,8 +113,75 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
             List.foldBack (fun (t, p) acc -> mk (CLet(t, p, acc)) tUnit) temps prints
         | k -> mk (mapChildren printPieces k) e.ty
 
+    // ---- re-matching: in `match x with C (a, b) -> if c then f a else x`, x stays alive for the
+    // branch that returns it, so its drop can't be specialized for the whole case. Each branch
+    // where x dies matches it again (a known constructor), so that branch takes the cell apart
+    // itself: the fields move out without a dup, and the cell can be reused.
+    let rematch (body: CExpr) : CExpr =
+        let rec renameVars (m: Map<string, string>) (e: CExpr) : CExpr =
+            match e.k with
+            | CLocal x when m.ContainsKey x -> { e with k = CLocal m[x] }
+            | k -> { e with k = mapChildren (renameVars m) k }
+
+        let single (fps: CPat list) =
+            fps
+            |> List.forall (fun fp ->
+                match fp with
+                | CPVar _
+                | CPWild -> true
+                | _ -> false)
+
+        let rec go (e: CExpr) : CExpr =
+            let e = { e with k = mapChildren go e.k }
+
+            match e.k with
+            | CMatch(({ k = CLocal x } as s), cases) when heap s.ty && not (plainUnion types s.ty) ->
+                let cases' =
+                    cases
+                    |> List.map (fun (p, g, b) ->
+                        match p with
+                        | CPCtor(u, tag, fps) when not fps.IsEmpty && single fps && (freeVars b).Contains x -> p, g, push s x u tag fps b
+                        | _ -> p, g, b)
+
+                { e with k = CMatch(s, cases') }
+            | _ -> e
+
+        // the branches of b where x (the scrutinee s) dies match it again; where x is used, b is
+        // left as it is
+        and push (s: CExpr) (x: string) u tag (fps: CPat list) (b: CExpr) : CExpr =
+            let uses (e: CExpr) = (freeVars e).Contains x
+            let branch (br: CExpr) = if uses br then push s x u tag fps br else again s u tag fps br
+
+            match b.k with
+            | CIf(c, t, f) when not (uses c) -> { b with k = CIf(c, branch t, branch f) }
+            | CLet(v, e, rest) when not (uses e) -> { b with k = CLet(v, e, push s x u tag fps rest) }
+            | CLine(l, inner) -> { b with k = CLine(l, push s x u tag fps inner) }
+            | CMatch(s2, cases) when not (uses s2) && cases |> List.forall (fun (_, g, _) -> not (g |> Option.exists uses)) ->
+                { b with k = CMatch(s2, cases |> List.map (fun (p, g, br) -> p, g, branch br)) }
+            | _ -> b
+
+        // match s again, with fresh names for the fields br uses
+        and again (s: CExpr) u tag (fps: CPat list) (br: CExpr) : CExpr =
+            let fv = freeVars br
+
+            let fps', pairs =
+                fps
+                |> List.map (fun fp ->
+                    match fp with
+                    | CPVar(v, t) when fv.Contains v ->
+                        count.Value <- count.Value + 1
+                        let v' = sprintf "%s.r%d" v count.Value
+                        CPVar(v', t), Some(v, v')
+                    | _ -> CPWild, None)
+                |> List.unzip
+
+            let m = pairs |> List.choose id |> Map.ofList
+            mk (CMatch(s, [ CPCtor(u, tag, fps'), None, renameVars m br ])) br.ty
+
+        go body
+
     let rcFun (f: MFun) =
-        let f = { f with body = printPieces f.body }
+        let f = { f with body = rematch (printPieces f.body) }
         // every variable's type, by unique name
         let vtypes = System.Collections.Generic.Dictionary<string, Ty>()
 
@@ -316,6 +383,19 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
                             p, g', dups nested (mk node body.ty)
                         | _ when xOwned -> p, g', dups used (rc (Set.union owned used) borrowed body)
                         | _ -> p, g', rc owned (Set.union borrowed pvars) body)
+
+                re (CMatch(s, cases'))
+            | CMatch({ k = CTuple xs } as s, cases) when xs |> List.forall isVar ->
+                // match (a, b) with …: the tuple only borrows its parts, which stay with their
+                // variables (owned as before). The pattern variables the body uses are dup'ed
+                // first: the body may drop a part it no longer needs before using them
+                let cases' =
+                    cases
+                    |> List.map (fun (p, g, body) ->
+                        let pvars = patVars p |> List.map fst |> List.filter heapVar |> Set.ofList
+                        let g' = g |> Option.map (rc Set.empty (Set.unionMany [ borrowed; owned; pvars ]))
+                        let used = Set.intersect pvars (freeVars body)
+                        p, g', dups used (rc (Set.union owned used) borrowed body))
 
                 re (CMatch(s, cases'))
             | CMatch(s, cases) -> viaTemp owned borrowed s (fun v -> re (CMatch(v, cases)))

@@ -15,6 +15,7 @@
     <Compile Include="Derive.fs" />
     <Compile Include="Typer.fs" />
     <Compile Include="Mono.fs" />
+    <Compile Include="Inline.fs" />
     <Compile Include="Lift.fs" />
     <Compile Include="Rc.fs" />
     <Compile Include="Codegen.fs" />

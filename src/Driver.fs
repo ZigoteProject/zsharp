@@ -544,7 +544,9 @@ let compileProgram (mainPath: string) (isLib: bool) =
     | [] ->
         let funs =
             try
-                let mono = timed "monomorphize" (fun () -> Mono.run prog |> Mono.fuse)
+                // a -g build keeps every function whole, so breakpoints on them hit
+                let inline' = if Codegen.debugInfo then id else Inline.run
+                let mono = timed "monomorphize" (fun () -> Mono.run prog |> Mono.fuse |> inline')
                 let lifted = timed "lift closures" (fun () -> Lift.run mono)
                 timed "reference counting" (fun () -> Rc.run prog.types lifted)
             with CompileError(l, m) ->
