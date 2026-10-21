@@ -25,7 +25,10 @@ Syntax highlighting, outline, bracket matching and indentation (from the tree-si
    `editors/tree-sitter-zsharp` (`git rev-parse HEAD`).
 
 3. In Zed: command palette → `zed: install dev extension` → choose `editors/zed`. Zed builds the
-   Rust part (it needs `rustup`; the Flatpak uses its own) and the grammar.
+   Rust part for `wasm32-wasip2` with the host's Rust and the grammar with wasi-sdk (downloaded
+   automatically). Fedora doesn't package the `wasm32-wasip2` target, so use rustup:
+   `curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --target wasm32-wasip2`,
+   then restart Zed so it picks up `~/.cargo/bin` from your shell.
 
 4. Zed's agent gets the `zs` context server (`zs mcp`): `check`, `type_at`, `docs`, `build`,
    `run` and `emit_llvm`. Enable it in the agent panel's settings.
