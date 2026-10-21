@@ -52,7 +52,7 @@ let hasBuiltinImpl (tr: string) (n: string) =
     | _ -> false
 
 /// Built-in generic type constructors and their arity.
-let builtinCons = dict [ "array", 1; "ref", 1 ]
+let builtinCons = dict [ "array", 1; "ref", 1; "callback", 1 ] // callback<F>: FFI only
 
 let typeAliases = dict [ "i64", "int"; "c_int", "i32"; "float", "f64"; "double", "f64" ]
 
@@ -405,7 +405,16 @@ type Program =
       externs: Dictionary<string, ExternSig>
       funs: FunDef list
       traitMethods: Dictionary<string, TraitMethod> // "Show.show" -> method
-      impls: Dictionary<string * string, Dictionary<string, string>> } // (trait, type) -> method -> function
+      impls: Dictionary<string * string, Dictionary<string, string>> // (trait, type) -> method -> function
+      exports: Export list
+      clayouts: HashSet<string> } // [<CLayout>] records
+
+/// [<Export "cname">]: a C entry point for a monomorphic function.
+and Export =
+    { cname: string
+      fname: string
+      pars: Ty list // unit parameters excluded
+      ret: Ty }
 
 /// Does a value of this type hold a reference count (directly or in a field)?
 let rec needsRc (types: Dictionary<string, TypeInfo>) t =

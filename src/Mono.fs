@@ -178,7 +178,12 @@ let run (prog: Program) : MFun list =
         | ">=" -> mk (CBin(op, call, mk (CInt 0L) tInt)) tBool
         | _ -> call
 
-    request "main" [] |> ignore
+    // roots: main (if any) and every exported function
+    if defs.ContainsKey "main" then
+        request "main" [] |> ignore
+
+    for e in prog.exports do
+        request e.fname [] |> ignore
 
     while queue.Count > 0 do
         let name, inst = queue.Dequeue()

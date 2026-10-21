@@ -49,6 +49,12 @@ type private Emitter() =
     member _.Alloca(s: string) = allocas.Append("  ").AppendLine(s) |> ignore
     member _.Body = "entry:\n" + allocas.ToString() + sb.ToString()
 
+/// How a C value is passed (x86-64 System V).
+type private Abi =
+    | Scalar // as its own LLVM type
+    | Pieces of string list // a struct split into eightbytes: INTEGER (iN) or SSE (double, float, <2 x float>)
+    | Memory // a struct by pointer: byval for parameters, sret for results
+
 let private arith = dict [ "+", "add"; "-", "sub"; "*", "mul" ]
 let private farith = dict [ "+", "fadd"; "-", "fsub"; "*", "fmul"; "/", "fdiv"; "%", "frem" ]
 let private icmpS = dict [ "=", "eq"; "<>", "ne"; "<", "slt"; ">", "sgt"; "<=", "sle"; ">=", "sge" ]
@@ -69,6 +75,7 @@ declare ptr @zs_str_of_f64(double)
 declare ptr @zs_str_of_bool(i1 zeroext)
 declare void @zs_print(ptr)
 declare void @zs_println(ptr)
+declare ptr @zs_str_from_c(ptr)
 
 define private void @zs.dup(ptr %p) alwaysinline {
 entry:
@@ -131,8 +138,15 @@ let private floatConst (ty: string) (f: float) =
     let v = if ty = "float" then float (float32 f) else f
     sprintf "0x%016X" (BitConverter.DoubleToInt64Bits v)
 
-/// Compiles closure-converted, RC-annotated functions to textual LLVM IR.
-let compile (types: Dictionary<string, TypeInfo>) (externs: Dictionary<string, ExternSig>) (funs: MFun list) : string =
+/// Compiles closure-converted, RC-annotated functions to textual LLVM IR, plus a C header for
+/// the exported functions.
+let compile
+    (types: Dictionary<string, TypeInfo>)
+    (externs: Dictionary<string, ExternSig>)
+    (exports: Export list)
+    (clayouts: HashSet<string>)
+    (funs: MFun list)
+    : string * string =
     let top = StringBuilder(prelude)
     let helpers = StringBuilder()
     let funcs = StringBuilder()
@@ -185,6 +199,120 @@ let compile (types: Dictionary<string, TypeInfo>) (externs: Dictionary<string, E
 
     let cloTy (env: Ty list) =
         "{ i64, ptr, ptr" + (env |> List.map (fun f -> ", " + llty f) |> String.concat "") + " }"
+
+    // ------------------------------------------------------------ C ABI (x86-64 System V)
+    // ponytail: x86-64 System V only, and running out of argument registers (a struct then goes
+    // to the stack whole) isn't modelled; aarch64 AAPCS comes with cross-compilation (Phase 4)
+
+    /// Size, alignment and scalar fields (offset, LLVM type) of a C-representable type.
+    let rec cLayout (t: Ty) : int * int * (int * string) list =
+        match llty t with
+        | "i1"
+        | "i8" -> 1, 1, [ 0, "i8" ]
+        | "i16" -> 2, 2, [ 0, "i16" ]
+        | "i32" -> 4, 4, [ 0, "i32" ]
+        | "float" -> 4, 4, [ 0, "float" ]
+        | "i64"
+        | "ptr"
+        | "double" as lt -> 8, 8, [ 0, lt ]
+        | _ ->
+            let fs =
+                match prune t with
+                | TCon(n, _) ->
+                    match types[n].def with
+                    | RecordDef fs -> List.map snd fs
+                    | UnionDef _ -> []
+                | _ -> []
+
+            let mutable off = 0
+            let mutable al = 1
+            let scalars = ResizeArray()
+
+            for ft in fs do
+                let sz, a, sc = cLayout ft
+                off <- (off + a - 1) / a * a
+
+                for o, st in sc do
+                    scalars.Add(off + o, st)
+
+                off <- off + sz
+                al <- max al a
+
+            (off + al - 1) / al * al, al, List.ofSeq scalars
+
+    let abiOf (t: Ty) : Abi =
+        match llty t with
+        | lt when not (lt.StartsWith "{") -> Scalar
+        | _ ->
+            let size, _, scalars = cLayout t
+
+            if size > 16 then
+                Memory
+            else
+                Pieces
+                    [ for k in 0 .. (size - 1) / 8 ->
+                          let here = scalars |> List.filter (fun (o, _) -> o >= 8 * k && o < 8 * k + 8) |> List.map snd
+
+                          if here |> List.forall (fun s -> s = "float" || s = "double") then
+                              match here with
+                              | [ "double" ] -> "double"
+                              | [ "float"; "float" ] -> "<2 x float>"
+                              | _ -> "float"
+                          else
+                              sprintf "i%d" (8 * min 8 (size - 8 * k)) ]
+
+    let cParam (t: Ty) = if llty t = "i1" then "i1 zeroext" else llty t
+
+    let byval (t: Ty) =
+        let _, a, _ = cLayout t
+        sprintf "ptr byval(%s) align %d" (llty t) a
+
+    /// LLVM return type for a C result, and whether it is returned through an sret pointer.
+    let cRet (t: Ty) : string * bool =
+        match prune t with
+        | TCon("unit", []) -> "void", false
+        | _ ->
+            match abiOf t with
+            | Scalar -> (if llty t = "i1" then "zeroext i1" else llty t), false
+            | Pieces [ p ] -> p, false
+            | Pieces ps -> "{ " + String.concat ", " ps + " }", false
+            | Memory -> "void", true
+
+    /// A struct in memory, read or written as its eightbytes.
+    let slotFor (em: Emitter) (t: Ty) =
+        let slot = "%" + em.Fresh "abi"
+        em.Alloca(sprintf "%s = alloca %s, align 8" slot (llty t))
+        slot
+
+    let toPieces (em: Emitter) (t: Ty) (v: string) (pieces: string list) =
+        let slot = slotFor em t
+        em.Emit(sprintf "store %s %s, ptr %s" (llty t) v slot)
+
+        pieces
+        |> List.mapi (fun k pt ->
+            let p = em.Instr(sprintf "getelementptr i8, ptr %s, i64 %d" slot (8 * k))
+            pt, em.Instr(sprintf "load %s, ptr %s" pt p))
+
+    let fromPieces (em: Emitter) (t: Ty) (pieces: (string * string) list) =
+        let slot = slotFor em t
+
+        pieces
+        |> List.iteri (fun k (pt, pv) ->
+            let p = em.Instr(sprintf "getelementptr i8, ptr %s, i64 %d" slot (8 * k))
+            em.Emit(sprintf "store %s %s, ptr %s" pt pv p))
+
+        em.Instr(sprintf "load %s, ptr %s" (llty t) slot)
+
+    /// The LLVM parameter types (with attributes) a C parameter of this type becomes.
+    let cParams (t: Ty) : string list =
+        match prune t with
+        | TCon("callback", _) -> [ "ptr"; "ptr" ]
+        | TCon("unit", []) -> []
+        | _ ->
+            match abiOf t with
+            | Scalar -> [ cParam t ]
+            | Pieces ps -> ps
+            | Memory -> [ byval t ]
 
     let sizeOf (em: Emitter) (ty: string) =
         let p = em.Instr(sprintf "getelementptr %s, ptr null, i32 1" ty)
@@ -450,6 +578,29 @@ let compile (types: Dictionary<string, TypeInfo>) (externs: Dictionary<string, E
         if generated.Add name then
             top.AppendLine(sprintf "%s = private unnamed_addr constant { i64, ptr, ptr } { i64 0, ptr %s, ptr null }" name (stub f 0))
             |> ignore
+
+        name
+
+    /// C entry point for a callback<A -> R>: R thunk(void* user, A) calls the closure `user`.
+    let thunk (f: Ty) : string =
+        let a, r =
+            match prune f with
+            | TFun(a, r) -> a, r
+            | _ -> failwith "callback type"
+
+        let name = sprintf "@\"cb.%s\"" (show f)
+
+        if generated.Add name then
+            let em = Emitter()
+            let unitArg = prune a = tUnit
+            let cp = em.Instr "getelementptr { i64, ptr }, ptr %user, i32 0, i32 1"
+            let code = em.Instr(sprintf "load ptr, ptr %s" cp)
+            let av = if unitArg then "zeroinitializer" else "%x"
+            let res = em.Instr(sprintf "call %s %s(ptr %%user, %s %s)" (llty r) code (llty a) av)
+            let rt, _ = cRet r
+            em.Emit(if rt = "void" then "ret void" else sprintf "ret %s %s" (llty r) res)
+            let ps = "ptr %user" + (if unitArg then "" else sprintf ", %s %%x" (cParam a))
+            helpers.Append(sprintf "define private %s %s(%s) {\n%s}\n\n" rt name ps em.Body) |> ignore
 
         name
 
@@ -792,7 +943,20 @@ let compile (types: Dictionary<string, TypeInfo>) (externs: Dictionary<string, E
 
                         match tyName a.ty with
                         | "string" -> "ptr " + em.Instr(sprintf "getelementptr inbounds i8, ptr %s, i64 16" v)
-                        | _ when fixedC -> sprintf "%s %s" (llty a.ty) v
+                        | _ when fixedC ->
+                            let pt = List.item i s.pars
+
+                            match prune pt with
+                            | TCon("callback", [ f ]) -> sprintf "ptr %s, ptr %s" (thunk f) v // the closure is the user data
+                            | TCon("unit", []) -> ""
+                            | _ ->
+                                match abiOf pt with
+                                | Scalar -> sprintf "%s %s" (cParam pt) v
+                                | Pieces ps -> toPieces em pt v ps |> List.map (fun (t, x) -> t + " " + x) |> String.concat ", "
+                                | Memory ->
+                                    let slot = slotFor em pt
+                                    em.Emit(sprintf "store %s %s, ptr %s" (llty pt) v slot)
+                                    sprintf "%s %s" (byval pt) slot
                         // C default argument promotions for variadic arguments
                         | "bool" -> "i32 " + em.Instr(sprintf "zext i1 %s to i32" v)
                         | "i8"
@@ -802,13 +966,15 @@ let compile (types: Dictionary<string, TypeInfo>) (externs: Dictionary<string, E
                         | "f32" -> "double " + em.Instr(sprintf "fpext float %s to double" v)
                         | n when prims.Contains n && n <> "unit" -> sprintf "%s %s" (llty a.ty) v
                         | _ -> fail 0 (sprintf "a %s cannot be passed to a C variadic function" (show a.ty)))
-                    |> String.concat ", "
+                    |> List.filter ((<>) "")
 
-                let ret = if s.ret = tUnit then "void" else llty s.ret
+                let ret, sret = cRet s.ret
+                let retSlot = if sret then Some(slotFor em s.ret) else None
+                let argv = (retSlot |> Option.map (fun p -> sprintf "ptr sret(%s) %s" (llty s.ret) p) |> Option.toList) @ argv |> String.concat ", "
 
                 let fnTy =
                     if s.variadic then
-                        sprintf "%s (%s)" ret ((s.pars |> List.map llty) @ [ "..." ] |> String.concat ", ")
+                        sprintf "%s (%s)" ret ((s.pars |> List.collect cParams) @ [ "..." ] |> String.concat ", ")
                     else
                         ret
 
@@ -817,13 +983,24 @@ let compile (types: Dictionary<string, TypeInfo>) (externs: Dictionary<string, E
                 let r =
                     if ret = "void" then
                         em.Emit call
-                        "zeroinitializer"
+
+                        match retSlot with
+                        | Some p -> em.Instr(sprintf "load %s, ptr %s" (llty s.ret) p)
+                        | None -> "zeroinitializer"
                     else
-                        em.Instr call
+                        let c = em.Instr call
+
+                        match abiOf s.ret with
+                        | Scalar -> c
+                        | Pieces [ p ] -> fromPieces em s.ret [ p, c ]
+                        | Pieces ps -> fromPieces em s.ret (ps |> List.mapi (fun k p -> p, em.Instr(sprintf "extractvalue %s %s, %d" ret c k)))
+                        | Memory -> failwith "unreachable"
 
                 for a, v in List.zip args vs do
-                    if tyName a.ty = "string" then
-                        dropValue em a.ty v
+                    match tyName a.ty, prune a.ty with
+                    | "string", _
+                    | _, TFun _ -> dropValue em a.ty v // the string's bytes / the callback's closure were borrowed
+                    | _ -> ()
 
                 r
             | CMkClosure(f, []) -> staticClosure f
@@ -973,6 +1150,7 @@ let compile (types: Dictionary<string, TypeInfo>) (externs: Dictionary<string, E
                 | "f32" -> em.Instr(sprintf "zext i32 %s to i64" (em.Instr(sprintf "bitcast float %s to i32" (arg 0))))
                 | _ when lt = "i64" -> arg 0
                 | _ -> em.Instr(sprintf "%s %s %s to i64" (if isUnsigned t || lt = "i1" then "zext" else "sext") lt (arg 0))
+            | "String.ofCStr" -> em.Instr(sprintf "call ptr @zs_str_from_c(ptr %s)" (arg 0))
             | "String.length" ->
                 let lp = em.Instr(sprintf "getelementptr i8, ptr %s, i64 8" (arg 0))
                 let n = em.Instr(sprintf "load i64, ptr %s" lp)
@@ -1085,22 +1263,108 @@ let compile (types: Dictionary<string, TypeInfo>) (externs: Dictionary<string, E
         funcs.Append(sprintf "define internal %s %s(%s) {\n%s}\n\n" rt (sym f.name) ps em.Body) |> ignore
 
     for KeyValue(name, s) in externs do
-        let ret = if s.ret = tUnit then "void" else llty s.ret
-        let ps = (s.pars |> List.map llty) @ (if s.variadic then [ "..." ] else [])
+        let ret, sret = cRet s.ret
+        let sretP = if sret then [ sprintf "ptr sret(%s)" (llty s.ret) ] else []
+        let ps = sretP @ (s.pars |> List.collect cParams) @ (if s.variadic then [ "..." ] else [])
         top.AppendLine(sprintf "declare %s @%s(%s)" ret name (String.concat ", " ps)) |> ignore
 
     for f in funs do
         genFun f
 
-    // C entry point; an int result becomes the exit code
-    let main = fnTable["main"]
-    let rt = llty main.ret
+    // C entry points: main (an int result becomes the exit code) and [<Export>] wrappers
+    if fnTable.ContainsKey "main" then
+        let main = fnTable["main"]
+        let rt = llty main.ret
 
-    let body =
-        match tyName main.ret with
-        | "unit" -> sprintf "  call {} %s({} zeroinitializer)\n  ret i32 0" (sym "main")
-        | "i32" -> sprintf "  %%r = call i32 %s({} zeroinitializer)\n  ret i32 %%r" (sym "main")
-        | _ -> sprintf "  %%r = call %s %s({} zeroinitializer)\n  %%c = trunc %s %%r to i32\n  ret i32 %%c" rt (sym "main") rt
+        let body =
+            match tyName main.ret with
+            | "unit" -> sprintf "  call {} %s({} zeroinitializer)\n  ret i32 0" (sym "main")
+            | "i32" -> sprintf "  %%r = call i32 %s({} zeroinitializer)\n  ret i32 %%r" (sym "main")
+            | _ -> sprintf "  %%r = call %s %s({} zeroinitializer)\n  %%c = trunc %s %%r to i32\n  ret i32 %%c" rt (sym "main") rt
 
-    funcs.AppendLine("define i32 @main() {").AppendLine(body).AppendLine("}") |> ignore
-    top.ToString() + "\n" + helpers.ToString() + funcs.ToString()
+        funcs.AppendLine("define i32 @main() {").AppendLine(body).AppendLine("}") |> ignore
+
+    for e in exports do
+        let fd = fnTable[e.fname]
+        let em = Emitter()
+        let rt, sret = cRet e.ret
+        let cps = ResizeArray<string>()
+
+        if sret then
+            cps.Add(sprintf "ptr sret(%s) align 8 %%ret" (llty e.ret))
+
+        let args =
+            fd.pars
+            |> List.mapi (fun i (_, t) ->
+                let n = sprintf "%%a%d" i
+
+                match prune t with
+                | TCon("unit", []) -> t, "zeroinitializer"
+                | _ ->
+                    match abiOf t with
+                    | Scalar ->
+                        cps.Add(sprintf "%s %s" (cParam t) n)
+                        t, n
+                    | Pieces ps ->
+                        let named =
+                            ps
+                            |> List.mapi (fun k p ->
+                                let nk = sprintf "%s.%d" n k
+                                cps.Add(p + " " + nk)
+                                p, nk)
+
+                        t, fromPieces em t named
+                    | Memory ->
+                        cps.Add(sprintf "%s %s" (byval t) n)
+                        t, em.Instr(sprintf "load %s, ptr %s" (llty t) n))
+
+        let argv = args |> List.map (fun (t, v) -> sprintf "%s %s" (llty t) v) |> String.concat ", "
+        let r = em.Instr(sprintf "call %s %s(%s)" (llty fd.ret) (sym e.fname) argv)
+
+        match prune e.ret, abiOf e.ret with
+        | TCon("unit", []), _ -> em.Emit "ret void"
+        | _, Memory ->
+            em.Emit(sprintf "store %s %s, ptr %%ret" (llty e.ret) r)
+            em.Emit "ret void"
+        | _, Scalar -> em.Emit(sprintf "ret %s %s" (llty e.ret) r)
+        | _, Pieces [ p ] -> em.Emit(sprintf "ret %s %s" p (snd (toPieces em e.ret r [ p ]).Head))
+        | _, Pieces ps ->
+            let agg =
+                toPieces em e.ret r ps
+                |> List.indexed
+                |> List.fold (fun acc (k, (p, v)) -> em.Instr(sprintf "insertvalue %s %s, %s %s, %d" rt acc p v k)) "poison"
+
+            em.Emit(sprintf "ret %s %s" rt agg)
+
+        funcs.Append(sprintf "define %s @%s(%s) {\n%s}\n\n" rt e.cname (String.concat ", " cps) em.Body) |> ignore
+
+    // the header: [<CLayout>] structs, then prototypes
+    let rec cName (t: Ty) =
+        match prune t with
+        | TCon("int", []) -> "int64_t"
+        | TCon(("i8" | "i16" | "i32") as n, []) -> sprintf "int%s_t" (n.Substring 1)
+        | TCon(("u8" | "u16" | "u32" | "u64") as n, []) -> sprintf "uint%s_t" (n.Substring 1)
+        | TCon("usize", []) -> "size_t"
+        | TCon("f64", []) -> "double"
+        | TCon("f32", []) -> "float"
+        | TCon("bool", []) -> "bool"
+        | TCon("cstr", []) -> "const char*"
+        | TCon("unit", []) -> "void"
+        | TCon(n, []) -> n.Replace('.', '_')
+        | t -> failwithf "no C name for %s" (show t)
+
+    let header = StringBuilder("// Generated by zs. Do not edit.\n#pragma once\n#include <stdbool.h>\n#include <stddef.h>\n#include <stdint.h>\n\n")
+
+    for KeyValue(n, info) in types do
+        match info.def with
+        | RecordDef fs when clayouts.Contains n ->
+            let name = n.Replace('.', '_')
+            let fields = fs |> List.map (fun (f, ft) -> sprintf "    %s %s;" (cName ft) f) |> String.concat "\n"
+            header.Append(sprintf "typedef struct %s {\n%s\n} %s;\n\n" name fields name) |> ignore
+        | _ -> ()
+
+    for e in exports do
+        let ps = e.pars |> List.mapi (fun i t -> sprintf "%s p%d" (cName t) i)
+        header.Append(sprintf "%s %s(%s);\n" (cName e.ret) e.cname (if ps.IsEmpty then "void" else String.concat ", " ps)) |> ignore
+
+    top.ToString() + "\n" + helpers.ToString() + funcs.ToString(), header.ToString()

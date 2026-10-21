@@ -106,6 +106,8 @@ zs_str *zs_str_of_f64(double v) {
     return str_of(buf, n);
 }
 
+zs_str *zs_str_from_c(const char *c) { return str_of(c, (int64_t)strlen(c)); }
+
 zs_str *zs_str_of_bool(bool v) { return v ? str_of("true", 4) : str_of("false", 5); }
 
 void zs_print(zs_str *s) { fwrite(s->data, 1, (size_t)s->len, stdout); }

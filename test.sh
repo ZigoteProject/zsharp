@@ -35,4 +35,16 @@ for t in $(find tests -name '*.zs' | sort); do
   if [ "$actual" == "$expected" ]; then echo "ok   $t"
   else echo "FAIL $t"; diff <(echo "$expected") <(echo "$actual") | head -20; fail=1; fi
 done
+# C interop: a directory with main.c links the static library built from its lib.zs
+for c in $(find tests -name main.c | sort); do
+  d=$(dirname "$c")
+  if bin/zs build "$d/lib.zs" --lib -o "$tmp/lib.a" 2>"$tmp/build.log" && clang -I"$tmp" "$c" "$tmp/lib.a" -lm -o "$tmp/cexe" 2>>"$tmp/build.log"; then
+    run=("$tmp/cexe"); [ $valgrind = 1 ] && run=(valgrind -q --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=all --error-exitcode=99 "$tmp/cexe")
+    actual=$("${run[@]}" 2>&1); [ $? = 99 ] && actual="$actual
+(valgrind reported memory errors or leaks)"
+  else actual=$(cat "$tmp/build.log"); fi
+  expected=$(cat "$d/main.out")
+  if [ "$actual" == "$expected" ]; then echo "ok   $c"
+  else echo "FAIL $c"; diff <(echo "$expected") <(echo "$actual") | head -20; fail=1; fi
+done
 exit $fail

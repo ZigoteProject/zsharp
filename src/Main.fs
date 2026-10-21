@@ -87,11 +87,12 @@ let loadModules (mainPath: string) : (string * string option * (int * Decl) list
     order[last] <- (mainPath, m, ds)
     List.ofSeq order
 
-/// Source files -> typed Core -> monomorphic -> closure-converted -> RC-annotated -> LLVM IR.
-let compileProgram (mainPath: string) =
+/// Source files -> typed Core -> monomorphic -> closure-converted -> RC-annotated -> LLVM IR
+/// (and a C header for [<Export>] functions). A library doesn't need `main`.
+let compileProgram (mainPath: string) (isLib: bool) =
     let preludePath = runtimeFile "prelude.zs"
     let _, prelude = parseFile preludePath
-    let prog = Typer.check (("prelude.zs", None, prelude) :: loadModules mainPath)
+    let prog = Typer.check (not isLib) (("prelude.zs", None, prelude) :: loadModules mainPath)
 
     let funs =
         try
@@ -99,16 +100,17 @@ let compileProgram (mainPath: string) =
         with CompileError(l, m) ->
             raise (CompileErrorAt(mainPath, l, m))
 
-    Codegen.compile prog.types prog.externs funs
+    Codegen.compile prog.types prog.externs prog.exports prog.clayouts funs
 
-/// .zs -> LLVM IR -> clang (with the runtime) -> native executable. Returns false on any error.
-let private build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) =
+/// .zs -> LLVM IR -> clang (with the runtime) -> native executable, or with isLib a static
+/// library (.a) plus its header (.h). Returns false on any error.
+let private build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) (isLib: bool) =
     let ir =
         try
             if not (File.Exists src) then
                 raise (CompileErrorAt(src, 0, "file not found"))
 
-            Some(compileProgram src)
+            Some(compileProgram src isLib)
         with
         | CompileErrorAt(file, line, msg) ->
             if line > 0 then
@@ -127,7 +129,7 @@ let private build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) 
 
     match ir with
     | None -> false
-    | Some ir ->
+    | Some(ir, header) ->
         let ll =
             if emitLlvm then
                 Path.ChangeExtension(out, ".ll")
@@ -136,13 +138,33 @@ let private build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) 
 
         File.WriteAllText(ll, ir)
         let san = if sanitize then [ "-fsanitize=address,undefined"; "-g" ] else []
-        let args = [ "-O2"; "-rdynamic"; "-Wno-override-module" ] @ san @ [ ll; runtimeFile "rt.c"; "-o"; out; "-lm" ]
-        let code = exec "clang" args
+
+        let ok =
+            if isLib then
+                // objects for the program and the runtime, archived, plus the header
+                let obj = Path.ChangeExtension(ll, ".o")
+                let rt = Path.ChangeExtension(ll, ".rt.o")
+
+                let ok =
+                    exec "clang" ([ "-O2"; "-c"; "-Wno-override-module" ] @ san @ [ ll; "-o"; obj ]) = 0
+                    && exec "clang" ([ "-O2"; "-c" ] @ san @ [ runtimeFile "rt.c"; "-o"; rt ]) = 0
+                    && (File.Delete out |> fun () -> exec "llvm-ar" [ "rcs"; out; obj; rt ] = 0)
+
+                File.WriteAllText(Path.ChangeExtension(out, ".h"), header)
+
+                for f in [ obj; rt ] do
+                    if File.Exists f then
+                        File.Delete f
+
+                ok
+            else
+                let args = [ "-O2"; "-rdynamic"; "-Wno-override-module" ] @ san @ [ ll; runtimeFile "rt.c"; "-o"; out; "-lm" ]
+                exec "clang" args = 0
 
         if not emitLlvm then
             File.Delete ll
 
-        code = 0
+        ok
 
 [<EntryPoint>]
 let main argv =
@@ -153,16 +175,17 @@ let main argv =
             | Some i when i + 1 < rest.Length -> rest[i + 1]
             | _ -> Path.GetFileNameWithoutExtension src
 
-        if build src out (List.contains "--emit-llvm" rest) (List.contains "--sanitize" rest) then 0 else 1
+        let isLib = List.contains "--lib" rest
+        if build src out (List.contains "--emit-llvm" rest) (List.contains "--sanitize" rest) isLib then 0 else 1
     | "run" :: src :: rest ->
         let exe = Path.Combine(Path.GetTempPath(), "zs-" + Guid.NewGuid().ToString("N"))
 
-        if build src exe false (List.contains "--sanitize" rest) then
+        if build src exe false (List.contains "--sanitize" rest) false then
             let code = exec exe []
             File.Delete exe
             code
         else
             1
     | _ ->
-        eprintfn "usage: zs build <file.zs> [-o <out>] [--emit-llvm] [--sanitize]\n       zs run <file.zs> [--sanitize]"
+        eprintfn "usage: zs build <file.zs> [-o <out>] [--lib] [--emit-llvm] [--sanitize]\n       zs run <file.zs> [--sanitize]"
         2

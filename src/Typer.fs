@@ -184,6 +184,7 @@ let private builtins =
           b "print" "print" [] (f tStr tUnit) 1
           b "println" "println" [] (f tStr tUnit) 1
           b "String.length" "String.length" [] (f tStr tInt) 1
+          b "String.ofCStr" "String.ofCStr" [] (f tCStr tStr) 1
           b "ref" "ref" [ kAny ] (f a (TCon("ref", [ a ]))) 1
           b "Array.create" "Array.create" [ kAny ] (f tInt (f a (TCon("array", [ a ])))) 2
           b "Array.length" "Array.length" [ kAny ] (f (TCon("array", [ a ])) tInt) 1 ]
@@ -216,7 +217,7 @@ type private Global =
 
 /// modules: (file, module name, declarations) in dependency order; the prelude and the main
 /// file have no module name (their declarations are global).
-let check (modules: (string * string option * (int * Decl) list) list) : Program =
+let check (requireMain: bool) (modules: (string * string option * (int * Decl) list) list) : Program =
     let decls = modules |> List.collect (fun (_, _, ds) -> ds)
     let types = Dictionary<string, TypeInfo>()
     let ctors = Dictionary<string, string * int>() // constructor -> union, tag
@@ -259,6 +260,8 @@ let check (modules: (string * string option * (int * Decl) list) list) : Program
     let tyvars = Dictionary<string, Ty>() // 'a in the current function's annotations
     let counter = ref 0
     let measures = HashSet<string>() // [<Measure>] types
+    let clayouts = HashSet<string>() // [<CLayout>] records
+    let exports = ResizeArray<Export>()
     let currentModule = ref (None: string option)
     let opens = ref ([]: string list) // most recent first
     let privates = Dictionary<string, string option>() // qualified name -> owning module
@@ -1404,11 +1407,11 @@ let check (modules: (string * string option * (int * Decl) list) list) : Program
 
                 if i < n then
                     let what = sprintf "argument %d of '%s'" (i + 1) f
-                    // a string is passed to C as a pointer to its bytes
-                    if s.pars[i] = tCStr then
-                        expect what (fresh kStrLit) ca.ty
-                    else
-                        expect what s.pars[i] ca.ty
+                    // a string is passed to C as a pointer to its bytes; a closure as callback + user data
+                    match s.pars[i] with
+                    | t when t = tCStr -> expect what (fresh kStrLit) ca.ty
+                    | TCon("callback", [ f ]) -> expect what f ca.ty
+                    | t -> expect what t ca.ty
 
                 ca)
 
@@ -1703,6 +1706,21 @@ let check (modules: (string * string option * (int * Decl) list) list) : Program
 
         defineGroup items
 
+    /// Types that can cross the C boundary: numbers, bool, cstr, unit and [<CLayout>] records.
+    let rec checkCType (what: string) (t: Ty) =
+        match prune t with
+        | TCon(n, []) when nums.Contains n || n = "bool" || n = "cstr" || n = "unit" -> ()
+        | TCon(n, []) when clayouts.Contains n -> ()
+        | t -> fail 0 (sprintf "%s: type %s cannot cross the C boundary (mark records [<CLayout>])" what (show t))
+
+    /// callback<A -> R>: C sees (R (*)(void* user, A), void* user); A and R are C types.
+    let checkCallback (what: string) (f: Ty) =
+        match prune f with
+        | TFun(a, r) ->
+            checkCType what a
+            checkCType what r
+        | t -> fail 0 (sprintf "%s: callback<%s> needs a function type such as callback<int -> unit>" what (show t))
+
     /// Registers an impl and type-checks its methods. The impl is registered before its
     /// bodies so they may use it recursively; its requirements on type arguments are inferred.
     let declareImpl (tr: string) (head: SType) (defs: (int * string * Param list * SType option * Expr) list) =
@@ -1890,14 +1908,18 @@ let check (modules: (string * string option * (int * Decl) list) list) : Program
                 if externs.ContainsKey name || globals.ContainsKey name then
                     fail 0 (sprintf "'%s' is already defined" name)
 
-                let cty st =
-                    match toTy (Some []) st with
-                    | TCon(n, []) as t when nums.Contains n || n = "cstr" || n = "unit" -> t
-                    | t -> fail 0 (sprintf "extern '%s': type %s cannot cross the C boundary yet" name (show t))
+                let cty (isParam: bool) st =
+                    let t = toTy (Some []) st
+
+                    match t with
+                    | TCon("callback", [ f ]) when isParam -> checkCallback (sprintf "extern '%s'" name) f
+                    | _ -> checkCType (sprintf "extern '%s'" name) t
+
+                    t
 
                 externs[name] <-
-                    { pars = List.map cty args
-                      ret = cty ret
+                    { pars = List.map (cty true) args
+                      ret = cty false ret
                       variadic = variadic }
             | Fun(name, isRec, ps, ret, body) when name.StartsWith "|" ->
                 // active pattern: cases become constructors of a hidden union (total) or option (partial)
@@ -1985,6 +2007,47 @@ let check (modules: (string * string option * (int * Decl) list) list) : Program
                 opens.Value <- m :: opens.Value
             | ModuleHeader _ -> ()
             | Attrs([ "Measure", [] ], TypeDecl(name, [], UnionTy [], [])) -> measures.Add name |> ignore
+            | Attrs([ "Export", cname ], (Fun(name, _, _, _, _) as f)) ->
+                declare ln f
+                let q = qualify name
+                let g = globals[q]
+
+                if not g.kinds.IsEmpty then
+                    fail 0 (sprintf "exported function '%s' must not be generic; add type annotations" name)
+
+                let cname =
+                    match cname with
+                    | [ c ] -> c
+                    | _ -> name
+
+                let ptys, ret = peel g.arity g.ty
+                let what = sprintf "export '%s'" cname
+
+                for t in ptys do
+                    checkCType what t
+
+                checkCType what ret
+
+                exports.Add
+                    { cname = cname
+                      fname = q
+                      pars = ptys |> List.filter (fun t -> prune t <> tUnit)
+                      ret = resolve ret }
+            | Attrs([ "CLayout", [] ], (TypeDecl(name, tps, RecordTy fields, _) as d)) ->
+                declare ln d
+                let q = qualify name
+
+                if not tps.IsEmpty then
+                    fail 0 "a [<CLayout>] record can't be generic"
+
+                clayouts.Add q |> ignore
+
+                for f, ft in (match types[q].def with
+                              | RecordDef fs -> fs
+                              | UnionDef _ -> []) do
+                    match prune ft with
+                    | TCon("unit", []) -> fail 0 (sprintf "[<CLayout>] field '%s' can't be unit" f)
+                    | _ -> checkCType (sprintf "[<CLayout>] field '%s'" f) ft
             | Attrs(attrs, inner) ->
                 declare ln inner
 
@@ -2043,7 +2106,8 @@ let check (modules: (string * string option * (int * Decl) list) list) : Program
     let mainFile, _, _ = List.last modules
 
     try
-        checkMain ()
+        if requireMain || globals.ContainsKey "main" then
+            checkMain ()
     with CompileError(_, msg) ->
         raise (CompileErrorAt(mainFile, 0, msg))
 
@@ -2051,4 +2115,6 @@ let check (modules: (string * string option * (int * Decl) list) list) : Program
       externs = externs
       funs = List.ofSeq funs
       traitMethods = traitMethods
-      impls = impls }
+      impls = impls
+      exports = List.ofSeq exports
+      clayouts = clayouts }

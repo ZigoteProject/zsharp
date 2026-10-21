@@ -1323,25 +1323,30 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
                 let n = ident ()
 
                 let args =
-                    if isSym "(" then
+                    match peek () with
+                    | KStr a -> // [<Export "name">]
                         advance ()
-                        let xs = ResizeArray()
+                        [ a ]
+                    | _ ->
+                        if isSym "(" then
+                            advance ()
+                            let xs = ResizeArray()
 
-                        while not (isSym ")") do
-                            match peek () with
-                            | KId a
-                            | KStr a ->
-                                advance ()
-                                xs.Add a
-                            | _ -> err "attribute argument"
+                            while not (isSym ")") do
+                                match peek () with
+                                | KId a
+                                | KStr a ->
+                                    advance ()
+                                    xs.Add a
+                                | _ -> err "attribute argument"
 
-                            if isSym "," then
-                                advance ()
+                                if isSym "," then
+                                    advance ()
 
-                        advance ()
-                        List.ofSeq xs
-                    else
-                        []
+                            advance ()
+                            List.ofSeq xs
+                        else
+                            []
 
                 attrs.Add(n, args)
 
