@@ -53,6 +53,10 @@ if [ -z "$target" ]; then
 bin/zs build tests/json.zs -o "$tmp/time-exe" --time 2>"$tmp/time.log" >/dev/null
 echo "time tests/json.zs: $(grep -E '^(parse|total)' "$tmp/time.log" | tr -s ' ' | tr '\n' ';' | sed 's/;$//')"
 
+# the checked library and modules, cached between builds: the same program from the cache
+if diff <(tests/cache.sh 2>&1) tests/cache.expected >"$tmp/cache.diff"; then echo "ok   tests/cache.sh (checked library, modules and compiled modules cached)"
+else echo "FAIL tests/cache.sh"; cat "$tmp/cache.diff"; fail=1; fi
+
 # host benchmarks against C: a Z# program needing more than 5% more instructions than in
 # bench/host/baseline.txt fails (bench/host/run.sh shows times; --update after an improvement)
 if bench/host/run.sh --check >"$tmp/bench.log" 2>&1; then echo "ok   bench/host (instruction counts within 5% of the baseline)"

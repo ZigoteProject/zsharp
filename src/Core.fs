@@ -67,6 +67,10 @@ let tChar = tcon "char"
 
 let mutable private nextVar = 0
 
+/// How many type variables were made (a checked snapshot carries the count on).
+let typeVars () = nextVar
+let setTypeVars (n: int) = nextVar <- max nextVar n
+
 let fresh kind =
     nextVar <- nextVar + 1
     TVar(ref (Unbound(nextVar, kind)))
@@ -298,7 +302,7 @@ and CKind =
     // after closure conversion
     | CCallDirect of string * CExpr list
     | CMkClosure of string * CExpr list // function, values for its first parameters
-    | CApplyClo of CExpr * CExpr
+    | CApplyClo of CExpr * CExpr list // a closure applied to arguments
     // after RC insertion
     | CDup of string * Ty * CExpr
     | CDrop of string * Ty * CExpr
@@ -350,7 +354,7 @@ let mapChildren (f: CExpr -> CExpr) (k: CKind) : CKind =
     | CLine(l, e) -> CLine(l, f e)
     | CCallDirect(n, args) -> CCallDirect(n, List.map f args)
     | CMkClosure(n, args) -> CMkClosure(n, List.map f args)
-    | CApplyClo(c, a) -> CApplyClo(f c, f a)
+    | CApplyClo(c, args) -> CApplyClo(f c, List.map f args)
     | CDup(x, t, e) -> CDup(x, t, f e)
     | CDrop(x, t, e) -> CDrop(x, t, f e)
     | CDropFields(x, t, tag, keep, tok, e) -> CDropFields(x, t, tag, keep, tok, f e)
@@ -467,6 +471,15 @@ let rec showCore (ind: int) (e: CExpr) : string =
     | CTuple xs -> line ("(" + args xs + ")")
     | CField(r, i) -> line (flat r + "." + string i)
     | CLine(_, x) -> showCore ind x
+    | CSeq(a, b) -> showCore ind a + "\n" + showCore ind b
+    | CAssign(x, v) -> line (x + " <- " + flat v)
+    | CWhile(c, b) -> line ("while " + flat c) + "\n" + sub b
+    | CFor(x, a, _, b, body) -> line ("for " + x + " in " + flat a + " .. " + flat b) + "\n" + sub body
+    | CMkClosure(f, xs) -> line ("closure " + f + "(" + args xs + ")")
+    | CApplyClo(c, xs) -> line (flat c + " $ (" + args xs + ")")
+    | CExtern(f, xs) -> line ("extern " + f + "(" + args xs + ")")
+    | CNot a -> line ("not " + flat a)
+    | CNeg a -> line ("-" + flat a)
     | k -> line (sprintf "<%s>" ((sprintf "%A" k).Split(' ', '\n')[0]))
 
 /// The variables a node references itself (not through its children).
@@ -597,3 +610,60 @@ and private plainUnionIn (types: Dictionary<string, TypeInfo>) (visiting: Set<st
 let needsRc (types: Dictionary<string, TypeInfo>) t = heapIn types Set.empty t
 
 let plainUnion (types: Dictionary<string, TypeInfo>) t = plainUnionIn types Set.empty t
+
+/// How a union's values are represented.
+type UnionRep =
+    /// A value: { tag, every case's fields } (small, not recursive, no heap data).
+    | Plain
+    /// Two cases, one without fields and one whose single field is a pointer: that field
+    /// itself, or a static object for the other case. So `Some s` allocates nothing for
+    /// option<string>.
+    | Niche of noneTag: int * payload: Ty
+    /// Heap cells for the cases with fields, with a tag in the cell only when there are several
+    /// such cases. A case without fields is a static cell, told apart by its address.
+    | Boxed of tagged: bool
+
+let private cases (types: Dictionary<string, TypeInfo>) t =
+    match prune t with
+    | TCon(n, args) ->
+        match types.TryGetValue n with
+        | true, { def = UnionDef cs } -> Some(cs |> List.map (fun (c, fs) -> c, List.map (substGen args) fs))
+        | _ -> None
+    | _ -> None
+
+/// Two cases, one without fields and one with a single field (option's shape): the tag of the
+/// one without, and the field's type.
+let private nicheShaped cs =
+    match cs with
+    | [ (_, []); (_, [ f ]) ] -> Some(0, f)
+    | [ (_, [ f ]); (_, []) ] -> Some(1, f)
+    | _ -> None
+
+let unionRep (types: Dictionary<string, TypeInfo>) (t: Ty) : UnionRep =
+    // an object that can't be the static one standing for a niche's empty case: a union of
+    // option's shape may be that one, so it never is a niche's payload (option<option<string>>
+    // boxes its outer Some)
+    let pointer (f: Ty) =
+        match prune f with
+        | TCon(("string" | "array" | "Buffer" | "ref"), _)
+        | TFun _ -> true
+        | f ->
+            match cases types f with
+            | Some cs -> (nicheShaped cs).IsNone && not (plainUnion types f)
+            | None -> false
+
+    if plainUnion types t then
+        Plain
+    else
+        let cs = (cases types t).Value
+
+        match nicheShaped cs with
+        | Some(noneTag, f) when pointer f -> Niche(noneTag, f)
+        | _ -> Boxed((cs |> List.filter (fun (_, fs) -> not fs.IsEmpty)).Length > 1)
+
+/// The shape of the cell a boxed union's case is built in (with a tag?, field types), which
+/// reuse must match; None for a case that isn't a cell.
+let cellShape (types: Dictionary<string, TypeInfo>) (t: Ty) (tag: int) : (bool * Ty list) option =
+    match unionRep types t, cases types t with
+    | Boxed tagged, Some cs when not (snd cs[tag]).IsEmpty -> Some(tagged, snd cs[tag])
+    | _ -> None

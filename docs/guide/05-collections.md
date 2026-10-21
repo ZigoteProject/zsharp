@@ -28,6 +28,7 @@ let main () =
 **Performance:**
 - The list functions are tail-recursive, so long lists don't exhaust the stack.
 - When a list has only one owner, functions like `List.rev` reuse its cells instead of allocating new ones.
+- A pipeline like `xs |> List.map f |> List.filter p |> List.sum`, with lambdas that only compute, runs as one loop: the lists in between are never built.
 
 ## Arrays
 

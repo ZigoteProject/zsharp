@@ -249,17 +249,99 @@ type private Local =
       mut: bool
       depth: int } // closure nesting depth where it is bound
 
-type private MemberInfo =
+type MemberInfo =
     { gname: string // the function implementing it
       isStatic: bool
       isProperty: bool
       mpars: MemberParam list }
 
-type private Global =
+type Global =
     { mutable ty: Ty
       mutable kinds: Kind list
       arity: int
       mutable defining: bool }
+
+/// What checking a program's modules has built so far: everything the modules after them can
+/// see. Saved after a prefix of them (the library, say), it lets a later build start there;
+/// Snapshot writes and reads every field.
+type State =
+    { types: Dictionary<string, TypeInfo>
+      ctors: Dictionary<string, string * int> // constructor -> union, tag
+      records: ResizeArray<string> // record types in declaration order
+      recordDefaults: Dictionary<string, Expr option list> // record -> default per field
+      ctorFieldNames: Dictionary<string, string option list> // constructor -> field names
+      members: Dictionary<string, Dictionary<string, MemberInfo>> // type -> member name -> info
+      memberTypeNames: HashSet<string> // the last part of each type in members, a quick test for staticMember
+      traitMethods: Dictionary<string, TraitMethod> // "Show.show" -> method
+      traitAliases: Dictionary<string, string> // "show" -> "Show.show"; "M.describe" -> "M.Describe.describe"
+      traitNames: HashSet<string> // by full name: Show, or M.Describe declared in module M
+      impls: Dictionary<string * string, Dictionary<string, string>> // (trait, type) -> method -> function
+      implRequires: Dictionary<string * string, Set<string> list> // traits each type argument needs
+      derives: Dictionary<string, (int * string * Param list * SType option * Expr) list> // by full name, as traits
+      deriveModules: Dictionary<string, string option> // derive -> the module declaring it
+      // active pattern case -> (function, total?, number of parameters before the value)
+      activePatterns: Dictionary<string, string * bool * int>
+      apCtors: HashSet<string> // cases of total active patterns: payload optional
+      ownImpls: HashSet<string * string> // the explicit impls in these modules
+      autoDerived: HashSet<string * string> // automatic derives made so far
+      optOut: HashSet<string * string> // [<NoEquality>] / [<NoComparison>]
+      globals: Dictionary<string, Global>
+      externs: Dictionary<string, ExternSig>
+      funs: ResizeArray<FunDef>
+      counter: int ref // for unique names
+      measures: HashSet<string> // [<Measure>] types
+      clayouts: HashSet<string> // [<CLayout>] records
+      exports: ResizeArray<Export>
+      tests: ResizeArray<string>
+      consts: Dictionary<string, Expr> // constants (top-level and from import c): their uses are the expression
+      globalValues: Dictionary<string, Ty> // top-level values computed at startup
+      valueList: ResizeArray<string * string> // in initialization order: name, init function
+      literalRecords: Dictionary<Expr, string> // record literal -> the record it built (a constant's, rechecked at each use)
+      privates: Dictionary<string, string option> // qualified name -> owning module
+      moduleNames: HashSet<string> // files' and nested modules, and the namespaces they are in
+      mainNested: HashSet<string> // modules nested in the main file (it has no module name)
+      nestedModules: HashSet<string> // every `module X =` so far, to catch a second one
+      enclosingOf: Dictionary<string, string list> // each module's enclosing modules, innermost first
+      mutable typeVars: int } // type variables made (Core's count)
+
+let private freshState () =
+    { types = Dictionary()
+      ctors = Dictionary()
+      records = ResizeArray()
+      recordDefaults = Dictionary()
+      ctorFieldNames = Dictionary()
+      members = Dictionary()
+      memberTypeNames = HashSet()
+      traitMethods = Dictionary()
+      traitAliases = Dictionary()
+      traitNames = HashSet()
+      impls = Dictionary()
+      implRequires = Dictionary()
+      derives = Dictionary()
+      deriveModules = Dictionary()
+      activePatterns = Dictionary()
+      apCtors = HashSet()
+      ownImpls = HashSet()
+      autoDerived = HashSet()
+      optOut = HashSet()
+      globals = Dictionary()
+      externs = Dictionary()
+      funs = ResizeArray()
+      counter = ref 0
+      measures = HashSet()
+      clayouts = HashSet()
+      exports = ResizeArray()
+      tests = ResizeArray()
+      consts = Dictionary()
+      globalValues = Dictionary()
+      valueList = ResizeArray()
+      literalRecords = Dictionary(HashIdentity.Reference)
+      privates = Dictionary()
+      moduleNames = HashSet()
+      mainNested = HashSet()
+      nestedModules = HashSet()
+      enclosingOf = Dictionary()
+      typeVars = 0 }
 
 /// modules: (file, module name, declarations) in dependency order; the prelude and the main
 /// file have no module name (their declarations are global).
@@ -283,27 +365,44 @@ let private unknown (what: string) (x: string) =
     | None when x <> "" && isOpChar x[0] -> fail 0 (sprintf "unknown operator '%s'; define it with: let (%s) a b = …" x x)
     | None -> fail 0 (sprintf "unknown %s '%s'" what x)
 
-let check (requireMain: bool) (collect: bool) (modules: (string * string option * (int * Decl) list) list) : Program =
+/// A snapshot that can't be used (a later module overrides something it already did).
+exception StaleSnapshot of string
+
+/// start: the state after the modules before these (from a snapshot), or None to start from
+/// nothing. snapshot i st: called after the i-th of these modules, with the state so far.
+let checkFrom
+    (requireMain: bool)
+    (collect: bool)
+    (start: State option)
+    (snapshot: int -> State -> unit)
+    (modules: (string * string option * (int * Decl) list) list)
+    : Program =
     let decls = modules |> List.collect (fun (_, _, ds) -> ds)
-    let types = Dictionary<string, TypeInfo>()
-    let ctors = Dictionary<string, string * int>() // constructor -> union, tag
-    let records = ResizeArray<string>() // record types in declaration order
-    let recordDefaults = Dictionary<string, Expr option list>() // record -> default per field
-    let ctorFieldNames = Dictionary<string, string option list>() // constructor -> field names
-    let members = Dictionary<string, Dictionary<string, MemberInfo>>() // type -> member name -> info
-    let memberTypeNames = HashSet<string>() // the last part of each type in members, a quick test for staticMember
-    let traitMethods = Dictionary<string, TraitMethod>() // "Show.show" -> method
-    let traitAliases = Dictionary<string, string>() // "show" -> "Show.show"; "M.describe" -> "M.Describe.describe"
-    let traitNames = HashSet<string>() // by full name: Show, or M.Describe declared in module M
-    let impls = Dictionary<string * string, Dictionary<string, string>>() // (trait, type) -> method -> function
-    let implRequires = Dictionary<string * string, Set<string> list>() // traits each type argument needs
-    let derives = Dictionary<string, (int * string * Param list * SType option * Expr) list>() // by full name, as traits
-    let deriveModules = Dictionary<string, string option>() // derive -> the module declaring it
-    // active pattern case -> (function, total?, number of parameters before the value)
-    let activePatterns = Dictionary<string, string * bool * int>()
-    let apCtors = HashSet<string>() // cases of total active patterns: payload optional
-    let manualImpls = HashSet<string * string>()
-    let optOut = HashSet<string * string>() // [<NoEquality>] / [<NoComparison>]
+    let st = defaultArg start (freshState ())
+
+    match start with
+    | Some s -> Core.setTypeVars s.typeVars
+    | None -> ()
+
+    let types = st.types
+    let ctors = st.ctors
+    let records = st.records
+    let recordDefaults = st.recordDefaults
+    let ctorFieldNames = st.ctorFieldNames
+    let members = st.members
+    let memberTypeNames = st.memberTypeNames
+    let traitMethods = st.traitMethods
+    let traitAliases = st.traitAliases
+    let traitNames = st.traitNames
+    let impls = st.impls
+    let implRequires = st.implRequires
+    let derives = st.derives
+    let deriveModules = st.deriveModules
+    let activePatterns = st.activePatterns
+    let apCtors = st.apCtors
+    // explicit impls anywhere in the program win over automatic derives (filled below)
+    let manualImpls = HashSet<string * string>(st.ownImpls)
+    let optOut = st.optOut
     let mutable autoDerive: string -> string -> bool = fun _ _ -> false // set once derives can run
 
     userImpl <-
@@ -328,12 +427,12 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
 
                 true
             | _ -> false
-    let globals = Dictionary<string, Global>()
-    let externs = Dictionary<string, ExternSig>()
-    let funs = ResizeArray<FunDef>()
+    let globals = st.globals
+    let externs = st.externs
+    let funs = st.funs
     let tyvars = Dictionary<string, Ty>() // 'a in the current function's annotations
-    let counter = ref 0
-    let measures = HashSet<string>() // [<Measure>] types
+    let counter = st.counter
+    let measures = st.measures
     let diagnostics = ResizeArray<Diagnostic>()
     let hovers = ResizeArray<Hover>()
     let currentFile = ref ""
@@ -383,31 +482,34 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                     | _ -> ())
                 orig
                 pars
-    let clayouts = HashSet<string>() // [<CLayout>] records
-    let exports = ResizeArray<Export>()
-    let tests = ResizeArray<string>()
-    let consts = Dictionary<string, Expr>() // constants (top-level and from import c): their uses are the expression
+    let clayouts = st.clayouts
+    let exports = st.exports
+    let tests = st.tests
+    let consts = st.consts
     let inlining = HashSet<string>() // constants being expanded (a cycle is an error)
-    let globalValues = Dictionary<string, Ty>() // top-level values computed at startup
-    let valueList = ResizeArray<string * string>() // in initialization order: name, init function
+    let globalValues = st.globalValues
+    let valueList = st.valueList
     let recordHints = Dictionary<Expr, Ty>(HashIdentity.Reference) // record literal -> expected type
-    let literalRecords = Dictionary<Expr, string>(HashIdentity.Reference) // record literal -> the record it built
+    let literalRecords = st.literalRecords
     let lambdaHints = Dictionary<Expr, Ty>(HashIdentity.Reference) // lambda -> the function type expected of it
     let currentModule = ref (None: string option)
     let opens = ref ([]: string list) // most recent first
-    let privates = Dictionary<string, string option>() // qualified name -> owning module
-    // files' and nested modules, and the namespaces they are in (Collections from Collections.List)
-    let moduleNames =
-        HashSet<string>(
-            modules
-            |> List.choose (fun (_, m, _) -> m)
-            |> List.collect (fun m ->
-                let parts = m.Split '.'
-                [ for k in 1 .. parts.Length -> String.concat "." parts[.. k - 1] ])
-        )
-    let mainNested = HashSet<string>() // modules nested in the main file (it has no module name)
+    let privates = st.privates
+    // files' and nested modules, and the namespaces they are in (Collections from Collections.List):
+    // all of them, so a name can be told from a module's; the state keeps those checked so far
+    let withEnclosing (m: string) =
+        let parts = m.Split '.'
+        [ for k in 1 .. parts.Length -> String.concat "." parts[.. k - 1] ]
+
+    let moduleNames = HashSet<string>(st.moduleNames)
+
+    for _, m, _ in modules do
+        for n in m |> Option.map withEnclosing |> Option.defaultValue [] do
+            moduleNames.Add n |> ignore
+
+    let mainNested = st.mainNested
     let wrapping = ref false // checking a [<Wrapping>] function: its integer + - * wrap
-    let nestedModules = HashSet<string>() // every `module X =` so far, to catch a second one
+    let nestedModules = st.nestedModules
 
     /// The name a declaration gets in the current module.
     let qualify (name: string) =
@@ -416,7 +518,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
         | None -> name
 
     // each module's enclosing modules, innermost first (A.B.C: A.B.C, A.B, A)
-    let enclosingOf = Dictionary<string, string list>()
+    let enclosingOf = st.enclosingOf
 
     /// The current module and the modules it is nested in, innermost first.
     let enclosing () =
@@ -467,14 +569,15 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                 fail 0 (sprintf "'%s' is private to module %s" x (defaultArg owner "?"))
             | _ -> q)
 
-    types["list"] <-
-        { npars = 1
-          def = UnionDef [ "[]", []; "::", [ TGen 0; TCon("list", [ TGen 0 ]) ] ] }
+    if start.IsNone then
+        types["list"] <-
+            { npars = 1
+              def = UnionDef [ "[]", []; "::", [ TGen 0; TCon("list", [ TGen 0 ]) ] ] }
 
-    ctors["[]"] <- ("list", 0)
-    ctors["::"] <- ("list", 1)
-    ctorFieldNames["[]"] <- []
-    ctorFieldNames["::"] <- [ Some "head"; Some "tail" ]
+        ctors["[]"] <- ("list", 0)
+        ctors["::"] <- ("list", 1)
+        ctorFieldNames["[]"] <- []
+        ctorFieldNames["::"] <- [ Some "head"; Some "tail" ]
 
     let uniq (x: string) =
         counter.Value <- counter.Value + 1
@@ -2437,6 +2540,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                     | _ -> false)
 
             if ok then
+                st.autoDerived.Add((tr, n)) |> ignore
                 deriveImpl (sprintf "automatic %s for %s" tr n) tr n
 
             ok
@@ -2446,6 +2550,12 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
         match d with
         | Impl(tr, STName(n, _), _) -> manualImpls.Add((tr, n)) |> ignore
         | _ -> ()
+
+    // an automatic derive made before (in the modules a snapshot holds) that a later impl
+    // should have prevented: the snapshot can't be used
+    match st.autoDerived |> Seq.tryFind manualImpls.Contains with
+    | Some(tr, n) when start.IsSome -> raise (StaleSnapshot(sprintf "%s for %s" tr n))
+    | _ -> ()
 
     /// A constant expression: literals, operators, conditionals, tuples, records, constructors
     /// and number conversions over constants. Its uses are the expression itself. Arrays, lists
@@ -2755,6 +2865,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                     fail 0 (sprintf "module '%s' is already defined" full)
 
                 moduleNames.Add full |> ignore
+                st.moduleNames.Add full |> ignore
 
                 if currentModule.Value.IsNone then
                     mainNested.Add full |> ignore
@@ -2921,13 +3032,25 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
 
     declareRecovering.Value <- declareOne
 
-    for file, modName, decls in modules do
+    for i, (file, modName, decls) in List.indexed modules do
         currentModule.Value <- modName
         opens.Value <- []
         currentFile.Value <- file
 
+        for n in modName |> Option.map withEnclosing |> Option.defaultValue [] do
+            st.moduleNames.Add n |> ignore
+
         for ln, d in decls do
             declareOne ln d
+
+        for _, d in decls do
+            match d with
+            | Impl(tr, STName(n, _), _) -> st.ownImpls.Add((tr, n)) |> ignore
+            | _ -> ()
+
+        if diagnostics.Count = 0 then
+            st.typeVars <- Core.typeVars ()
+            snapshot i st
 
     currentModule.Value <- None
     let mainFile, _, _ = List.last modules
@@ -2960,3 +3083,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
             d[t] <- List.ofSeq table.Keys
 
         d }
+
+/// Checks a whole program.
+let check (requireMain: bool) (collect: bool) (modules: (string * string option * (int * Decl) list) list) : Program =
+    checkFrom requireMain collect None (fun _ _ -> ()) modules

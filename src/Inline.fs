@@ -9,11 +9,6 @@ open Core
 open Mono
 
 let private mk k ty = { k = k; ty = ty }
-let private counter = ref 0
-
-let private fresh (x: string) =
-    counter.Value <- counter.Value + 1
-    sprintf "%s.i%d" x counter.Value
 
 let rec private size (e: CExpr) = 1 + (children e.k |> List.sumBy size)
 
@@ -27,10 +22,10 @@ let rec private renamePat (rn: string -> string) (p: CPat) =
     | CPOr(a, b) -> CPOr(renamePat rn a, renamePat rn b)
     | p -> p
 
-/// A copy of e for another place: what it binds gets fresh names (names stay unique per
-/// program), the parameters in m their arguments' names, and line marks go (they would
-/// point into the callee's file).
-let private copy (m: Map<string, string>) (e: CExpr) : CExpr =
+/// A copy of e for another place: what it binds gets fresh names (names stay unique in the
+/// function it goes into), the parameters in m their arguments' names, and line marks go
+/// (they would point into the callee's file).
+let private copy (fresh: string -> string) (m: Map<string, string>) (e: CExpr) : CExpr =
     let m = binders e |> List.distinct |> List.fold (fun (acc: Map<string, string>) x -> acc.Add(x, fresh x)) m
     let rn x = defaultArg (m.TryFind x) x
     let pars ps = ps |> List.map (fun (x, t) -> rn x, t)
@@ -56,6 +51,44 @@ let private copy (m: Map<string, string>) (e: CExpr) : CExpr =
             { e with k = k }
 
     go e
+
+/// Uncurrying: a function whose body is a lambda takes the lambda's parameters too, so
+/// `let add x = fun y -> x + y` has two parameters and `add 1 2` is one call (the closure it
+/// returned only held x: nothing runs at another time). A lambda returning a lambda merges
+/// the same way. Functions called from outside (main, tests, C exports) keep their signatures.
+let uncurry (fixedNames: Set<string>) (funs: MFun list) : MFun list =
+    let rec lambda (e: CExpr) =
+        match e.k with
+        | CLam(ps, b) -> Some(ps, b)
+        | CLine(_, inner) -> lambda inner
+        | _ -> None
+
+    let rec merge (ps: (string * Ty) list, body: CExpr) =
+        match lambda body with
+        | Some(more, b) -> merge (ps @ more, b)
+        | None -> ps, body
+
+    let rec go (e: CExpr) : CExpr =
+        let k =
+            match mapChildren go e.k with
+            | CLam(ps, b) -> CLam(merge (ps, b))
+            | CLetFun(n, r, ps, b, rest) ->
+                let ps, b = merge (ps, b)
+                CLetFun(n, r, ps, b, rest)
+            | CLetRec(fs, rest) -> CLetRec(fs |> List.map (fun (n, ps, b) -> (let ps, b = merge (ps, b) in n, ps, b)), rest)
+            | k -> k
+
+        { e with k = k }
+
+    funs
+    |> List.map (fun f ->
+        let body = go f.body
+
+        if f.pars.IsEmpty || fixedNames.Contains f.name then
+            { f with body = body }
+        else
+            let ps, b = merge (f.pars, body)
+            { f with pars = ps; ret = b.ty; body = b })
 
 /// Inlines calls to small functions that don't call themselves. Callees are done first, so a
 /// copy carries what was inlined into it.
@@ -85,6 +118,22 @@ let run (funs: MFun list) : MFun list =
     let done' = System.Collections.Generic.Dictionary<string, CExpr>()
     let visiting = System.Collections.Generic.HashSet<string>()
 
+    // fresh names numbered per function, so a function's code doesn't depend on others' (a
+    // build reuses the compiled code of modules that didn't change)
+    let counters = System.Collections.Generic.Dictionary<string, int ref>()
+
+    let freshIn (f: string) (x: string) =
+        let c =
+            match counters.TryGetValue f with
+            | true, c -> c
+            | _ ->
+                let c = ref 0
+                counters[f] <- c
+                c
+
+        c.Value <- c.Value + 1
+        sprintf "%s.i%d" x c.Value
+
     // a function's body with its calls to small functions inlined
     let rec bodyOf (name: string) : CExpr =
         match done'.TryGetValue name with
@@ -100,8 +149,9 @@ let run (funs: MFun list) : MFun list =
 
         match e.k with
         | CApp({ k = CGlobal(g, _) }, args) when small.Contains g && g <> caller && args.Length = byName[g].pars.Length ->
+            let fresh = freshIn caller
             let ps = byName[g].pars |> List.map (fun (p, t) -> p, fresh p, t)
-            let body = copy (ps |> List.map (fun (p, p', _) -> p, p') |> Map.ofList) (bodyOf g)
+            let body = copy fresh (ps |> List.map (fun (p, p', _) -> p, p') |> Map.ofList) (bodyOf g)
             // the arguments in order, each bound to its parameter
             List.foldBack2 (fun (_, p', _) (a: CExpr) (acc: CExpr) -> mk (CLet(p', a, acc)) acc.ty) ps args body
         | _ -> e

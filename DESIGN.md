@@ -91,7 +91,7 @@ let sumTo n =                            // imperative code is fine; mutation st
   - Curried, with closures (`fun x -> …`), `|>`, `>>` and partial application.
   - **Blocks inside brackets:** inside a bracket, a line ending in `->` (or `then`, `else`, `do`) and deeper lines after it open a block, as at the top level. So `xs |> List.map (fun x ->` can be followed by a multi-line body, and `Parser (fun cs ->` by a `match`. The block ends at the bracket's closer or at a line left of it.
   - **Custom operators:** `let (>>=) r f = …` defines one, and `(op)` is the function (`(+)` too). Precedence comes from the first character after any dots, as in F#: `|>`, `>>`, the comparisons and operators starting with `< > = | & $ !` share one level above `&&`; `@ ^` group like `::`, `+ -` like `+`, `* / %` like `*`, and `**` is right-associative. Operators starting with `!` (but not `!=`) or `~` are prefix: `!r` binds tighter than application.
-  - Known calls pass all arguments at once, so currying costs nothing at run time.
+  - Known calls pass all arguments at once, and so does a closure applied to as many arguments as it takes, so currying costs nothing at run time.
   - Tail calls: a call to itself becomes a loop, and other tail calls with the same signature use LLVM `musttail`. Recursion in tail position runs in constant stack.
 - **Loops:** `for i in a .. b do`, `for i in a .. step .. b do`, `for pattern in xs do` (lists and arrays), `while c do`.
 - **Pattern matching:**
@@ -304,9 +304,12 @@ error at the use site.
 - **Plain values:** these live in registers or on the stack and are copied.
   - **Which types:** numbers, `bool`, tuples, records, and **small unions**: unions that aren't recursive and have at most 4 fields over all their cases, none of them heap data.
   - **Small unions:** these are a tag plus fields, e.g. `option<int>`, `result<int, f64>`, enums, and state machines with number fields. They never allocate.
+  - **Enums:** a union whose cases have no fields is one byte, so an array of them is a byte per element. Other small unions have a 32-bit tag, which costs no space next to their fields and no extension on a 32-bit chip.
 - **Heap objects:** strings, arrays, `Buffer`, `ref`, closures, lists, and the other unions.
-  - **Header:** each object starts with a word-sized reference count. Strings and arrays add a word-sized length, boxed unions a 32-bit case tag, and closures their code and drop pointers. So a string's or a union cell's header is 8 bytes on a Cortex-M and 16 on 64-bit targets.
-  - **Static objects:** string literals and constant constructors are static objects, with count 0, never freed.
+  - **Header:** each object starts with a word-sized reference count. Strings and arrays add a word-sized length, closures their code and a pointer to what describes them (§9.1), and a union cell its 32-bit case tag, but only when the union has more than one case with fields. A list cell is the count, the head and the tail.
+  - **Cases without fields** (`[]`, `Leaf`, `None`) are static cells, told apart from the others by their address, so a match tests a pointer and loads nothing.
+  - **The `option` niche:** a union of `option`'s shape (one case without fields, one with a single field) whose field is a pointer, such as `option<string>` or `option<list<int>>`, is that pointer, or one static object for `None`. `Some s` allocates nothing.
+  - **Static objects:** string literals, constant constructors and the cases without fields are static objects, with count 0, never freed.
 - **Arrays are values with copy-on-write**, as in Swift and Lean. A write through one name is never visible through another.
   - `a.[i] <- x` needs `let mutable a`. It writes in place when `a` holds the only reference, and copies the array first otherwise.
   - `Array.set a i x` returns the changed array.
@@ -483,21 +486,27 @@ There are three levels, from free to manual.
 ```
  .zs ─► Lexer (offside rule) ─► Parser ─► AST ─► import c (clang)        Syntax, CImport
      ─► Type check: HM + kinds + traits + units, exhaustiveness ─► Core   Typer, Match, Derive
-     ─► Monomorphize (trait dispatch, units erased) ─► list fusion        Mono
-     ─► Inlining of small functions                                       Inline
+        (the library's and other modules' checked state from the cache)   Snapshot, Driver
+     ─► Monomorphize (trait dispatch, units erased) ─► fusion             Mono
+     ─► Uncurrying, inlining of small functions                           Inline
+     ─► Known constructors, case of case, lambdas applied in place        Simplify
      ─► Decision trees for matches, with join points                      Decide
      ─► Closure conversion, lambda lifting                                Lift
      ─► Perceus: ownership, borrowing, moves, reuse, drop specialization  Rc
-     ─► LLVM IR (textual) ─► clang -O2/-Os ─► object ─► link              Codegen, Driver
+     ─► LLVM IR (textual), a module per source file                       Codegen
+     ─► clang -O2/-Os per module, in parallel, cached ─► link             Driver
 ```
 
 - **Implementation language:** F# (.NET 10). Self-hosting is optional and late (phase 11).
-- **Reading the optimizer:** `ZS_DUMP_CORE=name` prints the Core of the functions whose name contains `name`, after reference counting. `ZS_NO_DECIDE=1` compiles matches clause by clause, for comparison.
-- **Backend:** textual LLVM IR passed to clang, so reading the `.ll` file is the debugger. A switch to the LLVM C API comes when compile time demands it (phase 9).
+- **Reading the optimizer:** `ZS_DUMP_CORE=name` prints the Core of the functions whose name contains `name`, after reference counting. `ZS_NO_DECIDE=1` compiles matches clause by clause, for comparison. `ZS_NO_CACHE=1` checks everything again instead of using the cache.
+- **Backend:** textual LLVM IR passed to clang, so reading the `.ll` file is the debugger (`--emit-llvm` writes the whole program as one module). A switch to the LLVM C API comes when compile time demands it (phase 9).
+  - **A module per source file:** a host build of a program of several files makes one LLVM module per file, with a copy of each library function and generic instance it uses, so LLVM inlines within a module as it would in one big one; what needs one address in the program (top-level values, the static cells of cases without fields) is defined in each and merged by the linker. A single-file program, and `--emit-llvm`, `-g`, `--lib`, `--sanitize`, cross and microcontroller builds, are one module.
+  - **Compiled once:** the modules and the runtime compile in parallel, and each object is kept in `~/.cache/zs/objects` under a hash of its IR. Every pass names what it makes per function, so a file whose functions didn't change gives byte-identical IR, and a rebuild compiles only the modules whose code changed.
+  - **Every core:** the passes that work per function (simplification, decision trees, lifting, reference counting) and code generation per module run in parallel.
 - **Runtimes:** `runtime/rt.c` on an OS, and `runtime/rt-embedded.c` on bare metal (§10). Each is one C file, linked statically.
 - **Generics across libraries:** libraries are **source**, as in Go and Zig.
   - **How they're used:** a dependency's modules are type-checked with the program and monomorphized at the program's types.
-  - **Speed:** comes from caching each module's checked Core, keyed by its content hash **(planned, phase 5)**.
+  - **Speed:** a build caches the type checker's state after the library, and after the main file's other modules, in the user's cache directory (`~/.cache/zs/checked`), keyed by a hash of the compiler and of those modules' sources. A build whose library and other modules haven't changed starts from there and checks only the main file; one whose main file's modules changed starts from the library. Editors and `zs doc` check everything, since they need every hover.
   - **No IR format:** there's no binary format to version. Closed-source code ships as an `[<Export>]` C library.
 - **The library** (`lib/`) is Z#, in three layers:
   - **Prelude** (`lib/prelude.zs`): the global names: the operator traits and their derives, `option`, `result`, `id`, `fst`, `min`, ….
@@ -515,22 +524,24 @@ and gives LLVM the facts it can't prove.
 
 | Layer | Optimization | Status |
 |---|---|---|
-| Representation | Small non-recursive unions as plain values | done |
-| Mono | List fusion: `List.init` chains into `sum`/`sumBy`/`fold`/`length` with pure lambdas become one loop | done (more sources and consumers planned, phase 5) |
+| Representation | Small non-recursive unions as plain values; enums as bytes | done |
+| Representation | Cases without fields are static cells, matched by address; a union cell has a tag only when several cases have fields; `option<string>` and other unions of `option`'s shape over a pointer are the pointer (no cell for `Some`) | done |
+| Mono | Fusion: a pipeline of `map`s and `filter`s from `List.init`, a list, `Array.init` or an array into `sum`/`sumBy`/`fold`/`length`/`iter` is one loop; one of several stages that builds a list or an array builds only that. Pure lambdas only (decision 36) | done |
+| Core | Uncurrying: a function whose body is a lambda takes its parameters (`let f x = fun y -> …` has two); a closure applied to several arguments calls code taking them all when it takes that many, through the closure's static description (drop function, arity, full entry), instead of building a closure per argument | done |
 | Perceus | Ownership, drop specialization, reuse, borrowing, moves out of mutables, borrowed reads and fields, re-matching | done |
 | Codegen | Copy-on-write checks hoisted out of loops; loop versioning that proves bounds once for innermost call-free loops | done |
 | Codegen | Overflow checks via `llvm.*.with.overflow`, which LLVM drops when ranges prove them safe | done |
 | Codegen | `print` of an interpolation prints the pieces, without building the string | done |
 | LLVM facts | `!range` on lengths, `inbounds nuw` element access, `noalias` allocator with `allockind`, `inlinehint` on higher-order functions, `optsize` at `-Os` | done |
 | Core | Inlining of small functions. Decision trees for matches: no value is tested twice, and a part reached on several paths is a join point (a block with phis) that reuse tokens pass through | done |
-| Core | Case-of-known-constructor, case-of-case | planned (phase 5) |
-| Representation | `i8` enums, null niche for `option<ref>`, tagged nullary constructors | planned (phase 5) |
+| Core | Known constructors: a match on a value whose case is known (built there, bound by `let`, or taken by an enclosing case) takes its case at compile time, testing inside its fields directly. Case of case: a match on a match or an `if` moves into its branches, with join points for bodies several reach. A lambda bound by `let` and only called is applied in place. So an inlined `Option.map` or `Result.bind` and the match on its result build no `option` or `result` | done |
 | Representation | A one-word object header: a 32-bit count, the tag and the number of fields to scan, as in Koka | planned (phase 9) |
 | Linking | ThinLTO with the runtime, PGO | planned (phase 9). On microcontrollers, linking the runtime as bitcode was measured and made code bigger and slower |
 
 **Performance contract:**
 - **Microcontrollers:** the suite in `bench/mcu` compares each program with its C version (same clang, same chip, under QEMU) [(results)](docs/reports/microcontrollers.md).
-- **Host:** the suite in `bench/host` (fib, binary-trees, nbody, spectral-norm, the red-black tree) compares each program with C (also built with `-ftrapv`, whose overflow traps match Z#'s), Rust, Swift, Zig and OCaml [(results)](docs/reports/host.md). A regression of more than 5% in instructions fails the build. An F# column is planned (phase 5).
+- **Host:** the suite in `bench/host` (fib, binary-trees, nbody, spectral-norm, the red-black tree) compares each program with C (also built with `-ftrapv`, whose overflow traps match Z#'s), Rust, Swift, Zig, OCaml and F# on .NET [(results)](docs/reports/host.md). A regression of more than 5% in instructions fails the build.
+- **Compile time:** `bench/compile/run.sh` builds a generated program of modules from nothing, then after a one-function change in the main file and in a module.
 
 ## 10. Targets
 
@@ -642,7 +653,7 @@ checker, so tools can't drift from the compiler.
 | 5 | Panics | message (+ backtrace), exit 134, no unwinding, no core dump, can't be caught; a C host can set a hook that runs first (`zs_set_panic_hook`) | decided |
 | 6 | Unreachable match case | an error (F# warns) | decided |
 | 7 | Array semantics | copy-on-write values; `Buffer<'a>` for shared mutation | decided |
-| 8 | Union representation | plain values when non-recursive with ≤ 4 non-heap fields; boxed otherwise | decided |
+| 8 | Union representation | plain values when non-recursive with ≤ 4 non-heap fields (enums a byte); boxed otherwise, with a tag only when several cases have fields, cases without fields as static cells, and `option`'s shape over a pointer as the pointer itself | decided |
 | 9 | Members / dot methods | yes; type-directed, no inheritance, no overloading | decided |
 | 10 | Equality, ordering, hashing, printing | automatic and structural (prelude derives), opt-out attributes | decided |
 | 11 | Units of measure | yes, erased, Kennedy unification | decided |
@@ -670,7 +681,7 @@ checker, so tools can't drift from the compiler.
 | 33 | Formatter | `zs fmt`, one style, no configuration; lossless syntax tree for reflow (planned) | decided |
 | 34 | Surface syntax | the freeze is lifted. Missing F# syntax comes first (phase L); new non-F# syntax needs a design discussion | decided |
 | 35 | Kept in v1 though not yet needed | `ptr<'a>` + `unsafe`, `Arena`, `dyn Trait`, `weak` references, built in phase V before CEs and `Task` | decided |
-| 36 | Optimizations that change evaluation order | only for pure code (list fusion requires pure lambdas; printing pieces evaluates them all first) | decided |
+| 36 | Optimizations that change evaluation order | only for pure code (fusion requires pure lambdas, and stages that can't panic when the consumer's function has effects; printing pieces evaluates them all first) | decided |
 | 37 | Library organization | prelude (global names) / Core (no OS: every target) / Std (needs an OS); .NET-style namespaces open everywhere at the lowest precedence; .NET module names, F# function names | decided |
 | 38 | Operator precedence | F#'s: custom operators by their first character; `\|>` and `>>` at the comparison level, above `&&` and `\|\|` (they used to be the loosest) | decided |
 | 39 | "Simple" | a feature replaces code people would write by hand and needs no runtime; no page budget | decided |

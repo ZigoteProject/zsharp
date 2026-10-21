@@ -13,22 +13,25 @@ open Core
 open Mono
 
 let private mk k ty = { k = k; ty = ty }
-let private counter = ref 0
+// per thread, numbered per function (each thread does one at a time): a function's code doesn't
+// depend on the others'
+let private counter = new System.Threading.ThreadLocal<int ref>(fun () -> ref 0)
 
 let private fresh (x: string) =
-    counter.Value <- counter.Value + 1
-    sprintf "%s.d%d" x counter.Value
+    let c = counter.Value
+    c.Value <- c.Value + 1
+    sprintf "%s.d%d" x c.Value
 
 /// Node counts, remembered per node (subtrees are measured again as the tree grows).
-let private sizes = Dictionary<CExpr, int>(HashIdentity.Reference)
+let private sizes = new System.Threading.ThreadLocal<Dictionary<CExpr, int>>(fun () -> Dictionary(HashIdentity.Reference))
 
 let rec private size (e: CExpr) =
-    match sizes.TryGetValue e with
+    match sizes.Value.TryGetValue e with
     | true, n -> n
     | _ ->
         let mutable n = 1
         mapChildren (fun c -> n <- n + size c; c) e.k |> ignore
-        sizes[e] <- n
+        sizes.Value[e] <- n
         n
 
 let rec private renamePat (rn: string -> string) (p: CPat) =
@@ -519,6 +522,14 @@ let run (types: Dictionary<string, TypeInfo>) (funs: MFun list) : MFun list =
             if size tree <= 8 * size e + 64 then tree else e
         | _ -> e
 
-    let lowered = funs |> List.map (fun f -> { f with body = lower f.body })
-    sizes.Clear()
-    lowered
+    // each function on its own, on every core; fresh names numbered per function
+    let one (f: MFun) =
+        counter.Value.Value <- 0
+        let body = lower f.body
+        sizes.Value.Clear()
+        { f with body = body }
+
+    try
+        funs |> Array.ofList |> Array.Parallel.map one |> List.ofArray
+    with :? System.AggregateException as e ->
+        raise e.InnerExceptions[0]

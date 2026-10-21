@@ -15,9 +15,15 @@ open Mono
 //   string   ptr -> { W rc, W len, [len+1 x i8] }
 //   array<T> ptr -> { W rc, W len, [len x T] }
 //   ref<T>   ptr -> { W rc, T }
-//   union    ptr -> { W rc, i32 tag, field... }; nullary constructors point to a static cell
-//   closure  ptr -> { W rc, ptr code, ptr drop, env... }; code: (ptr self, arg) -> result
-//   tuples and records: LLVM struct values; so are small non-recursive unions (tag + fields)
+//   union    ptr -> { W rc, i32 tag, field... } for a case with fields (no tag when it's the only
+//            such case); a case without fields is a static cell, told apart by its address. Two
+//            cases, one without fields and one with a single pointer field (option<string>): the
+//            field itself, or @zs.none
+//   closure  ptr -> { W rc, ptr code, ptr info, env... }; code: (ptr self, arg) -> result;
+//            info -> { ptr drop, i32 arity, ptr full }: the parameters it still takes, and code
+//            taking all of them at once, full: (ptr self, args...) -> result
+//   tuples and records: LLVM struct values; so are small non-recursive unions without heap
+//   data (an i32 tag, or an i8 one for an enum, then every case's fields)
 
 type private Binding =
     | Ssa of string
@@ -136,6 +142,10 @@ done:
   ret void
 }
 
+; an option's empty case when the other one holds a pointer (option<string>): a static object
+; (count 0, never freed), compared by its address
+@zs.none = private constant { i_W } { i_W 0 }
+
 ; true when this was the last reference (the caller frees the object)
 define private i1 @zs.release(ptr %p) alwaysinline {
 entry:
@@ -171,8 +181,9 @@ entry:
   %last = call i1 @zs.release(ptr %p)
   br i1 %last, label %free, label %done
 free:
-  %fp = getelementptr { i_W, ptr, ptr }, ptr %p, i32 0, i32 2
-  %f = load ptr, ptr %fp
+  %ip = getelementptr { i_W, ptr, ptr }, ptr %p, i32 0, i32 2
+  %info = load ptr, ptr %ip
+  %f = load ptr, ptr %info
   call void %f(ptr %p)
   ret void
 done:
@@ -263,8 +274,18 @@ let private resolveWord (ir: string) =
         head.Replace("i_W", w).Replace("HDR2", h2).Replace("HDR1", h1) + tail)
     |> String.concat "\n"
 
+/// One of the LLVM modules a program is split into, compiled on its own (in parallel, and
+/// taken from the cache when unchanged): the functions it defines, those of them the other
+/// modules call, and whether it has the entry points (main, the tests, C exports).
+type Part =
+    { defines: HashSet<string>
+      called: HashSet<string>
+      entry: bool }
+
 /// Compiles closure-converted, RC-annotated functions to textual LLVM IR, plus a C header for
-/// the exported functions.
+/// the exported functions. With a part, only that part's functions are defined; the others it
+/// calls are declared, and what must have one address in the program (top-level values, the
+/// static cells of cases without fields) is defined in every part for the linker to merge.
 let compile
     (types: Dictionary<string, TypeInfo>)
     (externs: Dictionary<string, ExternSig>)
@@ -272,16 +293,30 @@ let compile
     (tests: string list)
     (values: (string * string) list)
     (clayouts: HashSet<string>)
+    (part: Part option)
     (funs: MFun list)
     : string * string =
-    let top = StringBuilder(prelude)
+    let shared = if part.IsSome then "linkonce_odr hidden" else "private" // one address in the whole program
+    let top = StringBuilder(prelude.Replace("@zs.none = private constant", sprintf "@zs.none = %s constant" shared))
     let helpers = StringBuilder()
     let funcs = StringBuilder()
     let generated = HashSet<string>()
     let strings = Dictionary<string, string>()
     let fnTable = funs |> List.map (fun f -> f.name, f) |> dict
     let heap t = needsRc types t
-    let sym (f: string) = "@\"zs." + f + "\""
+    let defined (f: string) = part |> Option.forall (fun p -> p.defines.Contains f)
+    let entry = part |> Option.forall (fun p -> p.entry)
+    let referenced = HashSet<string>() // functions this module calls or makes closures of
+
+    let sym (f: string) =
+        referenced.Add f |> ignore
+        "@\"zs." + f + "\""
+
+    // a plain union's tag: a byte for an enum (no case has fields, so the tag is all there is,
+    // and an array of them is a byte per element), else an i32: next to fields a byte saves no
+    // space, and on a 32-bit chip it costs an extension at each test
+    let tagTy (cases: (string * Ty list) list) =
+        if cases.Length <= 256 && cases |> List.forall (fun (_, fs) -> fs.IsEmpty) then "i8" else "i32"
 
     let rec llty (t: Ty) =
         match prune t with
@@ -301,7 +336,7 @@ let compile
             | RecordDef fs -> structTy (fs |> List.map (fun (_, ft) -> substGen args ft))
             | UnionDef cs when plainUnion types t ->
                 // a plain union: the tag, then every case's fields in order (cases don't overlap)
-                "{ i32" + (cs |> List.collect snd |> List.map (fun ft -> ", " + llty (substGen args ft)) |> String.concat "") + " }"
+                "{ " + tagTy cs + (cs |> List.collect snd |> List.map (fun ft -> ", " + llty (substGen args ft)) |> String.concat "") + " }"
             | UnionDef _ -> "ptr"
         | TTuple ts -> structTy ts
         | t -> failwithf "llty: unresolved type %s" (show t)
@@ -330,8 +365,51 @@ let compile
         let _, cs = union t
         1 + (cs |> List.take tag |> List.sumBy (fun (_, fs) -> fs.Length)) + j
 
-    let cellTy (fields: Ty list) =
-        "{ i_W, i32" + (fields |> List.map (fun f -> ", " + llty f) |> String.concat "") + " }"
+    let reps = Dictionary<string, UnionRep>()
+
+    let repOf (t: Ty) =
+        let key = showFull t
+
+        match reps.TryGetValue key with
+        | true, r -> r
+        | _ ->
+            let r = unionRep types t
+            reps[key] <- r
+            r
+
+    /// A union type's representation; None for other types.
+    let repOf' (t: Ty) =
+        match prune t with
+        | TCon(n, _) when (match types.TryGetValue n with
+                           | true, { def = UnionDef _ } -> true
+                           | _ -> false) -> Some(repOf t)
+        | _ -> None
+
+    let tagged (t: Ty) = repOf' t = Some(Boxed true)
+
+    /// The cell of a boxed union's case: the count, the tag when the union has several cases
+    /// with fields, then the fields.
+    let cellTy (t: Ty) (tag: int) =
+        let fields = snd (List.item tag (snd (union t)))
+        "{ i_W" + (if tagged t then ", i32" else "") + (fields |> List.map (fun f -> ", " + llty f) |> String.concat "") + " }"
+
+    /// Field j's index in a case's cell.
+    let cellField (t: Ty) (j: int) = j + (if tagged t then 2 else 1)
+
+    /// A case without fields of a boxed union: a static cell (count 0, so never freed) with the
+    /// tag when the union's cells have one. A match tells it apart by its address.
+    let nullary (t: Ty) (tag: int) =
+        let u, _ = union t
+        let g = sprintf "@\"ctor.%s.%d\"" u tag
+
+        if generated.Add g then
+            // not unnamed_addr: the address is what's compared
+            if tagged t then
+                top.AppendLine(sprintf "%s = %s constant { i_W, i32 } { i_W 0, i32 %d }" g shared tag) |> ignore
+            else
+                top.AppendLine(sprintf "%s = %s constant { i_W } { i_W 0 }" g shared) |> ignore
+
+        g
 
     let cloTy (env: Ty list) =
         "{ i_W, ptr, ptr" + (env |> List.map (fun f -> ", " + llty f) |> String.concat "") + " }"
@@ -648,76 +726,94 @@ let compile
 
             if generated.Add name then
                 let em = Emitter()
-                let last = em.Instr "call i1 @zs.release(ptr %p)"
-                em.Emit(sprintf "br i1 %s, label %%free, label %%done" last)
-                em.Label "free"
 
-                match pt with
-                | TCon("array", [ el ]) ->
-                    if heap el then
-                        let lenp = em.Instr "getelementptr { i_W, i_W }, ptr %p, i32 0, i32 1"
-                        let len = em.Instr(sprintf "load i_W, ptr %s" lenp)
-                        em.Emit "br label %loop"
-                        em.Label "loop"
-                        let i = em.Tmp()
-                        em.Emit(sprintf "%s = phi i_W [ 0, %%free ], [ %%next, %%body ]" i)
-                        let c = em.Instr(sprintf "icmp slt i_W %s, %s" i len)
-                        em.Emit(sprintf "br i1 %s, label %%body, label %%end" c)
-                        em.Label "body"
-                        let ep = em.Instr(sprintf "getelementptr { i_W, i_W, [0 x %s] }, ptr %%p, i32 0, i32 2, i_W %s" (llty el) i)
-                        dropValue em el (em.Instr(sprintf "load %s, ptr %s" (llty el) ep))
-                        em.Emit(sprintf "%%next = add i_W %s, 1" i)
-                        em.Emit "br label %loop"
-                        em.Label "end"
-
-                    em.Emit "call void @zs_free(ptr %p)"
-                    em.Emit "ret void"
-                | TCon("ref", [ v ]) ->
-                    let vp = em.Instr(sprintf "getelementptr { i_W, %s }, ptr %%p, i32 0, i32 1" (llty v))
-                    let x = em.Instr(sprintf "load %s, ptr %s" (llty v) vp)
-                    em.Emit "call void @zs_free(ptr %p)"
-                    dropValue em v x
+                match repOf' pt with
+                | Some(Niche(_, payload)) ->
+                    // the payload itself, or @zs.none (static: its count is never changed)
+                    em.Emit(sprintf "musttail call void %s(ptr %%p)" (dropFn payload))
                     em.Emit "ret void"
                 | _ ->
-                    let _, cases = union pt
-                    let tagp = em.Instr "getelementptr { i_W, i32 }, ptr %p, i32 0, i32 1"
-                    let tag = em.Instr(sprintf "load i32, ptr %s" tagp)
-                    let withRefs = cases |> List.indexed |> List.filter (fun (_, (_, fs)) -> List.exists heap fs)
+                    let last = em.Instr "call i1 @zs.release(ptr %p)"
+                    em.Emit(sprintf "br i1 %s, label %%free, label %%done" last)
+                    em.Label "free"
 
-                    let targets =
-                        withRefs |> List.map (fun (i, _) -> sprintf "i32 %d, label %%case%d" i i) |> String.concat " "
-
-                    em.Emit(sprintf "switch i32 %s, label %%plain [ %s ]" tag targets)
-
-                    for i, (_, fs) in withRefs do
-                        em.Label(sprintf "case%d" i)
-                        let cell = cellTy fs
-
-                        let refs =
-                            fs
-                            |> List.indexed
-                            |> List.filter (snd >> heap)
-                            |> List.map (fun (j, ft) ->
-                                let fp = em.Instr(sprintf "getelementptr %s, ptr %%p, i32 0, i32 %d" cell (j + 2))
-                                ft, em.Instr(sprintf "load %s, ptr %s" (llty ft) fp))
+                    match pt with
+                    | TCon("array", [ el ]) ->
+                        if heap el then
+                            let lenp = em.Instr "getelementptr { i_W, i_W }, ptr %p, i32 0, i32 1"
+                            let len = em.Instr(sprintf "load i_W, ptr %s" lenp)
+                            em.Emit "br label %loop"
+                            em.Label "loop"
+                            let i = em.Tmp()
+                            let next = em.Tmp()
+                            let back = em.Fresh "next"
+                            em.Emit(sprintf "%s = phi i_W [ 0, %%free ], [ %s, %%%s ]" i next back)
+                            let c = em.Instr(sprintf "icmp slt i_W %s, %s" i len)
+                            em.Emit(sprintf "br i1 %s, label %%body, label %%end" c)
+                            em.Label "body"
+                            let ep = em.Instr(sprintf "getelementptr { i_W, i_W, [0 x %s] }, ptr %%p, i32 0, i32 2, i_W %s" (llty el) i)
+                            dropValue em el (em.Instr(sprintf "load %s, ptr %s" (llty el) ep))
+                            em.Emit(sprintf "br label %%%s" back)
+                            em.Label back
+                            em.Emit(sprintf "%s = add i_W %s, 1" next i)
+                            em.Emit "br label %loop"
+                            em.Label "end"
 
                         em.Emit "call void @zs_free(ptr %p)"
-                        let init, (lt, lv) = List.splitAt (refs.Length - 1) refs |> fun (a, b) -> a, b.Head
-
-                        for ft, v in init do
-                            dropValue em ft v
-
-                        // the last field is dropped by a tail call, so long lists free iteratively
-                        if llty lt = "ptr" then
-                            em.Emit(sprintf "musttail call void %s(ptr %s)" (dropFn lt) lv)
-                        else
-                            dropValue em lt lv
-
                         em.Emit "ret void"
+                    | TCon("ref", [ v ]) ->
+                        let vp = em.Instr(sprintf "getelementptr { i_W, %s }, ptr %%p, i32 0, i32 1" (llty v))
+                        let x = em.Instr(sprintf "load %s, ptr %s" (llty v) vp)
+                        em.Emit "call void @zs_free(ptr %p)"
+                        dropValue em v x
+                        em.Emit "ret void"
+                    | _ ->
+                        let _, cases = union pt
+                        let withRefs = cases |> List.indexed |> List.filter (fun (_, (_, fs)) -> List.exists heap fs)
 
-                    em.Label "plain"
-                    em.Emit "call void @zs_free(ptr %p)"
-                    em.Emit "ret void"
+                        if tagged pt then
+                            let tagp = em.Instr "getelementptr { i_W, i32 }, ptr %p, i32 0, i32 1"
+                            let tag = em.Instr(sprintf "load i32, ptr %s" tagp)
+
+                            let targets =
+                                withRefs |> List.map (fun (i, _) -> sprintf "i32 %d, label %%case%d" i i) |> String.concat " "
+
+                            em.Emit(sprintf "switch i32 %s, label %%plain [ %s ]" tag targets)
+                        else
+                            // the one case with fields
+                            match withRefs with
+                            | (i, _) :: _ -> em.Emit(sprintf "br label %%case%d" i)
+                            | [] -> em.Emit "br label %plain"
+
+                        for i, (_, fs) in withRefs do
+                            em.Label(sprintf "case%d" i)
+                            let cell = cellTy pt i
+
+                            let refs =
+                                fs
+                                |> List.indexed
+                                |> List.filter (snd >> heap)
+                                |> List.map (fun (j, ft) ->
+                                    let fp = em.Instr(sprintf "getelementptr %s, ptr %%p, i32 0, i32 %d" cell (cellField pt j))
+                                    ft, em.Instr(sprintf "load %s, ptr %s" (llty ft) fp))
+
+                            em.Emit "call void @zs_free(ptr %p)"
+                            let init, (lt, lv) = List.splitAt (refs.Length - 1) refs |> fun (a, b) -> a, b.Head
+
+                            for ft, v in init do
+                                dropValue em ft v
+
+                            // the last field is dropped by a tail call, so long lists free iteratively
+                            if llty lt = "ptr" then
+                                em.Emit(sprintf "musttail call void %s(ptr %s)" (dropFn lt) lv)
+                            else
+                                dropValue em lt lv
+
+                            em.Emit "ret void"
+
+                        em.Label "plain"
+                        em.Emit "call void @zs_free(ptr %p)"
+                        em.Emit "ret void"
 
                 em.Label "done"
                 em.Emit "ret void"
@@ -735,8 +831,8 @@ let compile
         em.Emit(sprintf "store i_W 1, ptr %s" c)
         let cp = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 1" cell c)
         em.Emit(sprintf "store ptr %s, ptr %s" (stub f k) cp)
-        let dp = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 2" cell c)
-        em.Emit(sprintf "store ptr %s, ptr %s" (dropStub f k) dp)
+        let ip = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 2" cell c)
+        em.Emit(sprintf "store ptr %s, ptr %s" (info f k) ip)
 
         env
         |> List.iteri (fun i (t, v) ->
@@ -784,6 +880,45 @@ let compile
 
         name
 
+    /// What a closure of f holding k parameters is, for its users: its drop function, the
+    /// number of parameters it still takes, and code taking all of them at once.
+    and info (f: string) (k: int) : string =
+        let name = sprintf "@\"cloinfo.%s.%d\"" f k
+
+        if generated.Add name then
+            let n = fnTable[f].pars.Length
+            let line = sprintf "%s = private unnamed_addr constant { ptr, i32, ptr } { ptr %s, i32 %d, ptr %s }" name (dropStub f k) (n - k) (full f k)
+            top.AppendLine line |> ignore
+
+        name
+
+    /// Code for a closure of f holding its first k parameters that takes all the others at once.
+    and full (f: string) (k: int) : string =
+        let fd = fnTable[f]
+
+        if k + 1 = fd.pars.Length then
+            stub f k
+        else
+            let name = sprintf "@\"cloN.%s.%d\"" f k
+
+            if generated.Add name then
+                let ps = fd.pars |> List.map snd
+                let em = Emitter()
+                let env = loadEnv em (List.take k ps)
+
+                for t, v in env do
+                    dupValue em t v
+
+                let rest = ps |> List.skip k |> List.mapi (fun i t -> t, sprintf "%%a%d" i)
+                let argv = env @ rest |> List.map (fun (t, v) -> sprintf "%s %s" (llty t) v) |> String.concat ", "
+                let rt = llty fd.ret
+                let r = em.Instr(sprintf "tail call %s %s(%s)" rt (sym f) argv)
+                em.Emit(sprintf "ret %s %s" rt r)
+                let pars = rest |> List.map (fun (t, v) -> sprintf "%s %s" (llty t) v) |> String.concat ", "
+                helpers.Append(sprintf "define private %s %s(ptr %%clo, %s) {\n%s}\n\n" rt name pars em.Body) |> ignore
+
+            name
+
     and dropStub (f: string) (k: int) : string =
         let name = sprintf "@\"clodrop.%s.%d\"" f k
 
@@ -804,7 +939,7 @@ let compile
         let name = sprintf "@\"cloS.%s\"" f
 
         if generated.Add name then
-            top.AppendLine(sprintf "%s = private unnamed_addr constant { i_W, ptr, ptr } { i_W 0, ptr %s, ptr null }" name (stub f 0))
+            top.AppendLine(sprintf "%s = private unnamed_addr constant { i_W, ptr, ptr } { i_W 0, ptr %s, ptr %s }" name (stub f 0) (info f 0))
             |> ignore
 
         name
@@ -919,7 +1054,8 @@ let compile
     let valueTypes = values |> List.map (fun (v, init) -> v, fnTable[init].ret) |> dict
 
     for v, _ in values do
-        top.AppendLine(sprintf "%s = internal global %s zeroinitializer" (valueSym v) (llty valueTypes[v])) |> ignore
+        let linkage = if part.IsSome then "linkonce_odr hidden" else "internal"
+        top.AppendLine(sprintf "%s = %s global %s zeroinitializer" (valueSym v) linkage (llty valueTypes[v])) |> ignore
 
     let genFun (f: MFun) =
         let em = Emitter()
@@ -978,7 +1114,10 @@ let compile
         let selfName = f.name
 
         /// Emits the test of pattern p against v (of type t); returns env extended with its bindings.
-        let rec test (p: CPat) (t: Ty) (v: string) failL (env: Map<string, Binding>) =
+        /// known: p's constructor is the only one v can have, so only its fields are tested.
+        let rec testIn (known: bool) (p: CPat) (t: Ty) (v: string) failL (env: Map<string, Binding>) =
+            let test p t v failL env = testIn false p t v failL env
+
             let guardOr cond =
                 let ok = em.Fresh "ok"
                 em.Emit(sprintf "br i1 %s, label %%%s, label %%%s" cond ok failL)
@@ -1026,8 +1165,11 @@ let compile
                         | _ -> test p ft (em.Instr(sprintf "extractvalue %s %s, %d" (llty t) v i)) failL env)
                     env
             | CPCtor(_, tag, ps) when plainUnion types t ->
-                let fields = snd (List.item tag (snd (union t)))
-                guardOr (em.Instr(sprintf "icmp eq i32 %s, %d" (em.Instr(sprintf "extractvalue %s %s, 0" (llty t) v)) tag))
+                let cases = snd (union t)
+                let fields = snd (List.item tag cases)
+
+                if not known then
+                    guardOr (em.Instr(sprintf "icmp eq %s %s, %d" (tagTy cases) (em.Instr(sprintf "extractvalue %s %s, 0" (llty t) v)) tag))
 
                 List.zip ps fields
                 |> List.indexed
@@ -1038,21 +1180,50 @@ let compile
                         | _ -> test p ft (em.Instr(sprintf "extractvalue %s %s, %d" (llty t) v (plainField t tag i))) failL env)
                     env
             | CPCtor(_, tag, ps) ->
-                let fields = snd (List.item tag (snd (union t)))
-                let tagp = em.Instr(sprintf "getelementptr { i_W, i32 }, ptr %s, i32 0, i32 1" v)
-                guardOr (em.Instr(sprintf "icmp eq i32 %s, %d" (em.Instr(sprintf "load i32, ptr %s" tagp)) tag))
-                let cell = cellTy fields
+                let cases = snd (union t)
+                let fields = snd (List.item tag cases)
 
-                List.zip ps fields
-                |> List.indexed
-                |> List.fold
-                    (fun env (i, (p, ft)) ->
-                        match p with
-                        | CPWild -> env
-                        | _ ->
-                            let fp = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 %d" cell v (i + 2))
-                            test p ft (em.Instr(sprintf "load %s, ptr %s" (llty ft) fp)) failL env)
+                match repOf t, ps with
+                | Niche(noneTag, _), _ when tag = noneTag ->
+                    if not known then
+                        guardOr (em.Instr(sprintf "icmp eq ptr %s, @zs.none" v))
+
                     env
+                | Niche(_, payload), [ p ] ->
+                    // the value is the field
+                    if not known then
+                        guardOr (em.Instr(sprintf "icmp ne ptr %s, @zs.none" v))
+
+                    test p payload v failL env
+                | _ when fields.IsEmpty ->
+                    if not known then
+                        guardOr (em.Instr(sprintf "icmp eq ptr %s, %s" v (nullary t tag)))
+
+                    env
+                | _ ->
+                    if not known then
+                        if not (tagged t) then
+                            // the only case with fields: the value isn't one of the static cells
+                            for k, (_, fs) in List.indexed cases do
+                                if fs.IsEmpty then
+                                    guardOr (em.Instr(sprintf "icmp ne ptr %s, %s" v (nullary t k)))
+                        else
+                            let tagp = em.Instr(sprintf "getelementptr { i_W, i32 }, ptr %s, i32 0, i32 1" v)
+                            let tv = em.Instr(sprintf "load i32, ptr %s, !range !{i32 0, i32 %d}" tagp cases.Length)
+                            guardOr (em.Instr(sprintf "icmp eq i32 %s, %d" tv tag))
+
+                    let cell = cellTy t tag
+
+                    List.zip ps fields
+                    |> List.indexed
+                    |> List.fold
+                        (fun env (i, (p, ft)) ->
+                            match p with
+                            | CPWild -> env
+                            | _ ->
+                                let fp = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 %d" cell v (cellField t i))
+                                test p ft (em.Instr(sprintf "load %s, ptr %s" (llty ft) fp)) failL env)
+                        env
             | CPOr(a, b) ->
                 // both sides bind the same variables; merge them with phis
                 let altL, okL = em.Fresh "alt", em.Fresh "or"
@@ -1188,7 +1359,9 @@ let compile
                   | _ -> () ]
 
         let lookup (env: Map<string, Binding>) x t =
-            match env[x] with
+            match (match env.TryFind x with
+                   | Some b -> b
+                   | None -> failwithf "Codegen: %s isn't bound in %s" x f.name) with
             | Ssa v -> v
             | Slot p -> em.Instr(sprintf "load %s, ptr %s" (llty t) p)
 
@@ -1294,13 +1467,30 @@ let compile
             | CDrop(x, t, rest) ->
                 dropValue em t (lookup env x t)
                 gen env tail rest
+            | CDropFields(x, xt, tag, keep, tok, rest) when (match repOf xt with
+                                                              | Niche _ -> true
+                                                              | _ -> false) ->
+                // the value is the field: it keeps the reference, or is dropped
+                let v = lookup env x xt
+
+                if not (keep.Contains 0) then
+                    match repOf xt with
+                    | Niche(_, payload) -> dropValue em payload v
+                    | _ -> ()
+
+                let env =
+                    match tok with
+                    | Some t -> env.Add(t, Ssa "null")
+                    | None -> env
+
+                gen env tail rest
             | CDropFields(x, xt, tag, keep, tok, rest) ->
                 let v = lookup env x xt
                 let fields = snd (List.item tag (snd (union xt)))
-                let cell = cellTy fields
+                let cell = cellTy xt tag
 
                 let load i ft =
-                    let fp = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 %d" cell v (i + 2))
+                    let fp = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 %d" cell v (cellField xt i))
                     em.Instr(sprintf "load %s, ptr %s" (llty ft) fp)
 
                 let uniq, shared, join = em.Fresh "unique", em.Fresh "shared", em.Fresh "dropped"
@@ -1315,6 +1505,7 @@ let compile
                 if tok.IsNone then
                     em.Emit(sprintf "call void @zs_free(ptr %s)" v)
 
+                let fromUniq = em.Block
                 em.Emit(sprintf "br label %%%s" join)
                 em.Label shared
 
@@ -1323,12 +1514,13 @@ let compile
                     if heap ft && keep.Contains i then
                         dupValue em ft (load i ft))
 
+                let fromShared = em.Block
                 em.Emit(sprintf "br label %%%s" join)
                 em.Label join
 
                 let env =
                     match tok with
-                    | Some t -> env.Add(t, Ssa(em.Instr(sprintf "phi ptr [ %s, %%%s ], [ null, %%%s ]" v uniq shared)))
+                    | Some t -> env.Add(t, Ssa(em.Instr(sprintf "phi ptr [ %s, %%%s ], [ null, %%%s ]" v fromUniq fromShared)))
                     | None -> env
 
                 gen env tail rest
@@ -1343,7 +1535,7 @@ let compile
                 gen env tail rest
             | CCtorAt(tok, _, tag, args) ->
                 let vs = args |> List.map (gen env false)
-                let cell = cellTy (snd (List.item tag (snd (union e.ty))))
+                let cell = cellTy e.ty tag
                 let t = lookup env tok tUnit
                 let fresh, reuse, join = em.Fresh "alloc", em.Fresh "reuse", em.Fresh "built"
                 em.Emit(sprintf "br i1 %s, label %%%s, label %%%s" (em.Instr(sprintf "icmp eq ptr %s, null" t)) fresh reuse)
@@ -1356,12 +1548,14 @@ let compile
                 em.Label join
                 let c = em.Instr(sprintf "phi ptr [ %s, %%%s ], [ %s, %%%s ]" a fromAlloc t reuse)
                 em.Emit(sprintf "store i_W 1, ptr %s" c)
-                let tp = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 1" cell c)
-                em.Emit(sprintf "store i32 %d, ptr %s" tag tp)
+
+                if tagged e.ty then
+                    let tp = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 1" cell c)
+                    em.Emit(sprintf "store i32 %d, ptr %s" tag tp)
 
                 List.zip args vs
                 |> List.iteri (fun i (a, v) ->
-                    let fp = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 %d" cell c (i + 2))
+                    let fp = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 %d" cell c (cellField e.ty i))
                     em.Emit(sprintf "store %s %s, ptr %s" (llty a.ty) v fp))
 
                 c
@@ -1420,10 +1614,34 @@ let compile
                 let results = ResizeArray()
                 em.Emit(sprintf "br label %%%s" next)
 
+                // the cases of a union no earlier clause has taken whole: a clause for the last of
+                // them needs no test of the case
+                let caseCount = repOf' s.ty |> Option.map (fun _ -> (snd (union s.ty)).Length)
+                let mutable taken = Set.empty
+
+                let rec irrefutable (p: CPat) =
+                    match p with
+                    | CPWild
+                    | CPVar _ -> true
+                    | CPAs(q, _, _) -> irrefutable q
+                    | CPTuple ps -> List.forall irrefutable ps
+                    | CPRecord(_, fs) -> fs |> List.forall (snd >> irrefutable)
+                    | _ -> false
+
                 for p, guard, body in cases do
                     em.Label next
                     let failL = em.Fresh "case"
-                    let env = test p s.ty v failL env
+
+                    let known =
+                        match p, caseCount with
+                        | CPCtor(_, tag, _), Some n -> not (taken.Contains tag) && taken.Count = n - 1
+                        | _ -> false
+
+                    let env = testIn known p s.ty v failL env
+
+                    match p with
+                    | CPCtor(_, tag, ps) when guard.IsNone && List.forall irrefutable ps -> taken <- taken.Add tag
+                    | _ -> ()
 
                     if guard.IsSome then
                         let ok = em.Fresh "guard"
@@ -1450,29 +1668,32 @@ let compile
                 // a value: the tag and this case's fields, the other cases' fields zero
                 let vs = args |> List.map (gen env false)
                 let lt = llty e.ty
-                let withTag = em.Instr(sprintf "insertvalue %s zeroinitializer, i32 %d, 0" lt tag)
+                let withTag = em.Instr(sprintf "insertvalue %s zeroinitializer, %s %d, 0" lt (tagTy (snd (union e.ty))) tag)
 
                 List.zip args vs
                 |> List.indexed
                 |> List.fold (fun agg (i, (a, v)) -> em.Instr(sprintf "insertvalue %s %s, %s %s, %d" lt agg (llty a.ty) v (plainField e.ty tag i))) withTag
-            | CCtor(u, tag, []) ->
-                let g = sprintf "@\"ctor.%s.%d\"" u tag
-
-                if generated.Add g then
-                    top.AppendLine(sprintf "%s = private unnamed_addr constant { i_W, i32 } { i_W 0, i32 %d }" g tag) |> ignore
-
-                g
+            | CCtor(_, tag, args) when (match repOf e.ty with
+                                         | Niche _ -> true
+                                         | _ -> false) ->
+                // a niche: the field itself, or @zs.none
+                match args with
+                | [ a ] -> gen env false a
+                | _ -> "@zs.none"
+            | CCtor(_, tag, []) -> nullary e.ty tag
             | CCtor(_, tag, args) ->
                 let vs = args |> List.map (gen env false)
-                let cell = cellTy (snd (List.item tag (snd (union e.ty))))
+                let cell = cellTy e.ty tag
                 let c = em.Instr(sprintf "call ptr @zs_alloc(i_W %s)" (sizeOf em cell))
                 em.Emit(sprintf "store i_W 1, ptr %s" c)
-                let tp = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 1" cell c)
-                em.Emit(sprintf "store i32 %d, ptr %s" tag tp)
+
+                if tagged e.ty then
+                    let tp = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 1" cell c)
+                    em.Emit(sprintf "store i32 %d, ptr %s" tag tp)
 
                 List.zip args vs
                 |> List.iteri (fun i (a, v) ->
-                    let fp = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 %d" cell c (i + 2))
+                    let fp = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 %d" cell c (cellField e.ty i))
                     em.Emit(sprintf "store %s %s, ptr %s" (llty a.ty) v fp))
 
                 c
@@ -1629,12 +1850,50 @@ let compile
             | CMkClosure(f, args) ->
                 let vs = args |> List.map (gen env false)
                 allocClosure em f (List.zip (args |> List.map (fun a -> a.ty)) vs)
-            | CApplyClo(c, a) ->
+            | CApplyClo(c, args) ->
                 let vc = gen env false c
-                let va = gen env false a
-                let cp = em.Instr(sprintf "getelementptr { i_W, ptr }, ptr %s, i32 0, i32 1" vc)
-                let code = em.Instr(sprintf "load ptr, ptr %s" cp)
-                em.Instr(sprintf "call %s %s(ptr %s, %s %s)" (llty e.ty) code vc (llty a.ty) va)
+                let vs = List.zip args (args |> List.map (gen env false))
+
+                // one argument at a time: each call but the last gives a closure holding more
+                let curried (vc: string) =
+                    vs
+                    |> List.indexed
+                    |> List.fold
+                        (fun (cur: string) (i, (a: CExpr, v)) ->
+                            let cp = em.Instr(sprintf "getelementptr { i_W, ptr }, ptr %s, i32 0, i32 1" cur)
+                            let code = em.Instr(sprintf "load ptr, ptr %s" cp)
+                            let rt = if i = vs.Length - 1 then llty e.ty else "ptr"
+                            let r = em.Instr(sprintf "call %s %s(ptr %s, %s %s)" rt code cur (llty a.ty) v)
+
+                            if i > 0 then
+                                em.Emit(sprintf "call void @zs.drop.clo(ptr %s)" cur) // a closure made on the way
+
+                            r)
+                        vc
+
+                if vs.Length = 1 then
+                    curried vc
+                else
+                    // all at once when the closure takes exactly that many
+                    let ip = em.Instr(sprintf "getelementptr { i_W, ptr, ptr }, ptr %s, i32 0, i32 2" vc)
+                    let inf = em.Instr(sprintf "load ptr, ptr %s" ip)
+                    let ap = em.Instr(sprintf "getelementptr { ptr, i32, ptr }, ptr %s, i32 0, i32 1" inf)
+                    let arity = em.Instr(sprintf "load i32, ptr %s" ap)
+                    let fullL, oneL, doneL = em.Fresh "full", em.Fresh "curried", em.Fresh "applied"
+                    em.Emit(sprintf "br i1 %s, label %%%s, label %%%s" (em.Instr(sprintf "icmp eq i32 %s, %d" arity vs.Length)) fullL oneL)
+                    em.Label fullL
+                    let fp = em.Instr(sprintf "getelementptr { ptr, i32, ptr }, ptr %s, i32 0, i32 2" inf)
+                    let code = em.Instr(sprintf "load ptr, ptr %s" fp)
+                    let argv = vs |> List.map (fun (a, v) -> sprintf "%s %s" (llty a.ty) v) |> String.concat ", "
+                    let r1 = em.Instr(sprintf "call %s %s(ptr %s, %s)" (llty e.ty) code vc argv)
+                    let fromFull = em.Block
+                    em.Emit(sprintf "br label %%%s" doneL)
+                    em.Label oneL
+                    let r2 = curried vc
+                    let fromOne = em.Block
+                    em.Emit(sprintf "br label %%%s" doneL)
+                    em.Label doneL
+                    phi (llty e.ty) [ r1, fromFull; r2, fromOne ]
             | CWhile _
             | CFor _ when not (hoisted.Contains e) && not (loopUniques env e).IsEmpty ->
                 let arrays = loopUniques env e
@@ -2047,7 +2306,13 @@ let compile
         let hint =
             if f.pars |> List.exists (fun (_, t) -> match prune t with TFun _ -> true | _ -> false) then " inlinehint" else ""
 
-        funcs.Append(sprintf "define internal %s %s(%s)%s%s {\n%s}\n\n" rt (sym f.name) ps hint dbg em.Body) |> ignore
+        // called from another part: external (hidden in the program)
+        let linkage =
+            match part with
+            | Some p when p.called.Contains f.name -> "hidden"
+            | _ -> "internal"
+
+        funcs.Append(sprintf "define %s %s %s(%s)%s%s {\n%s}\n\n" linkage rt (sym f.name) ps hint dbg em.Body) |> ignore
 
     for KeyValue(name, s) in externs do
         let ret, sret = cRet s.ret
@@ -2056,7 +2321,8 @@ let compile
         top.AppendLine(sprintf "declare %s @%s(%s)" ret name (String.concat ", " ps)) |> ignore
 
     for f in funs do
-        genFun f
+        if defined f.name then
+            genFun f
 
     /// Runs the initializers in order, storing each value (main's prologue).
     let initValues () =
@@ -2067,7 +2333,7 @@ let compile
         |> String.concat ""
 
     // the values, released in reverse order after main returns (so the leak check stays exact)
-    do
+    if entry then
         let em = Emitter()
 
         for v, _ in List.rev values do
@@ -2080,7 +2346,7 @@ let compile
         funcs.Append(sprintf "define private void @zsv.dropAll() {\n%s}\n\n" em.Body) |> ignore
 
     // C entry points: main (an int result becomes the exit code) and [<Export>] wrappers
-    if fnTable.ContainsKey "main" then
+    if entry && fnTable.ContainsKey "main" then
         let main = fnTable["main"]
         let rt = llty main.ret
 
@@ -2095,7 +2361,7 @@ let compile
         funcs.AppendLine(body.Replace("  ret i32", "  call void @zsv.dropAll()\n  ret i32")).AppendLine("}") |> ignore
 
     // a test build (zs test): `exe <n>` runs test n, so each test runs in its own process
-    if not tests.IsEmpty && not (fnTable.ContainsKey "main") then
+    if entry && not tests.IsEmpty && not (fnTable.ContainsKey "main") then
         let cases = tests |> List.mapi (fun i _ -> sprintf "i_W %d, label %%t%d" i i) |> String.concat " "
         funcs.AppendLine("define i32 @main(i32 %argc, ptr %argv) {") |> ignore
         funcs.AppendLine("  call void @zs_set_args(i32 %argc, ptr %argv)") |> ignore
@@ -2109,7 +2375,7 @@ let compile
 
         funcs.AppendLine("bad:\n  ret i32 2\n}") |> ignore
 
-    for e in exports do
+    for e in (if entry then exports else []) do
         let fd = fnTable[e.fname]
         let em = Emitter()
         let rt, sret = cRet e.ret
@@ -2204,5 +2470,11 @@ let compile
         let version = meta "!{i32 2, !\"Debug Info Version\", i32 3}"
         md.AppendLine(sprintf "!llvm.dbg.cu = !{%s}" compileUnit.Value) |> ignore
         md.AppendLine(sprintf "!llvm.module.flags = !{%s, %s}" flags version) |> ignore
+
+    // the functions of other parts this one calls
+    for f in List.ofSeq referenced do
+        if not (defined f) && fnTable.ContainsKey f then
+            let ps, rt = proto fnTable[f]
+            funcs.AppendLine(sprintf "declare %s %s(%s)" rt (sym f) (String.concat ", " ps)) |> ignore
 
     resolveWord (top.ToString() + "\n" + helpers.ToString() + funcs.ToString() + "\n" + md.ToString()), header.ToString()

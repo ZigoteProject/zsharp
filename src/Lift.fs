@@ -19,9 +19,11 @@ let rec private resultAfter n t =
 
 let run (funs: MFun list) : MFun list =
     let arity = funs |> List.map (fun f -> f.name, f.pars.Length) |> dict
-    let out = ResizeArray<MFun>()
-    let source = ref ("", 0) // the file and line of the function being converted
-    let count = ref 0
+    // per thread, for the function being converted: what it lifts out, its file and line, and
+    // its lambdas' numbers (so its code doesn't depend on other functions')
+    let out = new System.Threading.ThreadLocal<ResizeArray<MFun>>(fun () -> ResizeArray())
+    let source = new System.Threading.ThreadLocal<string * int>(fun () -> ("", 0))
+    let count = new System.Threading.ThreadLocal<int ref>(fun () -> ref 0)
     let mk k ty = { k = k; ty = ty }
 
     /// Free value variables, with references to local functions replaced by their captures.
@@ -39,7 +41,7 @@ let run (funs: MFun list) : MFun list =
     let capExprs (caps: (string * Ty) list) = caps |> List.map (fun (x, t) -> mk (CLocal x) t)
 
     let applyChain (f: CExpr) (args: CExpr list) =
-        args |> List.fold (fun acc a -> mk (CApplyClo(acc, a)) (resultAfter 1 acc.ty)) f
+        if args.IsEmpty then f else mk (CApplyClo(f, args)) (resultAfter args.Length f.ty)
 
     let direct f (pre: CExpr list) n (fty: Ty) (args: CExpr list) =
         if args.Length >= n then
@@ -67,8 +69,8 @@ let run (funs: MFun list) : MFun list =
             | _ -> applyChain (cv h) args
         | CLam(ps, body) ->
             let caps = captures lfuns e Set.empty
-            count.Value <- count.Value + 1
-            let lname = sprintf "%s$lam%d" owner count.Value
+            count.Value.Value <- count.Value.Value + 1
+            let lname = sprintf "%s$lam%d" owner count.Value.Value
             lift lfuns lname caps ps body
             mk (CMkClosure(lname, capExprs caps)) e.ty
         | CLetFun(g, _, ps, body, rest) ->
@@ -113,7 +115,7 @@ let run (funs: MFun list) : MFun list =
     and lift lfuns lname caps ps (body: CExpr) =
         let body = conv lfuns lname body
 
-        out.Add
+        out.Value.Add
             { name = lname
               pars = caps @ ps
               ret = body.ty
@@ -121,8 +123,16 @@ let run (funs: MFun list) : MFun list =
               file = fst source.Value
               line = snd source.Value }
 
-    for f in funs do
+    // each function on its own, on every core; its lifted lambdas come before it, as they're made
+    let one (f: MFun) =
         source.Value <- (f.file, f.line) // lifted lambdas are debugged as part of their function
-        out.Add { f with body = conv Map.empty f.name f.body }
+        count.Value.Value <- 0
+        let mine = ResizeArray<MFun>()
+        out.Value <- mine
+        mine.Add { f with body = conv Map.empty f.name f.body }
+        List.ofSeq mine
 
-    List.ofSeq out
+    try
+        funs |> Array.ofList |> Array.Parallel.map one |> List.concat
+    with :? System.AggregateException as e ->
+        raise e.InnerExceptions[0]

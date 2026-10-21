@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Host benchmarks: each program in Z#, C (clang -O2, and with -ftrapv: overflow traps, as in
-# Z#), Rust (-C opt-level=3), Swift (-O), Zig (ReleaseFast) and OCaml (ocamlopt), run natively.
-# All must print the same as C.
+# Z#), Rust (-C opt-level=3), Swift (-O), Zig (ReleaseFast), OCaml (ocamlopt) and F# (a
+# Release build on .NET, run with `dotnet`, startup included), run natively. All must print the
+# same as C.
 # Time is the best of 3 runs at the full size, memory the peak RSS of those runs. Z#'s
 # instructions are counted by valgrind (cachegrind) at a small size, which is deterministic
 # and so can catch regressions.
@@ -22,7 +23,7 @@ spectralnorm 4000 100
 rbtree 1000000 20000
 LIST
 )
-langs="zs c ctrap rust swift zig ocaml"
+langs="zs c ctrap rust swift zig ocaml fsharp"
 
 # build <lang> <bench>: compile into $t/<bench>-<lang>; the other languages' sources are compiled
 # from copies in $t so their compilers leave no files next to them
@@ -36,6 +37,13 @@ build() {
     swift) swiftc -O "$t/$2.swift" -o "$out" -lm ;;
     zig) zig build-exe -O ReleaseFast --cache-dir "$t/zig-cache" "$t/$2.zig" -femit-bin="$out" ;;
     ocaml) ocamlopt $(ocamlopt -config-var flambda | grep -q true && echo -O3) "$t/$2.ml" -o "$out" ;;
+    fsharp)
+      # a project of the one file, built for Release; the program runs on the .NET runtime
+      local d=$t/fs-$2
+      mkdir -p "$d" && cp "$src.fs" "$d/$2.fs"
+      printf '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><InvariantGlobalization>true</InvariantGlobalization><SatelliteResourceLanguages>en</SatelliteResourceLanguages></PropertyGroup><ItemGroup><Compile Include="%s.fs" /></ItemGroup></Project>\n' "$2" > "$d/$2.fsproj"
+      dotnet build "$d" -c Release -o "$d/out" --nologo -v q >/dev/null &&
+        printf '#!/bin/sh\nexec dotnet %s "$@"\n' "$d/out/$2.dll" > "$out" && chmod +x "$out" ;;
   esac
 }
 count() { valgrind --tool=cachegrind --cache-sim=no --cachegrind-out-file=/dev/null "$@" 2>&1 >/dev/null |
@@ -55,8 +63,8 @@ ratio() { awk -v a="$1" -v b="$2" 'BEGIN { if (b > 0) printf "%.2f", a / b; else
 
 if [ -z "$mode" ]; then
   cp bench/host/*.rs bench/host/*.swift bench/host/*.zig bench/host/*.ml "$t"
-  header="| benchmark | Z# | C | C -ftrapv | Rust | Swift | Zig | OCaml |"
-  times="$header"$'\n'"|---|---:|---:|---:|---:|---:|---:|---:|"
+  header="| benchmark | Z# | C | C -ftrapv | Rust | Swift | Zig | OCaml | F# |"
+  times="$header"$'\n'"|---|---:|---:|---:|---:|---:|---:|---:|---:|"
   mems=$times
 fi
 fail=0

@@ -11,11 +11,16 @@ open Mono
 let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: MFun list) : MFun list =
     let heap t = needsRc types t
     let mk k ty = { k = k; ty = ty }
-    let count = ref 0
+    // temporaries numbered per function (each thread does one at a time): a function's code
+    // doesn't depend on the others'
+    let count = new System.Threading.ThreadLocal<int ref>(fun () -> ref 0)
 
-    let tmp () =
-        count.Value <- count.Value + 1
-        sprintf "$rc%d" count.Value
+    let next () =
+        let c = count.Value
+        c.Value <- c.Value + 1
+        c.Value
+
+    let tmp () = sprintf "$rc%d" (next ())
 
     // ---- borrowed parameters (Perceus borrowing): a heap parameter the function only applies,
     // reads (a.[i], lengths) or passes on to a borrowed parameter is borrowed. The caller keeps
@@ -57,7 +62,7 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
                     let rec walk (e: CExpr) =
                         match e.k with
                         | CLocal x when x = p -> bad <- true
-                        | CApplyClo({ k = CLocal x }, arg) when x = p -> walk arg
+                        | CApplyClo({ k = CLocal x }, args) when x = p -> List.iter walk args
                         | CPrim(("array.get" | "Array.length" | "String.length" | "String.byte"), { k = CLocal x } :: rest) when x = p ->
                             List.iter walk rest
                         | CCallDirect(g, args) ->
@@ -169,8 +174,7 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
                 |> List.map (fun fp ->
                     match fp with
                     | CPVar(v, t) when fv.Contains v ->
-                        count.Value <- count.Value + 1
-                        let v' = sprintf "%s.r%d" v count.Value
+                        let v' = sprintf "%s.r%d" v (next ())
                         CPVar(v', t), Some(v, v')
                     | _ -> CPWild, None)
                 |> List.unzip
@@ -181,6 +185,7 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
         go body
 
     let rcFun (f: MFun) =
+        count.Value.Value <- 0
         let f = { f with body = rematch (printPieces f.body) }
         let freeVars = cachedFreeVars ()
         // every variable's type, by unique name
@@ -218,6 +223,11 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
 
         let heapVar x = heap vtypes[x]
 
+        /// The layout of the cell a constructor builds (or a matched case is): with a tag?, and
+        /// the field types. None when the case isn't a cell (no fields, or a niche).
+        let layoutOf (t: Ty) tag (fields: Ty list) =
+            cellShape types t tag |> Option.map (fun (tagged, _) -> tagged, fields)
+
         let fieldTypes (t: Ty) tag =
             match prune t with
             | TCon(u, args) ->
@@ -227,17 +237,17 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
             | _ -> []
 
         // join points whose body builds a cell: their reuse-token parameter and the cell's layout
-        let joinTok = System.Collections.Generic.Dictionary<string, string * Ty list>()
+        let joinTok = System.Collections.Generic.Dictionary<string, string * (bool * Ty list)>()
         let tokenTy = tcon "cptr"
 
         /// Rewrites one constructor with the given field layout, on every path of e that ends in
         /// one, to build in the token's cell; paths without one free the token. None = no site.
-        let rec place (tok: string) (layout: Ty list) (e: CExpr) : CExpr option =
+        let rec place (tok: string) (layout: bool * Ty list) (e: CExpr) : CExpr option =
             let re k = Some(mk k e.ty)
             let free (b: CExpr) = mk (CFreeToken(tok, b)) b.ty
 
             match e.k with
-            | CCtor(u, tag, args) when heap e.ty && (args |> List.map (fun a -> a.ty)) = layout -> re (CCtorAt(tok, u, tag, args))
+            | CCtor(u, tag, args) when heap e.ty && layoutOf e.ty tag (args |> List.map (fun a -> a.ty)) = Some layout -> re (CCtorAt(tok, u, tag, args))
             | CWhile _
             | CFor _ -> None // runs repeatedly
             | CJump(j, args) ->
@@ -411,7 +421,7 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
                 // the cell it builds, or the one a join point it jumps to builds
                 let rec layoutIn (e: CExpr) =
                     match e.k with
-                    | CCtor(_, _, args) when heap e.ty -> Some(args |> List.map (fun a -> a.ty))
+                    | CCtor(_, tag, args) when heap e.ty && (layoutOf e.ty tag []).IsSome -> layoutOf e.ty tag (args |> List.map (fun a -> a.ty))
                     | CJump(j2, _) when joinTok.ContainsKey j2 -> Some(snd joinTok[j2])
                     | k -> children k |> List.tryPick layoutIn
 
@@ -498,10 +508,9 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
                             let nested = Set.difference used (direct |> List.map snd |> Set.ofList)
                             let body' = rc (Set.union (owned.Remove x) used) borrowed body
                             let tok = tmp ()
-                            let layout = fieldTypes s.ty tag
 
                             let node =
-                                match place tok layout body' with
+                                match layoutOf s.ty tag (fieldTypes s.ty tag) |> Option.bind (fun l -> place tok l body') with
                                 | Some b -> CDropFields(x, s.ty, tag, keep, Some tok, b)
                                 | None -> CDropFields(x, s.ty, tag, keep, None, body')
 
@@ -558,22 +567,22 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
                 let res = if heap e.ty then mk (CDup(f, e.ty, res)) e.ty else res
                 re (CLet(f, e, res))
             | CField(r, i) -> viaTemp owned borrowed r (fun v -> re (CField(v, i)))
-            | CApplyClo(fe, arg) when isVar fe ->
+            | CApplyClo(fe, args) when isVar fe ->
                 let x =
                     match fe.k with
                     | CLocal x -> x
                     | _ -> failwith "unreachable"
 
-                // the closure stays alive across the argument and the call, then is released
-                let arg' = rc (owned.Remove x) (borrowed.Add x) arg
+                // the closure stays alive across the arguments and the call, then is released
+                let args' = rcList (owned.Remove x) (borrowed.Add x) args
 
                 if owned.Contains x then
                     let r = tmp ()
                     vtypes[r] <- e.ty
-                    re (CLet(r, re (CApplyClo(fe, arg')), mk (CDrop(x, vtypes[x], mk (CLocal r) e.ty)) e.ty))
+                    re (CLet(r, re (CApplyClo(fe, args')), mk (CDrop(x, vtypes[x], mk (CLocal r) e.ty)) e.ty))
                 else
-                    re (CApplyClo(fe, arg'))
-            | CApplyClo(fe, arg) -> viaTemp owned borrowed fe (fun v -> re (CApplyClo(v, arg)))
+                    re (CApplyClo(fe, args'))
+            | CApplyClo(fe, args) -> viaTemp owned borrowed fe (fun v -> re (CApplyClo(v, args)))
             | CWhile _
             | CFor _ ->
                 // loop parts run repeatedly, so they only borrow; owned variables die after the loop
@@ -809,4 +818,8 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
         let owned = f.pars |> List.map fst |> List.filter heapVar |> Set.ofList |> fun o -> Set.difference o lent
         { f with body = rc owned lent (moves f.body) }
 
-    List.map rcFun funs
+    // each function on its own, on every core
+    try
+        funs |> Array.ofList |> Array.Parallel.map rcFun |> List.ofArray
+    with :? System.AggregateException as e ->
+        raise e.InnerExceptions[0]

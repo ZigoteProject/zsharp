@@ -51,14 +51,14 @@ The compiler does most of the work. These habits help it:
 - **`int` is 32 bits here:** use it for counters and indices. Use `i64` only for values that need it, since 64-bit arithmetic costs two instructions per operation.
 - **Arrays:** declare an array you fill or update `let mutable` and write `a.[i] <- x`. Writes happen in place, and inside a loop the compiler checks only once that the array isn't shared.
   - **Bounds checks:** in a `for` loop that reads `a.[i]`, `a.[i + c]` or `a.[c - i]`, they are checked once before the loop instead of on every iteration.
-- **List pipelines:** a chain like `List.init n f |> List.map g |> List.filter p |> List.sum` with pure lambdas is compiled into one loop that builds no list.
-- **Small unions:** `option<int>`, enums and state machines with small number fields are plain values, never heap-allocated.
+- **Pipelines:** a chain like `List.init n f |> List.map g |> List.filter p |> List.sum` with pure lambdas is compiled into one loop that builds no list. So is one from a list or an array, or into `List.iter`.
+- **Small unions:** `option<int>`, enums and state machines with small number fields are plain values, never heap-allocated, and an enum is a single byte.
 - **Printing:** `println $"…{x}…"` prints the pieces one after another, without building the string.
 - **`-Os`:** for size. At `-O2`, the compiler may unroll loops and version them for speed.
 
 **What still costs more than C:**
 - **Overflow checks:** arithmetic is checked for overflow, so `+`, `-` and `*` that the compiler can't prove safe cost an extra instruction or two. For hashes and checksums, mark the function `[<Wrapping>]`, or use `Int.wrappingAdd` and friends.
-- **Heap data:** lists, strings and recursive unions are heap-allocated, with reference counting. Each object has an 8-byte header, plus 8 bytes of allocator header.
+- **Heap data:** lists, strings and recursive unions are heap-allocated, with reference counting. Each object has a 4-byte count, then a 4-byte length (strings, arrays) or tag (a union with several cases that have fields), plus 8 bytes of allocator header. `[]`, `None` and other cases without fields are never allocated.
 
 ## Timing code
 

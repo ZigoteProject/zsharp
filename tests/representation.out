@@ -1,0 +1,13 @@
+lookup: Some 2 None allocations 0
+equal: true true false 1
+some some x
+some none
+none
+[Some [1; 2]; Some []; None] [true; true; false]
+closure and array: 2 4
+hello ada, hello, true
+word let, newline, word x, eof
+[Word let; Newline; Word x; Eof] true true
+eval 2, Add (Num 3, Neg Add (Num 1, Zero)), 1
+mapped 100 with 0 allocations
+[Red; Green; Blue; Red; Green; Blue] true -1 [Red; Green; Blue]

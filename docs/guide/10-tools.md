@@ -31,6 +31,9 @@
 - `ZS_BACKTRACE=0` leaves backtraces out of panic output.
 - `ZS_ABORT=1` makes a panic a real `abort()`, with a core dump for a debugger.
 - `ZS_LEAKCHECK=1` reports heap objects still allocated at exit.
+- `ZS_NO_CACHE=1` checks the library and every module again. Otherwise builds, `zs check` and `zs test` keep the checked library, and the checked modules a main file uses, in `~/.cache/zs/checked` (or under `$XDG_CACHE_HOME`). The next build checks only the main file, or the modules too when one of them changed.
+
+**Rebuilds:** a program of several files is compiled one module per file, in parallel, and builds keep each compiled module in `~/.cache/zs/objects`, so a rebuild compiles only the files whose code changed. `--time` shows how many modules a build compiled.
 
 ## Formatting
 

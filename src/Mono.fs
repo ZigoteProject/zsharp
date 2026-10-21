@@ -255,6 +255,7 @@ let run (prog: Program) : MFun list =
         let name, inst = queue.Dequeue()
         let f = defs[name]
         let ct = concrete inst
+        count.Value <- 0 // names numbered per instance: its code doesn't depend on others'
 
         let rec ex (e: CExpr) : CExpr =
             match e.k with
@@ -288,14 +289,27 @@ let run (prog: Program) : MFun list =
 
     List.ofSeq out
 
-// ---- list fusion: List.init n g |> List.map f |> List.filter p |> List.sum (or sumBy, fold,
-// length) becomes one loop with an accumulator, building no lists. Only when every function in
-// the chain is a lambda that is pure (arithmetic, comparisons, local bindings, conditionals):
-// then running the stages per element instead of per list can't change what the program does.
+// ---- fusion: a pipeline of maps and filters over a list or an array, ending in a consumer
+// (sum, sumBy, length, fold, iter), becomes one loop that builds no intermediate list or array:
+//   List.init n g, a list, Array.init n g or an array
+//   |> map f |> filter p … (List's or Array's)
+//   |> sum / sumBy f / length / fold f s / iter f
+// A pipeline of several maps and filters that builds a list (or of maps building an array) is
+// one pass building that list or array.
+// The stages run per element instead of per list, so their functions must be pure lambdas
+// (arithmetic, comparisons, local bindings, conditionals): running them in another order can't
+// change what the program does. A consumer's function that does something else (iter's,
+// usually) still sees the elements in order; the stages must then be unable to panic, so no
+// effect of the consumer happens that a panic in a stage would have prevented.
 
 type private Stage =
     | MapS of CExpr
     | FilterS of CExpr
+
+type private Source =
+    | Init of n: CExpr * g: CExpr // List.init n g / Array.init n g
+    | OfList of CExpr
+    | OfArray of CExpr
 
 let fuse (funs: MFun list) : MFun list =
     let count = ref 0
@@ -316,6 +330,11 @@ let fuse (funs: MFun list) : MFun list =
         | CApp({ k = CGlobal(g, _) }, args) -> Some(baseName g, args)
         | _ -> None
 
+    let isInt (t: Ty) =
+        match prune t with
+        | TCon(n, []) -> ints.Contains n
+        | _ -> false
+
     let rec pure (e: CExpr) =
         match e.k with
         | CInt _
@@ -332,10 +351,25 @@ let fuse (funs: MFun list) : MFun list =
         | CPrim(("conv" | "wrap+" | "wrap-" | "wrap*"), args) -> List.forall pure args
         | _ -> false
 
-    let pureLambda (e: CExpr) arity =
+    /// Pure, and can't panic: no checked integer arithmetic (it traps on overflow), no division
+    /// that could be by zero.
+    let rec total (e: CExpr) =
+        pure e
+        && (match e.k with
+            | CBin(("+" | "-" | "*"), a, _) when isInt a.ty -> false
+            | CBin(("/" | "%"), a, b) when isInt a.ty ->
+                match b.k with
+                | CInt d -> d <> 0L && d <> -1L
+                | _ -> false
+            | CNeg a when isInt a.ty -> false
+            | k -> children k |> List.forall total)
+
+    let lambda (e: CExpr) arity =
         match e.k with
-        | CLam(ps, body) -> ps.Length = arity && pure body
-        | _ -> false
+        | CLam(ps, body) when ps.Length = arity -> Some body
+        | _ -> None
+
+    let pureLambda (e: CExpr) arity = lambda e arity |> Option.exists pure
 
     /// (lambda applied to args) as lets of its parameters around its body
     let beta (lam: CExpr) (args: CExpr list) =
@@ -353,53 +387,219 @@ let fuse (funs: MFun list) : MFun list =
         | TCon(n, []) when floats.Contains n -> mk (CFloat 0.0) t
         | _ -> mk (CInt 0L) t
 
-    /// The producer chain under a consumer: stages (outermost last) down to List.init n g.
-    let rec chain (xs: CExpr) (stages: Stage list) =
+    let elemOf (t: Ty) =
+        match prune t with
+        | TCon(("list" | "array"), [ el ]) -> el
+        | t -> failwithf "fusion: %s has no elements" (show t)
+
+    /// The pipeline under a consumer of a list (or an array): its stages, in order, and its source.
+    let rec chain (isArray: bool) (xs: CExpr) (stages: Stage list) : Source * Stage list =
+        let m = if isArray then "Collections.Array." else "Collections.List."
+
         match call xs with
-        | Some("Collections.List.map", [ f; ys ]) when pureLambda f 1 -> chain ys (MapS f :: stages)
-        | Some("Collections.List.filter", [ p; ys ]) when pureLambda p 1 -> chain ys (FilterS p :: stages)
-        | Some("Collections.List.init", [ n; g ]) when pureLambda g 1 -> Some(n, g, stages)
-        | _ -> None
+        | Some(f, [ g; ys ]) when f = m + "map" && pureLambda g 1 -> chain isArray ys (MapS g :: stages)
+        | Some(f, [ p; ys ]) when f = m + "filter" && pureLambda p 1 -> chain isArray ys (FilterS p :: stages)
+        | Some(f, [ n; g ]) when f = m + "init" && pureLambda g 1 -> Init(n, g), stages
+        | Some("Collections.Array.toList", [ a ]) when not isArray -> OfArray a, stages
+        | _ -> (if isArray then OfArray xs else OfList xs), stages
 
-    /// The fused loop: acc starts at `start`; for each element x surviving the stages, acc <- step acc x.
-    let loop (n: CExpr) (g: CExpr) (stages: Stage list) (start: CExpr) (step: CExpr -> CExpr -> CExpr) =
-        let acc, nv, i = fresh "acc", fresh "n", fresh "i"
+    /// Worth a loop of its own: a source that builds a list or array, or a stage to run.
+    let fusible (src: Source) (stages: Stage list) =
+        match src with
+        | Init _ -> true
+        | OfArray _ -> not stages.IsEmpty
+        | OfList _ -> not stages.IsEmpty
+
+    let stagesTotal (stages: Stage list) =
+        stages
+        |> List.forall (fun s ->
+            match s with
+            | MapS f
+            | FilterS f -> (lambda f 1).Value |> total)
+
+    /// The stages applied to element x: `keep y` for an element that survives them, `skip ()`
+    /// for one a filter drops.
+    let rec through (x: CExpr) (stages: Stage list) (keep: CExpr -> CExpr) (skip: unit -> CExpr) : CExpr =
+        match stages with
+        | [] -> keep x
+        | MapS f :: rest ->
+            let y = fresh "x"
+            let fx = beta f [ x ]
+            let inner = through (mk (CLocal y) fx.ty) rest keep skip
+            mk (CLet(y, fx, inner)) inner.ty
+        | FilterS p :: rest ->
+            let inner = through x rest keep skip
+            mk (CIf(beta p [ x ], inner, skip ())) inner.ty
+
+    /// The surviving elements folded: acc starts as `start`, then acc <- step acc y for each.
+    let foldOver (src: Source) (stages: Stage list) (start: CExpr) (step: CExpr -> CExpr -> CExpr) : CExpr =
         let accTy = start.ty
-        let accRef = mk (CLocal acc) accTy
 
-        let rec through (x: CExpr) (stages: Stage list) : CExpr =
-            match stages with
-            | [] -> mk (CAssign(acc, step accRef x)) tUnit
-            | MapS f :: rest ->
-                let y = fresh "x"
-                let fx = beta f [ x ]
-                mk (CLet(y, fx, through (mk (CLocal y) fx.ty) rest)) tUnit
-            | FilterS p :: rest -> mk (CIf(beta p [ x ], through x rest, mk CUnit tUnit)) tUnit
+        match src with
+        | OfList xs ->
+            // a local function over the list's cells, as the library's own folds (a loop after
+            // compilation): acc is a parameter, since a local function can't share a mutable
+            let go, acc, cur, rest = fresh "go", fresh "acc", fresh "xs", fresh "rest"
+            let accRef = mk (CLocal acc) accTy
+            let x = fresh "x"
+            let el = elemOf xs.ty
+            let again (a: CExpr) = mk (CApp(mk (CLocal go) (TFun(accTy, TFun(xs.ty, accTy))), [ a; mk (CLocal rest) xs.ty ])) accTy
 
-        let x0 = fresh "x"
-        let gi = beta g [ mk (CLocal i) tInt ]
-        let body = mk (CLet(x0, gi, through (mk (CLocal x0) gi.ty) stages)) tUnit
-        let last = mk (CBin("-", mk (CLocal nv) tInt, mk (CInt 1L) tInt)) tInt
-        let forLoop = mk (CFor(i, mk (CInt 0L) tInt, mk (CInt 1L) tInt, last, body)) tUnit
-        mk (CLet(nv, n, mk (CLetMut(acc, start, mk (CSeq(forLoop, accRef)) accTy)) accTy)) accTy
+            let body =
+                mk
+                    (CMatch(
+                        mk (CLocal cur) xs.ty,
+                        [ CPCtor("list", 0, []), None, accRef
+                          CPCtor("list", 1, [ CPVar(x, el); CPVar(rest, xs.ty) ]),
+                          None,
+                          through (mk (CLocal x) el) stages (fun y -> again (step accRef y)) (fun () -> again accRef) ]
+                    ))
+                    accTy
+
+            mk (CLetRec([ go, [ acc, accTy; cur, xs.ty ], body ], mk (CApp(mk (CLocal go) (TFun(accTy, TFun(xs.ty, accTy))), [ start; xs ])) accTy)) accTy
+        | Init _
+        | OfArray _ ->
+            let acc, nv, i = fresh "acc", fresh "n", fresh "i"
+            let accRef = mk (CLocal acc) accTy
+
+            // the count, then (for an array) the array itself, in the order the program has them
+            let count, element, bind =
+                match src with
+                | Init(n, g) -> n, (fun (iv: CExpr) -> beta g [ iv ]), id
+                | OfArray a ->
+                    let av = fresh "a"
+                    let aRef = mk (CLocal av) a.ty
+                    mk (CPrim("Array.length", [ aRef ])) tInt, (fun iv -> mk (CPrim("array.get", [ aRef; iv ])) (elemOf a.ty)), (fun (e: CExpr) -> mk (CLet(av, a, e)) e.ty)
+                | OfList _ -> failwith "unreachable"
+
+            let x0 = fresh "x"
+            let gi = element (mk (CLocal i) tInt)
+            let body = mk (CLet(x0, gi, through (mk (CLocal x0) gi.ty) stages (fun y -> mk (CAssign(acc, step accRef y)) tUnit) (fun () -> mk CUnit tUnit))) tUnit
+            let last = mk (CBin("-", mk (CLocal nv) tInt, mk (CInt 1L) tInt)) tInt
+            let forLoop = mk (CFor(i, mk (CInt 0L) tInt, mk (CInt 1L) tInt, last, body)) tUnit
+            bind (mk (CLet(nv, count, mk (CLetMut(acc, start, mk (CSeq(forLoop, accRef)) accTy)) accTy)) accTy)
+
+    /// The surviving elements as a list, built in one pass.
+    let listOf (src: Source) (stages: Stage list) (resTy: Ty) : CExpr =
+        let el = elemOf resTy
+        let nil = mk (CCtor("list", 0, [])) resTy
+        let cons (y: CExpr) (tl: CExpr) = mk (CCtor("list", 1, [ y; tl ])) resTy
+
+        match src with
+        | Init(n, g) ->
+            // from the last element down, so no reversing (the stages are pure)
+            let acc, nv, i, x0 = fresh "acc", fresh "n", fresh "i", fresh "x"
+            let accRef = mk (CLocal acc) resTy
+            let gi = beta g [ mk (CLocal i) tInt ]
+            let body = mk (CLet(x0, gi, through (mk (CLocal x0) gi.ty) stages (fun y -> mk (CAssign(acc, cons y accRef)) tUnit) (fun () -> mk CUnit tUnit))) tUnit
+            let last = mk (CBin("-", mk (CLocal nv) tInt, mk (CInt 1L) tInt)) tInt
+            let forLoop = mk (CFor(i, last, mk (CInt -1L) tInt, mk (CInt 0L) tInt, body)) tUnit
+            mk (CLet(nv, n, mk (CLetMut(acc, nil, mk (CSeq(forLoop, accRef)) resTy)) resTy)) resTy
+        | _ ->
+            // reversed as it's built, then reversed again: both in place when the cells are unique
+            let reversed = foldOver src stages nil (fun acc y -> cons y acc)
+            let rv, out, cur, y, rest = fresh "rev", fresh "out", fresh "ys", fresh "y", fresh "rest"
+            let rvTy = TFun(resTy, TFun(resTy, resTy))
+            let again = mk (CApp(mk (CLocal rv) rvTy, [ cons (mk (CLocal y) el) (mk (CLocal out) resTy); mk (CLocal rest) resTy ])) resTy
+
+            let body =
+                mk
+                    (CMatch(
+                        mk (CLocal cur) resTy,
+                        [ CPCtor("list", 0, []), None, mk (CLocal out) resTy
+                          CPCtor("list", 1, [ CPVar(y, el); CPVar(rest, resTy) ]), None, again ]
+                    ))
+                    resTy
+
+            mk (CLetRec([ rv, [ out, resTy; cur, resTy ], body ], mk (CApp(mk (CLocal rv) rvTy, [ nil; reversed ])) resTy)) resTy
+
+    /// Maps over an array (or Array.init) as one array: Array.init's loop with the maps inside.
+    let arrayOf (src: Source) (stages: Stage list) (resTy: Ty) : CExpr =
+        let el = elemOf resTy
+        let nv, r, i = fresh "n", fresh "r", fresh "i"
+
+        let count, element, bind =
+            match src with
+            | Init(n, g) -> n, (fun (iv: CExpr) -> beta g [ iv ]), id
+            | OfArray a ->
+                let av = fresh "a"
+                let aRef = mk (CLocal av) a.ty
+                mk (CPrim("Array.length", [ aRef ])) tInt, (fun iv -> mk (CPrim("array.get", [ aRef; iv ])) (elemOf a.ty)), (fun (e: CExpr) -> mk (CLet(av, a, e)) e.ty)
+            | OfList _ -> failwith "unreachable"
+
+        let mapped (iv: CExpr) = through (element iv) stages id (fun () -> failwith "a filter building an array")
+        let n = mk (CLocal nv) tInt
+        let first = mk (CPrim("Array.create", [ n; mapped (mk (CInt 0L) tInt) ])) resTy
+        let set = mk (CArraySet(r, mk (CLocal i) tInt, mapped (mk (CLocal i) tInt))) tUnit
+        let last = mk (CBin("-", n, mk (CInt 1L) tInt)) tInt
+        let fill = mk (CFor(i, mk (CInt 1L) tInt, mk (CInt 1L) tInt, last, set)) tUnit
+        let filled = mk (CLetMut(r, first, mk (CSeq(fill, mk (CLocal r) resTy)) resTy)) resTy
+        let empty = mk (CPrim("array.lit", [])) resTy
+        let isEmpty = mk (CBin("<=", n, mk (CInt 0L) tInt)) tBool
+        bind (mk (CLet(nv, count, mk (CIf(isEmpty, empty, filled)) resTy)) resTy)
 
     let rec ex (e: CExpr) : CExpr =
+        let consume (isArray: bool) (xs: CExpr) (pureStep: bool) (k: Source -> Stage list -> CExpr) =
+            let src, stages = chain isArray xs []
+            // a consumer whose function may do anything needs stages that can't panic
+            if fusible src stages && (pureStep || stagesTotal stages) then Some(k src stages) else None
+
         let fused =
             match call e with
-            | Some("Collections.List.sum", [ xs ]) when numeric e.ty ->
-                chain xs [] |> Option.map (fun (n, g, st) -> loop n g st (zeroOf e.ty) (fun a x -> mk (CBin("+", a, x)) e.ty))
+            | Some(("Collections.List.sum" | "Collections.Array.sum") as f, [ xs ]) when numeric e.ty ->
+                consume (f.Contains "Array") xs true (fun src st -> foldOver src st (zeroOf e.ty) (fun a x -> mk (CBin("+", a, x)) e.ty))
             | Some("Collections.List.sumBy", [ f; xs ]) when numeric e.ty && pureLambda f 1 ->
-                chain xs [] |> Option.map (fun (n, g, st) -> loop n g st (zeroOf e.ty) (fun a x -> mk (CBin("+", a, beta f [ x ])) e.ty))
+                consume false xs true (fun src st -> foldOver src st (zeroOf e.ty) (fun a x -> mk (CBin("+", a, beta f [ x ])) e.ty))
             | Some("Collections.List.length", [ xs ]) ->
-                chain xs [] |> Option.map (fun (n, g, st) -> loop n g st (mk (CInt 0L) tInt) (fun a _ -> mk (CBin("+", a, mk (CInt 1L) tInt)) tInt))
-            | Some("Collections.List.fold", [ f; s; xs ]) when pureLambda f 2 && pure s -> // s is now evaluated after n
-                chain xs [] |> Option.map (fun (n, g, st) -> loop n g st s (fun a x -> beta f [ a; x ]))
+                consume false xs true (fun src st -> foldOver src st (mk (CInt 0L) tInt) (fun a _ -> mk (CBin("+", a, mk (CInt 1L) tInt)) tInt))
+            | Some(("Collections.List.fold" | "Collections.Array.fold") as fn, [ f; s; xs ]) when pureLambda f 2 && pure s -> // s is now evaluated after n
+                consume (fn.Contains "Array") xs true (fun src st -> foldOver src st s (fun a x -> beta f [ a; x ]))
+            | Some(("Collections.List.iter" | "Collections.Array.iter") as fn, [ f; xs ]) ->
+                // the function is evaluated first, as the call would; a lambda is applied in place
+                let isArray = fn.Contains "Array"
+                let pureF = pureLambda f 1
+
+                consume isArray xs pureF (fun src st ->
+                    match lambda f 1 with
+                    | Some _ -> foldOver src st (mk CUnit tUnit) (fun _ x -> beta f [ x ])
+                    | None ->
+                        let fv = fresh "f"
+                        let apply x = mk (CApp(mk (CLocal fv) f.ty, [ x ])) tUnit
+                        mk (CLet(fv, f, foldOver src st (mk CUnit tUnit) (fun _ x -> apply x))) tUnit)
+            | Some(("Collections.List.map" | "Collections.List.filter"), [ g; _ ]) when pureLambda g 1 ->
+                // a pipeline of several stages building a list
+                let src, stages = chain false e []
+
+                let worth =
+                    match src with
+                    | Init _ -> true
+                    | _ -> stages.Length >= 2
+
+                if worth then Some(listOf src stages e.ty) else None
+            | Some("Collections.Array.map", [ g; _ ]) when pureLambda g 1 ->
+                // maps building an array
+                let src, stages = chain true e []
+
+                let maps =
+                    stages
+                    |> List.forall (fun s ->
+                        match s with
+                        | MapS _ -> true
+                        | FilterS _ -> false)
+
+                let worth =
+                    match src with
+                    | Init _ -> true
+                    | _ -> stages.Length >= 2
+
+                if maps && worth then Some(arrayOf src stages e.ty) else None
             | _ -> None
 
         match fused with
         | Some f -> { f with k = mapChildren ex f.k }
         | None -> { e with k = mapChildren ex e.k }
 
-    // ponytail: only chains from List.init; a source list or array could be fused the same way
-    // (a loop over it), and List.map into another list consumer (fusing into one map) too
-    funs |> List.map (fun f -> { f with body = ex f.body })
+    funs
+    |> List.map (fun f ->
+        count.Value <- 0 // per function, as Mono's names
+        { f with body = ex f.body })

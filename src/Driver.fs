@@ -491,8 +491,93 @@ let loadModules (mainPath: string) : (string * string option * (int * Decl) list
     order[last] <- (mainPath, m, ds)
     List.ofSeq order
 
-/// Parses and type-checks; with collect, every declaration's error is in the result.
-let check (mainPath: string) (requireMain: bool) (collect: bool) : Core.Program =
+// ---- the checked library, cached between builds (libraries are source, DESIGN §9): the type
+// checker's state after the library, and after the main file's other modules, saved under a
+// hash of the compiler and of those modules' sources. A build whose library and other modules
+// haven't changed starts there and checks only the main file.
+
+/// Where zs caches what it built: the user's cache directory (nothing in it depends on the
+/// project), with checked states in checked/ and compiled modules in objects/.
+let private cacheRoot () =
+    match Environment.GetEnvironmentVariable "XDG_CACHE_HOME" with
+    | null
+    | "" -> Path.Combine(Environment.GetFolderPath Environment.SpecialFolder.UserProfile, ".cache", "zs")
+    | dir -> Path.Combine(dir, "zs")
+
+let private cacheDir () = Path.Combine(cacheRoot (), "checked")
+
+/// The compiler, as part of every key: a state holds only for the compiler that made it.
+let private compilerId = lazy (Reflection.Assembly.GetExecutingAssembly().ManifestModule.ModuleVersionId.ToString())
+
+let private hashOf (parts: string list) =
+    let bytes = Text.Encoding.UTF8.GetBytes(String.concat "\u0000" parts)
+    Convert.ToHexString(Security.Cryptography.SHA256.HashData bytes).Substring(0, 32).ToLowerInvariant()
+
+module private Array =
+    /// The elements after the first n (all of them dropped when there are fewer).
+    let skip' n (a: 'a[]) = if a.Length <= n then [||] else Array.skip n a
+
+/// Keeps the n most recently used files of a cache directory with this extension.
+let private evict (dir: string) (pattern: string) (n: int) =
+    for old in DirectoryInfo(dir).GetFiles pattern |> Array.sortByDescending (fun f -> f.LastWriteTimeUtc) |> Array.skip' n do
+        try
+            old.Delete()
+        with _ ->
+            ()
+
+let private loadState (key: string) : Typer.State option =
+    let file = Path.Combine(cacheDir (), key + ".bin")
+
+    if not (File.Exists file) then
+        None
+    else
+        try
+            use s = new MemoryStream(File.ReadAllBytes file)
+            use r = new BinaryReader(s, Text.Encoding.UTF8, true)
+            // the key before and after: a file that isn't whole is never used
+            if r.ReadString() <> key then failwith "another state"
+            let st = Snapshot.read s (fun o p -> positions[o] <- p)
+            if r.ReadString() <> key then failwith "a broken state"
+            File.SetLastWriteTimeUtc(file, DateTime.UtcNow) // recently used: kept longest
+            Some st
+        with _ ->
+            None // checked again, and saved anew
+
+let private saveState (key: string) (st: Typer.State) =
+    try
+        let dir = cacheDir ()
+        Directory.CreateDirectory dir |> ignore
+        let tmp = Path.Combine(dir, sprintf "%s.%s.tmp" key (Guid.NewGuid().ToString "N"))
+
+        do
+            use s = new MemoryStream()
+            use w = new BinaryWriter(s, Text.Encoding.UTF8, true)
+            w.Write key
+
+            Snapshot.write s st (fun o ->
+                match positions.TryGetValue o with
+                | true, p -> Some p
+                | _ -> None)
+
+            w.Write key
+            w.Flush()
+            File.WriteAllBytes(tmp, s.ToArray())
+
+        // whole or not at all, for builds running at the same time
+        File.Move(tmp, Path.Combine(dir, key + ".bin"), true)
+
+        // the most recently used states are kept (each compiler and set of sources has its own)
+        evict dir "*.bin" 64
+    with _ ->
+        () // not cached: the next build checks everything again
+
+/// Whether builds use the cache (ZS_NO_CACHE=1 turns it off).
+let private cacheOn () = isNull (Environment.GetEnvironmentVariable "ZS_NO_CACHE")
+
+/// Parses and type-checks; with collect, every declaration's error is in the result. With
+/// cached, the checked library and the main file's other modules come from the cache when
+/// their sources haven't changed; their hovers aren't kept, so it's for builds, not editors.
+let checkWith (cached: bool) (mainPath: string) (requireMain: bool) (collect: bool) : Core.Program =
     positions.Clear()
     links.Clear()
     Typer.unavailable.Clear()
@@ -510,7 +595,40 @@ let check (mainPath: string) (requireMain: bool) (collect: bool) : Core.Program 
             for f in stdFiles do
                 Typer.unavailable.Add(f.Replace('/', '.')) |> ignore
 
-        Typer.check requireMain collect (libraryModules libraryDir hosted @ loadModules mainPath)
+        let program = loadModules mainPath
+
+        if not (cached && cacheOn ()) then
+            Typer.check requireMain collect (libraryModules libraryDir hosted @ program)
+        else
+            let libFiles =
+                "prelude.zs"
+                :: [ for f in coreFiles -> "core/" + f + ".zs" ]
+                @ (if hosted then [ for f in stdFiles -> "std/" + f + ".zs" ] else [])
+                |> List.map (fun f -> Path.Combine(libraryDir, f))
+
+            let deps = List.take (program.Length - 1) program
+            let libKey = hashOf (compilerId.Value :: [ for f in libFiles -> f + "\n" + readSource f ])
+            let depKey = hashOf (libKey :: [ for path, m, _ in deps -> path + "\n" + defaultArg m "" + "\n" + readSource path ])
+
+            let full () =
+                let lib = libraryModules libraryDir hosted
+
+                Typer.checkFrom requireMain collect None (fun i st ->
+                    if i = lib.Length - 1 then saveState libKey st
+                    elif i = lib.Length + deps.Length - 1 then saveState depKey st) (lib @ program)
+
+            try
+                match (if deps.IsEmpty then None else loadState depKey) with
+                | Some st -> Typer.checkFrom requireMain collect (Some st) (fun _ _ -> ()) [ List.last program ]
+                | None ->
+                    match loadState libKey with
+                    | Some st -> Typer.checkFrom requireMain collect (Some st) (fun i st -> if i = deps.Length - 1 then saveState depKey st) program
+                    | None -> full ()
+            with Typer.StaleSnapshot _ ->
+                full () // the program's own positions stay; the snapshot's are never reached again
+
+/// Parses and type-checks everything (with every hover, for editors and tools).
+let check (mainPath: string) (requireMain: bool) (collect: bool) : Core.Program = checkWith false mainPath requireMain collect
 
 /// Source files -> typed Core -> monomorphic -> closure-converted -> RC-annotated -> LLVM IR
 /// (and a C header for [<Export>] functions). A library doesn't need `main`.
@@ -526,9 +644,10 @@ let private timed (phase: string) (f: unit -> 'a) : 'a =
 /// zs test: build the [<Test>] functions with a test dispatcher in place of `main`.
 let mutable testBuild = false
 
-let compileProgram (mainPath: string) (isLib: bool) =
+/// Source files -> checked and lowered (monomorphic, closure-converted, RC-annotated) functions.
+let private lower (mainPath: string) (isLib: bool) =
     timings.Clear()
-    let prog = timed "parse + check" (fun () -> check mainPath (not isLib) true)
+    let prog = timed "parse + check" (fun () -> checkWith true mainPath (not isLib) true)
 
     let prog =
         if testBuild then { prog with funs = prog.funs |> List.filter (fun f -> f.name <> "main") } else prog
@@ -545,11 +664,13 @@ let compileProgram (mainPath: string) (isLib: bool) =
         let funs =
             try
                 // a -g build keeps every function whole, so breakpoints on them hit
-                let inline' = if Codegen.debugInfo then id else Inline.run
+                let fixedNames = set ("main" :: prog.tests @ (prog.exports |> List.map (fun e -> e.fname)))
+                let inline' = if Codegen.debugInfo then id else Inline.uncurry fixedNames >> Inline.run
                 // ZS_NO_DECIDE=1: matches as written, to compare with decision trees
                 let decide = if isNull (Environment.GetEnvironmentVariable "ZS_NO_DECIDE") then Decide.run prog.types else id
                 let mono = timed "monomorphize" (fun () -> Mono.run prog |> Mono.fuse)
                 let mono = timed "inline" (fun () -> inline' mono)
+                let mono = timed "simplify" (fun () -> if Codegen.debugInfo then mono else Simplify.run prog.types mono)
                 let mono = timed "decision trees" (fun () -> decide mono)
                 let lifted = timed "lift closures" (fun () -> Lift.run mono)
                 let counted = timed "reference counting" (fun () -> Rc.run prog.types lifted)
@@ -566,7 +687,112 @@ let compileProgram (mainPath: string) (isLib: bool) =
             with CompileError(l, m) ->
                 raise (CompileErrorAt(mainPath, l, 0, m))
 
-        Ok(timed "LLVM IR" (fun () -> Codegen.compile prog.types prog.externs prog.exports prog.tests prog.values prog.clayouts funs))
+        Ok(prog, funs)
+
+/// The program as one LLVM module (and the C header of its exports).
+let compileProgram (mainPath: string) (isLib: bool) =
+    lower mainPath isLib
+    |> Result.map (fun (prog, funs) ->
+        timed "LLVM IR" (fun () -> Codegen.compile prog.types prog.externs prog.exports prog.tests prog.values prog.clayouts None funs))
+
+/// How a program is split into LLVM modules: one per source file of the program, holding that
+/// file's functions and a copy of each library function (or instance of a generic one) they
+/// use, so LLVM inlines within a module as it would in one big module. A file whose functions
+/// don't change compiles to the same IR, which the object cache then reuses.
+let private partition (mainPath: string) (prog: Core.Program) (funs: Mono.MFun list) : Codegen.Part list =
+    // a lifted lambda or local function goes with the function it's in
+    let root (name: string) =
+        match name.IndexOf('$', 1) with
+        | -1 -> name
+        | i -> name.Substring(0, i)
+
+    let library = Dictionary<string, bool>()
+
+    let shared (f: Mono.MFun) =
+        let lib =
+            match library.TryGetValue f.file with
+            | true, b -> b
+            | _ ->
+                let b = f.file = "" || isLibrary f.file
+                library[f.file] <- b
+                b
+
+        lib || (root f.name).Contains '<'
+
+    let byName = funs |> List.map (fun f -> f.name, f) |> dict
+
+    let calls (f: Mono.MFun) =
+        let acc = HashSet<string>()
+
+        let rec walk (e: Core.CExpr) =
+            match e.k with
+            | Core.CCallDirect(g, _)
+            | Core.CMkClosure(g, _) -> acc.Add g |> ignore
+            | _ -> ()
+
+            Core.children e.k |> List.iter walk
+
+        walk f.body
+        acc
+
+    let main = Path.GetFullPath mainPath
+    let owners = funs |> List.filter (shared >> not) |> List.groupBy (fun f -> Path.GetFullPath f.file)
+    let ownerOf = Dictionary<string, string>()
+
+    for file, fs in owners do
+        for f in fs do
+            ownerOf[f.name] <- file
+
+    // what the entry points call: main, the tests, exports and the values' initializers
+    let entryCalls = "main" :: prog.tests @ (prog.exports |> List.map (fun e -> e.fname)) @ (prog.values |> List.map snd)
+    let called = HashSet<string>()
+
+    let parts =
+        owners
+        |> List.map (fun (file, fs) ->
+            let defines = HashSet<string>(fs |> List.map (fun f -> f.name))
+            let queue = Queue<Mono.MFun>(fs)
+
+            while queue.Count > 0 do
+                let f = queue.Dequeue()
+
+                for g in calls f do
+                    match byName.TryGetValue g with
+                    | true, gf when shared gf -> if defines.Add g then queue.Enqueue gf
+                    | true, _ when ownerOf[g] <> file -> called.Add g |> ignore
+                    | _ -> ()
+
+            file, defines)
+
+    for g in entryCalls do
+        match ownerOf.TryGetValue g with
+        | true, file when file <> main -> called.Add g |> ignore
+        | _ -> ()
+
+    parts
+    |> List.map (fun (file, defines) ->
+        { defines = defines
+          called = HashSet<string>(defines |> Seq.filter called.Contains)
+          entry = (file = main) })
+
+/// The program as LLVM modules, one per source file (partition).
+let private compileParts (mainPath: string) =
+    lower mainPath false
+    |> Result.map (fun (prog, funs) ->
+        timed "LLVM IR" (fun () ->
+            let compile part = fst (Codegen.compile prog.types prog.externs prog.exports prog.tests prog.values prog.clayouts part funs)
+
+            let parts =
+                match partition mainPath prog funs with
+                | [ _ ] -> [ compile None ] // one file: one module, as it always was
+                | parts ->
+                    // each part on its own, on every core
+                    try
+                        parts |> Array.ofList |> Array.Parallel.map (Some >> compile) |> List.ofArray
+                    with :? AggregateException as e ->
+                        raise e.InnerExceptions[0]
+
+            parts))
 
 /// Runs a program; with capture, returns its stdout and stderr too (stdin is empty).
 let exec (exe: string) (args: string list) (capture: bool) : int * string =
@@ -595,6 +821,62 @@ let exec (exe: string) (args: string list) (capture: bool) : int * string =
 /// The optimization level for clang: -O2, or -Os (zs build -Os) for size.
 let mutable optLevel = "-O2"
 
+/// Runs a tool; None, or the failure with its output.
+let private run (exe: string) (args: string list) =
+    let code, output = exec exe args true
+    if code = 0 then None else Some(sprintf "%s failed: %s" exe (output.Trim()))
+
+/// The object compiled from source (LLVM IR, or C with c) with these clang flags: from the
+/// cache when it has one for exactly this source and these flags, else compiled and kept
+/// there. Returns the object file and whether it was compiled now.
+let private objectOf (source: string) (c: bool) (flags: string list) : Result<string * bool, string> =
+    let key = hashOf ("object" :: string c :: flags @ [ source ])
+    let cached = Path.Combine(cacheRoot (), "objects")
+
+    let dir =
+        try
+            Directory.CreateDirectory cached |> ignore
+            cached
+        with _ ->
+            Path.GetTempPath() // not writable: compiled every time
+
+    let obj = Path.Combine(dir, key + ".o")
+
+    if File.Exists obj then
+        (try File.SetLastWriteTimeUtc(obj, DateTime.UtcNow) with _ -> ()) // recently used: kept longest
+        Ok(obj, false)
+    else
+        let tmp = Path.Combine(dir, sprintf "%s.%s" key (Guid.NewGuid().ToString "N"))
+        let input = tmp + (if c then ".c" else ".ll")
+        File.WriteAllText(input, source)
+
+        let failure = run "clang" (flags @ [ "-c"; "-Wno-override-module"; input; "-o"; tmp + ".o" ])
+        File.Delete input
+
+        match failure with
+        | Some msg -> Error msg
+        | None ->
+            File.Move(tmp + ".o", obj, true) // whole or not at all, for builds running at the same time
+            Ok(obj, true)
+
+/// Compiles a program's LLVM modules to objects in parallel (each one the cache hasn't seen),
+/// the runtime too, and links them into an executable.
+let private linkParts (parts: string list) (out: string) : string option =
+    let flags = [ optLevel ]
+    let all = Array.ofList ((File.ReadAllText(runtimeFile "rt.c"), true) :: (parts |> List.map (fun ir -> ir, false)))
+    let sw = Stopwatch.StartNew()
+    let objects = all |> Array.Parallel.map (fun (source, c) -> objectOf source c flags)
+    let compiled = objects |> Array.sumBy (fun o -> match o with Ok(_, true) -> 1 | _ -> 0)
+    timings.Add(sprintf "clang (%d of %d new)" compiled objects.Length, sw.Elapsed.TotalMilliseconds)
+
+    match objects |> Array.tryPick (fun o -> match o with Error msg -> Some msg | Ok _ -> None) with
+    | Some msg -> Some msg
+    | None ->
+        evict (Path.Combine(cacheRoot (), "objects")) "*.o" 256
+        let files = objects |> Array.map (fun o -> match o with Ok(f, _) -> f | Error _ -> "") |> List.ofArray
+        let linked = links |> Seq.map (fun l -> if l.Contains "/" then l else "-l" + l) |> List.ofSeq
+        timed "link" (fun () -> run "clang" (flags @ [ "-rdynamic" ] @ files @ linked @ [ "-o"; out; "-lm" ]))
+
 /// .zs -> LLVM IR -> clang (with the runtime) -> native executable, or with isLib a static
 /// library (.a) plus its header (.h).
 let build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) (isLib: bool) : Result<unit, Core.Diagnostic list> =
@@ -604,12 +886,12 @@ let build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) (isLib: 
             col = 0
             msg = msg } ]
 
-    let ir =
+    let catching (f: unit -> Result<'a, Core.Diagnostic list>) =
         try
             if not (File.Exists src || overlay.ContainsKey(Path.GetFullPath src)) then
                 raise (CompileErrorAt(src, 0, 0, "file not found"))
 
-            compileProgram src isLib
+            f ()
         with
         | CompileErrorAt(file, line, col, msg) ->
             Error
@@ -624,7 +906,19 @@ let build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) (isLib: 
                     col = 0
                     msg = msg } ]
 
-    match ir with
+    // a native executable for the host: a module per source file, compiled in parallel and
+    // from the cache when unchanged (the other builds are one module, as they always were)
+    let split = mcu.IsNone && Codegen.target = "" && not isLib && not emitLlvm && not Codegen.debugInfo && not sanitize
+
+    if split then
+        catching (fun () -> compileParts src)
+        |> Result.bind (fun parts ->
+            match linkParts parts out with
+            | None -> Ok()
+            | Some msg -> Error(toolError msg))
+    else
+
+    match catching (fun () -> compileProgram src isLib) with
     | Error e -> Error e
     | Ok(ir, header) ->
         let ll =
@@ -637,10 +931,6 @@ let build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) (isLib: 
         let san = if sanitize then [ "-fsanitize=address,undefined"; "-g" ] else []
         // -g: unoptimized, so stepping follows the source
         let opt = if Codegen.debugInfo then [ "-O0"; "-g" ] else [ optLevel ]
-
-        let run (exe: string) (args: string list) =
-            let code, output = exec exe args true
-            if code = 0 then None else Some(sprintf "%s failed: %s" exe (output.Trim()))
 
         // a cross build (--target): clang compiles the IR for the target, and zig cc compiles the
         // runtime and links against Zig's bundled libc (musl: a static binary, no sysroot needed)

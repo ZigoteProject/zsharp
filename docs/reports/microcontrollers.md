@@ -18,7 +18,7 @@ the same chip, in speed, flash and RAM?
 | Heap | Z#: 64 KB on the M4, 8 KB on the M0. C: 1 KB, since C doesn't need one |
 | Speed measure | Instructions executed in the timed part only (printing excluded). QEMU runs with `-icount`, so virtual time advances per instruction, and SysTick reads it. A calibration loop with a known instruction count gives the factor (40 per tick on the M4, 62.5 on the M0). Results are deterministic |
 | Sizes | `llvm-size`: flash = text + data; heap peak from the allocator; stack peak by stack painting |
-| Measured | the compiler at commit `63850ee` |
+| Measured | the compiler at commit `63850ee`, and again at the end of phase 5: the same instruction counts, flash, heap and stack |
 | Reproduce | `./dev bash bench/mcu/run.sh cortex-m4 -O2` (or `-Os`, or `cortex-m0plus`) |
 
 ## The programs
@@ -97,5 +97,5 @@ On the way, the measurements found gaps that blocked ordinary firmware code, and
 ## How the comparison could mislead
 
 - **Instructions are not cycles:** loads, branches and flash wait states cost differently on a real chip. Ratios between two programs on the same chip are a good guide; absolute times aren't.
-- **`pipeline`:** the Z# version is idiomatic, and fusion turns it into a loop. The C version is the loop a C programmer would write. Without fusion the Z# version was 37× C, so code that fusion doesn't cover yet (for example `List.map` feeding another list) still allocates.
+- **`pipeline`:** the Z# version is idiomatic, and fusion turns it into a loop. The C version is the loop a C programmer would write. Without fusion the Z# version was 37× C, so code that fusion doesn't cover (stages that aren't pure lambdas) still allocates.
 - **`fib64`:** this compares Z#'s default `int` (32-bit on these chips) with C's `int64_t`. It shows the benefit of a native-width `int`, not a faster 64-bit addition.

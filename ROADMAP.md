@@ -17,7 +17,7 @@ OCaml for the host benchmarks).
  v3:                   10 effect handlers ─ (11 self-hosting)
  alongside:            E editors, M microcontrollers, T more targets
 
- done: 0–4 and L        now: 5
+ done: 0–5 and L        now: V
 ```
 
 - **v1 (phases 0–6, L and V):** the complete single-threaded language. It is fast, memory-safe, has C interop, and runs async on one event loop.
@@ -29,57 +29,25 @@ OCaml for the host benchmarks).
 
 **Works today:**
 - **Language:** inference (lambdas get their parameter types from the call), records with defaults, unions, exhaustive matching (record, string and character patterns), active patterns, units of measure, traits, derives, members with named and optional arguments, nested modules with their own fields and traits, closures, generics, custom operators, `char`, multi-line and raw strings.
-- **Memory and performance:** Perceus RC with borrowing and reuse, copy-on-write arrays, checked arithmetic. On the host benchmarks it's within 1.31× of C, except `fib` (2.1×: overflow checks; 1.1× of C with the same checks). On compute code it's as fast as C on a Cortex-M.
+- **Memory and performance:** Perceus RC with borrowing and reuse, copy-on-write arrays, checked arithmetic, and an optimizer that inlines, uncurries, resolves known constructors and fuses pipelines. On the host benchmarks it's within 1.21× of C with C's peak memory, except `fib` (2.0×: overflow checks; 1.1× of C with the same checks). On compute code it's as fast as C on a Cortex-M.
 - **Library:** a prelude, Core (collections, text, options, results: every target) and Std (console, environment, files, paths, processes, timing: targets with an OS), in .NET-style namespaces.
 - **C:** C import and export, with a panic hook for C hosts.
 - **Targets:** x86-64, aarch64 (cross), Cortex-M4 and M0+ (bare metal).
 - **Tooling:** projects with path and git dependencies, `zs test`/`fmt`/`doc`, gdb debug info, and an LSP, MCP server and Zed extension.
 
 **Known gaps** (in priority order, each with the phase or track that closes it):
-1. **Optimizer (phase 5):**
-   - no case-of-case;
-   - fusion only starts from `List.init`;
-   - the library is re-checked on every build: 150 ms of the 0.42 s a one-line program takes (caching each module's checked Core removes it).
-2. **v1 features (phase V):** no `weak` references, `Arena`, `dyn Trait`, or `ptr<'a>` with `unsafe`.
-3. **C ABI (phase V; 32-bit ARM in track M):**
+1. **v1 features (phase V):** no `weak` references, `Arena`, `dyn Trait`, or `ptr<'a>` with `unsafe`.
+2. **C ABI (phase V; 32-bit ARM in track M):**
    - running out of argument registers isn't modelled (x86-64 then passes a struct on the stack whole);
    - 32-bit ARM passes structs by value with the x86-64 rules;
    - C function pointers can't be called from Z#;
    - no `.so` output.
-4. **Debug info (phase V):** strings, records and unions aren't shown as gdb values.
-5. **Units of measure (phase V):** Kennedy's general case (a fresh variable) isn't implemented, so unannotated `*` across different units needs annotations.
-6. **Editor (track E):** no signature help, rename or code actions; the formatter doesn't reflow long lines.
-7. **Targets (track T):** no macOS or Windows builds.
+3. **Debug info (phase V):** strings, records and unions aren't shown as gdb values.
+4. **Units of measure (phase V):** Kennedy's general case (a fresh variable) isn't implemented, so unannotated `*` across different units needs annotations.
+5. **Editor (track E):** no signature help, rename or code actions; the formatter doesn't reflow long lines.
+6. **Targets (track T):** no macOS or Windows builds.
 
 ## Next
-
-### Phase 5: optimizer I (in progress)
-**Done:**
-- **On the microcontroller track, early:** borrow inference, unboxed small unions, bounds-check hoisting (loop versioning), LLVM aliasing and range facts, list fusion (first form).
-- **Host benchmark suite:** `bench/host/run.sh` runs fib, binary-trees, nbody, spectral-norm and a red-black tree in Z#, C (clang -O2, and with `-ftrapv`), Rust, Swift, Zig and OCaml. Outputs must agree; times are best of 3, with peak memory. `./test.sh` fails when a Z# program needs more than 5% more instructions (cachegrind, deterministic) than in `bench/host/baseline.txt`. Details: [the report](docs/reports/host.md).
-  - `Math.sqrt` came with it: the LLVM intrinsic, one instruction where the hardware has it.
-- **Inlining and re-matching:**
-  - A call to a small function that doesn't call itself becomes a copy of its body (callees first; not with `-g`).
-  - A branch where a matched value dies matches it again, so it takes the cell apart itself and can reuse it, even when another branch returns the value.
-  - Together they rebuild a red-black tree's path in place: 80.9M → 35.5M instructions (C: 16.5M).
-- **Decision trees:**
-  - A match whose patterns nest becomes a tree of one-level matches, so no value is tested twice.
-  - A part reached on several paths is built once, as a join point the paths jump to; reuse tokens and borrowed fields go along as parameters.
-  - Measured: the red-black tree's `balance` gains little (35.5M → 35.4M), because LLVM had already merged the repeated tests. Their value is in larger matches and in keeping reuse whole.
-- **Reference counts:** the fast paths test the count's sign, as phase 7 needs (DESIGN §7.1): the red-black tree runs 1.7% fewer instructions.
-- **Compile time:** the published compiler is precompiled (ReadyToRun): a one-line program builds in 0.42 s instead of 0.71 s.
-
-**To do:**
-- **Core IR passes:** case-of-known-constructor, case-of-case, uncurrying.
-- **Representation:** `i8` enums, the null niche for `option<ref>`, tagged nullary constructors.
-- **Fusion:** from lists and arrays as sources, `map` into list consumers, and `iter`.
-- **F# in the host suite:** the same five programs on .NET, the comparison F# programmers will make.
-- **Compile time:** checked Core cached per module, keyed by content hash (libraries are source, DESIGN §9). A one-function change rebuilds in under 1 second.
-
-**Exit tests:**
-- fib, binary-trees, nbody, spectral-norm and the red-black tree each run within **1.5× of C** (clang -O2) on the host. `fib` is held to C built with `-ftrapv` instead: its time is overflow checks, which Z# keeps in every build (DESIGN decision 4), and `-ftrapv` gives C the same checks.
-  - **Today:** met. `fib` is 1.11× of C with `-ftrapv`; binary-trees 1.31×, nbody 0.95×, spectral-norm 0.98× and the red-black tree 1.10× of C ([the report](docs/reports/host.md)). The scope above is what's left.
-- The microcontroller suite stays within its current ratios.
 
 ### Phase V: v1 completion
 What DESIGN keeps in v1 beyond the syntax (decision 35), and the gaps left in C interop and
@@ -134,8 +102,8 @@ final language.
   - **Task speed:** `task { }` as stackless state machines, with no allocation per `let!`.
   - **Linking and profiling:** ThinLTO and PGO on the host. Measure again on microcontrollers, where bitcode linking of the runtime lost.
   - **Backend:** the LLVM C API instead of textual IR.
-  - **Build speed:** parallel module compilation.
-  - **Object header:** one word instead of two: a 32-bit count, the tag and the number of fields to scan, as in Koka. `binarytrees` uses 46% more memory than C today, mostly in headers.
+  - **Build speed:** the passes after type checking run over the whole program in every build (in parallel since phase 5, but most of a rebuild of a large program: 0.6 s of the 0.86 s a 2,600-line program of 30 modules takes); keeping their result per source file would make a rebuild follow the size of the change.
+  - **Object header:** one word: a 32-bit count, the tag and the number of fields to scan, as in Koka. A union cell with a tag has two words today, as do strings and arrays (a count and a length).
 - **Exit tests:**
   - A Task microbenchmark makes zero allocations per await.
   - The phase 5 suite reaches **1.2× of C** (`fib`: of C with `-ftrapv`).
@@ -350,3 +318,45 @@ Before more of phase 5:
 - `tests/cexport`: the hook runs on a panic, and ends the process its own way.
 - `tests/modules/scope.zs`: two modules with the same record, trait and derive names; `err_field_scope.zs`: a record out of scope, found by its fields, is an error that says how to reach it.
 - `tests/pipe_inference.zs`: members inside lambdas, through `|>` and without it.
+
+### Phase 5: optimizer I ✅
+- **On the microcontroller track, early:** borrow inference, unboxed small unions, bounds-check hoisting (loop versioning), LLVM aliasing and range facts, list fusion (first form).
+- **Host benchmark suite:** `bench/host/run.sh` runs fib, binary-trees, nbody, spectral-norm and a red-black tree in Z#, C (clang -O2, and with `-ftrapv`), Rust, Swift, Zig, OCaml and F# (a Release build on .NET, startup included). Outputs must agree; times are best of 3, with peak memory. `./test.sh` fails when a Z# program needs more than 5% more instructions (cachegrind, deterministic) than in `bench/host/baseline.txt`. Details: [the report](docs/reports/host.md).
+  - `Math.sqrt` came with it: the LLVM intrinsic, one instruction where the hardware has it.
+- **Inlining and re-matching:**
+  - A call to a small function that doesn't call itself becomes a copy of its body (callees first; not with `-g`).
+  - A branch where a matched value dies matches it again, so it takes the cell apart itself and can reuse it, even when another branch returns the value.
+  - Together they rebuild a red-black tree's path in place: 80.9M → 35.5M instructions (C: 16.5M).
+- **Decision trees:**
+  - A match whose patterns nest becomes a tree of one-level matches, so no value is tested twice.
+  - A part reached on several paths is built once, as a join point the paths jump to; reuse tokens and borrowed fields go along as parameters.
+  - Measured: the red-black tree's `balance` gains little (35.5M → 35.4M), because LLVM had already merged the repeated tests. Their value is in larger matches and in keeping reuse whole.
+- **Reference counts:** the fast paths test the count's sign, as phase 7 needs (DESIGN §7.1): the red-black tree runs 1.7% fewer instructions.
+- **Representation** (DESIGN §5.1):
+  - **Cases without fields** (`[]`, `Leaf`, `Empty`) are static cells, and a match tells them apart by address, loading nothing.
+  - **No tag in a cell** when the union has one case with fields: a list cell or a `binarytrees` node is 24 bytes instead of 32. `binarytrees` now needs C's peak memory (it needed 46% more), and runs 4.8% fewer instructions; the red-black tree 1.4% fewer.
+  - **The `option` niche:** `option<string>`, `option<list<int>>` and any union of `option`'s shape over a pointer are the pointer, or one static object for `None`, so `Some s` allocates nothing.
+  - **Enums are a byte.** A byte tag next to fields was measured too: it costs an extension at every test on a Cortex-M (4% on `tokens`) and saves no space, so other small unions keep 32 bits.
+  - **Not done as first planned:** nullary cases as tagged odd numbers, and `None` as null. Both put a test in every dup and drop of a union (measured: 3.8% more instructions on the red-black tree); static cells keep dup and drop as they were, and matching still loads nothing.
+- **Uncurrying:**
+  - A function whose body is a lambda takes its parameters (`let add x = fun y -> …` has two), and a lambda returning a lambda merges.
+  - A closure applied to several arguments calls code taking all of them when it takes that many, which the closure's static description (drop function, arity, that code) tells. A `List.fold` whose lambda captures a variable built a closure per element: 1,001 allocations over 1,000 elements, now 1.
+- **Simplification after inlining** (`Simplify`, DESIGN §9.1):
+  - **Known constructors:** a match on a value whose case is known (built there, bound by `let`, or taken by an enclosing case) takes its case at compile time, matching inside its fields directly.
+  - **Case of case:** a match on a match or an `if` moves into its branches, and those that build a value take their case; a body reached from several branches becomes a join point.
+  - **Lambdas:** one bound by `let` and only called is applied in place.
+  - So `match Option.map f o with …`, a `Result.map` on a known result, or an `if` on an inlined `List.isEmpty` build no `option`, `result` or `bool`.
+- **Fusion:** a pipeline of `map`s and `filter`s from `List.init`, a list, `Array.init` or an array into `sum`, `sumBy`, `length`, `fold` or `iter` is one loop; one of several stages that builds a list or an array builds only that one (in place when its source's cells are unique). `iter`'s function may print: the stages before it must then be unable to panic (DESIGN decision 36).
+- **Compile time:**
+  - **The checked library is cached:** the type checker's state after the library, and after a main file's other modules, saved in `~/.cache/zs/checked` under a hash of the compiler and of their sources, and read back in 10 ms without reflection. A build checks only the main file, or its modules too when one of them changed.
+  - **A module per source file:** a program of several files becomes one LLVM module per file, each with a copy of the library functions (and generic instances) it uses, so LLVM inlines as it did in one module; a single-file program is one module, as before. The modules, and the runtime, compile in parallel, and each object is kept in `~/.cache/zs/objects` under a hash of its IR, so a rebuild compiles only the modules whose code changed.
+  - **Stable code:** every pass names what it makes per function (Mono, fusion, inlining, simplification, decision trees, lifting, reference counting), so a file whose functions didn't change compiles to byte-identical IR, whatever else changed.
+  - **Every core:** simplification, decision trees, lifting, reference counting and code generation run per function (or per module) in parallel, with the server GC.
+  - **Startup:** the published compiler is precompiled (ReadyToRun: a one-line program then built in 0.42 s instead of 0.71 s), and now as one composite image with FSharp.Core and .NET when self-contained, which the JIT has less left to compile in.
+  - **Measured** (the published compiler, wall time): a one-line program builds in 0.20 s, against 0.39 s with the compiler before this work. `bench/compile/run.sh` times a generated program of modules, built from nothing and then after a one-function change: with 10 modules (877 lines), 1.1 s from nothing and **0.46 s** after a change in the main file or a module (2.7 s before); with 30 modules (2,617 lines), 2.5 s and **0.86 s** (8.1 s before).
+  - `tests/cache.sh` checks that a program from the cache is the same as one without it, and which modules a change compiles again; every test program was compared the same way. `tests/modules/parts.zs`: what's shared between modules (a case without fields, `None`, a top-level value) is the same object in each.
+- **Exit tests:**
+  - All five programs within **1.5× of C** (clang -O2), `fib` against C built with `-ftrapv`, whose overflow checks Z# keeps in every build (DESIGN decision 4): `fib` 1.12× of checked C; binary-trees 1.21×, nbody 0.96×, spectral-norm 0.97× and the red-black tree 1.07× of C ([the report](docs/reports/host.md)).
+  - The microcontroller suite: the same counts, flash and memory as before, on both chips at both levels ([the report](docs/reports/microcontrollers.md)).
+  - A one-function change rebuilds in **under 1 second**: 0.46 s for 10 modules (877 lines), 0.86 s for 30 (2,617 lines), with the published compiler (`bench/compile/run.sh`).
+  - `tests/representation.zs`, `tests/uncurry.zs`, `tests/simplify.zs`, `tests/fusion.zs`, `tests/cache.sh`, `tests/modules/parts.zs`.
