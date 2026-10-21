@@ -92,8 +92,20 @@ let loadModules (mainPath: string) : (string * string option * (int * Decl) list
 /// Parses and type-checks; with collect, every declaration's error is in the result.
 let check (mainPath: string) (requireMain: bool) (collect: bool) : Core.Program =
     positions.Clear()
-    let _, prelude = parseFile (runtimeFile "prelude.zs")
-    Typer.check requireMain collect (("prelude.zs", None, prelude) :: loadModules mainPath)
+    let full = Path.GetFullPath mainPath
+
+    // checking the prelude itself (the installed one, or runtime/prelude.zs in a checkout):
+    // it is the prelude, not a program that would define everything a second time
+    let isPrelude =
+        full = Path.GetFullPath(runtimeFile "prelude.zs")
+        || (Path.GetFileName full = "prelude.zs" && Path.GetFileName(Path.GetDirectoryName full) = "runtime")
+
+    if isPrelude then
+        let _, decls = parseFile mainPath
+        Typer.check false collect [ mainPath, None, decls ]
+    else
+        let _, prelude = parseFile (runtimeFile "prelude.zs")
+        Typer.check requireMain collect (("prelude.zs", None, prelude) :: loadModules mainPath)
 
 /// Source files -> typed Core -> monomorphic -> closure-converted -> RC-annotated -> LLVM IR
 /// (and a C header for [<Export>] functions). A library doesn't need `main`.

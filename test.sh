@@ -36,6 +36,10 @@ for t in $(find tests -name '*.zs' | sort); do
   if [ "$actual" == "$expected" ]; then echo "ok   $t"
   else echo "FAIL $t"; diff <(echo "$expected") <(echo "$actual") | head -20; fail=1; fi
 done
+# the prelude checks on its own (an editor opening it must not see everything defined twice)
+if bin/zs check runtime/prelude.zs >"$tmp/prelude.log" 2>&1; then echo "ok   zs check runtime/prelude.zs"
+else echo "FAIL zs check runtime/prelude.zs"; head -5 "$tmp/prelude.log"; fail=1; fi
+
 # the repository's own Z# code is formatted (zs fmt)
 if bin/zs fmt --check $(find tests runtime -name '*.zs') 2>"$tmp/fmt.log"; then echo "ok   zs fmt --check"
 else echo "FAIL zs fmt --check (run: bin/zs fmt \$(find tests runtime -name '*.zs'))"; cat "$tmp/fmt.log"; fail=1; fi
