@@ -40,13 +40,16 @@ let rec private spaces (cases: string -> (string * int) list) p =
         con { name = fst all[tag]; arity = ps.Length; all = Some all } ps
     | CPOr(a, b) -> spaces cases a @ spaces cases b
 
-let rec private render s =
+let rec private render (bare: string -> bool) s =
+    let render = render bare
+
     let atomic s =
         match s with
-        | SCon(c, _ :: _) when c.name <> "," -> "(" + render s + ")"
+        | SCon(c, _ :: _) when c.name <> "," && not (bare c.name) -> "(" + render s + ")"
         | _ -> render s
 
     match s with
+    | SCon(c, [ SWild ]) when bare c.name -> c.name
     | SWild -> "_"
     | SCon({ name = "," }, args) -> "(" + (args |> List.map render |> String.concat ", ") + ")"
     | SCon({ name = "::" }, [ h; t ]) -> atomic h + " :: " + render t
@@ -111,7 +114,8 @@ let rec private useful (rows: Space list list) (q: Space list) : Space list opti
 
 /// Fails if a clause can never match or if some value matches no clause.
 /// clauses: (pattern, has guard); guarded clauses don't count toward coverage.
-let check (cases: string -> (string * int) list) (clauses: (CPat * bool) list) =
+/// bare: constructors whose payload is optional (active pattern cases), shown without it.
+let check (cases: string -> (string * int) list) (bare: string -> bool) (clauses: (CPat * bool) list) =
     let mutable rows = []
 
     for p, guarded in clauses do
@@ -124,5 +128,5 @@ let check (cases: string -> (string * int) list) (clauses: (CPat * bool) list) =
             rows <- rows @ (ps |> List.map (fun s -> [ s ]))
 
     match useful rows [ SWild ] with
-    | Some w -> fail 0 (sprintf "match is not exhaustive; missing case: %s" (render w.Head))
+    | Some w -> fail 0 (sprintf "match is not exhaustive; missing case: %s" (render bare w.Head))
     | None -> ()

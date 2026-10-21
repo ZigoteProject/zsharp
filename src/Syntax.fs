@@ -27,6 +27,7 @@ type Pat =
     | POr of Pat * Pat
     | PAs of Pat * string
     | PNamed of (string * Pat) list // constructor fields by name: Rect(h = h)
+    | PArgs of Pat list // several atoms after a name: arguments of a parameterized active pattern
 
 type Expr =
     | Lit of int64
@@ -577,7 +578,11 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
         match peek () with
         | KId c when c <> "_" && startsPatAtom (peek2 ()) && (Char.IsUpper c[0] || c.Contains ".") ->
             advance ()
-            PIdent(c, Some(patAtom ()))
+
+            match [ while startsPatAtom (peek ()) do
+                        yield patAtom () ] with
+            | [ p ] -> PIdent(c, Some p)
+            | ps -> PIdent(c, Some(PArgs ps))
         | _ -> patAtom ()
 
     and patAtom () =
@@ -1428,7 +1433,22 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
             if isPrivate then
                 advance ()
 
-            let name = ident ()
+            // an active pattern: (|Even|Odd|) or (|Int|_|)
+            let name =
+                if isSym "(" && peek2 () = KSym "|" then
+                    advance ()
+                    advance ()
+                    let names = ResizeArray [ ident () ]
+
+                    while isSym "|" && peek2 () <> KSym ")" do
+                        advance ()
+                        names.Add(ident ())
+
+                    expect (KSym "|") "'|'"
+                    expect (KSym ")") "')'"
+                    "|" + String.concat "|" names + "|"
+                else
+                    ident ()
             let ps = parameters ()
 
             if ps.IsEmpty then

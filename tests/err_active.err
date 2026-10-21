@@ -1,0 +1,1 @@
+tests/err_active.zs:4: error: match is not exhaustive; missing case: Odd

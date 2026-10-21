@@ -207,6 +207,9 @@ let check (modules: (string * string option * (int * Decl) list) list) : Program
     let impls = Dictionary<string * string, Dictionary<string, string>>() // (trait, type) -> method -> function
     let implRequires = Dictionary<string * string, Set<string> list>() // traits each type argument needs
     let derives = Dictionary<string, (int * string * Param list * SType option * Expr) list>()
+    // active pattern case -> (function, total?, number of parameters before the value)
+    let activePatterns = Dictionary<string, string * bool * int>()
+    let apCtors = HashSet<string>() // cases of total active patterns: payload optional
     let manualImpls = HashSet<string * string>()
     let optOut = HashSet<string * string>() // [<NoEquality>] / [<NoComparison>]
     let mutable autoDerive: string -> string -> bool = fun _ _ -> false // set once derives can run
@@ -417,6 +420,8 @@ let check (modules: (string * string option * (int * Decl) list) list) : Program
 
             let subs =
                 match arg with
+                | None when apCtors.Contains c -> [ PWild ]
+                | Some(PArgs _) -> fail 0 (sprintf "constructor '%s' takes one argument pattern" c)
                 | Some(PNamed named) ->
                     let names = ctorFieldNames[c]
 
@@ -454,6 +459,7 @@ let check (modules: (string * string option * (int * Decl) list) list) : Program
             CPOr(ca, cb)
         | PAs(p, x) -> CPAs(pat names p ty, name x, ty)
         | PNamed _ -> fail 0 "named field patterns need a constructor: C(field = p)"
+        | PArgs _ -> fail 0 "only constructors and active patterns take arguments"
 
     let rec infer (env: Map<string, Local>) (depth: int) (e: Expr) : CExpr =
         let inf = infer env depth
@@ -791,8 +797,12 @@ let check (modules: (string * string option * (int * Decl) list) list) : Program
             let eu = uniq "$err"
             let errCase = CPCtor("result", errTag, [ CPVar(eu, er) ]), None, mk (CCtor("result", errTag, [ mk (CLocal eu) er ])) crest.ty
             let cases = [ (cp, None, crest); errCase ]
-            Match.check unionCases (cases |> List.map (fun (p, _, _) -> p, false))
+            Match.check unionCases apCtors.Contains (cases |> List.map (fun (p, _, _) -> p, false))
             mk (CMatch(ce, cases)) crest.ty
+        | Match(s, cases) when
+            not (isActiveCall s) && cases |> List.exists (fun (p: Pat, _, _) -> (activeOf p).IsSome)
+            ->
+            inf (desugarActive s cases)
         | Match(s, cases) ->
             let cs = inf s
             let resTy = fresh kAny
@@ -831,7 +841,7 @@ let check (modules: (string * string option * (int * Decl) list) list) : Program
                     expect "match case" resTy cb.ty
                     cp, cg, cb)
 
-            Match.check unionCases (ccases |> List.map (fun (p, g, _) -> p, g.IsSome))
+            Match.check unionCases apCtors.Contains (ccases |> List.map (fun (p, g, _) -> p, g.IsSome))
             mk (CMatch(cs, ccases)) resTy
 
     /// A literal-constrained type variable takes its default before a member lookup.
@@ -1066,6 +1076,95 @@ let check (modules: (string * string option * (int * Decl) list) list) : Program
         else
             mk (CGlobal(qname, Some inst)) t
 
+    /// The active pattern a case pattern uses at its top: (function, total?, args, case, value pattern).
+    and activeOf (p: Pat) : (string * bool * Expr list * string * Pat option) option =
+        let name, arg =
+            match p with
+            | PIdent(c, arg) -> Some c, arg
+            | _ -> None, None
+
+        match name |> Option.bind (resolveWith activePatterns.ContainsKey) with
+        | Some c ->
+            let fn, total, nargs = activePatterns[c]
+
+            let atoms =
+                match arg with
+                | Some(PArgs ps) -> ps
+                | Some p -> [ p ]
+                | None -> []
+
+            if atoms.Length < nargs then
+                fail 0 (sprintf "active pattern '%s' needs %d argument(s)" c nargs)
+
+            let toExpr p =
+                match p with
+                | PInt n -> Lit n
+                | PBool b -> BoolLit b
+                | PUnit -> UnitLit
+                | PIdent(x, None) -> Var x
+                | _ -> fail 0 "active pattern arguments must be literals or names"
+
+            let args = atoms |> List.take nargs |> List.map toExpr
+
+            let value =
+                match List.skip nargs atoms with
+                | [] -> None
+                | [ v ] -> Some v
+                | _ -> fail 0 (sprintf "too many patterns after active pattern '%s'" c)
+
+            Some(fn, total, args, c, value)
+        | None -> None
+
+    /// A match whose cases use active patterns becomes a chain of plain matches, in case order:
+    /// a run of ordinary cases matches the value; a run of one total active pattern matches its
+    /// result; a partial one matches Some value. Each falls through (`_`) to the rest.
+    and desugarActive (s: Expr) cases : Expr =
+        let sv = uniq "$ap"
+
+        let rec chain cases =
+            let fallback rest =
+                if List.isEmpty rest then [] else [ PWild, None, chain rest ]
+
+            match cases with
+            | [] -> failwith "unreachable"
+            | (p, _, _) :: _ when (activeOf p).IsNone ->
+                let group = cases |> List.takeWhile (fun (p, _, _) -> (activeOf p).IsNone)
+                let rest = List.skip group.Length cases
+                Match(Var sv, group @ fallback rest)
+            | (p, g, b) :: rest ->
+                let fn, total, args, c, value = (activeOf p).Value
+                let call = Call(fn, args @ [ Var sv ])
+
+                if total then
+                    let same (p, _, _) =
+                        match activeOf p with
+                        | Some(fn2, true, args2, _, _) -> fn2 = fn && args2 = args
+                        | _ -> false
+
+                    let group = cases |> List.takeWhile same
+                    let rest = List.skip group.Length cases
+
+                    let cases' =
+                        group
+                        |> List.map (fun (p, g, b) ->
+                            let _, _, _, c, value = (activeOf p).Value
+                            PIdent(c, value), g, b)
+
+                    Match(call, cases' @ fallback rest)
+                else
+                    if rest.IsEmpty then
+                        fail 0 (sprintf "active pattern '%s' can fail; add a case after it" c)
+
+                    Match(call, [ PIdent("Some", Some(defaultArg value PWild)), g, b ] @ fallback rest)
+
+        Let(PIdent(sv, None), None, s, chain cases)
+
+    /// A match on an active pattern function's result (made by desugarActive) uses its cases directly.
+    and isActiveCall (e: Expr) =
+        match e with
+        | Call(f, _) -> activePatterns.Values |> Seq.exists (fun (fn, _, _) -> fn = f)
+        | _ -> false
+
     and resolveName (x: string) : string option =
         resolveWith
             (fun q ->
@@ -1105,6 +1204,9 @@ let check (modules: (string * string option * (int * Decl) list) list) : Program
 
                     match caseFields u tag targs with
                     | [] -> mk (CCtor(u, tag, [])) uty
+                    | [ ft ] when apCtors.Contains x ->
+                        expect (sprintf "'%s' without a value" x) tUnit ft
+                        mk (CCtor(u, tag, [ mk CUnit tUnit ])) uty
                     | [ ft ] ->
                         let p = uniq "$v"
                         mk (CLam([ p, ft ], mk (CCtor(u, tag, [ mk (CLocal p) ft ])) uty)) (TFun(ft, uty))
@@ -1709,6 +1811,34 @@ let check (modules: (string * string option * (int * Decl) list) list) : Program
                     { pars = List.map cty args
                       ret = cty ret
                       variadic = variadic }
+            | Fun(name, isRec, ps, ret, body) when name.StartsWith "|" ->
+                // active pattern: cases become constructors of a hidden union (total) or option (partial)
+                let names = name.Trim('|').Split('|') |> List.ofArray
+                let fn = qualify name
+                let partial = List.last names = "_"
+
+                if partial then
+                    if names.Length <> 2 then
+                        fail 0 "a partial active pattern has one case: (|Name|_|)"
+
+                    activePatterns[qualify names.Head] <- (fn, false, ps.Length - 1)
+                else
+                    let u = qualify ("$AP" + name)
+                    types[u] <- { npars = names.Length; def = UnionDef(names |> List.mapi (fun i c -> qualify c, [ TGen i ])) }
+
+                    names
+                    |> List.iteri (fun i c ->
+                        let qc = qualify c
+
+                        if ctors.ContainsKey qc then
+                            fail 0 (sprintf "constructor '%s' is already defined" c)
+
+                        ctors[qc] <- (u, i)
+                        ctorFieldNames[qc] <- [ None ]
+                        apCtors.Add qc |> ignore
+                        activePatterns[qc] <- (fn, true, ps.Length - 1))
+
+                defineGroup [ ln, fn, isRec, ps, ret, body ]
             | Fun(name, isRec, ps, ret, body) ->
                 let name = qualify name
 
