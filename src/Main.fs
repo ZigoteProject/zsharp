@@ -151,6 +151,49 @@ let main argv =
         with CompileErrorAt(file, line, col, msg) ->
             printError file line col msg
             1
+    | "test" :: src :: filter ->
+        // builds the file's [<Test>] functions and runs each in its own process, so a failed
+        // assert or panic fails that test only
+        let names =
+            try
+                let prog = check src false false
+                prog.tests
+            with CompileErrorAt(file, line, col, msg) ->
+                printError file line col msg
+                []
+
+        let exe = Path.Combine(Path.GetTempPath(), "zs-test-" + Guid.NewGuid().ToString("N"))
+
+        if names.IsEmpty then
+            eprintfn "%s: no [<Test>] functions" src
+            1
+        elif not (build src exe false false false) then
+            1
+        else
+            Environment.SetEnvironmentVariable("ZS_BACKTRACE", "0")
+
+            let chosen =
+                names
+                |> List.indexed
+                |> List.filter (fun (_, n) -> filter.IsEmpty || filter |> List.exists (fun f -> n.Contains f))
+
+            let mutable failed = 0
+
+            for i, name in chosen do
+                let code, output = exec exe [ string i ] true
+
+                if code = 0 then
+                    printfn "ok   %s" name
+                else
+                    failed <- failed + 1
+                    printfn "FAIL %s" name
+
+                    for l in output.Trim().Split '\n' do
+                        if l <> "" then printfn "       %s" l
+
+            File.Delete exe
+            printfn "%d passed, %d failed" (chosen.Length - failed) failed
+            if failed = 0 then 0 else 1
     | "lsp" :: _ -> Lsp.serve () // editors may add flags such as --stdio
     | "mcp" :: _ -> Mcp.serve ()
     | "run" :: src :: rest ->
@@ -174,5 +217,5 @@ let main argv =
             Rpc.input <- new Rpc.PrefixedStream([| byte first |], stdin)
             if char first = '{' then Mcp.serve () else Lsp.serve ()
     | _ ->
-        eprintfn "usage: zs build <file.zs> [-o <out>] [--lib] [--emit-llvm] [--sanitize] [--time]\n       zs run <file.zs> [--sanitize]\n       zs check <file.zs>\n       zs doc <file.zs>\n       zs fmt [--check] <files…>\n       zs lsp\n       zs mcp"
+        eprintfn "usage: zs build <file.zs> [-o <out>] [--lib] [--emit-llvm] [--sanitize] [--time]\n       zs run <file.zs> [--sanitize]\n       zs check <file.zs>\n       zs test <file.zs> [name filters…]\n       zs doc <file.zs>\n       zs fmt [--check] <files…>\n       zs lsp\n       zs mcp"
         2

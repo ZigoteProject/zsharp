@@ -1,0 +1,8 @@
+ok   doublesNumbers
+FAIL failsAnAssert
+       panic: assertion failed at sample.zs:10
+FAIL panicsWithAMessage
+       some output first
+       panic: List.head: empty list
+ok   stringsWork
+2 passed, 2 failed

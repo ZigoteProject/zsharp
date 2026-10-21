@@ -133,7 +133,7 @@ let compileProgram (mainPath: string) (isLib: bool) =
             with CompileError(l, m) ->
                 raise (CompileErrorAt(mainPath, l, 0, m))
 
-        Ok(timed "LLVM IR" (fun () -> Codegen.compile prog.types prog.externs prog.exports prog.clayouts funs))
+        Ok(timed "LLVM IR" (fun () -> Codegen.compile prog.types prog.externs prog.exports prog.tests prog.clayouts funs))
 
 /// Runs a program; with capture, returns its stdout and stderr too (stdin is empty).
 let exec (exe: string) (args: string list) (capture: bool) : int * string =

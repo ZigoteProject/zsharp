@@ -40,6 +40,11 @@ done
 bin/zs build tests/json.zs -o "$tmp/time-exe" --time 2>"$tmp/time.log" >/dev/null
 echo "time tests/json.zs: $(grep -E '^(parse|total)' "$tmp/time.log" | tr -s ' ' | tr '\n' ';' | sed 's/;$//')"
 
+# zs test: passing and failing [<Test>] functions, each in its own process (exit 1: some fail)
+actual=$(bin/zs test tests/ztest/sample.zs 2>&1); code=$?
+if [ "$actual" = "$(cat tests/ztest/sample.expected)" ] && [ $code = 1 ]; then echo "ok   zs test tests/ztest/sample.zs"
+else echo "FAIL zs test tests/ztest/sample.zs (exit $code)"; diff <(echo "$actual") tests/ztest/sample.expected; fail=1; fi
+
 # the prelude checks on its own (an editor opening it must not see everything defined twice)
 if bin/zs check runtime/prelude.zs >"$tmp/prelude.log" 2>&1; then echo "ok   zs check runtime/prelude.zs"
 else echo "FAIL zs check runtime/prelude.zs"; head -5 "$tmp/prelude.log"; fail=1; fi

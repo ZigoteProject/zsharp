@@ -242,6 +242,9 @@ let run (prog: Program) : MFun list =
     for e in prog.exports do
         request e.fname [] |> ignore
 
+    for t in prog.tests do
+        request t [] |> ignore
+
     while queue.Count > 0 do
         let name, inst = queue.Dequeue()
         let f = defs[name]

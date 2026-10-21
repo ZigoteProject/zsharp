@@ -413,6 +413,7 @@ type Program =
       traitMethods: Dictionary<string, TraitMethod> // "Show.show" -> method
       impls: Dictionary<string * string, Dictionary<string, string>> // (trait, type) -> method -> function
       exports: Export list
+      tests: string list // [<Test>] functions (unit -> unit), in source order
       clayouts: HashSet<string> // [<CLayout>] records
       errors: Diagnostic list // when type-checking in collect mode
       hovers: Hover list // inferred types at source positions (editor support)

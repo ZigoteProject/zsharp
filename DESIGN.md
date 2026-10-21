@@ -522,6 +522,7 @@ import c "raylib.h"                              // libclang, like Zig's @cImpor
 - **Highlighting:** a tree-sitter grammar (`editors/tree-sitter-zsharp`). It drives highlighting, indentation and the outline in Zed, Neovim and Helix, and code views on GitHub.
 - **Language server:** `zs lsp`. It reuses the compiler's lexer, parser and type checker, so hover types and diagnostics are exactly what the compiler reports.
 - **AI agents:** `zs mcp` exposes the same queries, plus build and run, as MCP tools.
+- **Tests:** `[<Test>]` marks a `unit -> unit` function as a test. `zs test file.zs [filters…]` builds the file's tests (it needs no `main`) and runs each in its own process, so a failed `assert` or a panic fails only that test. It prints `ok`/`FAIL` per test with the failure's output, and exits 1 when any test fails. A failed `assert` names its file and line.
 - **Documentation:** `///` comments directly above a declaration, as in F#, are its documentation. This covers functions, types, union cases, traits and their methods, derives, impls and members.
   - **Where it appears:** hover, completion, the MCP `docs` tool, and `zs doc <file>`, which writes a Markdown reference.
   - **The prelude:** fully documented. `./test.sh` fails on any undocumented prelude item, and it keeps `docs/reference/prelude.md` current.

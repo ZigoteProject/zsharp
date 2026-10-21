@@ -309,6 +309,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
     let diagnostics = ResizeArray<Diagnostic>()
     let hovers = ResizeArray<Hover>()
     let currentFile = ref ""
+    let currentLine = ref 0 // of the expression being inferred (assert messages)
 
     /// Remembers the type at a node's source position, and what the name refers to.
     let recordKey (node: obj) (name: string) (t: Ty) (inlay: bool) (key: string) (isDef: bool) =
@@ -355,6 +356,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                 pars
     let clayouts = HashSet<string>() // [<CLayout>] records
     let exports = ResizeArray<Export>()
+    let tests = ResizeArray<string>()
     let currentModule = ref (None: string option)
     let opens = ref ([]: string list) // most recent first
     let privates = Dictionary<string, string option>() // qualified name -> owning module
@@ -610,6 +612,8 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
 
         match e with
         | At(ln, e) ->
+            currentLine.Value <- ln
+
             try
                 let c = infer env depth e
                 mk (CLine(ln, c)) c.ty
@@ -624,6 +628,12 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
             let r = at node (fun () -> value env depth x)
             recordKey node x r.ty false (keyOf env x) false
             r
+        | Call("assert", [ c ]) when not (env.ContainsKey "assert") ->
+            // the location goes into the message: "assertion failed at file:line"
+            let cc = infer env depth c
+            expect "assert" tBool cc.ty
+            let file = if currentFile.Value = "prelude.zs" then "prelude.zs" else System.IO.Path.GetFileName currentFile.Value
+            mk (CPrim(sprintf "assert:%s:%d" file currentLine.Value, [ cc ])) tUnit
         | Call(f, args) ->
             let r = at node (fun () -> call env depth f args)
 
@@ -2230,6 +2240,16 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                       fname = q
                       pars = ptys |> List.filter (fun t -> prune t <> tUnit)
                       ret = resolve ret }
+            | Attrs([ "Test", [] ], (Fun(name, _, _, _, _) as f)) ->
+                declare ln f
+                let q = qualify name
+
+                try
+                    unify (TFun(tUnit, tUnit)) globals[q].ty
+                with Mismatch ->
+                    fail 0 (sprintf "test '%s' must be a function of type unit -> unit, such as: let %s () = assert (...)" name name)
+
+                tests.Add q
             | Attrs([ "CLayout", [] ], (TypeDecl(name, tps, RecordTy fields, _) as d)) ->
                 declare ln d
                 let q = qualify name
@@ -2341,7 +2361,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
     let mainFile, _, _ = List.last modules
 
     try
-        if requireMain || globals.ContainsKey "main" then
+        if (requireMain && tests.Count = 0) || globals.ContainsKey "main" then // a test file needs no main
             checkMain ()
     with CompileError(_, msg) ->
         report
@@ -2356,6 +2376,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
       traitMethods = traitMethods
       impls = impls
       exports = List.ofSeq exports
+      tests = List.ofSeq tests
       clayouts = clayouts
       errors = List.ofSeq diagnostics
       hovers = List.ofSeq hovers

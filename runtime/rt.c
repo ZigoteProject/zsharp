@@ -423,3 +423,6 @@ zs_str *zs_process_run(zs_str *prog, zs_str *args) {
     free(buf);
     return s;
 }
+
+// a test build's argument: which test to run
+int64_t zs_test_index(void) { return g_argc > 1 ? strtoll(g_argv[1], NULL, 10) : -1; }

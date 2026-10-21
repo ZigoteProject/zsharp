@@ -66,6 +66,7 @@ let private prelude =
 declare void @zs_free(ptr)
 declare i64 @zs_allocations()
 declare void @zs_set_args(i32, ptr)
+declare i64 @zs_test_index()
 declare void @zs_exit(i64) noreturn
 declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)
 declare void @zs_panic(ptr) noreturn
@@ -211,6 +212,7 @@ let compile
     (types: Dictionary<string, TypeInfo>)
     (externs: Dictionary<string, ExternSig>)
     (exports: Export list)
+    (tests: string list)
     (clayouts: HashSet<string>)
     (funs: MFun list)
     : string * string =
@@ -1256,6 +1258,9 @@ let compile
             | "assert" ->
                 check em (arg 0) "assertion failed"
                 "zeroinitializer"
+            | _ when op.StartsWith "assert:" ->
+                check em (arg 0) ("assertion failed at " + op.Substring 7)
+                "zeroinitializer"
             | "print"
             | "println" ->
                 em.Emit(sprintf "call void @zs_%s(ptr %s)" op (arg 0))
@@ -1481,6 +1486,20 @@ let compile
             | _ -> sprintf "  %%r = call %s %s({} zeroinitializer)\n  %%c = trunc %s %%r to i32\n  ret i32 %%c" rt (sym "main") rt
 
         funcs.AppendLine("define i32 @main(i32 %argc, ptr %argv) {").AppendLine("  call void @zs_set_args(i32 %argc, ptr %argv)").AppendLine(body).AppendLine("}") |> ignore
+
+    // a test build (zs test): `exe <n>` runs test n, so each test runs in its own process
+    if not tests.IsEmpty && not (fnTable.ContainsKey "main") then
+        let cases = tests |> List.mapi (fun i _ -> sprintf "i64 %d, label %%t%d" i i) |> String.concat " "
+        funcs.AppendLine("define i32 @main(i32 %argc, ptr %argv) {") |> ignore
+        funcs.AppendLine("  call void @zs_set_args(i32 %argc, ptr %argv)") |> ignore
+        funcs.AppendLine("  %n = call i64 @zs_test_index()") |> ignore
+        funcs.AppendLine(sprintf "  switch i64 %%n, label %%bad [ %s ]" cases) |> ignore
+
+        tests
+        |> List.iteri (fun i t ->
+            funcs.AppendLine(sprintf "t%d:\n  call {} %s({} zeroinitializer)\n  ret i32 0" i (sym t)) |> ignore)
+
+        funcs.AppendLine("bad:\n  ret i32 2\n}") |> ignore
 
     for e in exports do
         let fd = fnTable[e.fname]
