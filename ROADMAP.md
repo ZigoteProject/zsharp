@@ -4,6 +4,10 @@ Every phase ends with an **exit test**: a program in `tests/` that must compile
 to a native binary and produce the expected output. A phase is done when its
 exit test passes and `./test.sh` passes. Design rationale: [DESIGN.md](DESIGN.md).
 
+**Development** happens in a container (`.devcontainer/Containerfile`: Fedora 44, .NET 10, clang/LLVM, valgrind,
+gdb, qemu-user, zig). `./dev ./test.sh` runs the suite inside it, plain `./dev` opens a shell, and
+`./dev --rebuild` rebuilds the image.
+
 ```
  v1 (single-threaded)                                                         v2 (threads)                              v3
  0 ─ 1 ─ 2 core FP + RC ─ 3 traits/modules/C export ─┬─ 4 C import + tooling

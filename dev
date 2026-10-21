@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Runs a command inside the Z# dev container (built on first use), e.g. ./dev ./test.sh
+set -euo pipefail
+cd "$(dirname "$0")"
+image=zsharp-dev
+if [ "${1:-}" = "--rebuild" ] || ! podman image exists "$image"; then
+  [ "${1:-}" = "--rebuild" ] && shift
+  podman build -t "$image" -f .devcontainer/Containerfile .devcontainer
+fi
+tty=(); [ -t 0 ] && tty=(-it)
+mkdir -p bin
+exec podman run --rm "${tty[@]}" --userns=keep-id -v "$PWD":/work:Z -v zsharp-home:/tmp/home:U \
+  -e HOME=/tmp/home -w /work "$image" "${@:-bash}"
