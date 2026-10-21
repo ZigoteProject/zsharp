@@ -1,0 +1,9 @@
+{
+  "name": "tree-sitter-zsharp",
+  "version": "0.1.0",
+  "description": "Z# grammar for tree-sitter",
+  "main": "bindings/node",
+  "license": "MIT",
+  "keywords": ["tree-sitter", "zsharp", "parser"],
+  "tree-sitter": [{ "scope": "source.zsharp", "file-types": ["zs"], "highlights": "queries/highlights.scm" }]
+}

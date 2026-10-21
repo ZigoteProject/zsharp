@@ -1,0 +1,26 @@
+==================
+function and match
+==================
+
+let rec fib n =
+  match n with
+  | 0 | 1 -> n
+  | _ -> fib (n - 1) + fib (n - 2)
+
+---
+
+(source_file
+  (let_declaration
+    name: (identifier)
+    (identifier)
+    body: (block
+      (match_expression
+        value: (identifier)
+        (match_rule
+          pattern: (or_pattern (number) (number))
+          body: (identifier))
+        (match_rule
+          pattern: (wildcard)
+          body: (binary_expression
+            (application function: (identifier) argument: (parenthesized_expression (binary_expression (identifier) (number))))
+            (application function: (identifier) argument: (parenthesized_expression (binary_expression (identifier) (number))))))))))

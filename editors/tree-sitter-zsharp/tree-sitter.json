@@ -1,0 +1,18 @@
+{
+  "grammars": [
+    {
+      "name": "zsharp",
+      "camelcase": "ZSharp",
+      "scope": "source.zsharp",
+      "path": ".",
+      "file-types": ["zs"],
+      "highlights": "queries/highlights.scm",
+      "injection-regex": "^(zs|zsharp)$"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Z# grammar for tree-sitter"
+  }
+}

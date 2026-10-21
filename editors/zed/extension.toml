@@ -1,0 +1,19 @@
+id = "zsharp"
+name = "Z#"
+description = "Z# support: syntax highlighting, outline, and the zs language server (diagnostics, hover types, inlay hints)."
+version = "0.1.0"
+schema_version = 1
+authors = ["Zigote Project <300591326+ZigoteProject@users.noreply.github.com>"]
+repository = "https://github.com/ZigoteProject/zsharp"
+
+# The grammar lives in this repository (editors/tree-sitter-zsharp). Zed fetches the repository
+# at `rev` and builds the grammar from `path`. For a local dev extension, point `repository` at
+# the checkout (file:///…/zsharp) and set `rev` to a commit that contains the grammar.
+[grammars.zsharp]
+repository = "https://github.com/ZigoteProject/zsharp"
+rev = "0000000000000000000000000000000000000000" # set to `git rev-parse HEAD` once src/parser.c is generated
+path = "editors/tree-sitter-zsharp"
+
+[language_servers.zs]
+name = "zs"
+languages = ["Z#"]

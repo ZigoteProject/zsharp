@@ -41,6 +41,18 @@ actual=$(tests/lsp/session.sh bin/zs 2>&1); expected=$(cat tests/lsp/session.out
 if [ "$actual" == "$expected" ]; then echo "ok   tests/lsp/session.sh"
 else echo "FAIL tests/lsp/session.sh"; diff <(echo "$expected") <(echo "$actual") | head -20; fail=1; fi
 
+# editor support: the Zed extension's queries are copies of the grammar's; the grammar parses
+# every program without errors (needs the tree-sitter CLI and a C compiler)
+if diff -q <(cat editors/tree-sitter-zsharp/queries/*.scm) <(cat editors/zed/languages/zsharp/*.scm) >/dev/null; then
+  echo "ok   editors/zed queries"
+else echo "FAIL editors/zed queries differ from editors/tree-sitter-zsharp/queries"; fail=1; fi
+if command -v tree-sitter >/dev/null; then
+  if (cd editors/tree-sitter-zsharp && tree-sitter generate >/dev/null && tree-sitter test >/dev/null) \
+     && tree-sitter parse --quiet --grammar-path editors/tree-sitter-zsharp $(find tests runtime -name '*.zs') >"$tmp/ts.log" 2>&1; then
+    echo "ok   editors/tree-sitter-zsharp"
+  else echo "FAIL editors/tree-sitter-zsharp"; head -20 "$tmp/ts.log"; fail=1; fi
+else echo "skip editors/tree-sitter-zsharp (no tree-sitter CLI; rebuild the dev image)"; fi
+
 # C interop: a directory with main.c links the static library built from its lib.zs
 for c in $(find tests -name main.c | sort); do
   d=$(dirname "$c")

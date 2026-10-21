@@ -1,3 +1,9 @@
 bin/
 obj/
 *.ll
+dist/
+editors/zed/target/
+editors/zed/grammars/
+editors/zed/extension.wasm
+editors/tree-sitter-zsharp/build/
+editors/tree-sitter-zsharp/node_modules/
