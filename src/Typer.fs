@@ -209,6 +209,23 @@ let private builtins =
           b "Int.wrappingSub" "wrap-" [ kInt ] (f a (f a a)) 2
           b "Int.wrappingMul" "wrap*" [ kInt ] (f a (f a a)) 2
           b "Runtime.allocations" "Runtime.allocations" [] (f tUnit tInt) 1
+          b "Process.exit" "Process.exit" [ kAny ] (f tInt a) 1
+          b "Env.argc" "Env.argc" [] (f tUnit tInt) 1
+          b "Env.arg" "Env.arg" [] (f tInt tStr) 1
+          b "Env.has" "Env.has" [] (f tStr tBool) 1
+          b "Env.get" "Env.get" [] (f tStr tStr) 1
+          b "Io.ok" "Io.ok" [] (f tUnit tBool) 1
+          b "Io.error" "Io.error" [] (f tUnit tStr) 1
+          b "File.readRaw" "File.readRaw" [] (f tStr tStr) 1
+          b "File.writeRaw" "File.writeRaw" [] (f tStr (f tStr tUnit)) 2
+          b "File.appendRaw" "File.appendRaw" [] (f tStr (f tStr tUnit)) 2
+          b "File.exists" "File.exists" [] (f tStr tBool) 1
+          b "File.deleteRaw" "File.deleteRaw" [] (f tStr tUnit) 1
+          b "Dir.exists" "Dir.exists" [] (f tStr tBool) 1
+          b "Dir.createRaw" "Dir.createRaw" [] (f tStr tUnit) 1
+          b "Dir.listRaw" "Dir.listRaw" [] (f tStr tStr) 1
+          b "Process.runRaw" "Process.runRaw" [] (f tStr (f tStr tStr)) 2
+          b "Process.code" "Process.code" [] (f tUnit tInt) 1
           b "Array.length" "Array.length" [ kAny ] (f (TCon("array", [ a ])) tInt) 1 ]
         @ [ for t in Seq.append nums [ "i64"; "float"; "c_int" ] ->
                 let target =
@@ -1964,7 +1981,19 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
             fail 0 (sprintf "no derive named '%s'" tr)
 
         let head = STName(tname, List.init types[tname].npars (fun i -> STVar(sprintf "t%d" i)))
-        let defs = Derive.expand tr tname head (shapeOf tname) derives[tr]
+        // hygiene: a trait method named in a derive (show, compare, hash…) means the trait's,
+        // even where the program defines a function of the same name
+        // ponytail: a local in a derive body named like a trait method would be rewritten too
+        let rec hygienic (e: Expr) =
+            match e with
+            | Var x when traitAliases.ContainsKey x && not (x.Contains ".") -> Var traitAliases[x]
+            | Call(x, args) when traitAliases.ContainsKey x && not (x.Contains ".") -> Call(traitAliases[x], List.map hygienic args)
+            | _ -> mapExpr hygienic e
+
+        let defs =
+            Derive.expand tr tname head (shapeOf tname) derives[tr]
+            |> List.map (fun (l, n, ps, r, body) -> l, n, ps, r, hygienic body)
+
         let saved = Dictionary<string, Ty>(tyvars) // may run in the middle of another function
 
         try

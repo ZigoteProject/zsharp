@@ -677,3 +677,80 @@ let Console.eprintln (s: string) = eprintln s
 let Console.readLine () =
   let line = Console.readLineRaw ()
   if Console.eof () then None else Some line
+
+/// All of standard input, line by line (without the newlines).
+let Console.readLines () =
+  let rec go acc =
+    match Console.readLine () with
+    | Some l -> go (l :: acc)
+    | None -> List.rev acc
+  go []
+
+// ---------------------------------------------------------------- Env, File, Dir, Process
+// The runtime reports failures through Io.ok / Io.error; these turn them into results.
+
+let private ioResult (value: 'a) : result<'a, string> =
+  if Io.ok () then Ok value else Error (Io.error ())
+
+let private nul () = String.ofByte (u8 0)
+
+let private splitNul (s: string) =
+  if String.isEmpty s then [] else String.split (nul ()) s
+
+/// The command-line arguments, without the program name.
+let Env.args () = List.init (Env.argc () - 1) (fun i -> Env.arg (i + 1))
+
+/// The program name as it was started (`argv[0]`).
+let Env.programName () = Env.arg 0
+
+/// The environment variable `name`, or `None` when it isn't set.
+let Env.var (name: string) = if Env.has name then Some (Env.get name) else None
+
+/// The whole file as a string, or the error (`cannot open data.txt: No such file or directory`).
+let File.read (path: string) = ioResult (File.readRaw path)
+
+let private toLines (text: string) =
+  let text = String.replace text (String.ofByte (u8 13) + "\n") "\n"
+  let text = if String.endsWith "\n" text then String.sub text 0 (String.length text - 1) else text
+  if String.isEmpty text then [] else String.split "\n" text
+
+/// The file's lines, without line endings; a final newline doesn't add an empty line.
+let File.lines (path: string) = File.read path |> Result.map toLines
+
+/// Replaces the file's contents with `text` (creating it if needed).
+let File.write (path: string) (text: string) =
+  File.writeRaw path text
+  ioResult ()
+
+/// Adds `text` to the end of the file (creating it if needed).
+let File.append (path: string) (text: string) =
+  File.appendRaw path text
+  ioResult ()
+
+/// Deletes the file.
+let File.delete (path: string) =
+  File.deleteRaw path
+  ioResult ()
+
+/// Creates the directory; an existing one is fine.
+let Dir.create (path: string) =
+  Dir.createRaw path
+  ioResult ()
+
+/// The names in the directory (not `.` or `..`), sorted.
+let Dir.list (path: string) =
+  let raw = Dir.listRaw path
+  ioResult (List.sort (splitNul raw))
+
+/// What a finished process left: its exit code and everything it wrote to standard output.
+type ProcessResult =
+  { /// The exit code (128 + the signal number if a signal ended it).
+    code: int
+    /// Standard output, captured. Standard error goes to this program's standard error.
+    output: string }
+
+/// Runs `program` (looked up on PATH) with the arguments, without a shell, and waits for it.
+/// An `Error` means it couldn't start; a failing program is an `Ok` with a nonzero code.
+let Process.run (program: string) (args: list<string>) =
+  let output = Process.runRaw program (String.join (nul ()) args)
+  ioResult { code = Process.code (); output = output }

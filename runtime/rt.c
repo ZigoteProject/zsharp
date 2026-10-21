@@ -229,3 +229,197 @@ void zs_println(zs_str *s) {
     fwrite(s->data, 1, (size_t)s->len, stdout);
     fputc('\n', stdout);
 }
+
+// ---- CLI: arguments, environment, files, directories, processes
+// Fallible calls set io_error ("" on success); the prelude turns that into a result.
+// Lists cross as one string with NUL-separated items.
+
+#include <dirent.h>
+#include <errno.h>
+#include <spawn.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+
+extern char **environ;
+static int g_argc;
+static char **g_argv;
+static zs_str *io_error;
+
+void zs_set_args(int32_t argc, char **argv) {
+    g_argc = argc;
+    g_argv = argv;
+}
+
+int64_t zs_argc(void) { return g_argc; }
+
+zs_str *zs_arg(int64_t i) { return i >= 0 && i < g_argc ? zs_str_from_c(g_argv[i]) : str_of("", 0); }
+
+static void set_error(const char *what, zs_str *path) {
+    char buf[1024];
+    snprintf(buf, sizeof buf, "%s %s: %s", what, path ? path->data : "", strerror(errno));
+    if (io_error) zs_free(io_error);
+    io_error = zs_str_from_c(buf);
+}
+
+static void clear_error(void) {
+    if (io_error) zs_free(io_error);
+    io_error = NULL;
+}
+
+bool zs_io_ok(void) { return io_error == NULL; }
+
+// the error of the last fallible call (the caller owns it)
+zs_str *zs_io_error(void) {
+    zs_str *e = io_error ? io_error : str_of("", 0);
+    io_error = NULL;
+    return e;
+}
+
+bool zs_env_has(zs_str *name) { return getenv(name->data) != NULL; }
+
+zs_str *zs_env_get(zs_str *name) {
+    const char *v = getenv(name->data);
+    return zs_str_from_c(v ? v : "");
+}
+
+// like a panic, no cleanup (and so no leak report): the process ends here
+_Noreturn void zs_exit(int64_t code) {
+    fflush(NULL);
+    _exit((int)code);
+}
+
+zs_str *zs_file_read(zs_str *path) {
+    clear_error();
+    FILE *f = fopen(path->data, "rb");
+    if (!f) {
+        set_error("cannot open", path);
+        return str_of("", 0);
+    }
+    size_t cap = 4096, len = 0;
+    char *buf = malloc(cap);
+    size_t n;
+    while ((n = fread(buf + len, 1, cap - len, f)) > 0) {
+        len += n;
+        if (len == cap) buf = realloc(buf, cap *= 2);
+    }
+    if (ferror(f)) set_error("cannot read", path);
+    fclose(f);
+    zs_str *s = str_of(buf, (int64_t)len);
+    free(buf);
+    return s;
+}
+
+static void file_put(zs_str *path, zs_str *text, const char *mode) {
+    clear_error();
+    FILE *f = fopen(path->data, mode);
+    if (!f) {
+        set_error("cannot open", path);
+        return;
+    }
+    if (fwrite(text->data, 1, (size_t)text->len, f) != (size_t)text->len) set_error("cannot write", path);
+    if (fclose(f) != 0 && !io_error) set_error("cannot write", path);
+}
+
+void zs_file_write(zs_str *path, zs_str *text) { file_put(path, text, "wb"); }
+void zs_file_append(zs_str *path, zs_str *text) { file_put(path, text, "ab"); }
+
+bool zs_file_exists(zs_str *path) {
+    struct stat st;
+    return stat(path->data, &st) == 0 && S_ISREG(st.st_mode);
+}
+
+bool zs_dir_exists(zs_str *path) {
+    struct stat st;
+    return stat(path->data, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+void zs_file_delete(zs_str *path) {
+    clear_error();
+    if (remove(path->data) != 0) set_error("cannot delete", path);
+}
+
+void zs_dir_create(zs_str *path) {
+    clear_error();
+    if (mkdir(path->data, 0777) != 0 && errno != EEXIST) set_error("cannot create", path);
+}
+
+// entry names (without . and ..), NUL-separated, in directory order
+zs_str *zs_dir_list(zs_str *path) {
+    clear_error();
+    DIR *d = opendir(path->data);
+    if (!d) {
+        set_error("cannot open", path);
+        return str_of("", 0);
+    }
+    size_t cap = 256, len = 0;
+    char *buf = malloc(cap);
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+        size_t n = strlen(e->d_name) + 1;
+        while (len + n > cap) buf = realloc(buf, cap *= 2);
+        memcpy(buf + len, e->d_name, n);
+        len += n;
+    }
+    closedir(d);
+    zs_str *s = str_of(buf, len ? (int64_t)len - 1 : 0);
+    free(buf);
+    return s;
+}
+
+// Runs prog with NUL-separated args (no shell), stdout captured, stderr passed through.
+static int64_t process_code;
+
+int64_t zs_process_code(void) { return process_code; }
+
+zs_str *zs_process_run(zs_str *prog, zs_str *args) {
+    clear_error();
+    int64_t count = args->len ? 1 : 0;
+    for (int64_t i = 0; i < args->len; i++) count += args->data[i] == 0;
+    char **argv = malloc(sizeof(char *) * (size_t)(count + 2));
+    argv[0] = prog->data;
+    int64_t k = 1;
+    if (args->len) {
+        argv[k++] = args->data;
+        for (int64_t i = 0; i < args->len; i++)
+            if (args->data[i] == 0) argv[k++] = args->data + i + 1;
+    }
+    argv[k] = NULL;
+    int fds[2];
+    if (pipe(fds) != 0) {
+        free(argv);
+        set_error("cannot run", prog);
+        return str_of("", 0);
+    }
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_adddup2(&fa, fds[1], 1);
+    posix_spawn_file_actions_addclose(&fa, fds[0]);
+    posix_spawn_file_actions_addclose(&fa, fds[1]);
+    fflush(stdout);
+    pid_t pid;
+    int rc = posix_spawnp(&pid, prog->data, &fa, NULL, argv, environ);
+    posix_spawn_file_actions_destroy(&fa);
+    free(argv);
+    close(fds[1]);
+    if (rc != 0) {
+        close(fds[0]);
+        errno = rc;
+        set_error("cannot run", prog);
+        return str_of("", 0);
+    }
+    size_t cap = 4096, len = 0;
+    char *buf = malloc(cap);
+    ssize_t n;
+    while ((n = read(fds[0], buf + len, cap - len)) > 0) {
+        len += (size_t)n;
+        if (len == cap) buf = realloc(buf, cap *= 2);
+    }
+    close(fds[0]);
+    int status = 0;
+    waitpid(pid, &status, 0);
+    process_code = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+    zs_str *s = str_of(buf, (int64_t)len);
+    free(buf);
+    return s;
+}

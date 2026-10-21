@@ -292,7 +292,10 @@ let builtinDocs =
           "Int.wrappingAdd", "`a + b`, wrapping around on overflow instead of panicking."
           "Int.wrappingSub", "`a - b`, wrapping around on overflow instead of panicking."
           "Int.wrappingMul", "`a * b`, wrapping around on overflow instead of panicking."
-          "Runtime.allocations", "The number of heap objects allocated so far." ]
+          "Runtime.allocations", "The number of heap objects allocated so far."
+          "Process.exit", "Ends the program now with the exit code (output is flushed; nothing else is cleaned up)."
+          "File.exists", "Whether `path` names an existing regular file."
+          "Dir.exists", "Whether `path` names an existing directory." ]
 
 /// A documented item of a source file, found by reading its declarations.
 type DocItem =
@@ -343,14 +346,16 @@ let docItems (file: string) : DocItem list =
             let m = rx @"^let\s+(rec\s+)?(private\s+)?([A-Za-z_][A-Za-z0-9_.]*|\(\|[^)]*\|\))" l
 
             if m.Success then
-                add "function" m.Groups[3].Value i
+                if not m.Groups[2].Success then add "function" m.Groups[3].Value i // private: not API
             else
                 let m = rx @"^type\s+(private\s+)?([A-Za-z_][A-Za-z0-9_]*)(<[^>]*>)?\s*(with)?" l
 
                 if m.Success then
                     container <- m.Groups[2].Value
 
-                    if m.Groups[4].Success then
+                    if m.Groups[1].Success then
+                        containerKind <- "private"
+                    elif m.Groups[4].Success then
                         containerKind <- "extension"
                     else
                         containerKind <- "type"

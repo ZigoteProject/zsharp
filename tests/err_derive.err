@@ -1,1 +1,1 @@
-tests/err_derive.zs:21: error: Derive(Json) on Callback: field run: argument 1 of 'toJson': int -> int does not implement Json
+tests/err_derive.zs:21: error: Derive(Json) on Callback: field run: argument 1 of 'Json.toJson': int -> int does not implement Json

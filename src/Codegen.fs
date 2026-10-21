@@ -65,6 +65,8 @@ let private prelude =
     """declare ptr @zs_alloc(i64)
 declare void @zs_free(ptr)
 declare i64 @zs_allocations()
+declare void @zs_set_args(i32, ptr)
+declare void @zs_exit(i64) noreturn
 declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)
 declare void @zs_panic(ptr) noreturn
 declare void @zs_panic_c(ptr) noreturn
@@ -89,6 +91,22 @@ declare ptr @zs_str_replace(ptr, ptr, ptr)
 declare zeroext i1 @zs_str_is_float(ptr)
 declare double @zs_str_to_float(ptr)
 declare ptr @zs_read_line()
+declare i64 @zs_argc()
+declare ptr @zs_arg(i64)
+declare zeroext i1 @zs_env_has(ptr)
+declare ptr @zs_env_get(ptr)
+declare zeroext i1 @zs_io_ok()
+declare ptr @zs_io_error()
+declare ptr @zs_file_read(ptr)
+declare void @zs_file_write(ptr, ptr)
+declare void @zs_file_append(ptr, ptr)
+declare zeroext i1 @zs_file_exists(ptr)
+declare void @zs_file_delete(ptr)
+declare zeroext i1 @zs_dir_exists(ptr)
+declare void @zs_dir_create(ptr)
+declare ptr @zs_dir_list(ptr)
+declare ptr @zs_process_run(ptr, ptr)
+declare i64 @zs_process_code()
 declare zeroext i1 @zs_eof()
 declare void @zs_eprintln(ptr)
 
@@ -165,7 +183,23 @@ let private runtimePrims =
           "String.toFloat", ("zs_str_to_float", "double", [ "ptr" ])
           "Console.readLineRaw", ("zs_read_line", "ptr", [])
           "Console.eof", ("zs_eof", "zeroext i1", [])
-          "eprintln", ("zs_eprintln", "void", [ "ptr" ]) ]
+          "eprintln", ("zs_eprintln", "void", [ "ptr" ])
+          "Env.argc", ("zs_argc", "i64", [])
+          "Env.arg", ("zs_arg", "ptr", [ "i64" ])
+          "Env.has", ("zs_env_has", "zeroext i1", [ "ptr" ])
+          "Env.get", ("zs_env_get", "ptr", [ "ptr" ])
+          "Io.ok", ("zs_io_ok", "zeroext i1", [])
+          "Io.error", ("zs_io_error", "ptr", [])
+          "File.readRaw", ("zs_file_read", "ptr", [ "ptr" ])
+          "File.writeRaw", ("zs_file_write", "void", [ "ptr"; "ptr" ])
+          "File.appendRaw", ("zs_file_append", "void", [ "ptr"; "ptr" ])
+          "File.exists", ("zs_file_exists", "zeroext i1", [ "ptr" ])
+          "File.deleteRaw", ("zs_file_delete", "void", [ "ptr" ])
+          "Dir.exists", ("zs_dir_exists", "zeroext i1", [ "ptr" ])
+          "Dir.createRaw", ("zs_dir_create", "void", [ "ptr" ])
+          "Dir.listRaw", ("zs_dir_list", "ptr", [ "ptr" ])
+          "Process.runRaw", ("zs_process_run", "ptr", [ "ptr"; "ptr" ])
+          "Process.code", ("zs_process_code", "i64", []) ]
 
 let private floatConst (ty: string) (f: float) =
     let v = if ty = "float" then float (float32 f) else f
@@ -1276,6 +1310,11 @@ let compile
                 | "f32" -> em.Instr(sprintf "zext i32 %s to i64" (em.Instr(sprintf "bitcast float %s to i32" (arg 0))))
                 | _ when lt = "i64" -> arg 0
                 | _ -> em.Instr(sprintf "%s %s %s to i64" (if isUnsigned t || lt = "i1" then "zext" else "sext") lt (arg 0))
+            | "Process.exit" ->
+                em.Emit(sprintf "call void @zs_exit(i64 %s)" (arg 0))
+                em.Emit "unreachable"
+                em.Dead()
+                "poison"
             | "String.ofCStr" -> em.Instr(sprintf "call ptr @zs_str_from_c(ptr %s)" (arg 0))
             | _ when runtimePrims.ContainsKey op ->
                 let fn, ret, pts = runtimePrims[op]
@@ -1441,7 +1480,7 @@ let compile
             | "i32" -> sprintf "  %%r = call i32 %s({} zeroinitializer)\n  ret i32 %%r" (sym "main")
             | _ -> sprintf "  %%r = call %s %s({} zeroinitializer)\n  %%c = trunc %s %%r to i32\n  ret i32 %%c" rt (sym "main") rt
 
-        funcs.AppendLine("define i32 @main() {").AppendLine(body).AppendLine("}") |> ignore
+        funcs.AppendLine("define i32 @main(i32 %argc, ptr %argv) {").AppendLine("  call void @zs_set_args(i32 %argc, ptr %argv)").AppendLine(body).AppendLine("}") |> ignore
 
     for e in exports do
         let fd = fnTable[e.fname]

@@ -359,6 +359,14 @@ member s.Replace(old: string, by: string)
 
 The string with every `old` replaced by `by`.
 
+### `ProcessResult`
+
+```zsharp
+type ProcessResult
+```
+
+What a finished process left: its exit code and everything it wrote to standard output.
+
 ## Derives and impls
 
 ### `derive Eq`
@@ -1124,4 +1132,101 @@ Console.readLine : unit -> option<string>
 ```
 
 The next line of standard input without its newline, or `None` at the end.
+
+### `Console.readLines`
+
+```zsharp
+Console.readLines : unit -> list<string>
+```
+
+All of standard input, line by line (without the newlines).
+
+### `Env.args`
+
+```zsharp
+Env.args : unit -> list<string>
+```
+
+The command-line arguments, without the program name.
+
+### `Env.programName`
+
+```zsharp
+Env.programName : unit -> string
+```
+
+The program name as it was started (`argv[0]`).
+
+### `Env.var`
+
+```zsharp
+Env.var : string -> option<string>
+```
+
+The environment variable `name`, or `None` when it isn't set.
+
+### `File.read`
+
+```zsharp
+File.read : string -> result<string, string>
+```
+
+The whole file as a string, or the error (`cannot open data.txt: No such file or directory`).
+
+### `File.lines`
+
+```zsharp
+File.lines : string -> result<list<string>, string>
+```
+
+The file's lines, without line endings; a final newline doesn't add an empty line.
+
+### `File.write`
+
+```zsharp
+File.write : string -> string -> result<unit, string>
+```
+
+Replaces the file's contents with `text` (creating it if needed).
+
+### `File.append`
+
+```zsharp
+File.append : string -> string -> result<unit, string>
+```
+
+Adds `text` to the end of the file (creating it if needed).
+
+### `File.delete`
+
+```zsharp
+File.delete : string -> result<unit, string>
+```
+
+Deletes the file.
+
+### `Dir.create`
+
+```zsharp
+Dir.create : string -> result<unit, string>
+```
+
+Creates the directory; an existing one is fine.
+
+### `Dir.list`
+
+```zsharp
+Dir.list : string -> result<list<string>, string>
+```
+
+The names in the directory (not `.` or `..`), sorted.
+
+### `Process.run`
+
+```zsharp
+Process.run : string -> list<string> -> result<ProcessResult, string>
+```
+
+Runs `program` (looked up on PATH) with the arguments, without a shell, and waits for it.
+An `Error` means it couldn't start; a failing program is an `Ok` with a nonzero code.
 
