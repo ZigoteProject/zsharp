@@ -70,11 +70,19 @@ zs_str *zs_str_concat(zs_str *a, zs_str *b) {
     return s;
 }
 
+// -1, 0 or 1
 int64_t zs_str_cmp(zs_str *a, zs_str *b) {
     int64_t n = a->len < b->len ? a->len : b->len;
     int c = memcmp(a->data, b->data, (size_t)n);
-    if (c != 0) return c;
+    if (c != 0) return c < 0 ? -1 : 1;
     return a->len < b->len ? -1 : a->len > b->len;
+}
+
+// FNV-1a
+int64_t zs_str_hash(zs_str *s) {
+    uint64_t h = 14695981039346656037ull;
+    for (int64_t i = 0; i < s->len; i++) h = (h ^ (uint8_t)s->data[i]) * 1099511628211ull;
+    return (int64_t)h;
 }
 
 zs_str *zs_str_of_i64(int64_t v) {

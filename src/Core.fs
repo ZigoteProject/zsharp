@@ -5,8 +5,11 @@ open System.Collections.Generic
 
 // ---------------------------------------------------------------- types
 
-/// None = any type; Some s = must become one of these nullary type constructors.
-type Kind = Set<string> option
+/// What a type variable may become: one of `allowed` (literals; None = anything) that
+/// implements every trait in `traits`.
+type Kind =
+    { allowed: Set<string> option
+      traits: Set<string> }
 
 type Ty =
     | TCon of string * Ty list // int, f64, string, list<_>, user types; args can later carry units of measure
@@ -23,13 +26,27 @@ let ints = set [ "int"; "i8"; "i16"; "i32"; "u8"; "u16"; "u32"; "u64"; "usize" ]
 let unsigned = set [ "u8"; "u16"; "u32"; "u64"; "usize" ]
 let floats = set [ "f64"; "f32" ]
 let nums = ints + floats
-let kInt, kFloat, kNum = Some ints, Some floats, Some nums
-let kPlus = Some(nums.Add "string")
-let kOrd = Some(nums.Add "string")
-let kEq = Some(nums + set [ "string"; "bool"; "unit" ])
-let kStrLit = Some(set [ "string"; "cstr" ])
-let kShow = Some(nums + set [ "string"; "bool" ])
 let prims = nums + set [ "bool"; "string"; "cstr"; "unit" ]
+let kAny = { allowed = None; traits = Set.empty }
+let private allow s = { allowed = Some s; traits = Set.empty }
+let kInt, kFloat, kNumeric = allow ints, allow floats, allow nums
+let kStrLit = allow (set [ "string"; "cstr" ])
+let kTrait (t: string) = { allowed = None; traits = set [ t ] }
+
+/// Built-in impls of the prelude's operator traits for primitive types.
+let builtinImpls =
+    dict
+        [ "Add", nums.Add "string"
+          "Num", nums
+          "Eq", nums + set [ "string"; "bool"; "unit" ]
+          "Ord", nums.Add "string"
+          "Show", nums + set [ "string"; "bool" ]
+          "Hash", nums + set [ "string"; "bool" ] ]
+
+let hasBuiltinImpl (tr: string) (n: string) =
+    match builtinImpls.TryGetValue tr with
+    | true, s -> s.Contains n
+    | _ -> false
 
 /// Built-in generic type constructors and their arity.
 let builtinCons = dict [ "array", 1; "ref", 1 ]
@@ -54,12 +71,16 @@ let rec prune t =
     | _ -> t
 
 let private defaultOf (k: Kind) =
-    match k with
-    | None -> tInt
-    | Some s when s.Contains "int" -> tInt
-    | Some s when s.Contains "f64" -> tcon "f64"
-    | Some s when s.Contains "string" -> tStr
-    | Some s -> tcon (Seq.head s)
+    let fits n =
+        (k.allowed |> Option.forall (fun s -> s.Contains n))
+        && k.traits |> Set.forall (fun tr -> hasBuiltinImpl tr n)
+
+    match [ "int"; "f64"; "string"; "bool"; "unit" ] |> List.tryFind fits with
+    | Some n -> tcon n
+    | None ->
+        match k.allowed with
+        | Some s -> tcon (Seq.head s)
+        | None -> tInt
 
 let rec show t =
     match prune t with
@@ -80,9 +101,9 @@ let rec show t =
     | TGen i -> "'" + string (char (int 'a' + i))
     | TVar r ->
         match r.Value with
-        | Unbound(_, Some k) when k.Contains "int" -> "int"
-        | Unbound(_, Some k) when k.Contains "f64" -> "f64"
-        | Unbound(_, Some k) when k.Contains "string" -> "string"
+        | Unbound(_, { allowed = Some k }) when k.Contains "int" -> "int"
+        | Unbound(_, { allowed = Some k }) when k.Contains "f64" -> "f64"
+        | Unbound(_, { allowed = Some k }) when k.Contains "string" -> "string"
         | Unbound(id, _) -> sprintf "'t%d" id
         | Link t -> show t
 
@@ -287,10 +308,18 @@ type ExternSig =
       ret: Ty
       variadic: bool }
 
+type TraitMethod =
+    { owner: string
+      name: string
+      ty: Ty // TGen 0 is the trait's type parameter
+      isConst: bool } // `abstract zero : 'a`: implemented as unit -> 'a
+
 type Program =
     { types: Dictionary<string, TypeInfo>
       externs: Dictionary<string, ExternSig>
-      funs: FunDef list }
+      funs: FunDef list
+      traitMethods: Dictionary<string, TraitMethod> // "Show.show" -> method
+      impls: Dictionary<string * string, Dictionary<string, string>> } // (trait, type) -> method -> function
 
 /// Does a value of this type hold a reference count (directly or in a field)?
 let rec needsRc (types: Dictionary<string, TypeInfo>) t =

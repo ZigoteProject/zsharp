@@ -1,0 +1,1 @@
+tests/err_noimpl.zs:7: error: argument 1 of 'describe': Vec does not implement Describe

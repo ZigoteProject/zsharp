@@ -2,6 +2,30 @@
 // List functions are tail-recursive (loops after codegen) so long lists don't exhaust the stack.
 // ponytail: map/filter build reversed then List.rev; tail recursion modulo cons would save the pass
 
+// Operator traits. Primitive types have built-in impls; user types implement them with `impl`.
+trait Add<'a> =
+  abstract add : 'a -> 'a -> 'a
+  abstract zero : 'a
+
+trait Num<'a> =
+  abstract sub : 'a -> 'a -> 'a
+  abstract mul : 'a -> 'a -> 'a
+  abstract div : 'a -> 'a -> 'a
+  abstract rem : 'a -> 'a -> 'a
+  abstract neg : 'a -> 'a
+
+trait Eq<'a> =
+  abstract equal : 'a -> 'a -> bool
+
+trait Ord<'a> =
+  abstract compare : 'a -> 'a -> int
+
+trait Show<'a> =
+  abstract show : 'a -> string
+
+trait Hash<'a> =
+  abstract hash : 'a -> int
+
 type option<'a> =
   | None
   | Some of 'a
@@ -105,7 +129,7 @@ let List.tryFind f xs =
     | x :: rest -> if f x then Some x else go rest
   go xs
 
-let List.sum xs = List.fold (fun acc x -> acc + x) 0 xs
+let List.sum xs = List.fold (fun acc x -> acc + x) Add.zero xs
 
 let List.init n f =
   let rec go acc i =
@@ -169,7 +193,7 @@ let Array.fold f state a =
     acc <- f acc a.[i]
   acc
 
-let Array.sum a = Array.fold (fun acc x -> acc + x) 0 a
+let Array.sum a = Array.fold (fun acc x -> acc + x) Add.zero a
 
 let Array.ofList xs =
   match xs with

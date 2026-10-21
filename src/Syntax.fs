@@ -85,6 +85,8 @@ type Decl =
     | Fun of name: string * isRec: bool * pars: Param list * ret: SType option * body: Expr
     | TypeDecl of name: string * tparams: string list * TypeBody * Member list
     | TypeExt of name: string * tparams: string list * Member list // type string with member ...
+    | Trait of name: string * tparam: string * methods: (string * SType) list
+    | Impl of traitName: string * head: SType * defs: (int * string * Param list * SType option * Expr) list
 
 // ---------------------------------------------------------------- lexer
 
@@ -125,7 +127,7 @@ let showTok =
 let keywords =
     set
         [ "let"; "rec"; "if"; "then"; "else"; "extern"; "true"; "false"; "not"; "match"; "with"; "when"
-          "type"; "of"; "as"; "fun"; "for"; "in"; "do"; "while"; "mutable"; "member"; "static" ]
+          "type"; "of"; "as"; "fun"; "for"; "in"; "do"; "while"; "mutable"; "member"; "static"; "trait"; "impl"; "abstract" ]
 
 // longest first
 let symbols =
@@ -282,8 +284,13 @@ let lex (src: string) : Token[] =
                         parts.Add(false, sb.ToString())
                         sb.Clear() |> ignore
                         let s = i + 1
+                        let mutable depth = 0
+                        i <- i + 1
 
-                        while i < line.Length && line[i] <> '}' do
+                        // the hole may itself contain braces: {f { x = 1 }}
+                        while i < line.Length && (line[i] <> '}' || depth > 0) do
+                            if line[i] = '{' then depth <- depth + 1
+                            elif line[i] = '}' then depth <- depth - 1
                             i <- i + 1
 
                         if i >= line.Length then
@@ -1198,6 +1205,60 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
                     expect KDedent "end of block"
 
                 ln, TypeDecl(name, List.ofSeq tparams, body, inner @ members ())
+        | KKw "trait" ->
+            // trait Show<'a> = abstract show : 'a -> string ...
+            advance ()
+            let name = ident ()
+            expect (KSym "<") "'<'"
+
+            let tp =
+                match peek () with
+                | KTyVar v ->
+                    advance ()
+                    v
+                | _ -> err "type parameter"
+
+            closeAngle ()
+            expect (KSym "=") "'='"
+            expect KIndent "indented 'abstract' declarations"
+            let methods = ResizeArray()
+
+            while peek () = KKw "abstract" do
+                advance ()
+                let m = ident ()
+                expect (KSym ":") "':'"
+                methods.Add(m, ty ())
+
+                if peek () = KNewline then
+                    advance ()
+
+            expect KDedent "end of trait"
+            ln, Trait(name, tp, List.ofSeq methods)
+        | KKw "impl" ->
+            // impl Show<Point> = let show p = ...
+            advance ()
+            let tr = ident ()
+            expect (KSym "<") "'<'"
+            let head = ty ()
+            closeAngle ()
+            expect (KSym "=") "'='"
+            expect KIndent "indented 'let' definitions"
+            let defs = ResizeArray()
+
+            while peek () = KKw "let" do
+                let dl = line ()
+                advance ()
+                let name = ident ()
+                let ps = parameters ()
+                let ret = optTy ()
+                expect (KSym "=") "'='"
+                defs.Add(dl, name, ps, ret, block ())
+
+                if peek () = KNewline then
+                    advance ()
+
+            expect KDedent "end of impl"
+            ln, Impl(tr, head, List.ofSeq defs)
         | KKw "extern" ->
             // extern name : t1 -> t2 -> ... -> ret
             advance ()

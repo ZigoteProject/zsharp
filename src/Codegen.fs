@@ -62,6 +62,7 @@ declare void @zs_panic(ptr) noreturn
 declare void @zs_panic_c(ptr) noreturn
 declare ptr @zs_str_concat(ptr, ptr)
 declare i64 @zs_str_cmp(ptr, ptr)
+declare i64 @zs_str_hash(ptr)
 declare ptr @zs_str_of_i64(i64)
 declare ptr @zs_str_of_u64(i64)
 declare ptr @zs_str_of_f64(double)
@@ -938,6 +939,40 @@ let compile (types: Dictionary<string, TypeInfo>) (externs: Dictionary<string, E
                 | _ ->
                     let v = if lt = "i64" then arg 0 else em.Instr(sprintf "sext %s %s to i64" lt (arg 0))
                     em.Instr(sprintf "call ptr @zs_str_of_i64(i64 %s)" v)
+            | "compare" ->
+                let t = argTy 0
+                let lt = llty t
+
+                match tyName t with
+                | "string" ->
+                    let c = em.Instr(sprintf "call i64 @zs_str_cmp(ptr %s, ptr %s)" (arg 0) (arg 1))
+                    dropValue em t (arg 0)
+                    dropValue em t (arg 1)
+                    c
+                | _ ->
+                    let gt, lt' =
+                        if isFloat t then
+                            em.Instr(sprintf "fcmp ogt %s %s, %s" lt (arg 0) (arg 1)), em.Instr(sprintf "fcmp olt %s %s, %s" lt (arg 0) (arg 1))
+                        else
+                            let u = if isUnsigned t then "u" else "s"
+                            em.Instr(sprintf "icmp %sgt %s %s, %s" u lt (arg 0) (arg 1)), em.Instr(sprintf "icmp %slt %s %s, %s" u lt (arg 0) (arg 1))
+
+                    let a = em.Instr(sprintf "zext i1 %s to i64" gt)
+                    let b = em.Instr(sprintf "zext i1 %s to i64" lt')
+                    em.Instr(sprintf "sub i64 %s, %s" a b)
+            | "hash" ->
+                let t = argTy 0
+                let lt = llty t
+
+                match tyName t with
+                | "string" ->
+                    let h = em.Instr(sprintf "call i64 @zs_str_hash(ptr %s)" (arg 0))
+                    dropValue em t (arg 0)
+                    h
+                | "f64" -> em.Instr(sprintf "bitcast double %s to i64" (arg 0))
+                | "f32" -> em.Instr(sprintf "zext i32 %s to i64" (em.Instr(sprintf "bitcast float %s to i32" (arg 0))))
+                | _ when lt = "i64" -> arg 0
+                | _ -> em.Instr(sprintf "%s %s %s to i64" (if isUnsigned t || lt = "i1" then "zext" else "sext") lt (arg 0))
             | "String.length" ->
                 let lp = em.Instr(sprintf "getelementptr i8, ptr %s, i64 8" (arg 0))
                 let n = em.Instr(sprintf "load i64, ptr %s" lp)

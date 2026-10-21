@@ -7,19 +7,42 @@ open Syntax
 open Core
 
 exception private Mismatch
+exception private NoImpl of string * Ty // trait, type
 
 let private kindOf (r: TV ref) =
     match r.Value with
     | Unbound(_, k) -> k
-    | Link _ -> None
+    | Link _ -> kAny
 
+/// Checks whether a type implements a trait through a user impl (set by `check`), pushing the
+/// impl's own requirements onto the type's arguments.
+let mutable private userImpl: string -> Ty -> bool = fun _ _ -> false
+
+/// Both constraints at once. Literal kinds keep only the types that also have the traits.
 let private meet (a: Kind) (b: Kind) : Kind =
-    match a, b with
-    | None, k
-    | k, None -> k
-    | Some x, Some y ->
-        let s = Set.intersect x y
-        if s.IsEmpty then raise Mismatch else Some s
+    let traits = Set.union a.traits b.traits
+
+    let allowed =
+        match a.allowed, b.allowed with
+        | None, k
+        | k, None -> k
+        | Some x, Some y -> Some(Set.intersect x y)
+
+    let has tr n =
+        hasBuiltinImpl tr n || userImpl tr (tcon n)
+
+    match allowed with
+    | Some s ->
+        let ok = s |> Set.filter (fun n -> traits |> Set.forall (fun tr -> has tr n))
+
+        if s.IsEmpty then
+            raise Mismatch
+        elif ok.IsEmpty then
+            let tr = traits |> Seq.find (fun tr -> s |> Set.forall (fun n -> not (has tr n)))
+            raise (NoImpl(tr, tcon (if s.Contains "int" then "int" elif s.Contains "f64" then "f64" else Seq.head s)))
+        else
+            { allowed = Some ok; traits = traits }
+    | None -> { allowed = None; traits = traits }
 
 let rec private occurs r t =
     match prune t with
@@ -30,10 +53,24 @@ let rec private occurs r t =
     | TGen _ -> false
 
 let private satisfies (k: Kind) t =
-    match k, t with
-    | None, _ -> true
-    | Some s, TCon(n, []) -> s.Contains n
-    | _ -> false
+    let allowedOk =
+        match k.allowed, t with
+        | None, _ -> true
+        | Some s, TCon(n, []) -> s.Contains n
+        | _ -> false
+
+    allowedOk
+    && k.traits
+       |> Set.forall (fun tr ->
+           let ok =
+               match t with
+               | TCon(n, []) when hasBuiltinImpl tr n -> true
+               | _ -> userImpl tr t
+
+           if not ok then
+               raise (NoImpl(tr, t))
+
+           true)
 
 let rec private unify a b =
     match prune a, prune b with
@@ -63,8 +100,9 @@ let rec private unify a b =
 let private expect what expected actual =
     try
         unify expected actual
-    with Mismatch ->
-        fail 0 (sprintf "%s: expected %s, got %s" what (show expected) (show actual))
+    with
+    | Mismatch -> fail 0 (sprintf "%s: expected %s, got %s" what (show expected) (show actual))
+    | NoImpl(tr, t) -> fail 0 (sprintf "%s: %s does not implement %s" what (show t) tr)
 
 /// Quantifies the unbound variables of a top-level function's type (linking them to TGen).
 let private generalize (t: Ty) : Kind list =
@@ -116,24 +154,23 @@ let private builtins =
           arity = arity }
 
     dict (
-        [ b "ignore" "ignore" [ None ] (f a tUnit) 1
-          b "panic" "panic" [ None ] (f tStr a) 1
-          b "failwith" "panic" [ None ] (f tStr a) 1
+        [ b "ignore" "ignore" [ kAny ] (f a tUnit) 1
+          b "panic" "panic" [ kAny ] (f tStr a) 1
+          b "failwith" "panic" [ kAny ] (f tStr a) 1
           b "assert" "assert" [] (f tBool tUnit) 1
           b "print" "print" [] (f tStr tUnit) 1
           b "println" "println" [] (f tStr tUnit) 1
-          b "string" "string" [ kShow ] (f a tStr) 1
           b "String.length" "String.length" [] (f tStr tInt) 1
-          b "ref" "ref" [ None ] (f a (TCon("ref", [ a ]))) 1
-          b "Array.create" "Array.create" [ None ] (f tInt (f a (TCon("array", [ a ])))) 2
-          b "Array.length" "Array.length" [ None ] (f (TCon("array", [ a ])) tInt) 1 ]
+          b "ref" "ref" [ kAny ] (f a (TCon("ref", [ a ]))) 1
+          b "Array.create" "Array.create" [ kAny ] (f tInt (f a (TCon("array", [ a ])))) 2
+          b "Array.length" "Array.length" [ kAny ] (f (TCon("array", [ a ])) tInt) 1 ]
         @ [ for t in Seq.append nums [ "i64"; "float"; "c_int" ] ->
                 let target =
                     match typeAliases.TryGetValue t with
                     | true, c -> c
                     | _ -> t
 
-                b t "conv" [ kNum ] (f a (tcon target)) 1 ]
+                b t "conv" [ kNumeric ] (f a (tcon target)) 1 ]
     )
 
 type private Local =
@@ -162,6 +199,24 @@ let check (decls: (int * Decl) list) : Program =
     let recordDefaults = Dictionary<string, Expr option list>() // record -> default per field
     let ctorFieldNames = Dictionary<string, string option list>() // constructor -> field names
     let members = Dictionary<string, Dictionary<string, MemberInfo>>() // type -> member name -> info
+    let traitMethods = Dictionary<string, TraitMethod>() // "Show.show" -> method
+    let traitAliases = Dictionary<string, string>() // "show" -> "Show.show"
+    let impls = Dictionary<string * string, Dictionary<string, string>>() // (trait, type) -> method -> function
+    let implRequires = Dictionary<string * string, Set<string> list>() // traits each type argument needs
+
+    userImpl <-
+        fun tr t ->
+            match prune t with
+            | TCon(n, args) ->
+                match implRequires.TryGetValue((tr, n)) with
+                | true, reqs ->
+                    for a, trs in List.zip args reqs do
+                        for tr2 in trs do
+                            unify (fresh (kTrait tr2)) a
+
+                    true
+                | _ -> false
+            | _ -> false
     let globals = Dictionary<string, Global>()
     let externs = Dictionary<string, ExternSig>()
     let funs = ResizeArray<FunDef>()
@@ -196,7 +251,7 @@ let check (decls: (int * Decl) list) : Program =
                 match tyvars.TryGetValue v with
                 | true, t -> t
                 | _ ->
-                    let t = fresh None
+                    let t = fresh kAny
                     tyvars[v] <- t
                     t
         | STName(n, args) ->
@@ -221,7 +276,7 @@ let check (decls: (int * Decl) list) : Program =
     let annot ann =
         match ann with
         | Some st -> toTy None st
-        | None -> fresh None
+        | None -> fresh kAny
 
     let instantiate (kinds: Kind list) (t: Ty) =
         let vars = kinds |> List.map fresh
@@ -229,7 +284,7 @@ let check (decls: (int * Decl) list) : Program =
 
     /// A user type applied to fresh type arguments.
     let instType name =
-        let args = List.init types[name].npars (fun _ -> fresh None)
+        let args = List.init types[name].npars (fun _ -> fresh kAny)
         TCon(name, args), args
 
     let caseFields u tag args =
@@ -337,7 +392,7 @@ let check (decls: (int * Decl) list) : Program =
         | PIdent(x, None) -> CPVar(name x, ty)
         | PIdent(c, Some _) -> fail 0 (sprintf "unknown constructor '%s'" c)
         | PTuple ps ->
-            let ts = ps |> List.map (fun _ -> fresh None)
+            let ts = ps |> List.map (fun _ -> fresh kAny)
             expect "pattern" ty (TTuple ts)
             CPTuple(List.map2 (pat names) ps ts)
         | POr(a, b) ->
@@ -520,12 +575,12 @@ let check (decls: (int * Decl) list) : Program =
         | Index(a, i) ->
             let ca = inf a
             let ci = inf i
-            let el = fresh None
+            let el = fresh kAny
             expect "indexing" (TCon("array", [ el ])) ca.ty
             expect "array index" tInt ci.ty
             mk (CPrim("array.get", [ ca; ci ])) el
         | ArrayLit xs ->
-            let el = fresh None
+            let el = fresh kAny
 
             let cs =
                 xs
@@ -540,27 +595,28 @@ let check (decls: (int * Decl) list) : Program =
             let cb = inf b
             let isArith = List.contains op [ "+"; "-"; "*"; "/"; "%" ]
 
-            let kind =
+            let tr =
                 match op with
-                | "+" -> kPlus
+                | "+" -> "Add"
                 | "-"
                 | "*"
                 | "/"
-                | "%" -> kNum
+                | "%" -> "Num"
                 | "="
-                | "<>" -> kEq
-                | _ -> kOrd
+                | "<>" -> "Eq"
+                | _ -> "Ord"
 
             try
-                unify (fresh kind) ca.ty
-            with Mismatch ->
-                fail 0 (sprintf "operator '%s' does not support type %s" op (show ca.ty))
+                unify (fresh (kTrait tr)) ca.ty
+            with
+            | Mismatch
+            | NoImpl _ -> fail 0 (sprintf "operator '%s' does not support type %s (it needs %s)" op (show ca.ty) tr)
 
             expect (sprintf "right operand of '%s'" op) ca.ty cb.ty
             mk (CBin(op, ca, cb)) (if isArith then ca.ty else tBool)
         | Neg a ->
             let ca = inf a
-            expect "operand of '-'" (fresh kNum) ca.ty
+            expect "operand of '-'" (fresh (kTrait "Num")) ca.ty
             mk (CNeg ca) ca.ty
         | Not a ->
             let ca = inf a
@@ -605,7 +661,7 @@ let check (decls: (int * Decl) list) : Program =
         | TryBind(p, e, rest) ->
             // match e with Ok p -> rest | Error err -> Error err
             let ce = inf e
-            let okTy, er = fresh None, fresh None
+            let okTy, er = fresh kAny, fresh kAny
             let resTy = TCon("result", [ okTy; er ])
             expect "operand of '?'" resTy ce.ty
             let names = Dictionary<string, string>()
@@ -629,8 +685,8 @@ let check (decls: (int * Decl) list) : Program =
             let crest = infer envOk depth rest
 
             try
-                unify (TCon("result", [ fresh None; er ])) crest.ty
-            with Mismatch ->
+                unify (TCon("result", [ fresh kAny; er ])) crest.ty
+            with Mismatch | NoImpl _ ->
                 let ers =
                     match prune er with
                     | TVar _ -> "_"
@@ -645,7 +701,7 @@ let check (decls: (int * Decl) list) : Program =
             mk (CMatch(ce, cases)) crest.ty
         | Match(s, cases) ->
             let cs = inf s
-            let resTy = fresh None
+            let resTy = fresh kAny
 
             let ccases =
                 cases
@@ -687,7 +743,7 @@ let check (decls: (int * Decl) list) : Program =
     /// A literal-constrained type variable takes its default before a member lookup.
     and settle (t: Ty) =
         match prune t with
-        | TVar r when (kindOf r).IsSome -> resolve t |> ignore
+        | TVar r when (kindOf r).allowed.IsSome -> resolve t |> ignore
         | _ -> ()
 
     /// `e.f` once e is typed: ref cell, record field, or property member.
@@ -709,7 +765,7 @@ let check (decls: (int * Decl) list) : Program =
             else
                 fail 0 (sprintf "method '%s' must be called: x.%s(...)" f f)
         | TVar _, _ when f = "Value" && not (fieldOwner.ContainsKey f) ->
-            let a = fresh None
+            let a = fresh kAny
             expect "ref cell" (TCon("ref", [ a ])) cr.ty
             mk (CPrim("ref.get", [ cr ])) a
         | TVar _, _ when not (fieldOwner.ContainsKey f) ->
@@ -827,7 +883,7 @@ let check (decls: (int * Decl) list) : Program =
                     let inner =
                         match prune pt with
                         | TCon("option", [ t ]) -> t
-                        | _ -> fresh None
+                        | _ -> fresh kAny
 
                     let c = inferHint env depth inner a
                     expect (sprintf "argument '%s' of '%s'" p.mname what) inner c.ty
@@ -893,7 +949,7 @@ let check (decls: (int * Decl) list) : Program =
 
         let resolves (n: string) =
             env.ContainsKey n || globals.ContainsKey n || ctors.ContainsKey n || builtins.ContainsKey n
-            || (staticMember n).IsSome
+            || traitAliases.ContainsKey n || (staticMember n).IsSome
 
         seq { parts.Length - 1 .. -1 .. 1 }
         |> Seq.tryPick (fun k ->
@@ -903,6 +959,17 @@ let check (decls: (int * Decl) list) : Program =
                 Some(parts[k..] |> Array.fold (fun e f -> Field(e, f)) (Var prefix))
             else
                 None)
+
+    /// A trait method, instantiated; its type parameter must implement the trait.
+    and traitMethod (x: string) : CExpr =
+        let tm = traitMethods[traitAliases[x]]
+        let t, inst = instantiate [ kTrait tm.owner ] tm.ty
+        let qname = tm.owner + "." + tm.name
+
+        if tm.isConst then
+            mk (CApp(mk (CGlobal(qname, Some inst)) (TFun(tUnit, t)), [ mk CUnit tUnit ])) t
+        else
+            mk (CGlobal(qname, Some inst)) t
 
     and value env depth x : CExpr =
         match env.TryFind x with
@@ -935,6 +1002,8 @@ let check (decls: (int * Decl) list) : Program =
                         let p = uniq "$v"
                         mk (CLam([ p, ft ], mk (CCtor(u, tag, [ mk (CLocal p) ft ])) uty)) (TFun(ft, uty))
                     | _ -> fail 0 (sprintf "constructor '%s' takes several fields; apply it as %s (a, b)" x x)
+                elif traitAliases.ContainsKey x then
+                    traitMethod x
                 elif builtins.ContainsKey x then
                     builtinCall env depth x []
                 elif externs.ContainsKey x then
@@ -951,6 +1020,8 @@ let check (decls: (int * Decl) list) : Program =
             apply env depth (value env depth f) args (Some f)
         elif ctors.ContainsKey f then
             ctor env depth f args
+        elif traitAliases.ContainsKey f then
+            apply env depth (traitMethod f) args (Some f)
         elif builtins.ContainsKey f then
             builtinCall env depth f args
         elif externs.ContainsKey f then
@@ -982,7 +1053,7 @@ let check (decls: (int * Decl) list) : Program =
                     expect what p ca.ty
                     t.Value <- r
                 | TVar _ ->
-                    let r = fresh None
+                    let r = fresh kAny
                     expect "function" t.Value (TFun(ca.ty, r))
                     t.Value <- r
                 | ty ->
@@ -1121,7 +1192,7 @@ let check (decls: (int * Decl) list) : Program =
             | _ ->
                 match records |> Seq.filter fits |> List.ofSeq with
                 | [ r ] -> r
-                | [] -> recordOf (fresh None) given.Head // the precise error comes from buildRecord
+                | [] -> recordOf (fresh kAny) given.Head // the precise error comes from buildRecord
                 | many ->
                     let exact = many |> List.filter (fun r -> (fieldsOf r).Length = given.Length)
 
@@ -1144,10 +1215,6 @@ let check (decls: (int * Decl) list) : Program =
                     expect (sprintf "default of field '%s'" f) ft ce.ty
                     ce
                 | None -> fail 0 (sprintf "record '%s' is missing field '%s'" rname f))
-
-        match hint with
-        | Some h -> expect "record literal" h rty
-        | None -> ()
 
         built
 
@@ -1203,16 +1270,22 @@ let check (decls: (int * Decl) list) : Program =
 
     /// Type-checks functions that may refer to each other (pre-registered when isRec),
     /// then generalizes each.
-    let defineGroup (items: (int * string * bool * Param list * SType option * Expr) list) =
+    let defineGroupWith
+        (items: (int * string * bool * Param list * SType option * Expr * (unit -> Ty) option) list)
+        : (Global * Dictionary<string, Ty>) list =
         let prepared =
             items
-            |> List.map (fun (ln, name, isRec, ps, ret, body) ->
+            |> List.map (fun (ln, name, isRec, ps, ret, body, expected) ->
                 try
                     tyvars.Clear()
                     let ps, body = lowerParams ps body
                     let pars = ps |> List.map (fun (x, ann) -> x, uniq x, annot ann)
                     let rty = annot ret
                     let fty = funTy (pars |> List.map (fun (_, _, t) -> t)) rty
+
+                    match expected with
+                    | Some f -> expect (sprintf "'%s' does not match the trait's signature" name) (f ()) fty
+                    | None -> ()
 
                     let g =
                         { ty = fty
@@ -1255,20 +1328,25 @@ let check (decls: (int * Decl) list) : Program =
                 with CompileError(0, msg) ->
                     fail ln msg)
 
-        for (_, name, pars, rty, fty, g, _, _), cb in List.zip prepared bodies do
-            if name = "main" then
-                resolve fty |> ignore
+        [ for (_, name, pars, rty, fty, g, _, tvs), cb in List.zip prepared bodies do
+              if name = "main" then
+                  resolve fty |> ignore
 
-            g.kinds <- generalize fty
-            g.defining <- false
-            globals[name] <- g
+              g.kinds <- generalize fty
+              g.defining <- false
+              globals[name] <- g
 
-            funs.Add
-                { name = name
-                  pars = pars |> List.map (fun (_, u, t) -> u, t)
-                  ret = rty
-                  body = cb
-                  ngen = g.kinds.Length }
+              funs.Add
+                  { name = name
+                    pars = pars |> List.map (fun (_, u, t) -> u, t)
+                    ret = rty
+                    body = cb
+                    ngen = g.kinds.Length }
+
+              yield g, tvs ]
+
+    let defineGroup items =
+        defineGroupWith (items |> List.map (fun (ln, n, r, ps, ret, b) -> ln, n, r, ps, ret, b, None)) |> ignore
 
     /// Members become functions `Type#Name`: self first (instance members), then parameters;
     /// an optional parameter without a default is an option in the body.
@@ -1388,6 +1466,106 @@ let check (decls: (int * Decl) list) : Program =
                     fail 0 (sprintf "'%s' is already defined" name)
 
                 defineGroup [ ln, name, isRec, ps, ret, body ]
+            | Trait(name, tp, methods) ->
+                if traitMethods.Keys |> Seq.exists (fun k -> k.StartsWith(name + ".")) then
+                    fail 0 (sprintf "trait '%s' is already defined" name)
+
+                for m, st in methods do
+                    let t = toTy (Some [ tp ]) st
+
+                    let isConst =
+                        match t with
+                        | TFun _ -> false
+                        | _ -> true
+
+                    let qname = name + "." + m
+
+                    traitMethods[qname] <-
+                        { owner = name
+                          name = m
+                          ty = t
+                          isConst = isConst }
+
+                    traitAliases[qname] <- qname
+
+                    // unqualified names, except for the operator traits (whose methods are the operators)
+                    if not (List.contains name [ "Add"; "Num"; "Eq" ]) && not (traitAliases.ContainsKey m) then
+                        traitAliases[m] <- qname
+
+                if name = "Show" then
+                    traitAliases["string"] <- "Show.show"
+            | Impl(tr, head, defs) ->
+                let methods =
+                    traitMethods.Values |> Seq.filter (fun m -> m.owner = tr) |> Seq.map (fun m -> m.name) |> Set.ofSeq
+
+                if methods.IsEmpty then
+                    fail 0 (sprintf "unknown trait '%s'" tr)
+
+                let hn, hargs =
+                    match head with
+                    | STName(n, args) ->
+                        (match typeAliases.TryGetValue n with
+                         | true, c -> c
+                         | _ -> n),
+                        args
+                    | _ -> fail 0 "an impl is for a named type, such as Show<Point> or Show<list<'a>>"
+
+                let hvars =
+                    hargs
+                    |> List.map (function
+                        | STVar v -> v
+                        | _ -> fail 0 "impl type arguments must be type variables: impl Show<list<'a>>")
+
+                if (List.distinct hvars).Length <> hvars.Length then
+                    fail 0 "impl type variables must be distinct"
+
+                if impls.ContainsKey((tr, hn)) then
+                    fail 0 (sprintf "%s<%s> is already implemented" tr hn)
+
+                let given = defs |> List.map (fun (_, n, _, _, _) -> n)
+
+                for m in methods do
+                    if not (List.contains m given) then
+                        fail 0 (sprintf "impl %s<%s> is missing '%s'" tr hn m)
+
+                for m in given do
+                    if not (methods.Contains m) then
+                        fail 0 (sprintf "trait %s has no method '%s'" tr m)
+
+                // registered before the bodies, so they may use the impl recursively
+                let table = Dictionary<string, string>()
+                impls[(tr, hn)] <- table
+                implRequires[(tr, hn)] <- List.map (fun _ -> Set.empty) hvars
+
+                let items =
+                    defs
+                    |> List.map (fun (dl, m, ps, ret, body) ->
+                        let tm = traitMethods[tr + "." + m]
+                        let fname = sprintf "%s<%s>#%s" tr hn m
+                        table[m] <- fname
+                        let ps = if ps.IsEmpty then [ PUnit, None ] else ps
+
+                        let expected () =
+                            let t = substGen [ toTy None head ] tm.ty
+                            if tm.isConst then TFun(tUnit, t) else t
+
+                        dl, fname, true, ps, ret, body, Some expected)
+
+                let results = defineGroupWith items
+
+                // what the impl needs from each type argument: the union over its methods
+                implRequires[(tr, hn)] <-
+                    hvars
+                    |> List.map (fun v ->
+                        results
+                        |> List.collect (fun (g, tvs) ->
+                            match tvs.TryGetValue v with
+                            | true, t ->
+                                match prune t with
+                                | TGen i -> (List.item i g.kinds).traits |> Set.toList
+                                | _ -> []
+                            | _ -> [])
+                        |> Set.ofList)
             | TypeExt(name, tps, ms) ->
                 let name =
                     match typeAliases.TryGetValue name with
@@ -1413,4 +1591,6 @@ let check (decls: (int * Decl) list) : Program =
 
     { types = types
       externs = externs
-      funs = List.ofSeq funs }
+      funs = List.ofSeq funs
+      traitMethods = traitMethods
+      impls = impls }
