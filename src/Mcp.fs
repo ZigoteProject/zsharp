@@ -79,7 +79,8 @@ let private tools: (string * string * JsonNode) list =
       "run",
       "Compile and run a Z# program (10 second limit, empty stdin). Returns its output, exit code and the leak check.",
       schema [ fileArg ] [ "file" ]
-      "emit_llvm", "The LLVM IR a Z# program compiles to.", schema [ fileArg ] [ "file" ] ]
+      "emit_llvm", "The LLVM IR a Z# program compiles to.", schema [ fileArg ] [ "file" ]
+      "format", "A Z# file in the canonical layout (zs fmt). Returns the formatted text; the file is not changed.", schema [ fileArg ] [ "file" ] ]
 
 let private call (name: string) (args: JsonNode) : string =
     let arg (k: string) =
@@ -159,6 +160,16 @@ let private call (name: string) (args: JsonNode) : string =
         match Driver.compileProgram file false with
         | Ok(ir, _) -> limit 100000 ir
         | Error errors -> raise (ToolError(formatErrors errors))
+    | "format" ->
+        let file = projectFile (getStr (arg "file"))
+
+        try
+            match Format.format (File.ReadAllText file) with
+            | Ok formatted -> formatted
+            | Error msg -> raise (ToolError msg)
+        with
+        | CompileError(l, m)
+        | CompileErrorPos(l, _, m) -> raise (ToolError(sprintf "%s:%d: %s" file l m))
     | _ -> raise (ToolError(sprintf "unknown tool '%s'" name))
 
 /// The design documents, when the server runs in the Z# repository.

@@ -32,23 +32,23 @@ let rec eval env e depth st =
   | Num n -> (n, st)
   | Var slot -> (lookup env slot, st)
   | Add (a, b) ->
-      let (x, st) = eval env a (depth + 1) st
-      let (y, st) = eval env b (depth + 1) st
-      (x + y, st)
+    let (x, st) = eval env a (depth + 1) st
+    let (y, st) = eval env b (depth + 1) st
+    (x + y, st)
   | Mul (a, b) ->
-      let (x, st) = eval env a (depth + 1) st
-      let (y, st) = eval env b (depth + 1) st
-      (x * y, st)
+    let (x, st) = eval env a (depth + 1) st
+    let (y, st) = eval env b (depth + 1) st
+    (x * y, st)
   | Neg a ->
-      let (x, st) = eval env a (depth + 1) st
-      (-x, st)
+    let (x, st) = eval env a (depth + 1) st
+    (-x, st)
   | IfPos (c, t, f) ->
-      let (x, st) = eval env c (depth + 1) st
-      if x > 0 then eval env t (depth + 1) st
-      else eval env f (depth + 1) st
+    let (x, st) = eval env c (depth + 1) st
+    if x > 0 then eval env t (depth + 1) st
+    else eval env f (depth + 1) st
   | Let (slot, v, body) ->
-      let (x, st) = eval env v (depth + 1) st
-      eval (Bind (slot, x, env)) body (depth + 1) st
+    let (x, st) = eval env v (depth + 1) st
+    eval (Bind (slot, x, env)) body (depth + 1) st
 
 let rec simplify e =
   match e with
@@ -74,40 +74,40 @@ let rec show e =
   | Num n -> printf "%ld" n |> ignore
   | Var s -> printf "x%ld" s |> ignore
   | Add (a, b) ->
-      printf "(" |> ignore
-      show a
-      printf " + " |> ignore
-      show b
-      printf ")" |> ignore
+    printf "(" |> ignore
+    show a
+    printf " + " |> ignore
+    show b
+    printf ")" |> ignore
   | Mul (a, b) ->
-      printf "(" |> ignore
-      show a
-      printf " * " |> ignore
-      show b
-      printf ")" |> ignore
+    printf "(" |> ignore
+    show a
+    printf " * " |> ignore
+    show b
+    printf ")" |> ignore
   | Neg a ->
-      printf "-" |> ignore
-      show a
+    printf "-" |> ignore
+    show a
   | IfPos (c, t, f) ->
-      printf "(if " |> ignore
-      show c
-      printf " > 0 then " |> ignore
-      show t
-      printf " else " |> ignore
-      show f
-      printf ")" |> ignore
+    printf "(if " |> ignore
+    show c
+    printf " > 0 then " |> ignore
+    show t
+    printf " else " |> ignore
+    show f
+    printf ")" |> ignore
   | Let (s, v, b) ->
-      printf "(let x%ld = " s |> ignore
-      show v
-      printf " in " |> ignore
-      show b
-      printf ")" |> ignore
+    printf "(let x%ld = " s |> ignore
+    show v
+    printf " in " |> ignore
+    show b
+    printf ")" |> ignore
 
 let main () =
   let prog =
     Let (0, Add (Num 3, Num 4),
       Add (IfPos (Var 0, Mul (Var 0, Add (Num 0, Num 10)), Neg (Num 1)),
-           Mul (Num 1, Neg (Var 0))))
+        Mul (Num 1, Neg (Var 0))))
   show prog
   printf "\n" |> ignore
   let (v, st) = eval Empty prog 0 { steps = 0; maxDepth = 0 }

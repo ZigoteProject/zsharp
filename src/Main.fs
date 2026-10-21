@@ -70,6 +70,36 @@ let main argv =
         with CompileErrorAt(file, line, col, msg) ->
             printError file line col msg
             1
+    | "fmt" :: rest ->
+        // zs fmt files… rewrites them; --check lists the ones that aren't formatted
+        let check = List.contains "--check" rest
+        let files = rest |> List.filter (fun a -> not (a.StartsWith "--"))
+        let mutable status = 0
+
+        for f in files do
+            try
+                let src = File.ReadAllText f
+
+                match Format.format src with
+                | Ok formatted when formatted = src.Replace("\r\n", "\n") -> ()
+                | Ok formatted ->
+                    if check then
+                        eprintfn "%s: not formatted" f
+                        status <- 1
+                    else
+                        File.WriteAllText(f, formatted)
+                | Error msg ->
+                    eprintfn "%s: %s" f msg
+                    status <- 1
+            with
+            | CompileError(l, m) ->
+                printError f l 0 m
+                status <- 1
+            | CompileErrorPos(l, c, m) ->
+                printError f l c m
+                status <- 1
+
+        status
     | [ "lsp" ] -> Lsp.serve ()
     | [ "mcp" ] -> Mcp.serve ()
     | "run" :: src :: rest ->
@@ -82,5 +112,5 @@ let main argv =
         else
             1
     | _ ->
-        eprintfn "usage: zs build <file.zs> [-o <out>] [--lib] [--emit-llvm] [--sanitize]\n       zs run <file.zs> [--sanitize]\n       zs check <file.zs>\n       zs lsp\n       zs mcp"
+        eprintfn "usage: zs build <file.zs> [-o <out>] [--lib] [--emit-llvm] [--sanitize]\n       zs run <file.zs> [--sanitize]\n       zs check <file.zs>\n       zs fmt [--check] <files…>\n       zs lsp\n       zs mcp"
         2

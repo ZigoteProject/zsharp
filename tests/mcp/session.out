@@ -1,5 +1,5 @@
 "protocolVersion":"2025-06-18"
-"name":"check" "name":"type_at" "name":"docs" "name":"build" "name":"run" "name":"emit_llvm" 
+"name":"check" "name":"type_at" "name":"docs" "name":"build" "name":"run" "name":"emit_llvm" "name":"format" 
 [false] no errors
 [false] tests/mcp/broken.zs:3:3: right operand of \u0027\u002B\u0027: expected int, got string
 [false] square : \u0027a -\u003E \u0027a when \u0027a : Num

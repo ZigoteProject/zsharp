@@ -11,7 +11,7 @@ let area s =
 let rec describe xs =
   match xs with
   | [] -> "end"
-  | [x] -> $"last {x}"
+  | [ x ] -> $"last {x}"
   | x :: rest -> $"{x}, " + describe rest
 
 let main () =

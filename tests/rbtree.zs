@@ -20,9 +20,9 @@ let insert x tree =
     match t with
     | E -> T (R, E, x, E)
     | T (c, l, y, r) ->
-        if x < y then balance c (ins l) y r
-        else if x > y then balance c l y (ins r)
-        else t
+      if x < y then balance c (ins l) y r
+      else if x > y then balance c l y (ins r)
+      else t
   match ins tree with
   | T (_, l, y, r) -> T (B, l, y, r)
   | E -> E

@@ -192,6 +192,15 @@ thin extension each. The compiler is the single source of truth: the language
 server and the MCP server are `zs` subcommands that reuse its lexer, parser and
 type checker, so editor behaviour can't drift from the compiler's.
 
+**Status (track E):**
+- **`zs check`:** done.
+- **Error messages:** done. They give `file:line:col`, the source line with a caret, and every error in one run.
+- **E2a (`zs lsp`):** done. Diagnostics, hover with constraints, inlay hints, document symbols and formatting, tested by `tests/lsp/session.sh`.
+- **E3 (`zs mcp`):** done. The `check`, `type_at`, `docs`, `build`, `run`, `emit_llvm` and `format` tools, tested by `tests/mcp/session.sh`.
+- **F (`zs fmt`):** v1 done (token-based; see below).
+- **E1 (grammar and Zed extension):** written but not yet built. The grammar still needs generating and testing, and the extension needs compiling to WASM, once the dev image has the tree-sitter CLI and Rust.
+- **E2b (navigation and completion):** next.
+
 ### E1: syntax highlighting and Zed extension
 - **Scope:**
   - **Grammar:** `editors/tree-sitter-zsharp`, a tree-sitter grammar with an external scanner for the offside rule (INDENT/DEDENT/NEWLINE, as in tree-sitter-python).
@@ -225,6 +234,12 @@ type checker, so editor behaviour can't drift from the compiler's.
   - In Zed, a 2,000-line file shows updated diagnostics within 100 ms of a keystroke.
 
 ### F: formatter (`zs fmt`)
+
+**v1 (done):** works on tokens, so formatting can't change a program's tokens; every result is checked.
+- **What it does:** re-indents from the block structure (2 spaces per level), spaces operators and punctuation the same way everywhere, and collapses blank lines. Comments are kept.
+- **Where it runs:** `./test.sh` keeps the repository formatted, and the LSP and MCP formatting use it.
+- **Still missing:** reflowing lines to 100 columns, which needs the lossless syntax tree described below.
+
 - **Style:** one canonical style with no configuration, like `gofmt`, `zig fmt` and `rustfmt`. The default layout follows Fantomas/F# conventions:
   - 2-space indent.
   - Match cases aligned under `match`.

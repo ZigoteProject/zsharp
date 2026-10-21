@@ -231,7 +231,8 @@ let serve () : int =
                                   [ "textDocumentSync", num 1 // full text on every change
                                     "hoverProvider", bool true
                                     "documentSymbolProvider", bool true
-                                    "inlayHintProvider", bool true ]
+                                    "inlayHintProvider", bool true
+                                    "documentFormattingProvider", bool true ]
                               "serverInfo", obj [ "name", str "zs"; "version", str "0.4" ] ])
                 | "textDocument/didOpen" ->
                     let path = docPath ()
@@ -255,6 +256,16 @@ let serve () : int =
                     let r = ps["range"]
                     respond id (inlayHints (docPath ()) (getInt (r["start"]["line"])) (getInt (r["end"]["line"])))
                 | "textDocument/documentSymbol" -> respond id (symbols (docPath ()))
+                | "textDocument/formatting" ->
+                    // one edit replacing the whole document; none if it doesn't parse
+                    let path = docPath ()
+                    let src = Driver.readSource path
+
+                    match (try Format.format src with _ -> Error "") with
+                    | Ok formatted when formatted <> src ->
+                        let lines = src.Split '\n'
+                        respond id (arr [ obj [ "range", range (0, 0) (lines.Length, 0); "newText", str formatted ] ])
+                    | _ -> respond id (arr [])
                 | "shutdown" -> respond id null
                 | "exit" ->
                     running <- false

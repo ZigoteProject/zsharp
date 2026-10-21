@@ -14,9 +14,9 @@ trait Json<'a> =
 let Json.field name j =
   match j with
   | JObject kvs ->
-      match List.tryFind (fun (k, _) -> k = name) kvs with
-      | Some (_, v) -> Ok v
-      | None -> Error $"missing key {name}"
+    match List.tryFind (fun (k, _) -> k = name) kvs with
+    | Some (_, v) -> Ok v
+    | None -> Error $"missing key {name}"
   | _ -> Error "expected an object"
 
 let Json.string j =
@@ -66,25 +66,25 @@ derive Json =
   let toJson (x: 'self) =
     match Shape.of x with
     | Record r ->
-        let mutable fields = []
-        for f in r.fields do
-          fields <- (f.name, toJson f.value) :: fields
-        JObject (List.rev fields)
+      let mutable fields = []
+      for f in r.fields do
+        fields <- (f.name, toJson f.value) :: fields
+      JObject (List.rev fields)
     | Union c ->
-        let mutable args = []
-        for f in c.fields do
-          args <- toJson f.value :: args
-        JObject [ ("case", JString c.name); ("fields", JArray (List.rev args)) ]
+      let mutable args = []
+      for f in c.fields do
+        args <- toJson f.value :: args
+      JObject [ ("case", JString c.name); ("fields", JArray (List.rev args)) ]
 
   let fromJson (j: JsonValue) : result<'self, string> =
     match Shape.kind with
     | RecordKind -> Shape.build (fun f -> Json.field f.name j |> Result.bind fromJson)
     | UnionKind ->
-        let name = (Json.field "case" j |> Result.bind Json.string)?
-        let args = (Json.field "fields" j |> Result.bind Json.array)?
-        match Shape.buildCase name (fun f -> Json.at f.index args |> Result.bind fromJson) with
-        | Some built -> built
-        | None -> Error $"unknown case {name}"
+      let name = (Json.field "case" j |> Result.bind Json.string)?
+      let args = (Json.field "fields" j |> Result.bind Json.array)?
+      match Shape.buildCase name (fun f -> Json.at f.index args |> Result.bind fromJson) with
+      | Some built -> built
+      | None -> Error $"unknown case {name}"
 
 [<Derive(Json)>]
 type User = { name: string; age: int; email: option<string> }

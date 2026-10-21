@@ -12,10 +12,10 @@ derive Json =
   let toJson (x: 'self) =
     match Shape.of x with
     | Record r ->
-        let mutable last = JNull
-        for f in r.fields do
-          last <- toJson f.value
-        last
+      let mutable last = JNull
+      for f in r.fields do
+        last <- toJson f.value
+      last
     | Union c -> JNull
 
 [<Derive(Json)>]

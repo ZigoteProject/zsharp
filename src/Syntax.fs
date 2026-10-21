@@ -201,7 +201,20 @@ let private unescape ln =
 /// Offside rule: emits KIndent / KDedent / KNewline at line starts outside brackets.
 /// A line starting with '|>' continues the previous one; a new line inside '{ }' or '[ ]' acts as ';'.
 /// `Upper.name` lexes as one qualified identifier (List.map, Array.length).
-let lex (src: string) : Token[] =
+/// Comments seen by the last lexComments call: (line, column, text).
+let private comments = ResizeArray<int * int * string>()
+
+let rec lex (src: string) : Token[] = lexWith src false
+
+/// The tokens and every `//` comment, for the formatter.
+and lexComments (src: string) : Token[] * (int * int * string) list =
+    let toks = lexWith src true
+    toks, List.ofSeq comments
+
+and private lexWith (src: string) (keepComments: bool) : Token[] =
+    if keepComments then
+        comments.Clear()
+
     let toks = ResizeArray<Token>()
     let indents = Stack<int>()
     indents.Push 0
@@ -268,6 +281,9 @@ let lex (src: string) : Token[] =
             if c = ' ' then
                 i <- i + 1
             elif c = '/' && i + 1 < line.Length && line[i + 1] = '/' then
+                if keepComments then
+                    comments.Add(ln, i + 1, line.Substring i)
+
                 i <- line.Length
             elif Char.IsDigit c then
                 let s = i
@@ -410,8 +426,8 @@ let lex (src: string) : Token[] =
                 | ">]" when brackets.Count > 0 -> brackets.Pop() |> ignore
                 | _ -> ()
 
-                add (KSym(if prefixMinus then "~-" else s))
                 i <- i + s.Length
+                add (KSym(if prefixMinus then "~-" else s))
 
     for _ in 2 .. indents.Count do
         toks.Add

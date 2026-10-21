@@ -38,49 +38,49 @@ derive Eq =
   let equal (a: 'self) (b: 'self) =
     match Shape.pair a b with
     | Same c ->
-        let mutable same = true
-        for f in c.fields do
-          if same then same <- f.left = f.right
-        same
+      let mutable same = true
+      for f in c.fields do
+        if same then same <- f.left = f.right
+      same
     | Different _ -> false
 
 derive Ord =
   let compare (a: 'self) (b: 'self) =
     match Shape.pair a b with
     | Same c ->
-        let mutable r = 0
-        for f in c.fields do
-          if r = 0 then r <- compare f.left f.right
-        r
+      let mutable r = 0
+      for f in c.fields do
+        if r = 0 then r <- compare f.left f.right
+      r
     | Different (i, j) -> compare i j
 
 derive Hash =
   let hash (x: 'self) =
     match Shape.of x with
     | Record r ->
-        let mutable h = 17
-        for f in r.fields do
-          h <- h * 31 + hash f.value
-        h
+      let mutable h = 17
+      for f in r.fields do
+        h <- h * 31 + hash f.value
+      h
     | Union c ->
-        let mutable h = 17 + c.index
-        for f in c.fields do
-          h <- h * 31 + hash f.value
-        h
+      let mutable h = 17 + c.index
+      for f in c.fields do
+        h <- h * 31 + hash f.value
+      h
 
 derive Show =
   let show (x: 'self) =
     match Shape.of x with
     | Record r ->
-        let mutable s = "{ "
-        for f in r.fields do
-          s <- s + (if f.index > 0 then "; " else "") + f.name + " = " + show f.value
-        s + " }"
+      let mutable s = "{ "
+      for f in r.fields do
+        s <- s + (if f.index > 0 then "; " else "") + f.name + " = " + show f.value
+      s + " }"
     | Union c ->
-        let mutable s = c.name
-        for f in c.fields do
-          s <- s + (if f.index = 0 then (if c.count > 1 then " (" else " ") else ", ") + show f.value
-        if c.count > 1 then s + ")" else s
+      let mutable s = c.name
+      for f in c.fields do
+        s <- s + (if f.index = 0 then (if c.count > 1 then " (" else " ") else ", ") + show f.value
+      if c.count > 1 then s + ")" else s
 
 type option<'a> =
   | None
@@ -151,8 +151,8 @@ let List.iter f xs =
     match xs with
     | [] -> ()
     | x :: rest ->
-        f x
-        go rest
+      f x
+      go rest
   go xs
 
 let List.append xs ys =
@@ -255,17 +255,17 @@ let Array.ofList xs =
   match xs with
   | [] -> [||]
   | x :: _ ->
-      let a = Array.create (List.length xs) x
-      let mutable cur = xs
-      let mutable i = 0
-      while i < Array.length a do
-        match cur with
-        | y :: rest ->
-            a.[i] <- y
-            cur <- rest
-        | [] -> ()
-        i <- i + 1
-      a
+    let a = Array.create (List.length xs) x
+    let mutable cur = xs
+    let mutable i = 0
+    while i < Array.length a do
+      match cur with
+      | y :: rest ->
+        a.[i] <- y
+        cur <- rest
+      | [] -> ()
+      i <- i + 1
+    a
 
 let Array.toList a =
   let rec go acc i =
@@ -313,9 +313,9 @@ let List.choose f xs =
     match xs with
     | [] -> List.rev acc
     | x :: rest ->
-        match f x with
-        | Some y -> go (y :: acc) rest
-        | None -> go acc rest
+      match f x with
+      | Some y -> go (y :: acc) rest
+      | None -> go acc rest
   go [] xs
 
 let List.collect f xs = List.fold (fun acc x -> List.append acc (f x)) [] xs

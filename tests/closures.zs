@@ -32,6 +32,6 @@ let main () =
   let (a, b) = pairUp "same"
   let (c, d) = pairUp 2.5
   println $"generic = {a}{b} {c + d}"
-  let adders = List.map add [1; 2; 3]
+  let adders = List.map add [ 1; 2; 3 ]
   println $"adders = {List.map (fun f -> f 10) adders |> List.sum}"
   0
