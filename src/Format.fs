@@ -61,7 +61,7 @@ let private space (prev: Token) (cur: Token) (unaryMinus: bool) (tight: bool) =
     let p, c = symText prev.tok, symText cur.tok
 
     if unaryMinus then ""
-    elif tight || asWritten.Contains p || asWritten.Contains c then (if cur.adj then "" else " ")
+    elif tight || asWritten.Contains p || asWritten.Contains c || isPrefixOp p then (if cur.adj then "" else " ")
     elif openers.Contains p && closers.Contains c then "" // [] () {} [||]
     elif p = "[<" || c = ">]" then ""
     elif openers.Contains p || closers.Contains c then " "

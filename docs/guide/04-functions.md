@@ -60,11 +60,13 @@ let main () =
 
 | Starts with | Binds like | Groups |
 |---|---|---|
-| `<` `>` `=` `\|` `&` `$` `!` | `\|>`, `>>` and `=` | from the left |
+| `<` `>` `=` `\|` `&` `$`, and `!=` | `\|>`, `>>` and `=` | from the left |
 | `@` `^` | `::` | from the right |
 | `+` `-` | `+` | from the left |
 | `*` `/` `%` | `*` | from the left |
 | `**` | | from the right |
+
+**Prefix operators:** one that starts with `!` (other than `!=`) or `~` goes before its argument and binds tighter than a function call: with `let (!) (r: ref<int>) = r.Value`, `f !counter` is `f (!counter)`.
 
 So `x |> parse >>= check` is `(x |> parse) >>= check`, and `a =~ b && c` is `(a =~ b) && c`. A line that starts with an operator continues the one above, as a line starting with `|>` does. This is what railway-style error handling and parser combinators (`p <|> q`, `p .>>. q |>> f`) are written with.
 

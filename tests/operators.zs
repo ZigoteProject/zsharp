@@ -82,6 +82,11 @@ let (+.) a b = a + b + 1 // like +
 let ( *. ) a b = a * b * 10 // like *
 let rec ( ** ) (a: int) (b: int) = if b = 0 then 1 else a * (a ** (b - 1)) // right-associative
 
+// prefix operators start with ! (but not !=) or ~, and bind tighter than application
+let (!) (r: ref<int>) = r.Value
+let (~~) x = -x
+let (!=) a b = a <> b // infix
+
 module Vec =
   let (|+|) (ax, ay) (bx, by) = (ax + bx, ay + by)
 
@@ -104,4 +109,7 @@ let main () =
   println $"{List.fold (+) 0 [ 1; 2; 3 ]} {List.map ((*) 2) [ 1; 2 ]} {(-) 10 3} {List.map ((=) 2) [ 1; 2 ]} {(>>=) (Ok 4) half}"
   let (<+>) a b = a * 10 + b
   println $"{1 <+> 2 <+> 3} {Shapes.moved} {[ 1; 2 ] |> List.length = 2}"
+  let counter = ref 41
+  counter.Value <- !counter + 1
+  println $"{!counter} {string !counter} {~~5} {3 != 4} {List.map (!) [ ref 1; ref 2 ]}"
   0

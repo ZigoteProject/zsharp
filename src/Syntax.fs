@@ -242,8 +242,16 @@ let private opRun (line: string) (at: int) =
 let isCustomOp (s: string) =
     s <> "" && not (symbolSet.Contains s) && Seq.forall isOpChar s && not (Seq.forall ((=) '.') s)
 
+/// A prefix operator, as in F#: a custom operator starting with ! (but not !=) or ~, as in
+/// !r or ~~x. It binds tighter than application: f !x is f (!x).
+let isPrefixOp (s: string) =
+    isCustomOp s && ((s.StartsWith "!" && not (s.StartsWith "!=")) || s.StartsWith "~")
+
+/// A custom operator written between its operands.
+let isInfixOp (s: string) = isCustomOp s && not (isPrefixOp s)
+
 /// How tightly a custom operator binds, from its first character after any dots, as in F#:
-/// 0 with |> and the comparisons (< > = | & $ ! ? ~), 1 with :: (@ ^, right-associative),
+/// 0 with |> and the comparisons (< > = | & $ ? and !=), 1 with :: (@ ^, right-associative),
 /// 2 with + (+ -), 3 with * (* / %), 4 power (**, right-associative).
 let opLevel (s: string) =
     let t = s.TrimStart '.'
@@ -261,10 +269,10 @@ let opLevel (s: string) =
         | '%' -> 3
         | _ -> 0
 
-/// A line starting with |> or a custom operator continues the previous one.
+/// A line starting with |> or an infix custom operator continues the previous one.
 let private continuesLine (rest: string) =
     let run = opRun rest 0
-    run.StartsWith "|>" || isCustomOp run
+    run.StartsWith "|>" || isInfixOp run
 
 /// An escape after a backslash at line[i]: its code point and the index after it. \n \r \t \0
 /// \\ \" \' and \u{hex} (any Unicode scalar value).
@@ -1239,7 +1247,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
             | KSym s when List.contains s ops ->
                 advance ()
                 l <- Bin(s, l, sub ())
-            | KSym s when level >= 0 && isCustomOp s && opLevel s = level ->
+            | KSym s when level >= 0 && isInfixOp s && opLevel s = level ->
                 advance ()
                 l <- mark oi (Call(s, [ l; operand sub ]))
             | _ -> go <- false
@@ -1274,7 +1282,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
             | KSym(("=" | "<>" | "<" | ">" | "<=" | ">=") as s) ->
                 advance ()
                 l <- Bin(s, l, bitOrE ())
-            | KSym s when isCustomOp s && opLevel s = 0 ->
+            | KSym s when isInfixOp s && opLevel s = 0 ->
                 advance ()
                 l <- mark oi (Call(s, [ l; operand bitOrE ]))
             | _ -> go <- false
@@ -1299,7 +1307,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         | KSym "@" ->
             advance ()
             Call("Collections.List.append", [ l; consE () ])
-        | KSym s when isCustomOp s && opLevel s = 1 ->
+        | KSym s when isInfixOp s && opLevel s = 1 ->
             advance ()
             mark oi (Call(s, [ l; operand consE ]))
         | _ -> l
@@ -1313,7 +1321,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         let oi = pos.Value
 
         match peek () with
-        | KSym s when isCustomOp s && opLevel s = 4 ->
+        | KSym s when isInfixOp s && opLevel s = 4 ->
             advance ()
             mark oi (Call(s, [ l; operand powE ]))
         | _ -> l
@@ -1347,6 +1355,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         | KSym "[|"
         | KSym "{"
         | KSym "~-" -> true
+        | KSym s -> isPrefixOp s
         | _ -> false
 
     // `f x?` applies ? to the whole application
@@ -1443,6 +1452,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         | KKw "false" -> BoolLit false
         | KSym "{" -> record ()
         | KSym "~-" -> Neg(atom ())
+        | KSym s when isPrefixOp s -> mark (pos.Value - 1) (Call(s, [ atom () ])) // !r, ~~x
         | KSym "[" -> List.foldBack cons (items "]") (Var "[]")
         | KSym "[|" -> ArrayLit(items "|]")
         | KSym "(" when peek2 () = KSym ")" && (match peek () with

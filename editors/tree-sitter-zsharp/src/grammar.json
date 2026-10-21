@@ -3355,6 +3355,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "prefix_expression"
+        },
+        {
+          "type": "SYMBOL",
           "name": "typed_expression"
         },
         {
@@ -3583,6 +3587,10 @@
         {
           "type": "SYMBOL",
           "name": "power_operator"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "prefix_operator"
         }
       ]
     },
@@ -3590,7 +3598,35 @@
       "type": "TOKEN",
       "content": {
         "type": "PATTERN",
-        "value": "\\.*[<>=|&$!?~][!%&*+\\-./<=>?@^|~$]*"
+        "value": "\\.*([<>=|&$?]|!=)[!%&*+\\-./<=>?@^|~$]*"
+      }
+    },
+    "prefix_operator": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PATTERN",
+        "value": "(![!%&*+\\-./<>?@^|~$]|~)[!%&*+\\-./<=>?@^|~$]*|!"
+      }
+    },
+    "prefix_expression": {
+      "type": "PREC",
+      "value": 17,
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "FIELD",
+            "name": "operator",
+            "content": {
+              "type": "SYMBOL",
+              "name": "prefix_operator"
+            }
+          },
+          {
+            "type": "SYMBOL",
+            "name": "_primary"
+          }
+        ]
       }
     },
     "cons_operator": {

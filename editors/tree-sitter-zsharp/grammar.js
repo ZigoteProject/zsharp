@@ -11,7 +11,7 @@ const PREC = {
   assign: 1,
   or: 4,
   and: 5,
-  compare: 6, // also |>, >> and custom operators starting with < > = | & $ ! ? ~, as in F#
+  compare: 6, // also |>, >> and custom operators starting with < > = | & $ ? or !=, as in F#
   bitor: 7, // ||| ^^^ &&& <<< >>>: tighter than comparison, looser than :: and +
   bitxor: 8,
   bitand: 9,
@@ -283,6 +283,7 @@ module.exports = grammar({
       $.unit,
       $.parenthesized_expression,
       $.operator_value,
+      $.prefix_expression,
       $.typed_expression,
       $.tuple,
       $.list,
@@ -297,8 +298,11 @@ module.exports = grammar({
     // (>>=), or a built-in operator as a function: (+)
     operator_value: $ => seq('(', choice($._custom_operator, '+', '-', '*', '/', '%', '=', '<>', '<', '>', '<=', '>=', '&&&', '|||', '^^^', '<<<', '>>>', '@', '::'), ')'),
     operator_name: $ => seq('(', $._custom_operator, ')'),
-    _custom_operator: $ => choice($.compare_operator, $.cons_operator, $.add_operator, $.multiply_operator, $.power_operator),
-    compare_operator: $ => customOp('[<>=|&$!?~]'),
+    _custom_operator: $ => choice($.compare_operator, $.cons_operator, $.add_operator, $.multiply_operator, $.power_operator, $.prefix_operator),
+    compare_operator: $ => customOp('([<>=|&$?]|!=)'),
+    // !r, ~~x: starting with ! (but not !=) or ~, and binding tighter than application
+    prefix_operator: $ => token(new RegExp('(![!%&*+\\-./<>?@^|~$]|~)' + OP + '|!')),
+    prefix_expression: $ => prec(PREC.application, seq(field('operator', $.prefix_operator), $._primary)),
     cons_operator: $ => customOp('[@^]'),
     add_operator: $ => customOp('[+\\-]'),
     multiply_operator: $ => customOp('[*/%]'),
