@@ -9,9 +9,19 @@
 
   <ItemGroup>
     <Compile Include="Syntax.fs" />
+    <Compile Include="Core.fs" />
+    <Compile Include="Match.fs" />
     <Compile Include="Typer.fs" />
+    <Compile Include="Mono.fs" />
+    <Compile Include="Lift.fs" />
+    <Compile Include="Rc.fs" />
     <Compile Include="Codegen.fs" />
     <Compile Include="Main.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="../runtime/rt.c" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../runtime/prelude.zs" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

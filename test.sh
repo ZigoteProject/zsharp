@@ -3,6 +3,7 @@
 set -u
 cd "$(dirname "$0")"
 dotnet build src -c Release -o bin --nologo -v q || exit 1
+export ZS_LEAKCHECK=1 ZS_BACKTRACE=0  # report leaked objects at exit; deterministic panic output
 fail=0
 for t in tests/*.zs; do
   base=${t%.zs}

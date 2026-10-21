@@ -1,0 +1,11 @@
+0, 1, 4, 9, last 16
+length 5, rev head 16, append 10
+find 9 true
+array sum 24, len 5, back to list 24
+chars 6
+while 12
+10 5 0 
+areas 7.75
+floats 3.5 7 1.5 0.3333333333333333
+u8 4 i8 -128 cmp true
+strings x xz

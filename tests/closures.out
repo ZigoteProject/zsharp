@@ -1,0 +1,10 @@
+inc 41 = 42
+twice inc 5 = 7
+compose = 16
+pipeline = 90
+hey!?
+counter = 12
+local rec = 500
+tail calls = 500000500000
+generic = samesame 5
+adders = 36
