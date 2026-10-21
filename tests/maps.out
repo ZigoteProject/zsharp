@@ -1,0 +1,12 @@
+map [(a, 1); (b, 2); (c, 3)] -> [(a, 10); (b, 2)]
+find Some 2 None 10 count 3
+keys [a; b; c] values [1; 2; 3] map [(a, 100); (b, 200); (c, 300)]
+big: count 100000 height 17 find Some 155554
+removed evens: count 50000 height 17 false true original 100000
+set [1; 2; 3] union [1; 2; 3; 4] intersect [2; 3] diff [1]
+contains true false remove [2; 3]
+hash Some 1 Some 5 2 None
+words [(and, 2); (bat, 1); (cat, 1); (hat, 1); (the, 3)]
+many: 100000 Some 0 Some 99999 false
+unique add copies no bucket array: true
+removed 99999 100000

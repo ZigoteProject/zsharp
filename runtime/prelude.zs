@@ -754,3 +754,251 @@ type ProcessResult =
 let Process.run (program: string) (args: list<string>) =
   let output = Process.runRaw program (String.join (nul ()) args)
   ioResult { code = Process.code (); output = output }
+
+// ---------------------------------------------------------------- Map, Set (persistent, sorted)
+// An AVL tree, as in OCaml's Map: every operation is O(log n) and leaves the old map intact.
+
+/// A persistent map from keys (ordered with `Ord`) to values. Adding or removing gives a new
+/// map and leaves the old one unchanged; both share most of their structure.
+type Map<'k, 'v> =
+  /// The empty map.
+  | MapLeaf
+  /// A node: left subtree, key, value, right subtree, height.
+  | MapNode of Map<'k, 'v> * 'k * 'v * Map<'k, 'v> * int
+
+let private mapHeight m =
+  match m with
+  | MapLeaf -> 0
+  | MapNode (_, _, _, _, h) -> h
+
+let private mapNode l k v r = MapNode (l, k, v, r, max (mapHeight l) (mapHeight r) + 1)
+
+// rebalances a node whose subtrees' heights differ by at most 2
+let private mapBalance l k v r =
+  let hl = mapHeight l
+  let hr = mapHeight r
+  if hl > hr + 1 then
+    match l with
+    | MapNode (ll, lk, lv, lr, _) ->
+      if mapHeight ll >= mapHeight lr then mapNode ll lk lv (mapNode lr k v r)
+      else
+        match lr with
+        | MapNode (lrl, lrk, lrv, lrr, _) -> mapNode (mapNode ll lk lv lrl) lrk lrv (mapNode lrr k v r)
+        | MapLeaf -> mapNode l k v r
+    | MapLeaf -> mapNode l k v r
+  else if hr > hl + 1 then
+    match r with
+    | MapNode (rl, rk, rv, rr, _) ->
+      if mapHeight rr >= mapHeight rl then mapNode (mapNode l k v rl) rk rv rr
+      else
+        match rl with
+        | MapNode (rll, rlk, rlv, rlr, _) -> mapNode (mapNode l k v rll) rlk rlv (mapNode rlr rk rv rr)
+        | MapLeaf -> mapNode l k v r
+    | MapLeaf -> mapNode l k v r
+  else mapNode l k v r
+
+/// The empty map.
+let Map.empty () : Map<'k, 'v> = MapLeaf
+
+/// Whether the map has no entries.
+let Map.isEmpty (m: Map<'k, 'v>) =
+  match m with
+  | MapLeaf -> true
+  | MapNode _ -> false
+
+/// The map with `key` bound to `value` (replacing an existing binding).
+let rec Map.add key value (m: Map<'k, 'v>) =
+  match m with
+  | MapLeaf -> MapNode (MapLeaf, key, value, MapLeaf, 1)
+  | MapNode (l, k, v, r, h) ->
+    let c = compare key k
+    if c = 0 then MapNode (l, key, value, r, h)
+    else if c < 0 then mapBalance (Map.add key value l) k v r
+    else mapBalance l k v (Map.add key value r)
+
+/// The value bound to `key`, or `None`.
+let rec Map.tryFind key (m: Map<'k, 'v>) =
+  match m with
+  | MapLeaf -> None
+  | MapNode (l, k, v, r, _) ->
+    let c = compare key k
+    if c = 0 then Some v else if c < 0 then Map.tryFind key l else Map.tryFind key r
+
+/// The value bound to `key`. Panics when there is none; see `Map.tryFind`.
+let Map.find key (m: Map<'k, 'v>) =
+  match Map.tryFind key m with
+  | Some v -> v
+  | None -> panic "Map.find: key not found"
+
+/// Whether the map binds `key`.
+let Map.containsKey key (m: Map<'k, 'v>) = Option.isSome (Map.tryFind key m)
+
+let rec private mapMinBinding (m: Map<'k, 'v>) =
+  match m with
+  | MapNode (MapLeaf, k, v, _, _) -> (k, v)
+  | MapNode (l, _, _, _, _) -> mapMinBinding l
+  | MapLeaf -> panic "Map: empty"
+
+let rec private mapRemoveMin (m: Map<'k, 'v>) =
+  match m with
+  | MapNode (MapLeaf, _, _, r, _) -> r
+  | MapNode (l, k, v, r, _) -> mapBalance (mapRemoveMin l) k v r
+  | MapLeaf -> MapLeaf
+
+/// The map without `key` (the same map when `key` isn't bound).
+let rec Map.remove key (m: Map<'k, 'v>) =
+  match m with
+  | MapLeaf -> MapLeaf
+  | MapNode (l, k, v, r, _) ->
+    let c = compare key k
+    if c = 0 then
+      match (l, r) with
+      | (MapLeaf, _) -> r
+      | (_, MapLeaf) -> l
+      | _ ->
+        let (mk, mv) = mapMinBinding r
+        mapBalance l mk mv (mapRemoveMin r)
+    else if c < 0 then mapBalance (Map.remove key l) k v r
+    else mapBalance l k v (Map.remove key r)
+
+/// Combines the entries in ascending key order: `f state key value`.
+let rec Map.fold f state (m: Map<'k, 'v>) =
+  match m with
+  | MapLeaf -> state
+  | MapNode (l, k, v, r, _) -> Map.fold f (f (Map.fold f state l) k v) r
+
+/// The number of entries. O(n).
+let Map.count (m: Map<'k, 'v>) = Map.fold (fun n _ _ -> n + 1) 0 m
+
+/// The entries as (key, value) pairs in ascending key order.
+let Map.toList (m: Map<'k, 'v>) = List.rev (Map.fold (fun acc k v -> (k, v) :: acc) [] m)
+
+/// A map with the pairs' bindings (a later pair wins over an earlier one with the same key).
+let Map.ofList (pairs: list<'k * 'v>) = List.fold (fun m (k, v) -> Map.add k v m) (Map.empty ()) pairs
+
+/// The keys in ascending order.
+let Map.keys (m: Map<'k, 'v>) = List.map fst (Map.toList m)
+
+/// The values in ascending key order.
+let Map.values (m: Map<'k, 'v>) = List.map snd (Map.toList m)
+
+/// Calls `f key value` on every entry in ascending key order.
+let rec Map.iter f (m: Map<'k, 'v>) =
+  match m with
+  | MapLeaf -> ()
+  | MapNode (l, k, v, r, _) ->
+    Map.iter f l
+    f k v
+    Map.iter f r
+
+/// The map with `f key value` as every value.
+let rec Map.map f (m: Map<'k, 'v>) =
+  match m with
+  | MapLeaf -> MapLeaf
+  | MapNode (l, k, v, r, h) -> MapNode (Map.map f l, k, f k v, Map.map f r, h)
+
+/// The entries for which `f key value` is true.
+let Map.filter f (m: Map<'k, 'v>) = Map.fold (fun acc k v -> if f k v then Map.add k v acc else acc) (Map.empty ()) m
+
+/// A persistent sorted set (a `Map` to unit underneath).
+type Set<'a> =
+  { /// The elements, as the keys of a map.
+    items: Map<'a, unit> }
+
+/// The empty set.
+let Set.empty () : Set<'a> = { items = MapLeaf }
+
+/// The set with `x` added.
+let Set.add x (s: Set<'a>) = { items = Map.add x () s.items }
+
+/// The set without `x`.
+let Set.remove x (s: Set<'a>) = { items = Map.remove x s.items }
+
+/// Whether the set contains `x`.
+let Set.contains x (s: Set<'a>) = Map.containsKey x s.items
+
+/// The number of elements. O(n).
+let Set.count (s: Set<'a>) = Map.count s.items
+
+/// Whether the set has no elements.
+let Set.isEmpty (s: Set<'a>) = Map.isEmpty s.items
+
+/// The elements in ascending order.
+let Set.toList (s: Set<'a>) = Map.keys s.items
+
+/// A set of the list's elements.
+let Set.ofList (xs: list<'a>) = List.fold (fun s x -> Set.add x s) (Set.empty ()) xs
+
+/// The elements in either set.
+let Set.union (a: Set<'a>) (b: Set<'a>) = List.fold (fun s x -> Set.add x s) a (Set.toList b)
+
+/// The elements in both sets.
+let Set.intersect (a: Set<'a>) (b: Set<'a>) = Set.ofList (List.filter (fun x -> Set.contains x b) (Set.toList a))
+
+/// The elements of `a` that aren't in `b`.
+let Set.difference (a: Set<'a>) (b: Set<'a>) = Set.ofList (List.filter (fun x -> not (Set.contains x b)) (Set.toList a))
+
+// ---------------------------------------------------------------- HashMap (a copy-on-write value)
+
+/// A hash map (keys with `Hash` and `Eq`). It is a value like an array: `HashMap.add` gives
+/// the changed map, updated in place when nothing else refers to the old one.
+type HashMap<'k, 'v> =
+  { /// Chains of entries; the bucket of a key is its hash modulo the bucket count.
+    buckets: array<list<'k * 'v>>
+    /// The number of entries.
+    size: int }
+
+let private bucketOf key (n: int) =
+  let h = hash key % n
+  if h < 0 then h + n else h
+
+/// An empty hash map.
+let HashMap.empty () : HashMap<'k, 'v> = { buckets = Array.create 8 []; size = 0 }
+
+/// The value bound to `key`, or `None`.
+let HashMap.tryFind key (m: HashMap<'k, 'v>) =
+  let b = m.buckets.[bucketOf key (Array.length m.buckets)]
+  List.tryFind (fun (k, _) -> k = key) b |> Option.map snd
+
+/// Whether the map binds `key`.
+let HashMap.containsKey key (m: HashMap<'k, 'v>) = Option.isSome (HashMap.tryFind key m)
+
+/// The number of entries.
+let HashMap.count (m: HashMap<'k, 'v>) = m.size
+
+/// The entries as (key, value) pairs, in no particular order.
+let HashMap.toList (m: HashMap<'k, 'v>) = Array.fold (fun acc b -> List.append b acc) [] m.buckets
+
+// moves every entry into twice as many buckets
+let private hashGrow (m: HashMap<'k, 'v>) =
+  let n = 2 * Array.length m.buckets
+  let mutable buckets = Array.create n []
+  for b in m.buckets do
+    for kv in b do
+      let i = bucketOf (fst kv) n
+      buckets.[i] <- kv :: buckets.[i]
+  { buckets = buckets; size = m.size }
+
+/// The map with `key` bound to `value` (replacing an existing binding).
+let HashMap.add key value (m: HashMap<'k, 'v>) =
+  let m = if m.size >= 2 * Array.length m.buckets then hashGrow m else m
+  let size = m.size
+  let mutable buckets = m.buckets // m's last use, so a unique map's array stays unique
+  let i = bucketOf key (Array.length buckets)
+  let old = buckets.[i]
+  let present = List.exists (fun (k, _) -> k = key) old
+  buckets.[i] <- (key, value) :: List.filter (fun (k, _) -> k <> key) old
+  { buckets = buckets; size = if present then size else size + 1 }
+
+/// The map without `key`.
+let HashMap.remove key (m: HashMap<'k, 'v>) =
+  let size = m.size
+  let mutable buckets = m.buckets // m's last use, so a unique map's array stays unique
+  let i = bucketOf key (Array.length buckets)
+  let old = buckets.[i]
+  let present = List.exists (fun (k, _) -> k = key) old
+  buckets.[i] <- List.filter (fun (k, _) -> k <> key) old
+  { buckets = buckets; size = if present then size - 1 else size }
+
+/// A hash map with the pairs' bindings.
+let HashMap.ofList (pairs: list<'k * 'v>) = List.fold (fun m (k, v) -> HashMap.add k v m) (HashMap.empty ()) pairs

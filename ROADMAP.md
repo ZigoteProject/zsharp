@@ -124,7 +124,7 @@ syntax, only fixes. Both decisions came from the design review.
 - **Scope:**
   - `import c "header.h"` via libclang, covering structs, enums, functions and `#define` constants.
   - DWARF debug info (gdb and lldb step through Z# lines).
-  - `zs test` and better error messages (code snippets, carets).
+  - `zs test` and better error messages (code snippets, carets). **Done:** `[<Test>]` functions, one process per test; a failed assert names its file and line.
   - **Cross-compilation:** `zs build --target <triple>` via `zig cc` and Zig's bundled libc.
   - **For C libraries:**
     - The aarch64 AAPCS calling convention (HFAs, register rules).
@@ -132,8 +132,9 @@ syntax, only fixes. Both decisions came from the design review.
     - Headers that are better documented, with `const` where it applies.
     - A stable naming scheme for exported symbols.
   - **For CLI tools:**
-    - **Stdlib:** `Env.args`, `Env.var`, exit codes, `File` (read, write, lines, exists), `Dir`, `Process.run`, stdin by line.
-    - **Collections:** a persistent `Map`/`Set` (red-black tree) and a `HashMap` (a CoW value).
+    - **Stdlib (done):** `Env.args`, `Env.var`, exit codes, `File` (read, write, lines, exists), `Dir`, `Process.run`, stdin by line.
+    - **Collections (done):** a persistent `Map`/`Set` and a `HashMap` (a CoW value). The tree is AVL, as in OCaml, because removal is much simpler than in a red-black tree.
+      - `x <- f … x` moves `x`'s value into the call, so copy-on-write updates stay in place. 100k `HashMap.add` calls went from 7.1 s to 0.01 s.
   - **Projects:**
     - A `zs.toml` manifest with name, version, entry point and dependencies by path or git. `zs build` with no arguments reads it.
     - `zs new` creates a project.

@@ -367,6 +367,48 @@ type ProcessResult
 
 What a finished process left: its exit code and everything it wrote to standard output.
 
+### `Map`
+
+```zsharp
+type Map<'k, 'v>
+```
+
+A persistent map from keys (ordered with `Ord`) to values. Adding or removing gives a new
+map and leaves the old one unchanged; both share most of their structure.
+
+#### `MapLeaf`
+
+```zsharp
+| MapLeaf
+```
+
+The empty map.
+
+#### `MapNode`
+
+```zsharp
+| MapNode of Map<'k, 'v> * 'k * 'v * Map<'k, 'v> * int
+```
+
+A node: left subtree, key, value, right subtree, height.
+
+### `Set`
+
+```zsharp
+type Set<'a>
+```
+
+A persistent sorted set (a `Map` to unit underneath).
+
+### `HashMap`
+
+```zsharp
+type HashMap<'k, 'v>
+```
+
+A hash map (keys with `Hash` and `Eq`). It is a value like an array: `HashMap.add` gives
+the changed map, updated in place when nothing else refers to the old one.
+
 ## Derives and impls
 
 ### `derive Eq`
@@ -1229,4 +1271,284 @@ Process.run : string -> list<string> -> result<ProcessResult, string>
 
 Runs `program` (looked up on PATH) with the arguments, without a shell, and waits for it.
 An `Error` means it couldn't start; a failing program is an `Ok` with a nonzero code.
+
+### `Map.empty`
+
+```zsharp
+Map.empty : unit -> Map<'a, 'b>
+```
+
+The empty map.
+
+### `Map.isEmpty`
+
+```zsharp
+Map.isEmpty : Map<'a, 'b> -> bool
+```
+
+Whether the map has no entries.
+
+### `Map.add`
+
+```zsharp
+Map.add : 'a -> 'b -> Map<'a, 'b> -> Map<'a, 'b> when 'a : Ord
+```
+
+The map with `key` bound to `value` (replacing an existing binding).
+
+### `Map.tryFind`
+
+```zsharp
+Map.tryFind : 'a -> Map<'a, 'b> -> option<'b> when 'a : Ord
+```
+
+The value bound to `key`, or `None`.
+
+### `Map.find`
+
+```zsharp
+Map.find : 'a -> Map<'a, 'b> -> 'b when 'a : Ord
+```
+
+The value bound to `key`. Panics when there is none; see `Map.tryFind`.
+
+### `Map.containsKey`
+
+```zsharp
+Map.containsKey : 'a -> Map<'a, 'b> -> bool when 'a : Ord
+```
+
+Whether the map binds `key`.
+
+### `Map.remove`
+
+```zsharp
+Map.remove : 'a -> Map<'a, 'b> -> Map<'a, 'b> when 'a : Ord
+```
+
+The map without `key` (the same map when `key` isn't bound).
+
+### `Map.fold`
+
+```zsharp
+Map.fold : ('a -> 'b -> 'c -> 'a) -> 'a -> Map<'b, 'c> -> 'a
+```
+
+Combines the entries in ascending key order: `f state key value`.
+
+### `Map.count`
+
+```zsharp
+Map.count : Map<'a, 'b> -> 'c when 'c : Add
+```
+
+The number of entries. O(n).
+
+### `Map.toList`
+
+```zsharp
+Map.toList : Map<'a, 'b> -> list<'a * 'b>
+```
+
+The entries as (key, value) pairs in ascending key order.
+
+### `Map.ofList`
+
+```zsharp
+Map.ofList : list<'a * 'b> -> Map<'a, 'b> when 'a : Ord
+```
+
+A map with the pairs' bindings (a later pair wins over an earlier one with the same key).
+
+### `Map.keys`
+
+```zsharp
+Map.keys : Map<'a, 'b> -> list<'a>
+```
+
+The keys in ascending order.
+
+### `Map.values`
+
+```zsharp
+Map.values : Map<'a, 'b> -> list<'b>
+```
+
+The values in ascending key order.
+
+### `Map.iter`
+
+```zsharp
+Map.iter : ('a -> 'b -> 'c) -> Map<'a, 'b> -> unit
+```
+
+Calls `f key value` on every entry in ascending key order.
+
+### `Map.map`
+
+```zsharp
+Map.map : ('a -> 'b -> 'c) -> Map<'a, 'b> -> Map<'a, 'c>
+```
+
+The map with `f key value` as every value.
+
+### `Map.filter`
+
+```zsharp
+Map.filter : ('a -> 'b -> bool) -> Map<'a, 'b> -> Map<'a, 'b> when 'a : Ord
+```
+
+The entries for which `f key value` is true.
+
+### `Set.empty`
+
+```zsharp
+Set.empty : unit -> Set<'a>
+```
+
+The empty set.
+
+### `Set.add`
+
+```zsharp
+Set.add : 'a -> Set<'a> -> Set<'a> when 'a : Ord
+```
+
+The set with `x` added.
+
+### `Set.remove`
+
+```zsharp
+Set.remove : 'a -> Set<'a> -> Set<'a> when 'a : Ord
+```
+
+The set without `x`.
+
+### `Set.contains`
+
+```zsharp
+Set.contains : 'a -> Set<'a> -> bool when 'a : Ord
+```
+
+Whether the set contains `x`.
+
+### `Set.count`
+
+```zsharp
+Set.count : Set<'a> -> 'b when 'b : Add
+```
+
+The number of elements. O(n).
+
+### `Set.isEmpty`
+
+```zsharp
+Set.isEmpty : Set<'a> -> bool
+```
+
+Whether the set has no elements.
+
+### `Set.toList`
+
+```zsharp
+Set.toList : Set<'a> -> list<'a>
+```
+
+The elements in ascending order.
+
+### `Set.ofList`
+
+```zsharp
+Set.ofList : list<'a> -> Set<'a> when 'a : Ord
+```
+
+A set of the list's elements.
+
+### `Set.union`
+
+```zsharp
+Set.union : Set<'a> -> Set<'a> -> Set<'a> when 'a : Ord
+```
+
+The elements in either set.
+
+### `Set.intersect`
+
+```zsharp
+Set.intersect : Set<'a> -> Set<'a> -> Set<'a> when 'a : Ord
+```
+
+The elements in both sets.
+
+### `Set.difference`
+
+```zsharp
+Set.difference : Set<'a> -> Set<'a> -> Set<'a> when 'a : Ord
+```
+
+The elements of `a` that aren't in `b`.
+
+### `HashMap.empty`
+
+```zsharp
+HashMap.empty : unit -> HashMap<'a, 'b>
+```
+
+An empty hash map.
+
+### `HashMap.tryFind`
+
+```zsharp
+HashMap.tryFind : 'a -> HashMap<'a, 'b> -> option<'b> when 'a : Eq, 'a : Hash
+```
+
+The value bound to `key`, or `None`.
+
+### `HashMap.containsKey`
+
+```zsharp
+HashMap.containsKey : 'a -> HashMap<'a, 'b> -> bool when 'a : Eq, 'a : Hash
+```
+
+Whether the map binds `key`.
+
+### `HashMap.count`
+
+```zsharp
+HashMap.count : HashMap<'a, 'b> -> int
+```
+
+The number of entries.
+
+### `HashMap.toList`
+
+```zsharp
+HashMap.toList : HashMap<'a, 'b> -> list<'a * 'b>
+```
+
+The entries as (key, value) pairs, in no particular order.
+
+### `HashMap.add`
+
+```zsharp
+HashMap.add : 'a -> 'b -> HashMap<'a, 'b> -> HashMap<'a, 'b> when 'a : Eq, 'a : Hash
+```
+
+The map with `key` bound to `value` (replacing an existing binding).
+
+### `HashMap.remove`
+
+```zsharp
+HashMap.remove : 'a -> HashMap<'a, 'b> -> HashMap<'a, 'b> when 'a : Eq, 'a : Hash
+```
+
+The map without `key`.
+
+### `HashMap.ofList`
+
+```zsharp
+HashMap.ofList : list<'a * 'b> -> HashMap<'a, 'b> when 'a : Eq, 'a : Hash
+```
+
+A hash map with the pairs' bindings.
 

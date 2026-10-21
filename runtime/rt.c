@@ -372,8 +372,33 @@ static int64_t process_code;
 
 int64_t zs_process_code(void) { return process_code; }
 
+// prog as an executable path: as given when it has a '/', else the first match on PATH
+// (looked up here so a missing program is the same error on every libc, and under valgrind)
+static bool find_program(const char *prog, char *out, size_t size) {
+    if (strchr(prog, '/')) {
+        snprintf(out, size, "%s", prog);
+        return access(out, X_OK) == 0;
+    }
+    const char *path = getenv("PATH");
+    if (!path) path = "/usr/bin:/bin";
+    while (*path) {
+        const char *end = strchr(path, ':');
+        size_t len = end ? (size_t)(end - path) : strlen(path);
+        snprintf(out, size, "%.*s/%s", (int)len, len ? path : ".", prog);
+        if (access(out, X_OK) == 0) return true;
+        path += len + (end ? 1 : 0);
+    }
+    return false;
+}
+
 zs_str *zs_process_run(zs_str *prog, zs_str *args) {
     clear_error();
+    char exe[4096];
+    if (!find_program(prog->data, exe, sizeof exe)) {
+        errno = ENOENT;
+        set_error("cannot run", prog);
+        return str_of("", 0);
+    }
     int64_t count = args->len ? 1 : 0;
     for (int64_t i = 0; i < args->len; i++) count += args->data[i] == 0;
     char **argv = malloc(sizeof(char *) * (size_t)(count + 2));
@@ -398,7 +423,7 @@ zs_str *zs_process_run(zs_str *prog, zs_str *args) {
     posix_spawn_file_actions_addclose(&fa, fds[1]);
     fflush(stdout);
     pid_t pid;
-    int rc = posix_spawnp(&pid, prog->data, &fa, NULL, argv, environ);
+    int rc = posix_spawn(&pid, exe, &fa, NULL, argv, environ);
     posix_spawn_file_actions_destroy(&fa);
     free(argv);
     close(fds[1]);

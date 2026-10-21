@@ -850,6 +850,15 @@ let compile
                     dropValue em v.ty (em.Instr(sprintf "load %s, ptr %s" (llty v.ty) slot))
 
                 r
+            | CAssign(x, { k = CPrim("slot.moved", [ v ]) }) ->
+                // the old value was moved into the call that computed the new one
+                let vv = gen env false v
+
+                match env[x] with
+                | Slot p ->
+                    em.Emit(sprintf "store %s %s, ptr %s" (llty v.ty) vv p)
+                    "zeroinitializer"
+                | Ssa _ -> failwith "assignment to an immutable variable"
             | CAssign(x, v) ->
                 let vv = gen env false v
 
@@ -1428,6 +1437,7 @@ let compile
             | "wrap*" ->
                 let instr = dict [ "wrap+", "add"; "wrap-", "sub"; "wrap*", "mul" ]
                 em.Instr(sprintf "%s %s %s, %s" instr[op] (llty ty) (arg 0) (arg 1))
+            | "slot.take" -> arg 0
             | "Runtime.allocations" -> em.Instr "call i64 @zs_allocations()"
             | "array.set" ->
                 bounds (arg 0) (arg 1)

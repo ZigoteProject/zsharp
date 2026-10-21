@@ -257,6 +257,29 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
                 let all = Set.union owned borrowed
                 let loop = re (mapChildren (rc Set.empty all) e.k)
                 mk (CSeq(loop, drops owned (mk CUnit tUnit))) tUnit
+            | CAssign(x, v) when heapVar x ->
+                // x <- f … x …: when x is a direct argument of the call (once, and nowhere else
+                // in it), the call gets x's own reference and the old value isn't dropped, so a
+                // unique value stays unique (copy-on-write updates in place)
+                let direct (args: CExpr list) =
+                    let hits = args |> List.filter (fun a -> a.k = CLocal x)
+                    let others = args |> List.filter (fun a -> a.k <> CLocal x)
+
+                    hits.Length = 1 && others |> List.forall (fun a -> not ((freeVars a).Contains x))
+
+                let take (args: CExpr list) =
+                    args |> List.map (fun a -> if a.k = CLocal x then mk (CPrim("slot.take", [ a ])) a.ty else a)
+
+                let moved =
+                    match v.k with
+                    | CCallDirect(f, args) when direct args -> Some(mk (CCallDirect(f, take args)) v.ty)
+                    | CPrim(op, args) when direct args -> Some(mk (CPrim(op, take args)) v.ty)
+                    | _ -> None
+
+                match moved with
+                | Some v -> re (CAssign(x, mk (CPrim("slot.moved", [ rc owned borrowed v ])) v.ty))
+                | None -> re (CAssign(x, rc owned borrowed v))
+            | CPrim("slot.take", _) -> e // the variable's own reference, moved out
             | CAssign(x, v) -> re (CAssign(x, rc owned borrowed v))
             | CArraySet(x, i, v) ->
                 match rcList owned borrowed [ i; v ] with
