@@ -1,4 +1,5 @@
 // Z# runtime: allocation, panics, strings. Linked into every Z# program.
+#define _GNU_SOURCE
 #include <execinfo.h>
 #include <inttypes.h>
 #include <stdbool.h>
@@ -109,6 +110,103 @@ zs_str *zs_str_of_f64(double v) {
 zs_str *zs_str_from_c(const char *c) { return str_of(c, (int64_t)strlen(c)); }
 
 zs_str *zs_str_of_bool(bool v) { return v ? str_of("true", 4) : str_of("false", 5); }
+
+// ---- string primitives (arguments borrowed; results owned)
+
+static void check_range(zs_str *s, int64_t start, int64_t len) {
+    if (start < 0 || len < 0 || start > s->len || len > s->len - start) zs_panic_c("string index out of range");
+}
+
+zs_str *zs_str_sub(zs_str *s, int64_t start, int64_t len) {
+    check_range(s, start, len);
+    return str_of(s->data + start, len);
+}
+
+uint8_t zs_str_byte(zs_str *s, int64_t i) {
+    check_range(s, i, 1);
+    return (uint8_t)s->data[i];
+}
+
+zs_str *zs_str_of_byte(uint8_t b) {
+    char c = (char)b;
+    return str_of(&c, 1);
+}
+
+int64_t zs_str_index_of(zs_str *s, zs_str *sub, int64_t from) {
+    if (from < 0) from = 0;
+    for (int64_t i = from; i + sub->len <= s->len; i++)
+        if (memcmp(s->data + i, sub->data, (size_t)sub->len) == 0) return i;
+    return -1;
+}
+
+zs_str *zs_str_trim(zs_str *s) {
+    int64_t a = 0, b = s->len;
+    while (a < b && (s->data[a] == ' ' || s->data[a] == '\t' || s->data[a] == '\n' || s->data[a] == '\r')) a++;
+    while (b > a && (s->data[b - 1] == ' ' || s->data[b - 1] == '\t' || s->data[b - 1] == '\n' || s->data[b - 1] == '\r')) b--;
+    return str_of(s->data + a, b - a);
+}
+
+static zs_str *map_ascii(zs_str *s, int upper) {
+    zs_str *r = str_of(s->data, s->len);
+    for (int64_t i = 0; i < r->len; i++) {
+        char c = r->data[i];
+        if (upper && c >= 'a' && c <= 'z') r->data[i] = (char)(c - 32);
+        if (!upper && c >= 'A' && c <= 'Z') r->data[i] = (char)(c + 32);
+    }
+    return r;
+}
+
+zs_str *zs_str_upper(zs_str *s) { return map_ascii(s, 1); }
+zs_str *zs_str_lower(zs_str *s) { return map_ascii(s, 0); }
+
+zs_str *zs_str_replace(zs_str *s, zs_str *old, zs_str *with) {
+    if (old->len == 0) return str_of(s->data, s->len);
+    int64_t n = 0;
+    for (int64_t i = 0; (i = zs_str_index_of(s, old, i)) >= 0; i += old->len) n++;
+    zs_str *r = str_new(s->len + n * (with->len - old->len));
+    int64_t i = 0, o = 0, j;
+    while ((j = zs_str_index_of(s, old, i)) >= 0) {
+        memcpy(r->data + o, s->data + i, (size_t)(j - i));
+        o += j - i;
+        memcpy(r->data + o, with->data, (size_t)with->len);
+        o += with->len;
+        i = j + old->len;
+    }
+    memcpy(r->data + o, s->data + i, (size_t)(s->len - i));
+    return r;
+}
+
+bool zs_str_is_float(zs_str *s) {
+    char *end;
+    if (s->len == 0) return false;
+    strtod(s->data, &end);
+    return end == s->data + s->len;
+}
+
+double zs_str_to_float(zs_str *s) { return strtod(s->data, NULL); }
+
+// ---- console
+
+static bool at_eof;
+
+zs_str *zs_read_line(void) {
+    char *line = NULL;
+    size_t cap = 0;
+    ssize_t n = getline(&line, &cap, stdin);
+    at_eof = n < 0;
+    if (n > 0 && line[n - 1] == '\n') n--;
+    zs_str *s = str_of(line ? line : "", n < 0 ? 0 : n);
+    free(line);
+    return s;
+}
+
+bool zs_eof(void) { return at_eof; }
+
+void zs_eprintln(zs_str *s) {
+    fflush(stdout);
+    fwrite(s->data, 1, (size_t)s->len, stderr);
+    fputc('\n', stderr);
+}
 
 void zs_print(zs_str *s) { fwrite(s->data, 1, (size_t)s->len, stdout); }
 

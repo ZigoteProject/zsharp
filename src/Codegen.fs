@@ -76,6 +76,19 @@ declare ptr @zs_str_of_bool(i1 zeroext)
 declare void @zs_print(ptr)
 declare void @zs_println(ptr)
 declare ptr @zs_str_from_c(ptr)
+declare ptr @zs_str_sub(ptr, i64, i64)
+declare zeroext i8 @zs_str_byte(ptr, i64)
+declare ptr @zs_str_of_byte(i8 zeroext)
+declare i64 @zs_str_index_of(ptr, ptr, i64)
+declare ptr @zs_str_trim(ptr)
+declare ptr @zs_str_upper(ptr)
+declare ptr @zs_str_lower(ptr)
+declare ptr @zs_str_replace(ptr, ptr, ptr)
+declare zeroext i1 @zs_str_is_float(ptr)
+declare double @zs_str_to_float(ptr)
+declare ptr @zs_read_line()
+declare zeroext i1 @zs_eof()
+declare void @zs_eprintln(ptr)
 
 define private void @zs.dup(ptr %p) alwaysinline {
 entry:
@@ -133,6 +146,24 @@ done:
   ret void
 }
 """
+
+/// Primitives implemented by runtime functions: C name, result type, parameter types (unit
+/// parameters omitted). Arguments are borrowed by the runtime and dropped after the call.
+let private runtimePrims =
+    dict
+        [ "String.sub", ("zs_str_sub", "ptr", [ "ptr"; "i64"; "i64" ])
+          "String.byte", ("zs_str_byte", "zeroext i8", [ "ptr"; "i64" ])
+          "String.ofByte", ("zs_str_of_byte", "ptr", [ "i8 zeroext" ])
+          "String.indexOfFrom", ("zs_str_index_of", "i64", [ "ptr"; "ptr"; "i64" ])
+          "String.trim", ("zs_str_trim", "ptr", [ "ptr" ])
+          "String.toUpper", ("zs_str_upper", "ptr", [ "ptr" ])
+          "String.toLower", ("zs_str_lower", "ptr", [ "ptr" ])
+          "String.replace", ("zs_str_replace", "ptr", [ "ptr"; "ptr"; "ptr" ])
+          "String.isFloat", ("zs_str_is_float", "zeroext i1", [ "ptr" ])
+          "String.toFloat", ("zs_str_to_float", "double", [ "ptr" ])
+          "Console.readLineRaw", ("zs_read_line", "ptr", [])
+          "Console.eof", ("zs_eof", "zeroext i1", [])
+          "eprintln", ("zs_eprintln", "void", [ "ptr" ]) ]
 
 let private floatConst (ty: string) (f: float) =
     let v = if ty = "float" then float (float32 f) else f
@@ -1151,6 +1182,23 @@ let compile
                 | _ when lt = "i64" -> arg 0
                 | _ -> em.Instr(sprintf "%s %s %s to i64" (if isUnsigned t || lt = "i1" then "zext" else "sext") lt (arg 0))
             | "String.ofCStr" -> em.Instr(sprintf "call ptr @zs_str_from_c(ptr %s)" (arg 0))
+            | _ when runtimePrims.ContainsKey op ->
+                let fn, ret, pts = runtimePrims[op]
+                let real = List.zip args vs |> List.filter (fun (a, _) -> prune a.ty <> tUnit)
+                let argv = List.zip pts real |> List.map (fun (pt, (_, v)) -> pt + " " + v) |> String.concat ", "
+                let call = sprintf "call %s @%s(%s)" ret fn argv
+
+                let r =
+                    if ret = "void" then
+                        em.Emit call
+                        "zeroinitializer"
+                    else
+                        em.Instr call
+
+                for a, v in real do
+                    dropValue em a.ty v
+
+                r
             | "String.length" ->
                 let lp = em.Instr(sprintf "getelementptr i8, ptr %s, i64 8" (arg 0))
                 let n = em.Instr(sprintf "load i64, ptr %s" lp)

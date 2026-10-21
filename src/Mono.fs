@@ -126,7 +126,7 @@ let run (prog: Program) : MFun list =
         mk k resTy
 
     /// Trait method `q` at its instantiation, applied to args (possibly none).
-    let dispatch (q: string) (inst: Ty list) (headTy: Ty) (args: CExpr list) (resTy: Ty) : CExpr =
+    let rec dispatch (q: string) (inst: Ty list) (headTy: Ty) (args: CExpr list) (resTy: Ty) : CExpr =
         let tm = prog.traitMethods[q]
         let t = List.head inst
 
@@ -138,11 +138,21 @@ let run (prog: Program) : MFun list =
 
             go headTy
 
-        if not (isPrim t) || prog.impls.ContainsKey((tm.owner, show t)) then
+        let inline' (args: CExpr list) res =
+            match prune t with
+            | TTuple ts -> tupleMethod q ts args res
+            | _ -> builtinMethod q t args res
+
+        let isTuple =
+            match prune t with
+            | TTuple _ -> true
+            | _ -> false
+
+        if not (isPrim t || isTuple) || prog.impls.ContainsKey((tm.owner, show t)) then
             let f = implFn tm.owner tm.name t headTy
             if args.IsEmpty then f else mk (CApp(f, args)) resTy
         elif args.Length = arity then
-            builtinMethod q t args resTy
+            inline' args resTy
         else
             // a built-in method used as a value: wrap it in a lambda
             let rec peel n t =
@@ -161,14 +171,60 @@ let run (prog: Program) : MFun list =
                     count.Value <- count.Value + 1
                     sprintf "$tm%d" count.Value, p)
 
-            let lam = mk (CLam(ps, builtinMethod q t (ps |> List.map (fun (x, p) -> mk (CLocal x) p)) res)) headTy
+            let lam = mk (CLam(ps, inline' (ps |> List.map (fun (x, p) -> mk (CLocal x) p)) res)) headTy
             if args.IsEmpty then lam else mk (CApp(lam, args)) resTy
+
+    /// Structural Eq/Ord/Show/Hash for tuples, component by component.
+    and tupleMethod (q: string) (ts: Ty list) (args: CExpr list) (resTy: Ty) : CExpr =
+        let temp (e: CExpr) =
+            count.Value <- count.Value + 1
+            sprintf "$tt%d" count.Value, e
+
+        let bound = args |> List.map temp
+        let comp (x, a: CExpr) i t = mk (CField(mk (CLocal x) a.ty, i)) t
+        let call m (t: Ty) cargs res = dispatch m [ t ] (substGen [ t ] prog.traitMethods[m].ty) cargs res
+        let ts' = List.indexed ts
+
+        let body =
+            match q, bound with
+            | "Show.show", [ a ] ->
+                let parts = ts' |> List.map (fun (i, t) -> call "Show.show" t [ comp a i t ] tStr)
+                let sep (x: CExpr) (y: CExpr) = mk (CBin("+", mk (CBin("+", x, mk (CStr ", ") tStr)) tStr, y)) tStr
+                let inner = List.reduce sep parts
+                mk (CBin("+", mk (CBin("+", mk (CStr "(") tStr, inner)) tStr, mk (CStr ")") tStr)) tStr
+            | "Eq.equal", [ a; b ] ->
+                List.foldBack
+                    (fun (i, t) acc ->
+                        mk (CIf(call "Eq.equal" t [ comp a i t; comp b i t ] tBool, acc, mk (CBool false) tBool)) tBool)
+                    ts'
+                    (mk (CBool true) tBool)
+            | "Ord.compare", [ a; b ] ->
+                // lexicographic: the first component that differs decides
+                List.foldBack
+                    (fun (i, t) acc ->
+                        count.Value <- count.Value + 1
+                        let c = sprintf "$tc%d" count.Value
+                        let cv = mk (CLocal c) tInt
+                        let differs = mk (CBin("<>", cv, mk (CInt 0L) tInt)) tBool
+                        mk (CLet(c, call "Ord.compare" t [ comp a i t; comp b i t ] tInt, mk (CIf(differs, cv, acc)) tInt)) tInt)
+                    ts'
+                    (mk (CInt 0L) tInt)
+            | "Hash.hash", [ a ] ->
+                ts'
+                |> List.fold
+                    (fun acc (i, t) ->
+                        let h = call "Hash.hash" t [ comp a i t ] tInt
+                        mk (CBin("+", mk (CBin("*", acc, mk (CInt 31L) tInt)) tInt, h)) tInt)
+                    (mk (CInt 17L) tInt)
+            | _ -> Syntax.fail 0 (sprintf "tuples have no %s" q)
+
+        List.foldBack (fun (x, e: CExpr) acc -> mk (CLet(x, e, acc)) acc.ty) bound body
 
     /// An operator on a non-primitive type calls the type's trait impl.
     let operator (op: string) (a: CExpr) (b: CExpr) (resTy: Ty) : CExpr =
         let tr, m = opTrait[op]
         let methodTy = substGen [ a.ty ] prog.traitMethods[tr + "." + m].ty
-        let call = mk (CApp(implFn tr m a.ty methodTy, [ a; b ])) (if tr = "Ord" then tInt else resTy)
+        let call = dispatch (tr + "." + m) [ a.ty ] methodTy [ a; b ] (if tr = "Ord" then tInt else resTy)
 
         match op with
         | "<>" -> mk (CNot call) tBool

@@ -185,6 +185,19 @@ let private builtins =
           b "println" "println" [] (f tStr tUnit) 1
           b "String.length" "String.length" [] (f tStr tInt) 1
           b "String.ofCStr" "String.ofCStr" [] (f tCStr tStr) 1
+          b "String.sub" "String.sub" [] (f tStr (f tInt (f tInt tStr))) 3
+          b "String.byte" "String.byte" [] (f tStr (f tInt (tcon "u8"))) 2
+          b "String.ofByte" "String.ofByte" [] (f (tcon "u8") tStr) 1
+          b "String.indexOfFrom" "String.indexOfFrom" [] (f tStr (f tStr (f tInt tInt))) 3
+          b "String.trim" "String.trim" [] (f tStr tStr) 1
+          b "String.toUpper" "String.toUpper" [] (f tStr tStr) 1
+          b "String.toLower" "String.toLower" [] (f tStr tStr) 1
+          b "String.replace" "String.replace" [] (f tStr (f tStr (f tStr tStr))) 3
+          b "String.isFloat" "String.isFloat" [] (f tStr tBool) 1
+          b "String.toFloat" "String.toFloat" [] (f tStr (tcon "f64")) 1
+          b "Console.readLineRaw" "Console.readLineRaw" [] (f tUnit tStr) 1
+          b "Console.eof" "Console.eof" [] (f tUnit tBool) 1
+          b "eprintln" "eprintln" [] (f tStr tUnit) 1
           b "ref" "ref" [ kAny ] (f a (TCon("ref", [ a ]))) 1
           b "Array.create" "Array.create" [ kAny ] (f tInt (f a (TCon("array", [ a ])))) 2
           b "Array.length" "Array.length" [ kAny ] (f (TCon("array", [ a ])) tInt) 1 ]
@@ -253,6 +266,12 @@ let check (requireMain: bool) (modules: (string * string option * (int * Decl) l
 
                     true
                 | _ -> false
+            | TTuple ts when List.contains tr [ "Eq"; "Ord"; "Show"; "Hash" ] ->
+                // tuples have structural Eq/Ord/Show/Hash when their components do
+                for a in ts do
+                    unify (fresh (kTrait tr)) a
+
+                true
             | _ -> false
     let globals = Dictionary<string, Global>()
     let externs = Dictionary<string, ExternSig>()

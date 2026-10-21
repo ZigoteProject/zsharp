@@ -296,3 +296,241 @@ impl Show<list<'a>> =
       | [] -> acc
       | x :: rest -> go (acc + (if first then "" else "; ") + show x) false rest
     "[" + go "" true xs + "]"
+
+// ---------------------------------------------------------------- List (more)
+
+let List.mapi f xs =
+  let rec go acc i xs =
+    match xs with
+    | [] -> List.rev acc
+    | x :: rest -> go (f i x :: acc) (i + 1) rest
+  go [] 0 xs
+
+let List.indexed xs = List.mapi (fun i x -> (i, x)) xs
+
+let List.choose f xs =
+  let rec go acc xs =
+    match xs with
+    | [] -> List.rev acc
+    | x :: rest ->
+        match f x with
+        | Some y -> go (y :: acc) rest
+        | None -> go acc rest
+  go [] xs
+
+let List.collect f xs = List.fold (fun acc x -> List.append acc (f x)) [] xs
+
+let List.zip xs ys =
+  let rec go acc xs ys =
+    match (xs, ys) with
+    | (x :: xr, y :: yr) -> go ((x, y) :: acc) xr yr
+    | _ -> List.rev acc
+  go [] xs ys
+
+let List.unzip xs = (List.map fst xs, List.map snd xs)
+
+let List.tryHead xs =
+  match xs with
+  | x :: _ -> Some x
+  | [] -> None
+
+let List.last xs =
+  let rec go x xs =
+    match xs with
+    | [] -> x
+    | y :: rest -> go y rest
+  match xs with
+  | x :: rest -> go x rest
+  | [] -> panic "List.last: empty list"
+
+let List.item n xs =
+  let rec go i xs =
+    match xs with
+    | x :: rest -> if i = 0 then x else go (i - 1) rest
+    | [] -> panic "List.item: index out of range"
+  go n xs
+
+let List.take n xs =
+  let rec go acc n xs =
+    if n <= 0 then List.rev acc
+    else
+      match xs with
+      | x :: rest -> go (x :: acc) (n - 1) rest
+      | [] -> List.rev acc
+  go [] n xs
+
+let rec List.skip n xs =
+  if n <= 0 then xs
+  else
+    match xs with
+    | _ :: rest -> List.skip (n - 1) rest
+    | [] -> []
+
+let List.reduce f xs =
+  match xs with
+  | x :: rest -> List.fold f x rest
+  | [] -> panic "List.reduce: empty list"
+
+let List.partition f xs =
+  let rec go yes no xs =
+    match xs with
+    | [] -> (List.rev yes, List.rev no)
+    | x :: rest -> if f x then go (x :: yes) no rest else go yes (x :: no) rest
+  go [] [] xs
+
+let List.max xs = List.reduce (fun a b -> if b > a then b else a) xs
+let List.min xs = List.reduce (fun a b -> if b < a then b else a) xs
+let List.sumBy f xs = List.fold (fun acc x -> acc + f x) Add.zero xs
+
+// ponytail: quadratic; fine for short lists, use a hash set when one exists
+let List.distinct xs =
+  List.rev (List.fold (fun acc x -> if List.contains x acc then acc else x :: acc) [] xs)
+
+// stable merge sort
+let List.sortWith cmp xs =
+  let rec merge acc a b =
+    match (a, b) with
+    | ([], _) -> List.append (List.rev acc) b
+    | (_, []) -> List.append (List.rev acc) a
+    | (x :: xr, y :: yr) -> if cmp x y <= 0 then merge (x :: acc) xr b else merge (y :: acc) a yr
+  let rec sort n xs =
+    if n < 2 then xs
+    else
+      let half = n / 2
+      merge [] (sort half (List.take half xs)) (sort (n - half) (List.skip half xs))
+  sort (List.length xs) xs
+
+let List.sort xs = List.sortWith compare xs
+let List.sortBy f xs = List.sortWith (fun a b -> compare (f a) (f b)) xs
+
+// ---------------------------------------------------------------- Array (more)
+
+let Array.copy a = Array.init (Array.length a) (fun i -> a.[i])
+let Array.mapi f a = Array.init (Array.length a) (fun i -> f i a.[i])
+let Array.exists f a = List.exists f (Array.toList a)
+let Array.contains x a = Array.exists (fun y -> y = x) a
+let Array.filter f a = Array.ofList (List.filter f (Array.toList a))
+let Array.append a b = Array.ofList (List.append (Array.toList a) (Array.toList b))
+let Array.sub a start len = Array.init len (fun i -> a.[start + i])
+let Array.rev a = Array.init (Array.length a) (fun i -> a.[Array.length a - 1 - i])
+let Array.sort a = Array.ofList (List.sort (Array.toList a))
+let Array.sortWith f a = Array.ofList (List.sortWith f (Array.toList a))
+
+// ---------------------------------------------------------------- Option, Result (more)
+
+let Option.toList o =
+  match o with
+  | Some x -> [ x ]
+  | None -> []
+
+let Option.orElse other o =
+  match o with
+  | Some _ -> o
+  | None -> other
+
+let Option.iter f o =
+  match o with
+  | Some x -> f x
+  | None -> ()
+
+let Option.toResult err o =
+  match o with
+  | Some x -> Ok x
+  | None -> Error err
+
+let Result.mapError f r =
+  match r with
+  | Ok x -> Ok x
+  | Error e -> Error (f e)
+
+let Result.defaultValue d r =
+  match r with
+  | Ok x -> x
+  | Error _ -> d
+
+let Result.isOk r =
+  match r with
+  | Ok _ -> true
+  | Error _ -> false
+
+let Result.isError r = not (Result.isOk r)
+
+let Result.toOption r =
+  match r with
+  | Ok x -> Some x
+  | Error _ -> None
+
+// ---------------------------------------------------------------- String
+
+let String.isEmpty (s: string) = String.length s = 0
+let String.contains (sub: string) (s: string) = String.indexOfFrom s sub 0 >= 0
+
+let String.indexOf (sub: string) (s: string) =
+  let i = String.indexOfFrom s sub 0
+  if i < 0 then None else Some i
+
+let String.startsWith (p: string) (s: string) =
+  String.length p <= String.length s && String.sub s 0 (String.length p) = p
+
+let String.endsWith (p: string) (s: string) =
+  String.length p <= String.length s && String.sub s (String.length s - String.length p) (String.length p) = p
+
+let String.split (sep: string) (s: string) =
+  let rec go acc start =
+    let i = String.indexOfFrom s sep start
+    if i < 0 then List.rev (String.sub s start (String.length s - start) :: acc)
+    else go (String.sub s start (i - start) :: acc) (i + String.length sep)
+  if String.length sep = 0 then [ s ] else go [] 0
+
+let String.join (sep: string) (xs: list<string>) =
+  match xs with
+  | [] -> ""
+  | x :: rest -> List.fold (fun acc s -> acc + sep + s) x rest
+
+let String.concat (xs: list<string>) = String.join "" xs
+
+let String.repeat n (s: string) =
+  let mutable r = ""
+  for _ in 1 .. n do
+    r <- r + s
+  r
+
+let String.parseInt (s: string) : option<int> =
+  let n = String.length s
+  if n = 0 then None
+  else
+    let first = String.byte s 0
+    let neg = first = u8 45
+    let start = if neg || first = u8 43 then 1 else 0
+    if start = n then None
+    else
+      let mutable acc = 0
+      let mutable ok = true
+      for i in start .. n - 1 do
+        let b = int (String.byte s i)
+        if b < 48 || b > 57 then ok <- false else acc <- acc * 10 + (b - 48)
+      if ok then Some (if neg then -acc else acc) else None
+
+let String.parseFloat (s: string) : option<f64> = if String.isFloat s then Some (String.toFloat s) else None
+
+type string with
+  member s.Contains(sub: string) = String.contains sub s
+  member s.StartsWith(p: string) = String.startsWith p s
+  member s.EndsWith(p: string) = String.endsWith p s
+  member s.IndexOf(sub: string) = String.indexOf sub s
+  member s.Split(sep: string) = String.split sep s
+  member s.Substring(start: int, len: int) = String.sub s start len
+  member s.Trim() = String.trim s
+  member s.ToUpper() = String.toUpper s
+  member s.ToLower() = String.toLower s
+  member s.Replace(old: string, by: string) = String.replace s old by
+
+// ---------------------------------------------------------------- Console
+
+let Console.print (s: string) = print s
+let Console.println (s: string) = println s
+let Console.eprintln (s: string) = eprintln s
+
+let Console.readLine () =
+  let line = Console.readLineRaw ()
+  if Console.eof () then None else Some line

@@ -20,7 +20,7 @@ for t in $(find tests -name '*.zs' | sort); do
     run=("$tmp/exe")
     # panics abort without cleanup by design, so only exit-normally programs are leak-checked
     [ $valgrind = 1 ] && ! grep -q "^panic:" "$base.out" && run=(valgrind -q --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=all --error-exitcode=99 "$tmp/exe")
-    actual=$("${run[@]}" 2>&1); code=$?
+    actual=$("${run[@]}" < /dev/null 2>&1); code=$?
     expected=$(cat "$base.out")
     [ $code = 99 ] && actual="$actual
 (valgrind reported memory errors or leaks)"
