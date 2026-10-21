@@ -4,6 +4,7 @@
 (import_c_declaration "c" @keyword)
 ((comment) @comment.doc (#match? @comment.doc "^///"))
 (string) @string
+(char) @string
 (interpolated_string) @string
 (escape_sequence) @string.escape
 (interpolation ["{" "}"] @punctuation.special)

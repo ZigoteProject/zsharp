@@ -1,0 +1,7 @@
+a 97 B true true A q
+true 128512 ' \ digit letter e-acute other
+bytes 12 chars 8 counted 8
+[h; é; l; l; o] ok é
+[1; 2; 2] 5
+HI THERE true -1 [a; b; c]
+escapes: [] 1 2 4

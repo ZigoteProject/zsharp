@@ -238,7 +238,8 @@ let private builtins =
                     | true, c -> c
                     | _ -> t
 
-                b t "conv" [ kNumeric ] (f a (tcon target)) 1 ]
+                b t "conv" [ kConvertible ] (f a (tcon target)) 1 ]
+        @ [ b "char" "conv" [ kIntOrChar ] (f a tChar) 1 ]
     )
 
 type private Local =
@@ -560,6 +561,9 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
         | PInt n ->
             expect "pattern" ty (fresh kInt)
             CPInt n
+        | PChar c ->
+            expect "pattern" ty tChar
+            CPInt(int64 c)
         | PBool b ->
             expect "pattern" ty tBool
             CPBool b
@@ -665,6 +669,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
             with CompileError(0, msg) ->
                 raise (CompileErrorPos(ln, colOf node, msg))
         | Lit n -> mk (CInt n) (fresh kInt)
+        | CharLit c -> mk (CInt(int64 c)) tChar
         | FloatLit f -> mk (CFloat f) (fresh kFloat)
         | BoolLit b -> mk (CBool b) tBool
         | StrLit s -> mk (CStr s) (fresh kStrLit)
@@ -1059,7 +1064,23 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                             )
                         )
                     )
-                | t -> fail 0 (sprintf "'for ... in' needs a list or an array, not %s" (show t))
+                | TCon("string", []) ->
+                    // the characters of a string, decoding its UTF-8 as it goes
+                    LetMut(
+                        "$pos",
+                        None,
+                        Lit 0L,
+                        While(
+                            Bin("<", Var "$pos", Call("String.length", [ Var "$coll" ])),
+                            Let(
+                                PTuple [ PIdent("$ch", None); PIdent("$next", None) ],
+                                None,
+                                Call("String.decodeAt", [ Var "$coll"; Var "$pos" ]),
+                                Seq(Assign(Var "$pos", Var "$next"), Let(PIdent(x, None), None, Var "$ch", body))
+                            )
+                        )
+                    )
+                | t -> fail 0 (sprintf "'for ... in' needs a list, an array or a string, not %s" (show t))
 
             let cl = infer env' depth loop
             expect "body of 'for'" tUnit cl.ty

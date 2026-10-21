@@ -30,10 +30,12 @@ let ints = set [ "int"; "i8"; "i16"; "i32"; "i64"; "u8"; "u16"; "u32"; "u64"; "u
 let unsigned = set [ "u8"; "u16"; "u32"; "u64"; "usize" ]
 let floats = set [ "f64"; "f32" ]
 let nums = ints + floats
-let prims = nums + set [ "bool"; "string"; "cstr"; "cptr"; "unit" ] // cptr: any other C pointer, opaque
+let prims = nums + set [ "bool"; "char"; "string"; "cstr"; "cptr"; "unit" ] // cptr: any other C pointer, opaque
 let kAny = { allowed = None; traits = Set.empty }
 let private allow s = { allowed = Some s; traits = Set.empty }
 let kInt, kFloat, kNumeric = allow ints, allow floats, allow nums
+let kConvertible = allow (nums.Add "char") // what the conversion functions (int, u8, …) take
+let kIntOrChar = allow (ints.Add "char") // what `char` converts from
 let kStrLit = allow (set [ "string"; "cstr" ])
 let kTrait (t: string) = { allowed = None; traits = set [ t ] }
 
@@ -42,10 +44,10 @@ let builtinImpls =
     dict
         [ "Add", nums.Add "string"
           "Num", nums
-          "Eq", nums + set [ "string"; "bool"; "unit" ]
-          "Ord", nums.Add "string"
-          "Show", nums + set [ "string"; "bool" ]
-          "Hash", nums + set [ "string"; "bool" ] ]
+          "Eq", nums + set [ "string"; "bool"; "char"; "unit" ]
+          "Ord", nums + set [ "string"; "char" ]
+          "Show", nums + set [ "string"; "bool"; "char" ]
+          "Hash", nums + set [ "string"; "bool"; "char" ] ]
 
 let hasBuiltinImpl (tr: string) (n: string) =
     match builtinImpls.TryGetValue tr with
@@ -61,6 +63,7 @@ let typeAliases = dict [ "c_int", "i32"; "float", "f64"; "double", "f64" ]
 
 let tcon n = TCon(n, [])
 let tInt, tBool, tUnit, tStr, tCStr = tcon "int", tcon "bool", tcon "unit", tcon "string", tcon "cstr"
+let tChar = tcon "char"
 
 let mutable private nextVar = 0
 

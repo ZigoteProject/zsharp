@@ -86,6 +86,7 @@ declare ptr @zs_str_of_u64(i64)
 declare ptr @zs_str_of_f64(double)
 declare ptr @zs_str_of_f32(float)
 declare ptr @zs_str_of_bool(i1 zeroext)
+declare ptr @zs_str_of_char(i32)
 declare void @zs_print(ptr)
 declare void @zs_println(ptr)
 declare ptr @zs_str_from_c(ptr)
@@ -283,7 +284,7 @@ let compile
         match prune t with
         | TCon(("int" | "usize"), []) -> wordTy () // the machine word
         | TCon(("i64" | "u64"), []) -> "i64"
-        | TCon(("i32" | "u32"), []) -> "i32"
+        | TCon(("i32" | "u32" | "char"), []) -> "i32"
         | TCon(("i16" | "u16"), []) -> "i16"
         | TCon(("i8" | "u8"), []) -> "i8"
         | TCon("f64", []) -> "double"
@@ -900,6 +901,7 @@ let compile
         | "f64" -> basic "f64" 64 "DW_ATE_float"
         | "f32" -> basic "f32" 32 "DW_ATE_float"
         | "bool" -> basic "bool" 8 "DW_ATE_boolean"
+        | "char" -> basic "char" 32 "DW_ATE_UTF"
         | _ -> None
 
     /// The name a variable has in the source (unique names are x.12; temporaries start with $).
@@ -1775,6 +1777,7 @@ let compile
                 match tyName t with
                 | "string" -> arg 0
                 | "bool" -> em.Instr(sprintf "call ptr @zs_str_of_bool(i1 zeroext %s)" (arg 0))
+                | "char" -> em.Instr(sprintf "call ptr @zs_str_of_char(i32 %s)" (arg 0))
                 | "f64" -> em.Instr(sprintf "call ptr @zs_str_of_f64(double %s)" (arg 0))
                 | "f32" -> em.Instr(sprintf "call ptr @zs_str_of_f32(float %s)" (arg 0))
                 | _ when isUnsigned t ->

@@ -82,7 +82,8 @@ let sumTo n =                            // imperative code is fine; mutation st
   - Literals: `42`, `0xFF`, `0b1010`, `0o17`, `1_000_000`, `3.14`, `1e-3`. A literal takes the type the context needs, and conversions are explicit (`float n`, `u8 x`).
   - Bitwise operators use F#'s spelling, `&&& ||| ^^^ <<< >>> ~~~`, and bind tighter than comparison (`x &&& mask = 0`).
 - **Other types:** `bool`, `string` (UTF-8 bytes, reference-counted, immutable), `unit`.
-  - **`char`** (a Unicode scalar) and iterating a string by character are **(planned, phase L)**. Today strings are byte sequences (`String.byte`).
+  - **`char`:** a Unicode scalar value (32 bits), written `'a'`, `'\n'` or `'\u{1F600}'`. It has equality, ordering, hashing and printing, and `match` on character literals, but no arithmetic. `int c` and `char n` convert.
+  - **Strings and characters:** `for c in s` decodes a string's UTF-8 character by character; `String.length` stays the byte length. The `Char` functions classify ASCII.
   - **SIMD vectors** `f32x4`, `i32x8`, … are **(planned, phase 8)**.
 - **Data:** tuples, records (`{ p with x = 1.0 }`), unions; library types `option`, `result`, `list`, `array`, `Buffer`, `ref`, `Map`, `Set`, `HashMap`.
 - **Functions:**
@@ -611,7 +612,7 @@ checker, so tools can't drift from the compiler.
 | 25 | SIMD API | portable `f32x8`-style value types + target intrinsics | default |
 | 26 | From Zig | cross-compilation through `zig cc`. Not adopted: explicit allocators, no-hidden-allocation, comptime | decided |
 | 27 | Libraries | source packages (path, git + `zs.lock`), checked Core cached per module; no binary IR format | decided |
-| 28 | Strings | UTF-8; `Length` is bytes; `char` and character iteration planned | default |
+| 28 | Strings and `char` | UTF-8 strings, `Length` is bytes; `char` is a Unicode scalar; `for c in s` decodes UTF-8 (malformed bytes become U+FFFD) | decided |
 | 29 | Target order | Linux x64/arm64; bare-metal Cortex-M; macOS arm64, Windows x64; WASM | decided |
 | 30 | Who it's for first | native libraries used from C, CLI tools, microcontroller firmware; games over C libraries next | decided |
 | 31 | Callbacks into C | `callback<A -> R>` = `R (*)(void *user, A)` + `void *user`; borrowed for the call | decided |

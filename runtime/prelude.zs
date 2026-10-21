@@ -667,6 +667,71 @@ type string with
   /// The string with every `old` replaced by `by`.
   member s.Replace(old: string, by: string) = String.replace s old by
 
+// ---------------------------------------------------------------- Char
+// A char is a Unicode scalar value. The tests below know ASCII; other letters aren't classified.
+
+/// Whether `c` is an ASCII digit, '0' to '9'.
+let Char.isDigit (c: char) = c >= '0' && c <= '9'
+/// Whether `c` is an ASCII lower-case letter.
+let Char.isLower (c: char) = c >= 'a' && c <= 'z'
+/// Whether `c` is an ASCII upper-case letter.
+let Char.isUpper (c: char) = c >= 'A' && c <= 'Z'
+/// Whether `c` is an ASCII letter.
+let Char.isLetter (c: char) = Char.isLower c || Char.isUpper c
+/// Whether `c` is an ASCII letter or digit.
+let Char.isLetterOrDigit (c: char) = Char.isLetter c || Char.isDigit c
+/// Whether `c` is a space, tab, line feed or carriage return.
+let Char.isWhitespace (c: char) = c = ' ' || c = '\t' || c = '\n' || c = '\r'
+/// `c` in upper case (ASCII letters; others unchanged).
+let Char.toUpper (c: char) = if Char.isLower c then char (int c - 32) else c
+/// `c` in lower case (ASCII letters; others unchanged).
+let Char.toLower (c: char) = if Char.isUpper c then char (int c + 32) else c
+/// The value of an ASCII digit: `Some 7` for '7', `None` for anything else.
+let Char.digitValue (c: char) = if Char.isDigit c then Some (int c - int '0') else None
+
+/// The character that starts at byte `i` of `s`, and the byte index after it (UTF-8 decoding;
+/// a malformed sequence gives U+FFFD and moves one byte). `for c in s` uses it.
+let String.decodeAt (s: string) (i: int) : char * int =
+  let b0 = int (String.byte s i)
+  if b0 < 0x80 then (char b0, i + 1)
+  else
+    let n = String.length s
+    let cont k = if i + k < n then int (String.byte s (i + k)) else 0
+    let ok k = cont k &&& 0xC0 = 0x80
+    if b0 &&& 0xE0 = 0xC0 && ok 1 then
+      (char (((b0 &&& 0x1F) <<< 6) ||| (cont 1 &&& 0x3F)), i + 2)
+    else if b0 &&& 0xF0 = 0xE0 && ok 1 && ok 2 then
+      (char (((b0 &&& 0x0F) <<< 12) ||| ((cont 1 &&& 0x3F) <<< 6) ||| (cont 2 &&& 0x3F)), i + 3)
+    else if b0 &&& 0xF8 = 0xF0 && ok 1 && ok 2 && ok 3 then
+      (char (((b0 &&& 0x07) <<< 18) ||| ((cont 1 &&& 0x3F) <<< 12) ||| ((cont 2 &&& 0x3F) <<< 6) ||| (cont 3 &&& 0x3F)), i + 4)
+    else (char 0xFFFD, i + 1)
+
+/// The characters of `s`, in order (decoded from UTF-8).
+let String.chars (s: string) =
+  let mutable acc = []
+  let mutable i = 0
+  while i < String.length s do
+    let (c, next) = String.decodeAt s i
+    acc <- c :: acc
+    i <- next
+  List.rev acc
+
+/// The number of characters in `s`. `String.length` counts bytes.
+let String.charCount (s: string) =
+  let mutable count = 0
+  let mutable i = 0
+  while i < String.length s do
+    let (_, next) = String.decodeAt s i
+    count <- count + 1
+    i <- next
+  count
+
+/// A string of one character (its UTF-8 encoding).
+let String.ofChar (c: char) = string c
+
+/// A string of the characters, in order.
+let String.ofChars (cs: list<char>) = String.concat (List.map String.ofChar cs)
+
 // ---------------------------------------------------------------- Console
 
 /// Writes the string to standard output, without a newline.

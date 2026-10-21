@@ -138,7 +138,7 @@ true true
 
 **Interpolation:** `$"..."` evaluates the expressions in braces and inserts their text. Any value with a `Show` impl can go in a hole: numbers, strings, records, unions, lists and options all have one.
 
-**Escapes:** `\n`, `\t`, `\"` and `\\`.
+**Escapes:** `\n`, `\r`, `\t`, `\0`, `\"`, `\'`, `\\`, and `\u{e9}` for any Unicode character by its hex code.
 
 ```zsharp
 let main () =
@@ -165,11 +165,36 @@ Some 42 None 3.5
 ```
 
 - **Converting to text:** `string x` gives any showable value's text.
+- **Characters:** `char` is one Unicode character (a code point), written `'a'`, `'\n'` or `'\u{e9}'`.
+  - **Iterating:** `for c in s` goes over a string's characters, decoding its UTF-8. `String.length` counts bytes and `String.charCount` counts characters.
+  - **Converting:** `int c` gives the code point, and `char 65` the character.
+  - **Testing and changing:** `Char.isDigit`, `isLetter`, `isWhitespace`, `toUpper` and the others work on ASCII.
 - **String functions:** the `String.*` functions and the members (`s.Length`, `s.Trim()`, `s.Split(sep)`, …) are listed in [the standard library](../reference/prelude.md).
 
 **Printing:**
 - `print` and `println` write to standard output.
 - `eprintln` writes to standard error.
+
+```zsharp
+let vowels (s: string) =
+  let mutable n = 0
+  for c in s do
+    match Char.toLower c with
+    | 'a' | 'e' | 'i' | 'o' | 'u' -> n <- n + 1
+    | _ -> ()
+  n
+
+let main () =
+  let word = "Crème brûlée"
+  println $"{String.length word} bytes, {String.charCount word} characters, {vowels word} plain vowels"
+  println $"{String.chars "abc"} {int 'A'} {char 97} {String.ofChars [ 'h'; 'i' ]} {'\u{e9}'}"
+  0
+```
+
+```text
+15 bytes, 12 characters, 2 plain vowels
+[a; b; c] 65 a hi é
+```
 
 ## if, while, for
 

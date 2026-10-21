@@ -1152,6 +1152,119 @@ String.parseFloat : string -> option<f64>
 
 The floating-point number written in `s`, or `None`.
 
+### `Char.isDigit`
+
+```zsharp
+Char.isDigit : char -> bool
+```
+
+Whether `c` is an ASCII digit, '0' to '9'.
+
+### `Char.isLower`
+
+```zsharp
+Char.isLower : char -> bool
+```
+
+Whether `c` is an ASCII lower-case letter.
+
+### `Char.isUpper`
+
+```zsharp
+Char.isUpper : char -> bool
+```
+
+Whether `c` is an ASCII upper-case letter.
+
+### `Char.isLetter`
+
+```zsharp
+Char.isLetter : char -> bool
+```
+
+Whether `c` is an ASCII letter.
+
+### `Char.isLetterOrDigit`
+
+```zsharp
+Char.isLetterOrDigit : char -> bool
+```
+
+Whether `c` is an ASCII letter or digit.
+
+### `Char.isWhitespace`
+
+```zsharp
+Char.isWhitespace : char -> bool
+```
+
+Whether `c` is a space, tab, line feed or carriage return.
+
+### `Char.toUpper`
+
+```zsharp
+Char.toUpper : char -> char
+```
+
+`c` in upper case (ASCII letters; others unchanged).
+
+### `Char.toLower`
+
+```zsharp
+Char.toLower : char -> char
+```
+
+`c` in lower case (ASCII letters; others unchanged).
+
+### `Char.digitValue`
+
+```zsharp
+Char.digitValue : char -> option<int>
+```
+
+The value of an ASCII digit: `Some 7` for '7', `None` for anything else.
+
+### `String.decodeAt`
+
+```zsharp
+String.decodeAt : string -> int -> char * int
+```
+
+The character that starts at byte `i` of `s`, and the byte index after it (UTF-8 decoding;
+a malformed sequence gives U+FFFD and moves one byte). `for c in s` uses it.
+
+### `String.chars`
+
+```zsharp
+String.chars : string -> list<char>
+```
+
+The characters of `s`, in order (decoded from UTF-8).
+
+### `String.charCount`
+
+```zsharp
+String.charCount : string -> 'a when 'a : Add
+```
+
+The number of characters in `s`. `String.length` counts bytes.
+
+### `String.ofChar`
+
+```zsharp
+String.ofChar : char -> string
+```
+
+A string of one character (its UTF-8 encoding).
+
+### `String.ofChars`
+
+```zsharp
+String.ofChars : list<char> -> string
+```
+
+A string of the characters, in order.
+
 ### `Console.print`
 
 ```zsharp

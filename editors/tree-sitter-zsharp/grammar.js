@@ -270,6 +270,7 @@ module.exports = grammar({
       $.index_access,
       $.number,
       $.measured_number,
+      $.char,
       $.string,
       $.interpolated_string,
       $.boolean,
@@ -307,6 +308,7 @@ module.exports = grammar({
       $.qualified_identifier,
       $.wildcard,
       $.number,
+      $.char,
       $.boolean,
       $.unit,
       $.parenthesized_pattern,
@@ -334,7 +336,9 @@ module.exports = grammar({
     interpolation: $ => seq('{', $._expression, '}'),
     string_content: $ => token.immediate(prec(1, /[^"\\]+/)),
     interpolated_content: $ => token.immediate(prec(1, /[^"\\{}]+/)),
-    escape_sequence: $ => token.immediate(choice(/\\[nt0\\"]/, '{{', '}}')),
+    escape_sequence: $ => token.immediate(choice(/\\[nrt0\\"']/, /\\u\{[0-9a-fA-F]+\}/, '{{', '}}')),
+    // 'a', '\n', '\u{e9}' (longer than a type variable 'a, so the lexer prefers it when it fits)
+    char: $ => token(seq("'", choice(/[^'\\\n]/, /\\[nrt0\\"']/, /\\u\{[0-9a-fA-F]+\}/), "'")),
     comment: $ => token(seq('//', /.*/)),
   },
 });

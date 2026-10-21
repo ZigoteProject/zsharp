@@ -27,6 +27,7 @@ type Pat =
     | PWild
     | PIdent of string * Pat option // variable, or constructor with optional payload
     | PInt of int64
+    | PChar of int
     | PBool of bool
     | PUnit
     | PTuple of Pat list
@@ -38,6 +39,7 @@ type Pat =
 
 type Expr =
     | Lit of int64
+    | CharLit of int
     | FloatLit of float
     | BoolLit of bool
     | StrLit of string
@@ -128,6 +130,7 @@ let cInfo = System.Collections.Generic.Dictionary<string, CInfo>()
 let mapExpr (f: Expr -> Expr) (e: Expr) : Expr =
     match e with
     | Lit _
+    | CharLit _
     | FloatLit _
     | BoolLit _
     | StrLit _
@@ -172,6 +175,7 @@ type Tok =
     | KInterp of (bool * string * int) list // (isExpr, text, 1-based column) parts of $"..."
     | KId of string
     | KTyVar of string
+    | KChar of int // 'a', '\n', '\u{e9}': a Unicode scalar value
     | KKw of string
     | KSym of string
     | KNewline
@@ -196,6 +200,7 @@ let showTok =
     | KKw s
     | KSym s -> sprintf "'%s'" s
     | KTyVar s -> "'" + s
+    | KChar _ -> "character literal"
     | KNewline -> "end of line"
     | KIndent -> "indented block"
     | KDedent -> "end of block"
@@ -211,13 +216,28 @@ let symbols =
     [ "&&&"; "|||"; "^^^"; "<<<"; ">>>"; "~~~"; "..."; ".."; "->"; "<-"; "|>"; "|]"; "[|"; "[<"; ">]"; "::"; ">>"; "<>"; "<="; ">="; "&&"; "||"
       "?"; "("; ")"; "{"; "}"; "["; "]"; ","; ";"; "|"; "."; ":"; "="; "<"; ">"; "+"; "-"; "*"; "/"; "%"; "@"; "^" ]
 
-let private unescape ln =
-    function
-    | 'n' -> '\n'
-    | 't' -> '\t'
-    | '0' -> '\000'
-    | '\\' -> '\\'
-    | '"' -> '"'
+/// An escape after a backslash at line[i]: its code point and the index after it. \n \r \t \0
+/// \\ \" \' and \u{hex} (any Unicode scalar value).
+let private unescapeAt ln (line: string) (i: int) : int * int =
+    match line[i] with
+    | 'n' -> 10, i + 1
+    | 'r' -> 13, i + 1
+    | 't' -> 9, i + 1
+    | '0' -> 0, i + 1
+    | '\\' -> int '\\', i + 1
+    | '"' -> int '"', i + 1
+    | '\'' -> int '\'', i + 1
+    | 'u' when i + 1 < line.Length && line[i + 1] = '{' ->
+        let close = line.IndexOf('}', i + 2)
+
+        if close < 0 then
+            fail ln "unterminated \\u{…} escape"
+
+        let hex = line.Substring(i + 2, close - i - 2)
+
+        match Int32.TryParse(hex, NumberStyles.HexNumber, CultureInfo.InvariantCulture) with
+        | true, v when hex <> "" && v <= 0x10FFFF && not (v >= 0xD800 && v <= 0xDFFF) -> v, close + 1
+        | _ -> fail ln (sprintf "\\u{%s} is not a Unicode scalar value" hex)
     | c -> fail ln (sprintf "unknown escape '\\%c'" c)
 
 /// Offside rule: emits KIndent / KDedent / KNewline at line starts outside brackets.
@@ -366,6 +386,21 @@ and private lexWith (src: string) (keepComments: bool) : Token[] =
                         fail ln "integer literal too large"
 
                     add (KInt n)
+            elif c = '\'' && i + 2 < line.Length
+                 && (line[i + 1] = '\\'
+                     || line[i + 2] = '\''
+                     || (Char.IsHighSurrogate line[i + 1] && i + 3 < line.Length && line[i + 3] = '\'')) then
+                // a character literal: 'a', '\n', '\u{e9}' (a type variable 'a has no closing quote)
+                let cp, next =
+                    if line[i + 1] = '\\' then unescapeAt ln line (i + 2)
+                    elif Char.IsHighSurrogate line[i + 1] then Char.ConvertToUtf32(line, i + 1), i + 3
+                    else int line[i + 1], i + 2
+
+                if next >= line.Length || line[next] <> '\'' then
+                    fail ln "a character literal holds one character: 'a'"
+
+                i <- next + 1
+                add (KChar cp)
             elif c = '\'' && i + 1 < line.Length && Char.IsLetter(line[i + 1]) then
                 let s = i + 1
                 i <- i + 1
@@ -396,9 +431,9 @@ and private lexWith (src: string) (keepComments: bool) : Token[] =
 
                 while i < line.Length && line[i] <> '"' do
                     if line[i] = '\\' && i + 1 < line.Length then
-                        i <- i + 1
-                        sb.Append(unescape ln (line[i])) |> ignore
-                        i <- i + 1
+                        let cp, next = unescapeAt ln line (i + 1)
+                        sb.Append(Char.ConvertFromUtf32 cp) |> ignore
+                        i <- next
                     elif interp && line[i] = '{' && i + 1 < line.Length && line[i + 1] = '{' then
                         sb.Append '{' |> ignore
                         i <- i + 2
@@ -698,6 +733,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         match t with
         | KId _
         | KInt _
+        | KChar _
         | KSym("-" | "~-")
         | KKw "true"
         | KKw "false"
@@ -774,6 +810,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         | KId "_" -> PWild
         | KId x -> mark (pos.Value - 1) (PIdent(x, None))
         | KInt n -> PInt n
+        | KChar c -> PChar c
         | KSym("-" | "~-") ->
             match peek () with
             | KInt n ->
@@ -1167,6 +1204,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
     and startsAtom () =
         match peek () with
         | KInt _
+        | KChar _
         | KFloat _
         | KStr _
         | KInterp _
@@ -1265,6 +1303,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
 
         match t with
         | KInt n -> measured (Lit n)
+        | KChar c -> CharLit c
         | KFloat f -> measured (FloatLit f)
         | KStr s -> StrLit s
         | KInterp parts -> interpolate ln parts

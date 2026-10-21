@@ -148,6 +148,33 @@ zs_str *zs_str_of_f32(float v) {
     return str_of(buf, n);
 }
 
+// a char's text: its UTF-8 encoding (a value that isn't a Unicode scalar becomes U+FFFD)
+zs_str *zs_str_of_char(int32_t c) {
+    char b[4];
+    int n;
+    if (c < 0 || c > 0x10FFFF || (c >= 0xD800 && c <= 0xDFFF)) c = 0xFFFD;
+    if (c < 0x80) {
+        b[0] = (char)c;
+        n = 1;
+    } else if (c < 0x800) {
+        b[0] = (char)(0xC0 | (c >> 6));
+        b[1] = (char)(0x80 | (c & 0x3F));
+        n = 2;
+    } else if (c < 0x10000) {
+        b[0] = (char)(0xE0 | (c >> 12));
+        b[1] = (char)(0x80 | ((c >> 6) & 0x3F));
+        b[2] = (char)(0x80 | (c & 0x3F));
+        n = 3;
+    } else {
+        b[0] = (char)(0xF0 | (c >> 18));
+        b[1] = (char)(0x80 | ((c >> 12) & 0x3F));
+        b[2] = (char)(0x80 | ((c >> 6) & 0x3F));
+        b[3] = (char)(0x80 | (c & 0x3F));
+        n = 4;
+    }
+    return str_of(b, n);
+}
+
 zs_str *zs_str_from_c(const char *c) { return str_of(c, (int64_t)strlen(c)); }
 
 zs_str *zs_str_of_bool(bool v) { return v ? str_of("true", 4) : str_of("false", 5); }
