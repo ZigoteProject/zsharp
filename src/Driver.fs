@@ -122,6 +122,40 @@ let moduleDirs (file: string) : string list =
     | Some m -> dir :: (snd (depDirs (Set.singleton m.root) m) |> List.filter ((<>) dir)) |> List.distinct
     | None -> [ dir ]
 
+/// What [<Link "...">] on an `import c` asked for: library names (-lname) and C, object or
+/// archive files (full paths), collected while loading the program's modules.
+let links = ResizeArray<string>()
+
+/// Replaces `import c` declarations with the header's declarations (headers are found next
+/// to the importing file, then on the system include path).
+let private expandImports (path: string) (decls: (int * Decl) list) =
+    let dir = Path.GetDirectoryName(Path.GetFullPath path)
+
+    decls
+    |> List.collect (fun (ln, d) ->
+        let imported header =
+            try
+                CImport.importHeader header dir
+            with CompileError(_, msg) ->
+                raise (CompileErrorAt(path, ln, 0, msg))
+
+        match d with
+        | ImportC header -> imported header
+        | Attrs(attrs, ImportC header) ->
+            for a, args in attrs do
+                if a <> "Link" || args.IsEmpty then
+                    raise (CompileErrorAt(path, ln, 0, sprintf "unknown attribute '%s' on import c (use [<Link \"lib\">])" a))
+
+                for l in args do
+                    let ext = Path.GetExtension l
+                    let item = if List.contains ext [ ".c"; ".o"; ".a"; ".so" ] then Path.Combine(dir, l) else l
+
+                    if not (links.Contains item) then
+                        links.Add item
+
+            imported header
+        | _ -> [ ln, d ])
+
 /// The main file and the modules it uses (`open M` or `M.name`, found as M.zs or m.zs next to
 /// it or in a dependency), dependencies first. Each module is named after its file unless it
 /// has a `module` header.
@@ -138,6 +172,7 @@ let loadModules (mainPath: string) : (string * string option * (int * Decl) list
 
     let rec visit (path: string) (modName: string option) (stack: string list) =
         let toks, decls = parseFile path
+        let decls = expandImports path decls
 
         let modName =
             match decls, modName with
@@ -189,6 +224,7 @@ let loadModules (mainPath: string) : (string * string option * (int * Decl) list
 /// Parses and type-checks; with collect, every declaration's error is in the result.
 let check (mainPath: string) (requireMain: bool) (collect: bool) : Core.Program =
     positions.Clear()
+    links.Clear()
     let full = Path.GetFullPath mainPath
 
     // checking the prelude itself (the installed one, or runtime/prelude.zs in a checkout):
@@ -330,7 +366,8 @@ let build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) (isLib: 
 
                 failure
             else
-                timed "clang" (fun () -> run "clang" ([ "-O2"; "-rdynamic"; "-Wno-override-module" ] @ san @ [ ll; runtimeFile "rt.c"; "-o"; out; "-lm" ]))
+                let linked = links |> Seq.map (fun l -> if l.Contains "/" then l else "-l" + l) |> List.ofSeq
+                timed "clang" (fun () -> run "clang" ([ "-O2"; "-rdynamic"; "-Wno-override-module" ] @ san @ [ ll; runtimeFile "rt.c" ] @ linked @ [ "-o"; out; "-lm" ]))
 
         if not emitLlvm then
             File.Delete ll

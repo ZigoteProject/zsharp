@@ -29,7 +29,7 @@ let ints = set [ "int"; "i8"; "i16"; "i32"; "u8"; "u16"; "u32"; "u64"; "usize" ]
 let unsigned = set [ "u8"; "u16"; "u32"; "u64"; "usize" ]
 let floats = set [ "f64"; "f32" ]
 let nums = ints + floats
-let prims = nums + set [ "bool"; "string"; "cstr"; "unit" ]
+let prims = nums + set [ "bool"; "string"; "cstr"; "cptr"; "unit" ] // cptr: any other C pointer, opaque
 let kAny = { allowed = None; traits = Set.empty }
 let private allow s = { allowed = Some s; traits = Set.empty }
 let kInt, kFloat, kNumeric = allow ints, allow floats, allow nums

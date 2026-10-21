@@ -1,0 +1,7 @@
+point_add 11 22, ORIGIN 0
+size_area 6 scale 2.5
+rect_move 16 17 3 0.5
+color_pack 4294967295 16909060
+enum 0 5 6 triangle true
+defines 3 255 shapes sum_to 5050
+canvas painted 2

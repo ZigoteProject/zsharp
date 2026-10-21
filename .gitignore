@@ -10,3 +10,4 @@ editors/tree-sitter-zsharp/node_modules/
 vgcore.*
 core.*
 build/
+examples/raylib/demo

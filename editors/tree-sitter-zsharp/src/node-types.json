@@ -2266,6 +2266,22 @@
     }
   },
   {
+    "type": "import_c_declaration",
+    "named": true,
+    "fields": {
+      "header": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "string",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "index_access",
     "named": true,
     "fields": {},
@@ -5156,6 +5172,10 @@
           "named": true
         },
         {
+          "type": "import_c_declaration",
+          "named": true
+        },
+        {
           "type": "let_declaration",
           "named": true
         },
@@ -6248,6 +6268,10 @@
     "named": false
   },
   {
+    "type": "c",
+    "named": false
+  },
+  {
     "type": "comment",
     "named": true,
     "extra": true
@@ -6294,6 +6318,10 @@
   },
   {
     "type": "impl",
+    "named": false
+  },
+  {
+    "type": "import",
     "named": false
   },
   {

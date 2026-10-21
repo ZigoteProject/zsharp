@@ -1,6 +1,7 @@
 ; Z# highlighting (capture names as used by Zed and nvim-treesitter)
 
 (comment) @comment
+(import_c_declaration "c" @keyword)
 ((comment) @comment.doc (#match? @comment.doc "^///"))
 (string) @string
 (interpolated_string) @string
@@ -13,7 +14,7 @@
 (wildcard) @variable.special
 
 [
-  "let" "rec" "mutable" "private" "type" "of" "with" "member" "static" "extern" "open"
+  "let" "rec" "mutable" "private" "type" "of" "with" "member" "static" "extern" "import" "open"
   "module" "trait" "impl" "abstract" "derive" "fun" "match" "when" "as" "if" "then" "else"
   "for" "in" "do" "while" "not"
 ] @keyword

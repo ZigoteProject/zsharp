@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <Compile Include="Syntax.fs" />
+    <Compile Include="CImport.fs" />
     <Compile Include="Core.fs" />
     <Compile Include="Match.fs" />
     <Compile Include="Derive.fs" />

@@ -505,8 +505,15 @@ type Vec2 = { x: f32; y: f32 }
 [<Export "zs_area">]                             // no currying, C calling convention, stable symbol
 let area (s: Shape) : f64 = ...
 
-import c "raylib.h"                              // libclang, like Zig's @cImport
+[<Link "raylib">]                                // -lraylib; or a .c/.o/.a file next to this one
+import c "raylib.h"                              // like Zig's @cImport
 ```
+
+- **`import c` (implemented):** clang reads the header (`-ast-dump=json` for declarations, `-E -dD` for macros). Only what that header itself declares is imported, not the headers it includes.
+  - **What comes across:** functions become externs, and structs become `[<CLayout>]` records, named and unnamed alike. Enum values and `#define` literals become constants, including `CLITERAL(Color){ … }` / `(T){ … }` struct literals.
+  - **Types:** `char*` becomes `cstr`. Every other pointer becomes the opaque `cptr`, and enum types become `i32`.
+  - **Left out:** unions, arrays, function pointers, `static inline` functions and opaque structs passed by value. Using one gives an error naming the reason, e.g. "C function 'apply' wasn't imported: parameter 1: it uses a function pointer".
+  - **Lookup and caching:** the header is found next to the importing file, then on the system include path. The result is cached until the header changes, so the language server stays fast.
 
 - **FFI types:** `c_int`, `c_long`, `usize`, `cstr`, `ptr<'a>`, `fnptr<...>`.
 - **Passing values across the boundary:**

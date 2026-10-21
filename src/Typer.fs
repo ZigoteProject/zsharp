@@ -357,6 +357,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
     let clayouts = HashSet<string>() // [<CLayout>] records
     let exports = ResizeArray<Export>()
     let tests = ResizeArray<string>()
+    let consts = Dictionary<string, Expr>() // C constants from import c
     let currentModule = ref (None: string option)
     let opens = ref ([]: string list) // most recent first
     let privates = Dictionary<string, string option>() // qualified name -> owning module
@@ -1312,7 +1313,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
         let parts = x.Split '.'
 
         let resolves (n: string) =
-            env.ContainsKey n || (resolveName n).IsSome
+            env.ContainsKey n || consts.ContainsKey n || (resolveName n).IsSome
 
         seq { parts.Length - 1 .. -1 .. 1 }
         |> Seq.tryPick (fun k ->
@@ -1443,6 +1444,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
 
     and value' env depth x : CExpr =
         match env.TryFind x with
+        | None when consts.ContainsKey x -> infer env depth consts[x]
         | Some l ->
             if l.mut && l.depth < depth then
                 fail 0 (sprintf "mutable variable '%s' cannot be captured by a closure; use a ref cell" x)
@@ -1484,6 +1486,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                 else
                     match splitQualified env x with
                     | Some e -> infer env depth e
+                    | None when skippedC.ContainsKey x -> fail 0 (sprintf "C name '%s' wasn't imported: %s" x skippedC[x])
                     | None -> fail 0 (sprintf "unknown name '%s'" x)
 
     and call env depth f args : CExpr =
@@ -1507,6 +1510,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
         else
             match splitQualified env f with
             | Some e -> infer env depth (App(e, args))
+            | None when skippedC.ContainsKey f -> fail 0 (sprintf "C function '%s' wasn't imported: %s" f skippedC[f])
             | None -> fail 0 (sprintf "unknown function '%s'" f)
 
     /// Type-checks arguments against a (curried) function type; returns them and the result type.
@@ -1883,7 +1887,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
     /// Types that can cross the C boundary: numbers, bool, cstr, unit and [<CLayout>] records.
     let rec checkCType (what: string) (t: Ty) =
         match prune t with
-        | TCon(n, []) when nums.Contains n || n = "bool" || n = "cstr" || n = "unit" -> ()
+        | TCon(n, []) when nums.Contains n || n = "bool" || n = "cstr" || n = "cptr" || n = "unit" -> ()
         | TCon(n, []) when clayouts.Contains n -> ()
         | t -> fail 0 (sprintf "%s: type %s cannot cross the C boundary (mark records [<CLayout>])" what (show t))
 
@@ -2207,6 +2211,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                             privates[qualify c] <- currentModule.Value
                     | RecordTy _ -> ()
                 | _ -> fail 0 "'private' applies to 'let' and 'type' declarations"
+            | Const(name, v) -> consts[name] <- v
             | Open m ->
                 if not (moduleNames.Contains m) then
                     fail 0 (sprintf "unknown module '%s'" m)

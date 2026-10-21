@@ -62,6 +62,12 @@ if [ "$proj" = "$expected" ]; then echo "ok   projects (zs.toml, path dependency
 else echo "FAIL projects"; diff <(echo "$proj") <(echo "$expected"); fail=1; fi
 rm -rf tests/project/wc/build
 
+# import c against a real library: the raylib demo builds (it needs a display to run)
+if [ -f /usr/include/raylib.h ]; then
+  if timeout 60 bin/zs build examples/raylib/main.zs -o "$tmp/raylib-demo" 2>"$tmp/raylib.log"; then echo "ok   examples/raylib (builds against raylib.h)"
+  else echo "FAIL examples/raylib"; head -5 "$tmp/raylib.log"; fail=1; fi
+else echo "skip examples/raylib (no raylib.h)"; fi
+
 # the prelude checks on its own (an editor opening it must not see everything defined twice)
 if bin/zs check runtime/prelude.zs >"$tmp/prelude.log" 2>&1; then echo "ok   zs check runtime/prelude.zs"
 else echo "FAIL zs check runtime/prelude.zs"; head -5 "$tmp/prelude.log"; fail=1; fi

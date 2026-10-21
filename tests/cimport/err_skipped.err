@@ -1,0 +1,1 @@
+tests/cimport/err_skipped.zs:5:3: error: C function 'apply' wasn't imported: parameter 1: it uses a function pointer

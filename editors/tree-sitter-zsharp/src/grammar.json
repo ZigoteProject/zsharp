@@ -123,6 +123,10 @@
             },
             {
               "type": "SYMBOL",
+              "name": "import_c_declaration"
+            },
+            {
+              "type": "SYMBOL",
               "name": "trait_declaration"
             },
             {
@@ -557,6 +561,27 @@
         {
           "type": "SYMBOL",
           "name": "_type"
+        }
+      ]
+    },
+    "import_c_declaration": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "import"
+        },
+        {
+          "type": "STRING",
+          "value": "c"
+        },
+        {
+          "type": "FIELD",
+          "name": "header",
+          "content": {
+            "type": "SYMBOL",
+            "name": "string"
+          }
         }
       ]
     },

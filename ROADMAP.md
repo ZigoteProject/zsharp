@@ -122,7 +122,7 @@ syntax, only fixes. Both decisions came from the design review.
 
 ### Phase 4: C import and tooling
 - **Scope:**
-  - `import c "header.h"` via libclang, covering structs, enums, functions and `#define` constants.
+  - **Done:** `import c "header.h"`, via clang's JSON AST and macro listing, covering structs, enums, functions and `#define` constants. `[<Link "lib">]` links a library.
   - DWARF debug info (gdb and lldb step through Z# lines).
   - `zs test` and better error messages (code snippets, carets). **Done:** `[<Test>]` functions, one process per test; a failed assert names its file and line.
   - **Cross-compilation:** `zs build --target <triple>` via `zig cc` and Zig's bundled libc.

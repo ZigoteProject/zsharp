@@ -3,7 +3,7 @@ FROM registry.fedoraproject.org/fedora:44
 
 RUN dnf install -y --setopt=install_weak_deps=False \
         dotnet-sdk-10.0 clang llvm lld compiler-rt libasan liblsan \
-        valgrind gdb qemu-user zig git make which findutils diffutils \
+        valgrind gdb qemu-user zig raylib-devel git make which findutils diffutils \
         nodejs npm cargo rust rust-std-static-wasm32-wasip1 tree-sitter-cli \
     && dnf clean all
 

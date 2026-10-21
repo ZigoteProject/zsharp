@@ -235,7 +235,7 @@ let compile
         | TCon("f32", []) -> "float"
         | TCon("bool", []) -> "i1"
         | TCon("unit", []) -> "{}"
-        | TCon(("cstr" | "string" | "array" | "ref"), _)
+        | TCon(("cstr" | "cptr" | "string" | "array" | "ref"), _)
         | TFun _ -> "ptr"
         | TCon(n, args) ->
             match types[n].def with

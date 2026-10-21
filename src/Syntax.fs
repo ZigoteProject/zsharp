@@ -103,6 +103,11 @@ type Decl =
     | Open of string // open Module
     | ModuleHeader of string // module Name (first line of a file)
     | Impl of traitName: string * head: SType * defs: (int * string * Param list * SType option * Expr) list
+    | ImportC of header: string // import c "raylib.h", replaced by the header's declarations
+    | Const of name: string * value: Expr // a C constant (enum value, #define): its uses are the literal
+
+/// C names an `import c` left out, with the reason (shown when a program uses one).
+let skippedC = System.Collections.Generic.Dictionary<string, string>()
 
 /// Rebuilds an expression with f applied to each direct child expression.
 let mapExpr (f: Expr -> Expr) (e: Expr) : Expr =
@@ -1558,6 +1563,20 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
 
             expect KDedent "end of impl"
             ln, Impl(tr, head, List.ofSeq defs)
+        | KId "import" ->
+            // import c "header.h"
+            advance ()
+
+            if peek () <> KId "c" then
+                fail ln "expected 'c' after 'import': import c \"header.h\""
+
+            advance ()
+
+            match peek () with
+            | KStr h ->
+                advance ()
+                ln, ImportC h
+            | _ -> fail ln "expected a header name: import c \"header.h\""
         | KKw "extern" ->
             // extern name : t1 -> t2 -> ... -> ret
             advance ()

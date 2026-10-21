@@ -61,6 +61,7 @@ module.exports = grammar({
       $.type_declaration,
       $.type_extension,
       $.extern_declaration,
+      $.import_c_declaration,
       $.trait_declaration,
       $.impl_declaration,
       $.derive_declaration,
@@ -94,6 +95,7 @@ module.exports = grammar({
     typed_parameter: $ => seq('(', optional('?'), field('name', $.identifier), $.type_annotation, optional(seq('=', $._expression)), ')'),
     type_annotation: $ => seq(':', $._type),
 
+    import_c_declaration: $ => seq('import', 'c', field('header', $.string)),
     extern_declaration: $ => seq('extern', field('name', $.identifier), ':', $._type),
 
     type_declaration: $ => seq(
