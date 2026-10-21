@@ -138,7 +138,7 @@ Some 36 None
 `match` tries each case in order and takes the first that matches.
 
 **What a pattern can be:**
-- a literal, or `_` for anything;
+- a literal (a number, character, string or bool), or `_` for anything;
 - a variable, which binds the value;
 - a tuple, a record (`{ x = 0; y = y }`, where the fields left out match anything), a union case, or a list (`[]`, `x :: rest`, `[ a; b ]`);
 - an or-pattern (`|`);
@@ -163,9 +163,16 @@ let classify n =
   | n when n < 0 -> "negative"
   | _ -> "big"
 
+let command (words: list<string>) =
+  match words with
+  | [ "open"; file ] -> $"opening {file}"
+  | [ "quit" ] | [ "exit" ] -> "bye"
+  | _ -> "unknown"
+
 let main () =
   println $"{describe []} | {describe [ 7 ]} | {describe [ 4; 4; 1 ]} | {describe [ 1; 2; 3 ]}"
   println $"{classify 0} {classify 2} {classify -5} {classify 99}"
+  println $"{command [ "open"; "a.txt" ]} {command [ "exit" ]}"
   match (1, "one") with
   | (n, name) as both when n > 0 -> println $"{name} {both}"
   | _ -> println "other"
@@ -175,6 +182,7 @@ let main () =
 ```text
 empty | just 7 | starts with a pair | 1 and 2 more
 zero small negative big
+opening a.txt bye
 one (1, one)
 ```
 

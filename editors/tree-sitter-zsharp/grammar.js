@@ -329,6 +329,7 @@ module.exports = grammar({
       $.wildcard,
       $.number,
       $.char,
+      $.string,
       $.boolean,
       $.unit,
       $.parenthesized_pattern,

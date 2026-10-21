@@ -627,6 +627,9 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
         | PChar c ->
             expect "pattern" ty tChar
             CPInt(int64 c)
+        | PStr s ->
+            expect "pattern" ty tStr
+            CPStr s
         | PBool b ->
             expect "pattern" ty tBool
             CPBool b
@@ -1562,6 +1565,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
             let toExpr p =
                 match p with
                 | PInt n -> Lit n
+                | PStr s -> StrLit s
                 | PBool b -> BoolLit b
                 | PUnit -> UnitLit
                 | PIdent(x, None) -> Var x

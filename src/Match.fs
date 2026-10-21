@@ -31,6 +31,7 @@ let rec private spaces (cases: string -> (string * int) list) p =
     | CPVar _ -> [ SWild ]
     | CPAs(p, _, _) -> spaces cases p
     | CPInt n -> [ SCon({ name = string n; arity = 0; all = None }, []) ]
+    | CPStr s -> [ SCon({ name = "\"" + s + "\""; arity = 0; all = None }, []) ]
     | CPBool b ->
         let all = Some [ "true", 0; "false", 0 ]
         [ SCon({ name = (if b then "true" else "false"); arity = 0; all = all }, []) ]

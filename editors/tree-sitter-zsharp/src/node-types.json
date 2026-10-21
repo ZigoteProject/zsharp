@@ -614,6 +614,10 @@
           "named": true
         },
         {
+          "type": "string",
+          "named": true
+        },
+        {
           "type": "tuple_pattern",
           "named": true
         },
@@ -1301,6 +1305,10 @@
           "named": true
         },
         {
+          "type": "string",
+          "named": true
+        },
+        {
           "type": "tuple_pattern",
           "named": true
         },
@@ -1372,6 +1380,10 @@
         },
         {
           "type": "record_pattern",
+          "named": true
+        },
+        {
+          "type": "string",
           "named": true
         },
         {
@@ -1883,6 +1895,10 @@
           "named": true
         },
         {
+          "type": "string",
+          "named": true
+        },
+        {
           "type": "tuple_pattern",
           "named": true
         },
@@ -2223,6 +2239,10 @@
           },
           {
             "type": "record_pattern",
+            "named": true
+          },
+          {
+            "type": "string",
             "named": true
           },
           {
@@ -3396,6 +3416,10 @@
             "named": true
           },
           {
+            "type": "string",
+            "named": true
+          },
+          {
             "type": "tuple_pattern",
             "named": true
           },
@@ -4287,6 +4311,10 @@
           "named": true
         },
         {
+          "type": "string",
+          "named": true
+        },
+        {
           "type": "tuple_pattern",
           "named": true
         },
@@ -4753,6 +4781,10 @@
           },
           {
             "type": "record_pattern",
+            "named": true
+          },
+          {
+            "type": "string",
             "named": true
           },
           {
@@ -5358,6 +5390,10 @@
           "named": true
         },
         {
+          "type": "string",
+          "named": true
+        },
+        {
           "type": "tuple_pattern",
           "named": true
         },
@@ -5540,6 +5576,10 @@
         },
         {
           "type": "record_pattern",
+          "named": true
+        },
+        {
+          "type": "string",
           "named": true
         },
         {
@@ -5742,6 +5782,10 @@
         },
         {
           "type": "record_pattern",
+          "named": true
+        },
+        {
+          "type": "string",
           "named": true
         },
         {
@@ -6394,6 +6438,10 @@
             "named": true
           },
           {
+            "type": "string",
+            "named": true
+          },
+          {
             "type": "tuple_pattern",
             "named": true
           },
@@ -6703,6 +6751,10 @@
         },
         {
           "type": "record_pattern",
+          "named": true
+        },
+        {
+          "type": "string",
           "named": true
         },
         {

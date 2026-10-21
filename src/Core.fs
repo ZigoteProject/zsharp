@@ -253,6 +253,7 @@ type CPat =
     | CPWild
     | CPVar of string * Ty
     | CPInt of int64
+    | CPStr of string
     | CPBool of bool
     | CPTuple of CPat list
     | CPRecord of record: string * (string * CPat) list // every field, in declaration order
@@ -368,6 +369,7 @@ let rec patVars p =
     match p with
     | CPWild
     | CPInt _
+    | CPStr _
     | CPBool _ -> []
     | CPVar(x, t) -> [ x, t ]
     | CPAs(p, x, t) -> (x, t) :: patVars p

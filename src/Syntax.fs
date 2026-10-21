@@ -28,6 +28,7 @@ type Pat =
     | PIdent of string * Pat option // variable, or constructor with optional payload
     | PInt of int64
     | PChar of int
+    | PStr of string // "open": compared with =
     | PBool of bool
     | PUnit
     | PTuple of Pat list
@@ -850,6 +851,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         | KId _
         | KInt _
         | KChar _
+        | KStr _
         | KSym("-" | "~-")
         | KKw "true"
         | KKw "false"
@@ -927,6 +929,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         | KId x -> mark (pos.Value - 1) (PIdent(x, None))
         | KInt n -> PInt n
         | KChar c -> PChar c
+        | KStr s -> PStr s
         | KSym("-" | "~-") ->
             match peek () with
             | KInt n ->

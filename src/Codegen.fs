@@ -988,6 +988,10 @@ let compile
             | CPInt k ->
                 guardOr (em.Instr(sprintf "icmp eq %s %s, %d" (llty t) v k))
                 env
+            | CPStr s ->
+                let c = em.Instr(sprintf "call i_W @zs_str_cmp(ptr %s, ptr %s)" v (strGlobal s))
+                guardOr (em.Instr(sprintf "icmp eq i_W %s, 0" c))
+                env
             | CPBool b ->
                 guardOr (em.Instr(sprintf "icmp eq i1 %s, %b" v b))
                 env
