@@ -20,6 +20,7 @@
 | Option | Does |
 |---|---|
 | `-g` | debug info, unoptimized ([Debugging](#debugging)) |
+| `-Os` | optimize for size instead of speed ([Microcontrollers](11-microcontrollers.md)) |
 | `--target <triple>` | cross-compile ([C interop](09-c-interop.md#cross-compiling)) |
 | `--lib` | a static library plus a C header |
 | `--sanitize` | AddressSanitizer and UndefinedBehaviorSanitizer |

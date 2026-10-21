@@ -609,7 +609,7 @@ checker, so tools can't drift from the compiler.
     - They're checked out into `.zs-cache/deps/`, and `zs.lock` pins each commit; commit `zs.lock` with the project.
     - `zs fetch` checks them out and `zs update` moves them to the newest commit of their `rev`. The language server never fetches.
   - **Modules:** found next to the importing file, then in each dependency, transitively.
-  - **Commands:** `zs new`, `zs build` (to `build/<name>`), `zs run`, `zs test`.
+  - **Commands:** `zs new`, `zs build` (to `build/<name>`), `zs run`, `zs check`, `zs test`. Builds take `-g`, `-Os`, `--target`, `--lib`, `--emit-llvm`, `--sanitize` and `--time`.
 - **Tests:** `[<Test>]` marks a `unit -> unit` function. `zs test` runs each test in its own process, so a failure or panic fails only that test. A failed `assert` names its file and line.
 - **Debugging:** `zs build -g` builds at `-O0` with DWARF.
   - gdb breaks on Z# functions and lines, steps, and shows backtraces.
