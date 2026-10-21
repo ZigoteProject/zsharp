@@ -402,6 +402,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                 [ for k in 1 .. parts.Length -> String.concat "." parts[.. k - 1] ])
         )
     let mainNested = HashSet<string>() // modules nested in the main file (it has no module name)
+    let wrapping = ref false // checking a [<Wrapping>] function: its integer + - * wrap
     let nestedModules = HashSet<string>() // every `module X =` so far, to catch a second one
 
     /// The name a declaration gets in the current module.
@@ -1284,6 +1285,10 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
             | NoImpl _ -> fail 0 (sprintf "operator '%s' does not support type %s (it needs %s)" op (show ca.ty) tr)
 
             expect (sprintf "right operand of '%s'" op) ca.ty cb.ty
+
+            // in a [<Wrapping>] function, + - * on integers wrap around (decided once the
+            // operand type is known: on floats and strings they stay the usual ones)
+            let op = if wrapping.Value && List.contains op [ "+"; "-"; "*" ] then "wrap" + op else op
             mk (CBin(op, ca, cb)) (if isArith then ca.ty else tBool)
 
     /// Does either operand carry a unit of measure (so * and / combine units)?
@@ -2664,6 +2669,15 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                       fname = q
                       pars = ptys |> List.filter (fun t -> prune t <> tUnit)
                       ret = resolve ret }
+            | Attrs([ "Wrapping", [] ], (Fun _ as f)) ->
+                // [<Wrapping>]: integer + - * in the function, its lambdas included, wrap around
+                // instead of panicking on overflow (hashes, checksums)
+                wrapping.Value <- true
+
+                try
+                    declare ln f
+                finally
+                    wrapping.Value <- false
             | Attrs([ "Test", [] ], (Fun(name, _, _, _, _) as f)) ->
                 declare ln f
                 let q = qualify name

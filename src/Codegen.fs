@@ -1438,6 +1438,8 @@ let compile
                 let vb = gen env false b
                 let t = a.ty
                 let lt = llty t
+                // a [<Wrapping>] function's + - *: wrapping on integers, the usual ones otherwise
+                let op = if op.StartsWith "wrap" && not (ints.Contains(tyName t)) then op.Substring 4 else op
 
                 match tyName t with
                 | "string" ->
@@ -1466,6 +1468,7 @@ let compile
                     let amount = em.Instr(sprintf "and %s %s, %d" lt vb (bits - 1))
                     let instr = if op = "<<<" then "shl" elif isUnsigned t then "lshr" else "ashr"
                     em.Instr(sprintf "%s %s %s, %s" instr lt va amount)
+                | _ when op.StartsWith "wrap" -> em.Instr(sprintf "%s %s %s, %s" arith[op.Substring 4] lt va vb)
                 | _ when arith.ContainsKey op -> checkedArith em op (isUnsigned t) lt va vb
                 | _ when op = "/" || op = "%" ->
                     check em (em.Instr(sprintf "icmp ne %s %s, 0" lt vb)) "division by zero"

@@ -57,7 +57,7 @@ The compiler does most of the work. These habits help it:
 - **`-Os`:** for size. At `-O2`, the compiler may unroll loops and version them for speed.
 
 **What still costs more than C:**
-- **Overflow checks:** arithmetic is checked for overflow, so `+`, `-` and `*` that the compiler can't prove safe cost an extra instruction or two. For hashes and checksums, use `Int.wrappingAdd` and friends.
+- **Overflow checks:** arithmetic is checked for overflow, so `+`, `-` and `*` that the compiler can't prove safe cost an extra instruction or two. For hashes and checksums, mark the function `[<Wrapping>]`, or use `Int.wrappingAdd` and friends.
 - **Heap data:** lists, strings and recursive unions are heap-allocated, with reference counting. Each object has an 8-byte header, plus 8 bytes of allocator header.
 
 ## Timing code

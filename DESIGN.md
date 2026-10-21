@@ -340,7 +340,7 @@ at once, and raw `ptr<'a>` inside `unsafe` expressions.
 | No out-of-bounds access | Indexing is bounds-checked; in loops the checks are proved once before the loop where possible (§9) |
 | No data races | `let mutable` can't be captured; the `Share` trait (planned, §7) |
 | Deterministic cleanup | RC, plus `use` (planned, phase 6), which also runs when a task is cancelled |
-| No silent overflow | Integer overflow traps in every build, as in Swift. Wrapping is explicit: `Int.wrappingAdd`, `Int.wrappingSub`, `Int.wrappingMul` (and `[<Wrapping>]` on a function, planned). Division by zero traps |
+| No silent overflow | Integer overflow traps in every build, as in Swift. Wrapping is explicit: `Int.wrappingAdd`, `Int.wrappingSub`, `Int.wrappingMul`, or `[<Wrapping>]` on a function, whose integer `+ - *` wrap. Division by zero traps |
 
 **Not guaranteed (and still memory-safe):** leaks through `ref` cycles.
 
@@ -598,7 +598,7 @@ checker, so tools can't drift from the compiler.
 | 1 | Syntax | F# light syntax, indentation only | decided |
 | 2 | Memory | Perceus RC, no GC; borrowing, reuse, moves | decided |
 | 3 | `int` width | the machine word (64-bit; 32 on Cortex-M); `i64` always 64-bit | decided (changed for microcontrollers: 64-bit `int` cost 1.5–2× in array loops there) |
-| 4 | Integer overflow | traps in every build; explicit wrapping operations, `[<Wrapping>]` planned; division by zero traps | decided |
+| 4 | Integer overflow | traps in every build; explicit wrapping operations and `[<Wrapping>]` functions; division by zero traps | decided |
 | 5 | Panics | message (+ backtrace), exit 134, no unwinding, no core dump, can't be caught | decided |
 | 6 | Unreachable match case | an error (F# warns) | decided |
 | 7 | Array semantics | copy-on-write values; `Buffer<'a>` for shared mutation | decided |

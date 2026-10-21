@@ -261,7 +261,7 @@ let run (prog: Program) : MFun list =
             | CApp({ k = CGlobal(q, Some gi) } as h, args) when prog.traitMethods.ContainsKey q ->
                 dispatch q (List.map ct gi) (ct h.ty) (List.map ex args) (ct e.ty)
             | CGlobal(q, Some gi) when prog.traitMethods.ContainsKey q -> dispatch q (List.map ct gi) (ct e.ty) [] (ct e.ty)
-            | CBin(op, a, b) when not (isPrim (ct a.ty)) -> operator op (ex a) (ex b) (ct e.ty)
+            | CBin(op, a, b) when not (isPrim (ct a.ty)) -> operator (op.Replace("wrap", "")) (ex a) (ex b) (ct e.ty)
             | CNeg a when not (isPrim (ct a.ty)) ->
                 let methodTy = substGen [ ct a.ty ] prog.traitMethods["Num.neg"].ty
                 mk (CApp(implFn "Num" "neg" (ct a.ty) methodTy, [ ex a ])) (ct e.ty)

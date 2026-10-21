@@ -175,7 +175,7 @@ first.
   5. **Nested modules (done):** `module Inner =` with an indented block; enclosing modules' names are in scope, `private` reaches nested modules, `open` is scoped to the block.
   6. **Custom operators (done):** `let (>>=) r f = …`, prefix ones (`!r`, `~~x`), `(op)` as a function (built-in operators too), and F#'s precedence by first character; `|>` and `>>` moved to the comparison level, as in F#. A line starting with an operator continues the previous one.
   7. **Blocks inside brackets (done):** a line ending in `->` (or `then`, `else`, `do`) inside a bracket opens a block, so multi-line lambdas and matches work inside parentheses, lists and records; `zs fmt` puts the block one level past its line.
-  8. **`[<Wrapping>]` on a function:** its integer arithmetic wraps instead of trapping.
+  8. **`[<Wrapping>]` on a function (done):** its integer `+ - *` wrap instead of trapping, lambdas inside included; floats and strings keep their meaning.
   9. **String patterns:** `match s with "open" -> …`.
   10. **Multi-line string literals**, and `"""…"""` strings.
 - **Exit tests:**

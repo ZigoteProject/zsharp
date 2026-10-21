@@ -90,3 +90,22 @@ let main () =
 9223372036854775806
 panic: integer overflow
 ```
+
+**A whole function:** `[<Wrapping>]` makes a function's integer `+`, `-` and `*` wrap around, including in the lambdas inside it. Floats and strings are unaffected, and negation and division keep their checks.
+
+```zsharp
+[<Wrapping>]
+let fnv1a (s: string) =
+  let mutable h = u32 2166136261
+  for i in 0 .. String.length s - 1 do
+    h <- (h ^^^ u32 (String.byte s i)) * u32 16777619
+  h
+
+let main () =
+  println $"{fnv1a "hello"} {fnv1a "world"}"
+  0
+```
+
+```text
+1335831723 933488787
+```

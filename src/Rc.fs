@@ -97,11 +97,11 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
 
         let rec flatten (e: CExpr) =
             match e.k with
-            | CBin("+", a, b) when isString a -> flatten a @ flatten b
+            | CBin(("+" | "wrap+"), a, b) when isString a -> flatten a @ flatten b
             | _ -> [ e ]
 
         match e.k with
-        | CPrim(("print" | "println") as op, [ ({ k = CBin("+", a, _) } as arg) ]) when isString a ->
+        | CPrim(("print" | "println") as op, [ ({ k = CBin(("+" | "wrap+"), a, _) } as arg) ]) when isString a ->
             let temps = flatten arg |> List.map (fun p -> tmp (), printPieces p)
             let last = temps.Length - 1
 
