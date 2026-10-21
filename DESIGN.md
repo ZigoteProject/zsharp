@@ -101,7 +101,7 @@ let sumTo n =                            // imperative code is fine; mutation st
 - **Panics:** for bugs, not errors a caller handles. These all panic: an out-of-bounds index, division by zero, integer overflow, a failed `assert`, an explicit `panic`.
   - A panic prints a message (and a backtrace where the C library supports it), then stops the program at once: no unwinding, no cleanup, exit status 134, no core dump. `ZS_ABORT=1` makes it a real `abort()` for a debugger.
   - Panics can't be caught. So there are no landing pads, and nothing unwinds through C frames.
-- **Strings:** `$"x = {p.x}"` interpolation, where any expression with `Show` can go in a hole. `+` joins strings.
+- **Strings:** `$"x = {p.x}"` interpolation, where any expression with `Show` can go in a hole. `+` joins strings. A string can span lines (its line breaks are part of it), and `"""…"""` is raw: quotes and backslashes stay as written.
 - **Modules:** one file is one module, with `open`, qualified names and `private`. `module Name` on the first line renames it.
   - **Namespaces:** `namespace X` on the first line makes the file's types and modules `X.Name`, as in F#. The library uses it to put `type Map` and `module Map` side by side in `Collections`.
   - **Nested modules:** `module Inner =` and an indented block. Names inside are `Outer.Inner.x`; the block sees the names of its enclosing modules, `private` reaches the modules nested inside, and an `open` lasts until the block ends.

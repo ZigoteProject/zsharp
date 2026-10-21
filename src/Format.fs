@@ -94,6 +94,13 @@ let format (src: string) : Result<string, string> =
 
         lineToks <- []
 
+    // the lines after the first of a string that spans lines are its text: they stay as written
+    let verbatim = Collections.Generic.HashSet<int>()
+
+    for t in toks do
+        for l in t.line + 1 .. t.last do
+            verbatim.Add l |> ignore
+
     for t in toks do
         match t.tok with
         | KIndent ->
@@ -109,6 +116,7 @@ let format (src: string) : Result<string, string> =
                         took.Value <- true
                         absorbed <- absorbed + 1
         | KDedent -> layout <- layout - 1
+        | _ when verbatim.Contains t.line -> ()
         | _ ->
             match textOf lines t with
             | None -> ()
@@ -186,6 +194,7 @@ let format (src: string) : Result<string, string> =
     for l in 1 .. lines.Length do
         let text =
             match code.TryGetValue l, commentAt.TryFind l with
+            | _ when verbatim.Contains l -> Some lines[l - 1]
             | (true, (level, ts)), Some(_, c) -> Some(render level ts + " " + c)
             | (true, (level, ts)), None -> Some(render level ts)
             | _, Some(_, c) -> Some(String.replicate (2 * nextLevel l) " " + c) // a comment on its own line

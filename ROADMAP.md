@@ -33,23 +33,21 @@ clang/LLVM 22, zig, valgrind, gdb, qemu-user, qemu-system-arm, raylib).
 - **Tooling:** projects with path and git dependencies, `zs test`/`fmt`/`doc`, gdb debug info, and an LSP, MCP server and Zed extension.
 
 **Known gaps** (in priority order; each is in a phase below):
-1. **Syntax (phase L):**
-   - string literals can't span lines.
-2. **Optimizer (phase 5):**
+1. **Optimizer (phase 5):**
    - no Core-level inlining or case-of-case;
    - matches are tested clause by clause;
    - fusion only starts from `List.init`;
    - no host benchmark suite in CI;
    - the library is re-checked on every build: about 200 ms of each compile, and 20 ms more since it is split into modules (caching each module's checked Core removes it).
-3. **C ABI:**
+2. **C ABI:**
    - running out of argument registers isn't modelled (x86-64 then passes a struct on the stack whole);
    - 32-bit ARM passes structs by value with the x86-64 rules;
    - C function pointers can't be called from Z#;
    - no `.so` output.
-4. **Debug info:** strings, records and unions aren't shown as gdb values.
-5. **Editor:** no signature help, rename or code actions; the formatter doesn't reflow long lines.
-6. **Units of measure:** Kennedy's general case (a fresh variable) isn't implemented, so unannotated `*` across different units needs annotations.
-7. **Modules:** record field names, traits and derives share one global namespace.
+3. **Debug info:** strings, records and unions aren't shown as gdb values.
+4. **Editor:** no signature help, rename or code actions; the formatter doesn't reflow long lines.
+5. **Units of measure:** Kennedy's general case (a fresh variable) isn't implemented, so unannotated `*` across different units needs annotations.
+6. **Modules:** record field names, traits and derives share one global namespace.
 
 ## Done
 
@@ -176,7 +174,7 @@ first.
   7. **Blocks inside brackets (done):** a line ending in `->` (or `then`, `else`, `do`) inside a bracket opens a block, so multi-line lambdas and matches work inside parentheses, lists and records; `zs fmt` puts the block one level past its line.
   8. **`[<Wrapping>]` on a function (done):** its integer `+ - *` wrap instead of trapping, lambdas inside included; floats and strings keep their meaning.
   9. **String patterns (done):** `match s with "open" -> …`, in lists and or-patterns too; a match on strings needs a case for the rest.
-  10. **Multi-line string literals**, and `"""…"""` strings.
+  10. **Multi-line strings (done):** a string can span lines, and `"""…"""` is raw; `zs fmt` leaves the lines inside a string as written.
 - **Exit tests:**
   - The guide's examples use each feature.
   - `examples/mcu/uart.zs` declares its registers as constants.

@@ -139,6 +139,8 @@ true true
 **Interpolation:** `$"..."` evaluates the expressions in braces and inserts their text. Any value with a `Show` impl can go in a hole: numbers, strings, records, unions, lists and options all have one.
 
 **Escapes:** `\n`, `\r`, `\t`, `\0`, `\"`, `\'`, `\\`, and `\u{e9}` for any Unicode character by its hex code.
+- **Over several lines:** a string can span lines, and the line breaks are part of it.
+- **Raw strings:** `"""…"""` keeps quotes and backslashes as written: `"""{ "path": "C:\new" }"""`.
 
 ```zsharp
 let main () =

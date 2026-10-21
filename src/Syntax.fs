@@ -190,7 +190,8 @@ type Token =
       line: int
       col: int // 1-based; 0 for layout tokens
       len: int
-      adj: bool } // no whitespace before it (F#: `f(x)` binds tighter than `f (x)`)
+      adj: bool // no whitespace before it (F#: `f(x)` binds tighter than `f (x)`)
+      last: int } // the line it ends on: a later one for a string that spans lines
 
 let showTok =
     function
@@ -325,6 +326,7 @@ and private lexWith (src: string) (keepComments: bool) : Token[] =
     // per bracket: the indentation of the blocks open inside it (empty while there are none)
     let frames = Stack<Stack<int>>()
     let mutable lastIndent = 0 // of the last line with code
+    let mutable resume: (int * int) option = None // a string that spans lines ends here: lexing goes on at (line index, column)
     let mutable first = true
     let lines = src.Replace("\r\n", "\n").Split '\n'
 
@@ -340,13 +342,24 @@ and private lexWith (src: string) (keepComments: bool) : Token[] =
                   line = ln
                   col = start + 1
                   len = max 1 (i - start)
-                  adj = start > 0 && line[start - 1] <> ' ' }
+                  adj = start > 0 && line[start - 1] <> ' '
+                  last = ln }
+
+        // a line inside a string that spans lines, or the line where one ends (lexing goes on
+        // after it); neither starts a line of code
+        let inString, resumeCol =
+            match resume with
+            | Some(rl, _) when li < rl -> true, -1
+            | Some(rl, col) when li = rl ->
+                resume <- None
+                false, col
+            | _ -> false, -1
 
         while i < line.Length && line[i] = ' ' do
             i <- i + 1
 
         let rest = line.Substring i
-        let blank = rest = "" || rest.StartsWith "//"
+        let blank = rest = "" || rest.StartsWith "//" || inString || resumeCol >= 0
 
         if not blank && brackets.Count = 0 && not (continuesLine rest) then
             if rest[0] = '\t' then
@@ -408,6 +421,9 @@ and private lexWith (src: string) (keepComments: bool) : Token[] =
 
         if not blank then
             lastIndent <- i
+
+        if inString then i <- line.Length
+        elif resumeCol >= 0 then i <- resumeCol
 
         while i < line.Length do
             let c = line[i]
@@ -518,22 +534,47 @@ and private lexWith (src: string) (keepComments: bool) : Token[] =
                 add (if keywords.Contains w then KKw w else KId w)
             elif c = '"' || (c = '$' && i + 1 < line.Length && line[i + 1] = '"') then
                 let interp = c = '$'
+                // """…""": raw text, with quotes and backslashes as written
+                let triple = not interp && i + 3 <= line.Length && line.Substring(i, 3) = "\"\"\""
                 let parts = ResizeArray<bool * string * int>()
                 let sb = StringBuilder()
-                i <- i + (if interp then 2 else 1)
+                // a string can go on over the next lines: cur is the line being read
+                let mutable cur = line
+                let mutable curLine = li
+                let mutable closed = false
+                i <- i + (if interp then 2 elif triple then 3 else 1)
 
-                while i < line.Length && line[i] <> '"' do
-                    if line[i] = '\\' && i + 1 < line.Length then
-                        let cp, next = unescapeAt ln line (i + 1)
+                while not closed do
+                    if i >= cur.Length then
+                        // the line ends inside the string: a newline in its text
+                        if curLine + 1 >= lines.Length then
+                            fail ln "unterminated string literal"
+
+                        sb.Append '\n' |> ignore
+                        curLine <- curLine + 1
+                        cur <- lines[curLine]
+                        i <- 0
+                    elif triple then
+                        if i + 3 <= cur.Length && cur.Substring(i, 3) = "\"\"\"" then
+                            closed <- true
+                            i <- i + 3
+                        else
+                            sb.Append(cur[i]) |> ignore
+                            i <- i + 1
+                    elif cur[i] = '"' then
+                        closed <- true
+                        i <- i + 1
+                    elif cur[i] = '\\' && i + 1 < cur.Length then
+                        let cp, next = unescapeAt (curLine + 1) cur (i + 1)
                         sb.Append(Char.ConvertFromUtf32 cp) |> ignore
                         i <- next
-                    elif interp && line[i] = '{' && i + 1 < line.Length && line[i + 1] = '{' then
+                    elif interp && cur[i] = '{' && i + 1 < cur.Length && cur[i + 1] = '{' then
                         sb.Append '{' |> ignore
                         i <- i + 2
-                    elif interp && line[i] = '}' && i + 1 < line.Length && line[i + 1] = '}' then
+                    elif interp && cur[i] = '}' && i + 1 < cur.Length && cur[i + 1] = '}' then
                         sb.Append '}' |> ignore
                         i <- i + 2
-                    elif interp && line[i] = '{' then
+                    elif interp && cur[i] = '{' then
                         parts.Add(false, sb.ToString(), 0)
                         sb.Clear() |> ignore
                         let s = i + 1
@@ -541,30 +582,42 @@ and private lexWith (src: string) (keepComments: bool) : Token[] =
                         i <- i + 1
 
                         // the hole may itself contain braces: {f { x = 1 }}
-                        while i < line.Length && (line[i] <> '}' || depth > 0) do
-                            if line[i] = '{' then depth <- depth + 1
-                            elif line[i] = '}' then depth <- depth - 1
+                        while i < cur.Length && (cur[i] <> '}' || depth > 0) do
+                            if cur[i] = '{' then depth <- depth + 1
+                            elif cur[i] = '}' then depth <- depth - 1
                             i <- i + 1
 
-                        if i >= line.Length then
-                            fail ln "unterminated '{' in interpolated string"
+                        if i >= cur.Length then
+                            fail (curLine + 1) "unterminated '{' in interpolated string"
 
-                        parts.Add(true, line.Substring(s, i - s), s + 1)
+                        parts.Add(true, cur.Substring(s, i - s), s + 1)
                         i <- i + 1
                     else
-                        sb.Append(line[i]) |> ignore
+                        sb.Append(cur[i]) |> ignore
                         i <- i + 1
 
-                if i >= line.Length then
-                    fail ln "unterminated string literal"
+                let tok =
+                    if interp then
+                        parts.Add(false, sb.ToString(), 0)
+                        KInterp(List.ofSeq parts)
+                    else
+                        KStr(sb.ToString())
 
-                i <- i + 1
-
-                if interp then
-                    parts.Add(false, sb.ToString(), 0)
-                    add (KInterp(List.ofSeq parts))
+                if curLine = li then
+                    add tok
                 else
-                    add (KStr(sb.ToString()))
+                    // it ended on a later line: the token takes the rest of this line, and
+                    // lexing goes on after the closing quote there
+                    resume <- Some(curLine, i)
+                    i <- line.Length
+
+                    toks.Add
+                        { tok = tok
+                          line = ln
+                          col = start + 1
+                          len = line.Length - start
+                          adj = start > 0 && line[start - 1] <> ' '
+                          last = curLine + 1 }
             else
                 let at = i
                 let two = if at + 1 < line.Length then line.Substring(at, 2) else ""
@@ -639,14 +692,16 @@ and private lexWith (src: string) (keepComments: bool) : Token[] =
               line = lines.Length
               col = 0
               len = 0
-              adj = false }
+              adj = false
+              last = lines.Length }
 
     toks.Add
         { tok = KEof
           line = lines.Length
           col = 0
           len = 0
-          adj = false }
+          adj = false
+          last = lines.Length }
     toks.ToArray()
 
 // ---------------------------------------------------------------- parser

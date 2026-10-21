@@ -352,7 +352,11 @@ module.exports = grammar({
     measured_number: $ => seq($.number, token.immediate('<'), $.measure, '>'),
     boolean: $ => choice('true', 'false'),
     unit: $ => seq('(', ')'),
-    string: $ => seq('"', repeat(choice($.string_content, $.escape_sequence)), '"'),
+    string: $ => choice(
+      seq('"', repeat(choice($.string_content, $.escape_sequence)), '"'),
+      // """…""": raw text, which may hold quotes and line breaks
+      token(seq('"""', repeat(choice(/[^"]/, /"[^"]/, /""[^"]/)), '"""')),
+    ),
     interpolated_string: $ => seq('$"', repeat(choice($.interpolated_content, $.escape_sequence, $.interpolation)), '"'),
     interpolation: $ => seq('{', $._expression, '}'),
     string_content: $ => token.immediate(prec(1, /[^"\\]+/)),
