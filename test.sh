@@ -62,6 +62,16 @@ if [ "$proj" = "$expected" ]; then echo "ok   projects (zs.toml, path dependency
 else echo "FAIL projects"; diff <(echo "$proj") <(echo "$expected"); fail=1; fi
 rm -rf tests/project/wc/build
 
+# import c in the editor: hover shows the Z# type, C prototype and header comment; definition
+# opens the header. Then the same file checks with clang unavailable, from the saved import.
+lspc=$(tests/lsp/cimport.sh)
+if echo "$lspc" | grep -q 'point_add : Point -\\u003E Point -\\u003E Point' && echo "$lspc" | grep -q 'Point point_add(Point a, Point b)' \
+   && echo "$lspc" | grep -q 'Adds two points' && echo "$lspc" | grep -q '"id":3,"result":{"uri":"file://[^"]*shapes.h"'; then
+  echo "ok   tests/lsp/cimport.sh (C hover and definition)"
+else echo "FAIL tests/lsp/cimport.sh"; echo "$lspc" | cut -c1-300; fail=1; fi
+if PATH=/nonexistent bin/zs check tests/cimport/main.zs >"$tmp/noclang.log" 2>&1; then echo "ok   import c without clang (from .zs-cache)"
+else echo "FAIL import c without clang"; head -3 "$tmp/noclang.log"; fail=1; fi
+
 # import c against a real library: the raylib demo builds (it needs a display to run)
 if [ -f /usr/include/raylib.h ]; then
   if timeout 60 bin/zs build examples/raylib/main.zs -o "$tmp/raylib-demo" 2>"$tmp/raylib.log"; then echo "ok   examples/raylib (builds against raylib.h)"

@@ -641,6 +641,9 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
             let headTy =
                 match r.k with
                 | CApp(h, _) -> h.ty
+                | CExtern(name, _) when externs.ContainsKey name -> // a C function: its declared type
+                    let x = externs[name]
+                    List.foldBack (fun a acc -> TFun(a, acc)) (if x.pars.IsEmpty then [ tUnit ] else x.pars) x.ret
                 | _ -> r.ty
 
             recordKey node f headTy false (keyOf env f) false

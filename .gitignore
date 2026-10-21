@@ -11,3 +11,4 @@ vgcore.*
 core.*
 build/
 examples/raylib/demo
+.zs-cache/

@@ -18,7 +18,7 @@ typedef enum { SHAPE_CIRCLE, SHAPE_SQUARE = 5, SHAPE_TRIANGLE } ShapeKind;
 
 typedef struct Canvas Canvas; // opaque
 
-Point point_add(Point a, Point b);
+Point point_add(Point a, Point b); // Adds two points
 float size_area(Size s);
 Rect rect_move(Rect r, int dx, int dy);
 unsigned int color_pack(Color c);

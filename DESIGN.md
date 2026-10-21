@@ -513,7 +513,9 @@ import c "raylib.h"                              // like Zig's @cImport
   - **What comes across:** functions become externs, and structs become `[<CLayout>]` records, named and unnamed alike. Enum values and `#define` literals become constants, including `CLITERAL(Color){ … }` / `(T){ … }` struct literals.
   - **Types:** `char*` becomes `cstr`. Every other pointer becomes the opaque `cptr`, and enum types become `i32`.
   - **Left out:** unions, arrays, function pointers, `static inline` functions and opaque structs passed by value. Using one gives an error naming the reason, e.g. "C function 'apply' wasn't imported: parameter 1: it uses a function pointer".
-  - **Lookup and caching:** the header is found next to the importing file, then on the system include path. The result is cached until the header changes, so the language server stays fast.
+  - **Lookup and caching:** the header is found next to the importing file, then on the system include path. The result is cached in memory until the header changes, so the language server stays fast.
+  - **Saved imports:** each successful import is written, with a copy of the header, to `.zs-cache/cimport/` in the project. Where clang or the header is missing, such as Zed's Flatpak sandbox when building happens in the dev container, the saved import is used instead.
+  - **In the editor:** hover on a C name shows its Z# type, its C declaration and the header's comment for it. Completion lists the imported names, and go-to-definition opens the header line.
 
 - **FFI types:** `c_int`, `c_long`, `usize`, `cstr`, `ptr<'a>`, `fnptr<...>`.
 - **Passing values across the boundary:**

@@ -135,7 +135,12 @@ let private expandImports (path: string) (decls: (int * Decl) list) =
     |> List.collect (fun (ln, d) ->
         let imported header =
             try
-                CImport.importHeader header dir
+                let root =
+                    match findProject dir with
+                    | Some m -> m.root
+                    | None -> dir
+
+                CImport.importHeader header dir (Path.Combine(root, ".zs-cache", "cimport"))
             with CompileError(_, msg) ->
                 raise (CompileErrorAt(path, ln, 0, msg))
 

@@ -109,6 +109,16 @@ type Decl =
 /// C names an `import c` left out, with the reason (shown when a program uses one).
 let skippedC = System.Collections.Generic.Dictionary<string, string>()
 
+/// What an editor shows for an imported C name: its C declaration, the header's comment for
+/// it, and where it is declared.
+type CInfo =
+    { csig: string
+      cdoc: string
+      cfile: string
+      cline: int }
+
+let cInfo = System.Collections.Generic.Dictionary<string, CInfo>()
+
 /// Rebuilds an expression with f applied to each direct child expression.
 let mapExpr (f: Expr -> Expr) (e: Expr) : Expr =
     match e with

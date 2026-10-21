@@ -155,7 +155,13 @@ let private docIndex (file: string) =
         items
 
 /// The doc comment of what a hover refers to (found at its definition).
-let private docOf (path: string) (h: Hover) =
+/// An imported C name's declaration and header comment, as Markdown.
+let private cDoc (name: string) =
+    match Syntax.cInfo.TryGetValue name with
+    | true, i -> Some(sprintf "```c\n%s\n```%s" i.csig (if i.cdoc = "" then "" else "\n\n" + i.cdoc))
+    | _ -> None
+
+let private zsDocOf (path: string) (h: Hover) =
     let def =
         if h.isDef || h.key = "" then
             Some h
@@ -189,6 +195,12 @@ let private docOf (path: string) (h: Hover) =
                     d.doc.IsSome
                     && (List.contains d.key keys || (d.kind = "method" && d.key.EndsWith("." + h.name)))) // `compare` = Ord.compare
                 |> Option.bind (fun d -> d.doc))
+
+/// The documentation of what a hover refers to: a C declaration, or Z# doc comments.
+let private docOf (path: string) (h: Hover) =
+    match cDoc h.name with
+    | Some d -> Some d
+    | None -> zsDocOf path h
 
 let private hover (path: string) (line: int) (ch: int) : JsonNode =
     let hits =
@@ -226,8 +238,17 @@ let private related (path: string) (line: int) (ch: int) =
     | _ -> None, []
 
 let private definition (path: string) (line: int) (ch: int) : JsonNode =
-    match related path line ch with
-    | Some _, all ->
+    let cName =
+        hoversAt path
+        |> List.filter (fun h -> h.hline = line + 1 && ch >= h.hcol - 1 && ch < h.hcol - 1 + h.hlen)
+        |> List.tryPick (fun h ->
+            match Syntax.cInfo.TryGetValue h.name with
+            | true, i when i.cline > 0 && File.Exists i.cfile -> Some i
+            | _ -> None)
+
+    match cName, related path line ch with
+    | Some i, _ -> obj [ "uri", str (toUri i.cfile); "range", range (i.cline - 1, 0) (i.cline - 1, 0) ] // in the header
+    | None, (Some _, all) ->
         match all |> List.tryFind (fun h -> h.isDef) with
         | Some d -> location d
         | None -> null
@@ -292,6 +313,11 @@ let private completion (path: string) (line: int) (ch: int) : JsonNode =
                 | Some d -> obj [ "label", str h.name; "kind", num 3; "detail", str (show h.hty); "documentation", obj [ "kind", str "markdown"; "value", str d ] ]
                 | None -> item h.name 3 (show h.hty))
 
+        let cNames =
+            [ for KeyValue(n, i) in Syntax.cInfo ->
+                  let kind = if i.csig.StartsWith "typedef struct" then 22 elif i.csig.Contains "(" then 3 else 21
+                  obj [ "label", str n; "kind", num kind; "detail", str i.csig; "documentation", obj [ "kind", str "markdown"; "value", str i.cdoc ] ] ]
+
         let locals =
             hoversAt path
             |> List.filter (fun h -> h.isDef && not h.decl)
@@ -311,7 +337,7 @@ let private completion (path: string) (line: int) (ch: int) : JsonNode =
                               yield item c 20 n
                       | RecordDef _ -> () ]
 
-        arr (locals @ globals @ typesAndCases @ (keywords |> List.map (fun k -> item k 14 "keyword")))
+        arr (locals @ globals @ cNames @ typesAndCases @ (keywords |> List.map (fun k -> item k 14 "keyword")))
     | _ -> arr (keywords |> List.map (fun k -> item k 14 "keyword"))
 
 let private inlayHints (path: string) (fromLine: int) (toLine: int) : JsonNode =
