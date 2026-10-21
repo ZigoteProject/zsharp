@@ -26,24 +26,24 @@ qemu-system-arm -M mps2-an386 -nographic -semihosting-config enable=on -kernel b
 `Mmio.read32`/`write32` and `Mmio.read8`/`write8` access memory-mapped registers. They are volatile accesses, which the optimizer keeps exactly as written. Together with the bitwise operators, they're enough for drivers. Here is the UART driver from `examples/mcu/uart.zs`:
 
 ```fsharp
-let uart () = 0x40004000
-let data () = usize (uart ())
-let state () = usize (uart () + 4)
-let ctrl () = usize (uart () + 8)
+let uart = usize 0x40004000                       // constants: no code, no RAM
+let data = uart
+let state = uart + usize 4
+let ctrl = uart + usize 8
 
-let init () = Mmio.write32 (ctrl ()) (u32 1)       // transmit enable
+let init () = Mmio.write32 ctrl (u32 1)           // transmit enable
 
 let putByte (b: u8) =
-  while Mmio.read32 (state ()) &&& u32 1 <> u32 0 do  // wait while the transmit buffer is full
+  while Mmio.read32 state &&& u32 1 <> u32 0 do   // wait while the transmit buffer is full
     ()
-  Mmio.write32 (data ()) (u32 b)
+  Mmio.write32 data (u32 b)
 
 let putString (s: string) =
   for i in 0 .. String.length s - 1 do
     putByte (String.byte s i)
 ```
 
-Top-level constants such as `let uart = 0x40004000` aren't supported yet. Write them as functions, which compile to the constant.
+A constant like `uart` is inlined, so `Mmio.write32 ctrl …` compiles to a store to an immediate address. Values computed at startup (an `Array.init` table, say) live in RAM.
 
 ## Writing fast, small code
 

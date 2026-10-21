@@ -362,7 +362,10 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
     let clayouts = HashSet<string>() // [<CLayout>] records
     let exports = ResizeArray<Export>()
     let tests = ResizeArray<string>()
-    let consts = Dictionary<string, Expr>() // C constants from import c
+    let consts = Dictionary<string, Expr>() // constants (top-level and from import c): their uses are the expression
+    let inlining = HashSet<string>() // constants being expanded (a cycle is an error)
+    let globalValues = Dictionary<string, Ty>() // top-level values computed at startup
+    let valueList = ResizeArray<string * string>() // in initialization order: name, init function
     let recordHints = Dictionary<Expr, Ty>(HashIdentity.Reference) // record literal -> expected type
     let currentModule = ref (None: string option)
     let opens = ref ([]: string list) // most recent first
@@ -854,6 +857,11 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                     c)
 
             mk (CPrim("array.lit", cs)) (TCon("array", [ el ]))
+        | Typed(e, st) ->
+            let t = toTy None st
+            let c = inferHint env depth t e
+            expect "annotated expression" t c.ty
+            c
         | Measured(e, m) ->
             let ce = inf e
             settle ce.ty
@@ -1453,7 +1461,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
         resolveWith
             (fun q ->
                 globals.ContainsKey q || ctors.ContainsKey q || traitAliases.ContainsKey q || builtins.ContainsKey q
-                || externs.ContainsKey q || (staticMember q).IsSome)
+                || externs.ContainsKey q || consts.ContainsKey q || globalValues.ContainsKey q || (staticMember q).IsSome)
             x
 
     and value env depth x : CExpr =
@@ -1463,7 +1471,18 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
 
     and value' env depth x : CExpr =
         match env.TryFind x with
-        | None when consts.ContainsKey x -> infer env depth consts[x]
+        | None when consts.ContainsKey x ->
+            // a constant: its expression, typed here (a literal constant takes the type each use needs)
+            if inlining.Contains x then
+                fail 0 (sprintf "'%s' is defined in terms of itself" x)
+
+            inlining.Add x |> ignore
+
+            try
+                infer Map.empty depth consts[x]
+            finally
+                inlining.Remove x |> ignore
+        | None when globalValues.ContainsKey x -> mk (CGlobalVal x) globalValues[x]
         | Some l ->
             if l.mut && l.depth < depth then
                 fail 0 (sprintf "mutable variable '%s' cannot be captured by a closure; use a ref cell" x)
@@ -2105,6 +2124,56 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
         | Impl(tr, STName(n, _), _) -> manualImpls.Add((tr, n)) |> ignore
         | _ -> ()
 
+    /// A constant expression: literals, operators, conditionals, tuples, records, constructors
+    /// and number conversions over constants. Its uses are the expression itself. Arrays, lists
+    /// and calls make a top-level value computed once at startup instead.
+    let rec isConstant (e: Expr) =
+        let conversion (f: string) = nums.Contains f || List.contains f [ "float"; "c_int"; "double" ]
+
+        match e with
+        | Lit _
+        | FloatLit _
+        | StrLit _
+        | BoolLit _
+        | UnitLit -> true
+        | At(_, a)
+        | Neg a
+        | Not a
+        | Measured(a, _)
+        | Typed(a, _) -> isConstant a
+        | Var x ->
+            match resolveName x with
+            | Some q -> consts.ContainsKey q || (ctors.ContainsKey q && q <> "[]")
+            | None -> false
+        | Bin(_, a, b) -> isConstant a && isConstant b
+        | If(c, t, Some f) -> isConstant c && isConstant t && isConstant f
+        | Tuple xs -> List.forall isConstant xs
+        | RecordLit fs -> fs |> List.forall (snd >> isConstant)
+        | Call(f, args) ->
+            let ctor =
+                match resolveName f with
+                | Some q -> ctors.ContainsKey q && q <> "::"
+                | None -> false
+
+            (ctor || conversion f) && List.forall isConstant args
+        | _ -> false
+
+    /// The expression with every name resolved where it is written (for inlining elsewhere).
+    let rec qualifyNames (e: Expr) =
+        match e with
+        | Var x ->
+            match resolveName x with
+            | Some q -> Var q
+            | None -> e
+        | Call(f, args) ->
+            let f' =
+                match resolveName f with
+                | Some q -> q
+                | None -> f
+
+            Call(f', List.map qualifyNames args)
+        | _ -> mapExpr qualifyNames e
+
     let rec declare (ln: int) (d: Decl) =
             match d with
             | TypeDecl(name, tps, body, ms) ->
@@ -2272,6 +2341,44 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                     | RecordTy _ -> ()
                 | _ -> fail 0 "'private' applies to 'let' and 'type' declarations"
             | Const(name, v) -> consts[name] <- v
+            | Value(name, ann, e) ->
+                let q = qualify name
+
+                if globals.ContainsKey q || externs.ContainsKey q || consts.ContainsKey q || globalValues.ContainsKey q then
+                    fail 0 (sprintf "'%s' is already defined" name)
+
+                let body =
+                    match ann with
+                    | Some t -> Typed(e, t)
+                    | None -> e
+
+                tyvars.Clear()
+
+                if isConstant body then
+                    // checked here, so errors point at the definition; then inlined at each use, with
+                    // its names resolved here (a local at the use site can't capture them)
+                    let body = qualifyNames body
+                    let c = infer Map.empty 0 body
+                    consts[q] <- body
+                    recordKey d name c.ty false q true
+                else
+                    // computed once at startup, in module order; it has one type, so literals settle now
+                    let c = infer Map.empty 0 body
+                    resolve c.ty |> ignore
+                    let init = "$init." + q
+
+                    funs.Add
+                        { name = init
+                          pars = []
+                          ret = c.ty
+                          body = c
+                          ngen = 0
+                          file = currentFile.Value
+                          line = ln }
+
+                    globalValues[q] <- c.ty
+                    valueList.Add(q, init)
+                    recordKey d name c.ty false q true
             | Open m ->
                 if not (moduleNames.Contains m) then
                     fail 0 (sprintf "unknown module '%s'" m)
@@ -2386,6 +2493,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
     let declaredNames (d: Decl) =
         let rec go d =
             match d with
+            | Value(n, _, _)
             | Fun(n, _, _, _, _)
             | TypeDecl(n, _, _, _) -> [ n ]
             | Attrs(_, d)
@@ -2441,6 +2549,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
       traitMethods = traitMethods
       impls = impls
       exports = List.ofSeq exports
+      values = List.ofSeq valueList
       tests = List.ofSeq tests
       clayouts = clayouts
       errors = List.ofSeq diagnostics

@@ -27,6 +27,32 @@ let main () =
 - **Types are inferred:** `square` works for any number type. `hypot` has annotations (`(a: f64)`, `: f64` for the result); they're optional, and useful as documentation.
 - **Blocks:** a function's body is an expression. A block's lines run in order, and the last line is the value.
 
+## Top-level values
+
+A `let` without parameters at the top of a file is a value.
+- **Constants:** built from literals, operators, constructors, records, tuples and other constants. They're inlined where used, so they cost nothing. A number constant without an annotation takes the type each use needs, like a literal.
+- **Other values:** anything that allocates or calls a function, such as an array, a list or `Map.ofList …`. These are computed once when the program starts, in the order they're declared (dependencies' modules first).
+- **Order:** declarations are in order, as in F#, so a value can only use what's declared above it.
+
+```zsharp
+let width = 8
+let area = width * width
+let mask = 0xFF
+let banner = "== report =="
+let squares = Array.init 5 (fun i -> i * i)   // computed once, at startup
+
+let main () =
+  let low: u8 = mask
+  println $"{banner} {area} {low} {mask * 1000} {squares.[3]} {(mask: int) + 1}"
+  0
+```
+
+```text
+== report == 64 255 255000 9 256
+```
+
+`(e: T)` gives an expression a type, here making `mask` an `int` for the addition.
+
 ## Numbers
 
 | Type | What | Literal |

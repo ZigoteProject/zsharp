@@ -266,6 +266,7 @@ let compile
     (externs: Dictionary<string, ExternSig>)
     (exports: Export list)
     (tests: string list)
+    (values: (string * string) list)
     (clayouts: HashSet<string>)
     (funs: MFun list)
     : string * string =
@@ -909,6 +910,14 @@ let compile
             | i when i > 0 && Seq.forall Char.IsDigit (x.Substring(i + 1)) -> Some(x.Substring(0, i))
             | _ -> Some x
 
+    // ---- top-level values computed at startup: a global each. Declarations are in order, so
+    // nothing can read a value before its initializer has run (as in F#)
+    let valueSym (v: string) = sprintf "@\"zsv.%s\"" v
+    let valueTypes = values |> List.map (fun (v, init) -> v, fnTable[init].ret) |> dict
+
+    for v, _ in values do
+        top.AppendLine(sprintf "%s = internal global %s zeroinitializer" (valueSym v) (llty valueTypes[v])) |> ignore
+
     let genFun (f: MFun) =
         let em = Emitter()
 
@@ -1179,6 +1188,7 @@ let compile
             | CUnit -> "zeroinitializer"
             | CStr s -> if tyName e.ty = "cstr" then cstrConst s else strGlobal s
             | CLocal x -> lookup env x e.ty
+            | CGlobalVal v -> em.Instr(sprintf "load %s, ptr %s" (llty e.ty) (valueSym v))
             | CLet(x, v, body) ->
                 let vv = gen env false v
                 declareVar x v.ty vv None 0
@@ -1977,6 +1987,27 @@ let compile
     for f in funs do
         genFun f
 
+    /// Runs the initializers in order, storing each value (main's prologue).
+    let initValues () =
+        values
+        |> List.mapi (fun i (v, init) ->
+            let t = llty valueTypes[v]
+            sprintf "  %%iv%d = call %s %s()\n  store %s %%iv%d, ptr %s\n" i t (sym init) t i (valueSym v))
+        |> String.concat ""
+
+    // the values, released in reverse order after main returns (so the leak check stays exact)
+    do
+        let em = Emitter()
+
+        for v, _ in List.rev values do
+            let t = valueTypes[v]
+
+            if heap t then
+                dropValue em t (em.Instr(sprintf "load %s, ptr %s" (llty t) (valueSym v)))
+
+        em.Emit "ret void"
+        funcs.Append(sprintf "define private void @zsv.dropAll() {\n%s}\n\n" em.Body) |> ignore
+
     // C entry points: main (an int result becomes the exit code) and [<Export>] wrappers
     if fnTable.ContainsKey "main" then
         let main = fnTable["main"]
@@ -1988,19 +2019,22 @@ let compile
             | _ when rt = "i32" -> sprintf "  %%r = call i32 %s({} zeroinitializer)\n  ret i32 %%r" (sym "main")
             | _ -> sprintf "  %%r = call %s %s({} zeroinitializer)\n  %%c = trunc %s %%r to i32\n  ret i32 %%c" rt (sym "main") rt
 
-        funcs.AppendLine("define i32 @main(i32 %argc, ptr %argv) {").AppendLine("  call void @zs_set_args(i32 %argc, ptr %argv)").AppendLine(body).AppendLine("}") |> ignore
+        funcs.AppendLine("define i32 @main(i32 %argc, ptr %argv) {").AppendLine("  call void @zs_set_args(i32 %argc, ptr %argv)") |> ignore
+        funcs.Append(initValues ()) |> ignore
+        funcs.AppendLine(body.Replace("  ret i32", "  call void @zsv.dropAll()\n  ret i32")).AppendLine("}") |> ignore
 
     // a test build (zs test): `exe <n>` runs test n, so each test runs in its own process
     if not tests.IsEmpty && not (fnTable.ContainsKey "main") then
         let cases = tests |> List.mapi (fun i _ -> sprintf "i_W %d, label %%t%d" i i) |> String.concat " "
         funcs.AppendLine("define i32 @main(i32 %argc, ptr %argv) {") |> ignore
         funcs.AppendLine("  call void @zs_set_args(i32 %argc, ptr %argv)") |> ignore
+        funcs.Append(initValues ()) |> ignore
         funcs.AppendLine("  %n = call i_W @zs_test_index()") |> ignore
         funcs.AppendLine(sprintf "  switch i_W %%n, label %%bad [ %s ]" cases) |> ignore
 
         tests
         |> List.iteri (fun i t ->
-            funcs.AppendLine(sprintf "t%d:\n  call {} %s({} zeroinitializer)\n  ret i32 0" i (sym t)) |> ignore)
+            funcs.AppendLine(sprintf "t%d:\n  call {} %s({} zeroinitializer)\n  call void @zsv.dropAll()\n  ret i32 0" i (sym t)) |> ignore)
 
         funcs.AppendLine("bad:\n  ret i32 2\n}") |> ignore
 

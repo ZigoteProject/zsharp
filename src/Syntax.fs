@@ -68,6 +68,7 @@ type Expr =
     | TryBind of Pat * Expr * Expr // let p = e? ; rest  (rest runs only if e is Ok)
     | DeriveCtx of string * Expr // prefixes errors inside a derive expansion ("field name: ...")
     | Measured of Expr * SType // 9.58<s>
+    | Typed of Expr * SType // (e: T)
     | At of int * Expr // source line, for error messages
 
 and Param = Pat * SType option
@@ -105,6 +106,7 @@ type Decl =
     | Impl of traitName: string * head: SType * defs: (int * string * Param list * SType option * Expr) list
     | ImportC of header: string // import c "raylib.h", replaced by the header's declarations
     | Const of name: string * value: Expr // a C constant (enum value, #define): its uses are the literal
+    | Value of name: string * ann: SType option * value: Expr // let name = expr at the top level
 
 /// C names an `import c` left out, with the reason (shown when a program uses one).
 let skippedC = System.Collections.Generic.Dictionary<string, string>()
@@ -154,6 +156,7 @@ let mapExpr (f: Expr -> Expr) (e: Expr) : Expr =
     | TryBind(p, a, b) -> TryBind(p, f a, f b)
     | DeriveCtx(c, a) -> DeriveCtx(c, f a)
     | Measured(a, m) -> Measured(f a, m)
+    | Typed(a, t) -> Typed(f a, t)
     | At(l, a) -> At(l, f a)
 
 // ---------------------------------------------------------------- lexer
@@ -1236,6 +1239,12 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
 
                 expect (KSym ")") "')'"
                 Tuple(List.ofSeq xs)
+            elif isSym ":" then
+                // (e: T)
+                advance ()
+                let t = ty ()
+                expect (KSym ")") "')'"
+                Typed(first, t)
             else
                 expect (KSym ")") "')'"
                 first
@@ -1708,12 +1717,19 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
             let ps = parameters ()
 
             if ps.IsEmpty then
-                fail ln "top-level values are not supported yet; write 'let f () = ...'"
+                // a top-level value: let name [: T] = expr
+                if isRec then
+                    fail ln "'let rec' needs parameters; a value can't refer to itself"
 
-            let ret = optTy ()
-            expect (KSym "=") "'='"
-            let f = mark ni (Fun(name, isRec, ps, ret, block ()))
-            ln, (if isPrivate then Private f else f)
+                let ann = optTy ()
+                expect (KSym "=") "'='"
+                let v = mark ni (Value(name, ann, block ()))
+                ln, (if isPrivate then Private v else v)
+            else
+                let ret = optTy ()
+                expect (KSym "=") "'='"
+                let f = mark ni (Fun(name, isRec, ps, ret, block ()))
+                ln, (if isPrivate then Private f else f)
         | _ -> err "'let', 'type' or 'extern'"
 
     if exprOnly then

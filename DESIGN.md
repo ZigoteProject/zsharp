@@ -71,7 +71,11 @@ let sumTo n =                            // imperative code is fine; mutation st
 
 - **Bindings:** `let`, `let mutable` with `<-`, `let rec`, and shadowing.
   - A `let mutable` can't be captured by a closure (an F# rule that §5 relies on); `ref` cells can.
-  - **Top-level values** (`let uart = 0x40004000`) are **(planned, phase L)**. Today a top-level `let` must be a function.
+  - **Top-level values:**
+    - **Constants:** built from literals, operators, conditionals, constructors, records, tuples, conversions and other constants. They're inlined at each use, and an unannotated number constant takes the type each use needs, like a literal. Their names resolve where they're defined.
+    - **Other values:** these are computed once at startup, before `main`, in module order then declaration order, and freed at exit.
+    - **Order:** declarations are in order, so nothing can read a value before it's initialized.
+    - **Libraries:** a library (`--lib`) has no startup, so it can only have constants.
 - **Numbers:**
   - `int` and `usize` are the machine word: 64 bits on 64-bit targets, 32 on a Cortex-M. This is as in Swift and Go, and keeps loop and index code native on 32-bit chips.
   - `i8 i16 i32 i64` and `u8 u16 u32 u64` have fixed sizes. `f32` and `f64` are IEEE floats.
@@ -96,7 +100,7 @@ let sumTo n =                            // imperative code is fine; mutation st
   - Panics can't be caught. So there are no landing pads, and nothing unwinds through C frames.
 - **Strings:** `$"x = {p.x}"` interpolation, where any expression with `Show` can go in a hole. `+` joins strings.
 - **Modules:** one file is one module, with `open`, qualified names and `private`. `module Name` on the first line renames it. **Nested modules** are **(planned, phase L)**.
-- **Type annotations in expressions** (`(e: T)`) and **`let rec … and …`** are **(planned, phase L)**.
+- **Type annotations in expressions:** `(e: T)`, which also gives a literal or a record literal its type. **`let rec … and …`** is **(planned, phase L)**.
 
 ### 2.2 F# features kept
 

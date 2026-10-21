@@ -34,9 +34,7 @@ clang/LLVM 22, zig, valgrind, gdb, qemu-user, qemu-system-arm, raylib).
 
 **Known gaps** (in priority order; each is in a phase below):
 1. **Syntax (phase L):**
-   - no top-level values (constants);
    - no record patterns;
-   - no `(e: T)` annotations;
    - no `let rec … and …`;
    - no `char` and no character iteration over strings;
    - no nested modules;
@@ -158,9 +156,11 @@ The syntax freeze is over. This phase fills the F# syntax Z# is still missing, b
 features build on the language. New syntax that F# doesn't have needs a design discussion
 first.
 - **Scope**, in order:
-  1. **Top-level values:** `let uart = 0x40004000`, `let table = [| … |]`. Constants are folded; other values are computed once at startup, in module order. On microcontrollers, constant data goes in flash.
+  1. **Top-level values (done):** constants are inlined at each use, and other values are computed once at startup, in order, then freed at exit.
+     - **Annotations (done):** `(e: T)` expression annotations came with them.
+     - **Still to do:** constant *arrays* in flash on microcontrollers; today they are startup values in RAM.
   2. **Record patterns:** `{ x = 0; y = y }`.
-  3. **Expression annotations** `(e: T)`, and **`let rec … and …`**.
+  3. **`let rec … and …`**.
   4. **`char`:** a Unicode scalar, with `for c in s` over a string's characters and character literals.
   5. **Nested modules:** `module Inner = …`.
   6. **Multi-line lambdas inside parentheses**, and `[<Wrapping>]` on a function.

@@ -4,19 +4,19 @@
 //   qemu-system-arm -M mps2-an386 -nographic -semihosting-config enable=on -kernel uart.elf
 
 /// UART0's registers: DATA, STATE (bit 0: transmit buffer full), CTRL (bit 0: transmit enable).
-let uart () = 0x40004000
-let data () = usize (uart ())
-let state () = usize (uart () + 4)
-let ctrl () = usize (uart () + 8)
+let uart = usize 0x40004000
+let data = uart
+let state = uart + usize 4
+let ctrl = uart + usize 8
 
-let txFull () = u32 1
+let txFull = u32 1
 
-let init () = Mmio.write32 (ctrl ()) (u32 1)
+let init () = Mmio.write32 ctrl (u32 1)
 
 let putByte (b: u8) =
-  while Mmio.read32 (state ()) &&& txFull () <> u32 0 do
+  while Mmio.read32 state &&& txFull <> u32 0 do
     ()
-  Mmio.write32 (data ()) (u32 b)
+  Mmio.write32 data (u32 b)
 
 let putString (s: string) =
   for i in 0 .. String.length s - 1 do

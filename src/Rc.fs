@@ -377,6 +377,12 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
                 | Some v -> re (CAssign(x, mk (CPrim("slot.moved", [ rc owned borrowed v ])) v.ty))
                 | None -> re (CAssign(x, rc owned borrowed v))
             | CPrim("slot.take", _) -> e // the variable's own reference, moved out
+            | CGlobalVal _ when heap e.ty ->
+                // a top-level value keeps its reference; a read takes one of its own
+                let t = tmp ()
+                vtypes[t] <- e.ty
+                re (CLet(t, e, mk (CDup(t, e.ty, mk (CLocal t) e.ty)) e.ty))
+            | CGlobalVal _ -> e
             | CPrim(("array.get" | "Array.length" | "String.length" | "String.byte") as op, ({ k = CLocal x } as a) :: rest) when
                 not (rest |> List.exists (fun r -> (freeVars r).Contains x))
                 ->

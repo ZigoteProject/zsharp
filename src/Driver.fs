@@ -450,6 +450,12 @@ let compileProgram (mainPath: string) (isLib: bool) =
     let prog =
         if testBuild then { prog with funs = prog.funs |> List.filter (fun f -> f.name <> "main") } else prog
 
+    // a library has no startup to compute values in
+    match prog.values with
+    | (v, _) :: _ when isLib ->
+        raise (CompileErrorAt(mainPath, 0, 0, sprintf "top-level value '%s' is computed at startup, which a library doesn't have; make it a constant or a function" v))
+    | _ -> ()
+
     match prog.errors with
     | first :: _ -> Error prog.errors
     | [] ->
@@ -461,7 +467,7 @@ let compileProgram (mainPath: string) (isLib: bool) =
             with CompileError(l, m) ->
                 raise (CompileErrorAt(mainPath, l, 0, m))
 
-        Ok(timed "LLVM IR" (fun () -> Codegen.compile prog.types prog.externs prog.exports prog.tests prog.clayouts funs))
+        Ok(timed "LLVM IR" (fun () -> Codegen.compile prog.types prog.externs prog.exports prog.tests prog.values prog.clayouts funs))
 
 /// Runs a program; with capture, returns its stdout and stderr too (stdin is empty).
 let exec (exe: string) (args: string list) (capture: bool) : int * string =

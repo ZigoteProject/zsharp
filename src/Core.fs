@@ -247,6 +247,7 @@ and CKind =
     | CStr of string
     | CUnit
     | CLocal of string // variable names are unique per program after type checking
+    | CGlobalVal of string // a top-level value computed at startup (not a constant)
     | CGlobal of string * Ty list option // top-level function; instantiation (None = enclosing one)
     | CApp of CExpr * CExpr list
     | CLam of (string * Ty) list * CExpr
@@ -293,6 +294,7 @@ let mapChildren (f: CExpr -> CExpr) (k: CKind) : CKind =
     | CStr _
     | CUnit
     | CLocal _
+    | CGlobalVal _
     | CGlobal _ -> k
     | CApp(h, args) -> CApp(f h, List.map f args)
     | CLam(ps, b) -> CLam(ps, f b)
@@ -416,6 +418,7 @@ type Program =
       traitMethods: Dictionary<string, TraitMethod> // "Show.show" -> method
       impls: Dictionary<string * string, Dictionary<string, string>> // (trait, type) -> method -> function
       exports: Export list
+      values: (string * string) list // top-level values computed at startup, in order: name, init function
       tests: string list // [<Test>] functions (unit -> unit), in source order
       clayouts: HashSet<string> // [<CLayout>] records
       errors: Diagnostic list // when type-checking in collect mode
