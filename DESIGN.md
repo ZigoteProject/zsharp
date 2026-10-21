@@ -555,6 +555,12 @@ needed. C structs by value follow the target's convention: x86-64 System V, or A
 - **Hardware:** `Mmio.read32/write32/read8/write8` are volatile register accesses, and `Runtime.ticks ()` counts cycles.
 - **Registers as constants:** a top-level constant such as `let uart = usize 0x40004000` is inlined, so a register access compiles to a store to an immediate address.
 - **Planned (microcontroller track):** interrupt handlers (`[<Interrupt "SysTick">]`), constant arrays in flash, RISC-V (ESP32-C3) and more boards (linker scripts in `runtime/boards`).
+- **No allocation (planned, microcontroller track):** `[<NoAlloc>]` on a function is a compile error if it, or anything it calls, may allocate or free heap memory. Firmware needs to know where the heap is touched, and Z# allocates implicitly (strings, closures, boxed unions).
+  - **The error** names the call chain down to the allocation.
+  - **What's checked:** Z#'s own IR, after borrow inference, unboxing and list fusion, so the result doesn't depend on `-O`, and a fused pipeline or a small union passes. Freeing counts too, since dropping a reference can free a chain of objects.
+  - **Externs** count as not allocating: C is outside the check.
+  - **Interrupt handlers** are `NoAlloc` implicitly, since the allocator isn't reentrant.
+  - **`--no-heap`:** the whole program is checked, and the image has no heap.
 
 ## 11. C interop
 
@@ -654,7 +660,7 @@ checker, so tools can't drift from the compiler.
 | 23 | Effect handlers | designed now (§6.1), built in v3; one-shot, evidence passing | decided |
 | 24 | Float semantics | strict IEEE; `[<FastMath>]` opt-in per function | default |
 | 25 | SIMD API | portable `f32x8`-style value types + target intrinsics | default |
-| 26 | From Zig | cross-compilation through `zig cc`. Not adopted: explicit allocators, no-hidden-allocation, comptime | decided |
+| 26 | From Zig | cross-compilation through `zig cc`; a checked opt-in instead of no-hidden-allocation (`[<NoAlloc>]`, #42). Not adopted: explicit allocators, comptime | decided |
 | 27 | Libraries | source packages (path, git + `zs.lock`), checked Core cached per module; no binary IR format | decided |
 | 28 | Strings and `char` | UTF-8 strings, `Length` is bytes; `char` is a Unicode scalar; `for c in s` decodes UTF-8 (malformed bytes become U+FFFD) | decided |
 | 29 | Target order | Linux x64/arm64; bare-metal Cortex-M; macOS arm64, Windows x64 (a targets track, build-only until a machine runs the tests); WASM | decided |
@@ -670,5 +676,6 @@ checker, so tools can't drift from the compiler.
 | 39 | "Simple" | a feature replaces code people would write by hand and needs no runtime; no page budget | decided |
 | 40 | Reference cycles | not collected; `weak` references for back-pointers, `ZS_LEAKCHECK=1` to find leaks | decided |
 | 41 | Lambda arguments | typed after the call's other arguments when a parameter has no annotation, with the parameter types the call expects; `x \|> fun p -> body` is `let p = x` | decided |
+| 42 | Code that must not touch the heap | `[<NoAlloc>]` functions and `--no-heap` programs, checked at compile time on Z#'s IR after its optimizations; freeing counts; externs trusted; interrupt handlers implicitly `NoAlloc` (§10) | default |
 
 "Default" means chosen by me and open to change until the phase that implements it begins.

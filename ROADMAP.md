@@ -160,11 +160,16 @@ byte-identical.
 Tier 2 (DESIGN §10): every phase keeps `bench/mcu` working and within its ratios.
 - **Next:**
   1. **Interrupt handlers:** `[<Interrupt "SysTick">] let tick () = …`, placed in the vector table, with the rules for sharing state with them.
-  2. **Constants in flash:** constant arrays placed in flash, instead of startup values copied to RAM.
-  3. **More boards:** linker scripts for STM32F4 and RP2040, flashing through `probe-rs` or OpenOCD, and RTT output as an alternative to semihosting.
-  4. **RISC-V:** ESP32-C3, under QEMU first.
-  5. **32-bit ARM C ABI:** AAPCS for structs by value.
-  6. **Heap:** reusing blocks larger than 256 bytes, and a heap size set in `zs.toml`.
+  2. **`[<NoAlloc>]` (DESIGN §10):** a compile error if a function, or anything it calls, may allocate or free heap memory. The error names the call chain down to the allocation (a string, a closure, a boxed union, …).
+     - **Checked on Z#'s own IR,** after borrow inference, unboxing and list fusion, so the result doesn't depend on `-O`, and a fused pipeline or a small union passes.
+     - **Externs** count as not allocating: C is outside the check.
+     - **Interrupt handlers** are `NoAlloc` implicitly, since the allocator isn't reentrant.
+     - **`--no-heap`:** the whole program is checked, and the image has no heap.
+  3. **Constants in flash:** constant arrays placed in flash, instead of startup values copied to RAM.
+  4. **More boards:** linker scripts for STM32F4 and RP2040, flashing through `probe-rs` or OpenOCD, and RTT output as an alternative to semihosting.
+  5. **RISC-V:** ESP32-C3, under QEMU first.
+  6. **32-bit ARM C ABI:** AAPCS for structs by value.
+  7. **Heap:** reusing blocks larger than 256 bytes, and a heap size set in `zs.toml`.
 - **Later:** async on bare metal (phase 6 `Task` over interrupts, with no OS).
 
 ### Editor tooling (E)
