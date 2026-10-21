@@ -1,0 +1,1 @@
+tests/err_type.zs:3: error: right operand of '+': expected int, got bool
