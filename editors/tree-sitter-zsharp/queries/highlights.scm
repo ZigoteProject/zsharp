@@ -14,7 +14,7 @@
 (wildcard) @variable.special
 
 [
-  "let" "rec" "mutable" "private" "type" "of" "with" "member" "static" "extern" "import" "open"
+  "let" "rec" "and" "mutable" "private" "type" "of" "with" "member" "static" "extern" "import" "open"
   "module" "trait" "impl" "abstract" "derive" "fun" "match" "when" "as" "if" "then" "else"
   "for" "in" "do" "while" "not"
 ] @keyword
@@ -29,6 +29,7 @@
 
 ; declarations
 (let_declaration name: (identifier) @function)
+(and_definition name: (identifier) @function)
 (let_declaration name: (qualified_identifier) @function)
 (let_declaration name: (active_pattern_name) @function)
 (let_function name: (identifier) @function)

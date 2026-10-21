@@ -755,6 +755,53 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
             recordKey node name fty false self.u true
             let cr = infer (env.Add(name, self)) depth rest
             mk (CLetFun(self.u, isRec, pars |> List.map (fun (_, u, t) -> u, t), cb, cr)) cr.ty
+        | LetRecGroup(members, rest) ->
+            // local functions that call each other: all names are in scope in every body
+            let prepared =
+                members
+                |> List.map (fun m ->
+                    match m with
+                    | LetFun(name, _, ps0, ret, body, _) ->
+                        let ps, body = lowerParams ps0 body
+                        let pars = ps |> List.map (fun (x, ann) -> x, uniq x, annot ann)
+                        recordParams ps0 pars
+                        let rty = annot ret
+                        let fty = funTy (pars |> List.map (fun (_, _, t) -> t)) rty
+
+                        let self =
+                            { u = uniq name
+                              ty = fty
+                              mut = false
+                              depth = depth }
+
+                        m, name, pars, rty, fty, self, body
+                    | _ -> failwith "LetRecGroup member")
+
+            let envGroup = prepared |> List.fold (fun (m: Map<_, _>) (_, name, _, _, _, self, _) -> m.Add(name, self)) env
+
+            let defs =
+                prepared
+                |> List.map (fun (node, name, pars, rty, fty, self, body) ->
+                    let envB =
+                        pars
+                        |> List.fold
+                            (fun (m: Map<_, _>) (x, u, t) ->
+                                m.Add(
+                                    x,
+                                    { u = u
+                                      ty = t
+                                      mut = false
+                                      depth = depth + 1 }
+                                ))
+                            envGroup
+
+                    let cb = infer envB (depth + 1) body
+                    expect (sprintf "result of '%s'" name) rty cb.ty
+                    recordKey node name fty false self.u true
+                    self.u, pars |> List.map (fun (_, u, t) -> u, t), cb)
+
+            let cr = infer envGroup depth rest
+            mk (CLetRec(defs, cr)) cr.ty
         | Let(PIdent(x, None) as p, ann, v, rest) when not (isCtor x) ->
             let cv =
                 match ann with
@@ -1744,7 +1791,8 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
         | Seq(_, b)
         | Let(_, _, _, b)
         | LetMut(_, _, _, b)
-        | LetFun(_, _, _, _, _, b) -> pushHint hint b
+        | LetFun(_, _, _, _, _, b)
+        | LetRecGroup(_, b) -> pushHint hint b
         | Tuple xs ->
             match prune hint with
             | TTuple ts when ts.Length = xs.Length -> List.iter2 pushHint ts xs
@@ -1862,9 +1910,11 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
         let body = List.foldBack (fun (tmp, ce: CExpr) acc -> mk (CLet(tmp, ce, acc)) acc.ty) (List.ofSeq filled) body
         List.foldBack (fun (_, ce, tmp) acc -> mk (CLet(tmp, ce, acc)) acc.ty) named body
 
-    /// Type-checks functions that may refer to each other (pre-registered when isRec),
-    /// then generalizes each.
+    /// Type-checks functions that may refer to each other (pre-registered when isRec), then
+    /// generalizes each; with joint (let rec … and …), all of them together, so they share one
+    /// numbering of their type variables (a call between them uses the caller's instantiation).
     let defineGroupWith
+        (joint: bool)
         (items: (int * string * bool * Param list * SType option * Expr * (unit -> Ty) option) list)
         : (Global * Dictionary<string, Ty>) list =
         let prepared =
@@ -1923,11 +1973,20 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                 with CompileError(0, msg) ->
                     fail ln msg)
 
+        let jointKinds =
+            if joint then
+                Some(generalize (TTuple(prepared |> List.map (fun (_, _, _, _, fty, _, _, _) -> fty))))
+            else
+                None
+
         [ for (ln, name, pars, rty, fty, g, _, tvs), cb in List.zip prepared bodies do
               if name = "main" then
                   resolve fty |> ignore
 
-              g.kinds <- generalize fty
+              g.kinds <-
+                  match jointKinds with
+                  | Some ks -> ks
+                  | None -> generalize fty
               g.defining <- false
               globals[name] <- g
 
@@ -1943,7 +2002,10 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
               yield g, tvs ]
 
     let defineGroup items =
-        defineGroupWith (items |> List.map (fun (ln, n, r, ps, ret, b) -> ln, n, r, ps, ret, b, None)) |> ignore
+        defineGroupWith false (items |> List.map (fun (ln, n, r, ps, ret, b) -> ln, n, r, ps, ret, b, None)) |> ignore
+
+    let defineRecGroup items =
+        defineGroupWith true (items |> List.map (fun (ln, n, r, ps, ret, b) -> ln, n, r, ps, ret, b, None)) |> ignore
 
     /// Members become functions `Type#Name`: self first (instance members), then parameters;
     /// an optional parameter without a default is an option in the body.
@@ -2072,7 +2134,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
 
                 dl, fname, true, ps, ret, body, Some expected)
 
-        let results = defineGroupWith items
+        let results = defineGroupWith false items
 
         // what the impl needs from each type argument: the union over its methods
         implRequires[(tr, hn)] <-
@@ -2365,7 +2427,8 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                 declare ln inner
 
                 match inner with
-                | Fun(n, _, _, _, _) -> privates[qualify n] <- currentModule.Value
+                | Fun(n, _, _, _, _)
+                | Value(n, _, _) -> privates[qualify n] <- currentModule.Value
                 | TypeDecl(n, _, body, _) ->
                     privates[qualify n] <- currentModule.Value
 
@@ -2376,6 +2439,36 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                     | RecordTy _ -> ()
                 | _ -> fail 0 "'private' applies to 'let' and 'type' declarations"
             | Const(name, v) -> consts[name] <- v
+            | FunGroup items ->
+                // let rec f … and g …: checked together, so each may call the others
+                let defs =
+                    items
+                    |> List.map (fun (l, d) ->
+                        match d with
+                        | Fun(n, _, ps, ret, body) -> l, n, ps, ret, body, d, false
+                        | Private(Fun(n, _, ps, ret, body) as f) -> l, n, ps, ret, body, f, true
+                        | _ -> fail l "'and' joins functions")
+
+                for _, n, _, _, _, _, _ in defs do
+                    let q = qualify n
+
+                    if globals.ContainsKey q || externs.ContainsKey q || consts.ContainsKey q || globalValues.ContainsKey q then
+                        fail 0 (sprintf "'%s' is already defined" n)
+
+                try
+                    defineRecGroup [ for l, n, ps, ret, body, _, _ in defs -> l, qualify n, true, ps, ret, body ]
+                with _ ->
+                    for _, n, _, _, _, _, _ in defs do
+                        globals.Remove(qualify n) |> ignore
+
+                    reraise ()
+
+                for _, n, _, _, _, node, isPrivate in defs do
+                    let q = qualify n
+                    recordKey node n globals[q].ty false q true
+
+                    if isPrivate then
+                        privates[q] <- currentModule.Value
             | Value(name, ann, e) ->
                 let q = qualify name
 
@@ -2531,6 +2624,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
             | Value(n, _, _)
             | Fun(n, _, _, _, _)
             | TypeDecl(n, _, _, _) -> [ n ]
+            | FunGroup items -> items |> List.collect (snd >> go)
             | Attrs(_, d)
             | Private d -> go d
             | _ -> []

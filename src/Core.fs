@@ -253,6 +253,7 @@ and CKind =
     | CApp of CExpr * CExpr list
     | CLam of (string * Ty) list * CExpr
     | CLetFun of string * bool * (string * Ty) list * CExpr * CExpr
+    | CLetRec of (string * (string * Ty) list * CExpr) list * CExpr // local functions that call each other, then the rest
     | CExtern of string * CExpr list
     | CPrim of string * CExpr list
     | CBin of string * CExpr * CExpr
@@ -300,6 +301,7 @@ let mapChildren (f: CExpr -> CExpr) (k: CKind) : CKind =
     | CApp(h, args) -> CApp(f h, List.map f args)
     | CLam(ps, b) -> CLam(ps, f b)
     | CLetFun(n, r, ps, b, rest) -> CLetFun(n, r, ps, f b, f rest)
+    | CLetRec(fs, rest) -> CLetRec(fs |> List.map (fun (n, ps, b) -> n, ps, f b), f rest)
     | CExtern(n, args) -> CExtern(n, List.map f args)
     | CPrim(n, args) -> CPrim(n, List.map f args)
     | CBin(op, a, b) -> CBin(op, f a, f b)
@@ -369,6 +371,7 @@ let rec binders (e: CExpr) : string list =
         match e.k with
         | CLam(ps, _) -> List.map fst ps
         | CLetFun(n, _, ps, _, _) -> n :: List.map fst ps
+        | CLetRec(fs, _) -> fs |> List.collect (fun (n, ps, _) -> n :: List.map fst ps)
         | CLet(x, _, _)
         | CLetMut(x, _, _)
         | CFor(x, _, _, _, _) -> [ x ]

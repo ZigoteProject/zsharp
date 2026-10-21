@@ -272,6 +272,7 @@ let run (prog: Program) : MFun list =
                     | CGlobal(g, None) -> CGlobal(request g inst, Some []) // self-recursion
                     | CLam(ps, b) -> CLam(ps |> List.map (fun (x, t) -> x, ct t), ex b)
                     | CLetFun(n, r, ps, b, rest) -> CLetFun(n, r, ps |> List.map (fun (x, t) -> x, ct t), ex b, ex rest)
+                    | CLetRec(fs, rest) -> CLetRec(fs |> List.map (fun (n, ps, b) -> n, ps |> List.map (fun (x, t) -> x, ct t), ex b), ex rest)
                     | CMatch(s, cases) -> CMatch(ex s, cases |> List.map (fun (p, g, b) -> mapPatTypes ct p, Option.map ex g, ex b))
                     | k -> mapChildren ex k
 

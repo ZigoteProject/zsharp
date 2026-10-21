@@ -360,7 +360,12 @@ let loadModules (mainPath: string) : (string * string option * (int * Decl) list
         |> List.tryFind (fun f -> File.Exists f || overlay.ContainsKey f)
 
     let rec visit (path: string) (modName: string option) (stack: string list) =
-        let toks, decls = parseFile path
+        let toks, decls =
+            try
+                parseFile path
+            with CompileErrorAt(file, l, c, m) when file = path ->
+                raise (CompileErrorAt(display path, l, c, m)) // the path as the user knows it, like other errors
+
         let decls = expandImports path decls
 
         let modName =

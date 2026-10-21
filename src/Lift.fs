@@ -82,6 +82,32 @@ let run (funs: MFun list) : MFun list =
             let lfuns = lfuns.Add(g, lf)
             lift lfuns lf.lname caps ps body
             conv lfuns owner rest
+        | CLetRec(fs, rest) ->
+            // functions that call each other: each takes every capture of the group, so a call
+            // between them passes the captures along
+            let names = fs |> List.map (fun (g, _, _) -> g) |> Set.ofList
+
+            let caps =
+                fs
+                |> List.collect (fun (_, ps, body) -> captures lfuns body (Set.union names (Set.ofList (List.map fst ps))))
+                |> List.distinctBy fst
+
+            let lfuns =
+                fs
+                |> List.fold
+                    (fun (m: Map<string, LocalFun>) (g, ps, _) ->
+                        m.Add(
+                            g,
+                            { lname = owner + "$" + g
+                              caps = caps
+                              arity = ps.Length }
+                        ))
+                    lfuns
+
+            for g, ps, body in fs do
+                lift lfuns lfuns[g].lname caps ps body
+
+            conv lfuns owner rest
         | k -> mk (mapChildren cv k) e.ty
 
     and lift lfuns lname caps ps (body: CExpr) =

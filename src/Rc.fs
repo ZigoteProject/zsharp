@@ -470,6 +470,7 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
             | CApp _
             | CLam _
             | CLetFun _
+            | CLetRec _
             | CDup _
             | CDrop _
             | CDropFields _

@@ -1709,7 +1709,8 @@ let compile
             | CGlobal _
             | CApp _
             | CLam _
-            | CLetFun _ -> failwithf "Codegen: unexpected node %A" e.k
+            | CLetFun _
+            | CLetRec _ -> failwithf "Codegen: unexpected node %A" e.k
 
         and prim env op (args: CExpr list) (ty: Ty) : string =
             // op!: a read a versioned loop proved in bounds; op#b: the first argument is borrowed

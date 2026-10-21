@@ -51,6 +51,8 @@ module.exports = grammar({
     [$.as_pattern, $.tuple_pattern],
     [$._primary, $.field_value],
     [$.union_type],
+    [$.let_declaration], // a newline after a body: the next declaration, or `and`
+    [$.let_function],
   ],
 
   rules: {
@@ -91,7 +93,10 @@ module.exports = grammar({
       optional($.type_annotation),
       '=',
       field('body', $._body),
+      repeat(seq($._newline, $.and_definition)), // let rec f … and g …
     ),
+
+    and_definition: $ => seq('and', optional('private'), field('name', $.identifier), repeat1($._parameter), optional($.type_annotation), '=', field('body', $._body)),
 
     active_pattern_name: $ => seq('(', '|', sep1(choice($.identifier, '_'), '|'), '|', ')'),
 
@@ -186,7 +191,8 @@ module.exports = grammar({
 
     _statement: $ => choice($.let_binding, $.let_function, $.let_mutable, $.assignment, $._expression),
     let_binding: $ => seq('let', field('pattern', $._pattern), optional($.type_annotation), '=', field('value', $._body)),
-    let_function: $ => seq('let', optional('rec'), field('name', $.identifier), repeat1($._parameter), optional($.type_annotation), '=', field('body', $._body)),
+    let_function: $ => seq('let', optional('rec'), field('name', $.identifier), repeat1($._parameter), optional($.type_annotation), '=', field('body', $._body),
+      repeat(seq($._newline, $.and_definition))),
     let_mutable: $ => seq('let', 'mutable', field('name', $.identifier), optional($.type_annotation), '=', field('value', $._body)),
     assignment: $ => prec.right(PREC.assign, seq($._expression, '<-', $._expression)),
 

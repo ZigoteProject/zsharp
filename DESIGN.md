@@ -100,7 +100,8 @@ let sumTo n =                            // imperative code is fine; mutation st
   - Panics can't be caught. So there are no landing pads, and nothing unwinds through C frames.
 - **Strings:** `$"x = {p.x}"` interpolation, where any expression with `Show` can go in a hole. `+` joins strings.
 - **Modules:** one file is one module, with `open`, qualified names and `private`. `module Name` on the first line renames it. **Nested modules** are **(planned, phase L)**.
-- **Type annotations in expressions:** `(e: T)`, which also gives a literal or a record literal its type. **`let rec … and …`** is **(planned, phase L)**.
+- **Type annotations in expressions:** `(e: T)`, which also gives a literal or a record literal its type.
+- **Mutual recursion:** `let rec f … and g …`, at the top level or locally. A top-level group is generalized jointly, so generic members share their type variables.
 
 ### 2.2 F# features kept
 

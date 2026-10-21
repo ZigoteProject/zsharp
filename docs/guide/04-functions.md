@@ -76,6 +76,23 @@ let main () =
 50000005000000 111
 ```
 
+Functions that call each other are defined together with `let rec … and …`, at the top level or inside a function. Calls between them in tail position are tail calls too, so mutual recursion also runs in constant stack.
+
+```zsharp
+let rec isEven n = if n = 0 then true else isOdd (n - 1)
+and isOdd n = if n = 0 then false else isEven (n - 1)
+
+let main () =
+  let rec ping n = if n = 0 then "ping" else pong (n - 1)
+  and pong n = if n = 0 then "pong" else ping (n - 1)
+  println $"{isEven 10} {isOdd 1000001} {ping 3}"
+  0
+```
+
+```text
+true true pong
+```
+
 ## Generics
 
 **Generic code:**

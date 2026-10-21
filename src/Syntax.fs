@@ -52,6 +52,7 @@ type Expr =
     | If of Expr * Expr * Expr option
     | Let of Pat * SType option * Expr * Expr
     | LetFun of string * bool * Param list * SType option * Expr * Expr
+    | LetRecGroup of Expr list * Expr // let rec f … and g …: the members are LetFun nodes (their rest unused), then the rest
     | LetMut of string * SType option * Expr * Expr
     | Assign of Expr * Expr
     | While of Expr * Expr
@@ -96,6 +97,7 @@ type Member =
 type Decl =
     | Extern of name: string * args: SType list * variadic: bool * ret: SType
     | Fun of name: string * isRec: bool * pars: Param list * ret: SType option * body: Expr
+    | FunGroup of (int * Decl) list // let rec f … and g …: Fun declarations (maybe Private) that may call each other
     | TypeDecl of name: string * tparams: string list * TypeBody * Member list
     | TypeExt of name: string * tparams: string list * Member list // type string with member ...
     | Trait of name: string * tparam: string * methods: (string * SType) list
@@ -140,6 +142,7 @@ let mapExpr (f: Expr -> Expr) (e: Expr) : Expr =
     | If(c, t, e) -> If(f c, f t, Option.map f e)
     | Let(p, t, v, b) -> Let(p, t, f v, f b)
     | LetFun(n, r, ps, t, b, rest) -> LetFun(n, r, ps, t, f b, f rest)
+    | LetRecGroup(fs, rest) -> LetRecGroup(List.map f fs, f rest)
     | LetMut(x, t, v, b) -> LetMut(x, t, f v, f b)
     | Assign(a, b) -> Assign(f a, f b)
     | While(c, b) -> While(f c, f b)
@@ -201,7 +204,7 @@ let showTok =
 let keywords =
     set
         [ "let"; "rec"; "if"; "then"; "else"; "extern"; "true"; "false"; "not"; "match"; "with"; "when"
-          "type"; "of"; "as"; "fun"; "for"; "in"; "do"; "while"; "mutable"; "member"; "static"; "trait"; "impl"; "abstract"; "derive"; "open"; "module"; "private" ]
+          "type"; "of"; "as"; "fun"; "for"; "in"; "do"; "while"; "mutable"; "member"; "static"; "trait"; "impl"; "abstract"; "derive"; "open"; "module"; "private"; "and" ]
 
 // longest first
 let symbols =
@@ -915,7 +918,32 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                 let ret = optTy ()
                 expect (KSym "=") "'='"
                 let body = block ()
-                stmt(ln, mark fi (LetFun(f, isRec, ps, ret, body, rest ln)))
+
+                if peek () = KNewline && peek2 () = KKw "and" then
+                    // let rec f … and g …: functions that call each other
+                    if not isRec then
+                        fail (line ()) "functions joined with 'and' call each other: write 'let rec f … and g …'"
+
+                    let members = ResizeArray [ mark fi (LetFun(f, true, ps, ret, body, UnitLit)) ]
+
+                    while peek () = KNewline && peek2 () = KKw "and" do
+                        advance ()
+                        advance ()
+                        let gi = pos.Value
+                        let g = ident ()
+                        let gps = parameters ()
+
+                        if gps.IsEmpty then
+                            fail (line ()) "'and' defines a function: and g x = …"
+
+                        let gret = optTy ()
+                        expect (KSym "=") "'='"
+                        let gbody = block ()
+                        members.Add(mark gi (LetFun(g, true, gps, gret, gbody, UnitLit)))
+
+                    stmt(ln, LetRecGroup(List.ofSeq members, rest ln))
+                else
+                    stmt(ln, mark fi (LetFun(f, isRec, ps, ret, body, rest ln)))
             | _ ->
                 let p = pattern ()
                 let ann = optTy ()
@@ -1752,7 +1780,39 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                 let ret = optTy ()
                 expect (KSym "=") "'='"
                 let f = mark ni (Fun(name, isRec, ps, ret, block ()))
-                ln, (if isPrivate then Private f else f)
+                let first = if isPrivate then Private f else f
+
+                if peek () = KNewline && peek2 () = KKw "and" then
+                    // let rec f … and g …: functions that call each other
+                    if not isRec then
+                        fail (line ()) "functions joined with 'and' call each other: write 'let rec f … and g …'"
+
+                    let members = ResizeArray [ ln, first ]
+
+                    while peek () = KNewline && peek2 () = KKw "and" do
+                        advance ()
+                        let gl = line ()
+                        advance ()
+                        let gPrivate = peek () = KKw "private"
+
+                        if gPrivate then
+                            advance ()
+
+                        let gi = pos.Value
+                        let g = ident ()
+                        let gps = parameters ()
+
+                        if gps.IsEmpty then
+                            fail gl "'and' defines a function: and g x = …"
+
+                        let gret = optTy ()
+                        expect (KSym "=") "'='"
+                        let gf = mark gi (Fun(g, true, gps, gret, block ()))
+                        members.Add(gl, (if gPrivate then Private gf else gf))
+
+                    ln, FunGroup(List.ofSeq members)
+                else
+                    ln, first
         | _ -> err "'let', 'type' or 'extern'"
 
     if exprOnly then

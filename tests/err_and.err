@@ -1,0 +1,1 @@
+tests/err_and.zs:2: error: functions joined with 'and' call each other: write 'let rec f … and g …'
