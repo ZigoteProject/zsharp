@@ -392,6 +392,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
     let valueList = ResizeArray<string * string>() // in initialization order: name, init function
     let recordHints = Dictionary<Expr, Ty>(HashIdentity.Reference) // record literal -> expected type
     let literalRecords = Dictionary<Expr, string>(HashIdentity.Reference) // record literal -> the record it built
+    let lambdaHints = Dictionary<Expr, Ty>(HashIdentity.Reference) // lambda -> the function type expected of it
     let currentModule = ref (None: string option)
     let opens = ref ([]: string list) // most recent first
     let privates = Dictionary<string, string option>() // qualified name -> owning module
@@ -824,6 +825,22 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
             let ps, body = lowerParams ps0 body
             let pars = ps |> List.map (fun (x, ann) -> x, uniq x, annot ann)
             recordParams ps0 pars
+
+            // the function type expected of it gives the unannotated parameters their types
+            // before the body is typed: in xs |> List.map (fun s -> s.Length), s is known
+            match lambdaHints.TryGetValue node with
+            | true, hint ->
+                lambdaHints.Remove node |> ignore
+
+                let rec give (t: Ty) (pars: (string * string * Ty) list) (ps: (string * SType option) list) =
+                    match prune t, pars, ps with
+                    | TFun(p, r), (_, _, pt) :: pars', (_, ann) :: ps' ->
+                        if ann.IsNone then unify pt p
+                        give r pars' ps'
+                    | _ -> ()
+
+                give hint pars ps
+            | _ -> ()
 
             let envB =
                 pars
@@ -1781,37 +1798,72 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
 
     /// Type-checks arguments against a (curried) function type; returns them and the result type.
     and checkArgs env depth (fty: Ty) (args: Expr list) (name: string option) =
-        let t = ref fty
+        let what i =
+            match name with
+            | Some f -> sprintf "argument %d of '%s'" (i + 1) f
+            | None -> sprintf "argument %d" (i + 1)
 
-        let cargs =
-            args
-            |> List.mapi (fun i a ->
-                let ca =
+        // a lambda with an unannotated parameter is typed after the other arguments, which may
+        // tell it what it's applied to: List.map (fun s -> s.Length) names, and so
+        // names |> List.map (fun s -> s.Length)
+        let rec waits (a: Expr) =
+            match a with
+            | At(_, a) -> waits a
+            | Lambda(ps, _) -> ps |> List.exists (fun (_, ann) -> ann.IsNone)
+            | _ -> false
+
+        // the parameter types the arguments meet, and the result (None: too many arguments)
+        let rec peel (t: Ty) (k: int) (acc: Ty list) =
+            if k = 0 then
+                Some(List.rev acc, t)
+            else
+                match prune t with
+                | TFun(p, r) -> peel r (k - 1) (p :: acc)
+                | TVar _ as v ->
+                    let p, r = fresh kAny, fresh kAny
+                    expect "function" v (TFun(p, r))
+                    peel r (k - 1) (p :: acc)
+                | _ -> None
+
+        match (if args |> List.exists waits then peel fty args.Length [] else None) with
+        | Some(ps, res) ->
+            let typed = Array.zeroCreate args.Length
+            let indexed = List.indexed args
+
+            for i, a in (indexed |> List.filter (snd >> waits >> not)) @ (indexed |> List.filter (snd >> waits)) do
+                let p = List.item i ps
+                let ca = inferHint env depth p a
+                expect (what i) p ca.ty
+                typed[i] <- ca
+
+            List.ofArray typed, res
+        | None ->
+            let t = ref fty
+
+            let cargs =
+                args
+                |> List.mapi (fun i a ->
+                    let ca =
+                        match prune t.Value with
+                        | TFun(p, _) -> inferHint env depth p a
+                        | _ -> infer env depth a
+
                     match prune t.Value with
-                    | TFun(p, _) -> inferHint env depth p a
-                    | _ -> infer env depth a
+                    | TFun(p, r) ->
+                        expect (what i) p ca.ty
+                        t.Value <- r
+                    | TVar _ ->
+                        let r = fresh kAny
+                        expect "function" t.Value (TFun(ca.ty, r))
+                        t.Value <- r
+                    | ty ->
+                        match name with
+                        | Some f -> fail 0 (sprintf "'%s' is applied to too many arguments" f)
+                        | None -> fail 0 (sprintf "this value is not a function; it has type %s" (show ty))
 
-                let what =
-                    match name with
-                    | Some f -> sprintf "argument %d of '%s'" (i + 1) f
-                    | None -> sprintf "argument %d" (i + 1)
+                    ca)
 
-                match prune t.Value with
-                | TFun(p, r) ->
-                    expect what p ca.ty
-                    t.Value <- r
-                | TVar _ ->
-                    let r = fresh kAny
-                    expect "function" t.Value (TFun(ca.ty, r))
-                    t.Value <- r
-                | ty ->
-                    match name with
-                    | Some f -> fail 0 (sprintf "'%s' is applied to too many arguments" f)
-                    | None -> fail 0 (sprintf "this value is not a function; it has type %s" (show ty))
-
-                ca)
-
-        cargs, t.Value
+            cargs, t.Value
 
     and apply env depth (ch: CExpr) (args: Expr list) (name: string option) : CExpr =
         let cargs, t = checkArgs env depth ch.ty args name
@@ -1918,11 +1970,15 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
         pushHint hint e
         infer env depth e
 
-    /// Notes the expected type on the record literals that produce e's value: through if and
-    /// match branches, the tails of let and sequences, and tuple, list and array elements.
+    /// Notes the expected type on the record literals and lambdas that produce e's value: through
+    /// if and match branches, the tails of let and sequences, and tuple, list and array elements.
     and pushHint (hint: Ty) (e: Expr) =
         match e with
         | At(_, a) -> pushHint hint a
+        | Lambda _ ->
+            match prune hint with
+            | TFun _ -> lambdaHints[e] <- hint
+            | _ -> ()
         | RecordLit _ ->
             // only a record type helps (a generic 'a from a constructor mustn't replace it)
             match prune hint with

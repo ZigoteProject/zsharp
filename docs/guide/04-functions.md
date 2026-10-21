@@ -30,6 +30,7 @@ let main () =
 **Curried functions:** a function of several arguments is curried, so giving it fewer arguments gives a function of the rest. Pipelines build on this:
 - `x |> f` is `f x`, so a chain of transformations reads left to right.
 - `f >> g` composes two functions.
+- **Lambdas know what they're applied to:** a lambda's parameters take the types the function it's passed to gives them, so `names |> List.map (fun s -> s.Length)` needs no `(s: string)`. Without the `|>` too: `List.map (fun s -> s.Length) names`.
 
 ```zsharp
 let add x y = x + y
@@ -42,12 +43,13 @@ let main () =
     |> List.filter (fun x -> x % 2 = 1)
     |> List.sum
   let shout = String.toUpper >> (fun s -> s + "!")
-  println $"{inc 41} {total} {shout "hi"}"
+  let letters = [ "ab"; "cde" ] |> List.map (fun s -> s.Length) |> List.sum
+  println $"{inc 41} {total} {shout "hi"} {letters}"
   0
 ```
 
 ```text
-42 35 HI!
+42 35 HI! 5
 ```
 
 **Multi-line lambdas:** a lambda's body can take several lines, inside parentheses too. Put it on the lines below `fun x ->`, one level in; the `)` after its last line ends it. A `match` or an `if` inside works the same way.

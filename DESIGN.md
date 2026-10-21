@@ -132,7 +132,8 @@ let same () = { x = 1.0<m>; y = 2.0<m> } = { x = 1.0<m>; y = 2.0<m> }   // true,
 - **Members** (`member`, `static member`, `type T with …` extensions) on records, unions and built-in types.
   - Calls use dot syntax: `v.Dot(w)`, `Vec.Zero`, `s.Split(", ")`.
   - There is no inheritance and no overloading (one member per name), which keeps inference predictable.
-  - **Dot resolution is type-directed, as in F#:** `x.M` needs `x`'s type known by that point, reading left to right. Otherwise the error says to annotate `x`. Pipelines (`xs |> List.map (fun p -> p.x)`) work because `|>` checks its left side first.
+  - **Dot resolution is type-directed, as in F#:** `x.M` needs `x`'s type known where it's read. Otherwise the error says to annotate `x`.
+  - **Lambda arguments are typed last:** a lambda without parameter types is typed after the call's other arguments, with the parameter types the call expects. So `names |> List.map (fun s -> s.Length)` works, and so does `List.map (fun s -> s.Length) names`, which F# rejects. A lambda with annotated parameters keeps its place, so its types still reach the arguments after it.
 - **Automatic structural equality, ordering, hashing and printing:**
   - `=`, `<>`, `compare`, `hash` and `string x` work on every record, union and tuple whose fields support them, as in F#.
   - Functions don't support them, so a type containing a function gets a compile error where equality is used.
@@ -663,5 +664,6 @@ checker, so tools can't drift from the compiler.
 | 38 | Operator precedence | F#'s: custom operators by their first character; `\|>` and `>>` at the comparison level, above `&&` and `\|\|` (they used to be the loosest) | decided |
 | 39 | "Simple" | a feature replaces code people would write by hand and needs no runtime; no page budget | decided |
 | 40 | Reference cycles | not collected; `weak` references for back-pointers, `ZS_LEAKCHECK=1` to find leaks | decided |
+| 41 | Lambda arguments | typed after the call's other arguments when a parameter has no annotation, with the parameter types the call expects; `x \|> fun p -> body` is `let p = x` | decided |
 
 "Default" means chosen by me and open to change until the phase that implements it begins.

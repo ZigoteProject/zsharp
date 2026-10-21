@@ -46,7 +46,6 @@ clang/LLVM 22, zig, valgrind, gdb, qemu-user, qemu-system-arm, raylib).
 3. **Debug info:** strings, records and unions aren't shown as gdb values.
 4. **Editor:** no signature help, rename or code actions; the formatter doesn't reflow long lines.
 5. **Units of measure:** Kennedy's general case (a fresh variable) isn't implemented, so unannotated `*` across different units needs annotations.
-6. **Inference order:** `x.Member` needs x's type known where it's read. `List.map (fun s -> s.Length) names` needs `(s: string)`, and so does `names |> List.map (fun s -> s.Length)`, which F# accepts. Record fields are found by name and don't need it.
 
 ## Done
 
@@ -180,6 +179,7 @@ first.
 ### Design review ✅
 A review of the design before more of phase 5:
 - **Module scope (was known gap #6):** record field names, traits and derives belong to their module, like types. Two modules can use the same names, and a record is found by its fields only where its module is in scope.
+- **Member access in lambdas (the gap that took #6's place):** a lambda without parameter types is typed after the call's other arguments, with the parameter types the call expects. So `names |> List.map (fun s -> s.Length)` needs no annotation, and neither does `List.map (fun s -> s.Length) names`, which F# rejects. An F# programmer meets this on the first day.
 - **Panics in a C host:** `zs_set_panic_hook` runs before the process stops. DESIGN §11 has the policy: `result` for errors a caller handles, panics for bugs.
 - **Threads:** how a value crosses threads is decided now (DESIGN §7.1), before the optimizer is tuned. RC's fast path already tests the count's sign as phase 7 needs, which made the red-black tree 1.7% faster.
 - **Cycles:** DESIGN §5.2 says which values can form them, that they leak, and how to avoid and find them.
@@ -189,6 +189,7 @@ A review of the design before more of phase 5:
 **Exit tests:**
 - `tests/cexport`: the hook runs on a panic, and ends the process its own way.
 - `tests/modules/scope.zs`: two modules with the same record, trait and derive names; `err_field_scope.zs`: a record out of scope, found by its fields, is an error that says how to reach it.
+- `tests/pipe_inference.zs`: members inside lambdas, through `|>` and without it.
 
 ## Next
 

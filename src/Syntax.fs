@@ -1372,6 +1372,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
 
                 l <-
                     match operand bitOrE with
+                    | Lambda([ p, ann ], body) -> Let(p, ann, l, body) // x |> fun p -> body: let p = x, typed in order
                     | Var f as v -> copyPos v (Call(f, [ l ]))
                     | Call(f, args) -> Call(f, args @ [ l ])
                     | App(h, args) -> App(h, args @ [ l ])
