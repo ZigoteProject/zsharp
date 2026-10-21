@@ -41,7 +41,7 @@ OCaml for the host benchmarks).
    - running out of argument registers isn't modelled (x86-64 then passes a struct on the stack whole);
    - 32-bit ARM passes structs by value with the x86-64 rules;
    - C function pointers can't be called from Z#;
-   - no `.so` output.
+   - no `.so` output, and the `--lib` archive isn't position-independent, so it can't be linked into another shared library (a Zig or C `.so`).
 3. **Debug info (phase V):** strings, records and unions aren't shown as gdb values.
 4. **Units of measure (phase V):** Kennedy's general case (a fresh variable) isn't implemented, so unannotated `*` across different units needs annotations.
 5. **Editor (track E):** no signature help, rename or code actions; the formatter doesn't reflow long lines.
@@ -57,7 +57,7 @@ final language.
   - **Memory:** `weak<'a>` references, for back-pointers that don't keep their target alive (DESIGN §5.2), and `Arena.with` for allocation freed all at once.
   - **Unsafe code:** `ptr<'a>` with `Ptr.read`/`write` and pointer arithmetic inside `unsafe` expressions (DESIGN §5.3), and calling C function pointers.
   - **Dynamic dispatch:** `dyn Trait`, vtables for heterogeneous collections and plugin APIs (DESIGN §3).
-  - **C interop:** argument-register exhaustion on x86-64, `.so` output, and RC objects crossing as opaque handles (`Rc.retain`/`Rc.release`).
+  - **C interop:** argument-register exhaustion on x86-64, `.so` output, `--lib` archives built with `-fPIC` so they link into a host's shared library, and RC objects crossing as opaque handles (`Rc.retain`/`Rc.release`).
   - **Debug info:** strings, records and unions as gdb values.
   - **Units of measure:** Kennedy's general case, so unannotated `*` across units infers.
 - **Exit tests:**
@@ -65,6 +65,7 @@ final language.
   - `binarytrees` with an arena per tree calls `malloc` per arena block, not per node.
   - A list of `dyn Shape` values from different types, and a C library's struct of function pointers called from Z#.
   - A C program links the library as a `.so`.
+  - A C shared library links a `--lib` archive whole (`--whole-archive`), and a C program calls Z# through it.
   - `tests/debug/gdb.sh` prints a string, a record and a union.
 
 ### Phase 6: computation expressions and Task
