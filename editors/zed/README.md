@@ -27,7 +27,10 @@ Syntax highlighting, outline, bracket matching and indentation (from the tree-si
 3. In Zed: command palette → `zed: install dev extension` → choose `editors/zed`. Zed builds the
    Rust part (it needs `rustup`; the Flatpak uses its own) and the grammar.
 
-4. Open a `.zs` file. `zed: open log` shows the extension's and the server's messages.
+4. Zed's agent gets the `zs` context server (`zs mcp`): `check`, `type_at`, `docs`, `build`,
+   `run` and `emit_llvm`. Enable it in the agent panel's settings.
+
+5. Open a `.zs` file. `zed: open log` shows the extension's and the server's messages.
 
 The queries in `languages/zsharp/` are copies of `../tree-sitter-zsharp/queries/`; keep them in
 step (`./test.sh` checks).

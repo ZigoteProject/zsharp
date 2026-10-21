@@ -3,7 +3,7 @@
 //! `zs` is found on PATH, or set explicitly in Zed's settings:
 //!   "lsp": { "zs": { "binary": { "path": "/path/to/zs", "arguments": ["lsp"] } } }
 
-use zed_extension_api::{self as zed, settings::LspSettings, LanguageServerId, Result};
+use zed_extension_api::{self as zed, settings::LspSettings, ContextServerId, LanguageServerId, Project, Result};
 
 struct ZSharp;
 
@@ -35,6 +35,16 @@ impl zed::Extension for ZSharp {
             command: path,
             args,
             env: worktree.shell_env(),
+        })
+    }
+
+    // `zs mcp` for Zed's agent. It runs in the project directory, and its build/run tools only
+    // touch files inside it. `zs` must be on Zed's PATH.
+    fn context_server_command(&mut self, _id: &ContextServerId, _project: &Project) -> Result<zed::Command> {
+        Ok(zed::Command {
+            command: "zs".to_string(),
+            args: vec!["mcp".to_string()],
+            env: Vec::new(),
         })
     }
 }

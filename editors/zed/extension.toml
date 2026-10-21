@@ -17,3 +17,6 @@ path = "editors/tree-sitter-zsharp"
 [language_servers.zs]
 name = "zs"
 languages = ["Z#"]
+
+# zs mcp: compiler-backed tools (check, type_at, docs, build, run, emit_llvm) for Zed's agent
+[context_servers.zs]
