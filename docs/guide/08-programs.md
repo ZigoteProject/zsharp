@@ -13,6 +13,36 @@ src/
   geometry.zs    type Shape = …   let area s = …   let private pi () = …
 ```
 
+**Nested modules:** `module Inner =` followed by indented declarations defines a module inside a file.
+- **Names:** its names are `Outer.Inner.name`, and code inside it sees the names of the modules it's in.
+- **Privacy:** a `private` name is visible in its module and the modules nested in it.
+- **`open`:** inside a module, it lasts until the module ends.
+
+```zsharp
+module Geometry =
+  let private pi3 = 3
+
+  let area r = pi3 * r * r
+
+  module Units =
+    let toBig x = x * 100 * pi3
+
+module Report =
+  open Geometry
+
+  let line r = $"radius {r}: area {area r}"
+
+let main () =
+  println $"{Geometry.area 2} {Geometry.Units.toBig 1}"
+  println (Report.line 3)
+  0
+```
+
+```text
+12 300
+radius 3: area 27
+```
+
 ## Projects
 
 A project is a folder with a `zs.toml` manifest:

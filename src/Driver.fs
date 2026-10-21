@@ -811,12 +811,24 @@ let docItems (file: string) : DocItem list =
                             add "derive" ("derive " + m.Groups[1].Value) i
                         else
                             let m = rx @"^impl\s+(.*?)\s*=\s*$" l
-                            if m.Success then add "impl" ("impl " + m.Groups[1].Value) i
+
+                            if m.Success then
+                                add "impl" ("impl " + m.Groups[1].Value) i
+                            else
+                                // module Inner = …: its functions are Inner.name
+                                let m = rx @"^module\s+([A-Za-z_][A-Za-z0-9_]*)\s*=" l
+
+                                if m.Success then
+                                    container <- m.Groups[1].Value
+                                    containerKind <- "module"
         elif container <> "" then
             let t = l.Trim()
             let m = rx @"^\|\s*([A-Z][A-Za-z0-9_]*)" t
+            let fm = rx @"^let\s+(rec\s+)?(private\s+)?([A-Za-z_][A-Za-z0-9_]*)" t
 
-            if m.Success && containerKind = "type" then
+            if containerKind = "module" && fm.Success then
+                if not fm.Groups[2].Success then add "function" (container + "." + fm.Groups[3].Value) i
+            elif m.Success && containerKind = "type" then
                 add "case" m.Groups[1].Value i
             else
                 let m = rx @"^abstract\s+([A-Za-z_][A-Za-z0-9_]*)" t

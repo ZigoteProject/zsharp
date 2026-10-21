@@ -100,7 +100,8 @@ let sumTo n =                            // imperative code is fine; mutation st
   - A panic prints a message (and a backtrace where the C library supports it), then stops the program at once: no unwinding, no cleanup, exit status 134, no core dump. `ZS_ABORT=1` makes it a real `abort()` for a debugger.
   - Panics can't be caught. So there are no landing pads, and nothing unwinds through C frames.
 - **Strings:** `$"x = {p.x}"` interpolation, where any expression with `Show` can go in a hole. `+` joins strings.
-- **Modules:** one file is one module, with `open`, qualified names and `private`. `module Name` on the first line renames it. **Nested modules** are **(planned, phase L)**.
+- **Modules:** one file is one module, with `open`, qualified names and `private`. `module Name` on the first line renames it.
+  - **Nested modules:** `module Inner =` and an indented block. Names inside are `Outer.Inner.x`; the block sees the names of its enclosing modules, `private` reaches the modules nested inside, and an `open` lasts until the block ends.
 - **Type annotations in expressions:** `(e: T)`, which also gives a literal or a record literal its type.
 - **Mutual recursion:** `let rec f … and g …`, at the top level or locally. A top-level group is generalized jointly, so generic members share their type variables.
 

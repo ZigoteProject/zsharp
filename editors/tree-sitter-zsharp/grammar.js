@@ -82,7 +82,8 @@ module.exports = grammar({
     ),
 
     open_declaration: $ => seq('open', field('module', $.identifier)),
-    module_declaration: $ => seq('module', field('name', $.identifier)),
+    module_declaration: $ => seq('module', field('name', $.identifier),
+      optional(seq('=', $._indent, sep1($._declaration, $._newline), optional($._newline), $._dedent))), // module Inner = …
 
     let_declaration: $ => seq(
       'let',

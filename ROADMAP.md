@@ -34,7 +34,6 @@ clang/LLVM 22, zig, valgrind, gdb, qemu-user, qemu-system-arm, raylib).
 
 **Known gaps** (in priority order; each is in a phase below):
 1. **Syntax (phase L):**
-   - no nested modules;
    - multi-line lambdas inside parentheses don't parse (brackets suppress layout).
 2. **Optimizer (phase 5):**
    - no Core-level inlining or case-of-case;
@@ -159,7 +158,7 @@ first.
   2. **Record patterns (done):** `{ x = 0; y = y }` in matches, `let`, parameters, lambdas and `for`. The record comes from the matched value's type, else from the fields, and missing cases are named in record syntax.
   3. **`let rec … and …` (done):** at the top level (generalized jointly, `private` allowed per function) and locally (lifted with the group's shared captures).
   4. **`char` (done):** a Unicode scalar with literals (`'a'`, `'\u{e9}'`), patterns, conversions, the `Char` functions (ASCII), and `for c in s` decoding UTF-8 in Z#. Strings gained the `\r`, `\'` and `\u{…}` escapes.
-  5. **Nested modules:** `module Inner = …`.
+  5. **Nested modules (done):** `module Inner =` with an indented block; enclosing modules' names are in scope, `private` reaches nested modules, `open` is scoped to the block.
   6. **Multi-line lambdas inside parentheses**, and `[<Wrapping>]` on a function.
 - **Exit tests:**
   - The guide's examples use each feature.

@@ -108,6 +108,7 @@ type Decl =
     | Private of Decl // let private f / type private T
     | Open of string // open Module
     | ModuleHeader of string // module Name (first line of a file)
+    | NestedModule of name: string * decls: (int * Decl) list // module Name = followed by indented declarations
     | Impl of traitName: string * head: SType * defs: (int * string * Param list * SType option * Expr) list
     | ImportC of header: string // import c "raylib.h", replaced by the header's declarations
     | Const of name: string * value: Expr // a C constant (enum value, #define): its uses are the literal
@@ -1605,7 +1606,24 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
             ln, Open(ident ())
         | KKw "module" ->
             advance ()
-            ln, ModuleHeader(ident ())
+            let name = ident ()
+
+            if isSym "=" then
+                // module Inner =, then its declarations, indented
+                advance ()
+                expect KIndent "indented declarations"
+                let decls = ResizeArray()
+
+                while peek () <> KDedent && peek () <> KEof do
+                    decls.Add(decl ())
+
+                    if peek () = KNewline then
+                        advance ()
+
+                expect KDedent "end of module"
+                ln, NestedModule(name, List.ofSeq decls)
+            else
+                ln, ModuleHeader name
         | KKw "derive" ->
             // derive Json = let toJson (x: 'self) = ...
             advance ()

@@ -371,7 +371,8 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
     let currentModule = ref (None: string option)
     let opens = ref ([]: string list) // most recent first
     let privates = Dictionary<string, string option>() // qualified name -> owning module
-    let moduleNames = modules |> List.choose (fun (_, m, _) -> m) |> Set.ofList
+    let moduleNames = HashSet<string>(modules |> List.choose (fun (_, m, _) -> m)) // files' and nested modules
+    let mainNested = HashSet<string>() // modules nested in the main file (it has no module name)
 
     /// The name a declaration gets in the current module.
     let qualify (name: string) =
@@ -381,19 +382,34 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
 
     /// Unqualified names resolve in the current module, then opened modules, then globally.
     let resolveWith (exists: string -> bool) (x: string) : string option =
+        // the current module, then each module it is nested in (A.B.C: A.B.C.x, A.B.x, A.x)
+        let enclosing =
+            match currentModule.Value with
+            | Some m ->
+                let parts = m.Split '.'
+                [ for k in parts.Length .. -1 .. 1 -> String.concat "." parts[.. k - 1] ]
+            | None -> []
+
         let candidates =
-            [ match currentModule.Value with
-              | Some m -> yield m + "." + x
-              | None -> ()
+            [ for m in enclosing do
+                  yield m + "." + x
               for o in opens.Value do
                   yield o + "." + x
               yield x ]
+
+        // a private name is visible in its module and in the modules nested in it
+        let visibleTo (owner: string option) =
+            match owner, currentModule.Value with
+            | o, c when o = c -> true
+            | Some o, Some c -> c.StartsWith(o + ".")
+            | None, Some c -> mainNested.Contains c
+            | _ -> false
 
         candidates
         |> List.tryFind exists
         |> Option.map (fun q ->
             match privates.TryGetValue q with
-            | true, owner when owner <> currentModule.Value ->
+            | true, owner when not (visibleTo owner) ->
                 fail 0 (sprintf "'%s' is private to module %s" x (defaultArg owner "?"))
             | _ -> q)
 
@@ -2292,6 +2308,9 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
             Call(f', List.map qualifyNames args)
         | _ -> mapExpr qualifyNames e
 
+    /// Declares with error recovery (set below): a nested module's declarations each get it.
+    let declareRecovering: (int -> Decl -> unit) ref = ref (fun _ _ -> ())
+
     let rec declare (ln: int) (d: Decl) =
             match d with
             | TypeDecl(name, tps, body, ms) ->
@@ -2529,11 +2548,33 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                     valueList.Add(q, init)
                     recordKey d name c.ty false q true
             | Open m ->
-                if not (moduleNames.Contains m) then
-                    fail 0 (sprintf "unknown module '%s'" m)
-
-                opens.Value <- m :: opens.Value
+                // a module, or one nested in the current module or a module enclosing it
+                match resolveWith moduleNames.Contains m with
+                | Some full -> opens.Value <- full :: opens.Value
+                | None -> fail 0 (sprintf "unknown module '%s'" m)
             | ModuleHeader _ -> ()
+            | NestedModule(name, decls) ->
+                // module Inner = …: its names are Outer.Inner.x; it sees the enclosing modules'
+                // names, and an open inside it lasts to its end
+                let full = qualify name
+
+                if moduleNames.Contains full then
+                    fail 0 (sprintf "module '%s' is already defined" full)
+
+                moduleNames.Add full |> ignore
+
+                if currentModule.Value.IsNone then
+                    mainNested.Add full |> ignore
+
+                let outer, outerOpens = currentModule.Value, opens.Value
+                currentModule.Value <- Some full
+
+                try
+                    for l, inner in decls do
+                        declareRecovering.Value l inner
+                finally
+                    currentModule.Value <- outer
+                    opens.Value <- outerOpens
             | Attrs([ "Measure", [] ], TypeDecl(name, [], UnionTy [], [])) -> measures.Add name |> ignore
             | Attrs([ "Export", cname ], (Fun(name, _, _, _, _) as f)) ->
                 declare ln f
@@ -2652,33 +2693,38 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
 
         go d
 
+    let declareOne (ln: int) (d: Decl) =
+        let diag l c msg =
+            { file = currentFile.Value
+              line = l
+              col = c
+              msg = msg }
+
+        try
+            declare ln d
+        with
+        | CompileError(l, msg) ->
+            report (diag (if l = 0 then ln else l) 0 msg)
+
+            for n in declaredNames d do
+                failed.Add n |> ignore
+                failed.Add(qualify n) |> ignore
+        | CompileErrorPos(l, c, msg) ->
+            report (diag l c msg)
+
+            for n in declaredNames d do
+                failed.Add n |> ignore
+                failed.Add(qualify n) |> ignore
+
+    declareRecovering.Value <- declareOne
+
     for file, modName, decls in modules do
         currentModule.Value <- modName
         opens.Value <- []
         currentFile.Value <- file
 
         for ln, d in decls do
-            let diag l c msg =
-                { file = file
-                  line = l
-                  col = c
-                  msg = msg }
-
-            try
-                declare ln d
-            with
-            | CompileError(l, msg) ->
-                report (diag (if l = 0 then ln else l) 0 msg)
-
-                for n in declaredNames d do
-                    failed.Add n |> ignore
-                    failed.Add(qualify n) |> ignore
-            | CompileErrorPos(l, c, msg) ->
-                report (diag l c msg)
-
-                for n in declaredNames d do
-                    failed.Add n |> ignore
-                    failed.Add(qualify n) |> ignore
+            declareOne ln d
 
     currentModule.Value <- None
     let mainFile, _, _ = List.last modules

@@ -1,3 +1,4 @@
+(module_declaration "module" @context name: (_) @name) @item
 ; the outline / symbol list
 (let_declaration "let" @context name: (_) @name) @item
 (and_definition "and" @context name: (_) @name) @item

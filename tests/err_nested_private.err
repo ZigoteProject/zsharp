@@ -1,0 +1,1 @@
+tests/err_nested_private.zs:5:15: error: 'Vault.secret' is private to module Vault
