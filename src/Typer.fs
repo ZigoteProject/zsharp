@@ -603,6 +603,48 @@ let check (decls: (int * Decl) list) : Program =
                 match defs |> List.tryFindIndex (fst >> (=) f) with
                 | Some i -> mk (CField(cr, i)) (substGen targs (snd defs[i]))
                 | None -> fail 0 (sprintf "record '%s' has no field '%s'" rname f)
+        | Question _ -> fail 0 "'?' is only supported as `let x = e?` or as a whole statement (for now)"
+        | TryBind(p, e, rest) ->
+            // match e with Ok p -> rest | Error err -> Error err
+            let ce = inf e
+            let okTy, er = fresh None, fresh None
+            let resTy = TCon("result", [ okTy; er ])
+            expect "operand of '?'" resTy ce.ty
+            let names = Dictionary<string, string>()
+            let okTag, errTag = snd ctors["Ok"], snd ctors["Error"]
+            let cp = CPCtor("result", okTag, [ pat names p okTy ])
+            let vars = patVars cp
+
+            let envOk =
+                names
+                |> Seq.fold
+                    (fun (m: Map<_, _>) kv ->
+                        m.Add(
+                            kv.Key,
+                            { u = kv.Value
+                              ty = vars |> List.find (fst >> (=) kv.Value) |> snd
+                              mut = false
+                              depth = depth }
+                        ))
+                    env
+
+            let crest = infer envOk depth rest
+
+            try
+                unify (TCon("result", [ fresh None; er ])) crest.ty
+            with Mismatch ->
+                let ers =
+                    match prune er with
+                    | TVar _ -> "_"
+                    | t -> show t
+
+                fail 0 (sprintf "'?' needs the rest of the block to produce a result<_, %s>, but it produces %s" ers (show crest.ty))
+
+            let eu = uniq "$err"
+            let errCase = CPCtor("result", errTag, [ CPVar(eu, er) ]), None, mk (CCtor("result", errTag, [ mk (CLocal eu) er ])) crest.ty
+            let cases = [ (cp, None, crest); errCase ]
+            Match.check unionCases (cases |> List.map (fun (p, _, _) -> p, false))
+            mk (CMatch(ce, cases)) crest.ty
         | Match(s, cases) ->
             let cs = inf s
             let resTy = fresh None

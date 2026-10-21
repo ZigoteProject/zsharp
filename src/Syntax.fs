@@ -55,6 +55,8 @@ type Expr =
     | Index of Expr * Expr
     | ArrayLit of Expr list
     | Match of Expr * (Pat * Expr option * Expr) list
+    | Question of Expr // e? (only valid where TryBind can be formed)
+    | TryBind of Pat * Expr * Expr // let p = e? ; rest  (rest runs only if e is Ok)
     | At of int * Expr // source line, for error messages
 
 and Param = Pat * SType option
@@ -109,7 +111,7 @@ let keywords =
 // longest first
 let symbols =
     [ "..."; ".."; "->"; "<-"; "|>"; "|]"; "[|"; "::"; ">>"; "<>"; "<="; ">="; "&&"; "||"
-      "("; ")"; "{"; "}"; "["; "]"; ","; ";"; "|"; "."; ":"; "="; "<"; ">"; "+"; "-"; "*"; "/"; "%"; "@" ]
+      "?"; "("; ")"; "{"; "}"; "["; "]"; ","; ";"; "|"; "."; ":"; "="; "<"; ">"; "+"; "-"; "*"; "/"; "%"; "@" ]
 
 let private unescape ln =
     function
@@ -633,15 +635,23 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
                 let ann = optTy ()
                 expect (KSym "=") "'='"
                 let v = block ()
-                At(ln, Let(p, ann, v, rest ln))
-        else
-            let e = At(ln, assignment (expr ()))
 
-            if peek () = KNewline then
+                match v with
+                | Question e when ann.IsNone -> At(ln, TryBind(p, e, rest ln))
+                | _ -> At(ln, Let(p, ann, v, rest ln))
+        else
+            match assignment (expr ()) with
+            | Question q when peek () = KNewline ->
                 advance ()
-                Seq(e, seq ())
-            else
-                e
+                At(ln, TryBind(PWild, q, seq ()))
+            | e ->
+                let e = At(ln, e)
+
+                if peek () = KNewline then
+                    advance ()
+                    Seq(e, seq ())
+                else
+                    e
 
     and expr () =
         match peek () with
@@ -825,11 +835,19 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
         | KSym "~-" -> true
         | _ -> false
 
+    // `f x?` applies ? to the whole application
     and app () =
-        match atom () with
-        | Var f when startsAtom () -> Call(f, [ while startsAtom () do yield atom () ])
-        | head when startsAtom () -> App(head, [ while startsAtom () do yield atom () ])
-        | head -> head
+        let e =
+            match atom () with
+            | Var f when startsAtom () -> Call(f, [ while startsAtom () do yield atom () ])
+            | head when startsAtom () -> App(head, [ while startsAtom () do yield atom () ])
+            | head -> head
+
+        if isSym "?" then
+            advance ()
+            Question e
+        else
+            e
 
     and atom () =
         let mutable e = primary ()
