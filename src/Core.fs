@@ -308,6 +308,12 @@ and CKind =
     | CDropFields of string * Ty * int * Set<int> * string option * CExpr
     | CCtorAt of string * union: string * tag: int * CExpr list // constructor built in token's cell if non-null
     | CFreeToken of string * CExpr
+    // after match lowering
+    /// A join point (from a decision tree): `rest`, whose paths may end in a jump to it, then
+    /// `body` with the parameters bound to the jump's arguments. A block with phis, not a
+    /// function: the body refers only to its parameters (and other join points).
+    | CJoin of name: string * pars: (string * Ty) list * body: CExpr * rest: CExpr
+    | CJump of string * CExpr list // to a join point, in a tail position of its rest
 
 /// Rebuilds a node with f applied to each direct child expression.
 let mapChildren (f: CExpr -> CExpr) (k: CKind) : CKind =
@@ -350,6 +356,10 @@ let mapChildren (f: CExpr -> CExpr) (k: CKind) : CKind =
     | CDropFields(x, t, tag, keep, tok, e) -> CDropFields(x, t, tag, keep, tok, f e)
     | CCtorAt(tok, u, tag, args) -> CCtorAt(tok, u, tag, List.map f args)
     | CFreeToken(tok, e) -> CFreeToken(tok, f e)
+    | CJoin(j, ps, b, r) ->
+        let r' = f r // the rest runs first
+        CJoin(j, ps, f b, r')
+    | CJump(j, args) -> CJump(j, List.map f args)
 
 /// Direct child expressions, in evaluation order.
 let children (k: CKind) : CExpr list =
@@ -388,37 +398,111 @@ let rec mapPatTypes (f: Ty -> Ty) p =
     | CPOr(a, b) -> CPOr(mapPatTypes f a, mapPatTypes f b)
     | p -> p
 
+/// The names a node binds itself (not those bound inside its children).
+let ownBinders (k: CKind) : string list =
+    match k with
+    | CLam(ps, _) -> List.map fst ps
+    | CLetFun(n, _, ps, _, _) -> n :: List.map fst ps
+    | CLetRec(fs, _) -> fs |> List.collect (fun (n, ps, _) -> n :: List.map fst ps)
+    | CJoin(_, ps, _, _) -> List.map fst ps
+    | CLet(x, _, _)
+    | CLetMut(x, _, _)
+    | CFor(x, _, _, _, _) -> [ x ]
+    | CMatch(_, cases) -> cases |> List.collect (fun (p, _, _) -> patVars p |> List.map fst)
+    | _ -> []
+
 /// Names bound inside an expression (binders), excluding the expression's free variables.
 let rec binders (e: CExpr) : string list =
-    let own =
-        match e.k with
-        | CLam(ps, _) -> List.map fst ps
-        | CLetFun(n, _, ps, _, _) -> n :: List.map fst ps
-        | CLetRec(fs, _) -> fs |> List.collect (fun (n, ps, _) -> n :: List.map fst ps)
-        | CLet(x, _, _)
-        | CLetMut(x, _, _)
-        | CFor(x, _, _, _, _) -> [ x ]
-        | CMatch(_, cases) -> cases |> List.collect (fun (p, _, _) -> patVars p |> List.map fst)
-        | _ -> []
+    ownBinders e.k @ (children e.k |> List.collect binders)
 
-    own @ (children e.k |> List.collect binders)
+/// Core as indented text, for reading what the optimizer did (ZS_DUMP_CORE=name).
+let rec showCore (ind: int) (e: CExpr) : string =
+    let pad = String.replicate ind "  "
+    let sub (x: CExpr) = showCore (ind + 1) x
+    let line (s: string) = pad + s
+
+    let rec pat p =
+        match p with
+        | CPWild -> "_"
+        | CPVar(x, _) -> x
+        | CPInt n -> string n
+        | CPStr s -> sprintf "%A" s
+        | CPBool b -> string b
+        | CPTuple ps -> "(" + (ps |> List.map pat |> String.concat ", ") + ")"
+        | CPRecord(_, fs) -> "{ " + (fs |> List.map (fun (n, q) -> n + " = " + pat q) |> String.concat "; ") + " }"
+        | CPCtor(_, tag, ps) -> sprintf "#%d(%s)" tag (ps |> List.map pat |> String.concat ", ")
+        | CPOr(a, b) -> pat a + " | " + pat b
+        | CPAs(q, x, _) -> pat q + " as " + x
+
+    let flat (x: CExpr) = (showCore 0 x).Replace("\n", " ")
+    let args (xs: CExpr list) = xs |> List.map flat |> String.concat ", "
+
+    match e.k with
+    | CInt n -> line (string n)
+    | CFloat f -> line (string f)
+    | CBool b -> line (string b)
+    | CStr s -> line (sprintf "%A" s)
+    | CUnit -> line "()"
+    | CLocal x -> line x
+    | CGlobalVal x
+    | CGlobal(x, _) -> line ("@" + x)
+    | CLet(x, v, b) -> line ("let " + x + " = " + flat v) + "\n" + showCore ind b
+    | CLetMut(x, v, b) -> line ("let mutable " + x + " = " + flat v) + "\n" + showCore ind b
+    | CIf(c, t, f) -> line ("if " + flat c) + "\n" + sub t + "\n" + line "else" + "\n" + sub f
+    | CMatch(s, cases) ->
+        line ("match " + flat s)
+        + (cases |> List.map (fun (p, g, b) -> "\n" + line ("| " + pat p + (match g with Some g -> " when " + flat g | None -> "") + " ->") + "\n" + sub b) |> String.concat "")
+    | CDup(x, _, b) -> line ("dup " + x) + "\n" + showCore ind b
+    | CDrop(x, _, b) -> line ("drop " + x) + "\n" + showCore ind b
+    | CDropFields(x, _, tag, keep, tok, b) ->
+        line (sprintf "dropfields %s #%d keep %A%s" x tag (Set.toList keep) (match tok with Some t -> " token " + t | None -> "")) + "\n" + showCore ind b
+    | CFreeToken(t, b) -> line ("free " + t) + "\n" + showCore ind b
+    | CCtorAt(t, _, tag, xs) -> line (sprintf "#%d@%s(%s)" tag t (args xs))
+    | CCtor(_, tag, xs) -> line (sprintf "#%d(%s)" tag (args xs))
+    | CJoin(j, ps, b, r) -> showCore ind r + "\n" + line ("join " + j + "(" + (ps |> List.map fst |> String.concat ", ") + ") =") + "\n" + sub b
+    | CJump(j, xs) -> line ("jump " + j + "(" + args xs + ")")
+    | CCallDirect(f, xs) -> line (f + "(" + args xs + ")")
+    | CPrim(op, xs) -> line (op + "(" + args xs + ")")
+    | CBin(op, a, b) -> line (flat a + " " + op + " " + flat b)
+    | CTuple xs -> line ("(" + args xs + ")")
+    | CField(r, i) -> line (flat r + "." + string i)
+    | CLine(_, x) -> showCore ind x
+    | k -> line (sprintf "<%s>" ((sprintf "%A" k).Split(' ', '\n')[0]))
+
+/// The variables a node references itself (not through its children).
+let private ownRefs (e: CExpr) : (string * Ty) list =
+    match e.k with
+    | CLocal x -> [ x, e.ty ]
+    | CAssign(x, v) -> [ x, v.ty ]
+    | CArraySet(x, _, v) -> [ x, TCon("array", [ v.ty ]) ]
+    | CDup(x, t, _)
+    | CDrop(x, t, _)
+    | CDropFields(x, t, _, _, _, _) -> [ x, t ]
+    | _ -> []
 
 /// Variables referenced by an expression (names are unique, so free = referenced - bound).
 let rec refs (e: CExpr) : (string * Ty) list =
-    let own =
-        match e.k with
-        | CLocal x -> [ x, e.ty ]
-        | CAssign(x, v) -> [ x, v.ty ]
-        | CArraySet(x, _, v) -> [ x, TCon("array", [ v.ty ]) ]
-        | CDup(x, t, _)
-        | CDrop(x, t, _)
-        | CDropFields(x, t, _, _, _, _) -> [ x, t ]
-        | _ -> []
-
-    own @ (children e.k |> List.collect refs)
+    ownRefs e @ (children e.k |> List.collect refs)
 
 let freeVars (e: CExpr) : Set<string> =
     Set.difference (refs e |> List.map fst |> Set.ofList) (Set.ofList (binders e))
+
+/// freeVars, remembered per node (by reference): bottom-up, each node's set from its
+/// children's, for a pass that asks about the same nodes again and again. Names are unique,
+/// so a node's free variables are its children's and its own references, less what it binds.
+let cachedFreeVars () : CExpr -> Set<string> =
+    let cache = System.Collections.Generic.Dictionary<CExpr, Set<string>>(HashIdentity.Reference)
+
+    let rec fv (e: CExpr) =
+        match cache.TryGetValue e with
+        | true, s -> s
+        | _ ->
+            let below = children e.k |> List.map fv |> Set.unionMany
+            let s = Set.difference (Set.union below (ownRefs e |> List.map fst |> Set.ofList)) (Set.ofList (ownBinders e.k))
+            cache[e] <- s
+            s
+
+    fv
 
 type FunDef =
     { name: string

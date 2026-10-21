@@ -1085,6 +1085,9 @@ let compile
             |> sprintf "phi %s %s" ty
             |> em.Instr
 
+        // join points being generated: their block, and each jump's argument values and block
+        let joinBlocks = Dictionary<string, string * ResizeArray<string list * string>>()
+
         /// let mutable arrays a loop writes, kept unique for the whole loop: inside it they are
         /// only borrowed (a.[i], Array.length a) or written, never shared or reassigned. Each is
         /// made unique once before the loop, and the writes in it skip the reference-count check.
@@ -1361,6 +1364,38 @@ let compile
                     em.Emit(sprintf "store %s %s, ptr %s" (llty a.ty) v fp))
 
                 c
+            | CJoin(j, ps, body, rest) ->
+                // a block that rest's jumps branch to, its parameters as phis
+                let label, joined = em.Fresh "join", em.Fresh "joined"
+                let incoming = ResizeArray<string list * string>()
+                joinBlocks[j] <- (label, incoming)
+                let vr = gen env tail rest
+                let fromRest = em.Block
+                em.Emit(sprintf "br label %%%s" joined)
+
+                if incoming.Count = 0 then
+                    em.Label joined
+                    vr
+                else
+                    em.Label label
+
+                    let env' =
+                        ps
+                        |> List.indexed
+                        |> List.fold (fun (m: Map<string, Binding>) (i, (x, t)) -> m.Add(x, Ssa(phi (llty t) [ for args, b in incoming -> List.item i args, b ]))) env
+
+                    let vb = gen env' tail body
+                    let fromBody = em.Block
+                    em.Emit(sprintf "br label %%%s" joined)
+                    em.Label joined
+                    phi (llty e.ty) [ vr, fromRest; vb, fromBody ]
+            | CJump(j, args) ->
+                let vs = args |> List.map (gen env false)
+                let label, incoming = joinBlocks[j]
+                incoming.Add(vs, em.Block)
+                em.Emit(sprintf "br label %%%s" label)
+                em.Dead()
+                "poison"
             | CIf(c, t, f) ->
                 let vc = gen env false c
                 let lt, lf, lend = em.Fresh "then", em.Fresh "else", em.Fresh "endif"
@@ -1959,6 +1994,7 @@ let compile
                 "zeroinitializer"
             | "Runtime.ticks" -> em.Instr "call i64 @zs_ticks()"
             | "Runtime.allocations" -> em.Instr "call i_W @zs_allocations()"
+            | "token.null" -> "null" // no cell to build in (a jump to a join point)
             | "Math.sqrt" ->
                 // one instruction where the hardware has it (x86-64, aarch64, the M4's FPU)
                 let lt = llty (argTy 0)

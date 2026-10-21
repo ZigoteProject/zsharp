@@ -546,9 +546,23 @@ let compileProgram (mainPath: string) (isLib: bool) =
             try
                 // a -g build keeps every function whole, so breakpoints on them hit
                 let inline' = if Codegen.debugInfo then id else Inline.run
-                let mono = timed "monomorphize" (fun () -> Mono.run prog |> Mono.fuse |> inline')
+                // ZS_NO_DECIDE=1: matches as written, to compare with decision trees
+                let decide = if isNull (Environment.GetEnvironmentVariable "ZS_NO_DECIDE") then Decide.run prog.types else id
+                let mono = timed "monomorphize" (fun () -> Mono.run prog |> Mono.fuse)
+                let mono = timed "inline" (fun () -> inline' mono)
+                let mono = timed "decision trees" (fun () -> decide mono)
                 let lifted = timed "lift closures" (fun () -> Lift.run mono)
-                timed "reference counting" (fun () -> Rc.run prog.types lifted)
+                let counted = timed "reference counting" (fun () -> Rc.run prog.types lifted)
+
+                // ZS_DUMP_CORE=name: the Core of matching functions after reference counting
+                match Environment.GetEnvironmentVariable "ZS_DUMP_CORE" with
+                | null -> ()
+                | name ->
+                    for f in counted do
+                        if f.name.Contains name then
+                            eprintfn "%s(%s) =\n%s\n" f.name (f.pars |> List.map fst |> String.concat ", ") (Core.showCore 1 f.body)
+
+                counted
             with CompileError(l, m) ->
                 raise (CompileErrorAt(mainPath, l, 0, m))
 

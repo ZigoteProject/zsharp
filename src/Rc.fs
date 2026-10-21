@@ -182,6 +182,7 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
 
     let rcFun (f: MFun) =
         let f = { f with body = rematch (printPieces f.body) }
+        let freeVars = cachedFreeVars ()
         // every variable's type, by unique name
         let vtypes = System.Collections.Generic.Dictionary<string, Ty>()
 
@@ -193,6 +194,9 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
             | CLet(x, v, _)
             | CLetMut(x, v, _) -> vtypes[x] <- v.ty
             | CFor(x, a, _, _, _) -> vtypes[x] <- a.ty
+            | CJoin(_, ps, _, _) ->
+                for x, t in ps do
+                    vtypes[x] <- t
             | CMatch(_, cases) ->
                 for p, _, _ in cases do
                     for x, t in patVars p do
@@ -222,6 +226,10 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
                 | RecordDef _ -> []
             | _ -> []
 
+        // join points whose body builds a cell: their reuse-token parameter and the cell's layout
+        let joinTok = System.Collections.Generic.Dictionary<string, string * Ty list>()
+        let tokenTy = tcon "cptr"
+
         /// Rewrites one constructor with the given field layout, on every path of e that ends in
         /// one, to build in the token's cell; paths without one free the token. None = no site.
         let rec place (tok: string) (layout: Ty list) (e: CExpr) : CExpr option =
@@ -232,6 +240,18 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
             | CCtor(u, tag, args) when heap e.ty && (args |> List.map (fun a -> a.ty)) = layout -> re (CCtorAt(tok, u, tag, args))
             | CWhile _
             | CFor _ -> None // runs repeatedly
+            | CJump(j, args) ->
+                // a jump to a join point that builds a cell alike passes the token on, unless
+                // the jump passes another token already
+                let free' =
+                    match (List.last args).k with
+                    | CPrim("token.null", _) -> true
+                    | _ -> false
+
+                match joinTok.TryGetValue j with
+                | true, (_, l) when l = layout && free' -> re (CJump(j, List.take (args.Length - 1) args @ [ mk (CLocal tok) tokenTy ]))
+                | _ -> None
+            | CJoin(j, ps, body, rest) -> place tok layout rest |> Option.map (fun r -> mk (CJoin(j, ps, body, r)) e.ty) // the token isn't in the body's scope
             | CIf(c, t, f) ->
                 match place tok layout t, place tok layout f with
                 | None, None -> None
@@ -267,16 +287,87 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
         let dups (vars: string seq) (e: CExpr) =
             vars |> Seq.fold (fun acc x -> mk (CDup(x, vtypes[x], acc)) acc.ty) e
 
-        // ponytail: free variables are recomputed per node (quadratic); cache them if compile time matters
+        /// Whether a path of e ends in a jump to a join point.
+        let rec jumps (e: CExpr) =
+            match e.k with
+            | CJump _ -> true
+            | CLet(_, _, b)
+            | CLetMut(_, _, b)
+            | CSeq(_, b)
+            | CLine(_, b)
+            | CDup(_, _, b)
+            | CDrop(_, _, b)
+            | CDropFields(_, _, _, _, _, b)
+            | CFreeToken(_, b)
+            | CJoin(_, _, _, b) -> jumps b
+            | CIf(_, t, f) -> jumps t || jumps f
+            | CMatch(_, cases) -> cases |> List.exists (fun (_, _, b) -> jumps b)
+            | _ -> false
+
+        // ---- borrowed projections (as in Lean 4's RC): the fields a match takes from a value that
+        // stays alive past it are borrowed from it, not dup'ed, and dup'ed only where something
+        // takes them. The value then counts as used wherever its fields are, so it's consumed
+        // only after their last use.
+        let parentOf = System.Collections.Generic.Dictionary<string, string>()
+
+        /// The variables e needs alive: its free variables, and the values their borrowed fields
+        /// come from.
+        let live (e: CExpr) =
+            let rec up (acc: Set<string>) (x: string) =
+                match parentOf.TryGetValue x with
+                | true, p when not (acc.Contains p) -> up (acc.Add p) p
+                | _ -> acc
+
+            let fv = freeVars e
+            if parentOf.Count = 0 then fv else fv |> Set.fold up fv
+
         /// e must consume every variable in `owned`; `borrowed` variables stay alive throughout.
         let rec rc (owned: Set<string>) (borrowed: Set<string>) (e: CExpr) : CExpr =
             let fv = freeVars e
-            let dead = Set.difference owned fv
-            drops dead (rc' (Set.intersect owned fv) borrowed e)
+            let lv = live e
+            let dead = Set.difference owned lv
+            // what e reaches only through borrowed fields: borrowed by e, dropped after it
+            let viaFields = Set.difference (Set.intersect owned lv) fv
+            let e' = rc' (Set.intersect owned fv) (Set.union borrowed viaFields) e
+
+            // the drops go where e ends: after its value, or before a jump (which doesn't come
+            // back), after the jump's arguments
+            let rec after (e: CExpr) =
+                let re k = { e with k = k }
+
+                match e.k with
+                | CJump(j, args) ->
+                    let ts = args |> List.map (fun a -> a, tmp ())
+
+                    for a, t in ts do
+                        vtypes[t] <- a.ty
+
+                    let jump = mk (CJump(j, ts |> List.map (fun (a, t) -> mk (CLocal t) a.ty))) e.ty
+                    List.foldBack (fun (a: CExpr, t) acc -> mk (CLet(t, a, acc)) acc.ty) ts (drops viaFields jump)
+                | _ when not (jumps e) ->
+                    let r = tmp ()
+                    vtypes[r] <- e.ty
+                    mk (CLet(r, e, drops viaFields (mk (CLocal r) e.ty))) e.ty
+                | CLet(x, v, b) -> re (CLet(x, v, after b))
+                | CLetMut(x, v, b) -> re (CLetMut(x, v, after b))
+                | CSeq(a, b) -> re (CSeq(a, after b))
+                | CLine(l, b) -> re (CLine(l, after b))
+                | CIf(c, t, f) -> re (CIf(c, after t, after f))
+                | CMatch(s, cases) -> re (CMatch(s, cases |> List.map (fun (p, g, b) -> p, g, after b)))
+                | CDup(x, t, b) -> re (CDup(x, t, after b))
+                | CDrop(x, t, b) -> re (CDrop(x, t, after b))
+                | CDropFields(x, t, tag, keep, tok, b) -> re (CDropFields(x, t, tag, keep, tok, after b))
+                | CFreeToken(t, b) -> re (CFreeToken(t, after b))
+                | CJoin(j, ps, body, rest) -> re (CJoin(j, ps, body, after rest)) // the jumps to it dropped them
+                | _ -> failwith "unreachable"
+
+            let e' = if viaFields.IsEmpty then e' else after e'
+
+            drops dead e'
 
         /// Ordered subexpressions: each owned variable goes to the last one that uses it.
         and rcList (owned: Set<string>) (borrowed: Set<string>) (es: CExpr list) =
-            let fvs = es |> List.map freeVars |> Array.ofList
+            let fvs = es |> List.map live |> Array.ofList
 
             es
             |> List.mapi (fun i ei ->
@@ -310,17 +401,51 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
             | CStr _
             | CUnit -> e
             | CLine(l, a) -> re (CLine(l, rc owned borrowed a))
+            | CJoin(j, ps, body, rest) ->
+                // a join point's body owns its parameters, as a function's does; jumps pass them.
+                // A body that builds a cell also takes a reuse token (null, or a cell the jump's
+                // path took apart), so that cell can be built in after the jump
+                let mine = ps |> List.map fst |> List.filter heapVar |> Set.ofList
+                let body' = rc mine Set.empty body
+
+                // the cell it builds, or the one a join point it jumps to builds
+                let rec layoutIn (e: CExpr) =
+                    match e.k with
+                    | CCtor(_, _, args) when heap e.ty -> Some(args |> List.map (fun a -> a.ty))
+                    | CJump(j2, _) when joinTok.ContainsKey j2 -> Some(snd joinTok[j2])
+                    | k -> children k |> List.tryPick layoutIn
+
+                match layoutIn body' with
+                | Some l ->
+                    let tp = tmp ()
+                    vtypes[tp] <- tokenTy
+                    joinTok[j] <- (tp, l)
+
+                    let body'' =
+                        match place tp l body' with
+                        | Some b -> b
+                        | None -> mk (CFreeToken(tp, body')) body'.ty
+
+                    re (CJoin(j, ps @ [ tp, tokenTy ], body'', rc owned borrowed rest))
+                | None -> re (CJoin(j, ps, body', rc owned borrowed rest))
+            | CJump(j, args) ->
+                let args' = rcList owned borrowed args
+
+                if joinTok.ContainsKey j then
+                    re (CJump(j, args' @ [ mk (CPrim("token.null", [])) tokenTy ]))
+                else
+                    re (CJump(j, args'))
             | CLet(x, v, body) ->
-                let fb = freeVars body
-                let fvv = freeVars v
+                let fb = live body
+                let fvv = live v
                 let ov = Set.difference (Set.intersect owned fvv) fb
                 let v' = rc ov (Set.union borrowed (Set.difference (Set.intersect owned fvv) ov)) v
                 let ob = Set.difference owned ov
                 let ob = if heap v.ty then ob.Add x else ob
                 re (CLet(x, v', rc ob borrowed body))
             | CLetMut(x, v, body) ->
-                let fb = freeVars body
-                let fvv = freeVars v
+                let fb = live body
+                let fvv = live v
                 let ov = Set.difference (Set.intersect owned fvv) fb
                 let v' = rc ov (Set.union borrowed (Set.difference (Set.intersect owned fvv) ov)) v
                 re (CLetMut(x, v', rc (Set.difference owned ov) borrowed body))
@@ -333,8 +458,8 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
                 | [ a'; b' ] -> re (CSeq(a', b'))
                 | _ -> failwith "unreachable"
             | CIf(c, t, f) ->
-                let fc = freeVars c
-                let fr = Set.union (freeVars t) (freeVars f)
+                let fc = live c
+                let fr = Set.union (live t) (live f)
                 let mine = Set.intersect owned fc
                 let oc = Set.difference mine fr
                 let c' = rc oc (Set.union borrowed (Set.difference mine oc)) c
@@ -358,7 +483,7 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
                         let used = Set.intersect pvars (freeVars body)
 
                         match p with
-                        | CPCtor(_, tag, fps) when xOwned && not (fps.IsEmpty || (freeVars body).Contains x) ->
+                        | CPCtor(_, tag, fps) when xOwned && not (fps.IsEmpty || (live body).Contains x) ->
                             // x dies here: specialize its drop, and reuse its cell if the body builds one alike
                             let direct =
                                 fps
@@ -381,21 +506,42 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
                                 | None -> CDropFields(x, s.ty, tag, keep, None, body')
 
                             p, g', dups nested (mk node body.ty)
-                        | _ when xOwned -> p, g', dups used (rc (Set.union owned used) borrowed body)
-                        | _ -> p, g', rc owned (Set.union borrowed pvars) body)
+                        | _ ->
+                            // x stays alive past this case (or is borrowed): its fields are
+                            // borrowed from it, and x, or whatever owns it, lives as long as
+                            // they're used
+                            for v in pvars do
+                                parentOf[v] <- x
+
+                            p, g', rc owned (Set.union borrowed pvars) body)
 
                 re (CMatch(s, cases'))
             | CMatch({ k = CTuple xs } as s, cases) when xs |> List.forall isVar ->
                 // match (a, b) with …: the tuple only borrows its parts, which stay with their
-                // variables (owned as before). The pattern variables the body uses are dup'ed
-                // first: the body may drop a part it no longer needs before using them
+                // variables (owned as before); the pattern variables borrow from the part they
+                // come from, which lives as long as they're used
                 let cases' =
                     cases
                     |> List.map (fun (p, g, body) ->
                         let pvars = patVars p |> List.map fst |> List.filter heapVar |> Set.ofList
                         let g' = g |> Option.map (rc Set.empty (Set.unionMany [ borrowed; owned; pvars ]))
-                        let used = Set.intersect pvars (freeVars body)
-                        p, g', dups used (rc (Set.union owned used) borrowed body))
+
+                        match p with
+                        | CPTuple ps ->
+                            List.zip xs ps
+                            |> List.iter (fun (x, q) ->
+                                match x.k with
+                                | CLocal xv ->
+                                    for v, _ in patVars q do
+                                        if heapVar v then parentOf[v] <- xv
+                                | _ -> ())
+
+                            p, g', rc owned (Set.union borrowed pvars) body
+                        | _ ->
+                            // an or-pattern may take a variable from a different part in each
+                            // alternative: no one part to keep alive, so the ones used are dup'ed
+                            let used = Set.intersect pvars (freeVars body)
+                            p, g', dups used (rc (Set.union owned used) borrowed body))
 
                 re (CMatch(s, cases'))
             | CMatch(s, cases) -> viaTemp owned borrowed s (fun v -> re (CMatch(v, cases)))
@@ -473,7 +619,7 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
                 re (CLet(t, e, mk (CDup(t, e.ty, mk (CLocal t) e.ty)) e.ty))
             | CGlobalVal _ -> e
             | CPrim(("array.get" | "Array.length" | "String.length" | "String.byte") as op, ({ k = CLocal x } as a) :: rest) when
-                not (rest |> List.exists (fun r -> (freeVars r).Contains x))
+                not (rest |> List.exists (fun r -> (live r).Contains x))
                 ->
                 // reading an element or the length borrows the array (or string): no dup before,
                 // no drop inside; if this was x's last use, x is dropped after

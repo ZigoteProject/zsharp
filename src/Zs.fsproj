@@ -5,6 +5,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <AssemblyName>zs</AssemblyName>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- dotnet publish -r <rid>: precompiled, so a build doesn't wait for the JIT (~30% faster) -->
+    <PublishReadyToRun>true</PublishReadyToRun>
   </PropertyGroup>
 
   <ItemGroup>
@@ -16,6 +18,7 @@
     <Compile Include="Typer.fs" />
     <Compile Include="Mono.fs" />
     <Compile Include="Inline.fs" />
+    <Compile Include="Decide.fs" />
     <Compile Include="Lift.fs" />
     <Compile Include="Rc.fs" />
     <Compile Include="Codegen.fs" />

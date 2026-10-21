@@ -34,8 +34,7 @@ clang/LLVM 22, zig, valgrind, gdb, qemu-user, qemu-system-arm, raylib).
 
 **Known gaps** (in priority order; each is in a phase below):
 1. **Optimizer (phase 5):**
-   - no Core-level inlining or case-of-case;
-   - matches are tested clause by clause;
+   - no case-of-case;
    - fusion only starts from `List.init`;
    - no host benchmark suite in CI;
    - the library is re-checked on every build: about 200 ms of each compile, and 20 ms more since it is split into modules (caching each module's checked Core removes it).
@@ -193,10 +192,17 @@ first.
   - **Details:** [the report](docs/reports/host.md).
   - **First measurements** (time Z# / C): fib 1.87, binary-trees 1.30, nbody 0.93, spectral-norm 0.98, red-black tree 1.79 (4.9× the instructions).
   - `Math.sqrt` came with it: the LLVM intrinsic, one instruction where the hardware has it.
+- **Inlining and re-matching (done):**
+  - A call to a small function that doesn't call itself becomes a copy of its body (callees first; not with `-g`).
+  - A branch where a matched value dies matches it again, so it takes the cell apart itself and can reuse it, even when another branch returns the value.
+  - Together they rebuild a red-black tree's path in place: 80.9M → 35.5M instructions (C: 16.5M).
+- **Decision trees (done):**
+  - A match whose patterns nest becomes a tree of one-level matches, so no value is tested twice.
+  - A part reached on several paths is built once, as a join point the paths jump to; reuse tokens and borrowed fields go along as parameters.
+  - Measured: the red-black tree's `balance` gains little (35.5M → 35.4M), because LLVM had already merged the repeated tests. Their value is in larger matches and in keeping reuse whole.
 
 **Scope:**
-- **Core IR passes:** inlining of small higher-order functions, case-of-known-constructor, case-of-case, uncurrying.
-- **Matches:** decision trees, so no subterm is tested twice.
+- **Core IR passes:** case-of-known-constructor, case-of-case, uncurrying.
 - **Representation:** `i8` enums, the null niche for `option<ref>`, tagged nullary constructors.
 - **Fusion:** from lists and arrays as sources, `map` into list consumers, and `iter`.
 - **Host benchmark suite in CI:** against C, OCaml and F#; a regression of more than 5% fails.

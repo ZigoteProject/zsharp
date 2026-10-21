@@ -460,12 +460,15 @@ There are three levels, from free to manual.
  .zs ─► Lexer (offside rule) ─► Parser ─► AST ─► import c (clang)        Syntax, CImport
      ─► Type check: HM + kinds + traits + units, exhaustiveness ─► Core   Typer, Match, Derive
      ─► Monomorphize (trait dispatch, units erased) ─► list fusion        Mono
+     ─► Inlining of small functions                                       Inline
+     ─► Decision trees for matches, with join points                      Decide
      ─► Closure conversion, lambda lifting                                Lift
      ─► Perceus: ownership, borrowing, moves, reuse, drop specialization  Rc
      ─► LLVM IR (textual) ─► clang -O2/-Os ─► object ─► link              Codegen, Driver
 ```
 
 - **Implementation language:** F# (.NET 10). Self-hosting is optional and late (phase 11).
+- **Reading the optimizer:** `ZS_DUMP_CORE=name` prints the Core of the functions whose name contains `name`, after reference counting. `ZS_NO_DECIDE=1` compiles matches clause by clause, for comparison.
 - **Backend:** textual LLVM IR passed to clang, so reading the `.ll` file is the debugger. A switch to the LLVM C API comes when compile time demands it (phase 9).
 - **Runtimes:** `runtime/rt.c` on an OS, and `runtime/rt-embedded.c` on bare metal (§10). Each is one C file, linked statically.
 - **Generics across libraries:** libraries are **source**, as in Go and Zig.
@@ -495,7 +498,8 @@ and gives LLVM the facts it can't prove.
 | Codegen | Overflow checks via `llvm.*.with.overflow`, which LLVM drops when ranges prove them safe | done |
 | Codegen | `print` of an interpolation prints the pieces, without building the string | done |
 | LLVM facts | `!range` on lengths, `inbounds nuw` element access, `noalias` allocator with `allockind`, `inlinehint` on higher-order functions, `optsize` at `-Os` | done |
-| Core | Inlining of small higher-order functions, case-of-known-constructor, case-of-case, decision trees for matches | planned (phase 5) |
+| Core | Inlining of small functions. Decision trees for matches: no value is tested twice, and a part reached on several paths is a join point (a block with phis) that reuse tokens pass through | done |
+| Core | Case-of-known-constructor, case-of-case | planned (phase 5) |
 | Representation | `i8` enums, null niche for `option<ref>`, tagged nullary constructors | planned (phase 5) |
 | Linking | ThinLTO with the runtime, PGO | planned (phase 9). On microcontrollers, linking the runtime as bitcode was measured and made code bigger and slower |
 
