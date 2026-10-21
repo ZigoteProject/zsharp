@@ -12,3 +12,4 @@ core.*
 build/
 examples/raylib/demo
 .zs-cache/
+bench/mcu/out/
