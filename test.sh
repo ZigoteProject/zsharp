@@ -40,6 +40,14 @@ done
 if bin/zs check runtime/prelude.zs >"$tmp/prelude.log" 2>&1; then echo "ok   zs check runtime/prelude.zs"
 else echo "FAIL zs check runtime/prelude.zs"; head -5 "$tmp/prelude.log"; fail=1; fi
 
+# the prelude is fully documented, and docs/reference/prelude.md is its current reference
+bin/zs doc runtime/prelude.zs > "$tmp/prelude.md" 2>&1
+if grep -q "_Undocumented._" "$tmp/prelude.md"; then
+  echo "FAIL runtime/prelude.zs has undocumented items:"; grep -B4 "_Undocumented._" "$tmp/prelude.md" | grep '^#'; fail=1
+elif ! cmp -s "$tmp/prelude.md" docs/reference/prelude.md; then
+  echo "FAIL docs/reference/prelude.md is out of date (run: bin/zs doc runtime/prelude.zs > docs/reference/prelude.md)"; fail=1
+else echo "ok   prelude documented; docs/reference/prelude.md current"; fi
+
 # the repository's own Z# code is formatted (zs fmt)
 if bin/zs fmt --check $(find tests runtime -name '*.zs') 2>"$tmp/fmt.log"; then echo "ok   zs fmt --check"
 else echo "FAIL zs fmt --check (run: bin/zs fmt \$(find tests runtime -name '*.zs'))"; cat "$tmp/fmt.log"; fail=1; fi

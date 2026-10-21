@@ -137,6 +137,59 @@ let private hoversAt (path: string) =
         |> List.filter (fun h -> h.hfile <> "prelude.zs" && Path.GetFullPath h.hfile = path && not (h.name.StartsWith "$"))
     | _ -> []
 
+/// Documented items per file, recomputed when the file's text changes.
+let private docCache = Dictionary<string, string * Driver.DocItem list>()
+
+let private docIndex (file: string) =
+    let text =
+        try
+            Driver.readSource (if file = "prelude.zs" then Driver.runtimeFile "prelude.zs" else file)
+        with _ ->
+            ""
+
+    match docCache.TryGetValue file with
+    | true, (t, items) when t = text -> items
+    | _ ->
+        let items = Driver.docItems file
+        docCache[file] <- (text, items)
+        items
+
+/// The doc comment of what a hover refers to (found at its definition).
+let private docOf (path: string) (h: Hover) =
+    let def =
+        if h.isDef || h.key = "" then
+            Some h
+        else
+            match results.TryGetValue path with
+            | true, prog -> prog.hovers |> List.tryFind (fun d -> d.isDef && d.key = h.key)
+            | _ -> None
+
+    match def |> Option.bind (fun d -> Driver.docAbove d.hfile d.hline) with
+    | Some doc -> Some doc
+    | None ->
+        match Driver.builtinDocs.TryGetValue h.name with
+        | true, doc -> Some doc
+        | _ ->
+            // constructors, trait methods and members: by name in the files of this program
+            let files =
+                match results.TryGetValue path with
+                | true, prog -> prog.hovers |> List.map (fun x -> x.hfile) |> List.distinct
+                | _ -> [ "prelude.zs" ]
+
+            let keys =
+                [ h.key; h.name ]
+                @ (match h.key.LastIndexOf '.' with
+                   | i when i > 0 -> [ h.key.Substring(0, i) + "#" + h.key.Substring(i + 1) ] // T.M (static) = T#M
+                   | _ -> [])
+
+            files
+            |> List.tryPick (fun f ->
+                docIndex f
+                |> List.tryFind (fun d ->
+                    d.doc.IsSome
+                    && (List.contains d.key keys || (d.kind = "method" && d.key.EndsWith("." + h.name)))) // `compare` = Ord.compare
+                |> Option.bind (fun d -> d.doc))
+
 let private hover (path: string) (line: int) (ch: int) : JsonNode =
     let hits =
         hoversAt path
@@ -146,9 +199,10 @@ let private hover (path: string) (line: int) (ch: int) : JsonNode =
     match hits with
     | h :: _ ->
         let needs = if h.constraints = "" then "" else " when " + h.constraints
+        let doc = docOf path h |> Option.map (fun d -> "\n\n" + d) |> Option.defaultValue ""
 
         obj
-            [ "contents", obj [ "kind", str "markdown"; "value", str (sprintf "```zsharp\n%s : %s%s\n```" h.name (show h.hty) needs) ]
+            [ "contents", obj [ "kind", str "markdown"; "value", str (sprintf "```zsharp\n%s : %s%s\n```%s" h.name (show h.hty) needs doc) ]
               "range", range (h.hline - 1, h.hcol - 1) (h.hline - 1, h.hcol - 1 + h.hlen) ]
     | [] -> null
 
@@ -233,7 +287,10 @@ let private completion (path: string) (line: int) (ch: int) : JsonNode =
             prog.hovers
             |> List.filter (fun h -> h.decl && not (h.name.Contains "$"))
             |> List.distinctBy (fun h -> h.name)
-            |> List.map (fun h -> item h.name 3 (show h.hty))
+            |> List.map (fun h ->
+                match Driver.docAbove h.hfile h.hline with
+                | Some d -> obj [ "label", str h.name; "kind", num 3; "detail", str (show h.hty); "documentation", obj [ "kind", str "markdown"; "value", str d ] ]
+                | None -> item h.name 3 (show h.hty))
 
         let locals =
             hoversAt path

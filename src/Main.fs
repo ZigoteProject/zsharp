@@ -100,6 +100,49 @@ let main argv =
                 status <- 1
 
         status
+    | [ "doc"; src ] ->
+        // a Markdown reference: every documented item, with inferred types for functions
+        try
+            let prog = check src false true
+            let full = Path.GetFullPath src
+
+            let signatures =
+                prog.hovers
+                |> List.filter (fun h -> h.decl)
+                |> List.map (fun h ->
+                    let needs = if h.constraints = "" then "" else " when " + h.constraints
+                    h.name, sprintf "%s : %s%s" h.name (Core.show h.hty) needs)
+                |> dict
+
+            let items = docItems src
+            let section (title: string) (kinds: string list) =
+                let chosen = items |> List.filter (fun d -> List.contains d.kind kinds)
+
+                if not chosen.IsEmpty then
+                    printfn "## %s\n" title
+
+                    for d in chosen do
+                        let shown =
+                            match d.kind with
+                            | "function" when signatures.ContainsKey d.key -> signatures[d.key]
+                            | _ -> d.title
+
+                        let heading = if List.contains d.kind [ "case"; "method"; "member" ] then "####" else "###"
+                        printfn "%s `%s`\n\n```zsharp\n%s\n```\n" heading d.key shown
+
+                        match d.doc with
+                        | Some doc -> printfn "%s\n" doc
+                        | None -> printfn "_Undocumented._\n"
+
+            printfn "# %s\n" (Path.GetFileNameWithoutExtension full)
+            section "Traits" [ "trait"; "method" ]
+            section "Types" [ "type"; "case"; "member" ]
+            section "Derives and impls" [ "derive"; "impl" ]
+            section "Functions" [ "function" ]
+            0
+        with CompileErrorAt(file, line, col, msg) ->
+            printError file line col msg
+            1
     | "lsp" :: _ -> Lsp.serve () // editors may add flags such as --stdio
     | "mcp" :: _ -> Mcp.serve ()
     | "run" :: src :: rest ->
@@ -123,5 +166,5 @@ let main argv =
             Rpc.input <- new Rpc.PrefixedStream([| byte first |], stdin)
             if char first = '{' then Mcp.serve () else Lsp.serve ()
     | _ ->
-        eprintfn "usage: zs build <file.zs> [-o <out>] [--lib] [--emit-llvm] [--sanitize]\n       zs run <file.zs> [--sanitize]\n       zs check <file.zs>\n       zs fmt [--check] <files…>\n       zs lsp\n       zs mcp"
+        eprintfn "usage: zs build <file.zs> [-o <out>] [--lib] [--emit-llvm] [--sanitize]\n       zs run <file.zs> [--sanitize]\n       zs check <file.zs>\n       zs doc <file.zs>\n       zs fmt [--check] <files…>\n       zs lsp\n       zs mcp"
         2

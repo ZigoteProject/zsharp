@@ -120,7 +120,10 @@ let private call (name: string) (args: JsonNode) : string =
             prog.hovers
             |> List.filter (fun h -> h.decl && h.hfile = "prelude.zs" && h.name.Contains(query, StringComparison.OrdinalIgnoreCase))
             |> List.distinctBy (fun h -> h.name)
-            |> List.map signature
+            |> List.map (fun h ->
+                match Driver.docAbove h.hfile h.hline with
+                | Some d -> signature h + "\n  " + d.Replace("\n", "\n  ")
+                | None -> signature h)
 
         if found.IsEmpty then sprintf "nothing in the library matches '%s'" query else String.concat "\n" found
     | "build" ->

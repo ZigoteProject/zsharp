@@ -1,6 +1,7 @@
 ; Z# highlighting (capture names as used by Zed and nvim-treesitter)
 
 (comment) @comment
+((comment) @comment.doc (#match? @comment.doc "^///"))
 (string) @string
 (interpolated_string) @string
 (escape_sequence) @string.escape

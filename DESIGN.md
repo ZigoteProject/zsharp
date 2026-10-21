@@ -522,6 +522,9 @@ import c "raylib.h"                              // libclang, like Zig's @cImpor
 - **Highlighting:** a tree-sitter grammar (`editors/tree-sitter-zsharp`). It drives highlighting, indentation and the outline in Zed, Neovim and Helix, and code views on GitHub.
 - **Language server:** `zs lsp`. It reuses the compiler's lexer, parser and type checker, so hover types and diagnostics are exactly what the compiler reports.
 - **AI agents:** `zs mcp` exposes the same queries, plus build and run, as MCP tools.
+- **Documentation:** `///` comments directly above a declaration, as in F#, are its documentation. This covers functions, types, union cases, traits and their methods, derives, impls and members.
+  - **Where it appears:** hover, completion, the MCP `docs` tool, and `zs doc <file>`, which writes a Markdown reference.
+  - **The prelude:** fully documented. `./test.sh` fails on any undocumented prelude item, and it keeps `docs/reference/prelude.md` current.
 - **Formatting:** `zs fmt` applies one canonical, configuration-free style (Fantomas-like layout, 100 columns). It is built on a lossless syntax tree, so comments survive. It's the backend for LSP formatting and format-on-save.
 - **Zed integration:** the Zed extension (`editors/zed`) bundles the grammar and starts both servers.
 - **Compiler requirements:**

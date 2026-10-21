@@ -608,12 +608,15 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
 
             recordKey node f headTy false (keyOf env f) false
             r
-        | App(Field(r, f), args) ->
+        | App((Field(r, f) as fe), args) ->
             let cr = inf r
             settle cr.ty
 
             match memberOf cr.ty f with
-            | Some(m: MemberInfo) when not m.isStatic && not m.isProperty -> memberCall env depth m (Some cr) args f
+            | Some(m: MemberInfo) when not m.isStatic && not m.isProperty ->
+                let res = memberCall env depth m (Some cr) args f
+                recordKey fe f res.ty false m.gname false
+                res
             | _ -> apply env depth (field cr f) args None
         | App(h, args) -> apply env depth (inf h) args None
         | Lambda(ps0, body) ->
@@ -839,7 +842,13 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
         | Field(r, f) ->
             let cr = inf r
             let res = at node (fun () -> field cr f)
-            record node f res.ty false
+
+            let key =
+                match memberOf cr.ty f with
+                | Some m -> m.gname
+                | None -> ""
+
+            recordKey node f res.ty false key false
             res
         | Question _ -> fail 0 "'?' is only supported as `let x = e?` or as a whole statement (for now)"
         | DeriveCtx(ctx, e) ->

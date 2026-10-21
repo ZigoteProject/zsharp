@@ -20,6 +20,8 @@ frame() { printf 'Content-Length: %d\r\n\r\n%s' "$(printf '%s' "$1" | wc -c)" "$
   frame '{"jsonrpc":"2.0","id":10,"method":"textDocument/definition","params":{"textDocument":{"uri":"'"$uri"'"},"position":{"line":4,"character":15}}}'
   frame '{"jsonrpc":"2.0","id":11,"method":"textDocument/references","params":{"textDocument":{"uri":"'"$uri"'"},"position":{"line":4,"character":7},"context":{"includeDeclaration":true}}}'
   frame '{"jsonrpc":"2.0","id":12,"method":"textDocument/definition","params":{"textDocument":{"uri":"'"$uri"'"},"position":{"line":7,"character":24}}}'
+  frame '{"jsonrpc":"2.0","id":14,"method":"textDocument/hover","params":{"textDocument":{"uri":"'"$uri"'"},"position":{"line":7,"character":24}}}'
+  frame '{"jsonrpc":"2.0","id":15,"method":"textDocument/hover","params":{"textDocument":{"uri":"'"$uri"'"},"position":{"line":6,"character":17}}}'
   frame '{"jsonrpc":"2.0","id":13,"method":"textDocument/completion","params":{"textDocument":{"uri":"'"$uri"'"},"position":{"line":6,"character":16}}}'
   frame '{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"'"$uri"'","version":2},"contentChanges":[{"text":"'"$bad"'"}]}}'
   frame '{"jsonrpc":"2.0","id":6,"method":"shutdown"}'
