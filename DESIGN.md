@@ -1,10 +1,12 @@
-# Z# — design draft v0
+# Z# — design v1
 
-An ML-family language with F# syntax and ergonomics, compiled ahead of time to
-native code through LLVM, with no runtime VM, no tracing GC, and direct C interop.
+An ML-family language with F# syntax and ergonomics. It compiles ahead of time to
+native code through LLVM. It has no VM, no tracing GC, and direct C interop.
 
 **Pitch:** F# syntax, OCaml semantics, Zig-style output: one native binary that
 links straight against C.
+
+Phased plan and status: [ROADMAP.md](ROADMAP.md).
 
 ## 1. Goals / non-goals
 
@@ -13,12 +15,15 @@ links straight against C.
 | F# light syntax (indentation, `let`, `\|>`, `match`) | .NET interop / CLR |
 | Hindley–Milner inference, monomorphized generics | Higher-kinded types, functors |
 | Algebraic data types + exhaustive pattern matching | OOP classes, inheritance |
-| Native codegen via LLVM, C-competitive perf | Tracing GC, JIT |
-| Call C / be called from C, C struct layout | Async / effect system |
-| Deterministic memory (RC, no pauses) | Computation expressions, macros, comptime |
+| Native codegen via LLVM, C-competitive performance | Tracing GC, JIT |
+| Call C / be called from C, C struct layout | Effect handlers (designed in §6.1, built in v3) |
+| Deterministic memory (RC), memory-safe by default | Macros, compile-time evaluation |
+| Computation expressions; `Task` as a library | Built-in `async`/`await` keywords |
+| Data parallelism and SIMD without data races | Green threads, a GIL |
 
-"Simple" here means you can explain the language in about 20 pages. Any feature
-that needs a runtime gets cut.
+"Simple" means the language fits in about 20 pages and a feature that needs a
+runtime is out. The exception is a small C runtime (reference counting, task
+scheduler, thread pool) that is linked only when the program uses it.
 
 ## 2. Language tour
 
@@ -27,7 +32,7 @@ module Geometry
 
 type Point = { x: f64; y: f64 }          // record: value type, C-compatible layout
 
-type Shape =                             // union: tagged, auto-boxed if recursive
+type Shape =                             // union: tagged
   | Circle of center: Point * radius: f64
   | Rect   of Point * Point
 
@@ -38,28 +43,47 @@ let area shape =                         // inferred: Shape -> f64
 
 let total shapes = shapes |> List.map area |> List.sum
 
-type Tree<'a> =                          // recursive -> heap nodes, refcounted
+type Tree<'a> =
   | Leaf
   | Node of Tree<'a> * 'a * Tree<'a>
 
 let rec insert x t =
   match t with
   | Leaf -> Node (Leaf, x, Leaf)
-  | Node (l, v, r) when x < v -> Node (insert x l, v, r)   // reuses node in place if unique
+  | Node (l, v, r) when x < v -> Node (insert x l, v, r)   // reuses the node in place if unique
   | Node (l, v, r)            -> Node (l, v, insert x r)
+
+let sumTo n =                            // imperative code is fine; mutation stays local
+  let mutable acc = 0
+  for i in 1 .. n do
+    acc <- acc + i
+  acc
 ```
 
 ### Core features
-- **Bindings:** `let` (immutable), `let mutable` with `<-`, `let rec`, plus shadowing.
-- **Types:** `int` (= i64), `i8..i64`, `u8..u64`, `f32`, `f64`, `bool`, `char` (u32 scalar), `string` (UTF-8, RC), `unit`.
-- **Data:** tuples, records (with `{ p with x = 1.0 }`), unions, `option<'a>`, `result<'a,'e>`, `array<'a>`, `list<'a>`.
-- **Functions:** curried by default, closures, `|>`, `>>`, partial application. The compiler uncurries known call sites, so curried code costs nothing at runtime.
-- **Pattern matching:** nested, guards, `as`, or-patterns, plus an exhaustiveness and redundancy checker. Non-exhaustive matches are an error, not a warning.
-- **Errors:** `result` with a postfix `?` that propagates (Rust-style). This stands in for F#'s `result { }` builder. `panic` is for bugs only.
+- **Bindings:** `let`, `let mutable` with `<-`, `let rec`, plus shadowing. A `let mutable` can't be captured by a closure (an F# rule that §5 relies on).
+- **Types:**
+  - Integers: `int` (= i64), `i8..i64`, `u8..u64`, `usize`.
+  - Floats: `f32`, `f64`.
+  - Others: `bool`, `char` (u32 scalar), `string` (UTF-8, RC), `unit`.
+  - SIMD vectors: `f32x4`, `i32x8`, … (§8).
+- **Data:**
+  - Tuples and records (`{ p with x = 1.0 }`) and unions.
+  - Library types: `option<'a>`, `result<'a,'e>`, `list<'a>`, `array<'a>`, `ref<'a>`.
+- **Functions:**
+  - Curried by default, with closures (`fun x -> ...`), `|>`, `>>` and partial application.
+  - Known call sites get uncurried, so currying costs nothing at runtime.
+  - Self tail calls become loops, guaranteed.
+- **Loops:** `for i in a .. b do`, `for x in xs do`, `while c do`.
+- **Pattern matching:**
+  - Supports nesting, guards, `as`, and or-patterns that bind variables.
+  - A non-exhaustive match is an **error** that names a missing case. A case that can never match is also an error.
+- **Errors:** `result` with a postfix `?` that propagates the error, or a `result { }` builder (§4). `panic` is for bugs only.
 - **Strings:** `$"x = {p.x}"` interpolation.
 - **Modules:** one file is one module, with `open`, `private`, and nested `module`.
 
-### Traits (replacing interfaces and SRTP)
+## 3. Traits (replacing interfaces and SRTP)
+
 ```fsharp
 trait Show<'a> =
   abstract show : 'a -> string
@@ -69,86 +93,252 @@ impl Show<Point> =
 
 let print<'a when 'a : Show> (x: 'a) = Console.println (show x)
 ```
-Traits are resolved statically and monomorphized, so there are no vtables
-unless you ask for `dyn Show`. Operators (`+`, `<`, `=`) are traits (`Num`,
-`Ord`, `Eq`) with built-in impls for primitives. `Eq`, `Ord`, `Hash` and `Show`
-can be derived with `[<Derive(Eq, Show)>]`.
 
-## 3. Memory model: Perceus reference counting
+- **Dispatch:** resolved statically and monomorphized, with no vtables unless you write `dyn Show`.
+- **Operators:** `+`, `<` and `=` are traits (`Num`, `Ord`, `Eq`) with built-in impls for primitives and SIMD vectors.
+- **Derivable:** `[<Derive(Eq, Ord, Hash, Show)>]`.
+- **Auto traits:** `Share` (§7) is derived structurally by the compiler, and users can't implement it by hand.
 
-This is the most important decision. It is how Koka and Lean 4 get functional
-code to run at native speed:
+## 4. Computation expressions
 
-- **Value types:** primitives, tuples, records, and non-recursive unions live inline (stack or registers) and are copied.
-- **Heap types:** recursive unions, closures, `string`, `array`, and `list` are refcounted.
-- **The compiler inserts and elides RC ops** using ownership and borrow inference. Most `inc`/`dec` pairs disappear.
-- **Reuse:** when a pattern match consumes a unique cell and builds one of the same size, it updates the cell in place. As a result, `insert`, `List.map`, and `arr.[i] <- x` on uniquely owned data do not allocate. This is "functional but in place."
-- **Cycles:** immutable data can't form cycles. Only `ref`/mutable fields can, and that is documented as the user's job (use `weak`), the same as Swift.
-- **Escape hatch:** an `Arena` for bulk allocation in hot paths (Zig flavor), plus raw `ptr<'a>` in `unsafe`.
-
-The result is deterministic destruction, no GC pauses, a runtime that is just
-`malloc`/`free` plus about 200 lines of C, and it's trivially embeddable in C programs.
-
-## 4. C interop
+These are F#'s builder syntax, kept general so that async, `result`, `option`,
+parsers and generators are all libraries rather than compiler features.
 
 ```fsharp
-// declare
-extern puts   : cstr -> c_int
-extern malloc : usize -> ptr<u8>
-extern printf : cstr -> ... -> c_int             // variadic
-
-// C-layout struct (records already are; this pins it and forbids reordering)
-[<CLayout>]
-type Vec2 = { x: f32; y: f32 }
-
-// export to C: no currying, C calling convention, stable symbol
-[<Export "zs_area">]
-let area (s: Shape) : f64 = ...
-
-// v2: import a header directly (libclang), like Zig's @cImport
-import c "raylib.h"
+let loadUser id =
+  task {
+    let! row  = Db.query $"select * from users where id = {id}"
+    let! avatar = Http.get row.avatarUrl
+    use file = File.create $"{id}.png"      // closed on completion, error *or* cancellation
+    do! file.write avatar
+    return row.name
+  }
 ```
 
-- **FFI types:** `c_int`, `c_long`, `usize`, `cstr`, `ptr<'a>`, `fnptr<...>`.
-- **Moving data across the boundary:** C-layout values pass by value. RC objects cross as opaque handles, using explicit `Rc.retain`/`Rc.release`.
-- **Raw pointers:** `Ptr.read`, `Ptr.write`, and pointer arithmetic need an `unsafe` expression.
-- **Linking:** `zs build` emits a `.o`/`.a`/`.so` plus a generated `.h` for every `[<Export>]` function. Use `--link -lfoo` to pull libraries in.
+A builder is a **module**, not an object, so it resolves statically and can be
+inlined. The forms rewrite as follows:
 
-## 5. Compiler architecture
+| Form | Rewrites to |
+|---|---|
+| `let! x = m in rest` | `B.bind m (fun x -> rest)` |
+| `do! m` | `B.bind m (fun () -> ...)` |
+| `return e` / `return! m` | `B.ret e` / `m` |
+| `use x = e` | `B.using e (fun x -> ...)` |
+| `for x in xs do` | `B.forEach xs (fun x -> ...)` |
+| `if c then m` (no else) | `B.zero` on the missing branch |
+
+The compiler checks the builder's shape with a `Builder` trait, so a missing
+`bind` is a type error at the use site.
+
+## 5. Memory model and memory safety
+
+### Perceus reference counting (Koka, Lean 4)
+- **Value types:** primitives, tuples, records, SIMD vectors, and *small non-recursive* unions live inline (registers or stack) and are copied.
+- **Heap types:** recursive unions, closures, `string`, `array`, `list` and `ref` are refcounted.
+- **The compiler inserts and elides RC operations.** Borrow inference removes most `inc`/`dec` pairs.
+- **Reuse:** when a match consumes a unique cell and builds one of the same size, it overwrites the cell. This makes code "functional but in place": `insert`, `List.map`, `arr.[i] <- x` and CPS continuations don't allocate when their input is unique.
+- **Cycles:** immutable data can't form cycles. Only `ref` and mutable fields can, which is the user's job, the same as in Swift (use `weak`).
+- **Escape hatches:** `Arena.with (fun a -> ...)` for bulk allocation, and `ptr<'a>` inside `unsafe`.
+
+### What code without `unsafe` guarantees
+
+| Guarantee | Mechanism |
+|---|---|
+| No use-after-free or double free | RC; values die when their last reference does |
+| No null | `option<'a>`; `option<ref>` compiles to a nullable pointer (niche) |
+| No uninitialised reads | Every binding has a value; arrays are created with `init` or `create` |
+| No out-of-bounds access | Bounds-checked indexing, with checks hoisted or removed in loops (§9) |
+| No data races | `let mutable` can't be captured, plus the `Share` trait (§7) |
+| Deterministic cleanup | RC plus `use`; this also runs when a task is cancelled (§6) |
+| Arithmetic | Integer overflow traps in debug and wraps in release. Divide by zero always traps. |
+
+**Not guaranteed (and still memory-safe):** leaks through mutable `ref` cycles.
+
+**Unsafe on purpose:** `unsafe` expressions, raw `ptr<'a>`, and every `extern` call.
+
+## 6. Concurrency: `Task`
+
+There is **one type, `Task<'a>`, and it is cold.** A task is a value that
+describes work. Defining it does nothing, and running it twice runs the work
+twice. `Task.start` gives a hot handle when you want the work to begin now. F#
+needed both Async and Task only because of .NET compatibility, which Z# doesn't
+have.
+
+```fsharp
+let both a b =
+  task {
+    let! (x, y) = Task.both (Http.get a) (Http.get b)   // concurrent
+    return x.length + y.length
+  }
+
+let main () = Task.run (both "https://a" "https://b") |> printfn "%d"
+```
+
+- **Implementation:** a plain library on top of §4. Each `let!` becomes a continuation closure.
+  - Continuations are almost always unique, so Perceus reuses them in place. A loop that waits repeatedly settles into steady memory use, not one allocation per await.
+  - Bind chains use LLVM `musttail` (guaranteed tail calls on x86-64 and aarch64), so the stack doesn't grow.
+  - Later, the compiler may lower `task { }` to stackless state machines, as F# 6 did with resumable code, with no change to the source (ROADMAP phase 9).
+- **Structured concurrency:**
+  - Child tasks can't outlive the scope that started them (`Task.both`, `Task.all`, `Task.race`, `Task.scope`).
+  - Cancellation flows down implicitly.
+  - Cancelling drops the continuation, so RC releases everything it captured and `use` resources close immediately.
+- **Event loop:** about 300 lines of C over epoll/kqueue (io_uring later), linked only if `Task` is used. **v1 is single-threaded; v2 makes the scheduler multi-threaded** (ROADMAP phase 7).
+- **Blocking C calls:** `Task.blocking (fun () -> sqlite3_step db)` moves the call to a helper thread so it doesn't stall the loop. In v1 this is the only use of threads.
+
+### 6.1 Effect handlers (designed now, built in v3)
+
+This is designed now so that v1 and v2 choices don't rule it out. With effect
+handlers, a single feature can express generators, async, exceptions,
+backtracking and dependency injection, with no function colouring.
+
+```fsharp
+effect Yield<'a> =
+  abstract yield : 'a -> unit
+
+let numbers () =                         // inferred: unit -> unit / Yield<int>
+  for i in 1 .. 3 do Yield.yield i
+
+let sum () =
+  let mutable total = 0
+  handle numbers () with
+  | Yield.yield x, k -> total <- total + x; k ()   // k: the resumption, called at most once
+  | return () -> total
+```
+
+- **Effect types:** Koka-style effect rows (`a -> b / E`), inferred and row-polymorphic. A function with no effects shows nothing extra in its type, so ordinary code stays unannotated.
+- **One-shot resumptions only** (`k` is called at most once). This keeps RC sound, since there's no duplication of captured resources, and allows in-place reuse. Multi-shot continuations (backtracking) would be a later, opt-in effect kind.
+- **Implementation:** generalized evidence passing with yield-bubbling (Xie & Leijen, ICFP 2021). This is what Koka uses, and Koka also uses Perceus.
+  - It compiles to plain code with **no stack switching and no stack copying**.
+  - Only functions whose effect row is non-empty pay any cost. Pure code is untouched.
+- **C interop rule:** an `extern` is effect-free by definition. A closure passed to C as a callback must have an empty effect row, checked at compile time. So a continuation can never be captured across a C frame, which is the property that sinks stack-switching designs.
+- **Relation to Task:** `Task` keeps its v1 API and `task { }` syntax. Later it may be reimplemented as an `Async` effect without breaking user code. Builders (§4) remain for monads that aren't effects (parsers, `result`).
+- **Constraints that apply now (v1 and v2):**
+  1. The runtime and FFI must not assume one contiguous native stack.
+  2. `Task` stays opaque, so its representation can change.
+  3. Core IR keeps the type information needed to add effect rows later.
+  4. The keywords `effect` and `handle` are reserved.
+
+## 7. Parallelism
+
+**Concurrency** (`Task`, waiting on I/O) and **parallelism** (using all cores)
+are separate APIs that share one runtime thread pool.
+
+```fsharp
+let rows = matrix |> Array.Parallel.map (fun row -> Array.sum row)
+let (a, b) = Parallel.both (fun () -> fib 35) (fun () -> fib 36)
+Parallel.for 0 n (fun i -> out.[i] <- f i)       // disjoint writes, see below
+```
+
+- **Thread pool:** work-stealing with Chase–Lev deques, sized to the core count, in the C runtime.
+- **`Share` auto-trait (like Rust's `Send`, but with no lifetimes):** a value may cross threads only if it is immutable or explicitly synchronised. Immutable-by-default means nearly all data qualifies automatically.
+  - **Share:** primitives, immutable records, tuples, unions, `string`, `list`, immutable `array`, and closures whose captured values are all `Share`.
+  - **Not Share:** `ref`, mutable fields, and plain `array` mutated through `<-`. Wrap these in `Atomic<'a>`, `Mutex<'a>` or `Channel<'a>`.
+  - **Indexed parallel writes:** `Parallel.for` and `Array.Parallel.init` write to one array by index. The library proves the writes are disjoint by construction, since each index belongs to exactly one task.
+- **Reference counts across threads** (the Koka and Lean approach):
+  - RC is non-atomic by default, so single-threaded code pays nothing.
+  - When a value is sent to another thread, its object graph is marked *shared* once, and from then on only those objects use atomic RC.
+- **Concurrency tools in the stdlib:** `Atomic`, `Mutex`, `Channel` (bounded, MPMC) and `Parallel.reduce`.
+- **Verification:** ThreadSanitizer runs in CI over the parallel tests.
+
+## 8. SIMD
+
+There are three levels, from free to manual.
+
+1. **Autovectorization (free):** the compiler emits IR that LLVM can vectorize:
+   - Arrays of unboxed value types are stored contiguously.
+   - Immutable arrays are marked `noalias` and `readonly`, a direct win from FP.
+   - Bounds checks are hoisted out of loops.
+   - Floats are strict IEEE by default. `[<FastMath>]` on a function allows reassociation, so reductions vectorize.
+2. **Portable vector types** (like Zig's `@Vector` and C#'s `Vector128`):
+   - Value types `f32x4`, `f32x8`, `f64x2`, `f64x4`, `i32x4`, `i32x8`, `i8x16`, `u8x32`, … map to LLVM `<N x T>`.
+   - They support arithmetic and comparison operators through the `Num`/`Ord` traits, plus `load`, `store`, `splat`, `shuffle`, `select`, `sum`, `min` and `max`.
+   - Any operation the target lacks is legalised by LLVM, so the code stays portable.
+
+   ```fsharp
+   let dot (a: array<f32>) (b: array<f32>) =
+     let mutable acc = f32x8.zero
+     for i in 0 .. 8 .. a.length - 8 do
+       acc <- acc + f32x8.load a i * f32x8.load b i
+     f32x8.sum acc + Array.dotTail a b (a.length / 8 * 8)
+   ```
+3. **Target intrinsics:** `Simd.X86` and `Simd.Arm` modules, which are thin `extern`s to LLVM intrinsics.
+   - **Selecting the CPU:** `zs build --cpu=native|x86-64-v3|...`, or per function with `[<Target("avx2")>]`.
+   - **Picking a variant at runtime:** `[<Multiversion("avx2", "sse4.2")>]` compiles several versions and chooses one when the program starts.
+
+## 9. Compiler architecture and optimization
 
 ```
  .zs ─► Lexer (offside rule) ─► Parser ─► AST
         ─► Resolve (names, modules)
-        ─► Typecheck (HM + trait constraints, exhaustiveness)
-        ─► Core IR (typed, ANF)
-        ─► Monomorphize ─► Match compile (decision trees)
-        ─► Closure convert + uncurry
-        ─► Perceus (RC insertion, borrow inference, reuse)
-        ─► LLVM IR ─► clang/llc -O2 ─► native object ─► link
+        ─► Typecheck (HM + traits, exhaustiveness)              [Typer.fs]
+        ─► Core IR (typed)
+        ─► Monomorphize ─► Core optimizer ─► Perceus (RC, borrow, reuse)
+        ─► LLVM IR ─► LLVM -O2/-O3 (+ThinLTO) ─► native object ─► link
 ```
 
-- **Bootstrap language: F#.** Unions and `match` are ideal for compilers, `dotnet` is already installed here, and you'd be dogfooding the ergonomics Z# copies. Self-hosting is optional and late.
-- **Backend: emit textual LLVM IR (`.ll`) and run `clang` on it** (already installed). This needs no LLVM bindings or build setup, and it's trivial to debug because you just read the `.ll`. Switching to the LLVM C API is a mechanical change, worth making only if compile speed becomes a problem. `zig cc` works as a drop-in for cross-compiling.
-- **Runtime:** `rt.c`, containing RC helpers, panic, and string/array primitives, compiled once and linked statically.
-- **Debug info:** emit DWARF from day one (`!DILocation`) so gdb and lldb work on source lines.
-- **CLI:** `zs build`, `zs run`, `zs test`. Plain `zs build main.zs` follows imports, so there's no project file in v1.
+- **Bootstrap language:** F#. Self-hosting is optional and late.
+- **Backend:** textual LLVM IR passed to `clang`. Debugging is trivial because you just read the `.ll` file. Switch to the LLVM C API when compile time demands it (phase 9).
+- **Runtime:** `rt.c` (RC helpers, panic, strings and arrays, scheduler, thread pool), compiled once and linked statically.
+- **Debug info:** DWARF (`!DILocation`) so gdb and lldb step through source lines. This is not yet implemented and is planned for phase 4.
 
-## 6. Roadmap
+### Optimization strategy
 
-Each phase ends with a native binary that runs.
+LLVM is excellent at scalar loops and register allocation. It knows nothing
+about closures, unions, or which values are unique. Z# does the
+**functional-language optimizations** on Core IR and leaves the rest to LLVM.
 
-| Phase | Scope | Exit test |
-|---|---|---|
-| 0 | `int`, `let`, functions, `if`, `extern`, LLVM IR emit + clang | `fib 30` prints via C `printf` |
-| 1 | HM inference, tuples, records, unions, `match` + exhaustiveness | Expression evaluator in Z# |
-| 2 | Closures, generics (mono), `string`/`list`/`array`, Perceus RC | Red-black tree with no leaks under valgrind |
-| 3 | Traits, modules, `?`, stdlib core, `[<Export>]` + `.h` gen | C program calls a Z# library |
-| 4 | `import c` via libclang, DWARF polish, `zs test` | Raylib demo window |
-| 5 | (optional) Self-host the compiler in Z# | — |
+| Layer | Optimization |
+|---|---|
+| Core IR | Inlining (especially small higher-order functions: `\|>`, `List.map (fun ...)`), uncurrying, closure elimination and lambda lifting |
+| Core IR | case-of-known-constructor, case-of-case, let-floating, dead code elimination |
+| Core IR | Self tail calls become loops. Other tail calls use `musttail`. |
+| Core IR | Match compilation into decision trees, so no subterm is tested twice |
+| Representation | Small non-recursive unions and tuples are unboxed (scalar replacement). Enums become `i8`. `option<ptr>` uses the null niche. Nullary constructors are pointer-tagged. |
+| Perceus | Borrow inference, drop specialization, reuse analysis, fusing RC ops on the fast path |
+| LLVM metadata | `noalias`/`readonly` on immutable data, `nonnull`, range metadata on tags, bounds-check hoisting |
+| LLVM | `-O2` by default, `-O3 --cpu=native` for release, ThinLTO across modules and `rt.c`, later PGO (`zs build --pgo`) |
+| Compile time | One LLVM module per Z# module, with incremental caching keyed on module interface hashes |
 
-## 7. Open decisions (defaults chosen)
+**Performance contract:** a benchmark suite tracked in CI (fib, binary-trees,
+nbody, spectral-norm, a red-black tree, JSON parsing, mandelbrot). Each runs
+against C (clang -O2), OCaml and F#. A regression of more than 5% fails the build.
 
-1. **`int` width:** 64-bit (F# uses 32). It's cheap on modern CPUs and avoids overflow surprises.
-2. **Integer overflow:** wraps in release builds and traps in debug builds (Zig's approach).
-3. **Syntax:** indentation only, no `begin/end` or verbose-syntax mode.
-4. **Memory:** Perceus RC rather than a GC. Revisit only if cyclic mutable graphs turn out to dominate real code.
+## 10. C interop
+
+```fsharp
+extern puts   : cstr -> c_int
+extern printf : cstr -> ... -> c_int             // variadic
+
+[<CLayout>]                                      // pins C layout, forbids reordering
+type Vec2 = { x: f32; y: f32 }
+
+[<Export "zs_area">]                             // no currying, C calling convention, stable symbol
+let area (s: Shape) : f64 = ...
+
+import c "raylib.h"                              // libclang, like Zig's @cImport
+```
+
+- **FFI types:** `c_int`, `c_long`, `usize`, `cstr`, `ptr<'a>`, `fnptr<...>`.
+- **Passing values across the boundary:**
+  - `[<CLayout>]` records pass by value. The compiler does the C ABI lowering, since LLVM doesn't.
+  - RC objects cross as opaque handles, using `Rc.retain`/`Rc.release`.
+- **Callbacks:** a C `void (*cb)(void*)` paired with a `void* user` receives a Z# closure. The compiler generates the thunk and passes the closure through `user`.
+- **Raw pointers:** `Ptr.read`, `Ptr.write` and pointer arithmetic require an `unsafe` expression.
+- **Build output:** `zs build` emits a `.o`/`.a`/`.so` and a `.h` for every `[<Export>]` function.
+- **Interaction with Task:** a blocking C call goes through `Task.blocking` (§6).
+
+## 11. Decisions
+
+| # | Decision | Chosen default | Status |
+|---|---|---|---|
+| 1 | `int` width | 64-bit | decided |
+| 2 | Integer overflow | traps in debug, wraps in release; divide by zero always traps | decided |
+| 3 | Syntax | indentation only | decided |
+| 4 | Memory | Perceus RC, no GC | decided |
+| 5 | Unreachable match case | error (F# warns) | decided |
+| 6 | Async types | one cold `Task<'a>` + `Task.start` | decided |
+| 7 | Async syntax | general computation expressions, builders as modules | decided |
+| 8 | Threads | v1 single-threaded event loop; multi-threading in v2 | decided |
+| 9 | Effect handlers | designed now (§6.1), built in v3; one-shot, evidence passing | decided |
+| 10 | Float semantics | strict IEEE; `[<FastMath>]` opt-in per function | **open** |
+| 11 | SIMD API | portable `f32x8`-style value types + target intrinsics | **open** |
