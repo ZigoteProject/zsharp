@@ -25,7 +25,7 @@ clang/LLVM 22, zig, valgrind, gdb, qemu-user, qemu-system-arm, raylib).
 ## Where things stand
 
 **Works today:**
-- **Language:** inference, records with defaults, unions, exhaustive matching, active patterns, units of measure, traits, derives, members with named and optional arguments, modules, closures, generics.
+- **Language:** inference, records with defaults, unions, exhaustive matching (record, string and character patterns), active patterns, units of measure, traits, derives, members with named and optional arguments, nested modules, closures, generics, custom operators, `char`, multi-line and raw strings.
 - **Memory and performance:** Perceus RC with borrowing and reuse, copy-on-write arrays, checked arithmetic. On compute code it's as fast as C on a Cortex-M.
 - **Library:** a prelude, Core (collections, text, options, results: every target) and Std (console, environment, files, paths, processes, timing: targets with an OS), in .NET-style namespaces.
 - **C:** C import and export.
@@ -143,22 +143,7 @@ patterns with guards, or-patterns and `as`, and the exhaustiveness and redundanc
 - `examples/mcu/uart.zs`: a UART driver in Z#.
 - `tests/fusion.zs`, `tests/bitwise.zs`.
 
-### Library organization ✅
-- **Layers:** the one prelude file became `lib/`: the prelude (global names), Core (no OS needed, so every target) and Std (needs an OS). A microcontroller build leaves Std out, and using it there is a compile error instead of a link error.
-- **Namespaces, as in .NET:** `Collections`, `Text`, `IO` and `Diagnostics`, open everywhere at the lowest precedence; full names work too. `namespace X` file headers put types and same-named modules side by side (`Collections.Map`).
-- **Names:** .NET's module names (`Directory`, `Environment`) and F#-style functions (`File.readAllText`, `Environment.getVariable`, `Environment.exit`). The old names are gone.
-- **New:** `IO.Path`, `Diagnostics.Stopwatch`, `File.writeAllLines`, `String.lastIndexOf`, `Console.Error.writeLine`, and `Show` for `Map` and `Set` (`map [(1, a)]`, `set [1; 2]`).
-- **Reference:** one page per module in `docs/reference`, built-in functions included.
-- **Fixed on the way:** an `impl` inside a module was registered under the type's short name, so it never applied.
-
-**Exit tests:**
-- `tests/library.zs`: namespaces, precedence, full names, `Path`, `Stopwatch`.
-- `tests/mcu/std.zs`: Std on a microcontroller is a compile error.
-- `./test.sh` checks the library on its own and keeps `docs/reference` current.
-
-## Next
-
-### Phase L: language gaps
+### Phase L: language gaps ✅
 The syntax freeze is over. This phase fills the F# syntax Z# is still missing, before more
 features build on the language. New syntax that F# doesn't have needs a design discussion
 first.
@@ -180,6 +165,21 @@ first.
   - `examples/mcu/uart.zs` declares its registers as constants.
   - The tree-sitter grammar parses all of it.
 
+### Library organization ✅
+- **Layers:** the one prelude file became `lib/`: the prelude (global names), Core (no OS needed, so every target) and Std (needs an OS). A microcontroller build leaves Std out, and using it there is a compile error instead of a link error.
+- **Namespaces, as in .NET:** `Collections`, `Text`, `IO` and `Diagnostics`, open everywhere at the lowest precedence; full names work too. `namespace X` file headers put types and same-named modules side by side (`Collections.Map`).
+- **Names:** .NET's module names (`Directory`, `Environment`) and F#-style functions (`File.readAllText`, `Environment.getVariable`, `Environment.exit`). The old names are gone.
+- **New:** `IO.Path`, `Diagnostics.Stopwatch`, `File.writeAllLines`, `String.lastIndexOf`, `Console.Error.writeLine`, and `Show` for `Map` and `Set` (`map [(1, a)]`, `set [1; 2]`).
+- **Reference:** one page per module in `docs/reference`, built-in functions included.
+- **Fixed on the way:** an `impl` inside a module was registered under the type's short name, so it never applied.
+
+**Exit tests:**
+- `tests/library.zs`: namespaces, precedence, full names, `Path`, `Stopwatch`.
+- `tests/mcu/std.zs`: Std on a microcontroller is a compile error.
+- `./test.sh` checks the library on its own and keeps `docs/reference` current.
+
+## Next
+
 ### Phase 5: optimizer I
 **Done early, on the microcontroller track:**
 - borrow inference;
@@ -187,6 +187,11 @@ first.
 - bounds-check hoisting (loop versioning);
 - LLVM aliasing and range facts;
 - list fusion (first form).
+
+**Started:**
+- **Host benchmark suite (done):** `bench/host/run.sh` runs fib, binary-trees, nbody, spectral-norm and a red-black tree in Z# and C (clang -O2). Outputs must agree; times are best of 3. `./test.sh` fails when a Z# program needs more than 5% more instructions (cachegrind, deterministic) than in `bench/host/baseline.txt`.
+  - **First measurements** (time Z# / C): fib 1.87, binary-trees 1.30, nbody 0.93, spectral-norm 0.98, red-black tree 1.79 (4.9× the instructions).
+  - `Math.sqrt` came with it: the LLVM intrinsic, one instruction where the hardware has it.
 
 **Scope:**
 - **Core IR passes:** inlining of small higher-order functions, case-of-known-constructor, case-of-case, uncurrying.

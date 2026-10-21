@@ -100,6 +100,8 @@ declare ptr @zs_str_lower(ptr)
 declare ptr @zs_str_replace(ptr, ptr, ptr)
 declare zeroext i1 @zs_str_is_float(ptr)
 declare double @zs_str_to_float(ptr)
+declare double @llvm.sqrt.f64(double)
+declare float @llvm.sqrt.f32(float)
 declare ptr @zs_read_line()
 declare i_W @zs_argc()
 declare ptr @zs_arg(i_W)
@@ -1957,6 +1959,10 @@ let compile
                 "zeroinitializer"
             | "Runtime.ticks" -> em.Instr "call i64 @zs_ticks()"
             | "Runtime.allocations" -> em.Instr "call i_W @zs_allocations()"
+            | "Math.sqrt" ->
+                // one instruction where the hardware has it (x86-64, aarch64, the M4's FPU)
+                let lt = llty (argTy 0)
+                em.Instr(sprintf "call %s @llvm.sqrt.%s(%s %s)" lt (if lt = "double" then "f64" else "f32") lt (arg 0))
             | "array.set" ->
                 bounds (arg 0) (arg 1)
                 let el, ep = elemPtr (arg 0) (arg 1)

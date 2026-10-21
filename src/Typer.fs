@@ -215,6 +215,7 @@ let private builtins =
           b "Mmio.read8" "mmio.read.u8" [] (f (tcon "usize") (tcon "u8")) 1
           b "Mmio.write8" "mmio.write.u8" [] (f (tcon "usize") (f (tcon "u8") tUnit)) 2
           b "Runtime.ticks" "Runtime.ticks" [] (f tUnit (tcon "u64")) 1
+          b "Math.sqrt" "Math.sqrt" [ kFloat ] (f a a) 1
           b "Native.argc" "Env.argc" [] (f tUnit tInt) 1
           b "Native.arg" "Env.arg" [] (f tInt tStr) 1
           b "Native.hasVariable" "Env.has" [] (f tStr tBool) 1

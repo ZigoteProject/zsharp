@@ -68,6 +68,7 @@ let main () =
 - **Integer literals:** take whatever integer type the context needs, so `let x: u8 = 200` is fine.
 - **Float literals:** work the same way with `f64` and `f32`.
 - **Converting:** done explicitly with the type's name used as a function, e.g. `float n`, `int 3.9` (which truncates), `u8 n`, `f32 x`.
+- **Math:** `Math.sqrt` (one instruction where the hardware has it) and `Math.abs`; the C library's other functions come in with `import c "math.h"`.
 
 ```zsharp
 let main () =

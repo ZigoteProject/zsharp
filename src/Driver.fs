@@ -770,6 +770,7 @@ let builtinDocs =
           "Int.wrappingSub", "`a - b`, wrapping around on overflow instead of panicking."
           "Int.wrappingMul", "`a * b`, wrapping around on overflow instead of panicking."
           "Runtime.allocations", "The number of heap objects allocated so far."
+          "Math.sqrt", "The square root of an `f64` or `f32` (NaN for a negative number): one instruction where the hardware has it."
           "Runtime.ticks", "A cycle counter for timing code: on a Cortex-M the SysTick count, elsewhere nanoseconds."
           "Mmio.read32", "Reads the 32-bit hardware register at an address (a volatile load)."
           "Mmio.write32", "Writes the 32-bit hardware register at an address (a volatile store)."

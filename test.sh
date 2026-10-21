@@ -53,6 +53,11 @@ if [ -z "$target" ]; then
 bin/zs build tests/json.zs -o "$tmp/time-exe" --time 2>"$tmp/time.log" >/dev/null
 echo "time tests/json.zs: $(grep -E '^(parse|total)' "$tmp/time.log" | tr -s ' ' | tr '\n' ';' | sed 's/;$//')"
 
+# host benchmarks against C: a Z# program needing more than 5% more instructions than in
+# bench/host/baseline.txt fails (bench/host/run.sh shows times; --update after an improvement)
+if bench/host/run.sh --check >"$tmp/bench.log" 2>&1; then echo "ok   bench/host (instruction counts within 5% of the baseline)"
+else echo "FAIL bench/host"; cat "$tmp/bench.log"; fail=1; fi
+
 # zs test: passing and failing [<Test>] functions, each in its own process (exit 1: some fail)
 actual=$(bin/zs test tests/ztest/sample.zs 2>&1); code=$?
 if [ "$actual" = "$(cat tests/ztest/sample.expected)" ] && [ $code = 1 ]; then echo "ok   zs test tests/ztest/sample.zs"
