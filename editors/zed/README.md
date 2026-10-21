@@ -34,3 +34,24 @@ Syntax highlighting, outline, bracket matching and indentation (from the tree-si
 
 The queries in `languages/zsharp/` are copies of `../tree-sitter-zsharp/queries/`; keep them in
 step (`./test.sh` checks).
+
+## Zed from Flatpak
+
+The Flatpak's sandbox has `PATH=/app/bin:/usr/bin` and no clang, so:
+
+- Give Zed the path to the self-contained `zs` (`dist/zs/zs` after the publish step) in
+  `settings.json`. The language server and the agent's context server both use it:
+
+  ```json
+  {
+    "lsp": { "zs": { "binary": { "path": "/path/to/zsharp/dist/zs/zs" } } },
+    "context_servers": { "zs": { "command": { "path": "/path/to/zsharp/dist/zs/zs" } } }
+  }
+  ```
+
+- The agent's `build` and `run` tools need clang, which the sandbox lacks. `check`, `type_at`,
+  `docs`, `format` and `emit_llvm` work. Run programs from a terminal (`./dev bin/zs run …`).
+
+Checked: the published `zs` runs inside the sandbox (`flatpak run --command=sh dev.zed.Zed`),
+and the extension builds for `wasm32-wasip1`
+(`./dev bash -c 'cd editors/zed && cargo build --release --target wasm32-wasip1'`).

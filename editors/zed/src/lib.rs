@@ -3,7 +3,11 @@
 //! `zs` is found on PATH, or set explicitly in Zed's settings:
 //!   "lsp": { "zs": { "binary": { "path": "/path/to/zs", "arguments": ["lsp"] } } }
 
-use zed_extension_api::{self as zed, settings::LspSettings, ContextServerId, LanguageServerId, Project, Result};
+use zed_extension_api::{
+    self as zed,
+    settings::{ContextServerSettings, LspSettings},
+    ContextServerId, LanguageServerId, Project, Result,
+};
 
 struct ZSharp;
 
@@ -38,12 +42,20 @@ impl zed::Extension for ZSharp {
         })
     }
 
-    // `zs mcp` for Zed's agent. It runs in the project directory, and its build/run tools only
-    // touch files inside it. `zs` must be on Zed's PATH.
-    fn context_server_command(&mut self, _id: &ContextServerId, _project: &Project) -> Result<zed::Command> {
+    // `zs mcp` for Zed's agent. Its build/run tools only touch files inside the project.
+    // The command comes from the context server's settings, else `zs` on PATH:
+    //   "context_servers": { "zs": { "command": { "path": "/path/to/zs", "args": ["mcp"] } } }
+    fn context_server_command(&mut self, id: &ContextServerId, project: &Project) -> Result<zed::Command> {
+        let command = ContextServerSettings::for_project(id.as_ref(), project)
+            .ok()
+            .and_then(|s| s.command);
+
         Ok(zed::Command {
-            command: "zs".to_string(),
-            args: vec!["mcp".to_string()],
+            command: command.as_ref().and_then(|c| c.path.clone()).unwrap_or_else(|| "zs".to_string()),
+            args: command
+                .as_ref()
+                .and_then(|c| c.arguments.clone())
+                .unwrap_or_else(|| vec!["mcp".to_string()]),
             env: Vec::new(),
         })
     }

@@ -198,7 +198,10 @@ type checker, so editor behaviour can't drift from the compiler's.
 - **E2a (`zs lsp`):** done. Diagnostics, hover with constraints, inlay hints, document symbols and formatting, tested by `tests/lsp/session.sh`.
 - **E3 (`zs mcp`):** done. The `check`, `type_at`, `docs`, `build`, `run`, `emit_llvm` and `format` tools, tested by `tests/mcp/session.sh`.
 - **F (`zs fmt`):** v1 done (token-based; see below).
-- **E1 (grammar and Zed extension):** written but not yet built. The grammar still needs generating and testing, and the extension needs compiling to WASM, once the dev image has the tree-sitter CLI and Rust.
+- **E1 (grammar and Zed extension):** built.
+  - **Grammar:** generates, passes its corpus test, parses every `.zs` file in the repository with no errors (checked by `./test.sh`), and parses the prelude in under 2 ms.
+  - **Extension:** compiles to `wasm32-wasip1`. The self-contained `zs` runs inside Zed's Flatpak sandbox.
+  - **Left to do:** install it in Zed (`zed: install dev extension`), which is a manual step.
 - **E2b (navigation and completion):** partly done.
   - **Done:** go to definition (across modules and into the prelude), find references, and completion (members and fields after `.`, plus names and keywords), including names inside `$"…{x}…"`.
   - **Still to do:** signature help, rename and code actions.
