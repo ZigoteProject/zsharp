@@ -6,6 +6,7 @@ open System.Globalization
 open System.Text
 
 exception CompileError of line: int * msg: string
+exception CompileErrorAt of file: string * line: int * msg: string // once the file is known
 
 /// line 0 = "unknown here"; the nearest enclosing statement/declaration fills it in.
 let fail line msg = raise (CompileError(line, msg))
@@ -90,6 +91,9 @@ type Decl =
     | Trait of name: string * tparam: string * methods: (string * SType) list
     | Derive of name: string * defs: (int * string * Param list * SType option * Expr) list
     | Attrs of (string * string list) list * Decl // [<Derive(Json); NoEquality>]
+    | Private of Decl // let private f / type private T
+    | Open of string // open Module
+    | ModuleHeader of string // module Name (first line of a file)
     | Impl of traitName: string * head: SType * defs: (int * string * Param list * SType option * Expr) list
 
 /// Rebuilds an expression with f applied to each direct child expression.
@@ -167,7 +171,7 @@ let showTok =
 let keywords =
     set
         [ "let"; "rec"; "if"; "then"; "else"; "extern"; "true"; "false"; "not"; "match"; "with"; "when"
-          "type"; "of"; "as"; "fun"; "for"; "in"; "do"; "while"; "mutable"; "member"; "static"; "trait"; "impl"; "abstract"; "derive" ]
+          "type"; "of"; "as"; "fun"; "for"; "in"; "do"; "while"; "mutable"; "member"; "static"; "trait"; "impl"; "abstract"; "derive"; "open"; "module"; "private" ]
 
 // longest first
 let symbols =
@@ -1254,6 +1258,12 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
 
             let _, d = decl ()
             ln, Attrs(List.ofSeq attrs, d)
+        | KKw "open" ->
+            advance ()
+            ln, Open(ident ())
+        | KKw "module" ->
+            advance ()
+            ln, ModuleHeader(ident ())
         | KKw "derive" ->
             // derive Json = let toJson (x: 'self) = ...
             advance ()
@@ -1276,6 +1286,11 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
 
             expect KDedent "end of derive"
             ln, Derive(name, List.ofSeq defs)
+        | KKw "type" when peek2 () = KKw "private" ->
+            advance ()
+            toks[pos.Value] <- { toks[pos.Value] with tok = KKw "type" }
+            let _, d = decl ()
+            ln, Private d
         | KKw "type" ->
             advance ()
             let name = ident ()
@@ -1408,6 +1423,11 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
             if isRec then
                 advance ()
 
+            let isPrivate = peek () = KKw "private"
+
+            if isPrivate then
+                advance ()
+
             let name = ident ()
             let ps = parameters ()
 
@@ -1416,7 +1436,8 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
 
             let ret = optTy ()
             expect (KSym "=") "'='"
-            ln, Fun(name, isRec, ps, ret, block ())
+            let f = Fun(name, isRec, ps, ret, block ())
+            ln, (if isPrivate then Private f else f)
         | _ -> err "'let', 'type' or 'extern'"
 
     if exprOnly then

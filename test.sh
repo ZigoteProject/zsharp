@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Builds the compiler, then checks every tests/*.zs: run output vs .out, or compile error vs .err.
+# Builds the compiler, then checks every tests/**/*.zs that has an expected .out (run output) or
+# .err (compile error) next to it; other .zs files are modules those tests use.
 # --valgrind: also run each program under valgrind (memory errors or leaks fail the test).
 set -u
 cd "$(dirname "$0")"
@@ -8,8 +9,9 @@ export ZS_LEAKCHECK=1 ZS_BACKTRACE=0  # report leaked objects at exit; determini
 valgrind=0; [ "${1:-}" = "--valgrind" ] && valgrind=1
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 fail=0
-for t in tests/*.zs; do
+for t in $(find tests -name '*.zs' | sort); do
   base=${t%.zs}
+  [ -f "$base.out" ] || [ -f "$base.err" ] || continue
   if [ -f "$base.err" ]; then
     actual=$(bin/zs build "$t" -o "$tmp/exe" 2>&1); expected=$(cat "$base.err")
   elif ! bin/zs build "$t" -o "$tmp/exe" 2>"$tmp/build.log"; then

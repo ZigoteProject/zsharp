@@ -191,7 +191,10 @@ type private Global =
       arity: int
       mutable defining: bool }
 
-let check (decls: (int * Decl) list) : Program =
+/// modules: (file, module name, declarations) in dependency order; the prelude and the main
+/// file have no module name (their declarations are global).
+let check (modules: (string * string option * (int * Decl) list) list) : Program =
+    let decls = modules |> List.collect (fun (_, _, ds) -> ds)
     let types = Dictionary<string, TypeInfo>()
     let ctors = Dictionary<string, string * int>() // constructor -> union, tag
     let fieldOwner = Dictionary<string, string>() // field -> last record declaring it
@@ -229,6 +232,34 @@ let check (decls: (int * Decl) list) : Program =
     let funs = ResizeArray<FunDef>()
     let tyvars = Dictionary<string, Ty>() // 'a in the current function's annotations
     let counter = ref 0
+    let currentModule = ref (None: string option)
+    let opens = ref ([]: string list) // most recent first
+    let privates = Dictionary<string, string option>() // qualified name -> owning module
+    let moduleNames = modules |> List.choose (fun (_, m, _) -> m) |> Set.ofList
+
+    /// The name a declaration gets in the current module.
+    let qualify (name: string) =
+        match currentModule.Value with
+        | Some m -> m + "." + name
+        | None -> name
+
+    /// Unqualified names resolve in the current module, then opened modules, then globally.
+    let resolveWith (exists: string -> bool) (x: string) : string option =
+        let candidates =
+            [ match currentModule.Value with
+              | Some m -> yield m + "." + x
+              | None -> ()
+              for o in opens.Value do
+                  yield o + "." + x
+              yield x ]
+
+        candidates
+        |> List.tryFind exists
+        |> Option.map (fun q ->
+            match privates.TryGetValue q with
+            | true, owner when owner <> currentModule.Value ->
+                fail 0 (sprintf "'%s' is private to module %s" x (defaultArg owner "?"))
+            | _ -> q)
 
     types["list"] <-
         { npars = 1
@@ -267,6 +298,10 @@ let check (decls: (int * Decl) list) : Program =
                 | true, c -> c
                 | _ -> n
 
+            let n =
+                resolveWith (fun q -> prims.Contains q || builtinCons.ContainsKey q || types.ContainsKey q) n
+                |> Option.defaultValue n
+
             let arity =
                 if prims.Contains n then 0
                 elif builtinCons.ContainsKey n then builtinCons[n]
@@ -293,6 +328,9 @@ let check (decls: (int * Decl) list) : Program =
     let instType name =
         let args = List.init types[name].npars (fun _ -> fresh kAny)
         TCon(name, args), args
+
+    let ctorName (c: string) = resolveWith ctors.ContainsKey c
+    let isCtor (c: string) = (ctorName c).IsSome
 
     let caseFields u tag args =
         match types[u].def with
@@ -334,7 +372,7 @@ let check (decls: (int * Decl) list) : Program =
             ps
             |> List.mapi (fun i (p, ann) ->
                 match p with
-                | PIdent(x, None) when not (ctors.ContainsKey x) -> (x, ann), None
+                | PIdent(x, None) when not (isCtor x) -> (x, ann), None
                 | _ ->
                     let x = sprintf "$p%d" i
                     (x, ann), Some(x, p))
@@ -370,7 +408,8 @@ let check (decls: (int * Decl) list) : Program =
         | PBool b ->
             expect "pattern" ty tBool
             CPBool b
-        | PIdent(c, arg) when ctors.ContainsKey c ->
+        | PIdent(c, arg) when isCtor c ->
+            let c = (ctorName c).Value
             let u, tag = ctors[c]
             let uty, targs = instType u
             expect "pattern" ty uty
@@ -490,7 +529,7 @@ let check (decls: (int * Decl) list) : Program =
             expect (sprintf "result of '%s'" name) rty cb.ty
             let cr = infer (env.Add(name, self)) depth rest
             mk (CLetFun(self.u, isRec, pars |> List.map (fun (_, u, t) -> u, t), cb, cr)) cr.ty
-        | Let(PIdent(x, None), ann, v, rest) when not (ctors.ContainsKey x) ->
+        | Let(PIdent(x, None), ann, v, rest) when not (isCtor x) ->
             let cv =
                 match ann with
                 | Some a -> inferHint env depth (toTy None a) v
@@ -865,6 +904,8 @@ let check (decls: (int * Decl) list) : Program =
                 | true, c -> c
                 | _ -> t
 
+            let t = resolveWith members.ContainsKey t |> Option.defaultValue t
+
             match members.TryGetValue t with
             | true, table ->
                 match table.TryGetValue(name.Substring(i + 1)) with
@@ -1003,8 +1044,7 @@ let check (decls: (int * Decl) list) : Program =
         let parts = x.Split '.'
 
         let resolves (n: string) =
-            env.ContainsKey n || globals.ContainsKey n || ctors.ContainsKey n || builtins.ContainsKey n
-            || traitAliases.ContainsKey n || (staticMember n).IsSome
+            env.ContainsKey n || (resolveName n).IsSome
 
         seq { parts.Length - 1 .. -1 .. 1 }
         |> Seq.tryPick (fun k ->
@@ -1026,7 +1066,19 @@ let check (decls: (int * Decl) list) : Program =
         else
             mk (CGlobal(qname, Some inst)) t
 
+    and resolveName (x: string) : string option =
+        resolveWith
+            (fun q ->
+                globals.ContainsKey q || ctors.ContainsKey q || traitAliases.ContainsKey q || builtins.ContainsKey q
+                || externs.ContainsKey q || (staticMember q).IsSome)
+            x
+
     and value env depth x : CExpr =
+        match env.TryFind x, resolveName x with
+        | None, Some q when q <> x -> value' env depth q
+        | _ -> value' env depth x
+
+    and value' env depth x : CExpr =
         match env.TryFind x with
         | Some l ->
             if l.mut && l.depth < depth then
@@ -1069,6 +1121,11 @@ let check (decls: (int * Decl) list) : Program =
                     | None -> fail 0 (sprintf "unknown name '%s'" x)
 
     and call env depth f args : CExpr =
+        match env.TryFind f, resolveName f with
+        | None, Some q when q <> f -> call' env depth q args
+        | _ -> call' env depth f args
+
+    and call' env depth f args : CExpr =
         if not (env.ContainsKey f || globals.ContainsKey f) && (staticMember f).IsSome then
             memberCall env depth (staticMember f).Value None args f
         elif env.ContainsKey f || globals.ContainsKey f then
@@ -1592,6 +1649,8 @@ let check (decls: (int * Decl) list) : Program =
     let rec declare (ln: int) (d: Decl) =
             match d with
             | TypeDecl(name, tps, body, ms) ->
+                let name = qualify name
+
                 if prims.Contains name || builtinCons.ContainsKey name || types.ContainsKey name then
                     fail 0 (sprintf "type '%s' is already defined" name)
 
@@ -1624,10 +1683,12 @@ let check (decls: (int * Decl) list) : Program =
                 | UnionTy cases ->
                     types[name] <-
                         { npars = tps.Length
-                          def = UnionDef(cases |> List.map (fun (c, fs) -> c, fs |> List.map (snd >> tt))) }
+                          def = UnionDef(cases |> List.map (fun (c, fs) -> qualify c, fs |> List.map (snd >> tt))) }
 
                     cases
                     |> List.iteri (fun i (c, fs) ->
+                        let c = qualify c
+
                         if ctors.ContainsKey c then
                             fail 0 (sprintf "constructor '%s' is already defined" c)
 
@@ -1649,6 +1710,8 @@ let check (decls: (int * Decl) list) : Program =
                       ret = cty ret
                       variadic = variadic }
             | Fun(name, isRec, ps, ret, body) ->
+                let name = qualify name
+
                 if globals.ContainsKey name || externs.ContainsKey name then
                     fail 0 (sprintf "'%s' is already defined" name)
 
@@ -1683,11 +1746,33 @@ let check (decls: (int * Decl) list) : Program =
                     traitAliases["string"] <- "Show.show"
             | Impl(tr, head, defs) -> declareImpl tr head defs
             | Derive(name, defs) -> derives[name] <- defs
+            | Private inner ->
+                declare ln inner
+
+                match inner with
+                | Fun(n, _, _, _, _) -> privates[qualify n] <- currentModule.Value
+                | TypeDecl(n, _, body, _) ->
+                    privates[qualify n] <- currentModule.Value
+
+                    match body with
+                    | UnionTy cases ->
+                        for c, _ in cases do
+                            privates[qualify c] <- currentModule.Value
+                    | RecordTy _ -> ()
+                | _ -> fail 0 "'private' applies to 'let' and 'type' declarations"
+            | Open m ->
+                if not (moduleNames.Contains m) then
+                    fail 0 (sprintf "unknown module '%s'" m)
+
+                opens.Value <- m :: opens.Value
+            | ModuleHeader _ -> ()
             | Attrs(attrs, inner) ->
                 declare ln inner
 
                 match inner with
                 | TypeDecl(name, _, _, _) ->
+                    let name = qualify name
+
                     for a, args in attrs do
                         match a with
                         | "Derive" ->
@@ -1705,26 +1790,43 @@ let check (decls: (int * Decl) list) : Program =
                     | true, c -> c
                     | _ -> name
 
+                let name =
+                    resolveWith (fun q -> prims.Contains q || builtinCons.ContainsKey q || types.ContainsKey q) name
+                    |> Option.defaultValue name
+
                 if not (prims.Contains name || builtinCons.ContainsKey name || types.ContainsKey name) then
                     fail 0 (sprintf "unknown type '%s'" name)
 
                 declareMembers name tps ms
 
-    for ln, d in decls do
-        try
-            declare ln d
-        with CompileError(0, msg) ->
-            fail ln msg
+    let checkMain () =
+        match globals.TryGetValue "main" with
+        | true, g ->
+            match g.arity, prune g.ty with
+            | 1, TFun(p, r) when prune p = tUnit ->
+                match resolve r with
+                | TCon(("int" | "i32" | "unit"), []) -> ()
+                | t -> fail 0 (sprintf "'main' must return int, c_int or unit, not %s" (show t))
+            | _ -> fail 0 "'main' must take one unit parameter: let main () = ..."
+        | _ -> fail 0 "no 'main' function"
 
-    match globals.TryGetValue "main" with
-    | true, g ->
-        match g.arity, prune g.ty with
-        | 1, TFun(p, r) when prune p = tUnit ->
-            match resolve r with
-            | TCon(("int" | "i32" | "unit"), []) -> ()
-            | t -> fail 0 (sprintf "'main' must return int, c_int or unit, not %s" (show t))
-        | _ -> fail 0 "'main' must take one unit parameter: let main () = ..."
-    | _ -> fail 0 "no 'main' function"
+    for file, modName, decls in modules do
+        currentModule.Value <- modName
+        opens.Value <- []
+
+        for ln, d in decls do
+            try
+                declare ln d
+            with CompileError(l, msg) ->
+                raise (CompileErrorAt(file, (if l = 0 then ln else l), msg))
+
+    currentModule.Value <- None
+    let mainFile, _, _ = List.last modules
+
+    try
+        checkMain ()
+    with CompileError(_, msg) ->
+        raise (CompileErrorAt(mainFile, 0, msg))
 
     { types = types
       externs = externs

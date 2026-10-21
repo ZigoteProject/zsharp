@@ -1,0 +1,1 @@
+tests/cycle/b.zs: error: import cycle: main -> A -> B -> A
