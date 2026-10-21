@@ -25,9 +25,9 @@ To learn the language: [the guide](docs/guide/README.md).
 | Data parallelism and SIMD without data races | |
 | Runs on Linux, macOS, Windows and bare-metal microcontrollers | |
 
-**"Simple":** the language fits in about 20 pages, and a feature that needs a runtime is out.
-The exception is a small C runtime (allocation, panics, strings, later the task scheduler and
-thread pool), linked statically.
+**"Simple":** a feature has to replace code people would otherwise write by hand, and a
+feature that needs a runtime is out. The exception is a small C runtime (allocation, panics,
+strings, later the task scheduler and thread pool), linked statically.
 
 **Who it's for first:** native libraries used from C, CLI tools, and microcontroller firmware.
 Games over C libraries come next.
@@ -101,6 +101,7 @@ let sumTo n =                            // imperative code is fine; mutation st
 - **Panics:** for bugs, not errors a caller handles. These all panic: an out-of-bounds index, division by zero, integer overflow, a failed `assert`, an explicit `panic`.
   - A panic prints a message (and a backtrace where the C library supports it), then stops the program at once: no unwinding, no cleanup, exit status 134, no core dump. `ZS_ABORT=1` makes it a real `abort()` for a debugger.
   - Panics can't be caught. So there are no landing pads, and nothing unwinds through C frames.
+  - In a C program that uses a Z# library, a panic ends the host process too. `zs_set_panic_hook` lets the host log, flush or save its state first (§11).
 - **Strings:** `$"x = {p.x}"` interpolation, where any expression with `Show` can go in a hole. `+` joins strings. A string can span lines (its line breaks are part of it), and `"""…"""` is raw: quotes and backslashes stay as written.
 - **Modules:** one file is one module, with `open`, qualified names and `private`. `module Name` on the first line renames it.
   - **Namespaces:** `namespace X` on the first line makes the file's types and modules `X.Name`, as in F#. The library uses it to put `type Map` and `module Map` side by side in `Collections`.
@@ -324,8 +325,12 @@ its last use.
 | **Moves out of mutables** | `x <- f x`, and `let r = f … x …` when `x` is reassigned before its next read, give `f` `x`'s own reference. So a unique value stays unique, and copy-on-write and reuse happen in place |
 | **Copy-on-write in loops** | An array a loop writes, and doesn't otherwise share, is made unique once before the loop; the writes inside skip the check |
 
-**Cycles:** immutable data can't form cycles. Only `ref` cells can, and breaking them is the
-user's job, as in Swift. **`weak` references** (planned, in v1) will help.
+**Cycles:** immutable data can't form cycles, because a value can only point to values built
+before it. Mutable cells can: a `ref` or `Buffer` holding a value that points back to it
+(directly, or through a closure that captures it).
+- **What happens:** RC never frees such a cycle. It leaks silently, and it stays memory-safe. There is no cycle collector, which would need a GC's tracing.
+- **Avoiding them:** back-pointers (a child's parent, a list of observers) are `weak` references **(planned, in v1)**, which don't keep their target alive. Otherwise, breaking a cycle is the program's job, as in Swift.
+- **Finding them:** `ZS_LEAKCHECK=1` reports the objects still allocated at exit, so a test suite run with it (as `./test.sh` runs the compiler's) catches a cycle the tests make.
 
 **Escape hatches (planned, in v1):** `Arena.with (fun a -> …)` for bulk allocation that's freed
 at once, and raw `ptr<'a>` inside `unsafe` expressions.
@@ -433,9 +438,23 @@ Parallel.for 0 n (fun i -> out.[i] <- f i)       // disjoint writes into a uniqu
   - **Share:** primitives, records, tuples, unions, `string`, `list`, arrays (they're values) whose elements are `Share`, and closures that capture only `Share` values.
   - **Not Share:** `ref` and `Buffer<'a>`. Use `Atomic<'a>`, `Mutex<'a>` or `Channel<'a>` instead.
   - **Disjoint writes:** `Parallel.for` and `Array.Parallel.init` write to one uniquely owned array by index. Each index belongs to one task, so the writes are disjoint by construction.
-- **Reference counts across threads** (as in Koka and Lean): RC is non-atomic by default. When a value is sent to another thread, its object graph is marked *shared* once, and only those objects use atomic RC from then on.
+- **Reference counts across threads** (as in Koka and Lean): RC is non-atomic by default. When a value is sent to another thread, its object graph is marked *shared* once, and only those objects use atomic RC from then on (§7.1).
 - **Library:** `Atomic`, `Mutex`, `Channel` (bounded, MPMC), `Parallel.reduce`.
 - **Testing:** ThreadSanitizer runs over the parallel tests.
+
+### 7.1 How a value crosses threads (decided; built in phase 7)
+
+Written down before the optimizer is tuned, so that phase 7 doesn't undo its work.
+
+- **The count's sign is the mark,** as in Lean 4. A count above 0 is a thread-local object, 0 is a static one (never freed), and below 0 is shared: changed only with atomic operations, and freed by whichever thread drops the last reference.
+- **The fast path is already the one phase 7 needs:** `dup` tests `count > 0`, and a drop tests `count = 1`, then `count > 1`. A static or shared object takes the other branch, which skips the count today and will call the atomic operations. Against the earlier `count ≠ 0` tests this costs nothing: the host benchmarks run the same number of instructions or fewer (the red-black tree 1.7% fewer).
+- **Where values cross:** the closures given to `Parallel.*`, `Channel.send`, a task started on the thread pool, and what goes into an `Atomic` or `Mutex`.
+- **Marking:** at a crossing, the runtime walks the value's object graph and makes each thread-local count negative. It stops at objects already shared or static, so it visits each object once: sending the same value again costs one test.
+- **What can't cross:** `ref`, `Buffer` and closures that capture them (the `Share` trait), so a shared graph is immutable. Mutation across threads goes through `Atomic`, `Mutex` or `Channel`.
+- **Uniqueness:** a shared object's count is never 1, so reuse and copy-on-write copy it instead of writing in place. Thread-local data, which is most data, keeps every optimization in §5.2. Shared data pays for atomic counts and copies.
+- **Not chosen:**
+  - **Atomic counts everywhere,** as in Swift: every count pays for the rare shared value.
+  - **Copying at the crossing,** as in Erlang, or allowing only unique values to cross: a parallel map over one large shared tree, the common case, needs sharing.
 
 ## 8. SIMD (planned, phase 8)
 
@@ -565,6 +584,10 @@ import c "raylib.h"                              // like Zig's @cImport
     - In the editor, hover shows the C declaration and the header's comment.
 - **Exporting:** `[<Export "name">]` functions must be monomorphic, with C types only. `zs build --lib` produces a static library (`.a`) and a header (`.h`).
   - **Planned:** shared libraries (`.so`), and RC objects crossing as opaque handles (`Rc.retain`/`Rc.release`).
+- **Panics in a C host:** a library reports the errors its caller can handle as `result`. A panic is a bug in the library, and it ends the host process, as Rust's `panic = "abort"` does.
+  - **The hook:** `zs_set_panic_hook(void (*hook)(const char *message))`, declared in every generated header, runs after the message is printed. It can log, flush or save the host's state, or end the process its own way (`exit`). If it returns, the process stops as before.
+  - **No calls back:** the hook must not call into the library, whose state is undefined after a panic.
+  - **A host that must survive a library's bugs** runs it in a separate process.
 - **Callbacks:** a C `void (*cb)(void *user, …)` paired with `void *user` receives a Z# closure; the compiler generates the thunk. The closure is borrowed for the call, so a callback can't be stored by C.
 - **With `Task` (planned):** a blocking C call goes through `Task.blocking` (§6).
 
@@ -603,7 +626,7 @@ checker, so tools can't drift from the compiler.
 | 2 | Memory | Perceus RC, no GC; borrowing, reuse, moves | decided |
 | 3 | `int` width | the machine word (64-bit; 32 on Cortex-M); `i64` always 64-bit | decided (changed for microcontrollers: 64-bit `int` cost 1.5–2× in array loops there) |
 | 4 | Integer overflow | traps in every build; explicit wrapping operations and `[<Wrapping>]` functions; division by zero traps | decided |
-| 5 | Panics | message (+ backtrace), exit 134, no unwinding, no core dump, can't be caught | decided |
+| 5 | Panics | message (+ backtrace), exit 134, no unwinding, no core dump, can't be caught; a C host can set a hook that runs first (`zs_set_panic_hook`) | decided |
 | 6 | Unreachable match case | an error (F# warns) | decided |
 | 7 | Array semantics | copy-on-write values; `Buffer<'a>` for shared mutation | decided |
 | 8 | Union representation | plain values when non-recursive with ≤ 4 non-heap fields; boxed otherwise | decided |
@@ -620,7 +643,7 @@ checker, so tools can't drift from the compiler.
 | 19 | `?` operator | `let p = e?` and statement `e?`; general positions with `result { }` (phase 6) | decided |
 | 20 | Code generation by users | `derive` over record and union shapes; no macros, no comptime | decided |
 | 21 | Async | one cold `Task<'a>` + `Task.start`; general computation expressions; an effects spike decides CPS vs effects before phase 6 | decided |
-| 22 | Threads | v1 single-threaded event loop; multi-threading in v2 | decided |
+| 22 | Threads | v1 single-threaded event loop; multi-threading in v2, with non-atomic RC and a negative count marking the objects that crossed threads (§7.1) | decided |
 | 23 | Effect handlers | designed now (§6.1), built in v3; one-shot, evidence passing | decided |
 | 24 | Float semantics | strict IEEE; `[<FastMath>]` opt-in per function | default |
 | 25 | SIMD API | portable `f32x8`-style value types + target intrinsics | default |
@@ -637,5 +660,7 @@ checker, so tools can't drift from the compiler.
 | 36 | Optimizations that change evaluation order | only for pure code (list fusion requires pure lambdas; printing pieces evaluates them all first) | decided |
 | 37 | Library organization | prelude (global names) / Core (no OS: every target) / Std (needs an OS); .NET-style namespaces open everywhere at the lowest precedence; .NET module names, F# function names | decided |
 | 38 | Operator precedence | F#'s: custom operators by their first character; `\|>` and `>>` at the comparison level, above `&&` and `\|\|` (they used to be the loosest) | decided |
+| 39 | "Simple" | a feature replaces code people would write by hand and needs no runtime; no page budget | decided |
+| 40 | Reference cycles | not collected; `weak` references for back-pointers, `ZS_LEAKCHECK=1` to find leaks | decided |
 
 "Default" means chosen by me and open to change until the phase that implements it begins.

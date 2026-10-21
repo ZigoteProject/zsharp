@@ -68,6 +68,8 @@ None
 panic: List.head: empty list
 ```
 
+**In a C program:** a panic in a Z# library ends the host process too. The host can set a hook that runs first ([C interop](09-c-interop.md)).
+
 **Backtraces:** a panic also prints a backtrace. Set `ZS_BACKTRACE=0` to leave it out, as these examples do. In a test run with `zs test`, a panic fails that one test only ([Programs](08-programs.md#tests)).
 
 ## Overflow

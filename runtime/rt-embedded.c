@@ -303,10 +303,18 @@ void zs_println(zs_str *s) {
 
 void zs_eprintln(zs_str *s) { zs_println(s); }
 
+// the firmware's function, run on a panic before the program stops (zs_set_panic_hook)
+static void (*panic_hook)(const char *message);
+
+void zs_set_panic_hook(void (*hook)(const char *message)) { panic_hook = hook; }
+
 _Noreturn void zs_panic_c(const char *msg) {
     write_c("panic: ");
     write_c(msg);
     write_c("\n");
+    void (*hook)(const char *) = panic_hook;
+    panic_hook = NULL; // a panic inside the hook stops at once
+    if (hook) hook(msg);
     stop(134);
 }
 

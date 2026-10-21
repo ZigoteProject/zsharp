@@ -36,3 +36,7 @@ let labelLength (s: cstr) : int = (String.ofCStr s).Length
 
 [<Export "geo_is_square">]
 let isSquare (r: Box) : bool = r.hi.x - r.lo.x = r.hi.y - r.lo.y
+
+// panics on a zero width: C's panic hook runs, then the process stops
+[<Export "geo_ratio">]
+let ratio (r: Box) : int = int (r.hi.y - r.lo.y) / int (r.hi.x - r.lo.x)

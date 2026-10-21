@@ -5,3 +5,6 @@ swap 2 1
 sum of squares 30
 label 5
 square 0 1
+ratio 1
+panic: division by zero
+hook: division by zero

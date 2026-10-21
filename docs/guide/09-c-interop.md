@@ -121,6 +121,19 @@ cc main.c libgeo.a -lm -o main
 - Its parameters and result must be C types.
 - C passes strings in as `cstr`, and `String.ofCStr` copies one into a Z# string.
 
+**Panics:** a panic in the library ends the whole program, C side included. So report the errors a caller can handle as a result the C side can check, and keep panics for bugs. The header declares a hook that runs before the program stops, to log or save state:
+
+```c
+static void on_panic(const char *message) {
+    fprintf(log, "geo: %s\n", message);   // when it returns, the program stops
+}
+
+int main(void) {
+    zs_set_panic_hook(on_panic);
+    …
+}
+```
+
 ## Cross-compiling
 
 `zs build --target <triple>` builds for another machine. For example, `aarch64-linux-musl` gives a static binary for 64-bit ARM Linux.

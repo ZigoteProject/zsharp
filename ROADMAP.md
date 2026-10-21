@@ -177,6 +177,16 @@ first.
 - `tests/mcu/std.zs`: Std on a microcontroller is a compile error.
 - `./test.sh` checks the library on its own and keeps `docs/reference` current.
 
+### Design review ✅
+A review of the design before more of phase 5:
+- **Panics in a C host:** `zs_set_panic_hook` runs before the process stops. DESIGN §11 has the policy: `result` for errors a caller handles, panics for bugs.
+- **Threads:** how a value crosses threads is decided now (DESIGN §7.1), before the optimizer is tuned. RC's fast path already tests the count's sign as phase 7 needs, which made the red-black tree 1.7% faster.
+- **Cycles:** DESIGN §5.2 says which values can form them, that they leak, and how to avoid and find them.
+- **"Simple":** there's no page budget; a feature has to replace code people would write by hand, and need no runtime.
+- **Cleanup:** core dumps and a stray file left the repository.
+
+**Exit test:** `tests/cexport`: the hook runs on a panic, and ends the process its own way.
+
 ## Next
 
 ### Phase 5: optimizer I
@@ -226,7 +236,7 @@ first.
 - **Scope:**
   - **Thread pool:** work-stealing, with Chase–Lev deques.
   - **Safety:** the `Share` auto-trait, checked at `Parallel.*` and channel boundaries.
-  - **Shared RC:** atomic RC only on objects marked shared.
+  - **Shared RC:** atomic RC only on objects marked shared, as DESIGN §7.1 describes.
   - **Parallel APIs:** `Parallel.both`, `for` and `reduce`, and `Array.Parallel.map`/`init`.
   - **Sync primitives:** `Atomic`, `Mutex`, `Channel`.
   - **Scheduler:** the Task scheduler becomes multi-threaded.
@@ -248,6 +258,7 @@ first.
   - **Linking and profiling:** ThinLTO and PGO on the host. Measure again on microcontrollers, where bitcode linking of the runtime lost.
   - **Backend:** the LLVM C API instead of textual IR.
   - **Build speed:** parallel module compilation.
+  - **Object header:** one word instead of two: a 32-bit count, the tag and the number of fields to scan, as in Koka. `binarytrees` uses 45% more memory than C today, mostly in headers.
 - **Exit tests:**
   - A Task microbenchmark makes zero allocations per await.
   - The phase 5 suite reaches **1.2× of C**.

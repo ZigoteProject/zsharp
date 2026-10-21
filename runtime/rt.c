@@ -31,16 +31,25 @@ static _Noreturn void stop(void) {
     _exit(134);
 }
 
+// a C host's function, run on a panic before the process stops (zs_set_panic_hook)
+static void (*panic_hook)(const char *message);
+
+void zs_set_panic_hook(void (*hook)(const char *message)) { panic_hook = hook; }
+
 _Noreturn void zs_panic_c(const char *msg) {
     fflush(stdout);
     fprintf(stderr, "panic: %s\n", msg);
-    const char *bt = getenv("ZS_BACKTRACE");
-    if (bt && strcmp(bt, "0") == 0) stop();
 #ifdef __GLIBC__
-    void *frames[64];
-    int n = backtrace(frames, 64);
-    backtrace_symbols_fd(frames + 1, n - 1, 2);
+    const char *bt = getenv("ZS_BACKTRACE");
+    if (!bt || strcmp(bt, "0") != 0) {
+        void *frames[64];
+        int n = backtrace(frames, 64);
+        backtrace_symbols_fd(frames + 1, n - 1, 2);
+    }
 #endif
+    void (*hook)(const char *) = panic_hook;
+    panic_hook = NULL; // a panic inside the hook stops at once
+    if (hook) hook(msg);
     stop();
 }
 
