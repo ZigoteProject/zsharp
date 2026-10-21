@@ -26,17 +26,114 @@ let parseFile (path: string) =
     | CompileError(l, m) -> raise (CompileErrorAt(path, l, 0, m))
     | CompileErrorPos(l, c, m) -> raise (CompileErrorAt(path, l, c, m))
 
+/// A zs.toml manifest:
+///   [package]  name = "wc"  version = "0.1.0"  main = "src/main.zs" (the default)
+///   [dependencies]  text = { path = "../text" }
+type Manifest =
+    { root: string // the directory holding zs.toml
+      name: string
+      version: string
+      main: string // full path
+      deps: (string * string) list } // name, full path of the dependency's directory
+
+/// Reads the subset of TOML a manifest uses: [sections], key = "string", key = { k = "v", … }.
+let readManifest (root: string) : Manifest =
+    let file = Path.Combine(root, "zs.toml")
+    let fail (n: int) msg = raise (CompileErrorAt(file, n, 0, msg))
+    let mutable section = ""
+    let package = Dictionary<string, string>()
+    let deps = ResizeArray<string * string>()
+    let unquote (n: int) (v: string) =
+        let v = v.Trim()
+        if v.Length >= 2 && v.StartsWith "\"" && v.EndsWith "\"" then v.Substring(1, v.Length - 2)
+        else fail n (sprintf "expected a quoted string, found %s" v)
+
+    File.ReadAllLines file
+    |> Array.iteri (fun i raw ->
+        let n = i + 1
+        let line = (if raw.Contains '#' then raw.Substring(0, raw.IndexOf '#') else raw).Trim()
+
+        if line = "" then ()
+        elif line.StartsWith "[" && line.EndsWith "]" then section <- line.Trim('[', ']').Trim()
+        else
+            match line.IndexOf '=' with
+            | -1 -> fail n "expected key = value"
+            | eq ->
+                let key, value = line.Substring(0, eq).Trim(), line.Substring(eq + 1).Trim()
+
+                match section with
+                | "package" -> package[key] <- unquote n value
+                | "dependencies" ->
+                    if not (value.StartsWith "{" && value.EndsWith "}") then
+                        fail n (sprintf "dependency '%s' needs a table, such as { path = \"../%s\" }" key key)
+
+                    let fields =
+                        value.Trim('{', '}').Split ','
+                        |> Array.filter (fun f -> f.Trim() <> "")
+                        |> Array.map (fun f ->
+                            match f.Split('=', 2) with
+                            | [| k; v |] -> k.Trim(), unquote n v
+                            | _ -> fail n "expected key = value inside { }")
+                        |> dict
+
+                    match fields.TryGetValue "path" with
+                    | true, p -> deps.Add(key, Path.GetFullPath(Path.Combine(root, p)))
+                    | _ when fields.ContainsKey "git" -> fail n "git dependencies are not supported yet; use { path = ... }"
+                    | _ -> fail n (sprintf "dependency '%s' needs a path" key)
+                | s -> fail n (sprintf "unknown section [%s]" s))
+
+    let get k d =
+        match package.TryGetValue k with
+        | true, v -> v
+        | _ -> d
+
+    { root = root
+      name = get "name" (Path.GetFileName root)
+      version = get "version" "0.1.0"
+      main = Path.GetFullPath(Path.Combine(root, get "main" "src/main.zs"))
+      deps = List.ofSeq deps }
+
+/// The nearest zs.toml at or above a directory.
+let rec findProject (dir: string) : Manifest option =
+    if isNull dir then None
+    elif File.Exists(Path.Combine(dir, "zs.toml")) then Some(readManifest dir)
+    else findProject (Path.GetDirectoryName dir)
+
+/// Where a file's modules are looked up: its own directory, then (inside a project) the
+/// source directory (the one holding `main`) of each dependency, transitively.
+let moduleDirs (file: string) : string list =
+    let dir = Path.GetDirectoryName(Path.GetFullPath file)
+
+    let rec depDirs (seen: Set<string>) (m: Manifest) =
+        m.deps
+        |> List.fold
+            (fun (seen: Set<string>, acc) (name, path) ->
+                if seen.Contains path then
+                    seen, acc
+                elif not (File.Exists(Path.Combine(path, "zs.toml"))) then
+                    raise (CompileErrorAt(Path.Combine(m.root, "zs.toml"), 0, 0, sprintf "dependency '%s': no zs.toml in %s" name path))
+                else
+                    let dm = readManifest path
+                    let seen, more = depDirs (seen.Add path) dm
+                    seen, acc @ [ Path.GetDirectoryName dm.main ] @ more)
+            (seen, [])
+
+    match findProject dir with
+    | Some m -> dir :: (snd (depDirs (Set.singleton m.root) m) |> List.filter ((<>) dir)) |> List.distinct
+    | None -> [ dir ]
+
 /// The main file and the modules it uses (`open M` or `M.name`, found as M.zs or m.zs next to
-/// it), dependencies first. Each module is named after its file unless it has a `module` header.
+/// it or in a dependency), dependencies first. Each module is named after its file unless it
+/// has a `module` header.
 let loadModules (mainPath: string) : (string * string option * (int * Decl) list) list =
-    let dir = Path.GetDirectoryName(Path.GetFullPath mainPath)
+    let dirs = moduleDirs mainPath
     let order = ResizeArray<string * string option * (int * Decl) list>()
     let finished = Dictionary<string, bool>() // module -> fully loaded?
     let display (p: string) = Path.GetRelativePath(Environment.CurrentDirectory, p)
 
     let fileOf (m: string) =
-        [ m + ".zs"; string (Char.ToLower m[0]) + m.Substring 1 + ".zs" ]
-        |> List.map (fun f -> Path.Combine(dir, f))
+        [ for dir in dirs do
+              for f in [ m + ".zs"; string (Char.ToLower m[0]) + m.Substring 1 + ".zs" ] -> Path.Combine(dir, f) ]
         |> List.tryFind (fun f -> File.Exists f || overlay.ContainsKey f)
 
     let rec visit (path: string) (modName: string option) (stack: string list) =
@@ -118,9 +215,15 @@ let private timed (phase: string) (f: unit -> 'a) : 'a =
     timings.Add(phase, sw.Elapsed.TotalMilliseconds)
     r
 
+/// zs test: build the [<Test>] functions with a test dispatcher in place of `main`.
+let mutable testBuild = false
+
 let compileProgram (mainPath: string) (isLib: bool) =
     timings.Clear()
     let prog = timed "parse + check" (fun () -> check mainPath (not isLib) true)
+
+    let prog =
+        if testBuild then { prog with funs = prog.funs |> List.filter (fun f -> f.name <> "main") } else prog
 
     match prog.errors with
     | first :: _ -> Error prog.errors

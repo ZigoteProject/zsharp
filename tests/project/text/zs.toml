@@ -1,0 +1,4 @@
+[package]
+name = "text"
+version = "0.1.0"
+main = "src/Text.zs"

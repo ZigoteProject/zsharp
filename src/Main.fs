@@ -47,9 +47,141 @@ let private build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) 
 
         false
 
+/// The project around the current directory, or an error message.
+let private project () =
+    try
+        match findProject Environment.CurrentDirectory with
+        | Some m -> Ok m
+        | None -> Error "no file given and no zs.toml here or above (zs new <name> creates a project)"
+    with CompileErrorAt(file, line, col, msg) ->
+        printError file line col msg
+        Error "invalid zs.toml"
+
+let private isFile (a: string) = a.EndsWith ".zs"
+
+/// Builds a file's [<Test>] functions and runs each in its own process, so a failed assert or
+/// panic fails that test only. Returns (passed, failed), or None when it didn't build.
+let private runTests (src: string) (filter: string list) =
+    let names =
+        try
+            (check src false false).tests
+        with CompileErrorAt(file, line, col, msg) ->
+            printError file line col msg
+            []
+
+    let exe = Path.Combine(Path.GetTempPath(), "zs-test-" + Guid.NewGuid().ToString("N"))
+    testBuild <- true
+
+    if names.IsEmpty then
+        Some(0, 0)
+    elif not (build src exe false false false) then
+        None
+    else
+        Environment.SetEnvironmentVariable("ZS_BACKTRACE", "0")
+
+        let chosen =
+            names
+            |> List.indexed
+            |> List.filter (fun (_, n) -> filter.IsEmpty || filter |> List.exists (fun f -> n.Contains f))
+
+        let mutable failed = 0
+
+        for i, name in chosen do
+            let code, output = exec exe [ string i ] true
+
+            if code = 0 then
+                printfn "ok   %s" name
+            else
+                failed <- failed + 1
+                printfn "FAIL %s" name
+
+                for l in output.Trim().Split '\n' do
+                    if l <> "" then printfn "       %s" l
+
+        File.Delete exe
+        Some(chosen.Length - failed, failed)
+
+let private newProject (name: string) =
+    if Directory.Exists name then
+        eprintfn "%s already exists" name
+        1
+    else
+        Directory.CreateDirectory(Path.Combine(name, "src")) |> ignore
+        File.WriteAllText(Path.Combine(name, "zs.toml"), sprintf "[package]\nname = \"%s\"\nversion = \"0.1.0\"\nmain = \"src/main.zs\"\n\n[dependencies]\n# text = { path = \"../text\" }\n" (Path.GetFileName(Path.GetFullPath name)))
+
+        File.WriteAllText(
+            Path.Combine(name, "src", "main.zs"),
+            "let greeting (who: string) = $\"Hello, {who}!\"\n\nlet main () =\n  match Env.args () with\n  | [] -> println (greeting \"world\")\n  | who :: _ -> println (greeting who)\n  0\n\n[<Test>]\nlet greets () =\n  assert (greeting \"Z#\" = \"Hello, Z#!\")\n"
+        )
+
+        File.WriteAllText(Path.Combine(name, ".gitignore"), "build/\n")
+        printfn "created %s: zs.toml, src/main.zs (cd %s && zs run)" name name
+        0
+
 [<EntryPoint>]
 let main argv =
     match List.ofArray argv with
+    | "build" :: rest when not (List.exists isFile rest) ->
+        // the project: its main, built as build/<name>
+        match project () with
+        | Error msg ->
+            eprintfn "zs: %s" msg
+            1
+        | Ok m ->
+            let out = Path.Combine(m.root, "build", m.name)
+            Directory.CreateDirectory(Path.GetDirectoryName out) |> ignore
+            let ok = build m.main out (List.contains "--emit-llvm" rest) (List.contains "--sanitize" rest) false
+
+            if ok then
+                printfn "built %s" (Path.GetRelativePath(Environment.CurrentDirectory, out))
+
+            if ok then 0 else 1
+    | "run" :: rest when not (List.exists isFile rest) ->
+        // the project's program, with the arguments
+        match project () with
+        | Error msg ->
+            eprintfn "zs: %s" msg
+            1
+        | Ok m ->
+            let exe = Path.Combine(Path.GetTempPath(), "zs-" + Guid.NewGuid().ToString("N"))
+
+            let args =
+                match rest with
+                | "--" :: args -> args
+                | args -> args
+
+            if build m.main exe false false false then
+                let code, _ = exec exe args false
+                File.Delete exe
+                code
+            else
+                1
+    | "test" :: filter when not (List.exists isFile filter) ->
+        // every .zs file under the project's src/ and tests/ that has tests
+        match project () with
+        | Error msg ->
+            eprintfn "zs: %s" msg
+            1
+        | Ok m ->
+            let files =
+                [ "src"; "tests" ]
+                |> List.map (fun d -> Path.Combine(m.root, d))
+                |> List.filter Directory.Exists
+                |> List.collect (fun d -> Directory.GetFiles(d, "*.zs", SearchOption.AllDirectories) |> List.ofArray |> List.sort)
+                |> List.filter (fun f -> (File.ReadAllText f).Contains "[<Test>]")
+
+            let results =
+                files
+                |> List.map (fun f ->
+                    printfn "%s" (Path.GetRelativePath(Environment.CurrentDirectory, f))
+                    runTests f filter)
+
+            let passed = results |> List.sumBy (Option.map fst >> Option.defaultValue 0)
+            let failed = results |> List.sumBy (Option.map snd >> Option.defaultValue 0)
+            let broken = results |> List.filter Option.isNone |> List.length
+            printfn "%d passed, %d failed%s" passed failed (if broken > 0 then sprintf ", %d file(s) didn't build" broken else "")
+            if failed = 0 && broken = 0 then 0 else 1
+    | [ "new"; name ] -> newProject name
     | "build" :: src :: rest ->
         let out =
             match List.tryFindIndex ((=) "-o") rest with
@@ -152,55 +284,27 @@ let main argv =
             printError file line col msg
             1
     | "test" :: src :: filter ->
-        // builds the file's [<Test>] functions and runs each in its own process, so a failed
-        // assert or panic fails that test only
-        let names =
-            try
-                let prog = check src false false
-                prog.tests
-            with CompileErrorAt(file, line, col, msg) ->
-                printError file line col msg
-                []
-
-        let exe = Path.Combine(Path.GetTempPath(), "zs-test-" + Guid.NewGuid().ToString("N"))
-
-        if names.IsEmpty then
+        match runTests src filter with
+        | None -> 1
+        | Some(0, 0) ->
             eprintfn "%s: no [<Test>] functions" src
             1
-        elif not (build src exe false false false) then
-            1
-        else
-            Environment.SetEnvironmentVariable("ZS_BACKTRACE", "0")
-
-            let chosen =
-                names
-                |> List.indexed
-                |> List.filter (fun (_, n) -> filter.IsEmpty || filter |> List.exists (fun f -> n.Contains f))
-
-            let mutable failed = 0
-
-            for i, name in chosen do
-                let code, output = exec exe [ string i ] true
-
-                if code = 0 then
-                    printfn "ok   %s" name
-                else
-                    failed <- failed + 1
-                    printfn "FAIL %s" name
-
-                    for l in output.Trim().Split '\n' do
-                        if l <> "" then printfn "       %s" l
-
-            File.Delete exe
-            printfn "%d passed, %d failed" (chosen.Length - failed) failed
+        | Some(passed, failed) ->
+            printfn "%d passed, %d failed" passed failed
             if failed = 0 then 0 else 1
     | "lsp" :: _ -> Lsp.serve () // editors may add flags such as --stdio
     | "mcp" :: _ -> Mcp.serve ()
     | "run" :: src :: rest ->
+        // zs run file.zs [--sanitize] [-- program arguments]
         let exe = Path.Combine(Path.GetTempPath(), "zs-" + Guid.NewGuid().ToString("N"))
 
+        let args =
+            match List.tryFindIndex ((=) "--") rest with
+            | Some i -> rest[i + 1 ..]
+            | None -> []
+
         if build src exe false (List.contains "--sanitize" rest) false then
-            let code, _ = exec exe [] false
+            let code, _ = exec exe args false
             File.Delete exe
             code
         else
@@ -217,5 +321,5 @@ let main argv =
             Rpc.input <- new Rpc.PrefixedStream([| byte first |], stdin)
             if char first = '{' then Mcp.serve () else Lsp.serve ()
     | _ ->
-        eprintfn "usage: zs build <file.zs> [-o <out>] [--lib] [--emit-llvm] [--sanitize] [--time]\n       zs run <file.zs> [--sanitize]\n       zs check <file.zs>\n       zs test <file.zs> [name filters…]\n       zs doc <file.zs>\n       zs fmt [--check] <files…>\n       zs lsp\n       zs mcp"
+        eprintfn "usage: zs new <name>\n       zs build [<file.zs> [-o <out>] [--lib]] [--emit-llvm] [--sanitize] [--time]\n       zs run [<file.zs> [--sanitize] --] [program arguments…]\n       zs check <file.zs>\n       zs test [<file.zs>] [name filters…]\n       zs doc <file.zs>\n       zs fmt [--check] <files…>\n       zs lsp\n       zs mcp"
         2

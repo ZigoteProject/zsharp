@@ -1,0 +1,8 @@
+# a CLI tool built from a manifest, with a path dependency
+[package]
+name = "wc"
+version = "0.1.0"
+main = "src/main.zs"
+
+[dependencies]
+text = { path = "../text" }

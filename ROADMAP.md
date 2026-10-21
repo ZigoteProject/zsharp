@@ -136,9 +136,10 @@ syntax, only fixes. Both decisions came from the design review.
     - **Collections (done):** a persistent `Map`/`Set` and a `HashMap` (a CoW value). The tree is AVL, as in OCaml, because removal is much simpler than in a red-black tree.
       - `x <- f … x` moves `x`'s value into the call, so copy-on-write updates stay in place. 100k `HashMap.add` calls went from 7.1 s to 0.01 s.
   - **Projects:**
-    - A `zs.toml` manifest with name, version, entry point and dependencies by path or git. `zs build` with no arguments reads it.
-    - `zs new` creates a project.
-    - A lockfile for git dependencies.
+    - **Done:** a `zs.toml` manifest with name, version, entry point and path dependencies.
+      - `zs build`, `zs run` and `zs test` with no file use it, and `zs new` creates a project.
+      - Modules are found in dependencies for the CLI, the LSP and MCP alike.
+    - **Next:** git dependencies, with a lockfile.
 - **Exit tests:**
   - A raylib window demo written only against `import c "raylib.h"`.
   - `tests/` cross-compiles to aarch64-linux-musl and passes under qemu-user. This includes `tests/cexport`, so the C ABI is checked on both architectures.

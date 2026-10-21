@@ -45,6 +45,23 @@ actual=$(bin/zs test tests/ztest/sample.zs 2>&1); code=$?
 if [ "$actual" = "$(cat tests/ztest/sample.expected)" ] && [ $code = 1 ]; then echo "ok   zs test tests/ztest/sample.zs"
 else echo "FAIL zs test tests/ztest/sample.zs (exit $code)"; diff <(echo "$actual") tests/ztest/sample.expected; fail=1; fi
 
+# projects: a CLI tool built from zs.toml with a path dependency; zs test over a project; zs new
+zs="$PWD/bin/zs"
+proj=$( (cd tests/project/wc && "$zs" build >/dev/null && ./build/wc sample.txt missing.txt; echo "exit $?"
+         "$zs" run -- -l sample.txt; printf 'a b\nc\n' | ./build/wc
+         cd ../text && "$zs" test | tail -1
+         cd "$tmp" && "$zs" new demo >/dev/null && cd demo && "$zs" run Z#) 2>&1 )
+expected='4 6 29 sample.txt
+wc: cannot open missing.txt: No such file or directory
+exit 1
+4 sample.txt
+2 3 6 
+2 passed, 0 failed
+Hello, Z#!'
+if [ "$proj" = "$expected" ]; then echo "ok   projects (zs.toml, path dependency, zs run/test/new)"
+else echo "FAIL projects"; diff <(echo "$proj") <(echo "$expected"); fail=1; fi
+rm -rf tests/project/wc/build
+
 # the prelude checks on its own (an editor opening it must not see everything defined twice)
 if bin/zs check runtime/prelude.zs >"$tmp/prelude.log" 2>&1; then echo "ok   zs check runtime/prelude.zs"
 else echo "FAIL zs check runtime/prelude.zs"; head -5 "$tmp/prelude.log"; fail=1; fi
