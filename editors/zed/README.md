@@ -47,11 +47,14 @@ The Flatpak's sandbox has `PATH=/app/bin:/usr/bin` and no clang, so:
 
   ```json
   {
-    "lsp": { "zs": { "binary": { "path": "/path/to/zsharp/dist/zs/zs" } } },
-    "context_servers": { "zs": { "command": { "path": "/path/to/zsharp/dist/zs/zs" } } }
+    "lsp": { "zs": { "binary": { "path": "/path/to/zsharp/dist/zs/zs", "arguments": ["lsp"] } } },
+    "context_servers": { "zs": { "command": "/path/to/zsharp/dist/zs/zs", "args": ["mcp"] } }
   }
   ```
 
+- With a `path` in the settings Zed runs that binary itself, with the settings' arguments (the
+  extension isn't asked). Without arguments, `zs` detects LSP or MCP from the first byte, but
+  giving them is clearer.
 - The agent's `build` and `run` tools need clang, which the sandbox lacks. `check`, `type_at`,
   `docs`, `format` and `emit_llvm` work. Run programs from a terminal (`./dev bin/zs run …`).
 

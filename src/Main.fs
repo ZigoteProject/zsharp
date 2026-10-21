@@ -111,6 +111,17 @@ let main argv =
             code
         else
             1
+    | [] when Console.IsInputRedirected ->
+        // started by an editor without arguments: an LSP message starts with a
+        // Content-Length header, an MCP message with '{'
+        let stdin = Console.OpenStandardInput()
+        let first = stdin.ReadByte()
+
+        if first < 0 then
+            2
+        else
+            Rpc.input <- new Rpc.PrefixedStream([| byte first |], stdin)
+            if char first = '{' then Mcp.serve () else Lsp.serve ()
     | _ ->
         eprintfn "usage: zs build <file.zs> [-o <out>] [--lib] [--emit-llvm] [--sanitize]\n       zs run <file.zs> [--sanitize]\n       zs check <file.zs>\n       zs fmt [--check] <files…>\n       zs lsp\n       zs mcp"
         2

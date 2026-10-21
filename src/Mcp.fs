@@ -180,9 +180,10 @@ let private documents () =
 
 let serve () : int =
     let mutable running = true
+    let reader = new StreamReader(Rpc.input)
 
     while running do
-        match Console.In.ReadLine() with
+        match reader.ReadLine() with
         | null -> running <- false
         | line when line.Trim() = "" -> ()
         | line ->

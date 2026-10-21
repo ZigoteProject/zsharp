@@ -45,6 +45,12 @@ actual=$(tests/lsp/session.sh bin/zs 2>&1); expected=$(cat tests/lsp/session.out
 if [ "$actual" == "$expected" ]; then echo "ok   tests/lsp/session.sh"
 else echo "FAIL tests/lsp/session.sh"; diff <(echo "$expected") <(echo "$actual") | head -20; fail=1; fi
 
+# editors may start zs without arguments: it detects LSP or MCP from the first byte
+printf '#!/bin/sh\nexec %s/bin/zs\n' "$PWD" > "$tmp/zs-bare"; chmod +x "$tmp/zs-bare"
+if [ "$(tests/lsp/session.sh "$tmp/zs-bare" 2>&1)" == "$(cat tests/lsp/session.out)" ] \
+   && [ "$(tests/mcp/session.sh "$tmp/zs-bare" 2>&1)" == "$(cat tests/mcp/session.out)" ]; then echo "ok   zs without arguments (protocol detection)"
+else echo "FAIL zs without arguments (protocol detection)"; fail=1; fi
+
 # the MCP server: a scripted session (tests/mcp/session.sh) against its expected transcript
 actual=$(tests/mcp/session.sh bin/zs 2>&1); expected=$(cat tests/mcp/session.out)
 if [ "$actual" == "$expected" ]; then echo "ok   tests/mcp/session.sh"

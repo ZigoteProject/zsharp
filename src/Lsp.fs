@@ -11,7 +11,6 @@ open Syntax
 open Core
 open Rpc
 
-let private input = Console.OpenStandardInput()
 let private output = Console.OpenStandardOutput()
 
 // ------------------------------------------------------------ JSON-RPC framing
