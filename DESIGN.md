@@ -105,6 +105,7 @@ let sumTo n =                            // imperative code is fine; mutation st
 - **Strings:** `$"x = {p.x}"` interpolation, where any expression with `Show` can go in a hole. `+` joins strings. A string can span lines (its line breaks are part of it), and `"""…"""` is raw: quotes and backslashes stay as written.
 - **Modules:** one file is one module, with `open`, qualified names and `private`. `module Name` on the first line renames it.
   - **Namespaces:** `namespace X` on the first line makes the file's types and modules `X.Name`, as in F#. The library uses it to put `type Map` and `module Map` side by side in `Collections`.
+  - **Fields, traits and derives belong to their module,** like types. A record literal, a record pattern, or `.f` on a value whose type isn't known yet, looks among the records in scope: the current module and the ones it's in, then opened modules, global names and the auto-opened namespaces, the nearest first. A trait's methods are called by name where its module is in scope, and by `Module.method` elsewhere.
   - **Nested modules:** `module Inner =` and an indented block. Names inside are `Outer.Inner.x`; the block sees the names of its enclosing modules, `private` reaches the modules nested inside, and an `open` lasts until the block ends.
 - **Type annotations in expressions:** `(e: T)`, which also gives a literal or a record literal its type.
 - **Mutual recursion:** `let rec f … and g …`, at the top level or locally. A top-level group is generalized jointly, so generic members share their type variables.
@@ -639,7 +640,7 @@ checker, so tools can't drift from the compiler.
 | 15 | `option` record fields | a default only with an explicit `= None` | decided |
 | 16 | Default expressions | any expression, evaluated at the use site, may use earlier fields/parameters | decided |
 | 17 | Union case fields | named construction and patterns; no defaults | decided |
-| 18 | Record literal type | from the expected type, through branches and elements; else the fields, latest declaration wins | decided |
+| 18 | Record literal type | from the expected type, through branches and elements; else the fields, among the records in scope: the nearest scope, then the latest declaration | decided |
 | 19 | `?` operator | `let p = e?` and statement `e?`; general positions with `result { }` (phase 6) | decided |
 | 20 | Code generation by users | `derive` over record and union shapes; no macros, no comptime | decided |
 | 21 | Async | one cold `Task<'a>` + `Task.start`; general computation expressions; an effects spike decides CPS vs effects before phase 6 | decided |

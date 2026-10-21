@@ -1,0 +1,1 @@
+tests/modules/err_field_scope.zs:3:12: error: no record in scope has a field 'name'; Books.Item does: open Books, or annotate (… : Books.Item)

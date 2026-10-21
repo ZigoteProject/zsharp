@@ -287,17 +287,18 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
     let decls = modules |> List.collect (fun (_, _, ds) -> ds)
     let types = Dictionary<string, TypeInfo>()
     let ctors = Dictionary<string, string * int>() // constructor -> union, tag
-    let fieldOwner = Dictionary<string, string>() // field -> last record declaring it
     let records = ResizeArray<string>() // record types in declaration order
     let recordDefaults = Dictionary<string, Expr option list>() // record -> default per field
     let ctorFieldNames = Dictionary<string, string option list>() // constructor -> field names
     let members = Dictionary<string, Dictionary<string, MemberInfo>>() // type -> member name -> info
     let memberTypeNames = HashSet<string>() // the last part of each type in members, a quick test for staticMember
     let traitMethods = Dictionary<string, TraitMethod>() // "Show.show" -> method
-    let traitAliases = Dictionary<string, string>() // "show" -> "Show.show"
+    let traitAliases = Dictionary<string, string>() // "show" -> "Show.show"; "M.describe" -> "M.Describe.describe"
+    let traitNames = HashSet<string>() // by full name: Show, or M.Describe declared in module M
     let impls = Dictionary<string * string, Dictionary<string, string>>() // (trait, type) -> method -> function
     let implRequires = Dictionary<string * string, Set<string> list>() // traits each type argument needs
-    let derives = Dictionary<string, (int * string * Param list * SType option * Expr) list>()
+    let derives = Dictionary<string, (int * string * Param list * SType option * Expr) list>() // by full name, as traits
+    let deriveModules = Dictionary<string, string option>() // derive -> the module declaring it
     // active pattern case -> (function, total?, number of parameters before the value)
     let activePatterns = Dictionary<string, string * bool * int>()
     let apCtors = HashSet<string>() // cases of total active patterns: payload optional
@@ -390,6 +391,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
     let globalValues = Dictionary<string, Ty>() // top-level values computed at startup
     let valueList = ResizeArray<string * string>() // in initialization order: name, init function
     let recordHints = Dictionary<Expr, Ty>(HashIdentity.Reference) // record literal -> expected type
+    let literalRecords = Dictionary<Expr, string>(HashIdentity.Reference) // record literal -> the record it built
     let currentModule = ref (None: string option)
     let opens = ref ([]: string list) // most recent first
     let privates = Dictionary<string, string option>() // qualified name -> owning module
@@ -415,21 +417,24 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
     // each module's enclosing modules, innermost first (A.B.C: A.B.C, A.B, A)
     let enclosingOf = Dictionary<string, string list>()
 
+    /// The current module and the modules it is nested in, innermost first.
+    let enclosing () =
+        match currentModule.Value with
+        | Some m ->
+            match enclosingOf.TryGetValue m with
+            | true, e -> e
+            | _ ->
+                let parts = m.Split '.'
+                let e = [ for k in parts.Length .. -1 .. 1 -> String.concat "." parts[.. k - 1] ]
+                enclosingOf[m] <- e
+                e
+        | None -> []
+
     /// Unqualified names resolve in the current module and the modules it is nested in, then
     /// opened modules, then globally, then in the auto-opened namespaces. Candidates are tried
     /// in that order and built only as needed: this runs for every name.
     let resolveWith (exists: string -> bool) (x: string) : string option =
-        let enclosing =
-            match currentModule.Value with
-            | Some m ->
-                match enclosingOf.TryGetValue m with
-                | true, e -> e
-                | _ ->
-                    let parts = m.Split '.'
-                    let e = [ for k in parts.Length .. -1 .. 1 -> String.concat "." parts[.. k - 1] ]
-                    enclosingOf[m] <- e
-                    e
-            | None -> []
+        let enclosing = enclosing ()
 
         let rec tryIn (prefixes: string list) =
             match prefixes with
@@ -562,20 +567,63 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
         | UnionDef cs -> cs |> List.map (fun (n, ts) -> n, ts.Length)
         | RecordDef _ -> []
 
+    let fieldsOf r =
+        match types[r].def with
+        | RecordDef fs -> fs
+        | UnionDef _ -> []
+
+    let hasFields (given: string list) (r: string) =
+        given |> List.forall (fun f -> fieldsOf r |> List.exists (fst >> (=) f))
+
+    /// Of the records some field names could mean, those in scope as a name would be (the
+    /// current and enclosing modules, then opens, global names and the auto-opened namespaces),
+    /// from the nearest scope that has any, in declaration order.
+    let inScope (candidates: string seq) : string list =
+        let order = (enclosing () |> List.map Some) @ (opens.Value |> List.map Some) @ [ None ] @ (autoOpens |> List.map Some)
+
+        let moduleOf (r: string) =
+            match r.LastIndexOf '.' with
+            | -1 -> None
+            | i -> Some(r.Substring(0, i))
+
+        let ranked =
+            candidates
+            |> Seq.choose (fun r -> order |> List.tryFindIndex ((=) (moduleOf r)) |> Option.map (fun k -> k, r))
+            |> List.ofSeq
+
+        match ranked with
+        | [] -> []
+        | _ ->
+            let nearest = ranked |> List.map fst |> List.min
+            ranked |> List.filter (fst >> (=) nearest) |> List.map snd
+
+    /// The error for fields that no record in scope has, naming a record out of scope that has them.
+    let noRecord (plain: string) (given: string list) =
+        match records |> Seq.filter (hasFields given) |> Seq.tryLast with
+        | Some r when r.Contains '.' -> // out of scope, so in a module
+            let m = r.Substring(0, r.LastIndexOf '.')
+
+            let what =
+                match given with
+                | [ f ] -> sprintf "a field '%s'" f
+                | _ -> "the fields " + (given |> List.map (sprintf "'%s'") |> String.concat ", ")
+
+            fail 0 (sprintf "no record in scope has %s; %s does: open %s, or annotate (… : %s)" what r m r)
+        | _ -> fail 0 plain
+
+    /// The record a field of a value of unknown type belongs to: the latest in scope.
+    let fieldRecord (field: string) =
+        records |> Seq.filter (hasFields [ field ]) |> inScope |> List.tryLast
+
     let recordOf (t: Ty) (field: string) =
         match prune t with
         | TCon(n, _) when (match types.TryGetValue n with
                            | true, { def = RecordDef _ } -> true
                            | _ -> false) -> n
         | _ ->
-            match fieldOwner.TryGetValue field with
-            | true, r -> r
-            | _ -> fail 0 (sprintf "no record has a field '%s'" field)
-
-    let fieldsOf r =
-        match types[r].def with
-        | RecordDef fs -> fs
-        | UnionDef _ -> []
+            match fieldRecord field with
+            | Some r -> r
+            | None -> noRecord (sprintf "no record has a field '%s'" field) [ field ]
 
     /// Matches a constructor's arguments to its payload fields: `C`, `C x`, `C (x, y)`.
     let ctorArgs c (args: 'a list) (fields: Ty list) (tuple: 'a -> 'a list option) (wild: 'a option) =
@@ -691,17 +739,14 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
             | Some(f, _) -> fail 0 (sprintf "field '%s' appears twice in the pattern" f)
             | None -> ()
 
-            let hasAll r =
-                given |> List.forall (fun f -> fieldsOf r |> List.exists (fst >> (=) f))
-
             // the record: the matched value's type when known, else the latest declared record
-            // with all these fields (as for record literals)
+            // in scope with all these fields (as for record literals)
             let rname =
                 match prune ty with
                 | TCon(n, _) when records.Contains n -> n
                 | _ ->
-                    match records |> Seq.filter hasAll |> List.ofSeq with
-                    | [] -> fail 0 (sprintf "no record has the field%s %s" (if given.Length > 1 then "s" else "") (given |> List.map (sprintf "'%s'") |> String.concat ", "))
+                    match records |> Seq.filter (hasFields given) |> inScope with
+                    | [] -> noRecord (sprintf "no record has the field%s %s" (if given.Length > 1 then "s" else "") (given |> List.map (sprintf "'%s'") |> String.concat ", ")) given
                     | candidates -> List.last candidates
 
             match given |> List.tryFind (fun f -> not (fieldsOf rname |> List.exists (fst >> (=) f))) with
@@ -1060,7 +1105,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
         | Tuple xs ->
             let cs = List.map inf xs
             mk (CTuple cs) (TTuple(cs |> List.map (fun c -> c.ty)))
-        | RecordLit fields -> recordLit env depth (takeHint node) fields
+        | RecordLit fields -> recordLit env depth (takeHint node) node fields
         | Update(r, fields) ->
             let cr = inf r
             let rname = recordOf cr.ty (fst fields.Head)
@@ -1328,11 +1373,11 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                 memberCall Map.empty 0 m (Some cr) [] f
             else
                 fail 0 (sprintf "method '%s' must be called: x.%s(...)" f f)
-        | TVar _, _ when f = "Value" && not (fieldOwner.ContainsKey f) ->
+        | TVar _, _ when f = "Value" && (fieldRecord f).IsNone ->
             let a = fresh kAny
             expect "ref cell" (TCon("ref", [ a ])) cr.ty
             mk (CPrim("ref.get", [ cr ])) a
-        | TVar _, _ when not (fieldOwner.ContainsKey f) ->
+        | TVar _, _ when (fieldRecord f).IsNone ->
             fail 0 (sprintf "cannot resolve '.%s': the type of this expression isn't known here; add a type annotation" f)
         | _ ->
             let rname = recordOf cr.ty f
@@ -1919,8 +1964,10 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
         | _ -> None
 
     /// The record a literal builds: the expected type if it is a record; otherwise the only
-    /// record whose fields fit (all given fields exist, all missing ones have defaults).
-    and recordLit env depth (hint: Ty option) (fields: (string * Expr) list) : CExpr =
+    /// record in scope whose fields fit (all given fields exist, all missing ones have defaults).
+    /// That record is kept for the literal: a constant's, typed again at each use, means the
+    /// record its own module sees.
+    and recordLit env depth (hint: Ty option) (node: Expr) (fields: (string * Expr) list) : CExpr =
         let given = fields |> List.map fst
 
         let fits r =
@@ -1932,8 +1979,9 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
         let rname =
             match hint |> Option.map prune with
             | Some(TCon(n, _)) when records.Contains n -> n
+            | _ when literalRecords.ContainsKey node -> literalRecords[node]
             | _ ->
-                match records |> Seq.filter fits |> List.ofSeq with
+                match records |> Seq.filter fits |> inScope with
                 | [ r ] -> r
                 | [] -> recordOf (fresh kAny) given.Head // the precise error comes from buildRecord
                 | many ->
@@ -1944,6 +1992,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                     else
                         List.last exact
 
+        literalRecords[node] <- rname
         let rty, targs = instType rname
         let defaults = recordDefaults[rname]
 
@@ -2180,6 +2229,8 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
     /// Registers an impl and type-checks its methods. The impl is registered before its
     /// bodies so they may use it recursively; its requirements on type arguments are inferred.
     let declareImpl (tr: string) (head: SType) (defs: (int * string * Param list * SType option * Expr) list) =
+        let tr = resolveWith traitNames.Contains tr |> Option.defaultValue tr
+
         let methods =
             traitMethods.Values |> Seq.filter (fun m -> m.owner = tr) |> Seq.map (fun m -> m.name) |> Set.ofSeq
 
@@ -2279,12 +2330,24 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
 
         let head = STName(tname, List.init types[tname].npars (fun i -> STVar(sprintf "t%d" i)))
         // hygiene: a trait method named in a derive (show, compare, hash…) means the trait's,
-        // even where the program defines a function of the same name
+        // as the derive's module sees it, even where the program defines a function of the
+        // same name
         // ponytail: a local in a derive body named like a trait method would be rewritten too
+        let methodOf (x: string) =
+            if x.Contains "." then
+                None
+            else
+                [ (match deriveModules[tr] with
+                   | Some m -> m + "." + x
+                   | None -> x)
+                  x ]
+                |> List.tryFind traitAliases.ContainsKey
+                |> Option.map (fun a -> traitAliases[a])
+
         let rec hygienic (e: Expr) =
             match e with
-            | Var x when traitAliases.ContainsKey x && not (x.Contains ".") -> Var traitAliases[x]
-            | Call(x, args) when traitAliases.ContainsKey x && not (x.Contains ".") -> Call(traitAliases[x], List.map hygienic args)
+            | Var x when (methodOf x).IsSome -> Var (methodOf x).Value
+            | Call(x, args) when (methodOf x).IsSome -> Call((methodOf x).Value, List.map hygienic args)
             | _ -> mapExpr hygienic e
 
         let defs =
@@ -2412,9 +2475,6 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                     types[name] <- { npars = tps.Length; def = RecordDef fs }
                     records.Add name
                     recordDefaults[name] <- fields |> List.map (fun (_, _, d) -> d)
-
-                    for f, _ in fs do
-                        fieldOwner[f] <- name
                 | UnionTy cases ->
                     types[name] <-
                         { npars = tps.Length
@@ -2504,7 +2564,9 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                 if not needs.IsEmpty && hovers.Count > 0 && hovers[hovers.Count - 1].name = name then
                     hovers[hovers.Count - 1] <- { hovers[hovers.Count - 1] with constraints = String.concat ", " needs }
             | Trait(name, tp, methods) ->
-                if traitMethods.Keys |> Seq.exists (fun k -> k.StartsWith(name + ".")) then
+                let name = qualify name
+
+                if not (traitNames.Add name) then
                     fail 0 (sprintf "trait '%s' is already defined" name)
 
                 for m, st in methods do
@@ -2525,14 +2587,17 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
 
                     traitAliases[qname] <- qname
 
-                    // unqualified names, except for the operator traits (whose methods are the operators)
-                    if not (List.contains name [ "Add"; "Num"; "Eq" ]) && not (traitAliases.ContainsKey m) then
-                        traitAliases[m] <- qname
+                    // the method by its own name in the trait's module, except for the operator traits
+                    // (whose methods are the operators)
+                    if not (List.contains name [ "Add"; "Num"; "Eq" ]) && not (traitAliases.ContainsKey(qualify m)) then
+                        traitAliases[qualify m] <- qname
 
                 if name = "Show" then
                     traitAliases["string"] <- "Show.show"
             | Impl(tr, head, defs) -> declareImpl tr head defs
-            | Derive(name, defs) -> derives[name] <- defs
+            | Derive(name, defs) ->
+                derives[qualify name] <- defs
+                deriveModules[qualify name] <- currentModule.Value
             | Private inner ->
                 declare ln inner
 
@@ -2719,6 +2784,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                         match a with
                         | "Derive" ->
                             for tr in args do
+                                let tr = resolveWith derives.ContainsKey tr |> Option.defaultValue tr
                                 deriveImpl (sprintf "Derive(%s) on %s" tr name) tr name
                         | "NoEquality" ->
                             optOut.Add(("Eq", name)) |> ignore
