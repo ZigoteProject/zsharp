@@ -225,7 +225,7 @@ module.exports = grammar({
     lambda: $ => prec.right(seq('fun', repeat1($._parameter), '->', $._body)),
 
     for_expression: $ => seq(
-      'for', field('variable', $.identifier), 'in',
+      'for', field('variable', $._pattern), 'in', // a name, or a pattern over a collection's elements
       choice(
         seq($._expression, '..', $._expression, optional(seq('..', $._expression))),
         $._expression,

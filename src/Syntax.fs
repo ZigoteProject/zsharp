@@ -946,13 +946,28 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
             While(c, block ())
         | KKw "for" ->
             advance ()
-            let x = ident ()
+
+            // for x in …, or for <pattern> in xs (a fresh name, taken apart at the top of the body)
+            let x, destructure =
+                match peek () with
+                | KId _ -> ident (), None
+                | _ ->
+                    let at = pos.Value
+                    let p = pattern ()
+                    sprintf "$for%d" at, Some p
+
             expect (KKw "in") "'in'"
             let a = pipe ()
 
             if peek () = KKw "do" then
                 advance ()
-                ForIn(x, a, block ())
+                let body = block ()
+
+                match destructure with
+                | Some p -> ForIn(x, a, Let(p, None, Var x, body))
+                | None -> ForIn(x, a, body)
+            elif destructure.IsSome then
+                fail (line ()) "a pattern needs 'for … in <collection> do'; a range loop takes a name"
             else
                 expect (KSym "..") "'..'"
                 let b = pipe ()

@@ -134,6 +134,9 @@ let snd (_, b) = b
 let max a b = if a > b then a else b
 /// The smaller of two values.
 let min a b = if a < b then a else b
+/// The absolute value: `x` without its sign (named apart from C's `abs`, which programs often
+/// import). For integers, the most negative value has none, so it overflows (and panics).
+let Math.abs x = if x < Add.zero then -x else x
 
 /// The list in reverse order. Reuses the cells when the list is unique.
 let List.rev xs =

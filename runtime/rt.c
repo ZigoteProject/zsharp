@@ -126,6 +126,17 @@ zs_str *zs_str_of_f64(double v) {
     return str_of(buf, n);
 }
 
+// the shortest text that reads back as the same f32 (0.3f prints "0.3", not its double value)
+zs_str *zs_str_of_f32(float v) {
+    char buf[40];
+    int n = 0;
+    for (int prec = 6; prec <= 9; prec++) {
+        n = snprintf(buf, sizeof buf, "%.*g", prec, (double)v);
+        if (strtof(buf, NULL) == v) break;
+    }
+    return str_of(buf, n);
+}
+
 zs_str *zs_str_from_c(const char *c) { return str_of(c, (int64_t)strlen(c)); }
 
 zs_str *zs_str_of_bool(bool v) { return v ? str_of("true", 4) : str_of("false", 5); }

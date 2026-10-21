@@ -495,6 +495,15 @@ min : 'a -> 'a -> 'a when 'a : Ord
 
 The smaller of two values.
 
+### `Math.abs`
+
+```zsharp
+Math.abs : 'a -> 'a when 'a : Add, 'a : Num, 'a : Ord
+```
+
+The absolute value: `x` without its sign (named apart from C's `abs`, which programs often
+import). For integers, the most negative value has none, so it overflows (and panics).
+
 ### `List.rev`
 
 ```zsharp

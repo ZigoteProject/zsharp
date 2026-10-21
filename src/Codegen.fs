@@ -82,6 +82,7 @@ declare i64 @zs_str_hash(ptr)
 declare ptr @zs_str_of_i64(i64)
 declare ptr @zs_str_of_u64(i64)
 declare ptr @zs_str_of_f64(double)
+declare ptr @zs_str_of_f32(float)
 declare ptr @zs_str_of_bool(i1 zeroext)
 declare void @zs_print(ptr)
 declare void @zs_println(ptr)
@@ -1450,7 +1451,7 @@ let compile
                 | "string" -> arg 0
                 | "bool" -> em.Instr(sprintf "call ptr @zs_str_of_bool(i1 zeroext %s)" (arg 0))
                 | "f64" -> em.Instr(sprintf "call ptr @zs_str_of_f64(double %s)" (arg 0))
-                | "f32" -> em.Instr(sprintf "call ptr @zs_str_of_f64(double %s)" (em.Instr(sprintf "fpext float %s to double" (arg 0))))
+                | "f32" -> em.Instr(sprintf "call ptr @zs_str_of_f32(float %s)" (arg 0))
                 | _ when isUnsigned t ->
                     let v = if lt = "i64" then arg 0 else em.Instr(sprintf "zext %s %s to i64" lt (arg 0))
                     em.Instr(sprintf "call ptr @zs_str_of_u64(i64 %s)" v)

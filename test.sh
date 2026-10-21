@@ -101,6 +101,10 @@ if command -v gdb >/dev/null; then
   else echo "FAIL tests/debug/gdb.sh"; cat "$tmp/gdb.diff"; fail=1; fi
 else echo "skip tests/debug/gdb.sh (no gdb)"; fi
 
+# the guide's examples build and print what the guide says (docs/guide)
+if tests/docs.sh >"$tmp/docs.log" 2>&1; then echo "ok   docs/guide examples ($(tail -1 "$tmp/docs.log"))"
+else echo "FAIL docs/guide examples"; cat "$tmp/docs.log"; fail=1; fi
+
 # the prelude checks on its own (an editor opening it must not see everything defined twice)
 if bin/zs check runtime/prelude.zs >"$tmp/prelude.log" 2>&1; then echo "ok   zs check runtime/prelude.zs"
 else echo "FAIL zs check runtime/prelude.zs"; head -5 "$tmp/prelude.log"; fail=1; fi

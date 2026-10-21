@@ -1,0 +1,188 @@
+# 2. Basics
+
+## Values and functions
+
+`let` names a value. Names are immutable: a `let` can't be assigned to later.
+
+```zsharp
+let square x = x * x
+
+let hypot (a: f64) (b: f64) : f64 =
+  let aa = a * a
+  let bb = b * b
+  aa + bb
+
+let main () =
+  let n = square 12
+  println $"{n} {hypot 3.0 4.0}"
+  0
+```
+
+```text
+144 25
+```
+
+**Calling and defining:**
+- **Calls:** a function is called by writing its arguments after it, separated by spaces: `square 12` or `hypot 3.0 4.0`. Parentheses are only for grouping: `square (square 2)`.
+- **Types are inferred:** `square` works for any number type. `hypot` has annotations (`(a: f64)`, `: f64` for the result); they're optional, and useful as documentation.
+- **Blocks:** a function's body is an expression. A block's lines run in order, and the last line is the value.
+
+## Numbers
+
+| Type | What | Literal |
+|---|---|---|
+| `int` | 64-bit signed integer (also `i64`) | `42`, `-7`, `0xFF` |
+| `i8` `i16` `i32` | smaller signed integers | `i32 5` |
+| `u8` `u16` `u32` `u64` `usize` | unsigned integers | `u8 255` |
+| `f64` | 64-bit float (also `float`) | `3.14`, `1e-3` |
+| `f32` | 32-bit float | `f32 1.5` |
+
+**Literals and conversions:**
+- **Integer literals:** take whatever integer type the context needs, so `let x: u8 = 200` is fine.
+- **Float literals:** work the same way with `f64` and `f32`.
+- **Converting:** done explicitly with the type's name used as a function, e.g. `float n`, `int 3.9` (which truncates), `u8 n`, `f32 x`.
+
+```zsharp
+let main () =
+  let items = 7
+  let price = 2.5
+  let total = float items * price
+  println $"{total} {int total} {7 / 2} {7 % 2} {7.0 / 2.0}"
+  let small: u8 = 200
+  println $"{small} {i32 70000} {f32 0.1 + f32 0.2}"
+  0
+```
+
+```text
+17.5 17 3 1 3.5
+200 70000 0.3
+```
+
+**Operators:**
+- **Arithmetic:** `+ - * / %`. Integer `/` rounds toward zero.
+- **Overflow:** integer arithmetic that overflows stops the program with a panic, in every build. [Errors](07-errors.md#overflow) shows the wrapping operations to use when wrap-around is what you want.
+
+## Booleans and comparison
+
+**Comparison:**
+- `=` and `<>` compare for equality, and `< > <= >=` compare order. They work on numbers and strings, and on records, unions, tuples and lists too ([Traits](06-traits.md)).
+- `compare a b` gives a negative number, zero or a positive number.
+
+**Logic:** `&&`, `||` and `not`.
+
+```zsharp
+let main () =
+  let a = 3
+  let b = 5
+  println $"{a = b} {a <> b} {a < b && b < 10} {not (a > b)} {compare a b}"
+  println $"{"apple" < "banana"} {[ 1; 2 ] = [ 1; 2 ]}"
+  0
+```
+
+```text
+false true true true -1
+true true
+```
+
+## Strings
+
+**What a string is:** an immutable sequence of UTF-8 bytes. `+` joins two strings.
+
+**Interpolation:** `$"..."` evaluates the expressions in braces and inserts their text. Any value with a `Show` impl can go in a hole: numbers, strings, records, unions, lists and options all have one.
+
+**Escapes:** `\n`, `\t`, `\"` and `\\`.
+
+```zsharp
+let main () =
+  let name = "Ada"
+  let langs = [ "F#"; "OCaml" ]
+  println ("Hello, " + name + "!")
+  println $"{name} has {String.length name} letters and knows {langs}"
+  println $"tab:\t| quote: \" | sum: {1 + 2}"
+  let s = "  Hello, World  "
+  let t = s.Trim()
+  println $"[{t}] {t.ToUpper()} {t.Contains("World")} {t.Replace("l", "L")}"
+  println $"{String.split ", " t} {String.join "-" [ "a"; "b"; "c" ]}"
+  println $"{String.parseInt "42"} {String.parseInt "4x2"} {string 3.5}"
+  0
+```
+
+```text
+Hello, Ada!
+Ada has 3 letters and knows [F#; OCaml]
+tab:	| quote: " | sum: 3
+[Hello, World] HELLO, WORLD true HeLLo, WorLd
+[Hello; World] a-b-c
+Some 42 None 3.5
+```
+
+- **Converting to text:** `string x` gives any showable value's text.
+- **String functions:** the `String.*` functions and the members (`s.Length`, `s.Trim()`, `s.Split(sep)`, …) are listed in [the standard library](../reference/prelude.md).
+
+**Printing:**
+- `print` and `println` write to standard output.
+- `eprintln` writes to standard error.
+
+## if, while, for
+
+`if` is an expression: both branches give a value of the same type. Without an `else`, the branch must be `unit` (a statement).
+
+```zsharp
+let sign n = if n < 0 then -1 else if n = 0 then 0 else 1
+
+let main () =
+  println $"{sign -5} {sign 0} {sign 9}"
+  for i in 1 .. 3 do
+    print $"{i} "
+  for i in 10 .. -5 .. 0 do
+    print $"{i} "
+  println ""
+  for w in [ "a"; "b" ] do
+    print $"{w}! "
+  println ""
+  let mutable n = 1
+  while n < 100 do
+    n <- n * 3
+  println $"{n}"
+  0
+```
+
+```text
+-1 0 1
+1 2 3 10 5 0 
+a! b! 
+243
+```
+
+**Loops:**
+- `for i in a .. b` counts up to `b` inclusive, and `a .. step .. b` uses a step, which can be negative.
+- `for x in xs` goes over a list or an array.
+
+## Mutation
+
+Values are immutable unless declared otherwise.
+- **`let mutable`:** a variable that `<-` can assign to.
+- **Closures:** a mutable variable can't be captured by a closure. Use a `ref` cell for that: `r.Value` reads it and `r.Value <- x` writes it.
+
+```zsharp
+let counter () =
+  let count = ref 0
+  fun () ->
+    count.Value <- count.Value + 1
+    count.Value
+
+let main () =
+  let mutable total = 0
+  for i in 1 .. 10 do
+    total <- total + i
+  let next = counter ()
+  next () |> ignore
+  println $"{total} {next ()}"
+  0
+```
+
+```text
+55 2
+```
+
+`ignore` discards a value. A statement whose value isn't `unit` must be ignored explicitly, so a forgotten result doesn't go unnoticed.
