@@ -60,10 +60,12 @@ exit test passes and `./test.sh` passes. Design rationale: [DESIGN.md](DESIGN.md
   - **Modules:** one file is one module, with `open`/`private`. The compiler follows imports from `zs build main.zs`.
   - **Errors:** the `?` operator over `result`.
   - **C export:** `[<CLayout>]` records with C ABI lowering, `[<Export>]` with a generated `.h`, and `fnptr` callbacks that can carry a closure.
+  - **Derive:** `derive` definitions, `[<Derive(...)>]`, `Shape.of`/`build`/`buildCase` and per-field expansion. `Eq`/`Ord`/`Hash`/`Show` are written as prelude derives rather than as compiler special cases.
   - **Stdlib core:** `List`, `Array`, `String`, `Option`, `Result`, `Console`.
 - **Exit tests:**
   - A C program links a Z# static library and calls into it, including a callback that captures state.
   - A physics snippet mixing `m` and `s` units fails to compile where it should and compiles to the same IR as unitless code.
+  - A `Json` derive written in Z# round-trips a record, a union and a `Tree<int>`. Deriving it for a type with a function field fails with an error that names the field.
 
 ### Phase 4: C import and tooling
 - **Scope:**

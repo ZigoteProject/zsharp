@@ -17,7 +17,7 @@ Phased plan and status: [ROADMAP.md](ROADMAP.md).
 | Algebraic data types + exhaustive pattern matching | OOP classes, inheritance |
 | Native codegen via LLVM, C-competitive performance | Tracing GC, JIT |
 | Call C / be called from C, C struct layout | Effect handlers (designed in §6.1, built in v3) |
-| Deterministic memory (RC), memory-safe by default | Macros, compile-time evaluation |
+| Deterministic memory (RC), memory-safe by default | Macros, general compile-time evaluation (`derive` is the one exception, §3.1) |
 | Computation expressions; `Task` as a library | Built-in `async`/`await` keywords |
 | Data parallelism and SIMD without data races | Green threads, a GIL |
 
@@ -141,8 +141,66 @@ let print<'a when 'a : Show> (x: 'a) = Console.println (show x)
 
 - **Dispatch:** resolved statically and monomorphized, with no vtables unless you write `dyn Show`.
 - **Operators:** `+`, `<` and `=` are traits (`Num`, `Ord`, `Eq`) with built-in impls for primitives and SIMD vectors.
-- **Built in:** `Eq`, `Ord` and `Hash` are provided structurally and automatically (§2.1). `Show` is automatic too, used for `%A`-style printing, and `impl` overrides any of them.
+- **Built in:** `Eq`, `Ord` and `Hash` are provided structurally and automatically (§2.1). `Show` is automatic too, used for `%A`-style printing, and `impl` overrides any of them. All four are ordinary derives (§3.1) in the prelude, applied automatically.
 - **Auto traits:** `Share` (§7) is derived structurally by the compiler, and users can't implement it by hand.
+
+### 3.1 Derive
+
+Rust gets serializers, CLI parsers and builders from proc macros, Zig gets them
+from `comptime`, and F# gets them from reflection. Z# has none of these, so it
+gets them from **derive**: a library definition that implements a trait for any
+record or union by walking its fields. The compiler uses the same mechanism for
+`Eq`, `Ord`, `Hash` and `Show`.
+
+```fsharp
+trait Json<'a> =
+  abstract toJson   : 'a -> JsonValue
+  abstract fromJson : JsonValue -> result<'a, string>
+
+derive Json =                                   // implements Json<'self> for a record or union
+  let toJson (x: 'self) =
+    match Shape.of x with
+    | Record r ->
+        let mutable fields = []
+        for f in r.fields do                    // unrolled: one copy of the body per field
+          fields <- (f.name, toJson f.value) :: fields
+        JsonValue.Object (List.rev fields)
+    | Union c ->
+        let mutable args = []
+        for f in c.fields do
+          args <- toJson f.value :: args
+        JsonValue.Object [ ("case", JsonValue.String c.name); ("fields", JsonValue.Array (List.rev args)) ]
+
+  let fromJson (j: JsonValue) : result<'self, string> =
+    match Shape.kind<'self> with
+    | RecordKind -> Shape.build<'self> (fun f -> Json.field f.name j |> Result.bind fromJson)
+    | UnionKind  ->
+        result {
+          let! name = Json.field "case" j |> Result.bind Json.string
+          let! args = Json.field "fields" j |> Result.bind Json.array
+          let! built = Shape.buildCase<'self> name (fun f -> Json.at f.index args |> Result.bind fromJson)
+                       |> Option.toResult $"unknown case {name}"
+          return! built
+        }
+
+[<Derive(Json)>]
+type User = { name: string; age: int; email: option<string> }
+
+[<Derive(Json)>]
+type Tree<'a> = Leaf | Node of Tree<'a> * 'a * Tree<'a>     // impl requires 'a : Json
+
+let s = toJson { name = "ada"; age = 36; email = None }
+```
+
+- **What a derive sees:** `Shape.of x` is `Record r` or `Union c`. `r.fields` lists every field, and `c.name`/`c.fields` describe the active case. Each field has `name`, `index`, and a `value` of that field's own type. Unnamed union fields are named `item1`, `item2`, … as in F#.
+- **Per-field expansion:** a `for f in ….fields do` loop is unrolled at compile time, and its body is typechecked once per field, at that field's type. So `toJson f.value` resolves `Json` separately for `string`, `int` and `option<string>`. This is Zig's `inline for` over `@typeInfo`, but it is the only construct that works this way. A lambda passed to `Shape.build<'self>` (records) or `Shape.buildCase<'self> name` (unions) expands the same way. It is called once per field and returns `result<field, 'e>`. `build` returns `result<'self, 'e>` and stops at the first error. `buildCase` returns `None` for an unknown case name. `Shape.kind<'self>` tells a derive whether it is building a record or a union.
+- **Checking:** a derive body is checked for names and syntax where it is defined. It is fully typechecked at each `[<Derive>]` type. Errors name the derive, the type and the field: `Derive(Json) on User: field created: Time has no Json impl`. This is the tradeoff C++ templates and Zig comptime make, confined to derive bodies.
+- **Generics and recursion:** deriving for `Tree<'a>` adds `'a : Json` to the impl, as Rust's `#[derive]` does. Recursive types work because impls are monomorphized.
+- **Cost:** none at runtime. The expanded impl is ordinary code that is inlined and optimized like a hand-written one. No reflection or type metadata ends up in the binary.
+- **Not included:**
+  - Derives can't add members, types or other declarations, and they can't see function bodies.
+  - There are no field attributes yet (for example, renaming a JSON key). Add `f.attr<'t>`, returning an `option` of a typed attribute value, when the first real library needs it.
+  - Declarations generated from a schema (like F# type providers) are a separate, later feature that generalizes `import c` (§10).
 
 ## 4. Computation expressions
 
@@ -407,5 +465,6 @@ import c "raylib.h"                              // libclang, like Zig's @cImpor
 | 19 | Strings | UTF-8; `Length` is bytes; iteration over chars | default |
 | 20 | Generics across libraries | ship Core IR, monomorphize at the user | default |
 | 21 | Target order | Linux x64/arm64, macOS arm64, Windows x64, WASM | default |
+| 22 | User code generation | `derive` over record and union shapes (§3.1); no macros, no comptime | default |
 
 "Default" means chosen by me and open to change until the phase that implements it begins.
