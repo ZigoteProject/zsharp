@@ -153,6 +153,111 @@ let private hover (path: string) (line: int) (ch: int) : JsonNode =
               "range", range (h.hline - 1, h.hcol - 1) (h.hline - 1, h.hcol - 1 + h.hlen) ]
     | [] -> null
 
+/// The file a hover's position is in (the prelude ships next to zs).
+let private hoverPath (h: Hover) =
+    if h.hfile = "prelude.zs" then Driver.runtimeFile "prelude.zs" else Path.GetFullPath h.hfile
+
+let private location (h: Hover) : JsonNode =
+    obj [ "uri", str (toUri (hoverPath h)); "range", range (h.hline - 1, h.hcol - 1) (h.hline - 1, h.hcol - 1 + h.name.Length) ]
+
+/// The name under the cursor, and everything else that refers to the same thing.
+let private related (path: string) (line: int) (ch: int) =
+    let here =
+        hoversAt path
+        |> List.filter (fun h -> h.key <> "" && h.hline = line + 1 && ch >= h.hcol - 1 && ch < h.hcol - 1 + h.hlen)
+        |> List.sortBy (fun h -> h.hlen)
+        |> List.tryHead
+
+    match here, results.TryGetValue path with
+    | Some h, (true, prog) -> Some h, prog.hovers |> List.filter (fun o -> o.key = h.key)
+    | _ -> None, []
+
+let private definition (path: string) (line: int) (ch: int) : JsonNode =
+    match related path line ch with
+    | Some _, all ->
+        match all |> List.tryFind (fun h -> h.isDef) with
+        | Some d -> location d
+        | None -> null
+    | _ -> null
+
+let private references (path: string) (line: int) (ch: int) (withDecl: bool) : JsonNode =
+    let _, all = related path line ch
+
+    all
+    |> List.filter (fun h -> withDecl || not h.isDef)
+    |> List.distinctBy (fun h -> h.hfile, h.hline, h.hcol)
+    |> List.map location
+    |> arr
+
+let private keywords =
+    [ "let"; "rec"; "mutable"; "if"; "then"; "else"; "match"; "with"; "when"; "fun"; "for"; "in"; "do"; "while"
+      "type"; "of"; "member"; "static"; "trait"; "impl"; "derive"; "extern"; "open"; "module"; "private"; "not"; "true"; "false" ]
+
+/// After `x.`: the fields and members of x's type; otherwise names in scope (approximately:
+/// library and project functions, types, constructors, this file's own names) and keywords.
+let private completion (path: string) (line: int) (ch: int) : JsonNode =
+    let text = lineText path (line + 1)
+    let upto = text.Substring(0, min ch text.Length)
+    let mutable i = upto.Length - 1
+
+    while i >= 0 && (Char.IsLetterOrDigit upto[i] || upto[i] = '_') do
+        i <- i - 1
+
+    let item (label: string) (kind: int) (detail: string) =
+        obj [ "label", str label; "kind", num kind; "detail", str detail ]
+
+    match results.TryGetValue path with
+    | true, prog when i >= 0 && upto[i] = '.' ->
+        // the receiver ends right before the dot
+        let receiver =
+            hoversAt path
+            |> List.filter (fun h -> h.hline = line + 1 && h.hcol - 1 + h.hlen = i)
+            |> List.sortBy (fun h -> h.hlen)
+            |> List.tryHead
+
+        match receiver |> Option.map (fun h -> prune h.hty) with
+        | Some(TCon(n, args)) ->
+            let fields =
+                match prog.types.TryGetValue n with
+                | true, { def = RecordDef fs } -> fs |> List.map (fun (f, t) -> item f 5 (show (substGen args t)))
+                | _ -> []
+
+            let members =
+                match prog.memberNames.TryGetValue n with
+                | true, ms -> ms |> List.map (fun m -> item m 2 n)
+                | _ -> []
+
+            arr (fields @ members)
+        | _ -> arr []
+    | true, prog ->
+        let globals =
+            prog.hovers
+            |> List.filter (fun h -> h.decl && not (h.name.Contains "$"))
+            |> List.distinctBy (fun h -> h.name)
+            |> List.map (fun h -> item h.name 3 (show h.hty))
+
+        let locals =
+            hoversAt path
+            |> List.filter (fun h -> h.isDef && not h.decl)
+            |> List.distinctBy (fun h -> h.name)
+            |> List.map (fun h -> item h.name 6 (show h.hty))
+
+        let typesAndCases =
+            [ for KeyValue(n, info) in prog.types do
+                  if not (n.Contains "$") then
+                      yield item n (match info.def with
+                                    | RecordDef _ -> 22
+                                    | UnionDef _ -> 13) ""
+
+                      match info.def with
+                      | UnionDef cs ->
+                          for c, _ in cs do
+                              yield item c 20 n
+                      | RecordDef _ -> () ]
+
+        arr (locals @ globals @ typesAndCases @ (keywords |> List.map (fun k -> item k 14 "keyword")))
+    | _ -> arr (keywords |> List.map (fun k -> item k 14 "keyword"))
+
 let private inlayHints (path: string) (fromLine: int) (toLine: int) : JsonNode =
     hoversAt path
     |> List.filter (fun h -> h.inlay && h.hline - 1 >= fromLine && h.hline - 1 <= toLine && not (h.name.StartsWith "_"))
@@ -232,7 +337,10 @@ let serve () : int =
                                     "hoverProvider", bool true
                                     "documentSymbolProvider", bool true
                                     "inlayHintProvider", bool true
-                                    "documentFormattingProvider", bool true ]
+                                    "documentFormattingProvider", bool true
+                                    "definitionProvider", bool true
+                                    "referencesProvider", bool true
+                                    "completionProvider", obj [ "triggerCharacters", arr [ str "." ] ] ]
                               "serverInfo", obj [ "name", str "zs"; "version", str "0.4" ] ])
                 | "textDocument/didOpen" ->
                     let path = docPath ()
@@ -256,6 +364,22 @@ let serve () : int =
                     let r = ps["range"]
                     respond id (inlayHints (docPath ()) (getInt (r["start"]["line"])) (getInt (r["end"]["line"])))
                 | "textDocument/documentSymbol" -> respond id (symbols (docPath ()))
+                | "textDocument/definition" ->
+                    let p = ps["position"]
+                    respond id (definition (docPath ()) (getInt (p["line"])) (getInt (p["character"])))
+                | "textDocument/references" ->
+                    let p = ps["position"]
+
+                    let withDecl =
+                        match ps["context"] with
+                        | null -> true
+                        | c when isNull c["includeDeclaration"] -> true
+                        | c -> c["includeDeclaration"].GetValue<bool>()
+
+                    respond id (references (docPath ()) (getInt (p["line"])) (getInt (p["character"])) withDecl)
+                | "textDocument/completion" ->
+                    let p = ps["position"]
+                    respond id (completion (docPath ()) (getInt (p["line"])) (getInt (p["character"])))
                 | "textDocument/formatting" ->
                     // one edit replacing the whole document; none if it doesn't parse
                     let path = docPath ()

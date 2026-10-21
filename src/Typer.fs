@@ -284,8 +284,8 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
     let hovers = ResizeArray<Hover>()
     let currentFile = ref ""
 
-    /// Remembers the type at a node's source position.
-    let record (node: obj) (name: string) (t: Ty) (inlay: bool) =
+    /// Remembers the type at a node's source position, and what the name refers to.
+    let recordKey (node: obj) (name: string) (t: Ty) (inlay: bool) (key: string) (isDef: bool) =
         match positions.TryGetValue node with
         | true, (l, c, len) ->
             hovers.Add
@@ -297,8 +297,12 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                   hty = t
                   constraints = ""
                   decl = false
+                  key = key
+                  isDef = isDef
                   inlay = inlay }
         | _ -> ()
+
+    let record (node: obj) (name: string) (t: Ty) (inlay: bool) = recordKey node name t inlay "" false
 
     /// Errors raised while checking a positioned node (a name, call or field) point at it.
     let at (node: obj) (f: unit -> 'r) : 'r =
@@ -317,9 +321,9 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
     let recordParams (orig: Param list) (pars: (string * string * Ty) list) =
         if orig.Length = pars.Length then
             List.iter2
-                (fun (p: Pat, ann: SType option) (_, _, t) ->
+                (fun (p: Pat, ann: SType option) (_, u, t) ->
                     match p with
-                    | PIdent(x, None) -> record p x t ann.IsNone
+                    | PIdent(x, None) -> recordKey p x t ann.IsNone u true
                     | _ -> ())
                 orig
                 pars
@@ -551,8 +555,9 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
 
             CPCtor(u, tag, List.map2 (pat names) subs fields)
         | PIdent(x, None) ->
-            record p x ty true
-            CPVar(name x, ty)
+            let u = name x
+            recordKey p x ty true u true
+            CPVar(u, ty)
         | PIdent(c, Some _) -> fail 0 (sprintf "unknown constructor '%s'" c)
         | PTuple ps ->
             let ts = ps |> List.map (fun _ -> fresh kAny)
@@ -591,7 +596,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
         | UnitLit -> mk CUnit tUnit
         | Var x ->
             let r = at node (fun () -> value env depth x)
-            record node x r.ty false
+            recordKey node x r.ty false (keyOf env x) false
             r
         | Call(f, args) ->
             let r = at node (fun () -> call env depth f args)
@@ -601,7 +606,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                 | CApp(h, _) -> h.ty
                 | _ -> r.ty
 
-            record node f headTy false
+            recordKey node f headTy false (keyOf env f) false
             r
         | App(Field(r, f), args) ->
             let cr = inf r
@@ -660,7 +665,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
 
             let cb = infer envB (depth + 1) body
             expect (sprintf "result of '%s'" name) rty cb.ty
-            record node name fty false
+            recordKey node name fty false self.u true
             let cr = infer (env.Add(name, self)) depth rest
             mk (CLetFun(self.u, isRec, pars |> List.map (fun (_, u, t) -> u, t), cb, cr)) cr.ty
         | Let(PIdent(x, None) as p, ann, v, rest) when not (isCtor x) ->
@@ -669,11 +674,12 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                 | Some a -> inferHint env depth (toTy None a) v
                 | None -> inf v
 
-            record p x cv.ty ann.IsNone
+            let u = uniq x
+            recordKey p x cv.ty ann.IsNone u true
             ann |> Option.iter (fun a -> expect (sprintf "value of '%s'" x) (toTy None a) cv.ty)
 
             let l =
-                { u = uniq x
+                { u = u
                   ty = cv.ty
                   mut = false
                   depth = depth }
@@ -1343,6 +1349,12 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
         match e with
         | Call(f, _) -> activePatterns.Values |> Seq.exists (fun (fn, _, _) -> fn = f)
         | _ -> false
+
+    /// What a name refers to, for go-to-definition: a local's unique name or a global's.
+    and keyOf (env: Map<string, Local>) (x: string) =
+        match env.TryFind x with
+        | Some l -> l.u
+        | None -> resolveName x |> Option.defaultValue ""
 
     and resolveName (x: string) : string option =
         resolveWith
@@ -2051,7 +2063,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                     globals.Remove name |> ignore // keep later declarations from seeing a half-defined function
                     reraise ()
 
-                record d name globals[name].ty false
+                recordKey d name globals[name].ty false name true
 
                 if hovers.Count > 0 && hovers[hovers.Count - 1].name = name then
                     hovers[hovers.Count - 1] <- { hovers[hovers.Count - 1] with decl = true }
@@ -2271,4 +2283,11 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
       exports = List.ofSeq exports
       clayouts = clayouts
       errors = List.ofSeq diagnostics
-      hovers = List.ofSeq hovers }
+      hovers = List.ofSeq hovers
+      memberNames =
+        let d = Dictionary<string, string list>()
+
+        for KeyValue(t, table) in members do
+            d[t] <- List.ofSeq table.Keys
+
+        d }

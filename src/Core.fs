@@ -409,7 +409,8 @@ type Program =
       exports: Export list
       clayouts: HashSet<string> // [<CLayout>] records
       errors: Diagnostic list // when type-checking in collect mode
-      hovers: Hover list } // inferred types at source positions (editor support)
+      hovers: Hover list // inferred types at source positions (editor support)
+      memberNames: Dictionary<string, string list> } // type -> its members (completion)
 
 and Diagnostic =
     { file: string
@@ -428,6 +429,8 @@ and Hover =
       hty: Ty
       constraints: string // "'a : Add" for generic functions
       decl: bool // a top-level function's name
+      key: string // what it refers to: a local's unique name or a global's qualified name ("" = unknown)
+      isDef: bool // this is where `key` is defined
       inlay: bool }
 
 /// [<Export "cname">]: a C entry point for a monomorphic function.

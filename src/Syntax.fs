@@ -147,7 +147,7 @@ type Tok =
     | KInt of int64
     | KFloat of float
     | KStr of string
-    | KInterp of (bool * string) list // (isExpr, text) parts of $"..."
+    | KInterp of (bool * string * int) list // (isExpr, text, 1-based column) parts of $"..."
     | KId of string
     | KTyVar of string
     | KKw of string
@@ -338,7 +338,7 @@ and private lexWith (src: string) (keepComments: bool) : Token[] =
                 add (if keywords.Contains w then KKw w else KId w)
             elif c = '"' || (c = '$' && i + 1 < line.Length && line[i + 1] = '"') then
                 let interp = c = '$'
-                let parts = ResizeArray<bool * string>()
+                let parts = ResizeArray<bool * string * int>()
                 let sb = StringBuilder()
                 i <- i + (if interp then 2 else 1)
 
@@ -354,7 +354,7 @@ and private lexWith (src: string) (keepComments: bool) : Token[] =
                         sb.Append '}' |> ignore
                         i <- i + 2
                     elif interp && line[i] = '{' then
-                        parts.Add(false, sb.ToString())
+                        parts.Add(false, sb.ToString(), 0)
                         sb.Clear() |> ignore
                         let s = i + 1
                         let mutable depth = 0
@@ -369,7 +369,7 @@ and private lexWith (src: string) (keepComments: bool) : Token[] =
                         if i >= line.Length then
                             fail ln "unterminated '{' in interpolated string"
 
-                        parts.Add(true, line.Substring(s, i - s))
+                        parts.Add(true, line.Substring(s, i - s), s + 1)
                         i <- i + 1
                     else
                         sb.Append(line[i]) |> ignore
@@ -381,7 +381,7 @@ and private lexWith (src: string) (keepComments: bool) : Token[] =
                 i <- i + 1
 
                 if interp then
-                    parts.Add(false, sb.ToString())
+                    parts.Add(false, sb.ToString(), 0)
                     add (KInterp(List.ofSeq parts))
                 else
                     add (KStr(sb.ToString()))
@@ -1172,12 +1172,21 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
     // $"a {x} b"  ==>  "a " + string x + " b"
     and interpolate ln parts =
         parts
-        |> List.filter (fun (isExpr, s) -> isExpr || s <> "")
-        |> List.map (fun (isExpr, s) ->
+        |> List.filter (fun (isExpr, s, _) -> isExpr || s <> "")
+        |> List.map (fun (isExpr, s, col) ->
             if isExpr then
+                // the hole's tokens, moved to where they are in the file, so they get positions too
+                let holeToks =
+                    lex s
+                    |> Array.map (fun t ->
+                        if t.col > 0 then
+                            { t with line = ln; col = t.col + col - 1 }
+                        else
+                            { t with line = ln })
+
                 let e =
                     try
-                        (snd (parseTokens (lex s) true false)).Value
+                        (snd (parseTokens holeToks true track)).Value
                     with
                     | CompileError(_, msg)
                     | CompileErrorPos(_, _, msg) -> fail ln msg

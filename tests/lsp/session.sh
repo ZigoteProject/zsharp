@@ -17,7 +17,11 @@ frame() { printf 'Content-Length: %d\r\n\r\n%s' "$(printf '%s' "$1" | wc -c)" "$
   frame '{"jsonrpc":"2.0","id":3,"method":"textDocument/hover","params":{"textDocument":{"uri":"'"$uri"'"},"position":{"line":4,"character":7}}}'
   frame '{"jsonrpc":"2.0","id":4,"method":"textDocument/inlayHint","params":{"textDocument":{"uri":"'"$uri"'"},"range":{"start":{"line":0,"character":0},"end":{"line":20,"character":0}}}}'
   frame '{"jsonrpc":"2.0","id":5,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"'"$uri"'"}}}'
+  frame '{"jsonrpc":"2.0","id":10,"method":"textDocument/definition","params":{"textDocument":{"uri":"'"$uri"'"},"position":{"line":4,"character":15}}}'
+  frame '{"jsonrpc":"2.0","id":11,"method":"textDocument/references","params":{"textDocument":{"uri":"'"$uri"'"},"position":{"line":4,"character":7},"context":{"includeDeclaration":true}}}'
+  frame '{"jsonrpc":"2.0","id":12,"method":"textDocument/definition","params":{"textDocument":{"uri":"'"$uri"'"},"position":{"line":7,"character":24}}}'
+  frame '{"jsonrpc":"2.0","id":13,"method":"textDocument/completion","params":{"textDocument":{"uri":"'"$uri"'"},"position":{"line":6,"character":16}}}'
   frame '{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"'"$uri"'","version":2},"contentChanges":[{"text":"'"$bad"'"}]}}'
   frame '{"jsonrpc":"2.0","id":6,"method":"shutdown"}'
   frame '{"jsonrpc":"2.0","method":"exit"}'
-} | "$zs" lsp | tr -d '\r' | sed 's/Content-Length: [0-9]*//' | grep -o '{.*}' | sed "s|$uri|URI|g"
+} | "$zs" lsp | tr -d '\r' | sed 's/Content-Length: [0-9]*//' | grep -o '{.*}' | sed "s|$uri|URI|g; s|file://$(pwd)/bin/|file://ZS/|g; s|$(pwd)|.|g"

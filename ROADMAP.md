@@ -199,7 +199,9 @@ type checker, so editor behaviour can't drift from the compiler's.
 - **E3 (`zs mcp`):** done. The `check`, `type_at`, `docs`, `build`, `run`, `emit_llvm` and `format` tools, tested by `tests/mcp/session.sh`.
 - **F (`zs fmt`):** v1 done (token-based; see below).
 - **E1 (grammar and Zed extension):** written but not yet built. The grammar still needs generating and testing, and the extension needs compiling to WASM, once the dev image has the tree-sitter CLI and Rust.
-- **E2b (navigation and completion):** next.
+- **E2b (navigation and completion):** partly done.
+  - **Done:** go to definition (across modules and into the prelude), find references, and completion (members and fields after `.`, plus names and keywords), including names inside `$"…{x}…"`.
+  - **Still to do:** signature help, rename and code actions.
 
 ### E1: syntax highlighting and Zed extension
 - **Scope:**

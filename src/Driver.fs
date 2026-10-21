@@ -58,7 +58,7 @@ let loadModules (mainPath: string) : (string * string option * (int * Decl) list
                         match t.tok with
                         | KId s when s.Contains "." && Char.IsUpper s[0] -> yield s.Substring(0, s.IndexOf '.')
                         | KInterp parts ->
-                            for isExpr, text in parts do
+                            for isExpr, text, _ in parts do
                                 if isExpr then
                                     yield! qualified (lex text)
                         | _ -> () ]
