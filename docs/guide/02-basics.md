@@ -31,9 +31,10 @@ let main () =
 
 | Type | What | Literal |
 |---|---|---|
-| `int` | 64-bit signed integer (also `i64`) | `42`, `-7`, `0xFF` |
-| `i8` `i16` `i32` | smaller signed integers | `i32 5` |
-| `u8` `u16` `u32` `u64` `usize` | unsigned integers | `u8 255` |
+| `int` | signed integer, the machine word: 64 bits (32 on a Cortex-M) | `42`, `-7`, `0xFF`, `0b1010`, `1_000_000` |
+| `i8` `i16` `i32` `i64` | signed integers of a fixed size | `i32 5` |
+| `u8` `u16` `u32` `u64` | unsigned integers of a fixed size | `u8 255` |
+| `usize` | unsigned, the machine word (sizes, addresses) | `usize 4096` |
 | `f64` | 64-bit float (also `float`) | `3.14`, `1e-3` |
 | `f32` | 32-bit float | `f32 1.5` |
 
@@ -61,6 +62,27 @@ let main () =
 **Operators:**
 - **Arithmetic:** `+ - * / %`. Integer `/` rounds toward zero.
 - **Overflow:** integer arithmetic that overflows stops the program with a panic, in every build. [Errors](07-errors.md#overflow) shows the wrapping operations to use when wrap-around is what you want.
+- **Width of `int`:** `int` is as wide as the machine's word, as in Swift and Go. That's 64 bits on a desktop or phone, and 32 bits on a microcontroller, where 64-bit arithmetic costs two instructions per operation. Use `i64` when a value needs 64 bits everywhere.
+
+## Bitwise operators
+
+`&&&` (and), `|||` (or), `^^^` (xor), `<<<` and `>>>` (shifts) and `~~~` (not) work on every integer type, as in F#.
+- **Precedence:** they bind tighter than comparison, so `flags &&& mask <> 0` needs no parentheses.
+- **Shifts:** `>>>` keeps the sign for signed types and fills with zeros for unsigned ones. The shift amount is taken modulo the width.
+
+```zsharp
+let main () =
+  let flags = 0b0101
+  println $"{flags &&& 0b0100 <> 0} {flags ||| 0b0010} {flags ^^^ 0xF} {1 <<< 10} {-16 >>> 2} {~~~0}"
+  let b = u8 0xF0
+  println $"{b >>> u8 4} {~~~b} {(b <<< u8 1) &&& u8 0xFF}"
+  0
+```
+
+```text
+true 7 10 1024 -4 -1
+15 15 224
+```
 
 ## Booleans and comparison
 

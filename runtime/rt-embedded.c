@@ -93,9 +93,13 @@ _Noreturn static void stop(int code) {
 // ---- heap: 8-byte header holding the block size; free lists per 8-byte class up to 256 bytes
 
 static uint8_t heap[ZS_HEAP_SIZE] __attribute__((aligned(8)));
-static size_t heap_top, heap_used, heap_peak;
-static int64_t live, allocations;
-static void *free_lists[33];
+
+// the allocator's state in one place (one base address), with word-sized counters
+static struct {
+    size_t top, used, peak;
+    zs_int live, allocations;
+    void *free_lists[33];
+} H;
 
 _Noreturn void zs_panic_c(const char *msg);
 
@@ -104,20 +108,20 @@ void *zs_alloc(zs_int size) {
     size_t cls = need / 8;
     uint64_t *block = 0;
 
-    if (cls <= 32 && free_lists[cls]) {
-        block = (uint64_t *)free_lists[cls] - 1;
-        free_lists[cls] = *(void **)free_lists[cls];
+    if (cls <= 32 && H.free_lists[cls]) {
+        block = (uint64_t *)H.free_lists[cls] - 1;
+        H.free_lists[cls] = *(void **)H.free_lists[cls];
     } else {
-        if (heap_top + need + 8 > ZS_HEAP_SIZE) zs_panic_c("out of memory");
-        block = (uint64_t *)(heap + heap_top);
-        heap_top += need + 8;
+        if (H.top + need + 8 > ZS_HEAP_SIZE) zs_panic_c("out of memory");
+        block = (uint64_t *)(heap + H.top);
+        H.top += need + 8;
         *block = need;
     }
 
-    heap_used += *block;
-    if (heap_used > heap_peak) heap_peak = heap_used;
-    live++;
-    allocations++;
+    H.used += (size_t)*block;
+    if (H.used > H.peak) H.peak = H.used;
+    H.live++;
+    H.allocations++;
     return block + 1;
 }
 
@@ -125,16 +129,16 @@ void *zs_alloc(zs_int size) {
 void zs_free(void *p) {
     uint64_t *block = (uint64_t *)p - 1;
     size_t cls = (size_t)*block / 8;
-    heap_used -= *block;
-    live--;
+    H.used -= (size_t)*block;
+    H.live--;
 
     if (cls <= 32) {
-        *(void **)p = free_lists[cls];
-        free_lists[cls] = p;
+        *(void **)p = H.free_lists[cls];
+        H.free_lists[cls] = p;
     }
 }
 
-zs_int zs_allocations(void) { return allocations; }
+zs_int zs_allocations(void) { return H.allocations; }
 
 // ---- strings
 
@@ -306,10 +310,10 @@ static void text(const char *label, uint64_t v) {
 static void report(void) {
     uint32_t *p = &_sstack;
     while (p < &_estack && *p == 0xCDCDCDCDu) p++;
-    text("#zs heap_peak=", heap_peak); // live bytes at the high-water mark
-    text(" heap_reserved=", heap_top);
-    text(" allocations=", (uint64_t)allocations);
-    text(" live=", (uint64_t)live);
+    text("#zs heap_peak=", H.peak); // live bytes at the high-water mark
+    text(" heap_reserved=", H.top);
+    text(" allocations=", (uint64_t)H.allocations);
+    text(" live=", (uint64_t)H.live);
     text(" stack=", (uint64_t)((uint8_t *)&_estack - (uint8_t *)p));
     write_c("\n");
 }

@@ -283,3 +283,119 @@ let run (prog: Program) : MFun list =
               line = f.line }
 
     List.ofSeq out
+
+// ---- list fusion: List.init n g |> List.map f |> List.filter p |> List.sum (or sumBy, fold,
+// length) becomes one loop with an accumulator, building no lists. Only when every function in
+// the chain is a lambda that is pure (arithmetic, comparisons, local bindings, conditionals):
+// then running the stages per element instead of per list can't change what the program does.
+
+type private Stage =
+    | MapS of CExpr
+    | FilterS of CExpr
+
+let fuse (funs: MFun list) : MFun list =
+    let count = ref 0
+
+    let fresh (p: string) =
+        count.Value <- count.Value + 1
+        sprintf "$fuse%d.%s" count.Value p
+
+    let mk k ty = { k = k; ty = ty }
+
+    let baseName (g: string) =
+        match g.IndexOf '<' with
+        | -1 -> g
+        | i -> g.Substring(0, i)
+
+    let call (e: CExpr) =
+        match e.k with
+        | CApp({ k = CGlobal(g, _) }, args) -> Some(baseName g, args)
+        | _ -> None
+
+    let rec pure (e: CExpr) =
+        match e.k with
+        | CInt _
+        | CFloat _
+        | CBool _
+        | CUnit
+        | CLocal _ -> true
+        | CBin(_, a, b) -> pure a && pure b
+        | CNeg a
+        | CNot a
+        | CLine(_, a) -> pure a
+        | CIf(c, t, f) -> pure c && pure t && pure f
+        | CLet(_, v, b) -> pure v && pure b
+        | CPrim(("conv" | "wrap+" | "wrap-" | "wrap*"), args) -> List.forall pure args
+        | _ -> false
+
+    let pureLambda (e: CExpr) arity =
+        match e.k with
+        | CLam(ps, body) -> ps.Length = arity && pure body
+        | _ -> false
+
+    /// (lambda applied to args) as lets of its parameters around its body
+    let beta (lam: CExpr) (args: CExpr list) =
+        match lam.k with
+        | CLam(ps, body) -> List.foldBack2 (fun (p, _) a acc -> mk (CLet(p, a, acc)) acc.ty) ps args body
+        | _ -> failwith "beta"
+
+    let numeric (t: Ty) =
+        match prune t with
+        | TCon(n, []) -> nums.Contains n
+        | _ -> false
+
+    let zeroOf (t: Ty) =
+        match prune t with
+        | TCon(n, []) when floats.Contains n -> mk (CFloat 0.0) t
+        | _ -> mk (CInt 0L) t
+
+    /// The producer chain under a consumer: stages (outermost last) down to List.init n g.
+    let rec chain (xs: CExpr) (stages: Stage list) =
+        match call xs with
+        | Some("List.map", [ f; ys ]) when pureLambda f 1 -> chain ys (MapS f :: stages)
+        | Some("List.filter", [ p; ys ]) when pureLambda p 1 -> chain ys (FilterS p :: stages)
+        | Some("List.init", [ n; g ]) when pureLambda g 1 -> Some(n, g, stages)
+        | _ -> None
+
+    /// The fused loop: acc starts at `start`; for each element x surviving the stages, acc <- step acc x.
+    let loop (n: CExpr) (g: CExpr) (stages: Stage list) (start: CExpr) (step: CExpr -> CExpr -> CExpr) =
+        let acc, nv, i = fresh "acc", fresh "n", fresh "i"
+        let accTy = start.ty
+        let accRef = mk (CLocal acc) accTy
+
+        let rec through (x: CExpr) (stages: Stage list) : CExpr =
+            match stages with
+            | [] -> mk (CAssign(acc, step accRef x)) tUnit
+            | MapS f :: rest ->
+                let y = fresh "x"
+                let fx = beta f [ x ]
+                mk (CLet(y, fx, through (mk (CLocal y) fx.ty) rest)) tUnit
+            | FilterS p :: rest -> mk (CIf(beta p [ x ], through x rest, mk CUnit tUnit)) tUnit
+
+        let x0 = fresh "x"
+        let gi = beta g [ mk (CLocal i) tInt ]
+        let body = mk (CLet(x0, gi, through (mk (CLocal x0) gi.ty) stages)) tUnit
+        let last = mk (CBin("-", mk (CLocal nv) tInt, mk (CInt 1L) tInt)) tInt
+        let forLoop = mk (CFor(i, mk (CInt 0L) tInt, mk (CInt 1L) tInt, last, body)) tUnit
+        mk (CLet(nv, n, mk (CLetMut(acc, start, mk (CSeq(forLoop, accRef)) accTy)) accTy)) accTy
+
+    let rec ex (e: CExpr) : CExpr =
+        let fused =
+            match call e with
+            | Some("List.sum", [ xs ]) when numeric e.ty ->
+                chain xs [] |> Option.map (fun (n, g, st) -> loop n g st (zeroOf e.ty) (fun a x -> mk (CBin("+", a, x)) e.ty))
+            | Some("List.sumBy", [ f; xs ]) when numeric e.ty && pureLambda f 1 ->
+                chain xs [] |> Option.map (fun (n, g, st) -> loop n g st (zeroOf e.ty) (fun a x -> mk (CBin("+", a, beta f [ x ])) e.ty))
+            | Some("List.length", [ xs ]) ->
+                chain xs [] |> Option.map (fun (n, g, st) -> loop n g st (mk (CInt 0L) tInt) (fun a _ -> mk (CBin("+", a, mk (CInt 1L) tInt)) tInt))
+            | Some("List.fold", [ f; s; xs ]) when pureLambda f 2 && pure s -> // s is now evaluated after n
+                chain xs [] |> Option.map (fun (n, g, st) -> loop n g st s (fun a x -> beta f [ a; x ]))
+            | _ -> None
+
+        match fused with
+        | Some f -> { f with k = mapChildren ex f.k }
+        | None -> { e with k = mapChildren ex e.k }
+
+    // ponytail: only chains from List.init; a source list or array could be fused the same way
+    // (a loop over it), and List.map into another list consumer (fusing into one map) too
+    funs |> List.map (fun f -> { f with body = ex f.body })

@@ -17,7 +17,104 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
         count.Value <- count.Value + 1
         sprintf "$rc%d" count.Value
 
+    // ---- borrowed parameters (Perceus borrowing): a heap parameter the function only applies,
+    // reads (a.[i], lengths) or passes on to a borrowed parameter is borrowed. The caller keeps
+    // ownership and the callee neither dups nor drops it, so a closure or array threaded
+    // through a loop costs no reference counting. Only for functions called directly (not
+    // closures, which are called through code pointers, nor main).
+    let borrowedParams =
+        let asValues = System.Collections.Generic.HashSet<string>([ "main" ])
+
+        let rec values (e: CExpr) =
+            match e.k with
+            | CMkClosure(n, _) -> asValues.Add n |> ignore
+            | _ -> ()
+
+            children e.k |> List.iter values
+
+        for f in funs do
+            values f.body
+
+        let borrowedOf = System.Collections.Generic.Dictionary<string, Set<int>>()
+
+        for f in funs do
+            if not (asValues.Contains f.name) then
+                borrowedOf[f.name] <- f.pars |> List.indexed |> List.filter (fun (_, (_, t)) -> heap t) |> List.map fst |> Set.ofList
+
+        let fnOf = funs |> List.map (fun f -> f.name, f) |> dict
+        let mutable changed = true
+
+        while changed do
+            changed <- false
+
+            for KeyValue(name, set) in List.ofSeq borrowedOf do
+                let f = fnOf[name]
+
+                let ok i =
+                    let p = fst f.pars[i]
+                    let mutable bad = false
+
+                    let rec walk (e: CExpr) =
+                        match e.k with
+                        | CLocal x when x = p -> bad <- true
+                        | CApplyClo({ k = CLocal x }, arg) when x = p -> walk arg
+                        | CPrim(("array.get" | "Array.length" | "String.length" | "String.byte"), { k = CLocal x } :: rest) when x = p ->
+                            List.iter walk rest
+                        | CCallDirect(g, args) ->
+                            args
+                            |> List.iteri (fun j a ->
+                                match a.k with
+                                | CLocal x when x = p ->
+                                    let once = (args |> List.filter (fun b -> b.k = CLocal p)).Length = 1
+
+                                    match borrowedOf.TryGetValue g with
+                                    | true, bs when once && bs.Contains j -> ()
+                                    | _ -> bad <- true
+                                | _ -> walk a)
+                        | CAssign(x, _)
+                        | CArraySet(x, _, _) when x = p -> bad <- true
+                        | k -> children k |> List.iter walk
+
+                    walk f.body
+                    not bad
+
+                let kept = set |> Set.filter ok
+
+                if kept <> set then
+                    borrowedOf[name] <- kept
+                    changed <- true
+
+        borrowedOf
+
+    /// print/println of a string built with + (an interpolation, usually) prints the pieces
+    /// instead of joining them: no concatenation, no allocation. Every piece is evaluated first,
+    /// in order, as before, so output and panics happen exactly as they did.
+    let rec printPieces (e: CExpr) : CExpr =
+        let isString (e: CExpr) =
+            match prune e.ty with
+            | TCon("string", []) -> true
+            | _ -> false
+
+        let rec flatten (e: CExpr) =
+            match e.k with
+            | CBin("+", a, b) when isString a -> flatten a @ flatten b
+            | _ -> [ e ]
+
+        match e.k with
+        | CPrim(("print" | "println") as op, [ ({ k = CBin("+", a, _) } as arg) ]) when isString a ->
+            let temps = flatten arg |> List.map (fun p -> tmp (), printPieces p)
+            let last = temps.Length - 1
+
+            let prints =
+                temps
+                |> List.mapi (fun i (t, p) -> mk (CPrim((if i = last then op else "print"), [ mk (CLocal t) p.ty ])) tUnit)
+                |> List.reduce (fun a b -> mk (CSeq(a, b)) tUnit)
+
+            List.foldBack (fun (t, p) acc -> mk (CLet(t, p, acc)) tUnit) temps prints
+        | k -> mk (mapChildren printPieces k) e.ty
+
     let rcFun (f: MFun) =
+        let f = { f with body = printPieces f.body }
         // every variable's type, by unique name
         let vtypes = System.Collections.Generic.Dictionary<string, Ty>()
 
@@ -65,7 +162,7 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
             let free (b: CExpr) = mk (CFreeToken(tok, b)) b.ty
 
             match e.k with
-            | CCtor(u, tag, args) when (args |> List.map (fun a -> a.ty)) = layout -> re (CCtorAt(tok, u, tag, args))
+            | CCtor(u, tag, args) when heap e.ty && (args |> List.map (fun a -> a.ty)) = layout -> re (CCtorAt(tok, u, tag, args))
             | CWhile _
             | CFor _ -> None // runs repeatedly
             | CIf(c, t, f) ->
@@ -301,6 +398,58 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
                 | _ -> failwith "unreachable"
             | CTuple xs -> re (CTuple(rcList owned borrowed xs))
             | CCtor(u, tag, xs) -> re (CCtor(u, tag, rcList owned borrowed xs))
+            | CCallDirect(n, xs) when (match borrowedParams.TryGetValue n with
+                                       | true, bs -> not bs.IsEmpty
+                                       | _ -> false) ->
+                // borrowed positions: a variable passed once is lent (and dropped after the call
+                // if this was its last use); anything else goes through a temporary dropped after
+                let bs = borrowedParams[n]
+
+                let lentArg (j: int) (a: CExpr) =
+                    bs.Contains j
+                    && (match a.k with
+                        | CLocal x -> (xs |> List.filter (fun b -> b.k = CLocal x)).Length = 1
+                        | _ -> false)
+
+                let needsTemp (j: int) (a: CExpr) = bs.Contains j && not (lentArg j a)
+
+                if xs |> List.indexed |> List.exists (fun (j, a) -> needsTemp j a) then
+                    // bind the others' temporaries first, then retry with variables in their place
+                    let temps = xs |> List.mapi (fun j a -> if needsTemp j a then Some(tmp (), a) else None)
+
+                    for t in temps do
+                        match t with
+                        | Some(v, (a: CExpr)) -> vtypes[v] <- a.ty
+                        | None -> ()
+
+                    let call = re (CCallDirect(n, List.map2 (fun t (a: CExpr) -> match t with Some(v, _) -> mk (CLocal v) a.ty | None -> a) temps xs))
+                    let body = temps |> List.choose id |> List.rev |> List.fold (fun acc (v, a) -> mk (CLet(v, a, acc)) e.ty) call
+                    rc' owned borrowed body
+                else
+                    let lentVars = xs |> List.indexed |> List.choose (fun (j, a) -> match a.k with | CLocal x when lentArg j a -> Some x | _ -> None) |> Set.ofList
+                    let others = xs |> List.indexed |> List.filter (fun (j, _) -> not (lentArg j xs[j])) |> List.map snd
+                    let others' = rcList (Set.difference owned lentVars) (Set.union borrowed lentVars) others
+                    let mutable k = 0
+
+                    let args =
+                        xs
+                        |> List.mapi (fun j a ->
+                            if lentArg j a then
+                                a
+                            else
+                                let r = others'[k]
+                                k <- k + 1
+                                r)
+
+                    let call = re (CCallDirect(n, args))
+                    let dying = Set.intersect owned lentVars
+
+                    if dying.IsEmpty then
+                        call
+                    else
+                        let r = tmp ()
+                        vtypes[r] <- e.ty
+                        re (CLet(r, call, drops dying (mk (CLocal r) e.ty)))
             | CCallDirect(n, xs) -> re (CCallDirect(n, rcList owned borrowed xs))
             | CExtern(n, xs) -> re (CExtern(n, rcList owned borrowed xs))
             | CPrim(n, xs) -> re (CPrim(n, rcList owned borrowed xs))
@@ -321,7 +470,101 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
             | CCtorAt _
             | CFreeToken _ -> failwithf "Rc: unexpected node %A" e.k
 
-        let owned = f.pars |> List.map fst |> List.filter heapVar |> Set.ofList
-        { f with body = rc owned Set.empty f.body }
+        // ---- moving out of mutable variables: `let r = f … x …` (or a match or statement on such a
+        // call) where x is a `let mutable` passed directly, and x is reassigned before it is
+        // read again on every path after it. The call gets x's own reference (so a unique value
+        // stays unique, and Perceus can reuse its cell), and that reassignment drops nothing.
+        let rec firstUse (x: string) (e: CExpr) : int = // 0: not used, 1: read first, 2: assigned first
+            let inOrder (es: CExpr list) =
+                es |> List.fold (fun u c -> if u <> 0 then u else firstUse x c) 0
+
+            let join (us: int list) =
+                if us |> List.forall ((=) 2) then 2
+                elif us |> List.forall ((=) 0) then 0
+                else 1 // a path that reads it, or that might not reassign it
+
+            match e.k with
+            | CLocal y when y = x -> 1
+            | CAssign(y, v) when y = x -> if firstUse x v = 1 then 1 else 2
+            | CIf(c, t, f) ->
+                match firstUse x c with
+                | 0 -> join [ firstUse x t; firstUse x f ]
+                | u -> u
+            | CMatch(sc, cases) ->
+                match firstUse x sc with
+                | 0 -> join (cases |> List.map (fun (_, g, b) -> inOrder ((Option.toList g) @ [ b ])))
+                | u -> u
+            | CWhile _
+            | CFor _ -> if (freeVars e).Contains x || (refs e |> List.exists (fun (y, _) -> y = x)) then 1 else 0
+            | CLam _ -> 0
+            | k -> inOrder (children k)
+
+        /// The first assignment to x on every path, marked as taking a moved-out variable.
+        let rec markAssign (x: string) (e: CExpr) : CExpr =
+            match e.k with
+            | CAssign(y, v) when y = x -> mk (CAssign(x, mk (CPrim("slot.moved", [ v ])) v.ty)) e.ty
+            | CIf(c, t, f) -> mk (CIf(c, markAssign x t, markAssign x f)) e.ty
+            | CMatch(sc, cases) -> mk (CMatch(sc, cases |> List.map (fun (p, g, b) -> p, g, markAssign x b))) e.ty
+            | CSeq(a, b) -> if firstUse x a = 2 then mk (CSeq(markAssign x a, b)) e.ty else mk (CSeq(a, markAssign x b)) e.ty
+            | CLet(y, v, b) -> if firstUse x v = 2 then mk (CLet(y, markAssign x v, b)) e.ty else mk (CLet(y, v, markAssign x b)) e.ty
+            | CLine(l, a) -> mk (CLine(l, markAssign x a)) e.ty
+            | _ -> e
+
+        let rec moves (e: CExpr) : CExpr =
+            let re k = mk k e.ty
+
+            /// h followed by continuations: move what every continuation reassigns first
+            let rec split (h: CExpr) (conts: CExpr list) (build: CExpr -> CExpr list -> CExpr) =
+              match h.k with
+              | CLine(l, inner) -> split inner conts (fun inner' cs -> build (mk (CLine(l, inner')) h.ty) cs)
+              | _ ->
+                let args =
+                    match h.k with
+                    | CCallDirect(_, a)
+                    | CCtor(_, _, a)
+                    | CTuple a -> a
+                    | CPrim(op, a) when not (op.StartsWith "slot.") -> a
+                    | _ -> []
+
+                let ok =
+                    args
+                    |> List.choose (fun a ->
+                        match a.k with
+                        | CLocal x when mutables.Contains x && heapVar x && conts |> List.forall (fun c -> firstUse x c = 2) -> Some x
+                        | _ -> None)
+                    |> List.filter (fun x ->
+                        (args |> List.filter (fun a -> a.k = CLocal x)).Length = 1
+                        && args |> List.forall (fun a -> a.k = CLocal x || not ((freeVars a).Contains x)))
+
+                if ok.IsEmpty then
+                    build (moves h) (List.map moves conts)
+                else
+                    let take (a: CExpr) = match a.k with | CLocal x when List.contains x ok -> mk (CPrim("slot.take", [ a ])) a.ty | _ -> a
+
+                    let h' =
+                        match h.k with
+                        | CCallDirect(n, a) -> mk (CCallDirect(n, List.map take a)) h.ty
+                        | CCtor(u, t, a) -> mk (CCtor(u, t, List.map take a)) h.ty
+                        | CTuple a -> mk (CTuple(List.map take a)) h.ty
+                        | CPrim(op, a) -> mk (CPrim(op, List.map take a)) h.ty
+                        | _ -> h
+
+                    build h' (conts |> List.map (fun c -> ok |> List.fold (fun c x -> markAssign x c) c |> moves))
+
+            match e.k with
+            | CLet(y, v, b) -> split v [ b ] (fun v' bs -> re (CLet(y, v', List.head bs)))
+            | CSeq(a, b) -> split a [ b ] (fun a' bs -> re (CSeq(a', List.head bs)))
+            | CMatch(sc, cases) when cases |> List.forall (fun (_, g, _) -> g.IsNone) ->
+                split sc (cases |> List.map (fun (_, _, b) -> b)) (fun sc' bs -> re (CMatch(sc', List.map2 (fun (p, g, _) b -> p, g, b) cases bs)))
+            | k -> re (mapChildren moves k)
+
+        let mine =
+            match borrowedParams.TryGetValue f.name with
+            | true, bs -> bs
+            | _ -> Set.empty
+
+        let lent = f.pars |> List.indexed |> List.filter (fun (i, _) -> mine.Contains i) |> List.map (snd >> fst) |> Set.ofList
+        let owned = f.pars |> List.map fst |> List.filter heapVar |> Set.ofList |> fun o -> Set.difference o lent
+        { f with body = rc owned lent (moves f.body) }
 
     List.map rcFun funs

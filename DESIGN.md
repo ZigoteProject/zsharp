@@ -63,7 +63,8 @@ let sumTo n =                            // imperative code is fine; mutation st
 ### Core features
 - **Bindings:** `let`, `let mutable` with `<-`, `let rec`, plus shadowing. A `let mutable` can't be captured by a closure (an F# rule that §5 relies on).
 - **Types:**
-  - Integers: `int` (= i64), `i8..i64`, `u8..u64`, `usize`.
+  - Integers: `int`, `i8..i64`, `u8..u64`, `usize`. `int` and `usize` are the machine word: 64 bits on 64-bit targets, 32 on a Cortex-M. That matches Swift and Go, and keeps index and loop code native on 32-bit chips. `i64`/`u64` are always 64 bits.
+  - Bitwise operators `&&& ||| ^^^ <<< >>> ~~~` (F# spelling), above comparison in precedence; literals `0xFF`, `0b1010`, `0o17`, `1_000_000`.
   - Floats: `f32`, `f64`.
   - Others: `bool`, `char` (u32 scalar), `string` (UTF-8, RC), `unit`.
   - SIMD vectors: `f32x4`, `i32x8`, … (§8).
@@ -574,7 +575,7 @@ Plan: ROADMAP "Editor tooling track".
 
 | # | Decision | Chosen default | Status |
 |---|---|---|---|
-| 1 | `int` width | 64-bit | decided |
+| 1 | `int` width | the machine word (64-bit; 32-bit on Cortex-M) | decided (changed for microcontrollers, measured: 64-bit int cost 1.5–2× in array loops on Cortex-M) |
 | 2 | Integer overflow | traps in debug **and release**; explicit wrapping operations or `[<Wrapping>]`; divide by zero always traps | decided (changed after the design review) |
 | 3 | Syntax | indentation only | decided |
 | 4 | Memory | Perceus RC, no GC | decided |

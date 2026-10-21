@@ -18,6 +18,7 @@ its exact output.
 8. [Programs](08-programs.md): modules, projects and dependencies, files and processes, tests, units of measure
 9. [C interop](09-c-interop.md): `extern`, `import c`, structs by value, callbacks, exporting to C, cross-compiling
 10. [Tools](10-tools.md): the `zs` command line, formatting, docs, debugging, Zed and other editors
+11. [Microcontrollers](11-microcontrollers.md): bare-metal Cortex-M, hardware registers, fast and small code
 
 **Reference:**
 - [The standard library](../reference/prelude.md), generated from its doc comments by `zs doc`.

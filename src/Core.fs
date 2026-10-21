@@ -451,14 +451,33 @@ and Export =
       ret: Ty }
 
 /// Does a value of this type hold a reference count (directly or in a field)?
-let rec needsRc (types: Dictionary<string, TypeInfo>) t =
+/// Does a value of this type hold a reference count (directly or in a field)? `visiting`: the
+/// unions being looked through, so a recursive union is found (and stays boxed).
+let rec private heapIn (types: Dictionary<string, TypeInfo>) (visiting: Set<string>) t =
     match prune t with
     | TCon(("string" | "array" | "Buffer" | "ref"), _)
     | TFun _ -> true
     | TCon(n, args) ->
         match types.TryGetValue n with
-        | true, { def = UnionDef _ } -> true
-        | true, { def = RecordDef fs } -> fs |> List.exists (fun (_, ft) -> needsRc types (substGen args ft))
+        | true, { def = UnionDef _ } -> visiting.Contains n || not (plainUnionIn types visiting t)
+        | true, { def = RecordDef fs } -> fs |> List.exists (fun (_, ft) -> heapIn types visiting (substGen args ft))
         | _ -> false
-    | TTuple ts -> List.exists (needsRc types) ts
+    | TTuple ts -> List.exists (heapIn types visiting) ts
     | _ -> false
+
+/// A union kept as a plain value ({ tag, fields }) instead of a heap cell: not recursive, at
+/// most 4 fields over all its cases, none of them holding a reference count (option<int>,
+/// result<int, f64>, enums, small state machines). Others are boxed.
+and private plainUnionIn (types: Dictionary<string, TypeInfo>) (visiting: Set<string>) t =
+    match prune t with
+    | TCon(n, args) ->
+        match types.TryGetValue n with
+        | true, { def = UnionDef cs } ->
+            let fields = cs |> List.collect (fun (_, fs) -> fs |> List.map (substGen args))
+            fields.Length <= 4 && fields |> List.forall (fun ft -> not (heapIn types (visiting.Add n) ft))
+        | _ -> false
+    | _ -> false
+
+let needsRc (types: Dictionary<string, TypeInfo>) t = heapIn types Set.empty t
+
+let plainUnion (types: Dictionary<string, TypeInfo>) t = plainUnionIn types Set.empty t

@@ -455,7 +455,7 @@ let compileProgram (mainPath: string) (isLib: bool) =
     | [] ->
         let funs =
             try
-                let mono = timed "monomorphize" (fun () -> Mono.run prog)
+                let mono = timed "monomorphize" (fun () -> Mono.run prog |> Mono.fuse)
                 let lifted = timed "lift closures" (fun () -> Lift.run mono)
                 timed "reference counting" (fun () -> Rc.run prog.types lifted)
             with CompileError(l, m) ->
@@ -588,6 +588,8 @@ let build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) (isLib: 
                 let shared = File.ReadAllText(runtimeFile (Path.Combine("boards", "cortex-m.ld")))
                 File.WriteAllText(script, File.ReadAllText(runtimeFile (Path.Combine("boards", m.board + ".ld"))).Replace("INCLUDE cortex-m.ld", shared))
 
+                // ponytail: linking the runtime in as bitcode (whole-program optimization) was
+                // measured: larger and slower (output code inlined everywhere); kept separate
                 let failure =
                     timed "clang" (fun () -> run "clang" (opt @ [ "--target=" + m.triple ] @ m.cflags @ flags @ [ "-c"; "-Wno-override-module"; ll; "-o"; obj ]))
                     |> Option.orElseWith (fun () ->

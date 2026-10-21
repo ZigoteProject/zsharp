@@ -68,8 +68,8 @@ let private icmpU = dict [ "=", "eq"; "<>", "ne"; "<", "ult"; ">", "ugt"; "<=", 
 let private fcmp = dict [ "=", "oeq"; "<>", "une"; "<", "olt"; ">", "ogt"; "<=", "ole"; ">=", "oge" ]
 
 let private prelude =
-    """declare ptr @zs_alloc(i_W)
-declare void @zs_free(ptr)
+    """declare noalias ptr @zs_alloc(i_W) allockind("alloc,uninitialized") allocsize(0) "alloc-family"="zs"
+declare void @zs_free(ptr allocptr) allockind("free") "alloc-family"="zs"
 declare i_W @zs_allocations()
 declare i64 @zs_ticks()
 declare void @zs_set_args(i32, ptr)
@@ -218,7 +218,7 @@ let private floatConst (ty: string) (f: float) =
 /// number and bool types.
 let mutable debugInfo = false
 
-/// Optimizing for size (zs build -Os): no loop versioning, which duplicates loop bodies.
+/// Optimizing for size (zs build -Os): optsize functions, and loop versioning only for small loops.
 let mutable optimizeSize = false
 
 /// The target triple (zs build --target), "" for the host (x86-64 Linux). It decides the C ABI.
@@ -241,8 +241,19 @@ let private wordTy () = if is32 () then "i32" else "i64"
 let private resolveWord (ir: string) =
     let w, h1, h2 = (if is32 () then "i32", "4", "8" else "i64", "8", "16")
 
+    // -Os: optsize on every function definition. LLVM's unroller and vectorizer go by this
+    // attribute (clang adds it to C functions), not by the -Os flag alone
+    let sized (line: string) =
+        if optimizeSize && line.StartsWith "define " && line.EndsWith "{" then
+            match line.IndexOf " !dbg " with
+            | i when i > 0 -> line.Substring(0, i) + " optsize" + line.Substring i
+            | _ -> line.Substring(0, line.Length - 1) + "optsize {"
+        else
+            line
+
     ir.Split('\n')
     |> Array.map (fun line ->
+        let line = sized line
         let cut = line.IndexOf " c\""
         let head, tail = if cut < 0 then line, "" else line.Substring(0, cut), line.Substring cut
         head.Replace("i_W", w).Replace("HDR2", h2).Replace("HDR1", h1) + tail)
@@ -283,6 +294,9 @@ let compile
         | TCon(n, args) ->
             match types[n].def with
             | RecordDef fs -> structTy (fs |> List.map (fun (_, ft) -> substGen args ft))
+            | UnionDef cs when plainUnion types t ->
+                // a plain union: the tag, then every case's fields in order (cases don't overlap)
+                "{ i32" + (cs |> List.collect snd |> List.map (fun ft -> ", " + llty (substGen args ft)) |> String.concat "") + " }"
             | UnionDef _ -> "ptr"
         | TTuple ts -> structTy ts
         | t -> failwithf "llty: unresolved type %s" (show t)
@@ -305,6 +319,11 @@ let compile
             | UnionDef cs -> u, cs |> List.map (fun (n, fs) -> n, List.map (substGen args) fs)
             | RecordDef _ -> failwith "not a union"
         | _ -> failwith "not a union"
+
+    /// Where case `tag`'s field j sits in a plain union's struct: after the tag and the earlier cases' fields.
+    let plainField (t: Ty) (tag: int) (j: int) =
+        let _, cs = union t
+        1 + (cs |> List.take tag |> List.sumBy (fun (_, fs) -> fs.Length)) + j
 
     let cellTy (fields: Ty list) =
         "{ i_W, i32" + (fields |> List.map (fun f -> ", " + llty f) |> String.concat "") + " }"
@@ -944,6 +963,7 @@ let compile
                     em.Raw(sprintf "#dbg_declare(ptr %s, %s, !DIExpression(), %s)" p var loc)
                 | _ -> ()
         let selfProto = proto f
+        let selfName = f.name
 
         /// Emits the test of pattern p against v (of type t); returns env extended with its bindings.
         let rec test (p: CPat) (t: Ty) (v: string) failL (env: Map<string, Binding>) =
@@ -971,6 +991,18 @@ let compile
                 List.zip ps ts
                 |> List.indexed
                 |> List.fold (fun env (i, (p, et)) -> test p et (em.Instr(sprintf "extractvalue %s %s, %d" (llty t) v i)) failL env) env
+            | CPCtor(_, tag, ps) when plainUnion types t ->
+                let fields = snd (List.item tag (snd (union t)))
+                guardOr (em.Instr(sprintf "icmp eq i32 %s, %d" (em.Instr(sprintf "extractvalue %s %s, 0" (llty t) v)) tag))
+
+                List.zip ps fields
+                |> List.indexed
+                |> List.fold
+                    (fun env (i, (p, ft)) ->
+                        match p with
+                        | CPWild -> env
+                        | _ -> test p ft (em.Instr(sprintf "extractvalue %s %s, %d" (llty t) v (plainField t tag i))) failL env)
+                    env
             | CPCtor(_, tag, ps) ->
                 let fields = snd (List.item tag (snd (union t)))
                 let tagp = em.Instr(sprintf "getelementptr { i_W, i32 }, ptr %s, i32 0, i32 1" v)
@@ -1085,8 +1117,11 @@ let compile
             | CLam _ -> false
             | k -> children k |> List.exists hasLoop
 
+        let rec nodes (e: CExpr) = 1 + (children e.k |> List.sumBy nodes)
+
+        // at -Os only small bodies: duplicating them costs a few dozen bytes
         let versionedReads env x body =
-            if hasLoop body then [] else affineReads env x body |> List.map snd
+            if hasLoop body || (optimizeSize && nodes body > 40) then [] else affineReads env x body |> List.map snd
         let versionedNodes env x body = affineReads env x body |> List.map fst
 
         let loopUniques (env: Map<string, Binding>) (loop: CExpr) =
@@ -1340,6 +1375,15 @@ let compile
                 |> List.indexed
                 |> List.fold (fun agg (i, (x, v)) -> em.Instr(sprintf "insertvalue %s %s, %s %s, %d" ty agg (llty x.ty) v i)) "poison"
             | CField(r, i) -> em.Instr(sprintf "extractvalue %s %s, %d" (llty r.ty) (gen env false r) i)
+            | CCtor(_, tag, args) when plainUnion types e.ty ->
+                // a value: the tag and this case's fields, the other cases' fields zero
+                let vs = args |> List.map (gen env false)
+                let lt = llty e.ty
+                let withTag = em.Instr(sprintf "insertvalue %s zeroinitializer, i32 %d, 0" lt tag)
+
+                List.zip args vs
+                |> List.indexed
+                |> List.fold (fun agg (i, (a, v)) -> em.Instr(sprintf "insertvalue %s %s, %s %s, %d" lt agg (llty a.ty) v (plainField e.ty tag i))) withTag
             | CCtor(u, tag, []) ->
                 let g = sprintf "@\"ctor.%s.%d\"" u tag
 
@@ -1427,7 +1471,10 @@ let compile
                 let rt = llty fd.ret
 
                 if tail && proto fd = selfProto then
-                    let r = em.Instr(sprintf "musttail call %s %s(%s)" rt (sym f) argv)
+                    // a call to itself is left to LLVM to make a loop (which can then be inlined into
+                    // callers); other tail calls, and all at -O0, must be tail calls (constant stack)
+                    let kind = if f = selfName && not debugInfo then "tail" else "musttail"
+                    let r = em.Instr(sprintf "%s call %s %s(%s)" kind rt (sym f) argv)
                     em.Emit(sprintf "ret %s %s" rt r)
                     em.Dead()
                     "poison"
@@ -1533,7 +1580,7 @@ let compile
                     uniqueSlots.Remove x |> ignore
 
                 r
-            | CFor(x, a, { k = CInt 1L }, b, body) when not optimizeSize && not (versioning.Contains e) && not (versionedReads env x body).IsEmpty ->
+            | CFor(x, a, { k = CInt 1L }, b, body) when not (versioning.Contains e) && not (versionedReads env x body).IsEmpty ->
                 // loop versioning: if every a.[x ± c] the loop reads is in bounds for the whole
                 // range, run a copy of the loop without those bounds checks; otherwise the checked one
                 let reads = versionedReads env x body
@@ -1913,7 +1960,13 @@ let compile
         em.Emit(sprintf "ret %s %s" rt v)
         let ps = f.pars |> List.map (fun (x, t) -> sprintf "%s %%p.%s" (llty t) x) |> String.concat ", "
         let dbg = if debugInfo then " !dbg " + sp else ""
-        funcs.Append(sprintf "define internal %s %s(%s)%s {\n%s}\n\n" rt (sym f.name) ps dbg em.Body) |> ignore
+
+        // a function taking a function (List.map, a lifted loop over a closure): inlining it
+        // lets the closure call become direct, and the closure's allocation disappear
+        let hint =
+            if f.pars |> List.exists (fun (_, t) -> match prune t with TFun _ -> true | _ -> false) then " inlinehint" else ""
+
+        funcs.Append(sprintf "define internal %s %s(%s)%s%s {\n%s}\n\n" rt (sym f.name) ps hint dbg em.Body) |> ignore
 
     for KeyValue(name, s) in externs do
         let ret, sret = cRet s.ret

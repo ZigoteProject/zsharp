@@ -16,7 +16,7 @@ d}" "runtime/boards/$board.ld" > "$t/link.ld"
 zs_opt=(); [ "$opt" = -Os ] && zs_opt=(-Os)
 
 cbuild() { zig cc -target $zt -mcpu=$cpu $opt -ffunction-sections -fdata-sections -Wl,--gc-sections \
-  -DZS_HEAP_SIZE=$heap -T "$t/link.ld" -I bench/mcu "$1" runtime/rt-embedded.c -o "$2" 2>&1; }
+  -DZS_HEAP_SIZE=1024 -T "$t/link.ld" -I bench/mcu "$1" runtime/rt-embedded.c -o "$2" 2>&1; }
 run() { timeout 120 qemu-system-arm -M $board -nographic -semihosting-config enable=on,target=native \
   -icount shift=0 -kernel "$1" 2>&1; }
 field() { grep -o "$1=[0-9-]*" | head -1 | cut -d= -f2; }
@@ -26,7 +26,7 @@ cbuild bench/mcu/calib.c "$t/calib" >/dev/null || { echo "calibration doesn't bu
 ticks=$(run "$t/calib" | field ticks)
 per=$(awk -v t="$ticks" 'BEGIN { printf "%.4f", 2000000 / t }') # instructions per tick
 
-echo "**$mcu** ($board under QEMU, $opt; instructions = ticks × $per; static RAM includes the ${heap}-byte heap array)"
+echo "**$mcu** ($board under QEMU, $opt; instructions = ticks × $per; Z# has a ${heap}-byte heap, C a 1024-byte one)"
 echo
 echo "| benchmark | result (Z# / C) | instructions Z# | instructions C | Z# / C | flash Z# | flash C | heap peak Z# | stack Z# | stack C |"
 echo "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|"
