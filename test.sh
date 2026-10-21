@@ -25,6 +25,13 @@ for t in $(find tests -name '*.zs' | sort); do
     [ $code = 99 ] && actual="$actual
 (valgrind reported memory errors or leaks)"
   fi
+  # base.same-ir names another program that must compile to identical LLVM IR
+  if [ -f "$base.same-ir" ]; then
+    other=$(cat "$base.same-ir")
+    bin/zs build "$t" -o "$tmp/a" --emit-llvm >/dev/null 2>&1; bin/zs build "$other" -o "$tmp/b" --emit-llvm >/dev/null 2>&1
+    cmp -s "$tmp/a.ll" "$tmp/b.ll" || actual="$actual
+(LLVM IR differs from $other)"
+  fi
   if [ "$actual" == "$expected" ]; then echo "ok   $t"
   else echo "FAIL $t"; diff <(echo "$expected") <(echo "$actual") | head -20; fail=1; fi
 done

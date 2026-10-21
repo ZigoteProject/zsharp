@@ -11,16 +11,26 @@ type MFun =
       ret: Ty
       body: CExpr }
 
+/// Units of measure are erased, so measure arguments don't distinguish instances.
 let mangle (name: string) (inst: Ty list) =
-    if inst.IsEmpty then
+    let shown =
+        inst
+        |> List.filter (fun t ->
+            match prune t with
+            | TMeas _ -> false
+            | _ -> true)
+
+    if shown.IsEmpty then
         name
     else
-        name + "<" + (inst |> List.map show |> String.concat ",") + ">"
+        name + "<" + (shown |> List.map show |> String.concat ",") + ">"
 
 /// Concrete type: quantified variables replaced, everything else resolved (defaulted).
 let rec private concrete (inst: Ty list) t =
     match prune t with
     | TGen i -> List.item i inst
+    | TCon(n, _) when nums.Contains n -> TCon(n, []) // units of measure are erased
+    | TMeas _ -> measOne
     | TCon(n, a) -> TCon(n, List.map (concrete inst) a)
     | TFun(a, b) -> TFun(concrete inst a, concrete inst b)
     | TTuple ts -> TTuple(List.map (concrete inst) ts)

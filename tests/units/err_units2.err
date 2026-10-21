@@ -1,0 +1,1 @@
+tests/units/err_units2.zs:4: error: result of 'speed': expected f64<m>, got f64<m/s>

@@ -49,7 +49,8 @@ let expand (deriveName: string) (tname: string) (head: SType) (shape: ShapeInfo)
         | STName(n, args) -> STName(n, List.map substTy args)
         | STTuple ts -> STTuple(List.map substTy ts)
         | STFun(a, b) -> STFun(substTy a, substTy b)
-        | STVar _ -> st
+        | STVar _
+        | STMeasure _ -> st
 
     let substParam ((p, ann): Param) : Param = p, Option.map substTy ann
 

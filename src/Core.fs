@@ -17,6 +17,9 @@ type Ty =
     | TTuple of Ty list
     | TVar of TV ref
     | TGen of int // quantified variable of a type scheme or type definition
+    /// A unit of measure: base units and measure variables (TVar/TGen), with exponents.
+    /// Appears only as the argument of a numeric type: f64<m/s> = TCon("f64", [TMeas ...]).
+    | TMeas of (string * int) list * (Ty * int) list
 
 and TV =
     | Unbound of int * Kind
@@ -82,8 +85,82 @@ let private defaultOf (k: Kind) =
         | Some s -> tcon (Seq.head s)
         | None -> tInt
 
+/// A measure in normal form: variables expanded, like terms merged, zeros dropped, sorted.
+let rec normMeas (t: Ty) : (string * int) list * (Ty * int) list =
+    let units = Dictionary<string, int>()
+    let vars = ResizeArray<Ty * int>()
+
+    let addVar (v: Ty) e =
+        let same (w: Ty) =
+            match v, w with
+            | TVar a, TVar b -> obj.ReferenceEquals(a, b)
+            | TGen i, TGen j -> i = j
+            | _ -> false
+
+        match Seq.tryFindIndex (fst >> same) vars with
+        | Some i -> vars[i] <- (v, snd vars[i] + e)
+        | None -> vars.Add(v, e)
+
+    let rec go (t: Ty) k =
+        match prune t with
+        | TMeas(us, vs) ->
+            for u, e in us do
+                units[u] <- (match units.TryGetValue u with
+                             | true, x -> x
+                             | _ -> 0)
+                            + e * k
+
+            for v, e in vs do
+                go v (e * k)
+        | v -> addVar v k
+
+    go t 1
+
+    [ for kv in units do
+          if kv.Value <> 0 then
+              yield kv.Key, kv.Value ]
+    |> List.sortBy fst,
+    vars |> Seq.filter (fun (_, e) -> e <> 0) |> List.ofSeq
+
+let measOne = TMeas([], [])
+
+let isOneMeas t =
+    match normMeas t with
+    | [], [] -> true
+    | _ -> false
+
+/// A numeric type with a measure; unitless when the measure is 1.
+let numWith (n: string) (m: Ty) =
+    if isOneMeas m then TCon(n, []) else TCon(n, [ TMeas(normMeas m) ])
+
+let measOf (args: Ty list) =
+    match args with
+    | [ m ] -> m
+    | _ -> measOne
+
+let measMul (a: Ty) (b: Ty) = TMeas(normMeas (TMeas([], [ a, 1; b, 1 ])))
+let measDiv (a: Ty) (b: Ty) = TMeas(normMeas (TMeas([], [ a, 1; b, -1 ])))
+
 let rec show t =
     match prune t with
+    | TMeas _ as m ->
+        let us, vs = normMeas m
+
+        let term (name: string) e =
+            if abs e = 1 then name else sprintf "%s^%d" name (abs e)
+
+        let parts =
+            (us |> List.map (fun (u, e) -> term u e, e))
+            @ (vs |> List.map (fun (v, e) -> term (show v) e, e))
+
+        let pos = parts |> List.filter (fun (_, e) -> e > 0) |> List.map fst
+        let neg = parts |> List.filter (fun (_, e) -> e < 0) |> List.map fst
+
+        match pos, neg with
+        | [], [] -> "1"
+        | _, [] -> String.concat " " pos
+        | [], _ -> "1/" + String.concat " " neg
+        | _ -> String.concat " " pos + "/" + String.concat " " neg
     | TCon(n, []) -> n
     | TCon(n, args) -> n + "<" + (args |> List.map show |> String.concat ", ") + ">"
     | TFun(a, b) ->
@@ -121,11 +198,20 @@ let rec resolve t =
     | TFun(a, b) -> TFun(resolve a, resolve b)
     | TTuple ts -> TTuple(List.map resolve ts)
     | TGen _ as t -> t
+    | TMeas(us, vs) ->
+        // an unconstrained measure variable is 1
+        for v, _ in vs do
+            match prune v with
+            | TVar r -> r.Value <- Link measOne
+            | _ -> ()
+
+        TMeas(normMeas (TMeas(us, vs)))
 
 /// Replaces TGen i with args[i].
 let rec substGen (args: Ty list) t =
     match prune t with
     | TGen i -> List.item i args
+    | TMeas(us, vs) -> TMeas(normMeas (TMeas(us, vs |> List.map (fun (v, e) -> substGen args v, e))))
     | TCon(n, a) -> TCon(n, List.map (substGen args) a)
     | TFun(a, b) -> TFun(substGen args a, substGen args b)
     | TTuple ts -> TTuple(List.map (substGen args) ts)

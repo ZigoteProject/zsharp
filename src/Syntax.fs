@@ -16,6 +16,7 @@ type SType =
     | STVar of string
     | STTuple of SType list
     | STFun of SType * SType
+    | STMeasure of (string * bool * int) list // unit or measure variable (isVar), exponent: m/s^2
 
 type Pat =
     | PWild
@@ -61,6 +62,7 @@ type Expr =
     | Question of Expr // e? (only valid where TryBind can be formed)
     | TryBind of Pat * Expr * Expr // let p = e? ; rest  (rest runs only if e is Ok)
     | DeriveCtx of string * Expr // prefixes errors inside a derive expansion ("field name: ...")
+    | Measured of Expr * SType // 9.58<s>
     | At of int * Expr // source line, for error messages
 
 and Param = Pat * SType option
@@ -131,6 +133,7 @@ let mapExpr (f: Expr -> Expr) (e: Expr) : Expr =
     | Question a -> Question(f a)
     | TryBind(p, a, b) -> TryBind(p, f a, f b)
     | DeriveCtx(c, a) -> DeriveCtx(c, f a)
+    | Measured(a, m) -> Measured(f a, m)
     | At(l, a) -> At(l, f a)
 
 // ---------------------------------------------------------------- lexer
@@ -177,7 +180,7 @@ let keywords =
 // longest first
 let symbols =
     [ "..."; ".."; "->"; "<-"; "|>"; "|]"; "[|"; "[<"; ">]"; "::"; ">>"; "<>"; "<="; ">="; "&&"; "||"
-      "?"; "("; ")"; "{"; "}"; "["; "]"; ","; ";"; "|"; "."; ":"; "="; "<"; ">"; "+"; "-"; "*"; "/"; "%"; "@" ]
+      "?"; "("; ")"; "{"; "}"; "["; "]"; ","; ";"; "|"; "."; ":"; "="; "<"; ">"; "+"; "-"; "*"; "/"; "%"; "@"; "^" ]
 
 let private unescape ln =
     function
@@ -450,9 +453,77 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
         | KSym ">>" -> toks[pos.Value] <- { toks[pos.Value] with tok = KSym ">" }
         | _ -> err "'>'"
 
+    /// A unit of measure: m, m/s^2, kg m/s^2, 'u, 1 (inside <...> after a numeric type).
+    let measure () =
+        let rec term () : (string * bool * int) list =
+            let unitTerm =
+                match peek () with
+                | KId u ->
+                    advance ()
+                    [ u, false, 1 ]
+                | KTyVar v ->
+                    advance ()
+                    [ v, true, 1 ]
+                | KInt 1L ->
+                    advance ()
+                    []
+                | KSym "(" ->
+                    advance ()
+                    let m = product ()
+                    expect (KSym ")") "')'"
+                    m
+                | _ -> err "unit of measure"
+
+            if isSym "^" then
+                advance ()
+
+                let neg = isSym "-" || isSym "~-"
+
+                if neg then
+                    advance ()
+
+                match peek () with
+                | KInt k ->
+                    advance ()
+                    let k = if neg then -(int k) else int k
+                    unitTerm |> List.map (fun (u, v, e) -> u, v, e * k)
+                | _ -> err "exponent"
+            else
+                unitTerm
+
+        and product () =
+            let mutable m = term ()
+            let mutable go = true
+
+            while go do
+                match peek () with
+                | KSym "*" ->
+                    advance ()
+                    m <- m @ term ()
+                | KSym "/" ->
+                    advance ()
+                    m <- m @ (term () |> List.map (fun (u, v, e) -> u, v, -e))
+                | KId _
+                | KTyVar _
+                | KSym "(" -> m <- m @ term () // juxtaposition multiplies: kg m
+                | _ -> go <- false
+
+            m
+
+        STMeasure(product ())
+
+    let isNumericName n =
+        List.contains n [ "int"; "i8"; "i16"; "i32"; "i64"; "u8"; "u16"; "u32"; "u64"; "usize"; "f32"; "f64"; "float"; "c_int" ]
+
     let rec tyAtom () =
         let t =
             match peek () with
+            | KId n when isNumericName n && peek2 () = KSym "<" ->
+                advance ()
+                advance ()
+                let m = measure ()
+                closeAngle ()
+                STName(n, [ m ])
             | KTyVar v ->
                 advance ()
                 STVar v
@@ -986,9 +1057,30 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
         let ln = line ()
         advance ()
 
+        // 9.58<s>: a measure right after a number literal
+        let measured (lit: Expr) =
+            if isSym "<" && toks[pos.Value].adj then
+                let save = pos.Value
+
+                try
+                    advance ()
+                    let m = measure ()
+
+                    if isSym ">" then
+                        advance ()
+                        Measured(lit, m)
+                    else
+                        pos.Value <- save
+                        lit
+                with CompileError _ ->
+                    pos.Value <- save
+                    lit
+            else
+                lit
+
         match t with
-        | KInt n -> Lit n
-        | KFloat f -> FloatLit f
+        | KInt n -> measured (Lit n)
+        | KFloat f -> measured (FloatLit f)
         | KStr s -> StrLit s
         | KInterp parts -> interpolate ln parts
         | KId x -> Var x
@@ -1321,6 +1413,8 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
 
             if peek () = KKw "with" then
                 ln, TypeExt(name, List.ofSeq tparams, members ())
+            elif peek () = KNewline || peek () = KEof then
+                ln, TypeDecl(name, [], UnionTy [], []) // [<Measure>] type m
             else
                 expect (KSym "=") "'='"
                 let indented = peek () = KIndent

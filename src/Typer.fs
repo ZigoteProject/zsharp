@@ -50,7 +50,25 @@ let rec private occurs r t =
     | TCon(_, ts)
     | TTuple ts -> List.exists (occurs r) ts
     | TFun(a, b) -> occurs r a || occurs r b
+    | TMeas(_, vs) -> vs |> List.exists (fst >> occurs r)
     | TGen _ -> false
+
+/// Unifies two units of measure (Kennedy): solve a/b = 1 for the variable with the smallest
+/// exponent, when every other exponent is divisible by it.
+let private unifyMeas (a: Ty) (b: Ty) =
+    match normMeas (measDiv a b) with
+    | [], [] -> ()
+    | _, [] -> raise Mismatch
+    | us, vs ->
+        let v, e = vs |> List.minBy (snd >> abs)
+        let others = vs |> List.filter (fun (w, _) -> not (obj.ReferenceEquals(w, v)))
+        let divisible = (us |> List.forall (fun (_, k) -> k % e = 0)) && (others |> List.forall (fun (_, k) -> k % e = 0))
+
+        match prune v with
+        | TVar r when divisible ->
+            // v^e * rest = 1  =>  v = rest^(-1/e)
+            r.Value <- Link(TMeas(us |> List.map (fun (u, k) -> u, -k / e), others |> List.map (fun (w, k) -> w, -k / e)))
+        | _ -> raise Mismatch // ponytail: Kennedy's general case (a fresh variable) hasn't been needed yet
 
 let private satisfies (k: Kind) t =
     let allowedOk =
@@ -65,6 +83,7 @@ let private satisfies (k: Kind) t =
            let ok =
                match t with
                | TCon(n, []) when hasBuiltinImpl tr n -> true
+               | TCon(n, [ TMeas _ ]) when hasBuiltinImpl tr n -> true
                | _ -> userImpl tr t
 
            if not ok then
@@ -89,6 +108,9 @@ let rec private unify a b =
             raise Mismatch
 
         r.Value <- Link t
+    | TCon(a, xs), TCon(b, ys) when a = b && nums.Contains a -> unifyMeas (measOf xs) (measOf ys)
+    | TMeas _, _
+    | _, TMeas _ -> unifyMeas a b
     | TCon(a, xs), TCon(b, ys) when a = b && xs.Length = ys.Length -> List.iter2 unify xs ys
     | TFun(a1, b1), TFun(a2, b2) ->
         unify a1 a2
@@ -119,6 +141,7 @@ let private generalize (t: Ty) : Kind list =
         | TFun(a, b) ->
             go a
             go b
+        | TMeas(_, vs) -> vs |> List.iter (fst >> go)
         | TGen _ -> ()
 
     go t
@@ -235,6 +258,7 @@ let check (modules: (string * string option * (int * Decl) list) list) : Program
     let funs = ResizeArray<FunDef>()
     let tyvars = Dictionary<string, Ty>() // 'a in the current function's annotations
     let counter = ref 0
+    let measures = HashSet<string>() // [<Measure>] types
     let currentModule = ref (None: string option)
     let opens = ref ([]: string list) // most recent first
     let privates = Dictionary<string, string option>() // qualified name -> owning module
@@ -306,7 +330,10 @@ let check (modules: (string * string option * (int * Decl) list) list) : Program
                 |> Option.defaultValue n
 
             let arity =
-                if prims.Contains n then 0
+                if nums.Contains n && (match args with
+                                       | [ STMeasure _ ] -> true
+                                       | _ -> false) then 1
+                elif prims.Contains n then 0
                 elif builtinCons.ContainsKey n then builtinCons[n]
                 elif types.ContainsKey n then types[n].npars
                 else fail 0 (sprintf "unknown type '%s'" n)
@@ -314,9 +341,26 @@ let check (modules: (string * string option * (int * Decl) list) list) : Program
             if arity <> args.Length then
                 fail 0 (sprintf "type '%s' expects %d type argument(s)" n arity)
 
-            TCon(n, List.map (toTy tparams) args)
+            match n, args with
+            | n, [ m ] when nums.Contains n -> numWith n (toTy tparams m)
+            | _ -> TCon(n, List.map (toTy tparams) args)
         | STTuple ts -> TTuple(List.map (toTy tparams) ts)
         | STFun(a, b) -> TFun(toTy tparams a, toTy tparams b)
+        | STMeasure terms ->
+            let units, vars = terms |> List.partition (fun (_, isVar, _) -> not isVar)
+
+            for u, _, _ in units do
+                if not (measures.Contains u) then
+                    fail 0 (sprintf "unknown unit of measure '%s'; declare it with [<Measure>] type %s" u u)
+
+            TMeas(
+                normMeas (
+                    TMeas(
+                        units |> List.map (fun (u, _, e) -> u, e),
+                        vars |> List.map (fun (v, _, e) -> toTy tparams (STVar v), e)
+                    )
+                )
+            )
 
     let annot ann =
         match ann with
@@ -642,30 +686,22 @@ let check (modules: (string * string option * (int * Decl) list) list) : Program
                     c)
 
             mk (CPrim("array.lit", cs)) (TCon("array", [ el ]))
-        | Bin(op, a, b) ->
+        | Measured(e, m) ->
+            let ce = inf e
+            settle ce.ty
+
+            match prune ce.ty with
+            | TCon(n, []) when nums.Contains n -> { ce with ty = numWith n (toTy None m) }
+            | t -> fail 0 (sprintf "only numbers have units, not %s" (show t))
+        | Bin(("*" | "/") as op, a, b) ->
             let ca = inf a
             let cb = inf b
-            let isArith = List.contains op [ "+"; "-"; "*"; "/"; "%" ]
 
-            let tr =
-                match op with
-                | "+" -> "Add"
-                | "-"
-                | "*"
-                | "/"
-                | "%" -> "Num"
-                | "="
-                | "<>" -> "Eq"
-                | _ -> "Ord"
-
-            try
-                unify (fresh (kTrait tr)) ca.ty
-            with
-            | Mismatch
-            | NoImpl _ -> fail 0 (sprintf "operator '%s' does not support type %s (it needs %s)" op (show ca.ty) tr)
-
-            expect (sprintf "right operand of '%s'" op) ca.ty cb.ty
-            mk (CBin(op, ca, cb)) (if isArith then ca.ty else tBool)
+            if measuredOperands ca cb then
+                measuredBin op ca cb
+            else
+                arith op ca cb
+        | Bin(op, a, b) -> arith op (inf a) (inf b)
         | Neg a ->
             let ca = inf a
             expect "operand of '-'" (fresh (kTrait "Num")) ca.ty
@@ -843,6 +879,58 @@ let check (modules: (string * string option * (int * Decl) list) list) : Program
 
             Match.check unionCases apCtors.Contains (ccases |> List.map (fun (p, g, _) -> p, g.IsSome))
             mk (CMatch(cs, ccases)) resTy
+
+    /// * and / on numbers with units: the units multiply and divide; a unitless literal
+    /// operand is dimensionless.
+    and measuredBin (op: string) (ca: CExpr) (cb: CExpr) : CExpr =
+
+        let numPart t =
+            match prune t with
+            | TCon(n, ms) when nums.Contains n -> Some(n, measOf ms)
+            | _ -> None
+
+        for x, other in [ ca, cb; cb, ca ] do
+            match prune x.ty, numPart other.ty with
+            | TVar r, Some(n, _) when (kindOf r).allowed.IsSome -> expect (sprintf "operand of '%s'" op) (TCon(n, [])) x.ty
+            | _ -> ()
+
+        match numPart ca.ty, numPart cb.ty with
+        | Some(n1, m1), Some(n2, m2) when n1 = n2 ->
+            mk (CBin(op, ca, cb)) (numWith n1 (if op = "*" then measMul m1 m2 else measDiv m1 m2))
+        | _ -> fail 0 (sprintf "operands of '%s' must be numbers of the same type: %s and %s" op (show ca.ty) (show cb.ty))
+
+    /// An operator through its trait: + Add, - * / % Num, = <> Eq, < > <= >= Ord.
+    and arith (op: string) (ca: CExpr) (cb: CExpr) : CExpr =
+        let isArith = List.contains op [ "+"; "-"; "*"; "/"; "%" ]
+
+        let tr =
+            match op with
+            | "+" -> "Add"
+            | "-"
+            | "*"
+            | "/"
+            | "%" -> "Num"
+            | "="
+            | "<>" -> "Eq"
+            | _ -> "Ord"
+
+        try
+            unify (fresh (kTrait tr)) ca.ty
+        with
+        | Mismatch
+        | NoImpl _ -> fail 0 (sprintf "operator '%s' does not support type %s (it needs %s)" op (show ca.ty) tr)
+
+        expect (sprintf "right operand of '%s'" op) ca.ty cb.ty
+        mk (CBin(op, ca, cb)) (if isArith then ca.ty else tBool)
+
+    /// Does either operand carry a unit of measure (so * and / combine units)?
+    and measuredOperands (ca: CExpr) (cb: CExpr) =
+        let measured t =
+            match prune t with
+            | TCon(n, [ TMeas _ ]) when nums.Contains n -> true
+            | _ -> false
+
+        measured ca.ty || measured cb.ty
 
     /// A literal-constrained type variable takes its default before a member lookup.
     and settle (t: Ty) =
@@ -1896,6 +1984,7 @@ let check (modules: (string * string option * (int * Decl) list) list) : Program
 
                 opens.Value <- m :: opens.Value
             | ModuleHeader _ -> ()
+            | Attrs([ "Measure", [] ], TypeDecl(name, [], UnionTy [], [])) -> measures.Add name |> ignore
             | Attrs(attrs, inner) ->
                 declare ln inner
 
