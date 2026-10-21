@@ -426,6 +426,7 @@ and Hover =
       hlen: int
       name: string
       hty: Ty
+      constraints: string // "'a : Add" for generic functions
       inlay: bool }
 
 /// [<Export "cname">]: a C entry point for a monomorphic function.

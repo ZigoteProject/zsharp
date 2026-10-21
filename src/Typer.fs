@@ -295,6 +295,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                   hlen = max len name.Length
                   name = name
                   hty = t
+                  constraints = ""
                   inlay = inlay }
         | _ -> ()
 
@@ -2050,6 +2051,17 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                     reraise ()
 
                 record d name globals[name].ty false
+
+                // a generic function's hover shows what its type variables need
+                let g = globals[name]
+
+                let needs =
+                    g.kinds
+                    |> List.indexed
+                    |> List.collect (fun (i, k) -> k.traits |> Set.toList |> List.map (fun tr -> sprintf "%s : %s" (show (TGen i)) tr))
+
+                if not needs.IsEmpty && hovers.Count > 0 && hovers[hovers.Count - 1].name = name then
+                    hovers[hovers.Count - 1] <- { hovers[hovers.Count - 1] with constraints = String.concat ", " needs }
             | Trait(name, tp, methods) ->
                 if traitMethods.Keys |> Seq.exists (fun k -> k.StartsWith(name + ".")) then
                     fail 0 (sprintf "trait '%s' is already defined" name)

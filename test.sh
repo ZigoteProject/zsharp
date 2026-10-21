@@ -36,6 +36,11 @@ for t in $(find tests -name '*.zs' | sort); do
   if [ "$actual" == "$expected" ]; then echo "ok   $t"
   else echo "FAIL $t"; diff <(echo "$expected") <(echo "$actual") | head -20; fail=1; fi
 done
+# the language server: a scripted session (tests/lsp/session.sh) against its expected transcript
+actual=$(tests/lsp/session.sh bin/zs 2>&1); expected=$(cat tests/lsp/session.out)
+if [ "$actual" == "$expected" ]; then echo "ok   tests/lsp/session.sh"
+else echo "FAIL tests/lsp/session.sh"; diff <(echo "$expected") <(echo "$actual") | head -20; fail=1; fi
+
 # C interop: a directory with main.c links the static library built from its lib.zs
 for c in $(find tests -name main.c | sort); do
   d=$(dirname "$c")

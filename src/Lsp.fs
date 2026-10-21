@@ -168,8 +168,10 @@ let private hover (path: string) (line: int) (ch: int) : JsonNode =
 
     match hits with
     | h :: _ ->
+        let needs = if h.constraints = "" then "" else " when " + h.constraints
+
         obj
-            [ "contents", obj [ "kind", str "markdown"; "value", str (sprintf "```zsharp\n%s : %s\n```" h.name (show h.hty)) ]
+            [ "contents", obj [ "kind", str "markdown"; "value", str (sprintf "```zsharp\n%s : %s%s\n```" h.name (show h.hty) needs) ]
               "range", range (h.hline - 1, h.hcol - 1) (h.hline - 1, h.hcol - 1 + h.hlen) ]
     | [] -> null
 
