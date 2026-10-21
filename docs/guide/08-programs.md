@@ -18,30 +18,6 @@ src/
 - **Privacy:** a `private` name is visible in its module and the modules nested in it.
 - **`open`:** inside a module, it lasts until the module ends.
 
-**Fields and traits belong to their module too.** A record literal, a record pattern, or `.name` on a value whose type isn't known yet, looks for the record among those in scope: the current module's first, then the opened modules'. So two modules can each have a record with a `name` field, or a trait called `Describe`. Elsewhere, open the module or annotate the literal:
-
-```zsharp
-module Shop =
-  type Item = { name: string; price: int }
-  let pen = { name = "pen"; price = 2 }
-
-module Books =
-  type Item = { name: string; price: int }
-  let novel = { name = "Dune"; price = 9 }
-
-open Shop
-
-let main () =
-  let mug = { name = "mug"; price = 3 } // a Shop.Item: Shop is open
-  let book = ({ name = "Emma"; price = 7 } : Books.Item)
-  println $"{mug.name} {Shop.pen.price} {book.name} {Books.novel.price}"
-  0
-```
-
-```text
-mug 2 Emma 9
-```
-
 ```zsharp
 module Geometry =
   let private pi3 = 3
@@ -65,6 +41,30 @@ let main () =
 ```text
 12 300
 radius 3: area 27
+```
+
+**Fields and traits belong to their module too.** A record literal, a record pattern, or `.name` on a value whose type isn't known yet, looks for the record among those in scope: the current module's first, then the opened modules'. So two modules can each have a record with a `name` field, or a trait called `Describe`. Elsewhere, open the module or annotate the literal:
+
+```zsharp
+module Shop =
+  type Item = { name: string; price: int }
+  let pen = { name = "pen"; price = 2 }
+
+module Books =
+  type Item = { name: string; price: int }
+  let novel = { name = "Dune"; price = 9 }
+
+open Shop
+
+let main () =
+  let mug = { name = "mug"; price = 3 } // a Shop.Item: Shop is open
+  let book = ({ name = "Emma"; price = 7 } : Books.Item)
+  println $"{mug.name} {Shop.pen.price} {book.name} {Books.novel.price}"
+  0
+```
+
+```text
+mug 2 Emma 9
 ```
 
 ## The library

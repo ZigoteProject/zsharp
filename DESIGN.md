@@ -8,7 +8,8 @@ counting, and it links directly with C.
 against C, from desktop CPUs down to microcontrollers.
 
 **Reading this document:** it describes the language as designed. Anything not built yet is
-marked **(planned)**, with the phase that builds it. Status and order: [ROADMAP.md](ROADMAP.md).
+marked **(planned)**, with the phase or track that builds it. Status and order:
+[ROADMAP.md](ROADMAP.md).
 To learn the language: [the guide](docs/guide/README.md).
 
 ## 1. Goals and non-goals
@@ -107,7 +108,9 @@ let sumTo n =                            // imperative code is fine; mutation st
   - **Namespaces:** `namespace X` on the first line makes the file's types and modules `X.Name`, as in F#. The library uses it to put `type Map` and `module Map` side by side in `Collections`.
   - **Fields, traits and derives belong to their module,** like types. A record literal, a record pattern, or `.f` on a value whose type isn't known yet, looks among the records in scope: the current module and the ones it's in, then opened modules, global names and the auto-opened namespaces, the nearest first. A trait's methods are called by name where its module is in scope, and by `Module.method` elsewhere.
   - **Nested modules:** `module Inner =` and an indented block. Names inside are `Outer.Inner.x`; the block sees the names of its enclosing modules, `private` reaches the modules nested inside, and an `open` lasts until the block ends.
-- **Type annotations in expressions:** `(e: T)`, which also gives a literal or a record literal its type.
+- **Type inference:** Hindley–Milner, so annotations are optional. `(e: T)` in an expression gives a literal or a record literal its type.
+  - **Dot resolution is type-directed, as in F#:** `x.M` needs `x`'s type known where it's read. Otherwise the error says to annotate `x`.
+  - **Lambda arguments are typed last:** a lambda without parameter types is typed after the call's other arguments, with the parameter types the call expects. So `names |> List.map (fun s -> s.Length)` works, and so does `List.map (fun s -> s.Length) names`, which F# rejects. A lambda with annotated parameters keeps its place, so its types still reach the arguments after it.
 - **Mutual recursion:** `let rec f … and g …`, at the top level or locally. A top-level group is generalized jointly, so generic members share their type variables.
 
 ### 2.2 F# features kept
@@ -131,9 +134,7 @@ let same () = { x = 1.0<m>; y = 2.0<m> } = { x = 1.0<m>; y = 2.0<m> }   // true,
 
 - **Members** (`member`, `static member`, `type T with …` extensions) on records, unions and built-in types.
   - Calls use dot syntax: `v.Dot(w)`, `Vec.Zero`, `s.Split(", ")`.
-  - There is no inheritance and no overloading (one member per name), which keeps inference predictable.
-  - **Dot resolution is type-directed, as in F#:** `x.M` needs `x`'s type known where it's read. Otherwise the error says to annotate `x`.
-  - **Lambda arguments are typed last:** a lambda without parameter types is typed after the call's other arguments, with the parameter types the call expects. So `names |> List.map (fun s -> s.Length)` works, and so does `List.map (fun s -> s.Length) names`, which F# rejects. A lambda with annotated parameters keeps its place, so its types still reach the arguments after it.
+  - There is no inheritance and no overloading (one member per name), which keeps inference predictable (§2.1).
 - **Automatic structural equality, ordering, hashing and printing:**
   - `=`, `<>`, `compare`, `hash` and `string x` work on every record, union and tuple whose fields support them, as in F#.
   - Functions don't support them, so a type containing a function gets a compile error where equality is used.
@@ -178,7 +179,7 @@ Http.Get("https://x", timeout = 5)     // inside Get: timeout is int, headers is
 - **Named arguments:** in a member call, `name = value` is a named argument when `name` is one of the member's parameters; elsewhere `x = 1` is equality. Positional arguments come first, and each parameter may be given at most once.
 - **Record literals:**
   - **Picking the type:** a literal's record type comes from the type expected where it's written. That works through `if`/`match` branches, `let` tails, tuple, list and array elements, and function, constructor and C call arguments.
-  - **Without an expected type:** the fields must identify the record. When two records share all the given fields, the later-declared one wins, as in F#.
+  - **Without an expected type:** the fields must identify the record, among the records in scope (see Modules in §2.1). When two of those share all the given fields, the nearest scope wins, then the later declaration, as in F#.
   - **Missing fields:** a field without a default must always be given.
 - **`derive` (§3.1):** `fromJson` uses a field's default when the key is missing.
 - **C export:** exported functions have all parameters required, since C has no defaults.
@@ -199,7 +200,7 @@ let report x = Console.println (describe x)    // inferred: 'a -> unit when 'a :
 
 - **Dispatch:** resolved statically and monomorphized, with no runtime cost.
   - A generic function's trait requirements are inferred, and so are an impl's requirements on its type arguments. For example, `impl Show<list<'a>>` needs `Show<'a>`.
-  - **`dyn Trait`** (vtables for heterogeneous collections and plugin APIs) is **(planned, phase L or later; in v1)**.
+  - **`dyn Trait`** (vtables for heterogeneous collections and plugin APIs) is **(planned, phase V)**.
 - **Operators are traits:** `Add` (`+`, `zero`), `Num` (`- * / %`, negation), `Eq`, `Ord`. They have built-in impls for primitives, and user types implement them with `impl`.
 - **Built-in derives:** `Eq`, `Ord`, `Hash` and `Show` come from prelude derives (§3.1), applied automatically the first time a type needs them. An `impl` overrides them.
 - **Auto traits:** `Share` (§7) will be derived structurally by the compiler, and can't be implemented by hand **(planned, phase 7)**.
@@ -258,7 +259,7 @@ The full example is `tests/json.zs`.
 - **Checking:**
   - **Where the derive is defined:** the body is checked for names and syntax.
   - **At each derived type:** it's fully type-checked. Errors name the derive, the type and the field: `Derive(Json) on Callback: field run: … does not implement Json`.
-  - **Names:** trait methods named inside a derive always mean the trait's, even where a program defines a function of the same name.
+  - **Names:** trait methods named inside a derive mean the trait's, as the derive's own module sees them, even where a program defines a function of the same name.
 - **Generics and recursion:** deriving for `Tree<'a>` adds `'a : Json` to the impl. Recursive types work because impls are monomorphized.
 - **Cost:** none at run time. The expanded impl is ordinary code, and no type metadata is in the binary.
 - **Not included:**
@@ -304,7 +305,7 @@ error at the use site.
   - **Which types:** numbers, `bool`, tuples, records, and **small unions**: unions that aren't recursive and have at most 4 fields over all their cases, none of them heap data.
   - **Small unions:** these are a tag plus fields, e.g. `option<int>`, `result<int, f64>`, enums, and state machines with number fields. They never allocate.
 - **Heap objects:** strings, arrays, `Buffer`, `ref`, closures, lists, and the other unions.
-  - **Header:** each object starts with a word-sized reference count, and arrays and strings add a word-sized length. That's 8 bytes of header on a Cortex-M, 16 on 64-bit targets.
+  - **Header:** each object starts with a word-sized reference count. Strings and arrays add a word-sized length, boxed unions a 32-bit case tag, and closures their code and drop pointers. So a string's or a union cell's header is 8 bytes on a Cortex-M and 16 on 64-bit targets.
   - **Static objects:** string literals and constant constructors are static objects, with count 0, never freed.
 - **Arrays are values with copy-on-write**, as in Swift and Lean. A write through one name is never visible through another.
   - `a.[i] <- x` needs `let mutable a`. It writes in place when `a` holds the only reference, and copies the array first otherwise.
@@ -324,6 +325,8 @@ its last use.
 | **Reuse** | A match that consumes a unique cell and builds one of the same layout writes into that cell. `List.map` over a unique list, `insert` into a unique tree, and a state machine's step don't allocate |
 | **Borrowing** | A function that only reads, applies or passes on a parameter borrows it: the caller keeps ownership and the callee does no RC. Inferred by fixpoint for directly called functions |
 | **Borrowed reads** | `a.[i]` and lengths don't dup or drop the array |
+| **Borrowed fields** | The fields a match takes from a value that stays alive past it are borrowed from that value, not dup'd; the value lives until their last use |
+| **Re-matching** | In `match x with C (a, b) -> if c then f a else x`, the branch where `x` dies matches it again, so that branch takes the cell apart and can reuse it although the other returns `x` |
 | **Moves out of mutables** | `x <- f x`, and `let r = f … x …` when `x` is reassigned before its next read, give `f` `x`'s own reference. So a unique value stays unique, and copy-on-write and reuse happen in place |
 | **Copy-on-write in loops** | An array a loop writes, and doesn't otherwise share, is made unique once before the loop; the writes inside skip the check |
 
@@ -331,11 +334,11 @@ its last use.
 before it. Mutable cells can: a `ref` or `Buffer` holding a value that points back to it
 (directly, or through a closure that captures it).
 - **What happens:** RC never frees such a cycle. It leaks silently, and it stays memory-safe. There is no cycle collector, which would need a GC's tracing.
-- **Avoiding them:** back-pointers (a child's parent, a list of observers) are `weak` references **(planned, in v1)**, which don't keep their target alive. Otherwise, breaking a cycle is the program's job, as in Swift.
+- **Avoiding them:** back-pointers (a child's parent, a list of observers) are `weak` references **(planned, phase V)**, which don't keep their target alive. Otherwise, breaking a cycle is the program's job, as in Swift.
 - **Finding them:** `ZS_LEAKCHECK=1` reports the objects still allocated at exit, so a test suite run with it (as `./test.sh` runs the compiler's) catches a cycle the tests make.
 
-**Escape hatches (planned, in v1):** `Arena.with (fun a -> …)` for bulk allocation that's freed
-at once, and raw `ptr<'a>` inside `unsafe` expressions.
+**Escape hatches (planned, phase V):** `Arena.with (fun a -> …)` for bulk allocation that's
+freed at once, and raw `ptr<'a>` inside `unsafe` expressions.
 
 ### 5.3 What code without `unsafe` guarantees
 
@@ -345,14 +348,14 @@ at once, and raw `ptr<'a>` inside `unsafe` expressions.
 | No null | `option<'a>` |
 | No uninitialised reads | Every binding has a value; arrays are created filled |
 | No out-of-bounds access | Indexing is bounds-checked; in loops the checks are proved once before the loop where possible (§9) |
-| No data races | `let mutable` can't be captured; the `Share` trait (planned, §7) |
+| No data races | `let mutable` can't be captured; the `Share` trait (planned, phase 7, §7) |
 | Deterministic cleanup | RC, plus `use` (planned, phase 6), which also runs when a task is cancelled |
 | No silent overflow | Integer overflow traps in every build, as in Swift. Wrapping is explicit: `Int.wrappingAdd`, `Int.wrappingSub`, `Int.wrappingMul`, or `[<Wrapping>]` on a function, whose integer `+ - *` wrap. Division by zero traps |
 
-**Not guaranteed (and still memory-safe):** leaks through `ref` cycles.
+**Not guaranteed (and still memory-safe):** leaks through cycles of `ref` cells or `Buffer`s (§5.2).
 
-**Unsafe on purpose:** `extern` calls, `Mmio.*` register accesses, and (planned) `unsafe`
-expressions with raw pointers.
+**Unsafe on purpose:** `extern` calls, `Mmio.*` register accesses, and `unsafe` expressions
+with raw pointers **(planned, phase V)**.
 
 ## 6. Concurrency: `Task` (planned, phase 6)
 
@@ -512,9 +515,9 @@ and gives LLVM the facts it can't prove.
 
 | Layer | Optimization | Status |
 |---|---|---|
-| Representation | Small non-recursive unions as plain values; word-sized headers | done |
-| Mono | List fusion: `List.init` chains into `sum`/`sumBy`/`fold`/`length` with pure lambdas become one loop | done (more sources and consumers planned) |
-| Perceus | Ownership, drop specialization, reuse, borrowing, moves out of mutables, borrowed reads | done |
+| Representation | Small non-recursive unions as plain values | done |
+| Mono | List fusion: `List.init` chains into `sum`/`sumBy`/`fold`/`length` with pure lambdas become one loop | done (more sources and consumers planned, phase 5) |
+| Perceus | Ownership, drop specialization, reuse, borrowing, moves out of mutables, borrowed reads and fields, re-matching | done |
 | Codegen | Copy-on-write checks hoisted out of loops; loop versioning that proves bounds once for innermost call-free loops | done |
 | Codegen | Overflow checks via `llvm.*.with.overflow`, which LLVM drops when ranges prove them safe | done |
 | Codegen | `print` of an interpolation prints the pieces, without building the string | done |
@@ -522,11 +525,12 @@ and gives LLVM the facts it can't prove.
 | Core | Inlining of small functions. Decision trees for matches: no value is tested twice, and a part reached on several paths is a join point (a block with phis) that reuse tokens pass through | done |
 | Core | Case-of-known-constructor, case-of-case | planned (phase 5) |
 | Representation | `i8` enums, null niche for `option<ref>`, tagged nullary constructors | planned (phase 5) |
+| Representation | A one-word object header: a 32-bit count, the tag and the number of fields to scan, as in Koka | planned (phase 9) |
 | Linking | ThinLTO with the runtime, PGO | planned (phase 9). On microcontrollers, linking the runtime as bitcode was measured and made code bigger and slower |
 
 **Performance contract:**
 - **Microcontrollers:** the suite in `bench/mcu` compares each program with its C version (same clang, same chip, under QEMU) [(results)](docs/reports/microcontrollers.md).
-- **Host:** the suite in `bench/host` (fib, binary-trees, nbody, spectral-norm, the red-black tree) compares each program with C, Rust, Swift, Zig and OCaml [(results)](docs/reports/host.md). A regression of more than 5% in instructions fails the build. JSON and F# are planned (phase 5).
+- **Host:** the suite in `bench/host` (fib, binary-trees, nbody, spectral-norm, the red-black tree) compares each program with C (also built with `-ftrapv`, whose overflow traps match Z#'s), Rust, Swift, Zig and OCaml [(results)](docs/reports/host.md). A regression of more than 5% in instructions fails the build. An F# column is planned (phase 5).
 
 ## 10. Targets
 
@@ -534,7 +538,7 @@ and gives LLVM the facts it can't prove.
 |---|---|---|
 | 1 | Linux x86-64 and aarch64 | native, or `--target aarch64-linux-musl` (static) |
 | 2 | Bare-metal ARM Cortex-M: `cortex-m4` (M4F), `cortex-m0plus` | `--target cortex-m4`; tested under QEMU |
-| 3 | macOS aarch64, Windows x86-64 | through `zig cc` (planned) |
+| 3 | macOS aarch64, Windows x86-64 | through `zig cc` (planned, targets track) |
 | 4 | WASM (WASI) | later |
 
 **Cross-compiling:** `zs build --target <triple>`. clang compiles the program for the target,
@@ -547,9 +551,10 @@ needed. C structs by value follow the target's convention: x86-64 System V, or A
   - a static heap with size-class free lists (64 KB or 8 KB);
   - semihosting output and exit;
   - a peak heap and stack report at exit.
-- **What's missing:** OS functions (`File`, `Process`, `Env`) aren't provided, so a program that uses one fails to link, naming the function.
+- **What's missing:** Std, the part of the library that needs an operating system (`Console`, `Environment`, `IO`, `Diagnostics`). A microcontroller build doesn't load it, and using it is a compile error that says why (§9).
 - **Hardware:** `Mmio.read32/write32/read8/write8` are volatile register accesses, and `Runtime.ticks ()` counts cycles.
-- **Planned:** interrupt handlers (`[<Interrupt "SysTick">]`), RISC-V (ESP32-C3) and more boards (linker scripts in `runtime/boards`). Top-level constants for register addresses come in phase L.
+- **Registers as constants:** a top-level constant such as `let uart = usize 0x40004000` is inlined, so a register access compiles to a store to an immediate address.
+- **Planned (microcontroller track):** interrupt handlers (`[<Interrupt "SysTick">]`), constant arrays in flash, RISC-V (ESP32-C3) and more boards (linker scripts in `runtime/boards`).
 
 ## 11. C interop
 
@@ -572,7 +577,7 @@ import c "raylib.h"                              // like Zig's @cImport
   - **Pointers:** `cstr` (`const char *`; a Z# string passes as its bytes) and `cptr` (any other pointer, opaque).
   - **Structs:** `[<CLayout>]` records, passed by value.
   - **Callbacks:** `callback<A -> R>`, a function pointer plus `void *` user data.
-  - **Planned (in v1):** typed raw pointers `ptr<'a>` with `Ptr.read`/`write` and pointer arithmetic inside `unsafe`, and C function pointers callable from Z#.
+  - **Planned (phase V):** typed raw pointers `ptr<'a>` with `Ptr.read`/`write` and pointer arithmetic inside `unsafe`, and C function pointers callable from Z#.
 - **`import c`:** clang reads the header, with `-ast-dump=json` for declarations and `-E -dD` for macros. Only what that header itself declares is imported.
   - **What comes across:**
     - functions, which become externs;
@@ -585,13 +590,13 @@ import c "raylib.h"                              // like Zig's @cImport
     - The result is cached in memory, and saved with a copy of the header in `.zs-cache/cimport/`, so editors without clang or the header still get it.
     - In the editor, hover shows the C declaration and the header's comment.
 - **Exporting:** `[<Export "name">]` functions must be monomorphic, with C types only. `zs build --lib` produces a static library (`.a`) and a header (`.h`).
-  - **Planned:** shared libraries (`.so`), and RC objects crossing as opaque handles (`Rc.retain`/`Rc.release`).
+  - **Planned (phase V):** shared libraries (`.so`), and RC objects crossing as opaque handles (`Rc.retain`/`Rc.release`).
 - **Panics in a C host:** a library reports the errors its caller can handle as `result`. A panic is a bug in the library, and it ends the host process, as Rust's `panic = "abort"` does.
   - **The hook:** `zs_set_panic_hook(void (*hook)(const char *message))`, declared in every generated header, runs after the message is printed. It can log, flush or save the host's state, or end the process its own way (`exit`). If it returns, the process stops as before.
   - **No calls back:** the hook must not call into the library, whose state is undefined after a panic.
   - **A host that must survive a library's bugs** runs it in a separate process.
 - **Callbacks:** a C `void (*cb)(void *user, …)` paired with `void *user` receives a Z# closure; the compiler generates the thunk. The closure is borrowed for the call, so a callback can't be stored by C.
-- **With `Task` (planned):** a blocking C call goes through `Task.blocking` (§6).
+- **With `Task` (planned, phase 6):** a blocking C call goes through `Task.blocking` (§6).
 
 ## 12. Tooling
 
@@ -608,14 +613,14 @@ checker, so tools can't drift from the compiler.
 - **Tests:** `[<Test>]` marks a `unit -> unit` function. `zs test` runs each test in its own process, so a failure or panic fails only that test. A failed `assert` names its file and line.
 - **Debugging:** `zs build -g` builds at `-O0` with DWARF.
   - gdb breaks on Z# functions and lines, steps, and shows backtraces.
-  - Number and bool locals and arguments are visible. Strings, records and unions are **(planned)**.
+  - Number and bool locals and arguments are visible. Strings, records and unions are **(planned, phase V)**.
 - **Documentation:** `///` comments above a declaration document it.
   - **Where they show:** hover, completion, the MCP `docs` tool, and `zs doc <file>`, which writes Markdown.
   - **The library:** fully documented, with one reference page per module in `docs/reference` (built-in functions included), which `./test.sh` keeps current.
-- **Formatting:** `zs fmt` has one canonical style and no options. Today it's token-based: it re-indents, spaces operators and keeps comments, and the result must lex to the same tokens. Reflowing long lines to 100 columns needs a lossless syntax tree **(planned)**.
+- **Formatting:** `zs fmt` has one canonical style and no options. Today it's token-based: it re-indents, spaces operators and keeps comments, and the result must lex to the same tokens. Reflowing long lines to 100 columns needs a lossless syntax tree **(planned, editor track)**.
 - **Editors:**
   - **Grammar:** a tree-sitter grammar (`editors/tree-sitter-zsharp`), for highlighting, indentation and outlines.
-  - **`zs lsp`:** diagnostics, hover with types and docs, definition, references, completion, inlay hints, symbols and formatting. Signature help, rename and code actions are **(planned)**.
+  - **`zs lsp`:** diagnostics, hover with types and docs, definition, references, completion, inlay hints, symbols and formatting. Signature help, rename and code actions are **(planned, editor track)**.
   - **`zs mcp`:** for AI agents. Tools: `check`, `type_at`, `docs`, `build`, `run`, `emit_llvm`, `format`.
   - **Zed:** a Zed extension (`editors/zed`) packages all three.
 - **Diagnostics:** each error gives `file:line:col` and the source line with a caret, and one run reports every error.
@@ -652,13 +657,13 @@ checker, so tools can't drift from the compiler.
 | 26 | From Zig | cross-compilation through `zig cc`. Not adopted: explicit allocators, no-hidden-allocation, comptime | decided |
 | 27 | Libraries | source packages (path, git + `zs.lock`), checked Core cached per module; no binary IR format | decided |
 | 28 | Strings and `char` | UTF-8 strings, `Length` is bytes; `char` is a Unicode scalar; `for c in s` decodes UTF-8 (malformed bytes become U+FFFD) | decided |
-| 29 | Target order | Linux x64/arm64; bare-metal Cortex-M; macOS arm64, Windows x64; WASM | decided |
+| 29 | Target order | Linux x64/arm64; bare-metal Cortex-M; macOS arm64, Windows x64 (a targets track, build-only until a machine runs the tests); WASM | decided |
 | 30 | Who it's for first | native libraries used from C, CLI tools, microcontroller firmware; games over C libraries next | decided |
 | 31 | Callbacks into C | `callback<A -> R>` = `R (*)(void *user, A)` + `void *user`; borrowed for the call | decided |
 | 32 | Editor support | tree-sitter grammar + `zs lsp` + `zs mcp`, Zed extension first | decided |
 | 33 | Formatter | `zs fmt`, one style, no configuration; lossless syntax tree for reflow (planned) | decided |
 | 34 | Surface syntax | the freeze is lifted. Missing F# syntax comes first (phase L); new non-F# syntax needs a design discussion | decided |
-| 35 | Kept in v1 though not yet needed | `ptr<'a>` + `unsafe`, `Arena`, `dyn Trait`, `weak` references | decided |
+| 35 | Kept in v1 though not yet needed | `ptr<'a>` + `unsafe`, `Arena`, `dyn Trait`, `weak` references, built in phase V before CEs and `Task` | decided |
 | 36 | Optimizations that change evaluation order | only for pure code (list fusion requires pure lambdas; printing pieces evaluates them all first) | decided |
 | 37 | Library organization | prelude (global names) / Core (no OS: every target) / Std (needs an OS); .NET-style namespaces open everywhere at the lowest precedence; .NET module names, F# function names | decided |
 | 38 | Operator precedence | F#'s: custom operators by their first character; `\|>` and `>>` at the comparison level, above `&&` and `\|\|` (they used to be the loosest) | decided |

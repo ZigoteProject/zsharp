@@ -17,8 +17,7 @@ open Mono
 //   ref<T>   ptr -> { W rc, T }
 //   union    ptr -> { W rc, i32 tag, field... }; nullary constructors point to a static cell
 //   closure  ptr -> { W rc, ptr code, ptr drop, env... }; code: (ptr self, arg) -> result
-//   tuples and records: LLVM struct values
-// ponytail: every union is boxed; keep small non-recursive ones inline when perf matters
+//   tuples and records: LLVM struct values; so are small non-recursive unions (tag + fields)
 
 type private Binding =
     | Ssa of string
@@ -1413,7 +1412,8 @@ let compile
                 em.Label lend
                 phi (llty e.ty) [ vt, bt; vf, bf ]
             | CMatch(s, cases) ->
-                // ponytail: clauses are tested one after another; decision trees when match speed matters
+                // clauses are tested one after another: Decide has already turned the matches whose
+                // patterns nest into decision trees, except where the tree would grow too large
                 let v = gen env false s
                 let endL = em.Fresh "mend"
                 let mutable next = em.Fresh "case"

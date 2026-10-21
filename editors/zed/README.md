@@ -1,8 +1,9 @@
 # Z# for Zed
 
 Syntax highlighting, outline, bracket matching and indentation (from the tree-sitter grammar in
-`../tree-sitter-zsharp`), plus the `zs` language server: diagnostics as you type, hover types
-(with trait constraints) and inlay type hints.
+`../tree-sitter-zsharp`), plus the `zs` language server: diagnostics as you type, hover with
+types (and trait constraints) and docs, go to definition, references, completion, inlay type
+hints, document symbols and formatting. Zed's agent gets the `zs mcp` context server.
 
 ## Install (dev extension)
 
@@ -16,7 +17,7 @@ Syntax highlighting, outline, bracket matching and indentation (from the tree-si
    Put `dist/zs` on `PATH`, or set the path in Zed's settings:
 
    ```json
-   { "lsp": { "zs": { "binary": { "path": "/home/you/zsharp/dist/zs/zs" } } } }
+   { "lsp": { "zs": { "binary": { "path": "/path/to/zsharp/dist/zs/zs" } } } }
    ```
 
 2. Generate the parser once (Zed compiles `src/parser.c`, it doesn't run the generator), and
@@ -31,7 +32,7 @@ Syntax highlighting, outline, bracket matching and indentation (from the tree-si
    then restart Zed so it picks up `~/.cargo/bin` from your shell.
 
 4. Zed's agent gets the `zs` context server (`zs mcp`): `check`, `type_at`, `docs`, `build`,
-   `run` and `emit_llvm`. Enable it in the agent panel's settings.
+   `run`, `emit_llvm` and `format`. Enable it in the agent panel's settings.
 
 5. Open a `.zs` file. `zed: open log` shows the extension's and the server's messages.
 
@@ -58,6 +59,7 @@ The Flatpak's sandbox has `PATH=/app/bin:/usr/bin` and no clang, so:
 - The agent's `build` and `run` tools need clang, which the sandbox lacks. `check`, `type_at`,
   `docs`, `format` and `emit_llvm` work. Run programs from a terminal (`./dev bin/zs run …`).
 
-Checked: the published `zs` runs inside the sandbox (`flatpak run --command=sh dev.zed.Zed`),
-and the extension builds for `wasm32-wasip1`
-(`./dev bash -c 'cd editors/zed && cargo build --release --target wasm32-wasip1'`).
+Checked: the published `zs` runs inside the sandbox (`flatpak run --command=sh dev.zed.Zed`).
+The dev container has Fedora's `wasm32-wasip1` target only, so it checks that the Rust part
+compiles with `./dev bash -c 'cd editors/zed && cargo build --release --target wasm32-wasip1'`;
+Zed itself builds it for `wasm32-wasip2`.

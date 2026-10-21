@@ -28,6 +28,7 @@
 
 **Environment variables:**
 - `ZS_BACKTRACE=0` leaves backtraces out of panic output.
+- `ZS_ABORT=1` makes a panic a real `abort()`, with a core dump for a debugger.
 - `ZS_LEAKCHECK=1` reports heap objects still allocated at exit.
 
 ## Formatting

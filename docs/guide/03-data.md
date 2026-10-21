@@ -22,7 +22,7 @@ let main () =
 ## Records
 
 A record has named fields.
-- **Creating:** write the fields in braces. The record type is found from the field names; when two record types share their field names, the expected type decides.
+- **Creating:** write the fields in braces. The record type is found from the field names, among the records in scope ([Programs](08-programs.md#modules)); when two record types share their field names, the expected type decides.
 - **Immutable:** a record's fields can't be assigned. `{ r with field = … }` makes a copy with some fields changed.
 
 ```zsharp

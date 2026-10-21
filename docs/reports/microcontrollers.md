@@ -18,6 +18,7 @@ the same chip, in speed, flash and RAM?
 | Heap | Z#: 64 KB on the M4, 8 KB on the M0. C: 1 KB, since C doesn't need one |
 | Speed measure | Instructions executed in the timed part only (printing excluded). QEMU runs with `-icount`, so virtual time advances per instruction, and SysTick reads it. A calibration loop with a known instruction count gives the factor (40 per tick on the M4, 62.5 on the M0). Results are deterministic |
 | Sizes | `llvm-size`: flash = text + data; heap peak from the allocator; stack peak by stack painting |
+| Measured | the compiler at commit `63850ee` |
 | Reproduce | `./dev bash bench/mcu/run.sh cortex-m4 -O2` (or `-Os`, or `cortex-m0plus`) |
 
 ## The programs
@@ -53,15 +54,15 @@ Both versions print the same result.
 
 | Program | M4 `-Os` | M0 `-Os` |
 |---|---:|---:|
-| crc32 | 2264 / 2076 | 2472 / 2264 |
-| fib | 2332 / 2024 | 2508 / 2204 |
-| fir | 2540 / 2348 | 4404 / 4088 |
-| isort | 2680 / 2104 | 3056 / 2436 |
-| pipeline | 2324 / 2016 | 2516 / 2208 |
-| tokens | 2692 / 2184 | 2956 / 2368 |
+| crc32 | 2304 / 2084 | 2496 / 2268 |
+| fib | 2356 / 2032 | 2532 / 2208 |
+| fir | 2564 / 2356 | 4428 / 4092 |
+| isort | 2720 / 2112 | 3080 / 2440 |
+| pipeline | 2348 / 2024 | 2524 / 2212 |
+| tokens | 2716 / 2192 | 2980 / 2372 |
 
 **RAM:**
-- **Stack:** Z#'s peak is within 10% of C's (196–436 bytes against 196–308).
+- **Stack:** Z#'s peak is within 10% of C's, except `isort` at `-O2` (436 bytes against 308). `fib64` needs half of C's (416 against 808), since its `int` is 32-bit.
 - **Heap:**
   - Programs using lists or unions now have a 32-byte heap peak (the printed result string).
   - Array programs keep their array on the heap: 4,144 bytes for `crc32`'s 4 KB buffer, where C uses a static array.
@@ -88,7 +89,7 @@ On the way, the measurements found gaps that blocked ordinary firmware code, and
 ## What is left, and why
 
 - **`fib`, 1.15–1.47×:** every `+` and `-` that the compiler can't prove safe is overflow-checked (DESIGN decision 4). C has none of these checks; overflow there is undefined behaviour.
-- **`tokens` on the Cortex-M0, 2.5–2.9×:** the state machine's checked arithmetic and its returned tuple cost more on the M0, which has fewer registers and simpler instructions. Inlining at the Core level (phase 5) is the next step.
+- **`tokens` on the Cortex-M0, 2.5–2.9×:** the state machine's checked arithmetic and its returned tuple cost more on the M0, which has fewer registers and simpler instructions. Core-level inlining, which phase 5 has added since, didn't change it.
 - **`fir` at `-Os`, 1.12×:** loop versioning is limited to small loops at `-Os`. Its check runs once per outer iteration, and at `-Os` LLVM doesn't fold it.
 - **Flash, +0.2–0.6 KB:** this comes from overflow and bounds panic paths, their message strings, and the copy-on-write copy function. That suits devices with 32 KB or more of flash. On 16 KB parts it matters, and a smaller panic path (one shared handler, short codes) would recover some.
 - **Not measured yet:** interrupt latency (Z# has no interrupt handlers yet), real hardware (QEMU counts instructions, not cycles or wait states), and RISC-V.
