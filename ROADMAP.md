@@ -72,26 +72,41 @@ gdb, qemu-user, zig). `./dev ./test.sh` runs the suite inside it, plain `./dev` 
   - **Strings to C:** a `string` converts to `cstr` only as an `extern` argument.
   - **Overflow:** integers wrap. The debug-mode overflow trap needs a debug build mode.
 
-## Next
-
-### Phase 3: traits, modules, C export
+### Phase 3: traits, modules, members, derive, C export ✅
 - **Scope:**
-  - **Traits:** monomorphized, with `Num`/`Ord`/`Eq`/`Hash`/`Show`. Operators become traits.
-  - **Equality:** automatic structural `=`, `compare`, `hash` and `%A`, with `[<NoEquality>]`/`[<NoComparison>]`.
-  - **Members:** `member`/`static member` on records and unions, with type-directed dot resolution. Named, optional (`?x`) and default (`?x = e`) arguments, expanded at the call site.
-  - **Record field defaults:** `{ port: int = 8080 }`; record literals may omit defaulted fields.
-  - **Named union fields:** `Circle(radius = 2.0)` and `| Rect(h = h) ->` (DESIGN §2.2).
-  - **Units of measure:** `[<Measure>]` types and `f64<m/s>`, using Kennedy unification.
-  - **Active patterns:** total, partial and parameterised, integrated into the exhaustiveness checker.
-  - **Modules:** one file is one module, with `open`/`private`. The compiler follows imports from `zs build main.zs`.
-  - **Errors:** the `?` operator over `result`.
-  - **C export:** `[<CLayout>]` records with C ABI lowering, `[<Export>]` with a generated `.h`, and `fnptr` callbacks that can carry a closure.
-  - **Derive:** `derive` definitions, `[<Derive(...)>]`, `Shape.of`/`build`/`buildCase` and per-field expansion. `Eq`/`Ord`/`Hash`/`Show` are written as prelude derives rather than as compiler special cases.
-  - **Stdlib core:** `List`, `Array`, `String`, `Option`, `Result`, `Console`.
+  - **Traits:** `trait`/`impl`. Impl requirements on type arguments are inferred. Operators are traits (`Add`, `Num`, `Eq`, `Ord`, `Show`, `Hash`), and `List.sum` uses `Add.zero`.
+  - **Derive:** `derive` over `Shape.of`/`pair`/`kind`, with unrolled `for f in c.fields`, `Shape.build` and `Shape.buildCase`.
+    - **Built-in derives:** `Eq`, `Ord`, `Hash` and `Show` are prelude derives, applied the first time a type needs them.
+    - **Controls:** `[<Derive(X)>]`, `[<NoEquality>]`, `[<NoComparison>]`.
+    - **Tuples:** structural traits.
+  - **Members:** `member`, `static member` and `type T with` extensions. Dot resolution is type-directed, and `f(x).M()` binds tighter than juxtaposition. Named, optional and default arguments.
+  - **Records and unions:** default field values, named union fields in construction and patterns.
+  - **Modules:** a file is a module. `open`, qualified names, `private`, an import graph built from the main file, and import-cycle errors with the file named.
+  - **Active patterns:** total, partial and parameterised, checked by the exhaustiveness checker.
+  - **Units of measure:** Kennedy unification, erased before codegen.
+  - **Errors:** `?` over `result`.
+  - **C export:** `[<Export>]` plus a generated `.h`, `[<CLayout>]` with x86-64 System V lowering, `callback<A -> R>`, and `zs build --lib`.
+  - **Stdlib core:** `List`, `Array`, `Option`, `Result`, `String` (runtime primitives plus Z#) and `Console`.
 - **Exit tests:**
-  - A C program links a Z# static library and calls into it, including a callback that captures state.
-  - A physics snippet mixing `m` and `s` units fails to compile where it should and compiles to the same IR as unitless code.
-  - A `Json` derive written in Z# round-trips a record, a union and a `Tree<int>`. Deriving it for a type with a function field fails with an error that names the field.
+  - **`tests/cexport`:** a C program calls a Z# static library using structs of every ABI class, and Z# calls back into C with a closure that captures state. Valgrind-clean.
+  - **`tests/units`:** mixing `m` and `s` fails to compile, and `physics.zs` compiles to LLVM IR identical to its unitless twin (`.same-ir`).
+  - **`tests/json.zs`:** a `Json` derive written in Z# round-trips a record, a union and `Tree<int>`. `tests/err_derive.zs` shows that deriving it for a function field fails and names the field.
+- **Known shortcuts:**
+  - **`?` operator:** only `let p = e?` or a statement `e?`.
+  - **Active patterns:** only at the top of a match case.
+  - **Units:** Kennedy's general case, which introduces a fresh variable, isn't implemented. Unannotated `*` across different units needs annotations.
+  - **C ABI:**
+    - x86-64 System V only, and running out of argument registers isn't modelled.
+    - Callbacks take scalar arguments and are synchronous, since the closure is borrowed for the call.
+    - C function pointers can't be called from Z#.
+  - **Modules:** record field names, traits and derives are global. There are no nested modules.
+  - **Members:** generic members that are mutually recursive share type variables. Fine so far, but not principled.
+  - **Syntax gaps:**
+    - Strings are byte-based, and there's no `char` type yet.
+    - No tuples without parentheses, no `(e: T)` annotations in expressions, no `let rec … and …`, and no top-level values.
+    - Quotes aren't allowed inside interpolation holes.
+
+## Next
 
 ### Phase 4: C import and tooling
 - **Scope:**

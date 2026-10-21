@@ -245,6 +245,11 @@ let s = toJson { name = "ada"; age = 36; email = None }
 ```
 
 - **What a derive sees:** `Shape.of x` is `Record r` or `Union c`. `r.fields` lists every field, and `c.name`/`c.fields` describe the active case. Each field has `name`, `index`, and a `value` of that field's own type. Unnamed union fields are named `item1`, `item2`, … as in F#.
+- **Comparing two values:** `match Shape.pair a b with Same c -> … | Different (i, j) -> …` gives a derive both values at once.
+  - **`Same`:** both have the same case (always, for records). Each field has `f.left` and `f.right`.
+  - **`Different`:** carries the two case indexes.
+  - **Case facts:** `c.index` and `c.count` give the case's position and its number of fields.
+  - **Prelude:** the derives for `Eq`, `Ord`, `Hash` and `Show` are written with these.
 - **Per-field expansion:** a `for f in ….fields do` loop is unrolled at compile time, and its body is typechecked once per field, at that field's type. So `toJson f.value` resolves `Json` separately for `string`, `int` and `option<string>`. This is Zig's `inline for` over `@typeInfo`, but it is the only construct that works this way. A lambda passed to `Shape.build<'self>` (records) or `Shape.buildCase<'self> name` (unions) expands the same way. It is called once per field and returns `result<field, 'e>`. `build` returns `result<'self, 'e>` and stops at the first error. `buildCase` returns `None` for an unknown case name. `Shape.kind<'self>` tells a derive whether it is building a record or a union.
 - **Checking:** a derive body is checked for names and syntax where it is defined. It is fully typechecked at each `[<Derive>]` type. Errors name the derive, the type and the field: `Derive(Json) on User: field created: Time has no Json impl`. This is the tradeoff C++ templates and Zig comptime make, confined to derive bodies.
 - **Generics and recursion:** deriving for `Tree<'a>` adds `'a : Json` to the impl, as Rust's `#[derive]` does. Recursive types work because impls are monomorphized.
@@ -539,6 +544,9 @@ Plan: ROADMAP "Editor tooling track".
 | 25 | `option` record fields | default only with explicit `= None` | decided |
 | 26 | Default expressions | any expression, evaluated at the call site, may use earlier fields/parameters | decided |
 | 27 | Union case fields | named construction and patterns; no defaults | decided |
+| 29 | `?` operator | `let p = e?` and statement `e?` for now; general positions arrive with `result { }` (Phase 6) | decided |
+| 30 | Automatic Eq/Ord/Hash/Show | derived the first time a type needs them; a type whose fields can't support it simply doesn't get it | decided |
+| 31 | Callbacks into C | `callback<A -> R>` = `R (*)(void* user, A)` + `void* user`; the closure is borrowed for the call | decided |
 | 28 | Formatter | `zs fmt`, one canonical style, no configuration; lossless CST with comment trivia | decided |
 
 "Default" means chosen by me and open to change until the phase that implements it begins.
