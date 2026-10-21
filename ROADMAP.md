@@ -42,7 +42,8 @@ exit test passes and `./test.sh` passes. Design rationale: [DESIGN.md](DESIGN.md
   - **Functions:** `fun` lambdas, closures, first-class and local functions, partial application. Self tail calls become loops.
   - **Generics:** let-polymorphism and monomorphization, plus generic user types (`Tree<'a>`).
   - **Numbers:** `f32`/`f64`, the other integer widths, and conversion functions.
-  - **Mutation and loops:** `let mutable`, `for`/`while`, `ref<'a>`, and arrays (bounds-checked, divide by zero traps).
+  - **Mutation and loops:** `let mutable`, `for`/`while`, `ref<'a>`, and arrays (`[| |]`, bounds-checked).
+  - **Panics:** a `panic` runtime that prints a message and backtrace, then aborts. Bounds errors, divide by zero and `assert` all route there. The type representation gets a slot for units of measure now, so Phase 3 doesn't have to restructure it.
   - **Built-in types:** `string` (UTF-8, RC), `list`, `option` and `result` in a minimal prelude.
   - **Memory:** Perceus RC with drop and reuse. Recursive unions are freed, which retires the Phase 1 leak.
 - **Exit tests:**
@@ -51,19 +52,28 @@ exit test passes and `./test.sh` passes. Design rationale: [DESIGN.md](DESIGN.md
 
 ### Phase 3: traits, modules, C export
 - **Scope:**
-  - **Traits:** monomorphized, with `Num`/`Ord`/`Eq`/`Show` and `[<Derive>]`. Operators become traits.
+  - **Traits:** monomorphized, with `Num`/`Ord`/`Eq`/`Hash`/`Show`. Operators become traits.
+  - **Equality:** automatic structural `=`, `compare`, `hash` and `%A`, with `[<NoEquality>]`/`[<NoComparison>]`.
+  - **Members:** `member`/`static member` on records and unions, with type-directed dot resolution.
+  - **Units of measure:** `[<Measure>]` types and `f64<m/s>`, using Kennedy unification.
+  - **Active patterns:** total, partial and parameterised, integrated into the exhaustiveness checker.
   - **Modules:** one file is one module, with `open`/`private`. The compiler follows imports from `zs build main.zs`.
   - **Errors:** the `?` operator over `result`.
   - **C export:** `[<CLayout>]` records with C ABI lowering, `[<Export>]` with a generated `.h`, and `fnptr` callbacks that can carry a closure.
   - **Stdlib core:** `List`, `Array`, `String`, `Option`, `Result`, `Console`.
-- **Exit test:** a C program links a Z# static library and calls into it, including a callback that captures state.
+- **Exit tests:**
+  - A C program links a Z# static library and calls into it, including a callback that captures state.
+  - A physics snippet mixing `m` and `s` units fails to compile where it should and compiles to the same IR as unitless code.
 
 ### Phase 4: C import and tooling
 - **Scope:**
   - `import c "header.h"` via libclang, covering structs, enums, functions and `#define` constants.
   - DWARF debug info (gdb and lldb step through Z# lines).
   - `zs test` and better error messages (code snippets, carets).
-- **Exit test:** a raylib window demo written only against `import c "raylib.h"`.
+  - **Cross-compilation:** `zs build --target <triple>` via `zig cc` and Zig's bundled libc.
+- **Exit tests:**
+  - A raylib window demo written only against `import c "raylib.h"`.
+  - `tests/` cross-compiles to aarch64-linux-musl and passes under qemu-user.
 
 ### Phase 5: optimizer I
 - **Scope:**

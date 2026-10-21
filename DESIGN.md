@@ -78,9 +78,54 @@ let sumTo n =                            // imperative code is fine; mutation st
 - **Pattern matching:**
   - Supports nesting, guards, `as`, and or-patterns that bind variables.
   - A non-exhaustive match is an **error** that names a missing case. A case that can never match is also an error.
-- **Errors:** `result` with a postfix `?` that propagates the error, or a `result { }` builder (§4). `panic` is for bugs only.
+- **Errors:** `result` with a postfix `?` that propagates the error, or a `result { }` builder (§4).
+- **Panics:** a bounds error, divide by zero, failed `assert` or explicit `panic` prints a message and backtrace, then **aborts**.
+  - Panics can't be caught and there is no unwinding. That means no landing pads and no unwinding through C frames.
+  - Recoverable errors use `result`; typed exceptions arrive with effects (§6.1).
+- **Sequences:** `[1; 2; 3]` is an immutable cons list (pattern `x :: rest`), as in F#, and `[| 1; 2 |]` is an array. Perceus reuse makes `List.map` and `filter` work in place when the list is unique.
+- **Strings:** UTF-8. `s.Length` is the byte length, `for c in s` iterates over `char` scalars, and slicing by byte range is checked to fall on character boundaries.
 - **Strings:** `$"x = {p.x}"` interpolation.
 - **Modules:** one file is one module, with `open`, `private`, and nested `module`.
+
+### 2.1 F# features kept
+
+```fsharp
+[<Measure>] type m
+[<Measure>] type s
+
+type Vec = { x: f64<m>; y: f64<m> }
+  with
+    member v.Length = sqrt (v.x * v.x + v.y * v.y)       // f64<m>
+    static member Zero = { x = 0.0<m>; y = 0.0<m> }
+
+let speed (d: f64<m>) (t: f64<s>) = d / t               // f64<m/s>
+
+let (|Even|Odd|) n = if n % 2 = 0 then Even else Odd    // total active pattern
+let (|Int|_|) (s: string) = Int.tryParse s              // partial active pattern
+
+let describe n =
+  match n with
+  | Even -> "even"
+  | Odd  -> "odd"                                       // exhaustive: {Even, Odd} is complete
+
+let same = { x = 1.0<m>; y = 2.0<m> } = { x = 1.0<m>; y = 2.0<m> }   // true, structural
+```
+
+- **Members** (`member`, `static member`) on records and unions:
+  - Calls use dot syntax: `v.Length`, `Vec.Zero`, `s.Split ','`.
+  - There is no inheritance and no overloading (one member per name). That keeps inference predictable.
+  - **Dot resolution is type-directed, as in F#:** `x.M` requires `x`'s type to be known by that point, reading left to right. Otherwise the error is "annotate x". Pipelines (`xs |> List.map (fun p -> p.x)`) work because `|>` checks its left side first.
+- **Automatic structural equality and comparison:**
+  - `=`, `<>`, `compare` and `hash` work on every record, union and tuple whose fields support them, as in F#.
+  - Functions, `ref` and `ptr` don't support them, so a type containing them gets a compile error at the use site.
+  - Opt out with `[<NoEquality>]`/`[<NoComparison>]`; customise with `impl Eq<T>`.
+- **Units of measure:** checked at compile time and erased at runtime, so they cost nothing.
+  - Measure exponents are unified as an abelian group (Kennedy's algorithm), so `m/s * s` simplifies to `m`.
+  - They apply to numeric types and to SIMD vector element types.
+- **Active patterns:**
+  - **Total** ones (`(|A|B|)`) define a closed set of cases and take part in exhaustiveness like constructors.
+  - **Partial** ones (`(|P|_|)`, returning `option`) never count toward coverage, the same as a guarded case.
+  - Parameterised ones (`(|DivBy|_|) 3`) are supported.
 
 ## 3. Traits (replacing interfaces and SRTP)
 
@@ -96,7 +141,7 @@ let print<'a when 'a : Show> (x: 'a) = Console.println (show x)
 
 - **Dispatch:** resolved statically and monomorphized, with no vtables unless you write `dyn Show`.
 - **Operators:** `+`, `<` and `=` are traits (`Num`, `Ord`, `Eq`) with built-in impls for primitives and SIMD vectors.
-- **Derivable:** `[<Derive(Eq, Ord, Hash, Show)>]`.
+- **Built in:** `Eq`, `Ord` and `Hash` are provided structurally and automatically (§2.1). `Show` is automatic too, used for `%A`-style printing, and `impl` overrides any of them.
 - **Auto traits:** `Share` (§7) is derived structurally by the compiler, and users can't implement it by hand.
 
 ## 4. Computation expressions
@@ -277,6 +322,16 @@ There are three levels, from free to manual.
 ```
 
 - **Bootstrap language:** F#. Self-hosting is optional and late.
+- **Generics across libraries:** a compiled library ships its generic functions as serialized Core IR next to its object code, the way Rust ships `.rlib` files. Users monomorphize them at their own types. `[<Export>]` functions must be monomorphic.
+- **Cross-compilation:** `zs build --target aarch64-linux-musl`, as in Zig.
+  - LLVM emits the object for the target triple.
+  - `zig cc` links it using Zig's bundled libc headers and libraries (glibc, musl, macOS, Windows/mingw).
+  - It's found on `PATH` or vendored with the release, so no target sysroot needs to be installed.
+- **Target platforms, in priority order:**
+  1. Linux x86-64 and aarch64.
+  2. macOS aarch64.
+  3. Windows x86-64.
+  4. WASM (WASI), which is later.
 - **Backend:** textual LLVM IR passed to `clang`. Debugging is trivial because you just read the `.ll` file. Switch to the LLVM C API when compile time demands it (phase 9).
 - **Runtime:** `rt.c` (RC helpers, panic, strings and arrays, scheduler, thread pool), compiled once and linked statically.
 - **Debug info:** DWARF (`!DILocation`) so gdb and lldb step through source lines. This is not yet implemented and is planned for phase 4.
@@ -340,5 +395,17 @@ import c "raylib.h"                              // libclang, like Zig's @cImpor
 | 7 | Async syntax | general computation expressions, builders as modules | decided |
 | 8 | Threads | v1 single-threaded event loop; multi-threading in v2 | decided |
 | 9 | Effect handlers | designed now (§6.1), built in v3; one-shot, evidence passing | decided |
-| 10 | Float semantics | strict IEEE; `[<FastMath>]` opt-in per function | **open** |
-| 11 | SIMD API | portable `f32x8`-style value types + target intrinsics | **open** |
+| 10 | Float semantics | strict IEEE; `[<FastMath>]` opt-in per function | default |
+| 11 | SIMD API | portable `f32x8`-style value types + target intrinsics | default |
+| 12 | Zig traits adopted | built-in cross-compilation via `zig cc`. Not adopted: explicit allocators, no-hidden-allocation, comptime | decided |
+| 13 | Members / dot methods | yes; type-directed, no inheritance or overloading | decided |
+| 14 | Equality / comparison | automatic and structural, opt-out attributes | decided |
+| 15 | Units of measure | yes, erased, Kennedy unification | decided |
+| 16 | Active patterns | yes: total, partial, parameterised | decided |
+| 17 | `[ ]` literal | F# immutable cons list; `[\| \|]` is an array | decided |
+| 18 | Panics | abort with backtrace, never unwind, can't be caught | decided |
+| 19 | Strings | UTF-8; `Length` is bytes; iteration over chars | default |
+| 20 | Generics across libraries | ship Core IR, monomorphize at the user | default |
+| 21 | Target order | Linux x64/arm64, macOS arm64, Windows x64, WASM | default |
+
+"Default" means chosen by me and open to change until the phase that implements it begins.
