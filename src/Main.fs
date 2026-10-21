@@ -100,8 +100,8 @@ let main argv =
                 status <- 1
 
         status
-    | [ "lsp" ] -> Lsp.serve ()
-    | [ "mcp" ] -> Mcp.serve ()
+    | "lsp" :: _ -> Lsp.serve () // editors may add flags such as --stdio
+    | "mcp" :: _ -> Mcp.serve ()
     | "run" :: src :: rest ->
         let exe = Path.Combine(Path.GetTempPath(), "zs-" + Guid.NewGuid().ToString("N"))
 

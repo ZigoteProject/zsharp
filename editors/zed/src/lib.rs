@@ -31,8 +31,10 @@ impl zed::Extension for ZSharp {
                     .to_string()
             })?;
 
+        // settings with a path but no arguments give an empty list: still `zs lsp`
         let args = binary
             .and_then(|b| b.arguments)
+            .filter(|a| !a.is_empty())
             .unwrap_or_else(|| vec!["lsp".to_string()]);
 
         Ok(zed::Command {
@@ -55,6 +57,7 @@ impl zed::Extension for ZSharp {
             args: command
                 .as_ref()
                 .and_then(|c| c.arguments.clone())
+                .filter(|a| !a.is_empty())
                 .unwrap_or_else(|| vec!["mcp".to_string()]),
             env: Vec::new(),
         })
