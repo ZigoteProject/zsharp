@@ -101,23 +101,38 @@ bool tree_sitter_zsharp_external_scanner_scan(void *payload, TSLexer *lexer, con
         }
     }
 
-    if (!at_line_start || recovering) return false;
+    if (recovering) return false;
 
-    // a line starting with |> or an infix custom operator (>>=, <|>, .>>) continues the previous one
-    if (is_op_char(lexer->lookahead)) {
-        char run[16];
-        int n = 0;
-        while (n < 15 && is_op_char(lexer->lookahead)) {
-            char c = (char)lexer->lookahead;
-            skip(lexer);
-            if ((c == '$' && lexer->lookahead == '"') || (c == '/' && lexer->lookahead == '/')) break; // $"…", //
-            run[n++] = c;
-        }
-        run[n] = 0;
-        // a prefix operator (! but not !=, or ~) starts an expression instead
-        bool prefix = (run[0] == '!' && run[1] != '=') || run[0] == '~';
-        if ((n >= 2 && run[0] == '|' && run[1] == '>') || (is_custom_operator(run) && !prefix)) return false;
+    // the operator characters coming next (|] is a closer)
+    char run[16];
+    int n = 0;
+    bool closer = lexer->lookahead == ')' || lexer->lookahead == ']' || lexer->lookahead == '}';
+    while (!closer && n < 15 && is_op_char(lexer->lookahead)) {
+        char c = (char)lexer->lookahead;
+        skip(lexer);
+        if ((c == '$' && lexer->lookahead == '"') || (c == '/' && lexer->lookahead == '/')) break; // $"…", //
+        if (c == '|' && n == 0 && lexer->lookahead == ']') closer = true;
+        run[n++] = c;
     }
+    run[n] = 0;
+
+    // a closing bracket ends the blocks opened inside it, as in the compiler: `(fun x ->`, the
+    // body on deeper lines, then `)`
+    if (closer) {
+        if (valid[DEDENT] && s->count > 1) {
+            s->count--;
+            lexer->result_symbol = DEDENT;
+            return true;
+        }
+        return false;
+    }
+
+    if (!at_line_start) return false;
+
+    // a line starting with |> or an infix custom operator (>>=, <|>, .>>) continues the
+    // previous one; a prefix operator (! but not !=, or ~) starts an expression instead
+    bool prefix = (run[0] == '!' && run[1] != '=') || run[0] == '~';
+    if ((n >= 2 && run[0] == '|' && run[1] == '>') || (is_custom_operator(run) && !prefix)) return false;
 
     uint16_t current = s->indents[s->count - 1];
 

@@ -88,6 +88,7 @@ let sumTo n =                            // imperative code is fine; mutation st
 - **Data:** tuples, records (`{ p with x = 1.0 }`), unions; library types `option`, `result`, `list`, `array`, `Buffer`, `ref`, `Map`, `Set`, `HashMap`.
 - **Functions:**
   - Curried, with closures (`fun x -> …`), `|>`, `>>` and partial application.
+  - **Blocks inside brackets:** inside a bracket, a line ending in `->` (or `then`, `else`, `do`) and deeper lines after it open a block, as at the top level. So `xs |> List.map (fun x ->` can be followed by a multi-line body, and `Parser (fun cs ->` by a `match`. The block ends at the bracket's closer or at a line left of it.
   - **Custom operators:** `let (>>=) r f = …` defines one, and `(op)` is the function (`(+)` too). Precedence comes from the first character after any dots, as in F#: `|>`, `>>`, the comparisons and operators starting with `< > = | & $ !` share one level above `&&`; `@ ^` group like `::`, `+ -` like `+`, `* / %` like `*`, and `**` is right-associative. Operators starting with `!` (but not `!=`) or `~` are prefix: `!r` binds tighter than application.
   - Known calls pass all arguments at once, so currying costs nothing at run time.
   - Tail calls: a call to itself becomes a loop, and other tail calls with the same signature use LLVM `musttail`. Recursion in tail position runs in constant stack.

@@ -78,10 +78,15 @@ let format (src: string) : Result<string, string> =
     // each code line: its indentation level and its tokens with their text
     let code = Collections.Generic.Dictionary<int, int * (Token * string) list>()
     let mutable layout = 0
-    let mutable brackets = 0
     let mutable current = -1
     let mutable lineToks = []
     let mutable lineLevel = 0
+    let mutable lastLine = 0
+    // each open bracket: the line it opened on, whether a block opened inside it yet, and
+    // whether that block took the bracket's level, so `(fun x ->` with its body below is one
+    // level in, not two
+    let opened = Collections.Generic.Stack<int * bool ref * bool ref>()
+    let mutable absorbed = 0
 
     let flush () =
         if current > 0 then
@@ -91,7 +96,18 @@ let format (src: string) : Result<string, string> =
 
     for t in toks do
         match t.tok with
-        | KIndent -> layout <- layout + 1
+        | KIndent ->
+            layout <- layout + 1
+
+            if opened.Count > 0 then
+                let line, framed, took = opened.Peek()
+
+                if not framed.Value then
+                    framed.Value <- true
+
+                    if line = lastLine then
+                        took.Value <- true
+                        absorbed <- absorbed + 1
         | KDedent -> layout <- layout - 1
         | _ ->
             match textOf lines t with
@@ -100,15 +116,27 @@ let format (src: string) : Result<string, string> =
                 if t.line <> current then
                     flush ()
                     current <- t.line
-                    let closing = closers.Contains(symText t.tok)
-                    lineLevel <- layout + brackets - (if closing && brackets > 0 then 1 else 0)
+
+                    // a closer lines up with its opener's line, unless a block took its level
+                    let closesOwnLevel =
+                        closers.Contains(symText t.tok)
+                        && opened.Count > 0
+                        && (let _, _, took = opened.Peek() in not took.Value)
+
+                    lineLevel <- layout + opened.Count - absorbed - (if closesOwnLevel then 1 else 0)
 
                 lineToks <- (t, text) :: lineToks
+                lastLine <- t.line
 
                 let s = symText t.tok
 
-                if openers.Contains s then brackets <- brackets + 1
-                elif closers.Contains s then brackets <- max 0 (brackets - 1)
+                if openers.Contains s then
+                    opened.Push((t.line, ref false, ref false))
+                elif closers.Contains s && opened.Count > 0 then
+                    let _, _, took = opened.Pop()
+
+                    if took.Value then
+                        absorbed <- absorbed - 1
 
     flush ()
 

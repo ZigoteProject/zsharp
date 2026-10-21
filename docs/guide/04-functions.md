@@ -50,6 +50,24 @@ let main () =
 42 35 HI!
 ```
 
+**Multi-line lambdas:** a lambda's body can take several lines, inside parentheses too. Put it on the lines below `fun x ->`, one level in; the `)` after its last line ends it. A `match` or an `if` inside works the same way.
+
+```zsharp
+let main () =
+  let labels =
+    [ 1; 2; 3 ]
+    |> List.map (fun x ->
+      let square = x * x
+      if square > 4 then $"{x}: big"
+      else $"{x}: small")
+  println $"{labels}"
+  0
+```
+
+```text
+[1: small; 2: small; 3: big]
+```
+
 ## Custom operators
 
 **Defining one:** `let (>>=) r f = …` defines an operator, a function with a symbolic name.

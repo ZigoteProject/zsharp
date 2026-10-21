@@ -298,7 +298,9 @@ let private unescapeAt ln (line: string) (i: int) : int * int =
         | _ -> fail ln (sprintf "\\u{%s} is not a Unicode scalar value" hex)
     | c -> fail ln (sprintf "unknown escape '\\%c'" c)
 
-/// Offside rule: emits KIndent / KDedent / KNewline at line starts outside brackets.
+/// Offside rule: emits KIndent / KDedent / KNewline at line starts outside brackets. Inside one,
+/// a line ending in -> (or then, else, do) and a deeper line after it open a block there too:
+/// `(fun x ->` with its body below; such blocks end at a line left of them or at the closer.
 /// A line starting with '|>' continues the previous one; a new line inside '{ }' or '[ ]' acts as ';'.
 /// `Upper.name` lexes as one qualified identifier (List.map, Array.length).
 /// Comments seen by the last lexComments call: (line, column, text).
@@ -319,6 +321,9 @@ and private lexWith (src: string) (keepComments: bool) : Token[] =
     let indents = Stack<int>()
     indents.Push 0
     let brackets = Stack<char>()
+    // per bracket: the indentation of the blocks open inside it (empty while there are none)
+    let frames = Stack<Stack<int>>()
+    let mutable lastIndent = 0 // of the last line with code
     let mutable first = true
     let lines = src.Replace("\r\n", "\n").Split '\n'
 
@@ -363,16 +368,45 @@ and private lexWith (src: string) (keepComments: bool) : Token[] =
                     fail ln "inconsistent indentation"
 
                 add KNewline
-        elif
-            not blank
-            && brackets.Count > 0
-            && (brackets.Peek() = '{' || brackets.Peek() = '[')
-            && not (rest.StartsWith "}" || rest.StartsWith "]" || rest.StartsWith "|]")
-        then
-            match toks[toks.Count - 1].tok with
-            | KSym(";" | "{" | "[" | "[|")
-            | KKw "with" -> ()
-            | _ -> add (KSym ";")
+        elif not blank && brackets.Count > 0 && not (continuesLine rest) then
+            let frame = frames.Peek()
+            let closer = rest.StartsWith ")" || rest.StartsWith "}" || rest.StartsWith "]" || rest.StartsWith "|]"
+
+            if not closer then
+                let opensBlock =
+                    match toks[toks.Count - 1].tok with
+                    | KSym "->"
+                    | KKw("then" | "else" | "do") -> true
+                    | _ -> false
+
+                // a block inside the bracket, as at the top level: (fun x -> and a deeper line
+                if frame.Count = 0 && opensBlock && i > lastIndent then
+                    frame.Push i
+                    add KIndent
+                elif frame.Count > 0 then
+                    if i > frame.Peek() then
+                        frame.Push i
+                        add KIndent
+                    else
+                        while frame.Count > 0 && i < frame.Peek() do
+                            frame.Pop() |> ignore
+                            add KDedent
+
+                        if frame.Count > 0 then
+                            if i <> frame.Peek() then
+                                fail ln "inconsistent indentation"
+
+                            add KNewline
+
+                // outside such blocks, a new line inside { } or [ ] separates items
+                if frame.Count = 0 && (brackets.Peek() = '{' || brackets.Peek() = '[') then
+                    match toks[toks.Count - 1].tok with
+                    | KSym(";" | "{" | "[" | "[|")
+                    | KKw "with" -> ()
+                    | _ -> add (KSym ";")
+
+        if not blank then
+            lastIndent <- i
 
         while i < line.Length do
             let c = line[i]
@@ -576,14 +610,23 @@ and private lexWith (src: string) (keepComments: bool) : Token[] =
                 match s with
                 | "("
                 | "{"
-                | "[" -> brackets.Push s[0]
+                | "[" ->
+                    brackets.Push s[0]
+                    frames.Push(Stack())
                 | "[|"
-                | "[<" -> brackets.Push '('
+                | "[<" ->
+                    brackets.Push '('
+                    frames.Push(Stack())
                 | ")"
                 | "}"
                 | "]"
                 | "|]"
-                | ">]" when brackets.Count > 0 -> brackets.Pop() |> ignore
+                | ">]" when brackets.Count > 0 ->
+                    // the blocks opened inside the bracket end with it
+                    for _ in 1 .. frames.Pop().Count do
+                        add KDedent
+
+                    brackets.Pop() |> ignore
                 | _ -> ()
 
                 i <- i + s.Length
