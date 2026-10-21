@@ -152,6 +152,9 @@ let check (decls: (int * Decl) list) : Program =
     let types = Dictionary<string, TypeInfo>()
     let ctors = Dictionary<string, string * int>() // constructor -> union, tag
     let fieldOwner = Dictionary<string, string>() // field -> last record declaring it
+    let records = ResizeArray<string>() // record types in declaration order
+    let recordDefaults = Dictionary<string, Expr option list>() // record -> default per field
+    let ctorFieldNames = Dictionary<string, string option list>() // constructor -> field names
     let globals = Dictionary<string, Global>()
     let externs = Dictionary<string, ExternSig>()
     let funs = ResizeArray<FunDef>()
@@ -164,6 +167,8 @@ let check (decls: (int * Decl) list) : Program =
 
     ctors["[]"] <- ("list", 0)
     ctors["::"] <- ("list", 1)
+    ctorFieldNames["[]"] <- []
+    ctorFieldNames["::"] <- [ Some "head"; Some "tail" ]
 
     let uniq (x: string) =
         counter.Value <- counter.Value + 1
@@ -303,9 +308,23 @@ let check (decls: (int * Decl) list) : Program =
             let fields = caseFields u tag targs
 
             let subs =
-                ctorArgs c (Option.toList arg) fields (function
-                    | PTuple ps -> Some ps
-                    | _ -> None) (Some PWild)
+                match arg with
+                | Some(PNamed named) ->
+                    let names = ctorFieldNames[c]
+
+                    for n, _ in named do
+                        if not (List.contains (Some n) names) then
+                            fail 0 (sprintf "constructor '%s' has no field '%s'" c n)
+
+                    names
+                    |> List.map (fun n ->
+                        match named |> List.tryFind (fun (m, _) -> Some m = n) with
+                        | Some(_, p) -> p
+                        | None -> PWild)
+                | _ ->
+                    ctorArgs c (Option.toList arg) fields (function
+                        | PTuple ps -> Some ps
+                        | _ -> None) (Some PWild)
 
             CPCtor(u, tag, List.map2 (pat names) subs fields)
         | PIdent(x, None) -> CPVar(name x, ty)
@@ -395,7 +414,10 @@ let check (decls: (int * Decl) list) : Program =
             let cr = infer (env.Add(name, self)) depth rest
             mk (CLetFun(self.u, isRec, pars |> List.map (fun (_, u, t) -> u, t), cb, cr)) cr.ty
         | Let(PIdent(x, None), ann, v, rest) when not (ctors.ContainsKey x) ->
-            let cv = inf v
+            let cv =
+                match ann with
+                | Some a -> inferHint env depth (toTy None a) v
+                | None -> inf v
             ann |> Option.iter (fun a -> expect (sprintf "value of '%s'" x) (toTy None a) cv.ty)
 
             let l =
@@ -549,15 +571,7 @@ let check (decls: (int * Decl) list) : Program =
         | Tuple xs ->
             let cs = List.map inf xs
             mk (CTuple cs) (TTuple(cs |> List.map (fun c -> c.ty)))
-        | RecordLit fields ->
-            let rname = recordOf (fresh None) (fst fields.Head)
-            let missing = fieldsOf rname |> List.filter (fun (f, _) -> not (List.exists (fst >> (=) f) fields))
-
-            if not missing.IsEmpty then
-                fail 0 (sprintf "record '%s' is missing field '%s'" rname (fst missing.Head))
-
-            let _, targs = instType rname
-            buildRecord env depth rname targs fields (fun _ -> failwith "unreachable")
+        | RecordLit fields -> recordLit env depth None fields
         | Update(r, fields) ->
             let cr = inf r
             let rname = recordOf cr.ty (fst fields.Head)
@@ -567,7 +581,7 @@ let check (decls: (int * Decl) list) : Program =
             let defs = fieldsOf rname
 
             let built =
-                buildRecord env depth rname targs fields (fun i ->
+                buildRecord env depth rname targs fields (fun i _ ->
                     mk (CField(mk (CLocal tmp) cr.ty, i)) (substGen targs (snd defs[i])))
 
             mk (CLet(tmp, cr, built)) built.ty
@@ -680,7 +694,10 @@ let check (decls: (int * Decl) list) : Program =
         let cargs =
             args
             |> List.mapi (fun i a ->
-                let ca = infer env depth a
+                let ca =
+                    match prune t.Value with
+                    | TFun(p, _) -> inferHint env depth p a
+                    | _ -> infer env depth a
 
                 let what =
                     match name with
@@ -756,15 +773,45 @@ let check (decls: (int * Decl) list) : Program =
         let uty, targs = instType u
         let fields = caseFields u tag targs
 
+        let isNamed a =
+            match a with
+            | Bin("=", Var n, _) -> List.contains (Some n) ctorFieldNames[c]
+            | _ -> false
+
+        let named =
+            match args with
+            | [ a ] when isNamed a -> Some [ a ]
+            | [ Tuple xs ] when List.forall isNamed xs -> Some xs
+            | _ -> None
+
         let args =
-            ctorArgs c args fields (function
-                | Tuple xs -> Some xs
-                | _ -> None) None
+            match named with
+            | Some xs ->
+                // Circle(radius = 2.0): every field by name, in any order
+                let given = xs |> List.map (function
+                    | Bin(_, Var n, v) -> n, v
+                    | _ -> failwith "unreachable")
+
+                if (given |> List.map fst |> List.distinct).Length <> given.Length then
+                    fail 0 (sprintf "a field of '%s' is given twice" c)
+
+                ctorFieldNames[c]
+                |> List.map (fun n ->
+                    match given |> List.tryFind (fun (m, _) -> Some m = n) with
+                    | Some(_, v) -> v
+                    | None ->
+                        match n with
+                        | Some n -> fail 0 (sprintf "constructor '%s' is missing field '%s'" c n)
+                        | None -> fail 0 (sprintf "constructor '%s' has unnamed fields; pass them by position" c))
+            | None ->
+                ctorArgs c args fields (function
+                    | Tuple xs -> Some xs
+                    | _ -> None) None
 
         let cargs =
             List.map2
                 (fun a ft ->
-                    let ca = infer env depth a
+                    let ca = inferHint env depth ft a
                     expect (sprintf "argument of '%s'" c) ft ca.ty
                     ca)
                 args
@@ -772,9 +819,69 @@ let check (decls: (int * Decl) list) : Program =
 
         mk (CCtor(u, tag, cargs)) uty
 
-    /// Binds each field expression to a temporary in source order (preserving evaluation
-    /// order), then builds the record from them in declaration order.
-    and buildRecord env depth rname targs (fields: (string * Expr) list) (fallback: int -> CExpr) : CExpr =
+    /// Like infer, but a record literal may use the expected type to pick its record.
+    and inferHint env depth (hint: Ty) (e: Expr) : CExpr =
+        match e with
+        | At(ln, inner) ->
+            try
+                let c = inferHint env depth hint inner
+                mk (CLine(ln, c)) c.ty
+            with CompileError(0, msg) ->
+                fail ln msg
+        | RecordLit fields -> recordLit env depth (Some hint) fields
+        | _ -> infer env depth e
+
+    /// The record a literal builds: the expected type if it is a record; otherwise the only
+    /// record whose fields fit (all given fields exist, all missing ones have defaults).
+    and recordLit env depth (hint: Ty option) (fields: (string * Expr) list) : CExpr =
+        let given = fields |> List.map fst
+
+        let fits r =
+            let defs = List.zip (fieldsOf r) recordDefaults[r]
+
+            given |> List.forall (fun f -> defs |> List.exists (fun ((g, _), _) -> g = f))
+            && defs |> List.forall (fun ((g, _), d) -> d.IsSome || List.contains g given)
+
+        let rname =
+            match hint |> Option.map prune with
+            | Some(TCon(n, _)) when records.Contains n -> n
+            | _ ->
+                match records |> Seq.filter fits |> List.ofSeq with
+                | [ r ] -> r
+                | [] -> recordOf (fresh None) given.Head // the precise error comes from buildRecord
+                | many ->
+                    let exact = many |> List.filter (fun r -> (fieldsOf r).Length = given.Length)
+
+                    if exact.IsEmpty then
+                        fail 0 (sprintf "record literal could be any of %s; add a type annotation" (String.concat ", " many))
+                    else
+                        List.last exact
+
+        let rty, targs = instType rname
+        let defaults = recordDefaults[rname]
+
+        let built =
+            buildRecord env depth rname targs fields (fun i scope ->
+                let f, ft = List.item i (fieldsOf rname)
+                let ft = substGen targs ft
+
+                match defaults[i] with
+                | Some d ->
+                    let ce = inferHint scope 0 ft d
+                    expect (sprintf "default of field '%s'" f) ft ce.ty
+                    ce
+                | None -> fail 0 (sprintf "record '%s' is missing field '%s'" rname f))
+
+        match hint with
+        | Some h -> expect "record literal" h rty
+        | None -> ()
+
+        built
+
+    /// Binds each given field to a temporary in source order (preserving evaluation order),
+    /// then each missing field, in declaration order, to fallback i scope, where scope holds
+    /// the fields declared before it. Builds the record from the temporaries.
+    and buildRecord env depth rname targs (fields: (string * Expr) list) (fallback: int -> Map<string, Local> -> CExpr) : CExpr =
         let defs = fieldsOf rname
 
         let named =
@@ -783,24 +890,43 @@ let check (decls: (int * Decl) list) : Program =
                 match defs |> List.tryFindIndex (fst >> (=) f) with
                 | None -> fail 0 (sprintf "record '%s' has no field '%s'" rname f)
                 | Some i ->
-                    let ce = infer env depth e
-                    expect (sprintf "field '%s'" f) (substGen targs (snd defs[i])) ce.ty
+                    let ft = substGen targs (snd defs[i])
+                    let ce = inferHint env depth ft e
+                    expect (sprintf "field '%s'" f) ft ce.ty
                     f, ce, uniq "$f")
 
         if (named |> List.map (fun (f, _, _) -> f) |> List.distinct).Length <> named.Length then
             fail 0 "a field is given twice"
 
-        let body =
-            defs
-            |> List.mapi (fun i (f, ft) ->
-                match named |> List.tryFind (fun (g, _, _) -> g = f) with
-                | Some(_, ce, tmp) -> mk (CLocal tmp) ce.ty
-                | None -> fallback i)
+        let mutable scope = Map.empty
+        let filled = ResizeArray()
 
-        List.foldBack
-            (fun (_, ce, tmp) acc -> mk (CLet(tmp, ce, acc)) acc.ty)
-            named
-            (mk (CTuple body) (TCon(rname, targs)))
+        let temps =
+            defs
+            |> List.mapi (fun i (f, _) ->
+                let tmp, ty =
+                    match named |> List.tryFind (fun (g, _, _) -> g = f) with
+                    | Some(_, ce, tmp) -> tmp, ce.ty
+                    | None ->
+                        let ce = fallback i scope
+                        let tmp = uniq "$f"
+                        filled.Add(tmp, ce)
+                        tmp, ce.ty
+
+                scope <-
+                    scope.Add(
+                        f,
+                        { u = tmp
+                          ty = ty
+                          mut = false
+                          depth = 0 }
+                    )
+
+                mk (CLocal tmp) ty)
+
+        let body = mk (CTuple temps) (TCon(rname, targs))
+        let body = List.foldBack (fun (tmp, ce: CExpr) acc -> mk (CLet(tmp, ce, acc)) acc.ty) (List.ofSeq filled) body
+        List.foldBack (fun (_, ce, tmp) acc -> mk (CLet(tmp, ce, acc)) acc.ty) named body
 
     for ln, d in decls do
         try
@@ -815,7 +941,7 @@ let check (decls: (int * Decl) list) : Program =
 
                 match body with
                 | RecordTy fields ->
-                    let fs = fields |> List.map (fun (f, st) -> f, tt st)
+                    let fs = fields |> List.map (fun (f, st, _) -> f, tt st)
 
                     let rec contains t =
                         match t with
@@ -830,20 +956,23 @@ let check (decls: (int * Decl) list) : Program =
                         fail 0 "duplicate field name"
 
                     types[name] <- { npars = tps.Length; def = RecordDef fs }
+                    records.Add name
+                    recordDefaults[name] <- fields |> List.map (fun (_, _, d) -> d)
 
                     for f, _ in fs do
                         fieldOwner[f] <- name
                 | UnionTy cases ->
                     types[name] <-
                         { npars = tps.Length
-                          def = UnionDef(cases |> List.map (fun (c, sts) -> c, List.map tt sts)) }
+                          def = UnionDef(cases |> List.map (fun (c, fs) -> c, fs |> List.map (snd >> tt))) }
 
                     cases
-                    |> List.iteri (fun i (c, _) ->
+                    |> List.iteri (fun i (c, fs) ->
                         if ctors.ContainsKey c then
                             fail 0 (sprintf "constructor '%s' is already defined" c)
 
-                        ctors[c] <- (name, i))
+                        ctors[c] <- (name, i)
+                        ctorFieldNames[c] <- List.map fst fs)
             | Extern(name, args, variadic, ret) ->
                 if externs.ContainsKey name || globals.ContainsKey name then
                     fail 0 (sprintf "'%s' is already defined" name)
@@ -889,7 +1018,7 @@ let check (decls: (int * Decl) list) : Program =
                             ))
                         Map.empty
 
-                let cb = infer env 0 body
+                let cb = inferHint env 0 rty body
                 expect (sprintf "result of '%s'" name) rty cb.ty
 
                 if name = "main" then

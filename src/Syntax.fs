@@ -25,6 +25,7 @@ type Pat =
     | PTuple of Pat list
     | POr of Pat * Pat
     | PAs of Pat * string
+    | PNamed of (string * Pat) list // constructor fields by name: Rect(h = h)
 
 type Expr =
     | Lit of int64
@@ -59,8 +60,8 @@ type Expr =
 and Param = Pat * SType option
 
 type TypeBody =
-    | RecordTy of (string * SType) list
-    | UnionTy of (string * SType list) list
+    | RecordTy of (string * SType * Expr option) list // field, type, default
+    | UnionTy of (string * (string option * SType) list) list // case, (field name, type)
 
 type Decl =
     | Extern of name: string * args: SType list * variadic: bool * ret: SType
@@ -532,6 +533,23 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
         | _ when isSym ")" ->
             advance ()
             PUnit
+        | _ when (match peek (), peek2 () with
+                  | KId _, KSym "=" -> true
+                  | _ -> false) ->
+            let fields = ResizeArray()
+
+            while not (isSym ")") do
+                let f = ident ()
+                expect (KSym "=") "'='"
+                fields.Add(f, pattern ())
+
+                if isSym "," || isSym ";" then
+                    advance ()
+                elif not (isSym ")") then
+                    err "',' or ')'"
+
+            advance ()
+            PNamed(List.ofSeq fields)
         | _ ->
             let p = pattern ()
             expect (KSym ")") "')'"
@@ -941,7 +959,16 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
             while go do
                 let f = ident ()
                 expect (KSym ":") "':'"
-                fields.Add(f, ty ())
+                let t = ty ()
+
+                let def =
+                    if isSym "=" then
+                        advance ()
+                        Some(expr ())
+                    else
+                        None
+
+                fields.Add(f, t, def)
 
                 if isSym ";" then
                     advance ()
@@ -954,12 +981,11 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
             // payload field: optional 'name:' then a type; '*' separates fields
             let field () =
                 match peek (), peek2 () with
-                | KId _, KSym ":" ->
+                | KId n, KSym ":" ->
                     advance ()
                     advance ()
-                | _ -> ()
-
-                tyAtom ()
+                    Some n, tyAtom ()
+                | _ -> None, tyAtom ()
 
             let cases = ResizeArray()
             nextBar () |> ignore
