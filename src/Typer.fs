@@ -296,6 +296,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                   name = name
                   hty = t
                   constraints = ""
+                  decl = false
                   inlay = inlay }
         | _ -> ()
 
@@ -2051,6 +2052,9 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                     reraise ()
 
                 record d name globals[name].ty false
+
+                if hovers.Count > 0 && hovers[hovers.Count - 1].name = name then
+                    hovers[hovers.Count - 1] <- { hovers[hovers.Count - 1] with decl = true }
 
                 // a generic function's hover shows what its type variables need
                 let g = globals[name]

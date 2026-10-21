@@ -9,6 +9,7 @@ open System.Text
 open System.Text.Json.Nodes
 open Syntax
 open Core
+open Rpc
 
 let private input = Console.OpenStandardInput()
 let private output = Console.OpenStandardOutput()
@@ -57,34 +58,11 @@ let private send (msg: JsonNode) =
     output.Write(body, 0, body.Length)
     output.Flush()
 
-let private obj (kvs: (string * JsonNode) list) : JsonNode =
-    let o = JsonObject()
-
-    for k, v in kvs do
-        o[k] <- v
-
-    o
-
-let private str (s: string) : JsonNode = JsonValue.Create s
-let private num (n: int) : JsonNode = JsonValue.Create n
-let private bool (b: bool) : JsonNode = JsonValue.Create b
-
-let private arr (xs: JsonNode seq) : JsonNode =
-    let a = JsonArray()
-
-    for x in xs do
-        a.Add x
-
-    a
-
 let private respond (id: JsonNode) (result: JsonNode) =
     send (obj [ "jsonrpc", str "2.0"; "id", id.DeepClone(); "result", result ])
 
 let private notify (meth: string) (ps: JsonNode) =
     send (obj [ "jsonrpc", str "2.0"; "method", str meth; "params", ps ])
-
-let private getStr (n: JsonNode) = n.GetValue<string>()
-let private getInt (n: JsonNode) = n.GetValue<int>()
 
 let private pos (line: int) (ch: int) = obj [ "line", num line; "character", num ch ]
 let private range (l1, c1) (l2, c2) = obj [ "start", pos l1 c1; "end", pos l2 c2 ]

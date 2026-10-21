@@ -41,6 +41,11 @@ actual=$(tests/lsp/session.sh bin/zs 2>&1); expected=$(cat tests/lsp/session.out
 if [ "$actual" == "$expected" ]; then echo "ok   tests/lsp/session.sh"
 else echo "FAIL tests/lsp/session.sh"; diff <(echo "$expected") <(echo "$actual") | head -20; fail=1; fi
 
+# the MCP server: a scripted session (tests/mcp/session.sh) against its expected transcript
+actual=$(tests/mcp/session.sh bin/zs 2>&1); expected=$(cat tests/mcp/session.out)
+if [ "$actual" == "$expected" ]; then echo "ok   tests/mcp/session.sh"
+else echo "FAIL tests/mcp/session.sh"; diff <(echo "$expected") <(echo "$actual") | head -20; fail=1; fi
+
 # editor support: the Zed extension's queries are copies of the grammar's; the grammar parses
 # every program without errors (needs the tree-sitter CLI and a C compiler)
 if diff -q <(cat editors/tree-sitter-zsharp/queries/*.scm) <(cat editors/zed/languages/zsharp/*.scm) >/dev/null; then

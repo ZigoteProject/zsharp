@@ -427,6 +427,7 @@ and Hover =
       name: string
       hty: Ty
       constraints: string // "'a : Add" for generic functions
+      decl: bool // a top-level function's name
       inlay: bool }
 
 /// [<Export "cname">]: a C entry point for a monomorphic function.
