@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <string.h>
 
 // Every heap object starts with an int64 reference count: 1+ = live, 0 = static (never freed).
@@ -17,25 +18,39 @@ typedef struct {
 
 static int64_t live; // objects currently allocated, reported at exit when ZS_LEAKCHECK is set
 
+// A panic stops the program at once (no cleanup) with exit status 134, like abort() but without
+// a core dump, so system crash reporters don't flag every panic. ZS_ABORT=1 aborts for real
+// (a core file for a debugger).
+static _Noreturn void stop(void) {
+    if (getenv("ZS_ABORT")) abort();
+    _exit(134);
+}
+
 _Noreturn void zs_panic_c(const char *msg) {
     fflush(stdout);
     fprintf(stderr, "panic: %s\n", msg);
     const char *bt = getenv("ZS_BACKTRACE");
-    if (bt && strcmp(bt, "0") == 0) abort();
+    if (bt && strcmp(bt, "0") == 0) stop();
     void *frames[64];
     int n = backtrace(frames, 64);
     backtrace_symbols_fd(frames + 1, n - 1, 2);
-    abort();
+    stop();
 }
 
 _Noreturn void zs_panic(zs_str *msg) { zs_panic_c(msg->data); }
+
+static int64_t allocations;
 
 void *zs_alloc(int64_t size) {
     void *p = malloc((size_t)size);
     if (!p) zs_panic_c("out of memory");
     live++;
+    allocations++;
     return p;
 }
+
+/// Runtime.allocations (): heap objects allocated so far (tests check copy-on-write with it).
+int64_t zs_allocations(void) { return allocations; }
 
 void zs_free(void *p) {
     live--;

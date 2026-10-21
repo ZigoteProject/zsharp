@@ -57,7 +57,15 @@ let main argv =
             | _ -> Path.GetFileNameWithoutExtension src
 
         let isLib = List.contains "--lib" rest
-        if build src out (List.contains "--emit-llvm" rest) (List.contains "--sanitize" rest) isLib then 0 else 1
+        let ok = build src out (List.contains "--emit-llvm" rest) (List.contains "--sanitize" rest) isLib
+
+        if List.contains "--time" rest then
+            for phase, ms in timings do
+                eprintfn "%-20s %8.1f ms" phase ms
+
+            eprintfn "%-20s %8.1f ms" "total" (Seq.sumBy snd timings)
+
+        if ok then 0 else 1
     | [ "check"; src ] ->
         // type-check only: every error, nothing built
         try
@@ -166,5 +174,5 @@ let main argv =
             Rpc.input <- new Rpc.PrefixedStream([| byte first |], stdin)
             if char first = '{' then Mcp.serve () else Lsp.serve ()
     | _ ->
-        eprintfn "usage: zs build <file.zs> [-o <out>] [--lib] [--emit-llvm] [--sanitize]\n       zs run <file.zs> [--sanitize]\n       zs check <file.zs>\n       zs doc <file.zs>\n       zs fmt [--check] <files…>\n       zs lsp\n       zs mcp"
+        eprintfn "usage: zs build <file.zs> [-o <out>] [--lib] [--emit-llvm] [--sanitize] [--time]\n       zs run <file.zs> [--sanitize]\n       zs check <file.zs>\n       zs doc <file.zs>\n       zs fmt [--check] <files…>\n       zs lsp\n       zs mcp"
         2

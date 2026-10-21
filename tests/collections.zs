@@ -19,7 +19,7 @@ let main () =
   println (describe xs)
   println $"length {List.length xs}, rev head {List.head (List.rev xs)}, append {List.length (xs @ xs)}"
   println $"find {List.tryFind (fun x -> x > 5) xs |> Option.defaultValue (-1)} {Option.isNone (List.tryFind (fun x -> x > 99) xs)}"
-  let arr = Array.init 5 (fun i -> i + 1)
+  let mutable arr = Array.init 5 (fun i -> i + 1)
   arr.[0] <- 10
   println $"array sum {Array.sum arr}, len {Array.length arr}, back to list {List.sum (Array.toList arr)}"
   let words = [| "a"; "bb"; "ccc" |]
@@ -40,8 +40,8 @@ let main () =
   println $"floats {half} {int (half * 2.0)} {f32 1.5} {1.0 / 3.0}"
   let bytes = u8 250
   let less = "abc" < "abd"
-  println $"u8 {bytes + u8 10} i8 {i8 -128} cmp {less}"
-  let names = Array.ofList [ "x"; "y" ]
+  println $"u8 {Int.wrappingAdd bytes (u8 10)} i8 {i8 -128} cmp {less}"
+  let mutable names = Array.ofList [ "x"; "y" ]
   names.[1] <- names.[0] + "z"
   println $"strings {names.[0]} {names.[1]}"
   0

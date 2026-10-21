@@ -112,13 +112,13 @@ gdb, qemu-user, zig). `./dev ./test.sh` runs the suite inside it, plain `./dev` 
 libraries come after. **The surface syntax is frozen** until Phases 4 and 5 are done: no new
 syntax, only fixes. Both decisions came from the design review.
 
-### Before Phase 4: design-review fixes
-- **Arrays become copy-on-write values** (DESIGN §5): `a.[i] <- x` needs `let mutable a`, writes in place when unique, copies otherwise. Add `Buffer<'a>` for alias-visible mutation, and update the prelude and tests. This has to be done before Phase 5 builds `noalias` and reuse on top of arrays.
-- **Integer overflow traps** in every build, using LLVM's `*.with.overflow` intrinsics. Add explicit wrapping operations and `[<Wrapping>]`.
-- **Compile time is measured:** `zs build --time` reports each phase, and `./test.sh` records the totals. Today the prelude is re-checked on every build.
-- **Exit tests:**
-  - An alias test: a write through one name is invisible through another, and a unique array is updated with no copy (checked by counting allocations).
-  - `i64` overflow traps in a release build, and `Int.wrappingAdd` wraps.
+### Before Phase 4: design-review fixes (done)
+- **Arrays are copy-on-write values** (DESIGN §5): `a.[i] <- x` needs `let mutable a`, writes in place when unique and copies otherwise. `Array.set a i x` returns the changed array. `Buffer<'a>` (`Buffer.create/length/ofArray/toArray`) is the shared mutable alternative.
+- **Integer overflow traps** in every build (`llvm.*.with.overflow`; `MIN / -1` too). `Int.wrappingAdd/Sub/Mul` wrap on purpose, and the derived `Hash` uses them.
+  - Deferred: `[<Wrapping>]` on a function. The explicit operations cover it until code needs many of them.
+- **Compile time is measured:** `zs build --time` reports each phase, and `./test.sh` prints the totals for `tests/json.zs`. Parse and check dominate, since the prelude is re-checked on every build.
+- **Exit tests:** `tests/cow.zs` checks aliasing, and that a unique array is updated with zero allocations. `tests/overflow.zs` and `tests/panic_div.zs` check traps and wrapping.
+- **Panics** exit with status 134 without a core dump (`ZS_ABORT=1` restores `abort()`).
 
 ### Phase 4: C import and tooling
 - **Scope:**

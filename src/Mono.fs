@@ -31,6 +31,7 @@ let rec private concrete (inst: Ty list) t =
     | TGen i -> List.item i inst
     | TCon(n, _) when nums.Contains n -> TCon(n, []) // units of measure are erased
     | TMeas _ -> measOne
+    | TCon("Buffer", a) -> TCon("array", List.map (concrete inst) a) // same storage, shared instead of copied
     | TCon(n, a) -> TCon(n, List.map (concrete inst) a)
     | TFun(a, b) -> TFun(concrete inst a, concrete inst b)
     | TTuple ts -> TTuple(List.map (concrete inst) ts)

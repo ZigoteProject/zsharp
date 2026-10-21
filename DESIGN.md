@@ -79,7 +79,7 @@ let sumTo n =                            // imperative code is fine; mutation st
   - Supports nesting, guards, `as`, and or-patterns that bind variables.
   - A non-exhaustive match is an **error** that names a missing case. A case that can never match is also an error.
 - **Errors:** `result` with a postfix `?` that propagates the error, or a `result { }` builder (§4).
-- **Panics:** a bounds error, divide by zero, failed `assert` or explicit `panic` prints a message and backtrace, then **aborts**.
+- **Panics:** a bounds error, divide by zero, failed `assert` or explicit `panic` prints a message and backtrace, then **stops the program** at once (no unwinding, no cleanup) with exit status 134. It does not dump core, so system crash reporters stay quiet; `ZS_ABORT=1` makes it a real `abort()` for a debugger.
   - Panics can't be caught and there is no unwinding. That means no landing pads and no unwinding through C frames.
   - Recoverable errors use `result`; typed exceptions arrive with effects (§6.1).
 - **Sequences:** `[1; 2; 3]` is an immutable cons list (pattern `x :: rest`), as in F#, and `[| 1; 2 |]` is an array. Perceus reuse makes `List.map` and `filter` work in place when the list is unique.

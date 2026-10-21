@@ -200,6 +200,15 @@ let private builtins =
           b "eprintln" "eprintln" [] (f tStr tUnit) 1
           b "ref" "ref" [ kAny ] (f a (TCon("ref", [ a ]))) 1
           b "Array.create" "Array.create" [ kAny ] (f tInt (f a (TCon("array", [ a ])))) 2
+          b "Array.set" "array.update" [ kAny ] (f (TCon("array", [ a ])) (f tInt (f a (TCon("array", [ a ]))))) 3
+          b "Buffer.create" "Array.create" [ kAny ] (f tInt (f a (TCon("Buffer", [ a ])))) 2
+          b "Buffer.length" "Array.length" [ kAny ] (f (TCon("Buffer", [ a ])) tInt) 1
+          b "Buffer.ofArray" "array.copy" [ kAny ] (f (TCon("array", [ a ])) (TCon("Buffer", [ a ]))) 1
+          b "Buffer.toArray" "array.copy" [ kAny ] (f (TCon("Buffer", [ a ])) (TCon("array", [ a ]))) 1
+          b "Int.wrappingAdd" "wrap+" [ kInt ] (f a (f a a)) 2
+          b "Int.wrappingSub" "wrap-" [ kInt ] (f a (f a a)) 2
+          b "Int.wrappingMul" "wrap*" [ kInt ] (f a (f a a)) 2
+          b "Runtime.allocations" "Runtime.allocations" [] (f tUnit tInt) 1
           b "Array.length" "Array.length" [ kAny ] (f (TCon("array", [ a ])) tInt) 1 ]
         @ [ for t in Seq.append nums [ "i64"; "float"; "c_int" ] ->
                 let target =
@@ -721,11 +730,32 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                 | None -> fail 0 (sprintf "unknown name '%s'" x)
             | Index(a, i) ->
                 let ca = inf a
-                let ci = inf i
-                let cv = inf rhs
-                expect "array" (TCon("array", [ cv.ty ])) ca.ty
-                expect "array index" tInt ci.ty
-                mk (CPrim("array.set", [ ca; ci; cv ])) tUnit
+
+                match prune ca.ty, a with
+                | TCon("Buffer", _), _ ->
+                    // a Buffer is a shared reference: the write is seen through every alias
+                    let ci = inf i
+                    let cv = inf rhs
+                    expect "Buffer" (TCon("Buffer", [ cv.ty ])) ca.ty
+                    expect "index" tInt ci.ty
+                    mk (CPrim("array.set", [ ca; ci; cv ])) tUnit
+                | _, Var x when (match env.TryFind x with
+                                 | Some l -> l.mut
+                                 | None -> false) ->
+                    let l = env[x]
+
+                    if l.depth < depth then
+                        fail 0 (sprintf "mutable variable '%s' cannot be captured by a closure; use a ref cell" x)
+
+                    let ci = inf i
+                    let cv = inf rhs
+                    expect "array" (TCon("array", [ cv.ty ])) l.ty
+                    expect "array index" tInt ci.ty
+                    mk (CArraySet(l.u, ci, cv)) tUnit
+                | _ ->
+                    fail
+                        0
+                        "arrays are values: to change one, declare it with `let mutable a = …` and write `a.[i] <- x`, or use `Array.set a i x`, which returns the changed array (Buffer<'a> is the shared mutable alternative)"
             | Field(r, "Value") ->
                 let cr = inf r
                 let cv = inf rhs
@@ -767,7 +797,13 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
             let ca = inf a
             let ci = inf i
             let el = fresh kAny
-            expect "indexing" (TCon("array", [ el ])) ca.ty
+
+            let container =
+                match prune ca.ty with
+                | TCon("Buffer", _) -> "Buffer"
+                | _ -> "array"
+
+            expect "indexing" (TCon(container, [ el ])) ca.ty
             expect "array index" tInt ci.ty
             mk (CPrim("array.get", [ ca; ci ])) el
         | ArrayLit xs ->
@@ -871,8 +907,9 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
 
             let loop =
                 match prune cxs.ty with
-                | TCon("array", _) ->
-                    For("$i", Lit 0L, None, Bin("-", Call("Array.length", [ Var "$coll" ]), Lit 1L), Let(PIdent(x, None), None, Index(Var "$coll", Var "$i"), body))
+                | TCon(("array" | "Buffer") as c, _) ->
+                    let len = if c = "array" then "Array.length" else "Buffer.length"
+                    For("$i", Lit 0L, None, Bin("-", Call(len, [ Var "$coll" ]), Lit 1L), Let(PIdent(x, None), None, Index(Var "$coll", Var "$i"), body))
                 | TCon("list", _) ->
                     // a while loop over a cursor, so the body may assign outer mutable variables
                     LetMut(

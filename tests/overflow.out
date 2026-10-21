@@ -1,0 +1,5 @@
+wrapping: -9223372036854775808 144 127
+hash-style: 3875834019684261736
+fits: 9223372036854775807 0
+before
+panic: integer overflow

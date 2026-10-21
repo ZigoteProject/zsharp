@@ -109,19 +109,31 @@ let check (mainPath: string) (requireMain: bool) (collect: bool) : Core.Program 
 
 /// Source files -> typed Core -> monomorphic -> closure-converted -> RC-annotated -> LLVM IR
 /// (and a C header for [<Export>] functions). A library doesn't need `main`.
+/// Time spent in each compiler phase of the last build (zs build --time).
+let timings = ResizeArray<string * float>()
+
+let private timed (phase: string) (f: unit -> 'a) : 'a =
+    let sw = Stopwatch.StartNew()
+    let r = f ()
+    timings.Add(phase, sw.Elapsed.TotalMilliseconds)
+    r
+
 let compileProgram (mainPath: string) (isLib: bool) =
-    let prog = check mainPath (not isLib) true
+    timings.Clear()
+    let prog = timed "parse + check" (fun () -> check mainPath (not isLib) true)
 
     match prog.errors with
     | first :: _ -> Error prog.errors
     | [] ->
         let funs =
             try
-                prog |> Mono.run |> Lift.run |> Rc.run prog.types
+                let mono = timed "monomorphize" (fun () -> Mono.run prog)
+                let lifted = timed "lift closures" (fun () -> Lift.run mono)
+                timed "reference counting" (fun () -> Rc.run prog.types lifted)
             with CompileError(l, m) ->
                 raise (CompileErrorAt(mainPath, l, 0, m))
 
-        Ok(Codegen.compile prog.types prog.externs prog.exports prog.clayouts funs)
+        Ok(timed "LLVM IR" (fun () -> Codegen.compile prog.types prog.externs prog.exports prog.clayouts funs))
 
 /// Runs a program; with capture, returns its stdout and stderr too (stdin is empty).
 let exec (exe: string) (args: string list) (capture: bool) : int * string =
@@ -215,7 +227,7 @@ let build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) (isLib: 
 
                 failure
             else
-                run "clang" ([ "-O2"; "-rdynamic"; "-Wno-override-module" ] @ san @ [ ll; runtimeFile "rt.c"; "-o"; out; "-lm" ])
+                timed "clang" (fun () -> run "clang" ([ "-O2"; "-rdynamic"; "-Wno-override-module" ] @ san @ [ ll; runtimeFile "rt.c"; "-o"; out; "-lm" ]))
 
         if not emitLlvm then
             File.Delete ll
@@ -271,7 +283,16 @@ let builtinDocs =
           "String.toUpper", "`s` with ASCII letters in upper case."
           "String.toLower", "`s` with ASCII letters in lower case."
           "String.replace", "`s` with every occurrence of `old` replaced by `by`."
-          "String.ofCStr", "A Z# string copied from a C string (`const char*`)." ]
+          "String.ofCStr", "A Z# string copied from a C string (`const char*`)."
+          "Array.set", "`a` with element `i` replaced by `x`. Arrays are values: `a` itself is unchanged (it is reused in place when nothing else refers to it)."
+          "Buffer.create", "A Buffer of `n` copies of `x`. A Buffer is shared and mutable: a write is seen through every reference."
+          "Buffer.length", "The number of elements."
+          "Buffer.ofArray", "A new Buffer with the array's elements."
+          "Buffer.toArray", "An array copy of the Buffer's current elements."
+          "Int.wrappingAdd", "`a + b`, wrapping around on overflow instead of panicking."
+          "Int.wrappingSub", "`a - b`, wrapping around on overflow instead of panicking."
+          "Int.wrappingMul", "`a * b`, wrapping around on overflow instead of panicking."
+          "Runtime.allocations", "The number of heap objects allocated so far." ]
 
 /// A documented item of a source file, found by reading its declarations.
 type DocItem =

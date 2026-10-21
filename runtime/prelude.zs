@@ -86,12 +86,12 @@ derive Hash =
     | Record r ->
       let mutable h = 17
       for f in r.fields do
-        h <- h * 31 + hash f.value
+        h <- Int.wrappingAdd (Int.wrappingMul h 31) (hash f.value)
       h
     | Union c ->
       let mutable h = 17 + c.index
       for f in c.fields do
-        h <- h * 31 + hash f.value
+        h <- Int.wrappingAdd (Int.wrappingMul h 31) (hash f.value)
       h
 
 /// F#-style text for records (`{ x = 1; y = 2 }`) and unions (`Leaf`, `Some 1`, `Rect (1, 2)`).
@@ -296,7 +296,7 @@ let Result.bind f r =
 let Array.init n f =
   if n <= 0 then [||]
   else
-    let a = Array.create n (f 0)
+    let mutable a = Array.create n (f 0)
     for i in 1 .. n - 1 do
       a.[i] <- f i
     a
@@ -324,7 +324,7 @@ let Array.ofList xs =
   match xs with
   | [] -> [||]
   | x :: _ ->
-    let a = Array.create (List.length xs) x
+    let mutable a = Array.create (List.length xs) x
     let mutable cur = xs
     let mutable i = 0
     while i < Array.length a do

@@ -1,0 +1,7 @@
+value: a 1 b 9
+Array.set: a 2 c 7
+through a function: a 1 d 99
+in place: 0 allocations, last 1998
+strings: y xz
+Buffer: 5 length 3
+toArray copies: 5 6

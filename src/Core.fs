@@ -52,7 +52,9 @@ let hasBuiltinImpl (tr: string) (n: string) =
     | _ -> false
 
 /// Built-in generic type constructors and their arity.
-let builtinCons = dict [ "array", 1; "ref", 1; "callback", 1 ] // callback<F>: FFI only
+// array<T>: a copy-on-write value; Buffer<T>: the same storage as a shared mutable reference;
+// callback<F>: FFI only
+let builtinCons = dict [ "array", 1; "Buffer", 1; "ref", 1; "callback", 1 ]
 
 let typeAliases = dict [ "i64", "int"; "c_int", "i32"; "float", "f64"; "double", "f64" ]
 
@@ -262,6 +264,8 @@ and CKind =
     | CMatch of CExpr * (CPat * CExpr option * CExpr) list
     | CLetMut of string * CExpr * CExpr
     | CAssign of string * CExpr
+    /// a.[i] <- v on a `let mutable` array: in place when the array is unique, else copied first
+    | CArraySet of string * CExpr * CExpr
     | CWhile of CExpr * CExpr
     | CFor of string * CExpr * CExpr * CExpr * CExpr // var, from, step, to, body
     | CLine of int * CExpr
@@ -306,6 +310,7 @@ let mapChildren (f: CExpr -> CExpr) (k: CKind) : CKind =
     | CMatch(s, cases) -> CMatch(f s, cases |> List.map (fun (p, g, b) -> p, Option.map f g, f b))
     | CLetMut(x, v, b) -> CLetMut(x, f v, f b)
     | CAssign(x, v) -> CAssign(x, f v)
+    | CArraySet(x, i, v) -> CArraySet(x, f i, f v)
     | CWhile(c, b) -> CWhile(f c, f b)
     | CFor(x, a, s, b, body) -> CFor(x, f a, f s, f b, f body)
     | CLine(l, e) -> CLine(l, f e)
@@ -372,6 +377,7 @@ let rec refs (e: CExpr) : (string * Ty) list =
         match e.k with
         | CLocal x -> [ x, e.ty ]
         | CAssign(x, v) -> [ x, v.ty ]
+        | CArraySet(x, _, v) -> [ x, TCon("array", [ v.ty ]) ]
         | CDup(x, t, _)
         | CDrop(x, t, _)
         | CDropFields(x, t, _, _, _, _) -> [ x, t ]
@@ -443,7 +449,7 @@ and Export =
 /// Does a value of this type hold a reference count (directly or in a field)?
 let rec needsRc (types: Dictionary<string, TypeInfo>) t =
     match prune t with
-    | TCon(("string" | "array" | "ref"), _)
+    | TCon(("string" | "array" | "Buffer" | "ref"), _)
     | TFun _ -> true
     | TCon(n, args) ->
         match types.TryGetValue n with

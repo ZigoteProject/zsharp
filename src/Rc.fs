@@ -258,6 +258,10 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
                 let loop = re (mapChildren (rc Set.empty all) e.k)
                 mk (CSeq(loop, drops owned (mk CUnit tUnit))) tUnit
             | CAssign(x, v) -> re (CAssign(x, rc owned borrowed v))
+            | CArraySet(x, i, v) ->
+                match rcList owned borrowed [ i; v ] with
+                | [ i'; v' ] -> re (CArraySet(x, i', v'))
+                | _ -> failwith "unreachable"
             | CTuple xs -> re (CTuple(rcList owned borrowed xs))
             | CCtor(u, tag, xs) -> re (CCtor(u, tag, rcList owned borrowed xs))
             | CCallDirect(n, xs) -> re (CCallDirect(n, rcList owned borrowed xs))
