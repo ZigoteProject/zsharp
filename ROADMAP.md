@@ -190,6 +190,7 @@ first.
 
 **Started:**
 - **Host benchmark suite (done):** `bench/host/run.sh` runs fib, binary-trees, nbody, spectral-norm and a red-black tree in Z#, C (clang -O2), Rust, Swift, Zig and OCaml. Outputs must agree; times are best of 3, with peak memory. `./test.sh` fails when a Z# program needs more than 5% more instructions (cachegrind, deterministic) than in `bench/host/baseline.txt`.
+  - **Details:** [the report](docs/reports/host.md).
   - **First measurements** (time Z# / C): fib 1.87, binary-trees 1.30, nbody 0.93, spectral-norm 0.98, red-black tree 1.79 (4.9× the instructions).
   - `Math.sqrt` came with it: the LLVM intrinsic, one instruction where the hardware has it.
 

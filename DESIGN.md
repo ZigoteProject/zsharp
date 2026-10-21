@@ -501,7 +501,7 @@ and gives LLVM the facts it can't prove.
 
 **Performance contract:**
 - **Microcontrollers:** the suite in `bench/mcu` compares each program with its C version (same clang, same chip, under QEMU) [(results)](docs/reports/microcontrollers.md).
-- **Host (planned, phase 5):** a host suite (fib, binary-trees, nbody, spectral-norm, the red-black tree, JSON) against C, OCaml and F#. A regression of more than 5% fails the build.
+- **Host:** the suite in `bench/host` (fib, binary-trees, nbody, spectral-norm, the red-black tree) compares each program with C, Rust, Swift, Zig and OCaml [(results)](docs/reports/host.md). A regression of more than 5% in instructions fails the build. JSON and F# are planned (phase 5).
 
 ## 10. Targets
 
