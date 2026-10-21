@@ -22,6 +22,7 @@ gdb, qemu-user, zig). `./dev ./test.sh` runs the suite inside it, plain `./dev` 
 
 ```
  E1 grammar + Zed extension (now) ─ E2a LSP diagnostics/hover (after 2) ─ E2b LSP navigation/completion (after 3) ─ E3 MCP (after E2a)
+                                                                         └─ F zs fmt (after 3) ─ LSP formatting
 ```
 
 ## Done
@@ -202,11 +203,30 @@ type checker, so editor behaviour can't drift from the compiler's.
   - Signature help.
   - Rename.
   - Code actions: add the missing match cases named by the exhaustiveness checker, and add a type annotation.
-  - Formatting, once a `zs fmt` formatter exists.
+  - Formatting (`textDocument/formatting` and range formatting), using `zs fmt` (F).
 - **Zed integration:** the extension runs `zs lsp` through `language_server_command` and finds `zs` on `PATH` or from a configured path.
 - **Exit tests:**
   - A scripted LSP session (JSON-RPC over stdio, run in `./test.sh`) checks diagnostics, hover and definition results against expected JSON.
   - In Zed, a 2,000-line file shows updated diagnostics within 100 ms of a keystroke.
+
+### F: formatter (`zs fmt`)
+- **Style:** one canonical style with no configuration, like `gofmt`, `zig fmt` and `rustfmt`. The default layout follows Fantomas/F# conventions:
+  - 2-space indent.
+  - Match cases aligned under `match`.
+  - Pipelines broken one `|>` per line when they don't fit in 100 columns.
+  - Record and list literals broken one item per line, with `;` dropped at line ends.
+- **Compiler prerequisite:** a lossless syntax tree. The lexer keeps comments and blank lines as trivia attached to tokens, so formatting never drops a comment. The CLI error messages planned for Phase 4 benefit from the same spans.
+- **Commands:**
+  - `zs fmt <files…>` rewrites the files in place.
+  - `zs fmt --check` lists unformatted files and exits non-zero, for CI.
+  - `zs fmt --stdin` is for editors.
+- **Integrations:** LSP document and range formatting (E2b), Zed's format-on-save through the extension, and an MCP `format` tool (E3).
+- **Prerequisite:** Phase 3. The syntax is mostly stable after members and traits land, so the formatter doesn't have to chase it.
+- **Exit tests:** run in `./test.sh` over `tests/*.zs` and `runtime/prelude.zs`.
+  - **Idempotent:** `fmt (fmt x) = fmt x`.
+  - **Meaning-preserving:** `parse (fmt x)` equals `parse x`, ignoring positions.
+  - **Comments kept:** every comment survives.
+  - **Repository formatted:** `zs fmt --check` passes on the repository's own `.zs` files.
 
 ### E3: MCP server (`zs mcp`) for AI agents
 - **Purpose:** gives Zed's agent (and any MCP client) compiler-backed tools, so it doesn't have to guess types from text.
@@ -217,6 +237,7 @@ type checker, so editor behaviour can't drift from the compiler's.
   - `emit_llvm`
   - `docs` (search prelude and stdlib signatures)
   - `explain` (long-form help for an error message)
+  - `format` (`zs fmt` on a file or snippet)
 - **Resources:** `DESIGN.md`, `ROADMAP.md`, and the language reference once it exists.
 - **Safety:** `build`/`run` execute code. They are confined to the project directory, and Zed asks for approval before each call (tool permissions). The read-only tools never execute user code.
 - **Zed integration:** the extension registers `zs mcp` as a context server.
@@ -235,4 +256,5 @@ type checker, so editor behaviour can't drift from the compiler's.
 - **E1 can start now.** It depends only on syntax. The `./test.sh` parse check keeps it in step as the syntax grows.
 - **E2a waits for Phase 2.** Hover is only useful once inference reports real generic types. It needs source spans and error recovery first, which also improve the command-line error messages planned for Phase 4.
 - **E2b waits for Phase 3.** Most go-to-definition and completion targets (modules, members, traits) don't exist before then.
+- **F (formatter) waits for Phase 3** for the same reason, and it needs the lossless lexer first. Once it exists, `./test.sh` keeps the repository formatted.
 - **Phase 10 (effects) comes last.** It needs Task's API to be stable and opaque, and it needs Perceus (the one-shot resumption rule depends on it). DESIGN §6.1 lists what must stay true until then.

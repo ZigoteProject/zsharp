@@ -497,6 +497,7 @@ import c "raylib.h"                              // libclang, like Zig's @cImpor
 - **Highlighting:** a tree-sitter grammar (`editors/tree-sitter-zsharp`). It drives highlighting, indentation and the outline in Zed, Neovim and Helix, and code views on GitHub.
 - **Language server:** `zs lsp`. It reuses the compiler's lexer, parser and type checker, so hover types and diagnostics are exactly what the compiler reports.
 - **AI agents:** `zs mcp` exposes the same queries, plus build and run, as MCP tools.
+- **Formatting:** `zs fmt` applies one canonical, configuration-free style (Fantomas-like layout, 100 columns). It is built on a lossless syntax tree, so comments survive. It's the backend for LSP formatting and format-on-save.
 - **Zed integration:** the Zed extension (`editors/zed`) bundles the grammar and starts both servers.
 - **Compiler requirements:**
   - Source spans with columns.
@@ -538,5 +539,6 @@ Plan: ROADMAP "Editor tooling track".
 | 25 | `option` record fields | default only with explicit `= None` | decided |
 | 26 | Default expressions | any expression, evaluated at the call site, may use earlier fields/parameters | decided |
 | 27 | Union case fields | named construction and patterns; no defaults | decided |
+| 28 | Formatter | `zs fmt`, one canonical style, no configuration; lossless CST with comment trivia | decided |
 
 "Default" means chosen by me and open to change until the phase that implements it begins.
