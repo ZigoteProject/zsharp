@@ -5,6 +5,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
         dotnet-sdk-10.0 clang llvm lld compiler-rt libasan liblsan \
         valgrind gdb qemu-user qemu-system-arm-core zig raylib-devel git make which findutils diffutils \
         nodejs npm cargo rust rust-std-static-wasm32-wasip1 tree-sitter-cli \
+        swift-lang ocaml time \
     && dnf clean all
 
 ENV DOTNET_CLI_TELEMETRY_OPTOUT=1 \
