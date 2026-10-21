@@ -44,20 +44,34 @@ gdb, qemu-user, zig). `./dev ./test.sh` runs the suite inside it, plain `./dev` 
   - Matches test clauses one after another.
   - Division by zero is unchecked.
 
-## Next
-
-### Phase 2: core FP and memory
+### Phase 2: core FP and memory ✅
 - **Scope:**
-  - **Functions:** `fun` lambdas, closures, first-class and local functions, partial application. Self tail calls become loops.
-  - **Generics:** let-polymorphism and monomorphization, plus generic user types (`Tree<'a>`).
-  - **Numbers:** `f32`/`f64`, the other integer widths, and conversion functions.
-  - **Mutation and loops:** `let mutable`, `for`/`while`, `ref<'a>`, and arrays (`[| |]`, bounds-checked).
-  - **Panics:** a `panic` runtime that prints a message and backtrace, then aborts. Bounds errors, divide by zero and `assert` all route there. The type representation gets a slot for units of measure now, so Phase 3 doesn't have to restructure it.
-  - **Built-in types:** `string` (UTF-8, RC), `list`, `option` and `result` in a minimal prelude.
-  - **Memory:** Perceus RC with drop and reuse. Recursive unions are freed, which retires the Phase 1 leak.
+  - **Functions:** `fun` lambdas, closures, first-class and local functions, partial application, `>>`.
+  - **Tail calls:** self tail calls and same-prototype tail calls use `musttail`.
+  - **Generics:** let-polymorphism for top-level functions and monomorphization. Generic user types (`Tree<'a>`).
+  - **Numbers:** `f32`/`f64`, all integer widths, and conversion functions.
+  - **Mutation and loops:** `let mutable`, `for`/`while` (with steps), `ref<'a>`, and bounds-checked arrays.
+  - **Panics:** bounds errors, divide by zero and `assert` print `panic:` plus a backtrace, then abort.
+  - **Built-in types:** `string` (UTF-8, RC) and `$"…{x}…"` interpolation.
+  - **Prelude in Z#:** `option`, `result`, and the `List`, `Option`, `Result` and `Array` functions.
+  - **Memory:** Perceus RC (ownership-based dup/drop), drop specialization, and in-place reuse of unique cells.
+  - **Leak checking:** `ZS_LEAKCHECK=1` reports leaked objects at exit, and `./test.sh` always sets it. `./test.sh --valgrind` runs everything under valgrind.
 - **Exit tests:**
-  - A red-black tree: insert 1M keys and look them up, clean under `valgrind --leak-check=full`.
-  - binary-trees from the Benchmarks Game.
+  - **`tests/rbtree.zs`:** 1M inserts and 1M lookups into a generic persistent red-black tree. Valgrind-clean, 1.75 s.
+  - **`tests/binarytrees.zs`:** depth 16. Valgrind-clean, 0.30 s.
+  - **Reuse check:** mapping a 100k list 10 times performs 200k allocations instead of 2.2M.
+- **Known shortcuts:**
+  - **Tracked in the code:** `ponytail:` comments.
+  - **Monomorphic local functions:** only top-level functions are generalized.
+  - **Boxed unions:** every union is boxed, and match clauses are tested one after another.
+  - **List building:** `List.map` and `List.filter` build a reversed list and then call `List.rev`, because there's no tail recursion modulo cons yet.
+  - **Ownership:** every argument is owned (no borrow inference yet), and reuse requires an identical field layout.
+  - **Compile time:** the RC pass recomputes free variables at every node, which is quadratic.
+  - **Missing syntax:** loops over ranges only (no `for x in xs`). Multi-line lambda bodies inside parentheses aren't supported yet, because brackets suppress layout.
+  - **Strings to C:** a `string` converts to `cstr` only as an `extern` argument.
+  - **Overflow:** integers wrap. The debug-mode overflow trap needs a debug build mode.
+
+## Next
 
 ### Phase 3: traits, modules, C export
 - **Scope:**

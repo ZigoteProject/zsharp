@@ -587,6 +587,77 @@ let compile (types: Dictionary<string, TypeInfo>) (externs: Dictionary<string, E
             | CDrop(x, t, rest) ->
                 dropValue em t (lookup env x t)
                 gen env tail rest
+            | CDropFields(x, xt, tag, keep, tok, rest) ->
+                let v = lookup env x xt
+                let fields = snd (List.item tag (snd (union xt)))
+                let cell = cellTy fields
+
+                let load i ft =
+                    let fp = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 %d" cell v (i + 2))
+                    em.Instr(sprintf "load %s, ptr %s" (llty ft) fp)
+
+                let uniq, shared, join = em.Fresh "unique", em.Fresh "shared", em.Fresh "dropped"
+                em.Emit(sprintf "br i1 %s, label %%%s, label %%%s" (em.Instr(sprintf "call i1 @zs.release(ptr %s)" v)) uniq shared)
+                em.Label uniq
+
+                fields
+                |> List.iteri (fun i ft ->
+                    if heap ft && not (keep.Contains i) then
+                        dropValue em ft (load i ft))
+
+                if tok.IsNone then
+                    em.Emit(sprintf "call void @zs_free(ptr %s)" v)
+
+                em.Emit(sprintf "br label %%%s" join)
+                em.Label shared
+
+                fields
+                |> List.iteri (fun i ft ->
+                    if heap ft && keep.Contains i then
+                        dupValue em ft (load i ft))
+
+                em.Emit(sprintf "br label %%%s" join)
+                em.Label join
+
+                let env =
+                    match tok with
+                    | Some t -> env.Add(t, Ssa(em.Instr(sprintf "phi ptr [ %s, %%%s ], [ null, %%%s ]" v uniq shared)))
+                    | None -> env
+
+                gen env tail rest
+            | CFreeToken(tok, rest) ->
+                let t = lookup env tok tUnit
+                let yes, no = em.Fresh "freetok", em.Fresh "notok"
+                em.Emit(sprintf "br i1 %s, label %%%s, label %%%s" (em.Instr(sprintf "icmp ne ptr %s, null" t)) yes no)
+                em.Label yes
+                em.Emit(sprintf "call void @zs_free(ptr %s)" t)
+                em.Emit(sprintf "br label %%%s" no)
+                em.Label no
+                gen env tail rest
+            | CCtorAt(tok, _, tag, args) ->
+                let vs = args |> List.map (gen env false)
+                let cell = cellTy (snd (List.item tag (snd (union e.ty))))
+                let t = lookup env tok tUnit
+                let fresh, reuse, join = em.Fresh "alloc", em.Fresh "reuse", em.Fresh "built"
+                em.Emit(sprintf "br i1 %s, label %%%s, label %%%s" (em.Instr(sprintf "icmp eq ptr %s, null" t)) fresh reuse)
+                em.Label fresh
+                let a = em.Instr(sprintf "call ptr @zs_alloc(i64 %s)" (sizeOf em cell))
+                let fromAlloc = em.Block
+                em.Emit(sprintf "br label %%%s" join)
+                em.Label reuse
+                em.Emit(sprintf "br label %%%s" join)
+                em.Label join
+                let c = em.Instr(sprintf "phi ptr [ %s, %%%s ], [ %s, %%%s ]" a fromAlloc t reuse)
+                em.Emit(sprintf "store i64 1, ptr %s" c)
+                let tp = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 1" cell c)
+                em.Emit(sprintf "store i32 %d, ptr %s" tag tp)
+
+                List.zip args vs
+                |> List.iteri (fun i (a, v) ->
+                    let fp = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 %d" cell c (i + 2))
+                    em.Emit(sprintf "store %s %s, ptr %s" (llty a.ty) v fp))
+
+                c
             | CIf(c, t, f) ->
                 let vc = gen env false c
                 let lt, lf, lend = em.Fresh "then", em.Fresh "else", em.Fresh "endif"

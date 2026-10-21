@@ -50,6 +50,53 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
 
         let heapVar x = heap vtypes[x]
 
+        let fieldTypes (t: Ty) tag =
+            match prune t with
+            | TCon(u, args) ->
+                match types[u].def with
+                | UnionDef cs -> snd cs[tag] |> List.map (substGen args)
+                | RecordDef _ -> []
+            | _ -> []
+
+        /// Rewrites one constructor with the given field layout, on every path of e that ends in
+        /// one, to build in the token's cell; paths without one free the token. None = no site.
+        let rec place (tok: string) (layout: Ty list) (e: CExpr) : CExpr option =
+            let re k = Some(mk k e.ty)
+            let free (b: CExpr) = mk (CFreeToken(tok, b)) b.ty
+
+            match e.k with
+            | CCtor(u, tag, args) when (args |> List.map (fun a -> a.ty)) = layout -> re (CCtorAt(tok, u, tag, args))
+            | CWhile _
+            | CFor _ -> None // runs repeatedly
+            | CIf(c, t, f) ->
+                match place tok layout t, place tok layout f with
+                | None, None -> None
+                | t', f' -> re (CIf(c, defaultArg t' (free t), defaultArg f' (free f)))
+            | CMatch(s, cases) ->
+                let placed = cases |> List.map (fun (p, g, b) -> p, g, b, place tok layout b)
+
+                if placed |> List.forall (fun (_, _, _, b) -> b.IsNone) then
+                    None
+                else
+                    re (CMatch(s, placed |> List.map (fun (p, g, b, b') -> p, g, defaultArg b' (free b))))
+            | k ->
+                // every other node evaluates each child exactly once: use the first child that can
+                let found = ref false
+
+                let k' =
+                    k
+                    |> mapChildren (fun c ->
+                        if found.Value then
+                            c
+                        else
+                            match place tok layout c with
+                            | Some c' ->
+                                found.Value <- true
+                                c'
+                            | None -> c)
+
+                if found.Value then re k' else None
+
         let drops (vars: Set<string>) (e: CExpr) =
             vars |> Set.fold (fun acc x -> mk (CDrop(x, vtypes[x], acc)) acc.ty) e
 
@@ -144,11 +191,34 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
                         let all = Set.unionMany [ borrowed; owned; pvars ]
                         let g' = g |> Option.map (rc Set.empty all)
 
-                        if xOwned then
-                            let used = Set.intersect pvars (freeVars body)
-                            p, g', dups used (rc (Set.union owned used) borrowed body)
-                        else
-                            p, g', rc owned (Set.union borrowed pvars) body)
+                        let used = Set.intersect pvars (freeVars body)
+
+                        match p with
+                        | CPCtor(_, tag, fps) when xOwned && not (fps.IsEmpty || (freeVars body).Contains x) ->
+                            // x dies here: specialize its drop, and reuse its cell if the body builds one alike
+                            let direct =
+                                fps
+                                |> List.indexed
+                                |> List.choose (fun (i, fp) ->
+                                    match fp with
+                                    | CPVar(v, _)
+                                    | CPAs(_, v, _) when used.Contains v -> Some(i, v)
+                                    | _ -> None)
+
+                            let keep = direct |> List.map fst |> Set.ofList
+                            let nested = Set.difference used (direct |> List.map snd |> Set.ofList)
+                            let body' = rc (Set.union (owned.Remove x) used) borrowed body
+                            let tok = tmp ()
+                            let layout = fieldTypes s.ty tag
+
+                            let node =
+                                match place tok layout body' with
+                                | Some b -> CDropFields(x, s.ty, tag, keep, Some tok, b)
+                                | None -> CDropFields(x, s.ty, tag, keep, None, body')
+
+                            p, g', dups nested (mk node body.ty)
+                        | _ when xOwned -> p, g', dups used (rc (Set.union owned used) borrowed body)
+                        | _ -> p, g', rc owned (Set.union borrowed pvars) body)
 
                 re (CMatch(s, cases'))
             | CMatch(s, cases) -> viaTemp owned borrowed s (fun v -> re (CMatch(v, cases)))
@@ -205,7 +275,10 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
             | CLam _
             | CLetFun _
             | CDup _
-            | CDrop _ -> failwithf "Rc: unexpected node %A" e.k
+            | CDrop _
+            | CDropFields _
+            | CCtorAt _
+            | CFreeToken _ -> failwithf "Rc: unexpected node %A" e.k
 
         let owned = f.pars |> List.map fst |> List.filter heapVar |> Set.ofList
         { f with body = rc owned Set.empty f.body }

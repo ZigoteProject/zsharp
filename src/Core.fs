@@ -165,6 +165,12 @@ and CKind =
     // after RC insertion
     | CDup of string * Ty * CExpr
     | CDrop of string * Ty * CExpr
+    /// Specialized drop of a matched cell (var, type, tag, kept fields, reuse token, body).
+    /// Unique: kept fields move out, the rest are dropped, and the cell is freed or becomes
+    /// the token. Shared: kept fields are dup'ed and the count decremented; token = null.
+    | CDropFields of string * Ty * int * Set<int> * string option * CExpr
+    | CCtorAt of string * union: string * tag: int * CExpr list // constructor built in token's cell if non-null
+    | CFreeToken of string * CExpr
 
 /// Rebuilds a node with f applied to each direct child expression.
 let mapChildren (f: CExpr -> CExpr) (k: CKind) : CKind =
@@ -201,6 +207,9 @@ let mapChildren (f: CExpr -> CExpr) (k: CKind) : CKind =
     | CApplyClo(c, a) -> CApplyClo(f c, f a)
     | CDup(x, t, e) -> CDup(x, t, f e)
     | CDrop(x, t, e) -> CDrop(x, t, f e)
+    | CDropFields(x, t, tag, keep, tok, e) -> CDropFields(x, t, tag, keep, tok, f e)
+    | CCtorAt(tok, u, tag, args) -> CCtorAt(tok, u, tag, List.map f args)
+    | CFreeToken(tok, e) -> CFreeToken(tok, f e)
 
 /// Direct child expressions, in evaluation order.
 let children (k: CKind) : CExpr list =
@@ -257,7 +266,8 @@ let rec refs (e: CExpr) : (string * Ty) list =
         | CLocal x -> [ x, e.ty ]
         | CAssign(x, v) -> [ x, v.ty ]
         | CDup(x, t, _)
-        | CDrop(x, t, _) -> [ x, t ]
+        | CDrop(x, t, _)
+        | CDropFields(x, t, _, _, _, _) -> [ x, t ]
         | _ -> []
 
     own @ (children e.k |> List.collect refs)
