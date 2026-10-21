@@ -295,6 +295,16 @@ The compiler checks the builder's shape with a `Builder` trait, so a missing
 ### Perceus reference counting (Koka, Lean 4)
 - **Value types:** primitives, tuples, records, SIMD vectors, and *small non-recursive* unions live inline (registers or stack) and are copied.
 - **Heap types:** recursive unions, closures, `string`, `array`, `list` and `ref` are refcounted.
+- **Arrays are values, with copy-on-write** (as in Swift and Lean). A write through one name is never visible through another.
+  - `a.[i] <- x` needs `let mutable a` and means `a <- Array.set a i x`.
+  - When `a` holds the only reference, the write happens in place. Otherwise the array is copied first.
+  - `Array.set` and `Array.push` follow the same rule as functions: in place when unique, copied when shared.
+  - **What this buys:**
+    - Arrays are `Share` whenever their elements are.
+    - An array parameter is `noalias` by construction.
+    - Reuse (below) covers arrays.
+  - **`Buffer<'a>`:** a fixed-size reference type for the rare case where a write must be seen through every alias (a shared scratch buffer, a ring buffer handed to C). It isn't `Share`.
+  - This is a deliberate difference from F#, whose arrays are shared mutable references.
 - **The compiler inserts and elides RC operations.** Borrow inference removes most `inc`/`dec` pairs.
 - **Reuse:** when a match consumes a unique cell and builds one of the same size, it overwrites the cell. This makes code "functional but in place": `insert`, `List.map`, `arr.[i] <- x` and CPS continuations don't allocate when their input is unique.
 - **Cycles:** immutable data can't form cycles. Only `ref` and mutable fields can, which is the user's job, the same as in Swift (use `weak`).
@@ -310,13 +320,23 @@ The compiler checks the builder's shape with a `Builder` trait, so a missing
 | No out-of-bounds access | Bounds-checked indexing, with checks hoisted or removed in loops (§9) |
 | No data races | `let mutable` can't be captured, plus the `Share` trait (§7) |
 | Deterministic cleanup | RC plus `use`; this also runs when a task is cancelled (§6) |
-| Arithmetic | Integer overflow traps in debug and wraps in release. Divide by zero always traps. |
+| Arithmetic | Integer overflow traps in debug and release builds alike, as in Swift. Wrapping is explicit (`Int.wrappingAdd`, `Int.wrappingMul`…, or `[<Wrapping>]` on a function). Divide by zero always traps. |
 
 **Not guaranteed (and still memory-safe):** leaks through mutable `ref` cycles.
 
 **Unsafe on purpose:** `unsafe` expressions, raw `ptr<'a>`, and every `extern` call.
 
 ## 6. Concurrency: `Task`
+
+> **Decision gate (before Phase 6).** Async could otherwise be built three times: CPS `Task`
+> in Phase 6, state machines in Phase 9, effects in Phase 10. So a time-boxed spike comes first.
+> It implements one built-in `Async` effect with one-shot resumptions, compiled by evidence
+> passing (§6.1).
+> - **If it typechecks and meets the Phase 5 performance bar:** `Task` is a library over
+>   effects from the start, and most of Phase 9's `Task` work goes away.
+> - **If not:** the CPS design below stands.
+>
+> Either way, the `Task` API in this section is what users see.
 
 There is **one type, `Task<'a>`, and it is cold.** A task is a value that
 describes work. Defining it does nothing, and running it twice runs the work
@@ -392,8 +412,8 @@ Parallel.for 0 n (fun i -> out.[i] <- f i)       // disjoint writes, see below
 - **Thread pool:** work-stealing with Chase–Lev deques, sized to the core count, in the C runtime.
 - **`Share` auto-trait (like Rust's `Send`, but with no lifetimes):** a value may cross threads only if it is immutable or explicitly synchronised. Immutable-by-default means nearly all data qualifies automatically.
   - **Share:** primitives, immutable records, tuples, unions, `string`, `list`, immutable `array`, and closures whose captured values are all `Share`.
-  - **Not Share:** `ref`, mutable fields, and plain `array` mutated through `<-`. Wrap these in `Atomic<'a>`, `Mutex<'a>` or `Channel<'a>`.
-  - **Indexed parallel writes:** `Parallel.for` and `Array.Parallel.init` write to one array by index. The library proves the writes are disjoint by construction, since each index belongs to exactly one task.
+  - **Not Share:** `ref`, mutable fields and `Buffer<'a>`. Wrap these in `Atomic<'a>`, `Mutex<'a>` or `Channel<'a>`. Arrays are values (§5), so they are `Share` whenever their elements are.
+  - **Indexed parallel writes:** `Parallel.for` and `Array.Parallel.init` write to one uniquely owned array by index, in place. The library proves the writes are disjoint by construction, since each index belongs to exactly one task.
 - **Reference counts across threads** (the Koka and Lean approach):
   - RC is non-atomic by default, so single-threaded code pays nothing.
   - When a value is sent to another thread, its object graph is marked *shared* once, and from then on only those objects use atomic RC.
@@ -518,7 +538,7 @@ Plan: ROADMAP "Editor tooling track".
 | # | Decision | Chosen default | Status |
 |---|---|---|---|
 | 1 | `int` width | 64-bit | decided |
-| 2 | Integer overflow | traps in debug, wraps in release; divide by zero always traps | decided |
+| 2 | Integer overflow | traps in debug **and release**; explicit wrapping operations or `[<Wrapping>]`; divide by zero always traps | decided (changed after the design review) |
 | 3 | Syntax | indentation only | decided |
 | 4 | Memory | Perceus RC, no GC | decided |
 | 5 | Unreachable match case | error (F# warns) | decided |
@@ -546,6 +566,10 @@ Plan: ROADMAP "Editor tooling track".
 | 27 | Union case fields | named construction and patterns; no defaults | decided |
 | 29 | `?` operator | `let p = e?` and statement `e?` for now; general positions arrive with `result { }` (Phase 6) | decided |
 | 30 | Automatic Eq/Ord/Hash/Show | derived the first time a type needs them; a type whose fields can't support it simply doesn't get it | decided |
+| 32 | Array semantics | copy-on-write values (Swift/Lean); `Buffer<'a>` for alias-visible mutation | decided (design review) |
+| 33 | Async strategy | decision gate before Phase 6: an evidence-passing effects spike decides effects-first vs CPS `Task` | decided (design review) |
+| 34 | Flagship domains | native libraries consumed from C, and CLI tools, first; games over C libraries after | decided (design review) |
+| 35 | Surface syntax | frozen until Phases 4 and 5 are done | decided (design review) |
 | 31 | Callbacks into C | `callback<A -> R>` = `R (*)(void* user, A)` + `void* user`; the closure is borrowed for the call | decided |
 | 28 | Formatter | `zs fmt`, one canonical style, no configuration; lossless CST with comment trivia | decided |
 

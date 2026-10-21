@@ -108,15 +108,40 @@ gdb, qemu-user, zig). `./dev ./test.sh` runs the suite inside it, plain `./dev` 
 
 ## Next
 
+**Who it's for first:** native libraries consumed from C, and CLI tools. Games over C
+libraries come after. **The surface syntax is frozen** until Phases 4 and 5 are done: no new
+syntax, only fixes. Both decisions came from the design review.
+
+### Before Phase 4: design-review fixes
+- **Arrays become copy-on-write values** (DESIGN §5): `a.[i] <- x` needs `let mutable a`, writes in place when unique, copies otherwise. Add `Buffer<'a>` for alias-visible mutation, and update the prelude and tests. This has to be done before Phase 5 builds `noalias` and reuse on top of arrays.
+- **Integer overflow traps** in every build, using LLVM's `*.with.overflow` intrinsics. Add explicit wrapping operations and `[<Wrapping>]`.
+- **Compile time is measured:** `zs build --time` reports each phase, and `./test.sh` records the totals. Today the prelude is re-checked on every build.
+- **Exit tests:**
+  - An alias test: a write through one name is invisible through another, and a unique array is updated with no copy (checked by counting allocations).
+  - `i64` overflow traps in a release build, and `Int.wrappingAdd` wraps.
+
 ### Phase 4: C import and tooling
 - **Scope:**
   - `import c "header.h"` via libclang, covering structs, enums, functions and `#define` constants.
   - DWARF debug info (gdb and lldb step through Z# lines).
   - `zs test` and better error messages (code snippets, carets).
   - **Cross-compilation:** `zs build --target <triple>` via `zig cc` and Zig's bundled libc.
+  - **For C libraries:**
+    - The aarch64 AAPCS calling convention (HFAs, register rules).
+    - Running out of argument registers, modelled on x86-64.
+    - Headers that are better documented, with `const` where it applies.
+    - A stable naming scheme for exported symbols.
+  - **For CLI tools:**
+    - **Stdlib:** `Env.args`, `Env.var`, exit codes, `File` (read, write, lines, exists), `Dir`, `Process.run`, stdin by line.
+    - **Collections:** a persistent `Map`/`Set` (red-black tree) and a `HashMap` (a CoW value).
+  - **Projects:**
+    - A `zs.toml` manifest with name, version, entry point and dependencies by path or git. `zs build` with no arguments reads it.
+    - `zs new` creates a project.
+    - A lockfile for git dependencies.
 - **Exit tests:**
   - A raylib window demo written only against `import c "raylib.h"`.
-  - `tests/` cross-compiles to aarch64-linux-musl and passes under qemu-user.
+  - `tests/` cross-compiles to aarch64-linux-musl and passes under qemu-user. This includes `tests/cexport`, so the C ABI is checked on both architectures.
+  - A CLI tool built from a `zs.toml` with a path dependency: a small `wc`/`grep` clone that reads files and arguments.
 
 ### Phase 5: optimizer I
 - **Scope:**
@@ -126,9 +151,11 @@ gdb, qemu-user, zig). `./dev ./test.sh` runs the suite inside it, plain `./dev` 
   - **Perceus:** borrow inference.
   - **LLVM hints:** `noalias`/`readonly`/`nonnull` metadata and hoisted bounds checks.
   - **Benchmark suite in CI**, run against C, OCaml and F#. A regression of more than 5% fails.
+  - **Compile time:** moved here from Phase 9 because shipping Core IR and monomorphizing at the user is Rust's compile-time trap. The prelude and each module are cached as checked Core keyed by their content hash, and a one-function change rebuilds in under 1 second.
 - **Exit test:** fib, binary-trees, nbody, spectral-norm and the red-black tree each run within **1.5× of C** (clang -O2).
 
 ### Phase 6: computation expressions and Task
+- **Gate first** (DESIGN §6): a time-boxed spike of a single `Async` effect with evidence passing. Its result decides whether `Task` below is a library over effects (and Phase 10 moves up) or CPS as written.
 - **Scope:**
   - **CE syntax:** builders as modules plus a `Builder` trait, with `let!`, `do!`, `return`, `return!`, `use`, `for` and `if`.
   - **Libraries:** `result { }` and `option { }` builders.
@@ -164,7 +191,7 @@ gdb, qemu-user, zig). `./dev ./test.sh` runs the suite inside it, plain `./dev` 
   - **Task speed:** `task { }` lowered to stackless state machines, with no allocation per `let!`.
   - **Linking and profiling:** ThinLTO across modules and `rt.c`, plus `--pgo`.
   - **Backend:** switch to the LLVM C API.
-  - **Build speed:** incremental per-module caching.
+  - **Build speed:** parallel module compilation (the cache arrives in Phase 5).
 - **Exit tests:**
   - A Task microbenchmark makes zero allocations per await.
   - The Phase 5 suite reaches **1.2× of C**.
