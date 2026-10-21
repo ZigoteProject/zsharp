@@ -440,6 +440,21 @@ import c "raylib.h"                              // libclang, like Zig's @cImpor
 - **Build output:** `zs build` emits a `.o`/`.a`/`.so` and a `.h` for every `[<Export>]` function.
 - **Interaction with Task:** a blocking C call goes through `Task.blocking` (§6).
 
+## 10.1 Editor tooling
+
+- **Highlighting:** a tree-sitter grammar (`editors/tree-sitter-zsharp`). It drives highlighting, indentation and the outline in Zed, Neovim and Helix, and code views on GitHub.
+- **Language server:** `zs lsp`. It reuses the compiler's lexer, parser and type checker, so hover types and diagnostics are exactly what the compiler reports.
+- **AI agents:** `zs mcp` exposes the same queries, plus build and run, as MCP tools.
+- **Zed integration:** the Zed extension (`editors/zed`) bundles the grammar and starts both servers.
+- **Compiler requirements:**
+  - Source spans with columns.
+  - Error recovery, so all errors are reported, not just the first.
+  - A position-to-type/definition index.
+
+  These also improve command-line error messages.
+
+Plan: ROADMAP "Editor tooling track".
+
 ## 11. Decisions
 
 | # | Decision | Chosen default | Status |
@@ -466,5 +481,6 @@ import c "raylib.h"                              // libclang, like Zig's @cImpor
 | 20 | Generics across libraries | ship Core IR, monomorphize at the user | default |
 | 21 | Target order | Linux x64/arm64, macOS arm64, Windows x64, WASM | default |
 | 22 | User code generation | `derive` over record and union shapes (§3.1); no macros, no comptime | default |
+| 23 | Editor support | tree-sitter grammar + `zs lsp` + `zs mcp`, Zed extension first | decided |
 
 "Default" means chosen by me and open to change until the phase that implements it begins.

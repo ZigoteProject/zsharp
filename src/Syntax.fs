@@ -455,10 +455,14 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
 
         p
 
+    // before '->', a line starting with '|' continues the or-pattern
     and orPat () =
         let mutable p = tuplePat ()
 
-        while isSym "|" do
+        while isSym "|" || (peek () = KNewline && peek2 () = KSym "|") do
+            if peek () = KNewline then
+                advance ()
+
             advance ()
             p <- POr(p, tuplePat ())
 
@@ -563,7 +567,15 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
             expect KDedent "end of block"
             e
         else
-            expr ()
+            assignment (expr ())
+
+    /// `lhs <- rhs` (statements, and single-line blocks such as `then x <- 1`)
+    and assignment lhs =
+        if isSym "<-" then
+            advance ()
+            Assign(lhs, expr ())
+        else
+            lhs
 
     /// After a binding: the rest of the block.
     and rest ln =
@@ -605,16 +617,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
                 let v = block ()
                 At(ln, Let(p, ann, v, rest ln))
         else
-            let e = expr ()
-
-            let e =
-                if isSym "<-" then
-                    advance ()
-                    Assign(e, expr ())
-                else
-                    e
-
-            let e = At(ln, e)
+            let e = At(ln, assignment (expr ()))
 
             if peek () = KNewline then
                 advance ()

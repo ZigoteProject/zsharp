@@ -18,6 +18,11 @@ gdb, qemu-user, zig). `./dev ./test.sh` runs the suite inside it, plain `./dev` 
 - **v1 (phases 0–6):** the complete single-threaded language. It is fast, memory-safe, has C interop, and runs async on one event loop.
 - **v2 (phases 7–9):** threads, parallelism, SIMD and the final performance work.
 - **v3 (phase 10+):** effect handlers.
+- **Editor tooling (E1–E3)** is a parallel track, Zed first. It hooks into the main line where marked:
+
+```
+ E1 grammar + Zed extension (now) ─ E2a LSP diagnostics/hover (after 2) ─ E2b LSP navigation/completion (after 3) ─ E3 MCP (after E2a)
+```
 
 ## Done
 
@@ -147,6 +152,63 @@ gdb, qemu-user, zig). `./dev ./test.sh` runs the suite inside it, plain `./dev` 
 - **Scope:** rewrite the compiler in Z#.
 - **Exit test:** the compiler compiles itself, and the second-generation build produces byte-identical output.
 
+## Editor tooling track (Zed first)
+
+Zed is the primary editor. Everything below is plain tree-sitter, LSP and MCP,
+so Neovim, Helix, VS Code and other agents get the same support with only a
+thin extension each. The compiler is the single source of truth: the language
+server and the MCP server are `zs` subcommands that reuse its lexer, parser and
+type checker, so editor behaviour can't drift from the compiler's.
+
+### E1: syntax highlighting and Zed extension
+- **Scope:**
+  - **Grammar:** `editors/tree-sitter-zsharp`, a tree-sitter grammar with an external scanner for the offside rule (INDENT/DEDENT/NEWLINE, as in tree-sitter-python).
+  - **Queries:** `highlights.scm`, `indents.scm`, `brackets.scm`, `outline.scm` (functions, types, constructors) and `injections.scm` (expressions inside `$"…{x}…"`).
+  - **Zed extension:** `editors/zed`, containing `extension.toml` and `languages/zsharp/config.toml` (`.zs` files, `//` comments, 2-space indent, bracket pairs). It also installs the grammar.
+- **Prerequisite:** none, so it can start now.
+- **Exit tests:**
+  - `tree-sitter test` passes, and every `tests/*.zs` and `runtime/prelude.zs` parses with no `ERROR` nodes. This check runs in `./test.sh`, so the grammar can't drift from the parser.
+  - Zed, with the extension installed as a dev extension, highlights and outlines the test files.
+
+### E2: language server (`zs lsp`)
+- **Compiler prerequisites:**
+  - Source spans (line and column ranges) on tokens, the AST and Core.
+  - Error recovery, so one pass reports every error instead of stopping at the first.
+  - A query index mapping a position to its type and definition.
+- **E2a, after Phase 2:**
+  - Diagnostics as you type, debounced, with incremental re-check per file.
+  - Hover showing inferred types, including generic schemes such as `List.map : ('a -> 'b) -> list<'a> -> list<'b>`.
+  - Inlay hints for inferred `let` and parameter types, as in F#.
+  - Document symbols.
+- **E2b, after Phase 3 (modules, members, traits):**
+  - Go to definition and find references, including into the prelude and stdlib.
+  - Completion: locals, module members, record fields, constructors, members after `.`.
+  - Signature help.
+  - Rename.
+  - Code actions: add the missing match cases named by the exhaustiveness checker, and add a type annotation.
+  - Formatting, once a `zs fmt` formatter exists.
+- **Zed integration:** the extension runs `zs lsp` through `language_server_command` and finds `zs` on `PATH` or from a configured path.
+- **Exit tests:**
+  - A scripted LSP session (JSON-RPC over stdio, run in `./test.sh`) checks diagnostics, hover and definition results against expected JSON.
+  - In Zed, a 2,000-line file shows updated diagnostics within 100 ms of a keystroke.
+
+### E3: MCP server (`zs mcp`) for AI agents
+- **Purpose:** gives Zed's agent (and any MCP client) compiler-backed tools, so it doesn't have to guess types from text.
+- **Tools:**
+  - `check` (structured diagnostics for a file or project)
+  - `type_at` and `definition` (shared with the LSP query index)
+  - `build` and `run` (output, exit code, leak-check report, optional `--sanitize` or valgrind)
+  - `emit_llvm`
+  - `docs` (search prelude and stdlib signatures)
+  - `explain` (long-form help for an error message)
+- **Resources:** `DESIGN.md`, `ROADMAP.md`, and the language reference once it exists.
+- **Safety:** `build`/`run` execute code. They are confined to the project directory, and Zed asks for approval before each call (tool permissions). The read-only tools never execute user code.
+- **Zed integration:** the extension registers `zs mcp` as a context server.
+- **Prerequisite:** E2a's query engine.
+- **Exit tests:**
+  - A scripted MCP session (`initialize`, `tools/list`, `check`, `type_at`, `run`) passes in `./test.sh`.
+  - Given a file with a type error, Zed's agent fixes it using only these tools.
+
 ## Ordering rationale
 - **Phase 2 comes before everything else.** Closures, generics and RC underpin every later feature, and async without RC would leak every continuation.
 - **Phase 3 (traits) comes before 6 (CE).** Builders are checked through the `Builder` trait, and `Task.both` needs generics plus traits.
@@ -154,4 +216,7 @@ gdb, qemu-user, zig). `./dev ./test.sh` runs the suite inside it, plain `./dev` 
 - **Phase 7 (parallelism) comes after 6.** The thread pool backs both `Task.blocking` and the multi-threaded scheduler.
 - **Phase 8 (SIMD) comes after 5 and 7.** Vectorization relies on unboxed arrays and aliasing metadata from Phase 5, and parallel SIMD kernels are the real-world case.
 - **Phases 4 and 5 can run in parallel with 6** if there are multiple contributors.
+- **E1 can start now.** It depends only on syntax. The `./test.sh` parse check keeps it in step as the syntax grows.
+- **E2a waits for Phase 2.** Hover is only useful once inference reports real generic types. It needs source spans and error recovery first, which also improve the command-line error messages planned for Phase 4.
+- **E2b waits for Phase 3.** Most go-to-definition and completion targets (modules, members, traits) don't exist before then.
 - **Phase 10 (effects) comes last.** It needs Task's API to be stable and opaque, and it needs Perceus (the one-shot resumption rule depends on it). DESIGN §6.1 lists what must stay true until then.
