@@ -33,6 +33,7 @@ type Pat =
     | POr of Pat * Pat
     | PAs of Pat * string
     | PNamed of (string * Pat) list // constructor fields by name: Rect(h = h)
+    | PRecord of (string * Pat) list // { x = 0; y = y }: fields left out match anything
     | PArgs of Pat list // several atoms after a name: arguments of a parameterized active pattern
 
 type Expr =
@@ -698,7 +699,8 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         | KKw "true"
         | KKw "false"
         | KSym "("
-        | KSym "[" -> true
+        | KSym "["
+        | KSym "{" -> true
         | _ -> false
 
     let rec pattern () =
@@ -777,6 +779,26 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
             | _ -> err "integer"
         | KKw "true" -> PBool true
         | KKw "false" -> PBool false
+        | KSym "{" ->
+            // a record pattern: { field = pattern; ... } (line breaks separate fields too)
+            let fields = ResizeArray()
+
+            while not (isSym "}") do
+                let f = ident ()
+                expect (KSym "=") "'='"
+                fields.Add(f, pattern ())
+
+                if isSym ";" then
+                    advance ()
+                elif not (isSym "}") then
+                    err "';' or '}'"
+
+            advance ()
+
+            if fields.Count = 0 then
+                fail (line ()) "a record pattern names at least one field: { x = x }"
+
+            PRecord(List.ofSeq fields)
         | KSym "[" ->
             let items = ResizeArray()
 
@@ -813,7 +835,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
             expect (KSym ")") "')'"
             p
 
-    /// A function parameter: x, _, (), (x: T) or (pattern).
+    /// A function parameter: x, _, (), (x: T), (pattern), [pattern] or { record pattern }.
     let param () : Param =
         match peek (), peek2 () with
         | KSym "(", KId _ when (toks[min (pos.Value + 2) (toks.Length - 1)].tok = KSym ":") ->
@@ -830,7 +852,8 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         match t with
         | KId _
         | KSym "("
-        | KSym "[" -> true
+        | KSym "["
+        | KSym "{" -> true // a record pattern: let norm { x = x; y = y } = …
         | _ -> false
 
     let parameters () =

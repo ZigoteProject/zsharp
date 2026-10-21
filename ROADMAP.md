@@ -34,7 +34,6 @@ clang/LLVM 22, zig, valgrind, gdb, qemu-user, qemu-system-arm, raylib).
 
 **Known gaps** (in priority order; each is in a phase below):
 1. **Syntax (phase L):**
-   - no record patterns;
    - no `let rec … and …`;
    - no `char` and no character iteration over strings;
    - no nested modules;
@@ -159,7 +158,7 @@ first.
   1. **Top-level values (done):** constants are inlined at each use, and other values are computed once at startup, in order, then freed at exit.
      - **Annotations (done):** `(e: T)` expression annotations came with them.
      - **Still to do:** constant *arrays* in flash on microcontrollers; today they are startup values in RAM.
-  2. **Record patterns:** `{ x = 0; y = y }`.
+  2. **Record patterns (done):** `{ x = 0; y = y }` in matches, `let`, parameters, lambdas and `for`. The record comes from the matched value's type, else from the fields, and missing cases are named in record syntax.
   3. **`let rec … and …`**.
   4. **`char`:** a Unicode scalar, with `for c in s` over a string's characters and character literals.
   5. **Nested modules:** `module Inner = …`.

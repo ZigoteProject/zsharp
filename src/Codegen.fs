@@ -1000,6 +1000,24 @@ let compile
                 List.zip ps ts
                 |> List.indexed
                 |> List.fold (fun env (i, (p, et)) -> test p et (em.Instr(sprintf "extractvalue %s %s, %d" (llty t) v i)) failL env) env
+            | CPRecord(_, fs) ->
+                // a record is a struct of its fields in declaration order, like a tuple
+                let ts =
+                    match prune t with
+                    | TCon(n, args) ->
+                        match types[n].def with
+                        | RecordDef rfs -> rfs |> List.map (fun (_, ft) -> substGen args ft)
+                        | UnionDef _ -> failwith "record pattern on a union"
+                    | _ -> failwith "record pattern on a non-record"
+
+                List.zip fs ts
+                |> List.indexed
+                |> List.fold
+                    (fun env (i, ((_, p), ft)) ->
+                        match p with
+                        | CPWild -> env
+                        | _ -> test p ft (em.Instr(sprintf "extractvalue %s %s, %d" (llty t) v i)) failL env)
+                    env
             | CPCtor(_, tag, ps) when plainUnion types t ->
                 let fields = snd (List.item tag (snd (union t)))
                 guardOr (em.Instr(sprintf "icmp eq i32 %s, %d" (em.Instr(sprintf "extractvalue %s %s, 0" (llty t) v)) tag))

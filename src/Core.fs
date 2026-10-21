@@ -234,6 +234,7 @@ type CPat =
     | CPInt of int64
     | CPBool of bool
     | CPTuple of CPat list
+    | CPRecord of record: string * (string * CPat) list // every field, in declaration order
     | CPCtor of union: string * tag: int * CPat list
     | CPOr of CPat * CPat
     | CPAs of CPat * string * Ty
@@ -349,6 +350,7 @@ let rec patVars p =
     | CPAs(p, x, t) -> (x, t) :: patVars p
     | CPTuple ps
     | CPCtor(_, _, ps) -> List.collect patVars ps
+    | CPRecord(_, fs) -> fs |> List.collect (snd >> patVars)
     | CPOr(a, _) -> patVars a
 
 let rec mapPatTypes (f: Ty -> Ty) p =
@@ -356,6 +358,7 @@ let rec mapPatTypes (f: Ty -> Ty) p =
     | CPVar(x, t) -> CPVar(x, f t)
     | CPAs(p, x, t) -> CPAs(mapPatTypes f p, x, f t)
     | CPTuple ps -> CPTuple(List.map (mapPatTypes f) ps)
+    | CPRecord(r, fs) -> CPRecord(r, fs |> List.map (fun (n, p) -> n, mapPatTypes f p))
     | CPCtor(u, tag, ps) -> CPCtor(u, tag, List.map (mapPatTypes f) ps)
     | CPOr(a, b) -> CPOr(mapPatTypes f a, mapPatTypes f b)
     | p -> p

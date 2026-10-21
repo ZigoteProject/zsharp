@@ -1,0 +1,1 @@
+tests/err_record_pattern.zs:9:3: error: match is not exhaustive; missing case: { kind = C }

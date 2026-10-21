@@ -613,6 +613,41 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
 
             CPOr(ca, cb)
         | PAs(p, x) -> CPAs(pat names p ty, name x, ty)
+        | PRecord fields ->
+            let given = fields |> List.map fst
+
+            match given |> List.countBy id |> List.tryFind (fun (_, n) -> n > 1) with
+            | Some(f, _) -> fail 0 (sprintf "field '%s' appears twice in the pattern" f)
+            | None -> ()
+
+            let hasAll r =
+                given |> List.forall (fun f -> fieldsOf r |> List.exists (fst >> (=) f))
+
+            // the record: the matched value's type when known, else the latest declared record
+            // with all these fields (as for record literals)
+            let rname =
+                match prune ty with
+                | TCon(n, _) when records.Contains n -> n
+                | _ ->
+                    match records |> Seq.filter hasAll |> List.ofSeq with
+                    | [] -> fail 0 (sprintf "no record has the field%s %s" (if given.Length > 1 then "s" else "") (given |> List.map (sprintf "'%s'") |> String.concat ", "))
+                    | candidates -> List.last candidates
+
+            match given |> List.tryFind (fun f -> not (fieldsOf rname |> List.exists (fst >> (=) f))) with
+            | Some f -> fail 0 (sprintf "record '%s' has no field '%s'" rname f)
+            | None -> ()
+
+            let rty, targs = instType rname
+            expect "pattern" ty rty
+
+            let subs =
+                fieldsOf rname
+                |> List.map (fun (f, ft) ->
+                    match fields |> List.tryFind (fst >> (=) f) with
+                    | Some(_, p) -> f, pat names p (substGen targs ft)
+                    | None -> f, CPWild)
+
+            CPRecord(rname, subs)
         | PNamed _ -> fail 0 "named field patterns need a constructor: C(field = p)"
         | PArgs _ -> fail 0 "only constructors and active patterns take arguments"
 

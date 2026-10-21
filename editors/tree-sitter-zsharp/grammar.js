@@ -95,7 +95,7 @@ module.exports = grammar({
 
     active_pattern_name: $ => seq('(', '|', sep1(choice($.identifier, '_'), '|'), '|', ')'),
 
-    _parameter: $ => choice($.identifier, $.unit, $.wildcard, $.typed_parameter, $.parenthesized_pattern, $.list_pattern),
+    _parameter: $ => choice($.identifier, $.unit, $.wildcard, $.typed_parameter, $.parenthesized_pattern, $.list_pattern, $.record_pattern),
     typed_parameter: $ => seq('(', optional('?'), field('name', $.identifier), $.type_annotation, optional(seq('=', $._expression)), ')'),
     type_annotation: $ => seq(':', $._type),
 
@@ -306,10 +306,13 @@ module.exports = grammar({
       $.parenthesized_pattern,
       $.list_pattern,
       $.named_fields_pattern,
+      $.record_pattern,
     ),
     parenthesized_pattern: $ => seq('(', $._pattern, ')'),
     list_pattern: $ => seq('[', sep($._pattern, ';'), ']'),
     named_fields_pattern: $ => seq('(', sep1(seq($.identifier, '=', $._pattern), choice(',', ';')), ')'),
+    record_pattern: $ => seq('{', sep1($.field_pattern, choice(';', $._newline)), optional(choice(';', $._newline)), '}'),
+    field_pattern: $ => seq(field('name', $.identifier), '=', $._pattern),
     wildcard: $ => '_',
 
     // ------------------------------------------------------------ tokens

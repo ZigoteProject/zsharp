@@ -49,6 +49,7 @@
 (field_declaration name: (identifier) @property)
 (case_field name: (identifier) @property)
 (field_value name: (identifier) @property)
+(field_pattern name: (identifier) @property)
 (member_access member: (identifier) @property)
 (typed_parameter name: (identifier) @variable.parameter)
 (member_parameter name: (identifier) @variable.parameter)

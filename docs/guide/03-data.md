@@ -140,7 +140,7 @@ Some 36 None
 **What a pattern can be:**
 - a literal, or `_` for anything;
 - a variable, which binds the value;
-- a tuple, a union case, or a list (`[]`, `x :: rest`, `[ a; b ]`);
+- a tuple, a record (`{ x = 0; y = y }`, where the fields left out match anything), a union case, or a list (`[]`, `x :: rest`, `[ a; b ]`);
 - an or-pattern (`|`);
 - `as name`, which binds the whole value too.
 
@@ -176,6 +176,30 @@ let main () =
 empty | just 7 | starts with a pair | 1 and 2 more
 zero small negative big
 one (1, one)
+```
+
+Record patterns also work wherever a pattern can go: in `let`, in function parameters and in `for` loops.
+
+```zsharp
+type Point = { x: int; y: int }
+
+let quadrant p =
+  match p with
+  | { x = 0; y = 0 } -> "origin"
+  | { x = 0 } -> "on the y axis"
+  | { x = x; y = y } when x > 0 && y > 0 -> "first"
+  | _ -> "elsewhere"
+
+let norm { x = x; y = y } = x * x + y * y
+
+let main () =
+  let { x = a; y = b } = { x = 3; y = 4 }
+  println $"{quadrant { x = 0; y = 2 }} {quadrant { x = a; y = b }} {norm { x = a; y = b }}"
+  0
+```
+
+```text
+on the y axis first 25
 ```
 
 ## Active patterns

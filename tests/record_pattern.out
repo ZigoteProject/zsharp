@@ -1,0 +1,6 @@
+origin | on the y axis | on the x axis | first | elsewhere
+circle 3 c | square s
+let 4 5 | norm 25 | lambda [7; 8]
+stack Some a None
+one two 7
+nested 2

@@ -35,6 +35,10 @@ let rec private spaces (cases: string -> (string * int) list) p =
         let all = Some [ "true", 0; "false", 0 ]
         [ SCon({ name = (if b then "true" else "false"); arity = 0; all = all }, []) ]
     | CPTuple ps -> con { name = ","; arity = ps.Length; all = Some [ ",", ps.Length ] } ps
+    | CPRecord(_, fs) ->
+        // a record is one constructor; its name carries the field names, for messages
+        let name = "{" + (fs |> List.map fst |> String.concat ";") + "}"
+        con { name = name; arity = fs.Length; all = Some [ name, fs.Length ] } (List.map snd fs)
     | CPCtor(u, tag, ps) ->
         let all = cases u
         con { name = fst all[tag]; arity = ps.Length; all = Some all } ps
@@ -45,13 +49,20 @@ let rec private render (bare: string -> bool) s =
 
     let atomic s =
         match s with
-        | SCon(c, _ :: _) when c.name <> "," && not (bare c.name) -> "(" + render s + ")"
+        | SCon(c, _ :: _) when c.name <> "," && not (c.name.StartsWith "{") && not (bare c.name) -> "(" + render s + ")"
         | _ -> render s
 
     match s with
     | SCon(c, [ SWild ]) when bare c.name -> c.name
     | SWild -> "_"
     | SCon({ name = "," }, args) -> "(" + (args |> List.map render |> String.concat ", ") + ")"
+    | SCon(c, args) when c.name.StartsWith "{" ->
+        // { kind = C }: only the fields that matter
+        let names = c.name.Trim('{', '}').Split ';'
+
+        match List.zip (List.ofArray names) args |> List.filter (fun (_, a) -> a <> SWild) with
+        | [] -> "_"
+        | shown -> "{ " + (shown |> List.map (fun (n, a) -> n + " = " + render a) |> String.concat "; ") + " }"
     | SCon({ name = "::" }, [ h; t ]) -> atomic h + " :: " + render t
     | SCon(c, []) -> c.name
     | SCon(c, [ a ]) -> c.name + " " + atomic a

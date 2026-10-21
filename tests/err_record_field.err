@@ -1,0 +1,1 @@
+tests/err_record_field.zs:4:3: error: record 'Point' has no field 'z'
