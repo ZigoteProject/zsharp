@@ -1,0 +1,6 @@
+{"name": "ada", "age": 36, "email": null}  ->  same: true
+{"name": "bob", "age": 7, "email": "b@x.org"}  ->  same: true
+{"case": "Rect", "fields": [2, 3.5]}  ->  same: true
+{"case": "Dot", "fields": []}  ->  same: true
+{"case": "Node", "fields": [{"case": "Node", "fields": [{"case": "Leaf", "fields": []}, 1, {"case": "Leaf", "fields": []}]}, 2, {"case": "Leaf", "fields": []}]}  ->  same: true
+error: missing key age
