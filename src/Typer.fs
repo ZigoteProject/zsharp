@@ -1583,7 +1583,8 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
         let cargs =
             args
             |> List.mapi (fun i a ->
-                let ca = infer env depth a
+                // the declared parameter type guides a record literal ({ x = 1; y = 2 } for Point)
+                let ca = if i < n then inferHint env depth s.pars[i] a else infer env depth a
 
                 if i < n then
                     let what = sprintf "argument %d of '%s'" (i + 1) f
@@ -1658,6 +1659,12 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
             with CompileError(0, msg) ->
                 raise (CompileErrorPos(ln, colOf e, msg))
         | RecordLit fields -> recordLit env depth (Some hint) fields
+        | Tuple xs ->
+            match prune hint with
+            | TTuple ts when ts.Length = xs.Length ->
+                let cs = List.map2 (inferHint env depth) ts xs
+                mk (CTuple cs) (TTuple(cs |> List.map (fun c -> c.ty)))
+            | _ -> infer env depth e
         | _ -> infer env depth e
 
     /// The record a literal builds: the expected type if it is a record; otherwise the only
