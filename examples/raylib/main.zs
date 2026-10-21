@@ -19,8 +19,8 @@ let step (b: Ball) (dt: f32) =
   { x = x; y = y; vx = vx; vy = vy }
 
 let main () =
-  InitWindow (i32 (width ())) (i32 (height ())) "Z# + raylib"
-  SetTargetFPS (i32 60)
+  InitWindow (width ()) (height ()) "Z# + raylib"
+  SetTargetFPS (60)
   let mutable ball = { x = f32 400.0; y = f32 225.0; vx = f32 180.0; vy = f32 120.0 }
   while not (WindowShouldClose ()) do
     ball <- step ball (GetFrameTime ())

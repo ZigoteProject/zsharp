@@ -1,0 +1,16 @@
+Breakpoint 1 file prog.zs, line 3.
+Breakpoint 1, square (n=1) at prog.zs:3
+3	  let result = n * n
+#0  square (n=1) at prog.zs:3
+#1  ADDR in main () at prog.zs:9
+#2  ADDR in main ()
+n = 1
+4	  result
+$1 = 1
+9	    let sq = square i
+10	    total <- total + sq
+total = 0
+i = 1
+sq = 1
+ratio = 0
+ok = false

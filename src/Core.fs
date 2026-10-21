@@ -393,7 +393,9 @@ type FunDef =
       pars: (string * Ty) list
       ret: Ty
       body: CExpr
-      ngen: int } // number of quantified variables (TGen 0..ngen-1)
+      ngen: int // number of quantified variables (TGen 0..ngen-1)
+      file: string // where it is defined (debug info)
+      line: int }
 
 type ExternSig =
     { pars: Ty list

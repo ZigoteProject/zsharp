@@ -78,6 +78,12 @@ if [ -f /usr/include/raylib.h ]; then
   else echo "FAIL examples/raylib"; head -5 "$tmp/raylib.log"; fail=1; fi
 else echo "skip examples/raylib (no raylib.h)"; fi
 
+# debug info: gdb on a zs build -g program (breakpoints, arguments, locals, stepping, backtrace)
+if command -v gdb >/dev/null; then
+  if diff <(tests/debug/gdb.sh) tests/debug/gdb.expected >"$tmp/gdb.diff"; then echo "ok   tests/debug/gdb.sh"
+  else echo "FAIL tests/debug/gdb.sh"; cat "$tmp/gdb.diff"; fail=1; fi
+else echo "skip tests/debug/gdb.sh (no gdb)"; fi
+
 # the prelude checks on its own (an editor opening it must not see everything defined twice)
 if bin/zs check runtime/prelude.zs >"$tmp/prelude.log" 2>&1; then echo "ok   zs check runtime/prelude.zs"
 else echo "FAIL zs check runtime/prelude.zs"; head -5 "$tmp/prelude.log"; fail=1; fi

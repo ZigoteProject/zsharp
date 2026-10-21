@@ -20,6 +20,7 @@ let rec private resultAfter n t =
 let run (funs: MFun list) : MFun list =
     let arity = funs |> List.map (fun f -> f.name, f.pars.Length) |> dict
     let out = ResizeArray<MFun>()
+    let source = ref ("", 0) // the file and line of the function being converted
     let count = ref 0
     let mk k ty = { k = k; ty = ty }
 
@@ -90,9 +91,12 @@ let run (funs: MFun list) : MFun list =
             { name = lname
               pars = caps @ ps
               ret = body.ty
-              body = body }
+              body = body
+              file = fst source.Value
+              line = snd source.Value }
 
     for f in funs do
+        source.Value <- (f.file, f.line) // lifted lambdas are debugged as part of their function
         out.Add { f with body = conv Map.empty f.name f.body }
 
     List.ofSeq out

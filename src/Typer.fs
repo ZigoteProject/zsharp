@@ -1814,7 +1814,7 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                 with CompileError(0, msg) ->
                     fail ln msg)
 
-        [ for (_, name, pars, rty, fty, g, _, tvs), cb in List.zip prepared bodies do
+        [ for (ln, name, pars, rty, fty, g, _, tvs), cb in List.zip prepared bodies do
               if name = "main" then
                   resolve fty |> ignore
 
@@ -1827,7 +1827,9 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
                     pars = pars |> List.map (fun (_, u, t) -> u, t)
                     ret = rty
                     body = cb
-                    ngen = g.kinds.Length }
+                    ngen = g.kinds.Length
+                    file = currentFile.Value
+                    line = ln }
 
               yield g, tvs ]
 

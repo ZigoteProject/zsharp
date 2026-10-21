@@ -9,7 +9,9 @@ type MFun =
     { name: string
       pars: (string * Ty) list
       ret: Ty
-      body: CExpr }
+      body: CExpr
+      file: string
+      line: int }
 
 /// Units of measure are erased, so measure arguments don't distinguish instances.
 let mangle (name: string) (inst: Ty list) =
@@ -275,6 +277,8 @@ let run (prog: Program) : MFun list =
             { name = mangle name inst
               pars = f.pars |> List.map (fun (x, t) -> x, ct t)
               ret = ct f.ret
-              body = ex f.body }
+              body = ex f.body
+              file = f.file
+              line = f.line }
 
     List.ofSeq out

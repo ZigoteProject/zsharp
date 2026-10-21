@@ -543,6 +543,9 @@ import c "raylib.h"                              // like Zig's @cImport
   ```
   - **Commands:** `zs build` (to `build/<name>`), `zs run [args…]` and `zs test` work on the nearest manifest. `zs new <name>` creates one.
   - **Modules:** found next to the importing file, then in each dependency, transitively. This is the same for the compiler, `zs lsp` and `zs mcp`.
+- **Debugging:** `zs build -g` (or `zs run -g`) builds without optimization and with DWARF debug info, so gdb can work with Z# source:
+  - break on functions or `file.zs:line`, step, and show backtraces;
+  - show arguments and locals of number and bool types, which are kept in stack slots in debug builds.
 - **Tests:** `[<Test>]` marks a `unit -> unit` function as a test. `zs test file.zs [filters…]` builds the file's tests (it needs no `main`) and runs each in its own process, so a failed `assert` or a panic fails only that test. It prints `ok`/`FAIL` per test with the failure's output, and exits 1 when any test fails. A failed `assert` names its file and line.
 - **Documentation:** `///` comments directly above a declaration, as in F#, are its documentation. This covers functions, types, union cases, traits and their methods, derives, impls and members.
   - **Where it appears:** hover, completion, the MCP `docs` tool, and `zs doc <file>`, which writes a Markdown reference.

@@ -2,6 +2,7 @@ module Codegen
 
 open System
 open System.Collections.Generic
+open System.IO
 open System.Text
 open Syntax
 open Core
@@ -33,7 +34,11 @@ type private Emitter() =
         sprintf "%s%d" prefix n
 
     member this.Tmp() = "%" + this.Fresh "t"
-    member _.Emit(s: string) = sb.Append("  ").AppendLine(s) |> ignore
+    /// The source location (!DILocation) attached to each instruction, when debug info is on.
+    member val Dbg = "" with get, set
+    member this.Emit(s: string) = sb.Append("  ").Append(s).AppendLine(if this.Dbg = "" then "" else ", !dbg " + this.Dbg) |> ignore
+    /// A line that isn't an instruction (a debug record).
+    member _.Raw(s: string) = sb.Append("  ").AppendLine(s) |> ignore
 
     member this.Instr(s: string) =
         let r = this.Tmp()
@@ -205,6 +210,10 @@ let private runtimePrims =
 let private floatConst (ty: string) (f: float) =
     let v = if ty = "float" then float (float32 f) else f
     sprintf "0x%016X" (BitConverter.DoubleToInt64Bits v)
+
+/// Emit DWARF debug info (zs build -g): line tables, functions, and local variables of
+/// number and bool types.
+let mutable debugInfo = false
 
 /// Compiles closure-converted, RC-annotated functions to textual LLVM IR, plus a C header for
 /// the exported functions.
@@ -738,8 +747,129 @@ let compile
 
     let proto (f: MFun) = f.pars |> List.map (snd >> llty), llty f.ret
 
+    // ---- debug info metadata (!N = ...), emitted after the functions
+    let md = StringBuilder()
+    let mutable mdCount = 0
+
+    let meta (s: string) =
+        mdCount <- mdCount + 1
+        let id = sprintf "!%d" mdCount
+        md.AppendLine(sprintf "%s = %s" id s) |> ignore
+        id
+
+    let diFiles = Dictionary<string, string>()
+
+    let diFile (file: string) =
+        match diFiles.TryGetValue file with
+        | true, id -> id
+        | _ ->
+            let full =
+                if file = "prelude.zs" then Path.Combine(AppContext.BaseDirectory, file)
+                else Path.GetFullPath file
+
+            let id = meta (sprintf "!DIFile(filename: \"%s\", directory: \"%s\")" (Path.GetFileName full) (Path.GetDirectoryName full))
+            diFiles[file] <- id
+            id
+
+    let compileUnit =
+        lazy
+            (let file = funs |> List.tryFind (fun f -> f.name = "main") |> Option.map (fun f -> f.file) |> Option.defaultValue "main.zs"
+             meta (sprintf "distinct !DICompileUnit(language: DW_LANG_C11, file: %s, producer: \"zs\", isOptimized: false, runtimeVersion: 0, emissionKind: FullDebug)" (diFile file)))
+
+    let noTypes = lazy (meta "!DISubroutineType(types: !{})")
+    let locs = Dictionary<int * string, string>()
+
+    let diLoc (line: int) (scope: string) =
+        match locs.TryGetValue((line, scope)) with
+        | true, id -> id
+        | _ ->
+            let id = meta (sprintf "!DILocation(line: %d, column: 1, scope: %s)" line scope)
+            locs[(line, scope)] <- id
+            id
+
+    let diTypes = Dictionary<string, string>()
+
+    /// The DWARF type of a variable, for the types gdb can show as values.
+    let diType (t: Ty) =
+        let basic name bits enc =
+            match diTypes.TryGetValue name with
+            | true, id -> Some id
+            | _ ->
+                let id = meta (sprintf "!DIBasicType(name: \"%s\", size: %d, encoding: %s)" name bits enc)
+                diTypes[name] <- id
+                Some id
+
+        match tyName t with
+        | "int" -> basic "int" 64 "DW_ATE_signed"
+        | ("i8" | "i16" | "i32") as n -> basic n (int (n.Substring 1)) "DW_ATE_signed"
+        | ("u8" | "u16" | "u32" | "u64") as n -> basic n (int (n.Substring 1)) "DW_ATE_unsigned"
+        | "usize" -> basic "usize" 64 "DW_ATE_unsigned"
+        | "f64" -> basic "f64" 64 "DW_ATE_float"
+        | "f32" -> basic "f32" 32 "DW_ATE_float"
+        | "bool" -> basic "bool" 8 "DW_ATE_boolean"
+        | _ -> None
+
+    /// The name a variable has in the source (unique names are x.12; temporaries start with $).
+    let sourceName (x: string) =
+        if x.StartsWith "$" then None
+        else
+            match x.LastIndexOf '.' with
+            | i when i > 0 && Seq.forall Char.IsDigit (x.Substring(i + 1)) -> Some(x.Substring(0, i))
+            | _ -> Some x
+
     let genFun (f: MFun) =
         let em = Emitter()
+
+        // this function's debug scope, and the line being generated
+        let sp =
+            if debugInfo then
+                let file = diFile f.file
+
+                meta (
+                    sprintf
+                        "distinct !DISubprogram(name: \"%s\", scope: %s, file: %s, line: %d, type: %s, scopeLine: %d, spFlags: DISPFlagDefinition, unit: %s)"
+                        f.name
+                        file
+                        file
+                        f.line
+                        noTypes.Value
+                        f.line
+                        compileUnit.Value
+                )
+            else
+                ""
+
+        let mutable line = f.line
+        let mutable lastLine = f.line // the latest statement line seen (the return's location)
+
+        if debugInfo then
+            em.Dbg <- diLoc (max 1 f.line) sp
+
+        /// In a debug build, a variable gdb can show: v kept in a stack slot described by
+        /// #dbg_declare (or, with slot given, the existing slot).
+        let declareVar (x: string) (t: Ty) (v: string) (slot: string option) (arg: int) =
+            if debugInfo then
+                match sourceName x, diType t with
+                | Some name, Some dt ->
+                    let loc = em.Dbg
+
+                    let p =
+                        match slot with
+                        | Some p -> p
+                        | None ->
+                            let p = "%dbg." + em.Fresh(name.Replace('.', '_'))
+                            em.Alloca(sprintf "%s = alloca %s" p (llty t))
+                            // a parameter's store has no line, as in C: it is prologue, so a
+                            // breakpoint on the function stops after it
+                            if arg > 0 then em.Dbg <- ""
+                            em.Emit(sprintf "store %s %s, ptr %s" (llty t) v p)
+                            em.Dbg <- loc
+                            p
+
+                    let argPart = if arg > 0 then sprintf ", arg: %d" arg else ""
+                    let var = meta (sprintf "!DILocalVariable(name: \"%s\"%s, scope: %s, file: %s, line: %d, type: %s)" name argPart sp (diFile f.file) (max 1 line) dt)
+                    em.Raw(sprintf "#dbg_declare(ptr %s, %s, !DIExpression(), %s)" p var loc)
+                | _ -> ()
         let selfProto = proto f
 
         /// Emits the test of pattern p against v (of type t); returns env extended with its bindings.
@@ -825,10 +955,21 @@ let compile
         let rec gen (env: Map<string, Binding>) (tail: bool) (e: CExpr) : string =
             match e.k with
             | CLine(ln, e) ->
+                let saved, savedLine = em.Dbg, line
+
+                if debugInfo && ln > 0 then
+                    line <- ln
+                    lastLine <- max lastLine ln
+                    em.Dbg <- diLoc ln sp
+
                 try
-                    gen env tail e
-                with CompileError(0, msg) ->
-                    fail ln msg
+                    try
+                        gen env tail e
+                    with CompileError(0, msg) ->
+                        fail ln msg
+                finally
+                    em.Dbg <- saved
+                    line <- savedLine
             | CInt k -> if isFloat e.ty then floatConst (llty e.ty) (float k) else string k
             | CFloat x -> floatConst (llty e.ty) x
             | CBool b -> if b then "true" else "false"
@@ -837,12 +978,14 @@ let compile
             | CLocal x -> lookup env x e.ty
             | CLet(x, v, body) ->
                 let vv = gen env false v
+                declareVar x v.ty vv None 0
                 gen (env.Add(x, Ssa vv)) tail body
             | CLetMut(x, v, body) ->
                 let vv = gen env false v
                 let slot = "%slot." + x
                 em.Alloca(sprintf "%s = alloca %s" slot (llty v.ty))
                 em.Emit(sprintf "store %s %s, ptr %s" (llty v.ty) vv slot)
+                declareVar x v.ty vv (Some slot) 0
                 let needsDrop = heap v.ty
                 let r = gen (env.Add(x, Slot slot)) (tail && not needsDrop) body
 
@@ -1202,6 +1345,7 @@ let compile
                 let slot = "%slot." + x
                 em.Alloca(sprintf "%s = alloca %s" slot lt)
                 em.Emit(sprintf "store %s %s, ptr %s" lt va slot)
+                declareVar x a.ty va (Some slot) 0
                 let lc, lb, lend = em.Fresh "fcond", em.Fresh "fbody", em.Fresh "fend"
                 em.Emit(sprintf "br label %%%s" lc)
                 em.Label lc
@@ -1469,11 +1613,17 @@ let compile
             | _ -> failwithf "unknown primitive %s" op
 
         let env = f.pars |> List.fold (fun (m: Map<_, _>) (x, _) -> m.Add(x, Ssa("%p." + x))) Map.empty
+        f.pars |> List.iteri (fun i (x, t) -> declareVar x t ("%p." + x) None (i + 1))
         let v = gen env true f.body
         let rt = llty f.ret
+
+        if debugInfo then
+            em.Dbg <- diLoc (max 1 lastLine) sp // returning belongs to the last statement, not the header
+
         em.Emit(sprintf "ret %s %s" rt v)
         let ps = f.pars |> List.map (fun (x, t) -> sprintf "%s %%p.%s" (llty t) x) |> String.concat ", "
-        funcs.Append(sprintf "define internal %s %s(%s) {\n%s}\n\n" rt (sym f.name) ps em.Body) |> ignore
+        let dbg = if debugInfo then " !dbg " + sp else ""
+        funcs.Append(sprintf "define internal %s %s(%s)%s {\n%s}\n\n" rt (sym f.name) ps dbg em.Body) |> ignore
 
     for KeyValue(name, s) in externs do
         let ret, sret = cRet s.ret
@@ -1594,4 +1744,11 @@ let compile
         let ps = e.pars |> List.mapi (fun i t -> sprintf "%s p%d" (cName t) i)
         header.Append(sprintf "%s %s(%s);\n" (cName e.ret) e.cname (if ps.IsEmpty then "void" else String.concat ", " ps)) |> ignore
 
-    top.ToString() + "\n" + helpers.ToString() + funcs.ToString(), header.ToString()
+    if debugInfo then
+        compileUnit.Force() |> ignore
+        let flags = meta "!{i32 7, !\"Dwarf Version\", i32 5}"
+        let version = meta "!{i32 2, !\"Debug Info Version\", i32 3}"
+        md.AppendLine(sprintf "!llvm.dbg.cu = !{%s}" compileUnit.Value) |> ignore
+        md.AppendLine(sprintf "!llvm.module.flags = !{%s, %s}" flags version) |> ignore
+
+    top.ToString() + "\n" + helpers.ToString() + funcs.ToString() + "\n" + md.ToString(), header.ToString()

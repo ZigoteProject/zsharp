@@ -343,6 +343,8 @@ let build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) (isLib: 
 
         File.WriteAllText(ll, ir)
         let san = if sanitize then [ "-fsanitize=address,undefined"; "-g" ] else []
+        // -g: unoptimized, so stepping follows the source
+        let opt = if Codegen.debugInfo then [ "-O0"; "-g" ] else [ "-O2" ]
 
         let run (exe: string) (args: string list) =
             let code, output = exec exe args true
@@ -355,8 +357,8 @@ let build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) (isLib: 
                 let rt = Path.ChangeExtension(ll, ".rt.o")
 
                 let failure =
-                    run "clang" ([ "-O2"; "-c"; "-Wno-override-module" ] @ san @ [ ll; "-o"; obj ])
-                    |> Option.orElseWith (fun () -> run "clang" ([ "-O2"; "-c" ] @ san @ [ runtimeFile "rt.c"; "-o"; rt ]))
+                    run "clang" (opt @ [ "-c"; "-Wno-override-module" ] @ san @ [ ll; "-o"; obj ])
+                    |> Option.orElseWith (fun () -> run "clang" (opt @ [ "-c" ] @ san @ [ runtimeFile "rt.c"; "-o"; rt ]))
                     |> Option.orElseWith (fun () ->
                         if File.Exists out then
                             File.Delete out
@@ -372,7 +374,7 @@ let build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) (isLib: 
                 failure
             else
                 let linked = links |> Seq.map (fun l -> if l.Contains "/" then l else "-l" + l) |> List.ofSeq
-                timed "clang" (fun () -> run "clang" ([ "-O2"; "-rdynamic"; "-Wno-override-module" ] @ san @ [ ll; runtimeFile "rt.c" ] @ linked @ [ "-o"; out; "-lm" ]))
+                timed "clang" (fun () -> run "clang" (opt @ [ "-rdynamic"; "-Wno-override-module" ] @ san @ [ ll; runtimeFile "rt.c" ] @ linked @ [ "-o"; out; "-lm" ]))
 
         if not emitLlvm then
             File.Delete ll
