@@ -30,25 +30,33 @@ const sep = (rule, separator) => optional(sep1(rule, separator));
 module.exports = grammar({
   name: 'zsharp',
 
-  externals: $ => [$._newline, $._indent, $._dedent],
+  // _error_sentinel is never used by a rule: tree-sitter marks it valid only during error
+  // recovery, which is how the scanner knows to stay out of the way
+  externals: $ => [$._newline, $._indent, $._dedent, $._error_sentinel],
 
   extras: $ => [/\s/, $.comment],
 
   word: $ => $.identifier,
 
   conflicts: $ => [
-    [$._pattern_atom, $._primary],
-    [$.constructor_pattern, $._pattern_atom],
-    [$.application, $._expression],
+    [$.match_expression],
+    [$.if_expression],
+    [$._parameter, $._pattern_atom],
+    [$.type_name, $.measure],
+    [$._type_atom, $.measure],
+    [$.as_pattern, $.tuple_pattern],
+    [$._primary, $.field_value],
+    [$.union_type],
   ],
 
   rules: {
-    source_file: $ => repeat(choice($._declaration, $._newline)),
+    // declarations separated by newlines (a bare newline can't repeat: layout tokens are
+    // zero-width, so `repeat(_newline)` would loop at one position)
+    source_file: $ => seq(optional($._newline), optional(seq(sep1($._declaration, $._newline), optional($._newline)))),
 
     // ------------------------------------------------------------ declarations
 
-    _declaration: $ => choice(
-      $.attributes,
+    _declaration: $ => seq(optional(seq($.attributes, optional($._newline))), choice(
       $.let_declaration,
       $.type_declaration,
       $.type_extension,
@@ -58,7 +66,7 @@ module.exports = grammar({
       $.derive_declaration,
       $.open_declaration,
       $.module_declaration,
-    ),
+    )),
 
     attributes: $ => seq('[<', sep1($.attribute, ';'), '>]'),
     attribute: $ => seq(
@@ -94,27 +102,40 @@ module.exports = grammar({
       field('name', $.identifier),
       optional($.type_parameters),
       optional(seq('=', choice(
-        seq($._type_body, optional($._members)),
-        seq($._indent, $._type_body, optional($._members), $._dedent),
-        seq($._indent, $._members, $._dedent),
+        // type T = { … }  (members below, or after `with`)
+        seq($._type_body, optional($._trailing_members)),
+        // type T =  then the body indented, members after it at the same indentation
+        seq(
+          $._indent, $._type_body,
+          repeat(seq($._newline, $.member_declaration)),
+          optional(seq($._newline, 'with', $._member_block)),
+          $._dedent,
+        ),
+        // a type with only members
+        seq($._indent, sep1($.member_declaration, $._newline), $._dedent),
       ))),
     ),
     type_parameters: $ => seq('<', sep1($.type_variable, ','), '>'),
     _type_body: $ => choice($.record_type, $.union_type),
 
-    record_type: $ => seq('{', sep1($.field_declaration, choice(';', $._newline)), optional(';'), '}'),
+    record_type: $ => seq('{', sep1($.field_declaration, choice(';', $._newline)), optional(choice(';', $._newline)), '}'),
     field_declaration: $ => seq(field('name', $.identifier), ':', $._type, optional(seq('=', $._expression))),
 
     union_type: $ => seq(optional('|'), sep1($.union_case, choice('|', seq($._newline, '|')))),
     union_case: $ => seq(field('name', $.identifier), optional(seq('of', sep1($.case_field, '*')))),
     case_field: $ => seq(optional(seq(field('name', $.identifier), ':')), $._type_atom),
 
-    type_extension: $ => seq('type', field('name', $.identifier), optional($.type_parameters), $._members),
+    type_extension: $ => seq('type', field('name', $.identifier), optional($.type_parameters), 'with', $._member_block),
 
-    _members: $ => choice(
-      seq(optional($._newline), optional('with'), repeat1(seq(optional($._newline), $.member_declaration))),
-      seq(optional('with'), $._indent, sep1($.member_declaration, $._newline), $._dedent),
-      seq($._indent, 'with', $._indent, sep1($.member_declaration, $._newline), $._dedent, $._dedent),
+    // members after a one-line type body: `with` on the same line, or indented below it
+    _trailing_members: $ => choice(
+      seq('with', $._member_block),
+      seq($._indent, sep1($.member_declaration, $._newline), $._dedent),
+      seq($._indent, 'with', $._member_block, $._dedent),
+    ),
+    _member_block: $ => choice(
+      $.member_declaration,
+      seq($._indent, sep1($.member_declaration, $._newline), $._dedent),
     ),
     member_declaration: $ => seq(
       optional('static'),
@@ -144,7 +165,8 @@ module.exports = grammar({
     _type: $ => choice($.function_type, $.tuple_type, $._type_atom),
     function_type: $ => prec.right(seq(choice($.tuple_type, $._type_atom), '->', $._type)),
     tuple_type: $ => prec.left(seq($._type_atom, repeat1(seq('*', $._type_atom)))),
-    _type_atom: $ => choice($.type_name, $.generic_type, $.postfix_type, $.type_variable, seq('(', $._type, ')')),
+    _type_atom: $ => choice($.type_name, $.generic_type, $.postfix_type, $.type_variable, $.variadic, seq('(', $._type, ')')),
+    variadic: $ => '...',
     type_name: $ => choice($.identifier, $.qualified_identifier),
     generic_type: $ => seq($.type_name, '<', sep1(choice($._type, $.measure), ','), '>'),
     postfix_type: $ => prec.left(seq($._type_atom, $.type_name)),
@@ -153,7 +175,7 @@ module.exports = grammar({
 
     // ------------------------------------------------------------ statements and blocks
 
-    _body: $ => choice($._expression, $.block),
+    _body: $ => choice($._expression, $.assignment, $.block),
     block: $ => seq($._indent, sep1($._statement, $._newline), optional($._newline), $._dedent),
 
     _statement: $ => choice($.let_binding, $.let_function, $.let_mutable, $.assignment, $._expression),
@@ -177,18 +199,23 @@ module.exports = grammar({
       $._primary,
     ),
 
-    if_expression: $ => prec.right(seq(
+    // `else` may start the next line, so a newline after the then-branch is ambiguous until
+    // the next token: the declared conflict lets the parser try both
+    if_expression: $ => seq(
       'if', field('condition', $._expression), 'then', field('then', $._body),
       optional(seq(optional($._newline), 'else', field('else', $._body))),
-    )),
+    ),
 
-    match_expression: $ => prec.right(seq(
+    // like `if`: after an arm, a newline may lead to another `|` or to the next statement
+    match_expression: $ => (seq(
       'match', field('value', $._expression), 'with',
       choice(
+        $.single_rule, // match p with (a, b) -> (b, a)
         repeat1(seq(optional($._newline), $.match_rule)),
         seq($._indent, repeat1(seq(optional($._newline), $.match_rule)), $._dedent),
       ),
     )),
+    single_rule: $ => prec.right(seq(field('pattern', $._pattern), '->', field('body', $._body))),
     match_rule: $ => prec.right(seq(
       '|', field('pattern', $._pattern), optional(seq('when', field('guard', $._expression))), '->', field('body', $._body),
     )),
@@ -243,10 +270,10 @@ module.exports = grammar({
     index_access: $ => prec.left(PREC.member, seq($._primary, '.', '[', $._expression, ']')),
     parenthesized_expression: $ => seq('(', $._expression, ')'),
     tuple: $ => seq('(', $._expression, repeat1(seq(',', $._expression)), ')'),
-    list: $ => seq('[', sep($._expression, choice(';', $._newline)), optional(';'), ']'),
-    array: $ => seq('[|', sep($._expression, choice(';', $._newline)), optional(';'), '|]'),
-    record: $ => seq('{', sep1($.field_value, choice(';', $._newline)), optional(';'), '}'),
-    record_update: $ => seq('{', $._expression, 'with', sep1($.field_value, choice(';', $._newline)), optional(';'), '}'),
+    list: $ => seq('[', sep($._expression, choice(';', $._newline)), optional(choice(';', $._newline)), ']'),
+    array: $ => seq('[|', sep($._expression, choice(';', $._newline)), optional(choice(';', $._newline)), '|]'),
+    record: $ => seq('{', sep1($.field_value, choice(';', $._newline)), optional(choice(';', $._newline)), '}'),
+    record_update: $ => seq('{', $._expression, 'with', sep1($.field_value, choice(';', $._newline)), optional(choice(';', $._newline)), '}'),
     field_value: $ => seq(field('name', $.identifier), '=', $._expression),
 
     // ------------------------------------------------------------ patterns

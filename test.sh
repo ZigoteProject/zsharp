@@ -56,10 +56,10 @@ if diff -q <(cat editors/tree-sitter-zsharp/queries/*.scm) <(cat editors/zed/lan
   echo "ok   editors/zed queries"
 else echo "FAIL editors/zed queries differ from editors/tree-sitter-zsharp/queries"; fail=1; fi
 if command -v tree-sitter >/dev/null; then
-  if (cd editors/tree-sitter-zsharp && tree-sitter generate >/dev/null && tree-sitter test >/dev/null) \
-     && tree-sitter parse --quiet --grammar-path editors/tree-sitter-zsharp $(find tests runtime -name '*.zs') >"$tmp/ts.log" 2>&1; then
+  ts=$(editors/tree-sitter-zsharp/script/errors.sh 2>&1)
+  if [ "$(echo "$ts" | tail -1)" = "files with errors: 0" ] && (cd editors/tree-sitter-zsharp && timeout 60 tree-sitter test >/dev/null 2>&1); then
     echo "ok   editors/tree-sitter-zsharp"
-  else echo "FAIL editors/tree-sitter-zsharp"; head -20 "$tmp/ts.log"; fail=1; fi
+  else echo "FAIL editors/tree-sitter-zsharp"; echo "$ts" | tail -20; fail=1; fi
 else echo "skip editors/tree-sitter-zsharp (no tree-sitter CLI; rebuild the dev image)"; fi
 
 # C interop: a directory with main.c links the static library built from its lib.zs

@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum TokenType { NEWLINE, INDENT, DEDENT };
+enum TokenType { NEWLINE, INDENT, DEDENT, ERROR_SENTINEL };
 
 #define MAX_DEPTH 255
 
@@ -50,7 +50,7 @@ static void skip(TSLexer *lexer) { lexer->advance(lexer, true); }
 
 bool tree_sitter_zsharp_external_scanner_scan(void *payload, TSLexer *lexer, const bool *valid) {
     Scanner *s = payload;
-    bool recovering = valid[NEWLINE] && valid[INDENT] && valid[DEDENT];
+    bool recovering = valid[ERROR_SENTINEL];
 
     lexer->mark_end(lexer); // every token here is zero-width
     bool at_line_start = false;
@@ -106,7 +106,9 @@ bool tree_sitter_zsharp_external_scanner_scan(void *payload, TSLexer *lexer, con
         return true;
     }
 
-    if (valid[NEWLINE] && indent <= current) {
+    // a deeper line where no block can start is a continuation: inside { } and [ ] it
+    // separates fields and items, as in the compiler
+    if (valid[NEWLINE] && (indent <= current || !valid[INDENT])) {
         lexer->result_symbol = NEWLINE;
         return true;
     }
