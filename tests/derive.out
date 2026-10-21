@@ -1,0 +1,8 @@
+{ x = 1; y = 2 } true false -1
+Rect ({ x = 0; y = 0 }, { x = 1; y = 2 }) | Circle 1.5 | Empty
+true false 1 -1
+true false
+Node (Node (Leaf, 1, Node (Leaf, 2, Leaf)), 3, Leaf)
+true [Some 1; None] true -1
+Ok 5 [b; a]
+b a 3 4 

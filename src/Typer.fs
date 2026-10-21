@@ -203,11 +203,18 @@ let check (decls: (int * Decl) list) : Program =
     let traitAliases = Dictionary<string, string>() // "show" -> "Show.show"
     let impls = Dictionary<string * string, Dictionary<string, string>>() // (trait, type) -> method -> function
     let implRequires = Dictionary<string * string, Set<string> list>() // traits each type argument needs
+    let derives = Dictionary<string, (int * string * Param list * SType option * Expr) list>()
+    let manualImpls = HashSet<string * string>()
+    let optOut = HashSet<string * string>() // [<NoEquality>] / [<NoComparison>]
+    let mutable autoDerive: string -> string -> bool = fun _ _ -> false // set once derives can run
 
     userImpl <-
         fun tr t ->
             match prune t with
             | TCon(n, args) ->
+                if not (implRequires.ContainsKey((tr, n))) then
+                    autoDerive tr n |> ignore
+
                 match implRequires.TryGetValue((tr, n)) with
                 | true, reqs ->
                     for a, trs in List.zip args reqs do
@@ -658,6 +665,54 @@ let check (decls: (int * Decl) list) : Program =
             mk (CLet(tmp, cr, built)) built.ty
         | Field(r, f) -> field (inf r) f
         | Question _ -> fail 0 "'?' is only supported as `let x = e?` or as a whole statement (for now)"
+        | DeriveCtx(ctx, e) ->
+            try
+                inf e
+            with CompileError(l, msg) ->
+                fail l (sprintf "%s: %s" ctx msg)
+        | ForIn(x, xs, body) ->
+            let cxs = inf xs
+            settle cxs.ty
+
+            let coll =
+                { u = uniq "$coll"
+                  ty = cxs.ty
+                  mut = false
+                  depth = depth }
+
+            let env' = env.Add("$coll", coll)
+
+            let loop =
+                match prune cxs.ty with
+                | TCon("array", _) ->
+                    For("$i", Lit 0L, None, Bin("-", Call("Array.length", [ Var "$coll" ]), Lit 1L), Let(PIdent(x, None), None, Index(Var "$coll", Var "$i"), body))
+                | TCon("list", _) ->
+                    // a while loop over a cursor, so the body may assign outer mutable variables
+                    LetMut(
+                        "$cur",
+                        None,
+                        Var "$coll",
+                        LetMut(
+                            "$go",
+                            None,
+                            BoolLit true,
+                            While(
+                                Var "$go",
+                                Match(
+                                    Var "$cur",
+                                    [ PIdent("::", Some(PTuple [ PIdent(x, None); PIdent("$rest", None) ])),
+                                      None,
+                                      Seq(Assign(Var "$cur", Var "$rest"), body)
+                                      PIdent("[]", None), None, Assign(Var "$go", BoolLit false) ]
+                                )
+                            )
+                        )
+                    )
+                | t -> fail 0 (sprintf "'for ... in' needs a list or an array, not %s" (show t))
+
+            let cl = infer env' depth loop
+            expect "body of 'for'" tUnit cl.ty
+            mk (CLet(coll.u, cxs, cl)) tUnit
         | TryBind(p, e, rest) ->
             // match e with Ok p -> rest | Error err -> Error err
             let ce = inf e
@@ -1401,8 +1456,140 @@ let check (decls: (int * Decl) list) : Program =
 
         defineGroup items
 
-    for ln, d in decls do
+    /// Registers an impl and type-checks its methods. The impl is registered before its
+    /// bodies so they may use it recursively; its requirements on type arguments are inferred.
+    let declareImpl (tr: string) (head: SType) (defs: (int * string * Param list * SType option * Expr) list) =
+        let methods =
+            traitMethods.Values |> Seq.filter (fun m -> m.owner = tr) |> Seq.map (fun m -> m.name) |> Set.ofSeq
+
+        if methods.IsEmpty then
+            fail 0 (sprintf "unknown trait '%s'" tr)
+
+        let hn, hargs =
+            match head with
+            | STName(n, args) ->
+                (match typeAliases.TryGetValue n with
+                 | true, c -> c
+                 | _ -> n),
+                args
+            | _ -> fail 0 "an impl is for a named type, such as Show<Point> or Show<list<'a>>"
+
+        let hvars =
+            hargs
+            |> List.map (function
+                | STVar v -> v
+                | _ -> fail 0 "impl type arguments must be type variables: impl Show<list<'a>>")
+
+        if (List.distinct hvars).Length <> hvars.Length then
+            fail 0 "impl type variables must be distinct"
+
+        if impls.ContainsKey((tr, hn)) then
+            fail 0 (sprintf "%s<%s> is already implemented" tr hn)
+
+        let given = defs |> List.map (fun (_, n, _, _, _) -> n)
+
+        for m in methods do
+            if not (List.contains m given) then
+                fail 0 (sprintf "impl %s<%s> is missing '%s'" tr hn m)
+
+        for m in given do
+            if not (methods.Contains m) then
+                fail 0 (sprintf "trait %s has no method '%s'" tr m)
+
+        // registered before the bodies, so they may use the impl recursively
+        let table = Dictionary<string, string>()
+        impls[(tr, hn)] <- table
+        implRequires[(tr, hn)] <- List.map (fun _ -> Set.empty) hvars
+
+        let items =
+            defs
+            |> List.map (fun (dl, m, ps, ret, body) ->
+                let tm = traitMethods[tr + "." + m]
+                let fname = sprintf "%s<%s>#%s" tr hn m
+                table[m] <- fname
+                let ps = if ps.IsEmpty then [ PUnit, None ] else ps
+
+                let expected () =
+                    let t = substGen [ toTy None head ] tm.ty
+                    if tm.isConst then TFun(tUnit, t) else t
+
+                dl, fname, true, ps, ret, body, Some expected)
+
+        let results = defineGroupWith items
+
+        // what the impl needs from each type argument: the union over its methods
+        implRequires[(tr, hn)] <-
+            hvars
+            |> List.map (fun v ->
+                results
+                |> List.collect (fun (g, tvs) ->
+                    match tvs.TryGetValue v with
+                    | true, t ->
+                        match prune t with
+                        | TGen i -> (List.item i g.kinds).traits |> Set.toList
+                        | _ -> []
+                    | _ -> [])
+                |> Set.ofList)
+
+    let shapeOf (tname: string) : Derive.ShapeInfo =
+        match types[tname].def with
+        | RecordDef fs -> Derive.RecordShape(List.map fst fs)
+        | UnionDef cs ->
+            Derive.UnionShape(
+                cs
+                |> List.map (fun (c, fts) ->
+                    c,
+                    List.mapi
+                        (fun j n -> defaultArg n (sprintf "item%d" (j + 1)))
+                        (match ctorFieldNames.TryGetValue c with
+                         | true, ns -> ns
+                         | _ -> List.map (fun _ -> None) fts))
+            )
+
+    /// Implements trait `tr` for type `tname` by expanding `derive tr`.
+    let deriveImpl (context: string) (tr: string) (tname: string) =
+        if not (derives.ContainsKey tr) then
+            fail 0 (sprintf "no derive named '%s'" tr)
+
+        let head = STName(tname, List.init types[tname].npars (fun i -> STVar(sprintf "t%d" i)))
+        let defs = Derive.expand tr tname head (shapeOf tname) derives[tr]
+        let saved = Dictionary<string, Ty>(tyvars) // may run in the middle of another function
+
         try
+            try
+                declareImpl tr head defs
+            with CompileError(l, msg) ->
+                fail l (sprintf "%s: %s" context msg)
+        finally
+            tyvars.Clear()
+
+            for kv in saved do
+                tyvars[kv.Key] <- kv.Value
+
+    // Eq, Ord, Hash and Show come from the prelude's derives, the first time they're needed
+    autoDerive <-
+        fun tr n ->
+            let ok =
+                List.contains tr [ "Eq"; "Ord"; "Hash"; "Show" ]
+                && derives.ContainsKey tr
+                && not (manualImpls.Contains((tr, n)) || optOut.Contains((tr, n)))
+                && (match types.TryGetValue n with
+                    | true, { def = RecordDef _ } -> true
+                    | true, { def = UnionDef cs } -> not cs.IsEmpty
+                    | _ -> false)
+
+            if ok then
+                deriveImpl (sprintf "automatic %s for %s" tr n) tr n
+
+            ok
+
+    // explicit impls anywhere in the program win over automatic derives
+    for _, d in decls do
+        match d with
+        | Impl(tr, STName(n, _), _) -> manualImpls.Add((tr, n)) |> ignore
+        | _ -> ()
+
+    let rec declare (ln: int) (d: Decl) =
             match d with
             | TypeDecl(name, tps, body, ms) ->
                 if prims.Contains name || builtinCons.ContainsKey name || types.ContainsKey name then
@@ -1494,78 +1681,24 @@ let check (decls: (int * Decl) list) : Program =
 
                 if name = "Show" then
                     traitAliases["string"] <- "Show.show"
-            | Impl(tr, head, defs) ->
-                let methods =
-                    traitMethods.Values |> Seq.filter (fun m -> m.owner = tr) |> Seq.map (fun m -> m.name) |> Set.ofSeq
+            | Impl(tr, head, defs) -> declareImpl tr head defs
+            | Derive(name, defs) -> derives[name] <- defs
+            | Attrs(attrs, inner) ->
+                declare ln inner
 
-                if methods.IsEmpty then
-                    fail 0 (sprintf "unknown trait '%s'" tr)
-
-                let hn, hargs =
-                    match head with
-                    | STName(n, args) ->
-                        (match typeAliases.TryGetValue n with
-                         | true, c -> c
-                         | _ -> n),
-                        args
-                    | _ -> fail 0 "an impl is for a named type, such as Show<Point> or Show<list<'a>>"
-
-                let hvars =
-                    hargs
-                    |> List.map (function
-                        | STVar v -> v
-                        | _ -> fail 0 "impl type arguments must be type variables: impl Show<list<'a>>")
-
-                if (List.distinct hvars).Length <> hvars.Length then
-                    fail 0 "impl type variables must be distinct"
-
-                if impls.ContainsKey((tr, hn)) then
-                    fail 0 (sprintf "%s<%s> is already implemented" tr hn)
-
-                let given = defs |> List.map (fun (_, n, _, _, _) -> n)
-
-                for m in methods do
-                    if not (List.contains m given) then
-                        fail 0 (sprintf "impl %s<%s> is missing '%s'" tr hn m)
-
-                for m in given do
-                    if not (methods.Contains m) then
-                        fail 0 (sprintf "trait %s has no method '%s'" tr m)
-
-                // registered before the bodies, so they may use the impl recursively
-                let table = Dictionary<string, string>()
-                impls[(tr, hn)] <- table
-                implRequires[(tr, hn)] <- List.map (fun _ -> Set.empty) hvars
-
-                let items =
-                    defs
-                    |> List.map (fun (dl, m, ps, ret, body) ->
-                        let tm = traitMethods[tr + "." + m]
-                        let fname = sprintf "%s<%s>#%s" tr hn m
-                        table[m] <- fname
-                        let ps = if ps.IsEmpty then [ PUnit, None ] else ps
-
-                        let expected () =
-                            let t = substGen [ toTy None head ] tm.ty
-                            if tm.isConst then TFun(tUnit, t) else t
-
-                        dl, fname, true, ps, ret, body, Some expected)
-
-                let results = defineGroupWith items
-
-                // what the impl needs from each type argument: the union over its methods
-                implRequires[(tr, hn)] <-
-                    hvars
-                    |> List.map (fun v ->
-                        results
-                        |> List.collect (fun (g, tvs) ->
-                            match tvs.TryGetValue v with
-                            | true, t ->
-                                match prune t with
-                                | TGen i -> (List.item i g.kinds).traits |> Set.toList
-                                | _ -> []
-                            | _ -> [])
-                        |> Set.ofList)
+                match inner with
+                | TypeDecl(name, _, _, _) ->
+                    for a, args in attrs do
+                        match a with
+                        | "Derive" ->
+                            for tr in args do
+                                deriveImpl (sprintf "Derive(%s) on %s" tr name) tr name
+                        | "NoEquality" ->
+                            optOut.Add(("Eq", name)) |> ignore
+                            optOut.Add(("Hash", name)) |> ignore
+                        | "NoComparison" -> optOut.Add(("Ord", name)) |> ignore
+                        | _ -> fail 0 (sprintf "unknown attribute '%s'" a)
+                | _ -> fail 0 "attributes are only supported on type declarations yet"
             | TypeExt(name, tps, ms) ->
                 let name =
                     match typeAliases.TryGetValue name with
@@ -1576,6 +1709,10 @@ let check (decls: (int * Decl) list) : Program =
                     fail 0 (sprintf "unknown type '%s'" name)
 
                 declareMembers name tps ms
+
+    for ln, d in decls do
+        try
+            declare ln d
         with CompileError(0, msg) ->
             fail ln msg
 

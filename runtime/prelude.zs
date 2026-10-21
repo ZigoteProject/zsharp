@@ -26,6 +26,62 @@ trait Show<'a> =
 trait Hash<'a> =
   abstract hash : 'a -> int
 
+// What `Shape.kind` matches in a derive.
+type ShapeKind =
+  | RecordKind
+  | UnionKind
+
+// Structural equality, ordering, hashing and printing for every record and union. Each is
+// derived the first time a type needs it; an explicit impl, [<NoEquality>] or
+// [<NoComparison>] takes precedence.
+derive Eq =
+  let equal (a: 'self) (b: 'self) =
+    match Shape.pair a b with
+    | Same c ->
+        let mutable same = true
+        for f in c.fields do
+          if same then same <- f.left = f.right
+        same
+    | Different _ -> false
+
+derive Ord =
+  let compare (a: 'self) (b: 'self) =
+    match Shape.pair a b with
+    | Same c ->
+        let mutable r = 0
+        for f in c.fields do
+          if r = 0 then r <- compare f.left f.right
+        r
+    | Different (i, j) -> compare i j
+
+derive Hash =
+  let hash (x: 'self) =
+    match Shape.of x with
+    | Record r ->
+        let mutable h = 17
+        for f in r.fields do
+          h <- h * 31 + hash f.value
+        h
+    | Union c ->
+        let mutable h = 17 + c.index
+        for f in c.fields do
+          h <- h * 31 + hash f.value
+        h
+
+derive Show =
+  let show (x: 'self) =
+    match Shape.of x with
+    | Record r ->
+        let mutable s = "{ "
+        for f in r.fields do
+          s <- s + (if f.index > 0 then "; " else "") + f.name + " = " + show f.value
+        s + " }"
+    | Union c ->
+        let mutable s = c.name
+        for f in c.fields do
+          s <- s + (if f.index = 0 then (if c.count > 1 then " (" else " ") else ", ") + show f.value
+        if c.count > 1 then s + ")" else s
+
 type option<'a> =
   | None
   | Some of 'a
@@ -232,3 +288,11 @@ type list<'a> with
 type option<'a> with
   member o.IsSome = Option.isSome o
   member o.IsNone = Option.isNone o
+
+impl Show<list<'a>> =
+  let show xs =
+    let rec go acc first xs =
+      match xs with
+      | [] -> acc
+      | x :: rest -> go (acc + (if first then "" else "; ") + show x) false rest
+    "[" + go "" true xs + "]"

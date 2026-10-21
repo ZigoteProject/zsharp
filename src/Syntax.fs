@@ -47,6 +47,7 @@ type Expr =
     | Assign of Expr * Expr
     | While of Expr * Expr
     | For of string * Expr * Expr option * Expr * Expr // var, from, step, to, body
+    | ForIn of string * Expr * Expr // for x in xs do body (list or array)
     | Seq of Expr * Expr
     | Tuple of Expr list
     | RecordLit of (string * Expr) list
@@ -57,6 +58,7 @@ type Expr =
     | Match of Expr * (Pat * Expr option * Expr) list
     | Question of Expr // e? (only valid where TryBind can be formed)
     | TryBind of Pat * Expr * Expr // let p = e? ; rest  (rest runs only if e is Ok)
+    | DeriveCtx of string * Expr // prefixes errors inside a derive expansion ("field name: ...")
     | At of int * Expr // source line, for error messages
 
 and Param = Pat * SType option
@@ -86,7 +88,45 @@ type Decl =
     | TypeDecl of name: string * tparams: string list * TypeBody * Member list
     | TypeExt of name: string * tparams: string list * Member list // type string with member ...
     | Trait of name: string * tparam: string * methods: (string * SType) list
+    | Derive of name: string * defs: (int * string * Param list * SType option * Expr) list
+    | Attrs of (string * string list) list * Decl // [<Derive(Json); NoEquality>]
     | Impl of traitName: string * head: SType * defs: (int * string * Param list * SType option * Expr) list
+
+/// Rebuilds an expression with f applied to each direct child expression.
+let mapExpr (f: Expr -> Expr) (e: Expr) : Expr =
+    match e with
+    | Lit _
+    | FloatLit _
+    | BoolLit _
+    | StrLit _
+    | UnitLit
+    | Var _ -> e
+    | Call(n, args) -> Call(n, List.map f args)
+    | App(h, args) -> App(f h, List.map f args)
+    | Lambda(ps, b) -> Lambda(ps, f b)
+    | Bin(op, a, b) -> Bin(op, f a, f b)
+    | Neg a -> Neg(f a)
+    | Not a -> Not(f a)
+    | If(c, t, e) -> If(f c, f t, Option.map f e)
+    | Let(p, t, v, b) -> Let(p, t, f v, f b)
+    | LetFun(n, r, ps, t, b, rest) -> LetFun(n, r, ps, t, f b, f rest)
+    | LetMut(x, t, v, b) -> LetMut(x, t, f v, f b)
+    | Assign(a, b) -> Assign(f a, f b)
+    | While(c, b) -> While(f c, f b)
+    | For(x, a, s, b, body) -> For(x, f a, Option.map f s, f b, f body)
+    | ForIn(x, xs, b) -> ForIn(x, f xs, f b)
+    | Seq(a, b) -> Seq(f a, f b)
+    | Tuple xs -> Tuple(List.map f xs)
+    | RecordLit fs -> RecordLit(fs |> List.map (fun (n, v) -> n, f v))
+    | Update(r, fs) -> Update(f r, fs |> List.map (fun (n, v) -> n, f v))
+    | Field(r, n) -> Field(f r, n)
+    | Index(a, i) -> Index(f a, f i)
+    | ArrayLit xs -> ArrayLit(List.map f xs)
+    | Match(s, cases) -> Match(f s, cases |> List.map (fun (p, g, b) -> p, Option.map f g, f b))
+    | Question a -> Question(f a)
+    | TryBind(p, a, b) -> TryBind(p, f a, f b)
+    | DeriveCtx(c, a) -> DeriveCtx(c, f a)
+    | At(l, a) -> At(l, f a)
 
 // ---------------------------------------------------------------- lexer
 
@@ -127,11 +167,11 @@ let showTok =
 let keywords =
     set
         [ "let"; "rec"; "if"; "then"; "else"; "extern"; "true"; "false"; "not"; "match"; "with"; "when"
-          "type"; "of"; "as"; "fun"; "for"; "in"; "do"; "while"; "mutable"; "member"; "static"; "trait"; "impl"; "abstract" ]
+          "type"; "of"; "as"; "fun"; "for"; "in"; "do"; "while"; "mutable"; "member"; "static"; "trait"; "impl"; "abstract"; "derive" ]
 
 // longest first
 let symbols =
-    [ "..."; ".."; "->"; "<-"; "|>"; "|]"; "[|"; "::"; ">>"; "<>"; "<="; ">="; "&&"; "||"
+    [ "..."; ".."; "->"; "<-"; "|>"; "|]"; "[|"; "[<"; ">]"; "::"; ">>"; "<>"; "<="; ">="; "&&"; "||"
       "?"; "("; ")"; "{"; "}"; "["; "]"; ","; ";"; "|"; "."; ":"; "="; "<"; ">"; "+"; "-"; "*"; "/"; "%"; "@" ]
 
 let private unescape ln =
@@ -344,11 +384,13 @@ let lex (src: string) : Token[] =
                 | "("
                 | "{"
                 | "[" -> brackets.Push s[0]
-                | "[|" -> brackets.Push '['
+                | "[|"
+                | "[<" -> brackets.Push '('
                 | ")"
                 | "}"
                 | "]"
-                | "|]" when brackets.Count > 0 -> brackets.Pop() |> ignore
+                | "|]"
+                | ">]" when brackets.Count > 0 -> brackets.Pop() |> ignore
                 | _ -> ()
 
                 add (KSym(if prefixMinus then "~-" else s))
@@ -752,18 +794,23 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
             let x = ident ()
             expect (KKw "in") "'in'"
             let a = pipe ()
-            expect (KSym "..") "'..'"
-            let b = pipe ()
 
-            let step, b =
-                if isSym ".." then
-                    advance ()
-                    Some b, pipe ()
-                else
-                    None, b
+            if peek () = KKw "do" then
+                advance ()
+                ForIn(x, a, block ())
+            else
+                expect (KSym "..") "'..'"
+                let b = pipe ()
 
-            expect (KKw "do") "'do'"
-            For(x, a, step, b, block ())
+                let step, b =
+                    if isSym ".." then
+                        advance ()
+                        Some b, pipe ()
+                    else
+                        None, b
+
+                expect (KKw "do") "'do'"
+                For(x, a, step, b, block ())
         | _ -> pipe ()
 
     // x |> f a  ==>  f a x
@@ -1162,10 +1209,73 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
 
         List.ofSeq ms
 
-    let decl () =
+    let rec decl () =
         let ln = line ()
 
         match peek () with
+        | KSym "[<" ->
+            // [<Name; Name(arg, arg)>] before a declaration
+            advance ()
+            let attrs = ResizeArray()
+
+            while not (isSym ">]") do
+                let n = ident ()
+
+                let args =
+                    if isSym "(" then
+                        advance ()
+                        let xs = ResizeArray()
+
+                        while not (isSym ")") do
+                            match peek () with
+                            | KId a
+                            | KStr a ->
+                                advance ()
+                                xs.Add a
+                            | _ -> err "attribute argument"
+
+                            if isSym "," then
+                                advance ()
+
+                        advance ()
+                        List.ofSeq xs
+                    else
+                        []
+
+                attrs.Add(n, args)
+
+                if isSym ";" then
+                    advance ()
+
+            advance ()
+
+            if peek () = KNewline then
+                advance ()
+
+            let _, d = decl ()
+            ln, Attrs(List.ofSeq attrs, d)
+        | KKw "derive" ->
+            // derive Json = let toJson (x: 'self) = ...
+            advance ()
+            let name = ident ()
+            expect (KSym "=") "'='"
+            expect KIndent "indented 'let' definitions"
+            let defs = ResizeArray()
+
+            while peek () = KKw "let" do
+                let dl = line ()
+                advance ()
+                let f = ident ()
+                let ps = parameters ()
+                let ret = optTy ()
+                expect (KSym "=") "'='"
+                defs.Add(dl, f, ps, ret, block ())
+
+                if peek () = KNewline then
+                    advance ()
+
+            expect KDedent "end of derive"
+            ln, Derive(name, List.ofSeq defs)
         | KKw "type" ->
             advance ()
             let name = ident ()

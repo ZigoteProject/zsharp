@@ -11,6 +11,7 @@
     <Compile Include="Syntax.fs" />
     <Compile Include="Core.fs" />
     <Compile Include="Match.fs" />
+    <Compile Include="Derive.fs" />
     <Compile Include="Typer.fs" />
     <Compile Include="Mono.fs" />
     <Compile Include="Lift.fs" />
