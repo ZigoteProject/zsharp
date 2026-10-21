@@ -191,3 +191,20 @@ let Array.toList a =
   let rec go acc i =
     if i < 0 then acc else go (a.[i] :: acc) (i - 1)
   go [] (Array.length a - 1)
+
+// members on built-in types
+type string with
+  member s.Length = String.length s
+
+type array<'a> with
+  member a.Length = Array.length a
+
+type list<'a> with
+  member xs.Length = List.length xs
+  member xs.Head = List.head xs
+  member xs.Tail = List.tail xs
+  member xs.IsEmpty = List.isEmpty xs
+
+type option<'a> with
+  member o.IsSome = Option.isSome o
+  member o.IsNone = Option.isNone o

@@ -1,0 +1,7 @@
+length 25 add 4 zero 0 scaled 8
+areas 7 grown 9 12
+GET a.org timeout=30 retries=3 tag=none
+GET b.org timeout=50 retries=5 tag=x
+GET c.org timeout=30 retries=7 tag=none
+stack 2 size 2 b
+lengths 5 3 1 true

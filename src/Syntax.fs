@@ -65,10 +65,26 @@ type TypeBody =
     | RecordTy of (string * SType * Expr option) list // field, type, default
     | UnionTy of (string * (string option * SType) list) list // case, (field name, type)
 
+type MemberParam =
+    { mname: string
+      mty: SType option
+      optional: bool // ?x
+      mdefault: Expr option } // ?x = e
+
+type Member =
+    { name: string
+      isStatic: bool
+      self: string option // v in `member v.Name`
+      mpars: MemberParam list option // None: a property
+      mret: SType option
+      mbody: Expr
+      mline: int }
+
 type Decl =
     | Extern of name: string * args: SType list * variadic: bool * ret: SType
     | Fun of name: string * isRec: bool * pars: Param list * ret: SType option * body: Expr
-    | TypeDecl of name: string * tparams: string list * TypeBody
+    | TypeDecl of name: string * tparams: string list * TypeBody * Member list
+    | TypeExt of name: string * tparams: string list * Member list // type string with member ...
 
 // ---------------------------------------------------------------- lexer
 
@@ -86,7 +102,10 @@ type Tok =
     | KDedent
     | KEof
 
-type Token = { tok: Tok; line: int }
+type Token =
+    { tok: Tok
+      line: int
+      adj: bool } // no whitespace before it (F#: `f(x)` binds tighter than `f (x)`)
 
 let showTok =
     function
@@ -106,7 +125,7 @@ let showTok =
 let keywords =
     set
         [ "let"; "rec"; "if"; "then"; "else"; "extern"; "true"; "false"; "not"; "match"; "with"; "when"
-          "type"; "of"; "as"; "fun"; "for"; "in"; "do"; "while"; "mutable" ]
+          "type"; "of"; "as"; "fun"; "for"; "in"; "do"; "while"; "mutable"; "member"; "static" ]
 
 // longest first
 let symbols =
@@ -136,8 +155,14 @@ let lex (src: string) : Token[] =
     for li in 0 .. lines.Length - 1 do
         let line = lines[li]
         let ln = li + 1
-        let add t = toks.Add { tok = t; line = ln }
         let mutable i = 0
+        let mutable start = 0
+
+        let add t =
+            toks.Add
+                { tok = t
+                  line = ln
+                  adj = start > 0 && line[start - 1] <> ' ' }
 
         while i < line.Length && line[i] = ' ' do
             i <- i + 1
@@ -179,6 +204,7 @@ let lex (src: string) : Token[] =
 
         while i < line.Length do
             let c = line[i]
+            start <- i
 
             if c = ' ' then
                 i <- i + 1
@@ -322,9 +348,9 @@ let lex (src: string) : Token[] =
                 i <- i + s.Length
 
     for _ in 2 .. indents.Count do
-        toks.Add { tok = KDedent; line = lines.Length }
+        toks.Add { tok = KDedent; line = lines.Length; adj = false }
 
-    toks.Add { tok = KEof; line = lines.Length }
+    toks.Add { tok = KEof; line = lines.Length; adj = false }
     toks.ToArray()
 
 // ---------------------------------------------------------------- parser
@@ -852,16 +878,26 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
     and atom () =
         let mutable e = primary ()
 
-        while isSym "." do
-            advance ()
+        while isSym "." || (isSym "(" && toks[pos.Value].adj) do
+            if isSym "(" then
+                // high-precedence application: f(x), x.M(a, b).N
+                let arg = primary ()
 
-            if isSym "[" then
-                advance ()
-                let i = expr ()
-                expect (KSym "]") "']'"
-                e <- Index(e, i)
+                e <-
+                    match e with
+                    | Var f -> Call(f, [ arg ])
+                    | Call(f, args) -> Call(f, args @ [ arg ])
+                    | _ -> App(e, [ arg ])
             else
-                e <- Field(e, ident ())
+                advance ()
+
+                if isSym "[" then
+                    advance ()
+                    let i = expr ()
+                    expect (KSym "]") "']'"
+                    e <- Index(e, i)
+                else
+                    e <- Field(e, ident ())
 
         e
 
@@ -969,7 +1005,9 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
             Update(e, fields ())
 
     let typeBody () =
-        if isSym "{" then
+        if peek () = KKw "member" || peek () = KKw "static" then
+            UnionTy [] // only members: a type with no values
+        elif isSym "{" then
             advance ()
             let fields = ResizeArray()
             let mutable go = true
@@ -1026,6 +1064,97 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
 
             UnionTy(List.ofSeq cases)
 
+    let memberDecl () : Member =
+        let ln = line ()
+        let isStatic = peek () = KKw "static"
+
+        if isStatic then
+            advance ()
+
+        expect (KKw "member") "'member'"
+
+        let self, name =
+            if isStatic then
+                None, ident ()
+            else
+                let a = ident ()
+
+                if a.Contains "." then // `V.Name` lexes as one qualified identifier
+                    Some(a.Substring(0, a.IndexOf '.')), a.Substring(a.IndexOf '.' + 1)
+                else
+                    expect (KSym ".") "'.'"
+                    Some a, ident ()
+
+        let pars =
+            if isSym "(" then
+                advance ()
+                let ps = ResizeArray()
+
+                while not (isSym ")") do
+                    let optional = isSym "?"
+
+                    if optional then
+                        advance ()
+
+                    let n = ident ()
+                    let t = optTy ()
+
+                    let d =
+                        if isSym "=" then
+                            if not optional then
+                                fail (line ()) (sprintf "a parameter with a default must be optional: write ?%s = ..." n)
+
+                            advance ()
+                            Some(expr ())
+                        else
+                            None
+
+                    ps.Add
+                        { mname = n
+                          mty = t
+                          optional = optional
+                          mdefault = d }
+
+                    if isSym "," then advance ()
+                    elif not (isSym ")") then err "',' or ')'"
+
+                advance ()
+                Some(List.ofSeq ps)
+            else
+                None
+
+        let ret = optTy ()
+        expect (KSym "=") "'='"
+
+        { name = name
+          isStatic = isStatic
+          self = self
+          mpars = pars
+          mret = ret
+          mbody = block ()
+          mline = ln }
+
+    /// Members after a type body: optional `with`, on following (possibly indented) lines.
+    let members () =
+        let ms = ResizeArray()
+        let mutable opened = 0
+        let mutable go = true
+
+        while go do
+            match peek (), peek2 () with
+            | KNewline, KKw("member" | "static" | "with") -> advance ()
+            | KIndent, KKw("member" | "static" | "with") ->
+                advance ()
+                opened <- opened + 1
+            | KKw "with", _ -> advance ()
+            | KKw("member" | "static"), _ -> ms.Add(memberDecl ())
+            | _ -> go <- false
+
+        for _ in 1..opened do
+            expect KDedent "end of members"
+
+        List.ofSeq ms
+
     let decl () =
         let ln = line ()
 
@@ -1053,18 +1182,22 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
 
                 closeAngle ()
 
-            expect (KSym "=") "'='"
-            let indented = peek () = KIndent
+            if peek () = KKw "with" then
+                ln, TypeExt(name, List.ofSeq tparams, members ())
+            else
+                expect (KSym "=") "'='"
+                let indented = peek () = KIndent
 
-            if indented then
-                advance ()
+                if indented then
+                    advance ()
 
-            let body = typeBody ()
+                let body = typeBody ()
+                let inner = members ()
 
-            if indented then
-                expect KDedent "end of block"
+                if indented then
+                    expect KDedent "end of block"
 
-            ln, TypeDecl(name, List.ofSeq tparams, body)
+                ln, TypeDecl(name, List.ofSeq tparams, body, inner @ members ())
         | KKw "extern" ->
             // extern name : t1 -> t2 -> ... -> ret
             advance ()

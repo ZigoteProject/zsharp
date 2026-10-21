@@ -142,6 +142,12 @@ type private Local =
       mut: bool
       depth: int } // closure nesting depth where it is bound
 
+type private MemberInfo =
+    { gname: string // the function implementing it
+      isStatic: bool
+      isProperty: bool
+      mpars: MemberParam list }
+
 type private Global =
     { mutable ty: Ty
       mutable kinds: Kind list
@@ -155,6 +161,7 @@ let check (decls: (int * Decl) list) : Program =
     let records = ResizeArray<string>() // record types in declaration order
     let recordDefaults = Dictionary<string, Expr option list>() // record -> default per field
     let ctorFieldNames = Dictionary<string, string option list>() // constructor -> field names
+    let members = Dictionary<string, Dictionary<string, MemberInfo>>() // type -> member name -> info
     let globals = Dictionary<string, Global>()
     let externs = Dictionary<string, ExternSig>()
     let funs = ResizeArray<FunDef>()
@@ -345,6 +352,7 @@ let check (decls: (int * Decl) list) : Program =
 
             CPOr(ca, cb)
         | PAs(p, x) -> CPAs(pat names p ty, name x, ty)
+        | PNamed _ -> fail 0 "named field patterns need a constructor: C(field = p)"
 
     let rec infer (env: Map<string, Local>) (depth: int) (e: Expr) : CExpr =
         let inf = infer env depth
@@ -363,6 +371,13 @@ let check (decls: (int * Decl) list) : Program =
         | UnitLit -> mk CUnit tUnit
         | Var x -> value env depth x
         | Call(f, args) -> call env depth f args
+        | App(Field(r, f), args) ->
+            let cr = inf r
+            settle cr.ty
+
+            match memberOf cr.ty f with
+            | Some(m: MemberInfo) when not m.isStatic && not m.isProperty -> memberCall env depth m (Some cr) args f
+            | _ -> apply env depth (field cr f) args None
         | App(h, args) -> apply env depth (inf h) args None
         | Lambda(ps, body) ->
             let ps, body = lowerParams ps body
@@ -585,24 +600,7 @@ let check (decls: (int * Decl) list) : Program =
                     mk (CField(mk (CLocal tmp) cr.ty, i)) (substGen targs (snd defs[i])))
 
             mk (CLet(tmp, cr, built)) built.ty
-        | Field(r, f) ->
-            let cr = inf r
-
-            match prune cr.ty with
-            | TCon("ref", [ a ]) when f = "Value" -> mk (CPrim("ref.get", [ cr ])) a
-            | TVar _ when f = "Value" && not (fieldOwner.ContainsKey f) ->
-                let a = fresh None
-                expect "ref cell" (TCon("ref", [ a ])) cr.ty
-                mk (CPrim("ref.get", [ cr ])) a
-            | _ ->
-                let rname = recordOf cr.ty f
-                let rty, targs = instType rname
-                expect (sprintf "field '%s'" f) rty cr.ty
-                let defs = fieldsOf rname
-
-                match defs |> List.tryFindIndex (fst >> (=) f) with
-                | Some i -> mk (CField(cr, i)) (substGen targs (snd defs[i]))
-                | None -> fail 0 (sprintf "record '%s' has no field '%s'" rname f)
+        | Field(r, f) -> field (inf r) f
         | Question _ -> fail 0 "'?' is only supported as `let x = e?` or as a whole statement (for now)"
         | TryBind(p, e, rest) ->
             // match e with Ok p -> rest | Error err -> Error err
@@ -686,6 +684,226 @@ let check (decls: (int * Decl) list) : Program =
             Match.check unionCases (ccases |> List.map (fun (p, g, _) -> p, g.IsSome))
             mk (CMatch(cs, ccases)) resTy
 
+    /// A literal-constrained type variable takes its default before a member lookup.
+    and settle (t: Ty) =
+        match prune t with
+        | TVar r when (kindOf r).IsSome -> resolve t |> ignore
+        | _ -> ()
+
+    /// `e.f` once e is typed: ref cell, record field, or property member.
+    and field (cr: CExpr) (f: string) : CExpr =
+        settle cr.ty
+
+        let isField =
+            match prune cr.ty with
+            | TCon(n, _) when records.Contains n -> fieldsOf n |> List.exists (fst >> (=) f)
+            | _ -> false
+
+        match prune cr.ty, memberOf cr.ty f with
+        | TCon("ref", [ a ]), _ when f = "Value" -> mk (CPrim("ref.get", [ cr ])) a
+        | _, Some m when not isField ->
+            if m.isStatic then
+                fail 0 (sprintf "'%s' is a static member; use %s.%s" f (typeName cr.ty) f)
+            elif m.isProperty then
+                memberCall Map.empty 0 m (Some cr) [] f
+            else
+                fail 0 (sprintf "method '%s' must be called: x.%s(...)" f f)
+        | TVar _, _ when f = "Value" && not (fieldOwner.ContainsKey f) ->
+            let a = fresh None
+            expect "ref cell" (TCon("ref", [ a ])) cr.ty
+            mk (CPrim("ref.get", [ cr ])) a
+        | TVar _, _ when not (fieldOwner.ContainsKey f) ->
+            fail 0 (sprintf "cannot resolve '.%s': the type of this expression isn't known here; add a type annotation" f)
+        | _ ->
+            let rname = recordOf cr.ty f
+            let rty, targs = instType rname
+            expect (sprintf "field '%s'" f) rty cr.ty
+            let defs = fieldsOf rname
+
+            match defs |> List.tryFindIndex (fst >> (=) f) with
+            | Some i -> mk (CField(cr, i)) (substGen targs (snd defs[i]))
+            | None -> fail 0 (sprintf "%s has no field or member '%s'" (show cr.ty) f)
+
+    and typeName (t: Ty) =
+        match prune t with
+        | TCon(n, _) -> n
+        | t -> show t
+
+    and memberOf (t: Ty) (f: string) : MemberInfo option =
+        match prune t with
+        | TCon(n, _) ->
+            match members.TryGetValue n with
+            | true, table ->
+                match table.TryGetValue f with
+                | true, m -> Some m
+                | _ -> None
+            | _ -> None
+        | _ -> None
+
+    /// `T.M` names a static member?
+    and staticMember (name: string) : MemberInfo option =
+        let i = name.LastIndexOf '.'
+
+        if i <= 0 then
+            None
+        else
+            let t = name.Substring(0, i)
+
+            let t =
+                match typeAliases.TryGetValue t with
+                | true, c -> c
+                | _ -> t
+
+            match members.TryGetValue t with
+            | true, table ->
+                match table.TryGetValue(name.Substring(i + 1)) with
+                | true, m when m.isStatic -> Some m
+                | _ -> None
+            | _ -> None
+
+    /// A member call. Arguments: positional, then `name = value`; missing optional ones take
+    /// their default (evaluated here, seeing earlier parameters) or None.
+    and memberCall env depth (m: MemberInfo) (self: CExpr option) (args: Expr list) (what: string) : CExpr =
+        let g = globals[m.gname]
+
+        let head =
+            if g.defining then
+                mk (CGlobal(m.gname, None)) g.ty
+            else
+                let t, inst = instantiate g.kinds g.ty
+                mk (CGlobal(m.gname, Some inst)) t
+
+        let nself = if self.IsSome then 1 else 0
+        let arity = max 1 (nself + m.mpars.Length)
+        let ptys, resTy = peel arity head.ty
+        let mptys = ptys |> List.skip nself
+
+        match self with
+        | Some c -> expect (sprintf "receiver of '%s'" what) (List.head ptys) c.ty
+        | None -> ()
+
+        let args =
+            match args with
+            | [ Tuple xs ] -> xs
+            | [ UnitLit ] -> []
+            | xs -> xs
+
+        let paramIndex n = m.mpars |> List.tryFindIndex (fun p -> p.mname = n)
+
+        let isNamed a =
+            match a with
+            | Bin("=", Var n, _) -> (paramIndex n).IsSome
+            | _ -> false
+
+        let positional = args |> List.takeWhile (isNamed >> not)
+        let named = args |> List.skip positional.Length
+
+        if named |> List.exists (isNamed >> not) then
+            fail 0 (sprintf "in a call to '%s', positional arguments must come before named ones" what)
+
+        if positional.Length > m.mpars.Length then
+            fail 0 (sprintf "'%s' takes %d argument(s), got %d" what m.mpars.Length positional.Length)
+
+        let bindings = ResizeArray<string * CExpr>()
+        let given = Dictionary<string, string * Ty>()
+
+        let bindTemp (ce: CExpr) =
+            let tmp = uniq "$m"
+            bindings.Add(tmp, ce)
+            tmp
+
+        let selfArg = self |> Option.map (fun c -> mk (CLocal(bindTemp c)) c.ty)
+
+        let bind i (a: Expr) =
+            let p = List.item i m.mpars
+            let pt = List.item i mptys
+
+            if given.ContainsKey p.mname then
+                fail 0 (sprintf "argument '%s' of '%s' is given twice" p.mname what)
+
+            let ce =
+                if p.optional && p.mdefault.IsNone then
+                    // the body sees option<T>; a given argument arrives as Some
+                    let inner =
+                        match prune pt with
+                        | TCon("option", [ t ]) -> t
+                        | _ -> fresh None
+
+                    let c = inferHint env depth inner a
+                    expect (sprintf "argument '%s' of '%s'" p.mname what) inner c.ty
+                    let u, tag = ctors["Some"]
+                    mk (CCtor(u, tag, [ c ])) pt
+                else
+                    let c = inferHint env depth pt a
+                    expect (sprintf "argument '%s' of '%s'" p.mname what) pt c.ty
+                    c
+
+            given[p.mname] <- (bindTemp ce, ce.ty)
+
+        positional |> List.iteri bind
+
+        for a in named do
+            match a with
+            | Bin(_, Var n, v) -> bind (paramIndex n).Value v
+            | _ -> ()
+
+        let mutable scope = Map.empty
+
+        let argTemps =
+            m.mpars
+            |> List.mapi (fun i p ->
+                let pt = List.item i mptys
+
+                let tmp, ty =
+                    match given.TryGetValue p.mname with
+                    | true, v -> v
+                    | _ ->
+                        let ce =
+                            match p.optional, p.mdefault with
+                            | true, Some d ->
+                                let c = inferHint scope 0 pt d
+                                expect (sprintf "default of '%s'" p.mname) pt c.ty
+                                c
+                            | true, None ->
+                                let u, tag = ctors["None"]
+                                mk (CCtor(u, tag, [])) pt
+                            | false, _ -> fail 0 (sprintf "'%s' is missing argument '%s'" what p.mname)
+
+                        bindTemp ce, pt
+
+                scope <-
+                    scope.Add(
+                        p.mname,
+                        { u = tmp
+                          ty = ty
+                          mut = false
+                          depth = 0 }
+                    )
+
+                mk (CLocal tmp) ty)
+
+        let callArgs = Option.toList selfArg @ argTemps
+        let callArgs = if callArgs.IsEmpty then [ mk CUnit tUnit ] else callArgs
+        let call = mk (CApp(head, callArgs)) resTy
+        List.foldBack (fun (tmp, ce: CExpr) acc -> mk (CLet(tmp, ce, acc)) acc.ty) (List.ofSeq bindings) call
+
+    /// `A.B.c.d` lexed as one name: the longest prefix that resolves, then field accesses.
+    and splitQualified (env: Map<string, Local>) (x: string) : Expr option =
+        let parts = x.Split '.'
+
+        let resolves (n: string) =
+            env.ContainsKey n || globals.ContainsKey n || ctors.ContainsKey n || builtins.ContainsKey n
+            || (staticMember n).IsSome
+
+        seq { parts.Length - 1 .. -1 .. 1 }
+        |> Seq.tryPick (fun k ->
+            let prefix = String.concat "." parts[.. k - 1]
+
+            if resolves prefix then
+                Some(parts[k..] |> Array.fold (fun e f -> Field(e, f)) (Var prefix))
+            else
+                None)
+
     and value env depth x : CExpr =
         match env.TryFind x with
         | Some l ->
@@ -695,6 +913,13 @@ let check (decls: (int * Decl) list) : Program =
             mk (CLocal l.u) l.ty
         | None ->
             match globals.TryGetValue x with
+            | _ when not (globals.ContainsKey x) && (staticMember x).IsSome ->
+                let m = (staticMember x).Value
+
+                if m.isProperty then
+                    memberCall env depth m None [] x
+                else
+                    fail 0 (sprintf "static method '%s' must be called: %s(...)" x x)
             | true, g when g.defining -> mk (CGlobal(x, None)) g.ty
             | true, g ->
                 let t, inst = instantiate g.kinds g.ty
@@ -715,10 +940,14 @@ let check (decls: (int * Decl) list) : Program =
                 elif externs.ContainsKey x then
                     fail 0 (sprintf "C function '%s' must be called directly" x)
                 else
-                    fail 0 (sprintf "unknown name '%s'" x)
+                    match splitQualified env x with
+                    | Some e -> infer env depth e
+                    | None -> fail 0 (sprintf "unknown name '%s'" x)
 
     and call env depth f args : CExpr =
-        if env.ContainsKey f || globals.ContainsKey f then
+        if not (env.ContainsKey f || globals.ContainsKey f) && (staticMember f).IsSome then
+            memberCall env depth (staticMember f).Value None args f
+        elif env.ContainsKey f || globals.ContainsKey f then
             apply env depth (value env depth f) args (Some f)
         elif ctors.ContainsKey f then
             ctor env depth f args
@@ -727,7 +956,9 @@ let check (decls: (int * Decl) list) : Program =
         elif externs.ContainsKey f then
             externCall env depth f args
         else
-            fail 0 (sprintf "unknown function '%s'" f)
+            match splitQualified env f with
+            | Some e -> infer env depth (App(e, args))
+            | None -> fail 0 (sprintf "unknown function '%s'" f)
 
     /// Type-checks arguments against a (curried) function type; returns them and the result type.
     and checkArgs env depth (fty: Ty) (args: Expr list) (name: string option) =
@@ -970,10 +1201,132 @@ let check (decls: (int * Decl) list) : Program =
         let body = List.foldBack (fun (tmp, ce: CExpr) acc -> mk (CLet(tmp, ce, acc)) acc.ty) (List.ofSeq filled) body
         List.foldBack (fun (_, ce, tmp) acc -> mk (CLet(tmp, ce, acc)) acc.ty) named body
 
+    /// Type-checks functions that may refer to each other (pre-registered when isRec),
+    /// then generalizes each.
+    let defineGroup (items: (int * string * bool * Param list * SType option * Expr) list) =
+        let prepared =
+            items
+            |> List.map (fun (ln, name, isRec, ps, ret, body) ->
+                try
+                    tyvars.Clear()
+                    let ps, body = lowerParams ps body
+                    let pars = ps |> List.map (fun (x, ann) -> x, uniq x, annot ann)
+                    let rty = annot ret
+                    let fty = funTy (pars |> List.map (fun (_, _, t) -> t)) rty
+
+                    let g =
+                        { ty = fty
+                          kinds = []
+                          arity = pars.Length
+                          defining = true }
+
+                    if isRec then
+                        globals[name] <- g
+
+                    ln, name, pars, rty, fty, g, body, Dictionary<string, Ty>(tyvars)
+                with CompileError(0, msg) ->
+                    fail ln msg)
+
+        let bodies =
+            prepared
+            |> List.map (fun (ln, name, pars, rty, _, _, body, tvs) ->
+                try
+                    tyvars.Clear()
+
+                    for kv in tvs do
+                        tyvars[kv.Key] <- kv.Value
+
+                    let env =
+                        pars
+                        |> List.fold
+                            (fun (m: Map<_, _>) (x, u, t) ->
+                                m.Add(
+                                    x,
+                                    { u = u
+                                      ty = t
+                                      mut = false
+                                      depth = 0 }
+                                ))
+                            Map.empty
+
+                    let cb = inferHint env 0 rty body
+                    expect (sprintf "result of '%s'" name) rty cb.ty
+                    cb
+                with CompileError(0, msg) ->
+                    fail ln msg)
+
+        for (_, name, pars, rty, fty, g, _, _), cb in List.zip prepared bodies do
+            if name = "main" then
+                resolve fty |> ignore
+
+            g.kinds <- generalize fty
+            g.defining <- false
+            globals[name] <- g
+
+            funs.Add
+                { name = name
+                  pars = pars |> List.map (fun (_, u, t) -> u, t)
+                  ret = rty
+                  body = cb
+                  ngen = g.kinds.Length }
+
+    /// Members become functions `Type#Name`: self first (instance members), then parameters;
+    /// an optional parameter without a default is an option in the body.
+    let declareMembers (tname: string) (tparams: string list) (ms: Member list) =
+        let table =
+            match members.TryGetValue tname with
+            | true, t -> t
+            | _ ->
+                let t = Dictionary<string, MemberInfo>()
+                members[tname] <- t
+                t
+
+        let items =
+            ms
+            |> List.map (fun m ->
+                if table.ContainsKey m.name then
+                    fail m.mline (sprintf "'%s' already has a member '%s'" tname m.name)
+
+                if not m.isStatic && List.contains m.name (match types.TryGetValue tname with
+                                                           | true, { def = RecordDef fs } -> List.map fst fs
+                                                           | _ -> []) then
+                    fail m.mline (sprintf "member '%s' has the same name as a field of '%s'" m.name tname)
+
+                let gname = tname + "#" + m.name
+                let ps = m.mpars |> Option.defaultValue []
+
+                let mps =
+                    ps
+                    |> List.map (fun p ->
+                        let ann =
+                            match p.optional, p.mdefault with
+                            | true, None -> Some(STName("option", [ defaultArg p.mty (STVar("$opt." + p.mname)) ]))
+                            | _ -> p.mty
+
+                        PIdent(p.mname, None), ann)
+
+                let selfPar =
+                    m.self
+                    |> Option.map (fun v -> PIdent(v, None), Some(STName(tname, tparams |> List.map STVar)))
+                    |> Option.toList
+
+                let allPars = selfPar @ mps
+                let allPars = if allPars.IsEmpty then [ PUnit, None ] else allPars
+
+                table[m.name] <-
+                    { gname = gname
+                      isStatic = m.isStatic
+                      isProperty = m.mpars.IsNone
+                      mpars = ps }
+
+                m.mline, gname, true, allPars, m.mret, m.mbody)
+
+        defineGroup items
+
     for ln, d in decls do
         try
             match d with
-            | TypeDecl(name, tps, body) ->
+            | TypeDecl(name, tps, body, ms) ->
                 if prims.Contains name || builtinCons.ContainsKey name || types.ContainsKey name then
                     fail 0 (sprintf "type '%s' is already defined" name)
 
@@ -1015,6 +1368,8 @@ let check (decls: (int * Decl) list) : Program =
 
                         ctors[c] <- (name, i)
                         ctorFieldNames[c] <- List.map fst fs)
+
+                declareMembers name tps ms
             | Extern(name, args, variadic, ret) ->
                 if externs.ContainsKey name || globals.ContainsKey name then
                     fail 0 (sprintf "'%s' is already defined" name)
@@ -1032,50 +1387,17 @@ let check (decls: (int * Decl) list) : Program =
                 if globals.ContainsKey name || externs.ContainsKey name then
                     fail 0 (sprintf "'%s' is already defined" name)
 
-                tyvars.Clear()
-                let ps, body = lowerParams ps body
-                let pars = ps |> List.map (fun (x, ann) -> x, uniq x, annot ann)
-                let rty = annot ret
-                let fty = funTy (pars |> List.map (fun (_, _, t) -> t)) rty
+                defineGroup [ ln, name, isRec, ps, ret, body ]
+            | TypeExt(name, tps, ms) ->
+                let name =
+                    match typeAliases.TryGetValue name with
+                    | true, c -> c
+                    | _ -> name
 
-                let g =
-                    { ty = fty
-                      kinds = []
-                      arity = pars.Length
-                      defining = true }
+                if not (prims.Contains name || builtinCons.ContainsKey name || types.ContainsKey name) then
+                    fail 0 (sprintf "unknown type '%s'" name)
 
-                if isRec then
-                    globals[name] <- g
-
-                let env =
-                    pars
-                    |> List.fold
-                        (fun (m: Map<_, _>) (x, u, t) ->
-                            m.Add(
-                                x,
-                                { u = u
-                                  ty = t
-                                  mut = false
-                                  depth = 0 }
-                            ))
-                        Map.empty
-
-                let cb = inferHint env 0 rty body
-                expect (sprintf "result of '%s'" name) rty cb.ty
-
-                if name = "main" then
-                    resolve fty |> ignore
-
-                g.kinds <- generalize fty
-                g.defining <- false
-                globals[name] <- g
-
-                funs.Add
-                    { name = name
-                      pars = pars |> List.map (fun (_, u, t) -> u, t)
-                      ret = rty
-                      body = cb
-                      ngen = g.kinds.Length }
+                declareMembers name tps ms
         with CompileError(0, msg) ->
             fail ln msg
 
