@@ -105,6 +105,10 @@ else echo "FAIL tests/mcp/session.sh"; diff <(echo "$expected") <(echo "$actual"
 if diff -q <(cat editors/tree-sitter-zsharp/queries/*.scm) <(cat editors/zed/languages/zsharp/*.scm) >/dev/null; then
   echo "ok   editors/zed queries"
 else echo "FAIL editors/zed queries differ from editors/tree-sitter-zsharp/queries"; fail=1; fi
+# Zed builds the grammar from the commit pinned in extension.toml: it must match the grammar here
+pinned=$(grep -o '^rev = "[0-9a-f]*"' editors/zed/extension.toml | grep -o '[0-9a-f]\{40\}')
+if git diff --quiet "$pinned" -- editors/tree-sitter-zsharp/grammar.js editors/tree-sitter-zsharp/src/scanner.c 2>/dev/null; then echo "ok   editors/zed pins the current grammar"
+else echo "FAIL editors/zed/extension.toml pins an old grammar: commit the grammar, then set rev to that commit"; fail=1; fi
 if command -v tree-sitter >/dev/null; then
   ts=$(editors/tree-sitter-zsharp/script/errors.sh 2>&1)
   if [ "$(echo "$ts" | tail -1)" = "files with errors: 0" ] && (cd editors/tree-sitter-zsharp && timeout 60 tree-sitter test >/dev/null 2>&1); then
