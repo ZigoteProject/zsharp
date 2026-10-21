@@ -11,7 +11,7 @@ repository = "https://github.com/ZigoteProject/zsharp"
 # the checkout (file:///…/zsharp) and set `rev` to a commit that contains the grammar.
 [grammars.zsharp]
 repository = "https://github.com/ZigoteProject/zsharp"
-rev = "6f9c13d4172874722df4c6ccd441b853a9e3d710" # a commit containing editors/tree-sitter-zsharp with its generated src/parser.c
+rev = "91a342af7c414013b55307ed0eb64b1d6e3db54a" # a commit containing editors/tree-sitter-zsharp with its generated src/parser.c
 path = "editors/tree-sitter-zsharp"
 
 [language_servers.zs]
