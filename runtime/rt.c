@@ -12,9 +12,12 @@
 #endif
 
 // Every heap object starts with an int64 reference count: 1+ = live, 0 = static (never freed).
+// zs_int: Z#'s int, the machine word (also the header fields of every heap object)
+typedef intptr_t zs_int;
+
 typedef struct {
-    int64_t rc;
-    int64_t len;
+    zs_int rc;
+    zs_int len;
     char data[]; // len bytes + NUL
 } zs_str;
 
@@ -45,7 +48,7 @@ _Noreturn void zs_panic(zs_str *msg) { zs_panic_c(msg->data); }
 
 static int64_t allocations;
 
-void *zs_alloc(int64_t size) {
+void *zs_alloc(zs_int size) {
     void *p = malloc((size_t)size);
     if (!p) zs_panic_c("out of memory");
     live++;
@@ -54,7 +57,15 @@ void *zs_alloc(int64_t size) {
 }
 
 /// Runtime.allocations (): heap objects allocated so far (tests check copy-on-write with it).
-int64_t zs_allocations(void) { return allocations; }
+zs_int zs_allocations(void) { return allocations; }
+
+#include <time.h>
+/// Runtime.ticks (): a monotonic clock in nanoseconds (on a Cortex-M: SysTick counts).
+int64_t zs_ticks(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (int64_t)t.tv_sec * 1000000000 + t.tv_nsec;
+}
 
 void zs_free(void *p) {
     live--;
@@ -68,7 +79,7 @@ static void leak_report(void) {
 
 __attribute__((constructor)) static void zs_init(void) { atexit(leak_report); }
 
-static zs_str *str_new(int64_t len) {
+static zs_str *str_new(zs_int len) {
     zs_str *s = zs_alloc((int64_t)sizeof(zs_str) + len + 1);
     s->rc = 1;
     s->len = len;
@@ -76,7 +87,7 @@ static zs_str *str_new(int64_t len) {
     return s;
 }
 
-static zs_str *str_of(const char *buf, int64_t len) {
+static zs_str *str_of(const char *buf, zs_int len) {
     zs_str *s = str_new(len);
     memcpy(s->data, buf, (size_t)len);
     return s;
@@ -91,18 +102,18 @@ zs_str *zs_str_concat(zs_str *a, zs_str *b) {
 }
 
 // -1, 0 or 1
-int64_t zs_str_cmp(zs_str *a, zs_str *b) {
-    int64_t n = a->len < b->len ? a->len : b->len;
+zs_int zs_str_cmp(zs_str *a, zs_str *b) {
+    zs_int n = a->len < b->len ? a->len : b->len;
     int c = memcmp(a->data, b->data, (size_t)n);
     if (c != 0) return c < 0 ? -1 : 1;
     return a->len < b->len ? -1 : a->len > b->len;
 }
 
 // FNV-1a
-int64_t zs_str_hash(zs_str *s) {
+zs_int zs_str_hash(zs_str *s) {
     uint64_t h = 14695981039346656037ull;
     for (int64_t i = 0; i < s->len; i++) h = (h ^ (uint8_t)s->data[i]) * 1099511628211ull;
-    return (int64_t)h;
+    return sizeof(zs_int) < 8 ? (zs_int)(h ^ (h >> 32)) : (zs_int)h; // fold on a 32-bit chip
 }
 
 zs_str *zs_str_of_i64(int64_t v) {
@@ -143,16 +154,16 @@ zs_str *zs_str_of_bool(bool v) { return v ? str_of("true", 4) : str_of("false", 
 
 // ---- string primitives (arguments borrowed; results owned)
 
-static void check_range(zs_str *s, int64_t start, int64_t len) {
+static void check_range(zs_str *s, zs_int start, zs_int len) {
     if (start < 0 || len < 0 || start > s->len || len > s->len - start) zs_panic_c("string index out of range");
 }
 
-zs_str *zs_str_sub(zs_str *s, int64_t start, int64_t len) {
+zs_str *zs_str_sub(zs_str *s, zs_int start, zs_int len) {
     check_range(s, start, len);
     return str_of(s->data + start, len);
 }
 
-uint8_t zs_str_byte(zs_str *s, int64_t i) {
+uint8_t zs_str_byte(zs_str *s, zs_int i) {
     check_range(s, i, 1);
     return (uint8_t)s->data[i];
 }
@@ -162,9 +173,9 @@ zs_str *zs_str_of_byte(uint8_t b) {
     return str_of(&c, 1);
 }
 
-int64_t zs_str_index_of(zs_str *s, zs_str *sub, int64_t from) {
+zs_int zs_str_index_of(zs_str *s, zs_str *sub, zs_int from) {
     if (from < 0) from = 0;
-    for (int64_t i = from; i + sub->len <= s->len; i++)
+    for (zs_int i = from; i + sub->len <= s->len; i++)
         if (memcmp(s->data + i, sub->data, (size_t)sub->len) == 0) return i;
     return -1;
 }
@@ -265,9 +276,9 @@ void zs_set_args(int32_t argc, char **argv) {
     g_argv = argv;
 }
 
-int64_t zs_argc(void) { return g_argc; }
+zs_int zs_argc(void) { return g_argc; }
 
-zs_str *zs_arg(int64_t i) { return i >= 0 && i < g_argc ? zs_str_from_c(g_argv[i]) : str_of("", 0); }
+zs_str *zs_arg(zs_int i) { return i >= 0 && i < g_argc ? zs_str_from_c(g_argv[i]) : str_of("", 0); }
 
 static void set_error(const char *what, zs_str *path) {
     char buf[1024];
@@ -298,7 +309,7 @@ zs_str *zs_env_get(zs_str *name) {
 }
 
 // like a panic, no cleanup (and so no leak report): the process ends here
-_Noreturn void zs_exit(int64_t code) {
+_Noreturn void zs_exit(zs_int code) {
     fflush(NULL);
     _exit((int)code);
 }
@@ -385,7 +396,7 @@ zs_str *zs_dir_list(zs_str *path) {
 // Runs prog with NUL-separated args (no shell), stdout captured, stderr passed through.
 static int64_t process_code;
 
-int64_t zs_process_code(void) { return process_code; }
+zs_int zs_process_code(void) { return process_code; }
 
 // prog as an executable path: as given when it has a '/', else the first match on PATH
 // (looked up here so a missing program is the same error on every libc, and under valgrind)
@@ -465,4 +476,4 @@ zs_str *zs_process_run(zs_str *prog, zs_str *args) {
 }
 
 // a test build's argument: which test to run
-int64_t zs_test_index(void) { return g_argc > 1 ? strtoll(g_argv[1], NULL, 10) : -1; }
+zs_int zs_test_index(void) { return g_argc > 1 ? strtoll(g_argv[1], NULL, 10) : -1; }

@@ -487,6 +487,41 @@ let exec (exe: string) (args: string list) (capture: bool) : int * string =
         p.WaitForExit()
         p.ExitCode, ""
 
+/// A bare-metal microcontroller target (zs build --target cortex-m4): how clang and zig cc are
+/// told about the chip, the QEMU board whose memory map the program is linked for, and the
+/// heap size. The program uses runtime/rt-embedded.c instead of the OS runtime.
+type Mcu =
+    { triple: string // for clang
+      cflags: string list
+      zigTarget: string
+      zigCpu: string
+      board: string // runtime/boards/<board>.ld; also the QEMU machine
+      heap: int }
+
+let mcus =
+    dict
+        [ "cortex-m4",
+          { triple = "thumbv7em-none-eabihf"
+            cflags = [ "-mcpu=cortex-m4"; "-mfpu=fpv4-sp-d16"; "-mfloat-abi=hard" ]
+            zigTarget = "thumb-freestanding-eabihf"
+            zigCpu = "cortex_m4+vfp4d16sp" // the M4F: Zig's cortex_m4 alone has no FPU
+            board = "mps2-an386"
+            heap = 64 * 1024 }
+          "cortex-m0plus",
+          { triple = "thumbv6m-none-eabi"
+            cflags = [ "-mcpu=cortex-m0plus"; "-mfloat-abi=soft" ]
+            zigTarget = "thumb-freestanding-eabi"
+            zigCpu = "cortex_m0plus"
+            board = "microbit"
+            heap = 8 * 1024 } ]
+
+/// The microcontroller being built for (zs build --target cortex-m4), if any; Codegen.target
+/// then holds its triple.
+let mutable mcu: Mcu option = None
+
+/// The optimization level for clang: -O2, or -Os (zs build -Os) for size.
+let mutable optLevel = "-O2"
+
 /// .zs -> LLVM IR -> clang (with the runtime) -> native executable, or with isLib a static
 /// library (.a) plus its header (.h).
 let build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) (isLib: bool) : Result<unit, Core.Diagnostic list> =
@@ -528,7 +563,7 @@ let build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) (isLib: 
         File.WriteAllText(ll, ir)
         let san = if sanitize then [ "-fsanitize=address,undefined"; "-g" ] else []
         // -g: unoptimized, so stepping follows the source
-        let opt = if Codegen.debugInfo then [ "-O0"; "-g" ] else [ "-O2" ]
+        let opt = if Codegen.debugInfo then [ "-O0"; "-g" ] else [ optLevel ]
 
         let run (exe: string) (args: string list) =
             let code, output = exec exe args true
@@ -541,7 +576,41 @@ let build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) (isLib: 
         let cc args = if cross then run "zig" ([ "cc"; "-target"; Codegen.target ] @ args) else run "clang" args
 
         let failure =
-            if cross && not isLib then
+            if mcu.IsSome then
+                // bare metal: the IR and the embedded runtime for the chip, linked for the board
+                let m = mcu.Value
+                let obj = Path.ChangeExtension(ll, ".o")
+                let flags = [ "-ffunction-sections"; "-fdata-sections" ]
+
+                // the board's script with the shared Cortex-M layout spliced in (zig cc can't
+                // pass the linker a search path for INCLUDE)
+                let script = Path.ChangeExtension(ll, ".ld")
+                let shared = File.ReadAllText(runtimeFile (Path.Combine("boards", "cortex-m.ld")))
+                File.WriteAllText(script, File.ReadAllText(runtimeFile (Path.Combine("boards", m.board + ".ld"))).Replace("INCLUDE cortex-m.ld", shared))
+
+                let failure =
+                    timed "clang" (fun () -> run "clang" (opt @ [ "--target=" + m.triple ] @ m.cflags @ flags @ [ "-c"; "-Wno-override-module"; ll; "-o"; obj ]))
+                    |> Option.orElseWith (fun () ->
+                        timed "zig cc" (fun () ->
+                            run
+                                "zig"
+                                ([ "cc"; "-target"; m.zigTarget; "-mcpu=" + m.zigCpu ]
+                                 @ opt
+                                 @ flags
+                                 @ [ sprintf "-DZS_HEAP_SIZE=%d" m.heap
+                                     "-T" + script
+                                     "-Wl,--gc-sections"
+                                     obj
+                                     runtimeFile "rt-embedded.c"
+                                     "-o"
+                                     out ])))
+
+                for f in [ obj; script ] do
+                    if File.Exists f then
+                        File.Delete f
+
+                failure
+            elif cross && not isLib then
                 let obj = Path.ChangeExtension(ll, ".o")
 
                 let failure =
@@ -643,6 +712,11 @@ let builtinDocs =
           "Int.wrappingSub", "`a - b`, wrapping around on overflow instead of panicking."
           "Int.wrappingMul", "`a * b`, wrapping around on overflow instead of panicking."
           "Runtime.allocations", "The number of heap objects allocated so far."
+          "Runtime.ticks", "A cycle counter for timing code: on a Cortex-M the SysTick count, elsewhere nanoseconds."
+          "Mmio.read32", "Reads the 32-bit hardware register at an address (a volatile load)."
+          "Mmio.write32", "Writes the 32-bit hardware register at an address (a volatile store)."
+          "Mmio.read8", "Reads the 8-bit hardware register at an address (a volatile load)."
+          "Mmio.write8", "Writes the 8-bit hardware register at an address (a volatile store)."
           "Process.exit", "Ends the program now with the exit code (output is flushed; nothing else is cleaned up)."
           "File.exists", "Whether `path` names an existing regular file."
           "Dir.exists", "Whether `path` names an existing directory." ]

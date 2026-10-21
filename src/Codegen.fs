@@ -8,14 +8,15 @@ open Syntax
 open Core
 open Mono
 
-// Representation (every heap object starts with an i64 reference count; 0 = static, never freed):
-//   int/i64/u64/usize i64, i32/u32 i32, i16/u16 i16, i8/u8 i8, f64 double, f32 float, bool i1,
+// Representation (every heap object starts with a word-sized reference count; 0 = static, never
+// freed). W is the machine word: i64, or i32 on a 32-bit chip (written i_W, resolved at the end):
+//   int/usize W, i64/u64 i64, i32/u32 i32, i16/u16 i16, i8/u8 i8, f64 double, f32 float, bool i1,
 //   unit {} (value: zeroinitializer), cstr ptr
-//   string   ptr -> { i64 rc, i64 len, [len+1 x i8] }
-//   array<T> ptr -> { i64 rc, i64 len, [len x T] }
-//   ref<T>   ptr -> { i64 rc, T }
-//   union    ptr -> { i64 rc, i32 tag, field... }; nullary constructors point to a static cell
-//   closure  ptr -> { i64 rc, ptr code, ptr drop, env... }; code: (ptr self, arg) -> result
+//   string   ptr -> { W rc, W len, [len+1 x i8] }
+//   array<T> ptr -> { W rc, W len, [len x T] }
+//   ref<T>   ptr -> { W rc, T }
+//   union    ptr -> { W rc, i32 tag, field... }; nullary constructors point to a static cell
+//   closure  ptr -> { W rc, ptr code, ptr drop, env... }; code: (ptr self, arg) -> result
 //   tuples and records: LLVM struct values
 // ponytail: every union is boxed; keep small non-recursive ones inline when perf matters
 
@@ -67,18 +68,19 @@ let private icmpU = dict [ "=", "eq"; "<>", "ne"; "<", "ult"; ">", "ugt"; "<=", 
 let private fcmp = dict [ "=", "oeq"; "<>", "une"; "<", "olt"; ">", "ogt"; "<=", "ole"; ">=", "oge" ]
 
 let private prelude =
-    """declare ptr @zs_alloc(i64)
+    """declare ptr @zs_alloc(i_W)
 declare void @zs_free(ptr)
-declare i64 @zs_allocations()
+declare i_W @zs_allocations()
+declare i64 @zs_ticks()
 declare void @zs_set_args(i32, ptr)
-declare i64 @zs_test_index()
-declare void @zs_exit(i64) noreturn
-declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)
+declare i_W @zs_test_index()
+declare void @zs_exit(i_W) noreturn
+declare void @llvm.memcpy.p0.p0.i_W(ptr, ptr, i_W, i1)
 declare void @zs_panic(ptr) noreturn
 declare void @zs_panic_c(ptr) noreturn
 declare ptr @zs_str_concat(ptr, ptr)
-declare i64 @zs_str_cmp(ptr, ptr)
-declare i64 @zs_str_hash(ptr)
+declare i_W @zs_str_cmp(ptr, ptr)
+declare i_W @zs_str_hash(ptr)
 declare ptr @zs_str_of_i64(i64)
 declare ptr @zs_str_of_u64(i64)
 declare ptr @zs_str_of_f64(double)
@@ -87,10 +89,10 @@ declare ptr @zs_str_of_bool(i1 zeroext)
 declare void @zs_print(ptr)
 declare void @zs_println(ptr)
 declare ptr @zs_str_from_c(ptr)
-declare ptr @zs_str_sub(ptr, i64, i64)
-declare zeroext i8 @zs_str_byte(ptr, i64)
+declare ptr @zs_str_sub(ptr, i_W, i_W)
+declare zeroext i8 @zs_str_byte(ptr, i_W)
 declare ptr @zs_str_of_byte(i8 zeroext)
-declare i64 @zs_str_index_of(ptr, ptr, i64)
+declare i_W @zs_str_index_of(ptr, ptr, i_W)
 declare ptr @zs_str_trim(ptr)
 declare ptr @zs_str_upper(ptr)
 declare ptr @zs_str_lower(ptr)
@@ -98,8 +100,8 @@ declare ptr @zs_str_replace(ptr, ptr, ptr)
 declare zeroext i1 @zs_str_is_float(ptr)
 declare double @zs_str_to_float(ptr)
 declare ptr @zs_read_line()
-declare i64 @zs_argc()
-declare ptr @zs_arg(i64)
+declare i_W @zs_argc()
+declare ptr @zs_arg(i_W)
 declare zeroext i1 @zs_env_has(ptr)
 declare ptr @zs_env_get(ptr)
 declare zeroext i1 @zs_io_ok()
@@ -113,18 +115,18 @@ declare zeroext i1 @zs_dir_exists(ptr)
 declare void @zs_dir_create(ptr)
 declare ptr @zs_dir_list(ptr)
 declare ptr @zs_process_run(ptr, ptr)
-declare i64 @zs_process_code()
+declare i_W @zs_process_code()
 declare zeroext i1 @zs_eof()
 declare void @zs_eprintln(ptr)
 
 define private void @zs.dup(ptr %p) alwaysinline {
 entry:
-  %rc = load i64, ptr %p
-  %static = icmp eq i64 %rc, 0
+  %rc = load i_W, ptr %p
+  %static = icmp eq i_W %rc, 0
   br i1 %static, label %done, label %inc
 inc:
-  %n = add i64 %rc, 1
-  store i64 %n, ptr %p
+  %n = add i_W %rc, 1
+  store i_W %n, ptr %p
   br label %done
 done:
   ret void
@@ -133,17 +135,17 @@ done:
 ; true when this was the last reference (the caller frees the object)
 define private i1 @zs.release(ptr %p) alwaysinline {
 entry:
-  %rc = load i64, ptr %p
-  %last = icmp eq i64 %rc, 1
+  %rc = load i_W, ptr %p
+  %last = icmp eq i_W %rc, 1
   br i1 %last, label %yes, label %no
 yes:
   ret i1 true
 no:
-  %static = icmp eq i64 %rc, 0
+  %static = icmp eq i_W %rc, 0
   br i1 %static, label %keep, label %dec
 dec:
-  %n = sub i64 %rc, 1
-  store i64 %n, ptr %p
+  %n = sub i_W %rc, 1
+  store i_W %n, ptr %p
   br label %keep
 keep:
   ret i1 false
@@ -165,7 +167,7 @@ entry:
   %last = call i1 @zs.release(ptr %p)
   br i1 %last, label %free, label %done
 free:
-  %fp = getelementptr { i64, ptr, ptr }, ptr %p, i32 0, i32 2
+  %fp = getelementptr { i_W, ptr, ptr }, ptr %p, i32 0, i32 2
   %f = load ptr, ptr %fp
   call void %f(ptr %p)
   ret void
@@ -178,10 +180,10 @@ done:
 /// parameters omitted). Arguments are borrowed by the runtime and dropped after the call.
 let private runtimePrims =
     dict
-        [ "String.sub", ("zs_str_sub", "ptr", [ "ptr"; "i64"; "i64" ])
-          "String.byte", ("zs_str_byte", "zeroext i8", [ "ptr"; "i64" ])
+        [ "String.sub", ("zs_str_sub", "ptr", [ "ptr"; "i_W"; "i_W" ])
+          "String.byte", ("zs_str_byte", "zeroext i8", [ "ptr"; "i_W" ])
           "String.ofByte", ("zs_str_of_byte", "ptr", [ "i8 zeroext" ])
-          "String.indexOfFrom", ("zs_str_index_of", "i64", [ "ptr"; "ptr"; "i64" ])
+          "String.indexOfFrom", ("zs_str_index_of", "i_W", [ "ptr"; "ptr"; "i_W" ])
           "String.trim", ("zs_str_trim", "ptr", [ "ptr" ])
           "String.toUpper", ("zs_str_upper", "ptr", [ "ptr" ])
           "String.toLower", ("zs_str_lower", "ptr", [ "ptr" ])
@@ -191,8 +193,8 @@ let private runtimePrims =
           "Console.readLineRaw", ("zs_read_line", "ptr", [])
           "Console.eof", ("zs_eof", "zeroext i1", [])
           "eprintln", ("zs_eprintln", "void", [ "ptr" ])
-          "Env.argc", ("zs_argc", "i64", [])
-          "Env.arg", ("zs_arg", "ptr", [ "i64" ])
+          "Env.argc", ("zs_argc", "i_W", [])
+          "Env.arg", ("zs_arg", "ptr", [ "i_W" ])
           "Env.has", ("zs_env_has", "zeroext i1", [ "ptr" ])
           "Env.get", ("zs_env_get", "ptr", [ "ptr" ])
           "Io.ok", ("zs_io_ok", "zeroext i1", [])
@@ -206,7 +208,7 @@ let private runtimePrims =
           "Dir.createRaw", ("zs_dir_create", "void", [ "ptr" ])
           "Dir.listRaw", ("zs_dir_list", "ptr", [ "ptr" ])
           "Process.runRaw", ("zs_process_run", "ptr", [ "ptr"; "ptr" ])
-          "Process.code", ("zs_process_code", "i64", []) ]
+          "Process.code", ("zs_process_code", "i_W", []) ]
 
 let private floatConst (ty: string) (f: float) =
     let v = if ty = "float" then float (float32 f) else f
@@ -216,10 +218,35 @@ let private floatConst (ty: string) (f: float) =
 /// number and bool types.
 let mutable debugInfo = false
 
+/// Optimizing for size (zs build -Os): no loop versioning, which duplicates loop bodies.
+let mutable optimizeSize = false
+
 /// The target triple (zs build --target), "" for the host (x86-64 Linux). It decides the C ABI.
 let mutable target = ""
 
+// ponytail: a bare-metal target (cortex-m4, cortex-m0plus) passes C structs by value with the
+// x86-64 rules, which are wrong for 32-bit ARM AAPCS; scalars and pointers are right
+
 let private isArm64 () = target.StartsWith "aarch64"
+
+/// The machine word (int, usize, reference counts, lengths): 32 bits on a Cortex-M, else 64.
+let private is32 () = target.StartsWith "thumb"
+
+let private pointerBytes () = if is32 () then 4 else 8
+
+let private wordTy () = if is32 () then "i32" else "i64"
+
+/// The module text with the word placeholders resolved (i_W, and the header sizes HDR1 = one
+/// word, HDR2 = two). String constants (c"...") are left as written.
+let private resolveWord (ir: string) =
+    let w, h1, h2 = (if is32 () then "i32", "4", "8" else "i64", "8", "16")
+
+    ir.Split('\n')
+    |> Array.map (fun line ->
+        let cut = line.IndexOf " c\""
+        let head, tail = if cut < 0 then line, "" else line.Substring(0, cut), line.Substring cut
+        head.Replace("i_W", w).Replace("HDR2", h2).Replace("HDR1", h1) + tail)
+    |> String.concat "\n"
 
 /// Compiles closure-converted, RC-annotated functions to textual LLVM IR, plus a C header for
 /// the exported functions.
@@ -242,7 +269,8 @@ let compile
 
     let rec llty (t: Ty) =
         match prune t with
-        | TCon(("int" | "u64" | "usize"), []) -> "i64"
+        | TCon(("int" | "usize"), []) -> wordTy () // the machine word
+        | TCon(("i64" | "u64"), []) -> "i64"
         | TCon(("i32" | "u32"), []) -> "i32"
         | TCon(("i16" | "u16"), []) -> "i16"
         | TCon(("i8" | "u8"), []) -> "i8"
@@ -279,10 +307,10 @@ let compile
         | _ -> failwith "not a union"
 
     let cellTy (fields: Ty list) =
-        "{ i64, i32" + (fields |> List.map (fun f -> ", " + llty f) |> String.concat "") + " }"
+        "{ i_W, i32" + (fields |> List.map (fun f -> ", " + llty f) |> String.concat "") + " }"
 
     let cloTy (env: Ty list) =
-        "{ i64, ptr, ptr" + (env |> List.map (fun f -> ", " + llty f) |> String.concat "") + " }"
+        "{ i_W, ptr, ptr" + (env |> List.map (fun f -> ", " + llty f) |> String.concat "") + " }"
 
     // ------------------------------------------------------------ C ABI (x86-64 System V, AAPCS64)
     // ponytail: running out of argument registers isn't modelled (x86-64 then passes a struct on
@@ -297,8 +325,8 @@ let compile
         | "i32" -> 4, 4, [ 0, "i32" ]
         | "float" -> 4, 4, [ 0, "float" ]
         | "i64"
-        | "ptr"
         | "double" as lt -> 8, 8, [ 0, lt ]
+        | "ptr" -> pointerBytes (), pointerBytes (), [ 0, "ptr" ]
         | _ ->
             let fs =
                 match prune t with
@@ -380,7 +408,7 @@ let compile
             | Memory -> "void", true
 
     /// A struct in memory, read or written as its eightbytes (padded: a piece may be read
-    /// whole past a struct's last byte, such as an i64 for a 4-byte struct).
+    /// whole past a struct's last byte, such as an i_W for a 4-byte struct).
     let slotFor (em: Emitter) (t: Ty) =
         let slot = "%" + em.Fresh "abi"
         em.Alloca(sprintf "%s = alloca { %s, [16 x i8] }, align 8" slot (llty t))
@@ -392,7 +420,7 @@ let compile
 
         pieces
         |> List.mapi (fun k pt ->
-            let p = em.Instr(sprintf "getelementptr i8, ptr %s, i64 %d" slot (8 * k))
+            let p = em.Instr(sprintf "getelementptr i8, ptr %s, i_W %d" slot (8 * k))
             pt, em.Instr(sprintf "load %s, ptr %s" pt p))
 
     let fromPieces (em: Emitter) (t: Ty) (pieces: (string * string) list) =
@@ -400,7 +428,7 @@ let compile
 
         pieces
         |> List.iteri (fun k (pt, pv) ->
-            let p = em.Instr(sprintf "getelementptr i8, ptr %s, i64 %d" slot (8 * k))
+            let p = em.Instr(sprintf "getelementptr i8, ptr %s, i_W %d" slot (8 * k))
             em.Emit(sprintf "store %s %s, ptr %s" pt pv p))
 
         em.Instr(sprintf "load %s, ptr %s" (llty t) slot)
@@ -418,7 +446,7 @@ let compile
 
     let sizeOf (em: Emitter) (ty: string) =
         let p = em.Instr(sprintf "getelementptr %s, ptr null, i32 1" ty)
-        em.Instr(sprintf "ptrtoint ptr %s to i64" p)
+        em.Instr(sprintf "ptrtoint ptr %s to i_W" p)
 
     let strGlobal (s: string) =
         match strings.TryGetValue s with
@@ -439,7 +467,7 @@ let compile
 
             top.AppendLine(
                 sprintf
-                    "%s = private unnamed_addr constant { i64, i64, [%d x i8] } { i64 0, i64 %d, [%d x i8] c\"%s\\00\" }"
+                    "%s = private unnamed_addr constant { i_W, i_W, [%d x i8] } { i_W 0, i_W %d, [%d x i8] c\"%s\\00\" }"
                     g
                     (bytes.Length + 1)
                     bytes.Length
@@ -454,7 +482,7 @@ let compile
     /// The bytes of a string literal, as a C string.
     let cstrConst (s: string) =
         sprintf
-            "getelementptr inbounds ({ i64, i64, [%d x i8] }, ptr %s, i32 0, i32 2)"
+            "getelementptr inbounds ({ i_W, i_W, [%d x i8] }, ptr %s, i32 0, i32 2)"
             (Encoding.UTF8.GetByteCount s + 1)
             (strGlobal s)
 
@@ -469,6 +497,14 @@ let compile
         em.Label bad
         panicWith em msg
         em.Label ok
+
+    /// A 64-bit value as a word-sized hash: itself, or on a 32-bit chip its halves xor'ed.
+    let foldWord (em: Emitter) (v: string) =
+        if is32 () then
+            let hi = em.Instr(sprintf "lshr i64 %s, 32" v)
+            em.Instr(sprintf "trunc i64 %s to i32" (em.Instr(sprintf "xor i64 %s, %s" v hi)))
+        else
+            v
 
     /// Integer + - * that panics on overflow (llvm.*.with.overflow), in every build.
     let checkedArith (em: Emitter) (op: string) (unsigned: bool) (lt: string) (a: string) (b: string) =
@@ -532,41 +568,46 @@ let compile
 
         let name = sprintf "@\"%s.%s\"" (if always then "copy" else "unique") (show t)
 
-        if generated.Add name then
+        if not always && generated.Add name then
+            // inlined at every write: a count test, and the copy (out of line, cold) only if shared
+            let copy = uniqueFn t true
             let em = Emitter()
-            let at = sprintf "{ i64, i64, [0 x %s] }" (llty el)
+            let rc = em.Instr "load i_W, ptr %p"
+            em.Emit(sprintf "br i1 %s, label %%same, label %%copy, !prof !{!\"branch_weights\", i32 2000, i32 1}" (em.Instr(sprintf "icmp eq i_W %s, 1" rc)))
+            em.Label "same"
+            em.Emit "ret ptr %p"
+            em.Label "copy"
+            em.Emit(sprintf "%%c = call ptr %s(ptr %%p)" copy)
+            em.Emit "ret ptr %c"
+            helpers.Append(sprintf "define private ptr %s(ptr %%p) alwaysinline {\n%s}\n\n" name em.Body) |> ignore
+        elif always && generated.Add name then
+            let em = Emitter()
+            let at = sprintf "{ i_W, i_W, [0 x %s] }" (llty el)
 
-            if not always then
-                let rc = em.Instr "load i64, ptr %p"
-                em.Emit(sprintf "br i1 %s, label %%same, label %%copy" (em.Instr(sprintf "icmp eq i64 %s, 1" rc)))
-                em.Label "same"
-                em.Emit "ret ptr %p"
-                em.Label "copy"
-
-            let len = em.Instr(sprintf "load i64, ptr %s" (em.Instr "getelementptr { i64, i64 }, ptr %p, i32 0, i32 1"))
+            let len = em.Instr(sprintf "load i_W, ptr %s" (em.Instr "getelementptr { i_W, i_W }, ptr %p, i32 0, i32 1"))
             let es = sizeOf em (llty el)
-            let bytes = em.Instr(sprintf "add i64 16, %s" (em.Instr(sprintf "mul i64 %s, %s" len es)))
-            let b = em.Instr(sprintf "call ptr @zs_alloc(i64 %s)" bytes)
-            em.Emit(sprintf "call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %%p, i64 %s, i1 false)" b bytes)
-            em.Emit(sprintf "store i64 1, ptr %s" b)
+            let bytes = em.Instr(sprintf "add i_W HDR2, %s" (em.Instr(sprintf "mul i_W %s, %s" len es)))
+            let b = em.Instr(sprintf "call ptr @zs_alloc(i_W %s)" bytes)
+            em.Emit(sprintf "call void @llvm.memcpy.p0.p0.i_W(ptr %s, ptr %%p, i_W %s, i1 false)" b bytes)
+            em.Emit(sprintf "store i_W 1, ptr %s" b)
 
             if heap el then
                 // the copy holds its own reference to every element
                 em.Emit "br label %loop"
                 em.Label "loop"
                 let i = em.Tmp()
-                em.Emit(sprintf "%s = phi i64 [ 0, %%%s ], [ %%next, %%body ]" i (if always then "entry" else "copy"))
-                em.Emit(sprintf "br i1 %s, label %%body, label %%end" (em.Instr(sprintf "icmp slt i64 %s, %s" i len)))
+                em.Emit(sprintf "%s = phi i_W [ 0, %%entry ], [ %%next, %%body ]" i)
+                em.Emit(sprintf "br i1 %s, label %%body, label %%end" (em.Instr(sprintf "icmp slt i_W %s, %s" i len)))
                 em.Label "body"
-                let ep = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 2, i64 %s" at b i)
+                let ep = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 2, i_W %s" at b i)
                 dupValue em el (em.Instr(sprintf "load %s, ptr %s" (llty el) ep))
-                em.Emit(sprintf "%%next = add i64 %s, 1" i)
+                em.Emit(sprintf "%%next = add i_W %s, 1" i)
                 em.Emit "br label %loop"
                 em.Label "end"
 
             dropValue em t "%p"
             em.Emit(sprintf "ret ptr %s" b)
-            helpers.Append(sprintf "define private ptr %s(ptr %%p) {\n%s}\n\n" name em.Body) |> ignore
+            helpers.Append(sprintf "define private ptr %s(ptr %%p) noinline cold {\n%s}\n\n" name em.Body) |> ignore
 
         name
 
@@ -590,32 +631,32 @@ let compile
                 match pt with
                 | TCon("array", [ el ]) ->
                     if heap el then
-                        let lenp = em.Instr "getelementptr { i64, i64 }, ptr %p, i32 0, i32 1"
-                        let len = em.Instr(sprintf "load i64, ptr %s" lenp)
+                        let lenp = em.Instr "getelementptr { i_W, i_W }, ptr %p, i32 0, i32 1"
+                        let len = em.Instr(sprintf "load i_W, ptr %s" lenp)
                         em.Emit "br label %loop"
                         em.Label "loop"
                         let i = em.Tmp()
-                        em.Emit(sprintf "%s = phi i64 [ 0, %%free ], [ %%next, %%body ]" i)
-                        let c = em.Instr(sprintf "icmp slt i64 %s, %s" i len)
+                        em.Emit(sprintf "%s = phi i_W [ 0, %%free ], [ %%next, %%body ]" i)
+                        let c = em.Instr(sprintf "icmp slt i_W %s, %s" i len)
                         em.Emit(sprintf "br i1 %s, label %%body, label %%end" c)
                         em.Label "body"
-                        let ep = em.Instr(sprintf "getelementptr { i64, i64, [0 x %s] }, ptr %%p, i32 0, i32 2, i64 %s" (llty el) i)
+                        let ep = em.Instr(sprintf "getelementptr { i_W, i_W, [0 x %s] }, ptr %%p, i32 0, i32 2, i_W %s" (llty el) i)
                         dropValue em el (em.Instr(sprintf "load %s, ptr %s" (llty el) ep))
-                        em.Emit(sprintf "%%next = add i64 %s, 1" i)
+                        em.Emit(sprintf "%%next = add i_W %s, 1" i)
                         em.Emit "br label %loop"
                         em.Label "end"
 
                     em.Emit "call void @zs_free(ptr %p)"
                     em.Emit "ret void"
                 | TCon("ref", [ v ]) ->
-                    let vp = em.Instr(sprintf "getelementptr { i64, %s }, ptr %%p, i32 0, i32 1" (llty v))
+                    let vp = em.Instr(sprintf "getelementptr { i_W, %s }, ptr %%p, i32 0, i32 1" (llty v))
                     let x = em.Instr(sprintf "load %s, ptr %s" (llty v) vp)
                     em.Emit "call void @zs_free(ptr %p)"
                     dropValue em v x
                     em.Emit "ret void"
                 | _ ->
                     let _, cases = union pt
-                    let tagp = em.Instr "getelementptr { i64, i32 }, ptr %p, i32 0, i32 1"
+                    let tagp = em.Instr "getelementptr { i_W, i32 }, ptr %p, i32 0, i32 1"
                     let tag = em.Instr(sprintf "load i32, ptr %s" tagp)
                     let withRefs = cases |> List.indexed |> List.filter (fun (_, (_, fs)) -> List.exists heap fs)
 
@@ -666,8 +707,8 @@ let compile
     let rec allocClosure (em: Emitter) (f: string) (env: (Ty * string) list) =
         let k = env.Length
         let cell = cloTy (List.map fst env)
-        let c = em.Instr(sprintf "call ptr @zs_alloc(i64 %s)" (sizeOf em cell))
-        em.Emit(sprintf "store i64 1, ptr %s" c)
+        let c = em.Instr(sprintf "call ptr @zs_alloc(i_W %s)" (sizeOf em cell))
+        em.Emit(sprintf "store i_W 1, ptr %s" c)
         let cp = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 1" cell c)
         em.Emit(sprintf "store ptr %s, ptr %s" (stub f k) cp)
         let dp = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 2" cell c)
@@ -739,7 +780,7 @@ let compile
         let name = sprintf "@\"cloS.%s\"" f
 
         if generated.Add name then
-            top.AppendLine(sprintf "%s = private unnamed_addr constant { i64, ptr, ptr } { i64 0, ptr %s, ptr null }" name (stub f 0))
+            top.AppendLine(sprintf "%s = private unnamed_addr constant { i_W, ptr, ptr } { i_W 0, ptr %s, ptr null }" name (stub f 0))
             |> ignore
 
         name
@@ -756,7 +797,7 @@ let compile
         if generated.Add name then
             let em = Emitter()
             let unitArg = prune a = tUnit
-            let cp = em.Instr "getelementptr { i64, ptr }, ptr %user, i32 0, i32 1"
+            let cp = em.Instr "getelementptr { i_W, ptr }, ptr %user, i32 0, i32 1"
             let code = em.Instr(sprintf "load ptr, ptr %s" cp)
             let av = if unitArg then "zeroinitializer" else "%x"
             let res = em.Instr(sprintf "call %s %s(ptr %%user, %s %s)" (llty r) code (llty a) av)
@@ -782,6 +823,14 @@ let compile
         id
 
     let diFiles = Dictionary<string, string>()
+
+    /// !range for array and string lengths: no array can be as long as the address space, so a
+    /// length is below 2^31 on a 32-bit chip and 2^47 on a 64-bit machine. Knowing that lets LLVM
+    /// drop overflow checks and bounds checks that can't fail (an index from a loop up to the length).
+    let lenRange =
+        lazy (meta (if target.StartsWith "thumb" then "!{i_W 0, i_W 2147483648}" else "!{i_W 0, i_W 140737488355328}"))
+
+    let loadLen (em: Emitter) (p: string) = em.Instr(sprintf "load i_W, ptr %s, !range %s" p lenRange.Value)
 
     let diFile (file: string) =
         match diFiles.TryGetValue file with
@@ -924,7 +973,7 @@ let compile
                 |> List.fold (fun env (i, (p, et)) -> test p et (em.Instr(sprintf "extractvalue %s %s, %d" (llty t) v i)) failL env) env
             | CPCtor(_, tag, ps) ->
                 let fields = snd (List.item tag (snd (union t)))
-                let tagp = em.Instr(sprintf "getelementptr { i64, i32 }, ptr %s, i32 0, i32 1" v)
+                let tagp = em.Instr(sprintf "getelementptr { i_W, i32 }, ptr %s, i32 0, i32 1" v)
                 guardOr (em.Instr(sprintf "icmp eq i32 %s, %d" (em.Instr(sprintf "load i32, ptr %s" tagp)) tag))
                 let cell = cellTy fields
 
@@ -971,6 +1020,101 @@ let compile
             |> sprintf "phi %s %s" ty
             |> em.Instr
 
+        /// let mutable arrays a loop writes, kept unique for the whole loop: inside it they are
+        /// only borrowed (a.[i], Array.length a) or written, never shared or reassigned. Each is
+        /// made unique once before the loop, and the writes in it skip the reference-count check.
+        let uniqueSlots = HashSet<string>()
+
+        let hoisted = HashSet<CExpr>(HashIdentity.Reference)
+        let versioning = HashSet<CExpr>(HashIdentity.Reference) // for loops being generated as versions
+        let uncheckedReads = HashSet<CExpr>(HashIdentity.Reference) // a.[i] proved in bounds
+
+        /// The array reads of a for loop's body that versioning can prove in bounds: a.[x],
+        /// a.[x ± c], a.[c - x], with a and c not assigned in the loop (c a constant or a variable
+        /// bound outside it). Returns the read nodes with (array, coefficient of x, c).
+        let affineReads (env: Map<string, Binding>) (x: string) (body: CExpr) =
+            let assigned = HashSet<string>()
+
+            let rec scan (e: CExpr) =
+                match e.k with
+                | CAssign(y, _) -> assigned.Add y |> ignore
+                | _ -> ()
+
+                children e.k |> List.iter scan
+
+            scan body
+
+            let invariant (c: CExpr) =
+                match c.k with
+                | CInt _ -> true
+                | CLocal y -> y <> x && env.ContainsKey y && not (assigned.Contains y)
+                | _ -> false
+
+            let affine (idx: CExpr) =
+                match idx.k with
+                | CLocal y when y = x -> Some(1, None)
+                | CBin("+", { k = CLocal y }, c)
+                | CBin("+", c, { k = CLocal y }) when y = x && invariant c -> Some(1, Some c)
+                | CBin("-", c, { k = CLocal y }) when y = x && invariant c -> Some(-1, Some c)
+                | _ -> None
+
+            let found = ResizeArray<CExpr * (CExpr * int * CExpr option)>()
+
+            let rec walk (e: CExpr) =
+                match e.k with
+                | CPrim("array.get#b", [ ({ k = CLocal arr } as a); idx ]) when arr <> x && env.ContainsKey arr && not (assigned.Contains arr) ->
+                    match affine idx with
+                    | Some(coef, c) -> found.Add(e, (a, coef, c))
+                    | None -> ()
+
+                    walk idx
+                | CLam _ -> () // a closure body doesn't run in the loop
+                | _ -> children e.k |> List.iter walk
+
+            walk body
+            List.ofSeq found
+
+        /// Only innermost loops without calls are versioned: that's where bounds checks cost, and duplicating
+        /// an outer loop's body (with its inner loops) costs more code than it saves time.
+        let rec hasLoop (e: CExpr) =
+            match e.k with
+            | CWhile _
+            | CFor _
+            | CCallDirect _
+            | CApplyClo _ -> true // nor loops that call: the call costs more, and duplicating it blocks inlining
+            | CLam _ -> false
+            | k -> children k |> List.exists hasLoop
+
+        let versionedReads env x body =
+            if hasLoop body then [] else affineReads env x body |> List.map snd
+        let versionedNodes env x body = affineReads env x body |> List.map fst
+
+        let loopUniques (env: Map<string, Binding>) (loop: CExpr) =
+            let written = Dictionary<string, Ty>()
+            let shared = HashSet<string>()
+
+            let rec walk (e: CExpr) =
+                match e.k with
+                | CArraySet(x, i, v) ->
+                    written[x] <- TCon("array", [ v.ty ])
+                    walk i
+                    walk v
+                | CPrim(op, { k = CLocal _ } :: rest) when op.EndsWith "#b" -> List.iter walk rest
+                | CLocal x
+                | CDup(x, _, _)
+                | CDrop(x, _, _)
+                | CAssign(x, _) ->
+                    shared.Add x |> ignore
+                    children e.k |> List.iter walk
+                | _ -> children e.k |> List.iter walk
+
+            walk loop
+
+            [ for KeyValue(x, t) in written do
+                  match env.TryFind x with
+                  | Some(Slot p) when not (shared.Contains x) && not (uniqueSlots.Contains x) -> yield x, p, t
+                  | _ -> () ]
+
         let lookup (env: Map<string, Binding>) x t =
             match env[x] with
             | Ssa v -> v
@@ -1006,7 +1150,7 @@ let compile
                 gen (env.Add(x, Ssa vv)) tail body
             | CLetMut(x, v, body) ->
                 let vv = gen env false v
-                let slot = "%slot." + x
+                let slot = "%slot." + x + "." + em.Fresh "" // unique: a loop body may be generated twice
                 em.Alloca(sprintf "%s = alloca %s" slot (llty v.ty))
                 em.Emit(sprintf "store %s %s, ptr %s" (llty v.ty) vv slot)
                 declareVar x v.ty vv (Some slot) 0
@@ -1046,13 +1190,23 @@ let compile
                     | _ -> failwith "array set"
 
                 match env[x] with
+                | Slot p when uniqueSlots.Contains x ->
+                    // made unique before the enclosing loop, and not shared inside it
+                    let u = em.Instr(sprintf "load ptr, ptr %s" p)
+                    let len = loadLen em (em.Instr(sprintf "getelementptr { i_W, i_W }, ptr %s, i32 0, i32 1" u))
+                    check em (em.Instr(sprintf "icmp ult i_W %s, %s" vi len)) "index out of bounds"
+                    let ep = em.Instr(sprintf "getelementptr inbounds nuw { i_W, i_W, [0 x %s] }, ptr %s, i32 0, i32 2, i_W %s" (llty el) u vi)
+                    let old = em.Instr(sprintf "load %s, ptr %s" (llty el) ep)
+                    em.Emit(sprintf "store %s %s, ptr %s" (llty el) vv ep)
+                    dropValue em el old
+                    "zeroinitializer"
                 | Slot p ->
                     let a = em.Instr(sprintf "load ptr, ptr %s" p)
                     let u = em.Instr(sprintf "call ptr %s(ptr %s)" (uniqueFn at false) a)
                     em.Emit(sprintf "store ptr %s, ptr %s" u p)
-                    let len = em.Instr(sprintf "load i64, ptr %s" (em.Instr(sprintf "getelementptr { i64, i64 }, ptr %s, i32 0, i32 1" u)))
-                    check em (em.Instr(sprintf "icmp ult i64 %s, %s" vi len)) "index out of bounds"
-                    let ep = em.Instr(sprintf "getelementptr { i64, i64, [0 x %s] }, ptr %s, i32 0, i32 2, i64 %s" (llty el) u vi)
+                    let len = loadLen em (em.Instr(sprintf "getelementptr { i_W, i_W }, ptr %s, i32 0, i32 1" u))
+                    check em (em.Instr(sprintf "icmp ult i_W %s, %s" vi len)) "index out of bounds"
+                    let ep = em.Instr(sprintf "getelementptr inbounds nuw { i_W, i_W, [0 x %s] }, ptr %s, i32 0, i32 2, i_W %s" (llty el) u vi)
                     let old = em.Instr(sprintf "load %s, ptr %s" (llty el) ep)
                     em.Emit(sprintf "store %s %s, ptr %s" (llty el) vv ep)
                     dropValue em el old
@@ -1121,14 +1275,14 @@ let compile
                 let fresh, reuse, join = em.Fresh "alloc", em.Fresh "reuse", em.Fresh "built"
                 em.Emit(sprintf "br i1 %s, label %%%s, label %%%s" (em.Instr(sprintf "icmp eq ptr %s, null" t)) fresh reuse)
                 em.Label fresh
-                let a = em.Instr(sprintf "call ptr @zs_alloc(i64 %s)" (sizeOf em cell))
+                let a = em.Instr(sprintf "call ptr @zs_alloc(i_W %s)" (sizeOf em cell))
                 let fromAlloc = em.Block
                 em.Emit(sprintf "br label %%%s" join)
                 em.Label reuse
                 em.Emit(sprintf "br label %%%s" join)
                 em.Label join
                 let c = em.Instr(sprintf "phi ptr [ %s, %%%s ], [ %s, %%%s ]" a fromAlloc t reuse)
-                em.Emit(sprintf "store i64 1, ptr %s" c)
+                em.Emit(sprintf "store i_W 1, ptr %s" c)
                 let tp = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 1" cell c)
                 em.Emit(sprintf "store i32 %d, ptr %s" tag tp)
 
@@ -1190,14 +1344,14 @@ let compile
                 let g = sprintf "@\"ctor.%s.%d\"" u tag
 
                 if generated.Add g then
-                    top.AppendLine(sprintf "%s = private unnamed_addr constant { i64, i32 } { i64 0, i32 %d }" g tag) |> ignore
+                    top.AppendLine(sprintf "%s = private unnamed_addr constant { i_W, i32 } { i_W 0, i32 %d }" g tag) |> ignore
 
                 g
             | CCtor(_, tag, args) ->
                 let vs = args |> List.map (gen env false)
                 let cell = cellTy (snd (List.item tag (snd (union e.ty))))
-                let c = em.Instr(sprintf "call ptr @zs_alloc(i64 %s)" (sizeOf em cell))
-                em.Emit(sprintf "store i64 1, ptr %s" c)
+                let c = em.Instr(sprintf "call ptr @zs_alloc(i_W %s)" (sizeOf em cell))
+                em.Emit(sprintf "store i_W 1, ptr %s" c)
                 let tp = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 1" cell c)
                 em.Emit(sprintf "store i32 %d, ptr %s" tag tp)
 
@@ -1219,8 +1373,8 @@ let compile
                         if op = "+" then
                             em.Instr(sprintf "call ptr @zs_str_concat(ptr %s, ptr %s)" va vb)
                         else
-                            let c = em.Instr(sprintf "call i64 @zs_str_cmp(ptr %s, ptr %s)" va vb)
-                            em.Instr(sprintf "icmp %s i64 %s, 0" (icmpS[op]) c)
+                            let c = em.Instr(sprintf "call i_W @zs_str_cmp(ptr %s, ptr %s)" va vb)
+                            em.Instr(sprintf "icmp %s i_W %s, 0" (icmpS[op]) c)
 
                     dropValue em t va
                     dropValue em t vb
@@ -1231,6 +1385,15 @@ let compile
                         em.Instr(sprintf "%s %s %s, %s" (farith[op]) lt va vb)
                     else
                         em.Instr(sprintf "fcmp %s %s %s, %s" (fcmp[op]) lt va vb)
+                | _ when op = "&&&" -> em.Instr(sprintf "and %s %s, %s" lt va vb)
+                | _ when op = "|||" -> em.Instr(sprintf "or %s %s, %s" lt va vb)
+                | _ when op = "^^^" -> em.Instr(sprintf "xor %s %s, %s" lt va vb)
+                | _ when op = "<<<" || op = ">>>" ->
+                    // the shift amount is taken modulo the width, as in F# (LLVM leaves larger ones undefined)
+                    let bits = int (lt.Substring 1)
+                    let amount = em.Instr(sprintf "and %s %s, %d" lt vb (bits - 1))
+                    let instr = if op = "<<<" then "shl" elif isUnsigned t then "lshr" else "ashr"
+                    em.Instr(sprintf "%s %s %s, %s" instr lt va amount)
                 | _ when arith.ContainsKey op -> checkedArith em op (isUnsigned t) lt va vb
                 | _ when op = "/" || op = "%" ->
                     check em (em.Instr(sprintf "icmp ne %s %s, 0" lt vb)) "division by zero"
@@ -1280,7 +1443,7 @@ let compile
                         let fixedC = i < s.pars.Length
 
                         match tyName a.ty with
-                        | "string" -> "ptr " + em.Instr(sprintf "getelementptr inbounds i8, ptr %s, i64 16" v)
+                        | "string" -> "ptr " + em.Instr(sprintf "getelementptr inbounds i8, ptr %s, i_W HDR2" v)
                         | _ when fixedC ->
                             let pt = List.item i s.pars
 
@@ -1348,9 +1511,87 @@ let compile
             | CApplyClo(c, a) ->
                 let vc = gen env false c
                 let va = gen env false a
-                let cp = em.Instr(sprintf "getelementptr { i64, ptr }, ptr %s, i32 0, i32 1" vc)
+                let cp = em.Instr(sprintf "getelementptr { i_W, ptr }, ptr %s, i32 0, i32 1" vc)
                 let code = em.Instr(sprintf "load ptr, ptr %s" cp)
                 em.Instr(sprintf "call %s %s(ptr %s, %s %s)" (llty e.ty) code vc (llty a.ty) va)
+            | CWhile _
+            | CFor _ when not (hoisted.Contains e) && not (loopUniques env e).IsEmpty ->
+                let arrays = loopUniques env e
+
+                for _, p, t in arrays do
+                    let a = em.Instr(sprintf "load ptr, ptr %s" p)
+                    em.Emit(sprintf "store ptr %s, ptr %s" (em.Instr(sprintf "call ptr %s(ptr %s)" (uniqueFn t false) a)) p)
+
+                for x, _, _ in arrays do
+                    uniqueSlots.Add x |> ignore
+
+                hoisted.Add e |> ignore
+                let r = gen env tail e
+                hoisted.Remove e |> ignore
+
+                for x, _, _ in arrays do
+                    uniqueSlots.Remove x |> ignore
+
+                r
+            | CFor(x, a, { k = CInt 1L }, b, body) when not optimizeSize && not (versioning.Contains e) && not (versionedReads env x body).IsEmpty ->
+                // loop versioning: if every a.[x ± c] the loop reads is in bounds for the whole
+                // range, run a copy of the loop without those bounds checks; otherwise the checked one
+                let reads = versionedReads env x body
+                let lt = llty a.ty
+                let va = gen env false a
+                let vb = gen env false b
+                let value (c: CExpr) = gen env false c
+
+                let ovf (op: string) (p: string) (q: string) (bad: string) =
+                    let name = sprintf "llvm.s%s.with.overflow.%s" op lt
+                    let decl = sprintf "declare { %s, i1 } @%s(%s, %s)" lt name lt lt
+
+                    if generated.Add decl then
+                        helpers.Append(decl + "\n") |> ignore
+
+                    let r = em.Instr(sprintf "call { %s, i1 } @%s(%s %s, %s %s)" lt name lt p lt q)
+                    em.Instr(sprintf "extractvalue { %s, i1 } %s, 0" lt r), em.Instr(sprintf "or i1 %s, %s" bad (em.Instr(sprintf "extractvalue { %s, i1 } %s, 1" lt r)))
+
+                let ok =
+                    reads
+                    |> List.fold
+                        (fun ok (arr: CExpr, coef, c) ->
+                            let cv = match c with Some c -> value c | None -> "0"
+                            let lo, hi, bad =
+                                if coef > 0 then
+                                    let lo, bad = ovf "add" va cv "false"
+                                    let hi, bad = ovf "add" vb cv bad
+                                    lo, hi, bad
+                                else
+                                    let lo, bad = ovf "sub" cv vb "false"
+                                    let hi, bad = ovf "sub" cv va bad
+                                    lo, hi, bad
+
+                            let len = loadLen em (em.Instr(sprintf "getelementptr { i_W, i_W }, ptr %s, i32 0, i32 1" (value arr)))
+                            let inRange = em.Instr(sprintf "and i1 %s, %s" (em.Instr(sprintf "icmp sge %s %s, 0" lt lo)) (em.Instr(sprintf "icmp slt %s %s, %s" lt hi len)))
+                            em.Instr(sprintf "and i1 %s, %s" ok (em.Instr(sprintf "and i1 %s, %s" inRange (em.Instr(sprintf "xor i1 %s, true" bad))))))
+                        "true"
+
+                let fast, slow, join = em.Fresh "vfast", em.Fresh "vslow", em.Fresh "vjoin"
+                em.Emit(sprintf "br i1 %s, label %%%s, label %%%s" ok fast slow)
+                versioning.Add e |> ignore
+                em.Label fast
+
+                for node in versionedNodes env x body do
+                    uncheckedReads.Add node |> ignore
+
+                gen env false e |> ignore
+
+                for node in versionedNodes env x body do
+                    uncheckedReads.Remove node |> ignore
+
+                em.Emit(sprintf "br label %%%s" join)
+                em.Label slow
+                gen env false e |> ignore
+                em.Emit(sprintf "br label %%%s" join)
+                em.Label join
+                versioning.Remove e |> ignore
+                "zeroinitializer"
             | CWhile(c, b) ->
                 let lc, lb, lend = em.Fresh "wcond", em.Fresh "wbody", em.Fresh "wend"
                 em.Emit(sprintf "br label %%%s" lc)
@@ -1366,7 +1607,7 @@ let compile
                 let va = gen env false a
                 let vs = gen env false step
                 let vb = gen env false b
-                let slot = "%slot." + x
+                let slot = "%slot." + x + "." + em.Fresh "" // unique: a loop body may be generated twice
                 em.Alloca(sprintf "%s = alloca %s" slot lt)
                 em.Emit(sprintf "store %s %s, ptr %s" lt va slot)
                 declareVar x a.ty va (Some slot) 0
@@ -1389,38 +1630,46 @@ let compile
                 em.Emit(sprintf "br label %%%s" lc)
                 em.Label lend
                 "zeroinitializer"
-            | CPrim(op, args) -> prim env op args e.ty
+            | CPrim(op, args) -> prim env (if uncheckedReads.Contains e then op + "!" else op) args e.ty
             | CGlobal _
             | CApp _
             | CLam _
             | CLetFun _ -> failwithf "Codegen: unexpected node %A" e.k
 
         and prim env op (args: CExpr list) (ty: Ty) : string =
+            // op!: a read a versioned loop proved in bounds; op#b: the first argument is borrowed
+            // (the Rc pass keeps it alive), so it isn't dropped
+            let unchecked = op.EndsWith "!"
+            let op = if unchecked then op.Substring(0, op.Length - 1) else op
+            let borrowed0 = op.EndsWith "#b"
+            let op = if borrowed0 then op.Substring(0, op.Length - 2) else op
             let vs = args |> List.map (gen env false)
             let arg i = List.item i vs
             let argTy i = (List.item i args).ty
 
             let arrTy (t: Ty) =
                 match prune t with
-                | TCon("array", [ el ]) -> el, sprintf "{ i64, i64, [0 x %s] }" (llty el)
+                | TCon("array", [ el ]) -> el, sprintf "{ i_W, i_W, [0 x %s] }" (llty el)
                 | _ -> failwith "not an array"
 
             let elemPtr a i =
                 let el, at = arrTy (argTy 0)
-                el, em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 2, i64 %s" at a i)
+                // after the bounds check the index is non-negative: nuw tells LLVM an element never
+                // overlaps the header, so a reference-count check can move out of a loop
+                el, em.Instr(sprintf "getelementptr inbounds nuw %s, ptr %s, i32 0, i32 2, i_W %s" at a i)
 
             let bounds a i =
-                let lenp = em.Instr(sprintf "getelementptr { i64, i64 }, ptr %s, i32 0, i32 1" a)
-                let len = em.Instr(sprintf "load i64, ptr %s" lenp)
-                check em (em.Instr(sprintf "icmp ult i64 %s, %s" i len)) "index out of bounds"
+                let lenp = em.Instr(sprintf "getelementptr { i_W, i_W }, ptr %s, i32 0, i32 1" a)
+                let len = loadLen em lenp
+                check em (em.Instr(sprintf "icmp ult i_W %s, %s" i len)) "index out of bounds"
 
             let newArray (el: Ty) (n: string) =
                 let es = sizeOf em (llty el)
-                let bytes = em.Instr(sprintf "add i64 16, %s" (em.Instr(sprintf "mul i64 %s, %s" n es)))
-                let a = em.Instr(sprintf "call ptr @zs_alloc(i64 %s)" bytes)
-                em.Emit(sprintf "store i64 1, ptr %s" a)
-                let lenp = em.Instr(sprintf "getelementptr { i64, i64 }, ptr %s, i32 0, i32 1" a)
-                em.Emit(sprintf "store i64 %s, ptr %s" n lenp)
+                let bytes = em.Instr(sprintf "add i_W HDR2, %s" (em.Instr(sprintf "mul i_W %s, %s" n es)))
+                let a = em.Instr(sprintf "call ptr @zs_alloc(i_W %s)" bytes)
+                em.Emit(sprintf "store i_W 1, ptr %s" a)
+                let lenp = em.Instr(sprintf "getelementptr { i_W, i_W }, ptr %s, i32 0, i32 1" a)
+                em.Emit(sprintf "store i_W %s, ptr %s" n lenp)
                 a
 
             match op with
@@ -1464,7 +1713,7 @@ let compile
 
                 match tyName t with
                 | "string" ->
-                    let c = em.Instr(sprintf "call i64 @zs_str_cmp(ptr %s, ptr %s)" (arg 0) (arg 1))
+                    let c = em.Instr(sprintf "call i_W @zs_str_cmp(ptr %s, ptr %s)" (arg 0) (arg 1))
                     dropValue em t (arg 0)
                     dropValue em t (arg 1)
                     c
@@ -1476,24 +1725,25 @@ let compile
                             let u = if isUnsigned t then "u" else "s"
                             em.Instr(sprintf "icmp %sgt %s %s, %s" u lt (arg 0) (arg 1)), em.Instr(sprintf "icmp %slt %s %s, %s" u lt (arg 0) (arg 1))
 
-                    let a = em.Instr(sprintf "zext i1 %s to i64" gt)
-                    let b = em.Instr(sprintf "zext i1 %s to i64" lt')
-                    em.Instr(sprintf "sub i64 %s, %s" a b)
+                    let a = em.Instr(sprintf "zext i1 %s to i_W" gt)
+                    let b = em.Instr(sprintf "zext i1 %s to i_W" lt')
+                    em.Instr(sprintf "sub i_W %s, %s" a b)
             | "hash" ->
                 let t = argTy 0
                 let lt = llty t
 
                 match tyName t with
                 | "string" ->
-                    let h = em.Instr(sprintf "call i64 @zs_str_hash(ptr %s)" (arg 0))
+                    let h = em.Instr(sprintf "call i_W @zs_str_hash(ptr %s)" (arg 0))
                     dropValue em t (arg 0)
                     h
-                | "f64" -> em.Instr(sprintf "bitcast double %s to i64" (arg 0))
-                | "f32" -> em.Instr(sprintf "zext i32 %s to i64" (em.Instr(sprintf "bitcast float %s to i32" (arg 0))))
-                | _ when lt = "i64" -> arg 0
-                | _ -> em.Instr(sprintf "%s %s %s to i64" (if isUnsigned t || lt = "i1" then "zext" else "sext") lt (arg 0))
+                | "f64" -> foldWord em (em.Instr(sprintf "bitcast double %s to i64" (arg 0)))
+                | "f32" -> em.Instr(sprintf "zext i32 %s to i_W" (em.Instr(sprintf "bitcast float %s to i32" (arg 0))))
+                | _ when lt = wordTy () -> arg 0
+                | _ when lt = "i64" -> foldWord em (arg 0) // i64/u64 on a 32-bit chip
+                | _ -> em.Instr(sprintf "%s %s %s to i_W" (if isUnsigned t || lt = "i1" then "zext" else "sext") lt (arg 0))
             | "Process.exit" ->
-                em.Emit(sprintf "call void @zs_exit(i64 %s)" (arg 0))
+                em.Emit(sprintf "call void @zs_exit(i_W %s)" (arg 0))
                 em.Emit "unreachable"
                 em.Dead()
                 "poison"
@@ -1511,60 +1761,61 @@ let compile
                     else
                         em.Instr call
 
-                for a, v in real do
-                    dropValue em a.ty v
+                for k, (a, v) in List.indexed real do
+                    if not (borrowed0 && k = 0) then
+                        dropValue em a.ty v
 
                 r
             | "String.length" ->
-                let lp = em.Instr(sprintf "getelementptr i8, ptr %s, i64 8" (arg 0))
-                let n = em.Instr(sprintf "load i64, ptr %s" lp)
-                dropValue em (argTy 0) (arg 0)
+                let lp = em.Instr(sprintf "getelementptr i8, ptr %s, i_W HDR1" (arg 0))
+                let n = loadLen em lp
+                if not borrowed0 then dropValue em (argTy 0) (arg 0)
                 n
             | "ref" ->
-                let cell = sprintf "{ i64, %s }" (llty (argTy 0))
-                let r = em.Instr(sprintf "call ptr @zs_alloc(i64 %s)" (sizeOf em cell))
-                em.Emit(sprintf "store i64 1, ptr %s" r)
+                let cell = sprintf "{ i_W, %s }" (llty (argTy 0))
+                let r = em.Instr(sprintf "call ptr @zs_alloc(i_W %s)" (sizeOf em cell))
+                em.Emit(sprintf "store i_W 1, ptr %s" r)
                 let vp = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 1" cell r)
                 em.Emit(sprintf "store %s %s, ptr %s" (llty (argTy 0)) (arg 0) vp)
                 r
             | "ref.get" ->
-                let vp = em.Instr(sprintf "getelementptr { i64, %s }, ptr %s, i32 0, i32 1" (llty ty) (arg 0))
+                let vp = em.Instr(sprintf "getelementptr { i_W, %s }, ptr %s, i32 0, i32 1" (llty ty) (arg 0))
                 let v = em.Instr(sprintf "load %s, ptr %s" (llty ty) vp)
                 dupValue em ty v
                 dropValue em (argTy 0) (arg 0)
                 v
             | "ref.set" ->
                 let vt = argTy 1
-                let vp = em.Instr(sprintf "getelementptr { i64, %s }, ptr %s, i32 0, i32 1" (llty vt) (arg 0))
+                let vp = em.Instr(sprintf "getelementptr { i_W, %s }, ptr %s, i32 0, i32 1" (llty vt) (arg 0))
                 let old = em.Instr(sprintf "load %s, ptr %s" (llty vt) vp)
                 em.Emit(sprintf "store %s %s, ptr %s" (llty vt) (arg 1) vp)
                 dropValue em vt old
                 dropValue em (argTy 0) (arg 0)
                 "zeroinitializer"
             | "Array.length" ->
-                let lp = em.Instr(sprintf "getelementptr { i64, i64 }, ptr %s, i32 0, i32 1" (arg 0))
-                let n = em.Instr(sprintf "load i64, ptr %s" lp)
-                dropValue em (argTy 0) (arg 0)
+                let lp = em.Instr(sprintf "getelementptr { i_W, i_W }, ptr %s, i32 0, i32 1" (arg 0))
+                let n = loadLen em lp
+                if not borrowed0 then dropValue em (argTy 0) (arg 0)
                 n
             | "Array.create" ->
                 let el = argTy 1
                 let n = arg 0
-                check em (em.Instr(sprintf "icmp sge i64 %s, 0" n)) "negative array size"
+                check em (em.Instr(sprintf "icmp sge i_W %s, 0" n)) "negative array size"
                 let a = newArray el n
-                let at = sprintf "{ i64, i64, [0 x %s] }" (llty el)
+                let at = sprintf "{ i_W, i_W, [0 x %s] }" (llty el)
                 let slot = "%" + em.Fresh "fill"
-                em.Alloca(sprintf "%s = alloca i64" slot)
-                em.Emit(sprintf "store i64 0, ptr %s" slot)
+                em.Alloca(sprintf "%s = alloca i_W" slot)
+                em.Emit(sprintf "store i_W 0, ptr %s" slot)
                 let lc, lb, lend = em.Fresh "acond", em.Fresh "abody", em.Fresh "aend"
                 em.Emit(sprintf "br label %%%s" lc)
                 em.Label lc
-                let i = em.Instr(sprintf "load i64, ptr %s" slot)
-                em.Emit(sprintf "br i1 %s, label %%%s, label %%%s" (em.Instr(sprintf "icmp slt i64 %s, %s" i n)) lb lend)
+                let i = em.Instr(sprintf "load i_W, ptr %s" slot)
+                em.Emit(sprintf "br i1 %s, label %%%s, label %%%s" (em.Instr(sprintf "icmp slt i_W %s, %s" i n)) lb lend)
                 em.Label lb
-                let ep = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 2, i64 %s" at a i)
+                let ep = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 2, i_W %s" at a i)
                 em.Emit(sprintf "store %s %s, ptr %s" (llty el) (arg 1) ep)
                 dupValue em el (arg 1)
-                em.Emit(sprintf "store i64 %s, ptr %s" (em.Instr(sprintf "add i64 %s, 1" i)) slot)
+                em.Emit(sprintf "store i_W %s, ptr %s" (em.Instr(sprintf "add i_W %s, 1" i)) slot)
                 em.Emit(sprintf "br label %%%s" lc)
                 em.Label lend
                 dropValue em el (arg 1) // each slot took its own reference
@@ -1579,16 +1830,18 @@ let compile
 
                 vs
                 |> List.iteri (fun i v ->
-                    let ep = em.Instr(sprintf "getelementptr { i64, i64, [0 x %s] }, ptr %s, i32 0, i32 2, i64 %d" (llty el) a i)
+                    let ep = em.Instr(sprintf "getelementptr { i_W, i_W, [0 x %s] }, ptr %s, i32 0, i32 2, i_W %d" (llty el) a i)
                     em.Emit(sprintf "store %s %s, ptr %s" (llty el) v ep))
 
                 a
             | "array.get" ->
-                bounds (arg 0) (arg 1)
+                if not unchecked then
+                    bounds (arg 0) (arg 1)
+
                 let el, ep = elemPtr (arg 0) (arg 1)
                 let v = em.Instr(sprintf "load %s, ptr %s" (llty el) ep)
                 dupValue em el v
-                dropValue em (argTy 0) (arg 0)
+                if not borrowed0 then dropValue em (argTy 0) (arg 0)
                 v
             | "array.update" ->
                 // Array.set a i x: a changed array (the same one when `a` was unique)
@@ -1606,7 +1859,20 @@ let compile
                 let instr = dict [ "wrap+", "add"; "wrap-", "sub"; "wrap*", "mul" ]
                 em.Instr(sprintf "%s %s %s, %s" instr[op] (llty ty) (arg 0) (arg 1))
             | "slot.take" -> arg 0
-            | "Runtime.allocations" -> em.Instr "call i64 @zs_allocations()"
+            | "mmio.read.u32"
+            | "mmio.read.u8" ->
+                // a hardware register: a volatile load the optimizer keeps exactly as written
+                let w = if op.EndsWith "u32" then "i32" else "i8"
+                let p = em.Instr(sprintf "inttoptr i_W %s to ptr" (arg 0))
+                em.Instr(sprintf "load volatile %s, ptr %s" w p)
+            | "mmio.write.u32"
+            | "mmio.write.u8" ->
+                let w = if op.EndsWith "u32" then "i32" else "i8"
+                let p = em.Instr(sprintf "inttoptr i_W %s to ptr" (arg 0))
+                em.Emit(sprintf "store volatile %s %s, ptr %s" w (arg 1) p)
+                "zeroinitializer"
+            | "Runtime.ticks" -> em.Instr "call i64 @zs_ticks()"
+            | "Runtime.allocations" -> em.Instr "call i_W @zs_allocations()"
             | "array.set" ->
                 bounds (arg 0) (arg 1)
                 let el, ep = elemPtr (arg 0) (arg 1)
@@ -1666,18 +1932,18 @@ let compile
         let body =
             match tyName main.ret with
             | "unit" -> sprintf "  call {} %s({} zeroinitializer)\n  ret i32 0" (sym "main")
-            | "i32" -> sprintf "  %%r = call i32 %s({} zeroinitializer)\n  ret i32 %%r" (sym "main")
+            | _ when rt = "i32" -> sprintf "  %%r = call i32 %s({} zeroinitializer)\n  ret i32 %%r" (sym "main")
             | _ -> sprintf "  %%r = call %s %s({} zeroinitializer)\n  %%c = trunc %s %%r to i32\n  ret i32 %%c" rt (sym "main") rt
 
         funcs.AppendLine("define i32 @main(i32 %argc, ptr %argv) {").AppendLine("  call void @zs_set_args(i32 %argc, ptr %argv)").AppendLine(body).AppendLine("}") |> ignore
 
     // a test build (zs test): `exe <n>` runs test n, so each test runs in its own process
     if not tests.IsEmpty && not (fnTable.ContainsKey "main") then
-        let cases = tests |> List.mapi (fun i _ -> sprintf "i64 %d, label %%t%d" i i) |> String.concat " "
+        let cases = tests |> List.mapi (fun i _ -> sprintf "i_W %d, label %%t%d" i i) |> String.concat " "
         funcs.AppendLine("define i32 @main(i32 %argc, ptr %argv) {") |> ignore
         funcs.AppendLine("  call void @zs_set_args(i32 %argc, ptr %argv)") |> ignore
-        funcs.AppendLine("  %n = call i64 @zs_test_index()") |> ignore
-        funcs.AppendLine(sprintf "  switch i64 %%n, label %%bad [ %s ]" cases) |> ignore
+        funcs.AppendLine("  %n = call i_W @zs_test_index()") |> ignore
+        funcs.AppendLine(sprintf "  switch i_W %%n, label %%bad [ %s ]" cases) |> ignore
 
         tests
         |> List.iteri (fun i t ->
@@ -1742,8 +2008,8 @@ let compile
     // the header: [<CLayout>] structs, then prototypes
     let rec cName (t: Ty) =
         match prune t with
-        | TCon("int", []) -> "int64_t"
-        | TCon(("i8" | "i16" | "i32") as n, []) -> sprintf "int%s_t" (n.Substring 1)
+        | TCon("int", []) -> "intptr_t"
+        | TCon(("i8" | "i16" | "i32" | "i64") as n, []) -> sprintf "int%s_t" (n.Substring 1)
         | TCon(("u8" | "u16" | "u32" | "u64") as n, []) -> sprintf "uint%s_t" (n.Substring 1)
         | TCon("usize", []) -> "size_t"
         | TCon("f64", []) -> "double"
@@ -1775,4 +2041,4 @@ let compile
         md.AppendLine(sprintf "!llvm.dbg.cu = !{%s}" compileUnit.Value) |> ignore
         md.AppendLine(sprintf "!llvm.module.flags = !{%s, %s}" flags version) |> ignore
 
-    top.ToString() + "\n" + helpers.ToString() + funcs.ToString() + "\n" + md.ToString(), header.ToString()
+    resolveWord (top.ToString() + "\n" + helpers.ToString() + funcs.ToString() + "\n" + md.ToString()), header.ToString()

@@ -210,6 +210,11 @@ let private builtins =
           b "Int.wrappingMul" "wrap*" [ kInt ] (f a (f a a)) 2
           b "Runtime.allocations" "Runtime.allocations" [] (f tUnit tInt) 1
           b "Process.exit" "Process.exit" [ kAny ] (f tInt a) 1
+          b "Mmio.read32" "mmio.read.u32" [] (f (tcon "usize") (tcon "u32")) 1
+          b "Mmio.write32" "mmio.write.u32" [] (f (tcon "usize") (f (tcon "u32") tUnit)) 2
+          b "Mmio.read8" "mmio.read.u8" [] (f (tcon "usize") (tcon "u8")) 1
+          b "Mmio.write8" "mmio.write.u8" [] (f (tcon "usize") (f (tcon "u8") tUnit)) 2
+          b "Runtime.ticks" "Runtime.ticks" [] (f tUnit (tcon "u64")) 1
           b "Env.argc" "Env.argc" [] (f tUnit tInt) 1
           b "Env.arg" "Env.arg" [] (f tInt tStr) 1
           b "Env.has" "Env.has" [] (f tStr tBool) 1
@@ -227,7 +232,7 @@ let private builtins =
           b "Process.runRaw" "Process.runRaw" [] (f tStr (f tStr tStr)) 2
           b "Process.code" "Process.code" [] (f tUnit tInt) 1
           b "Array.length" "Array.length" [ kAny ] (f (TCon("array", [ a ])) tInt) 1 ]
-        @ [ for t in Seq.append nums [ "i64"; "float"; "c_int" ] ->
+        @ [ for t in Seq.append nums [ "float"; "c_int" ] ->
                 let target =
                     match typeAliases.TryGetValue t with
                     | true, c -> c
@@ -1078,25 +1083,35 @@ let check (requireMain: bool) (collect: bool) (modules: (string * string option 
     and arith (op: string) (ca: CExpr) (cb: CExpr) : CExpr =
         let isArith = List.contains op [ "+"; "-"; "*"; "/"; "%" ]
 
-        let tr =
-            match op with
-            | "+" -> "Add"
-            | "-"
-            | "*"
-            | "/"
-            | "%" -> "Num"
-            | "="
-            | "<>" -> "Eq"
-            | _ -> "Ord"
+        if List.contains op [ "&&&"; "|||"; "^^^"; "<<<"; ">>>" ] then
+            // bitwise: both operands the same integer type (a shift amount too)
+            try
+                unify (fresh kInt) ca.ty
+            with Mismatch ->
+                fail 0 (sprintf "operator '%s' needs an integer, not %s" op (show ca.ty))
 
-        try
-            unify (fresh (kTrait tr)) ca.ty
-        with
-        | Mismatch
-        | NoImpl _ -> fail 0 (sprintf "operator '%s' does not support type %s (it needs %s)" op (show ca.ty) tr)
+            expect (sprintf "right operand of '%s'" op) ca.ty cb.ty
+            mk (CBin(op, ca, cb)) ca.ty
+        else
+            let tr =
+                match op with
+                | "+" -> "Add"
+                | "-"
+                | "*"
+                | "/"
+                | "%" -> "Num"
+                | "="
+                | "<>" -> "Eq"
+                | _ -> "Ord"
 
-        expect (sprintf "right operand of '%s'" op) ca.ty cb.ty
-        mk (CBin(op, ca, cb)) (if isArith then ca.ty else tBool)
+            try
+                unify (fresh (kTrait tr)) ca.ty
+            with
+            | Mismatch
+            | NoImpl _ -> fail 0 (sprintf "operator '%s' does not support type %s (it needs %s)" op (show ca.ty) tr)
+
+            expect (sprintf "right operand of '%s'" op) ca.ty cb.ty
+            mk (CBin(op, ca, cb)) (if isArith then ca.ty else tBool)
 
     /// Does either operand carry a unit of measure (so * and / combine units)?
     and measuredOperands (ca: CExpr) (cb: CExpr) =

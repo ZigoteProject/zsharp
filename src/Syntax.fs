@@ -201,7 +201,7 @@ let keywords =
 
 // longest first
 let symbols =
-    [ "..."; ".."; "->"; "<-"; "|>"; "|]"; "[|"; "[<"; ">]"; "::"; ">>"; "<>"; "<="; ">="; "&&"; "||"
+    [ "&&&"; "|||"; "^^^"; "<<<"; ">>>"; "~~~"; "..."; ".."; "->"; "<-"; "|>"; "|]"; "[|"; "[<"; ">]"; "::"; ">>"; "<>"; "<="; ">="; "&&"; "||"
       "?"; "("; ")"; "{"; "}"; "["; "]"; ","; ";"; "|"; "."; ":"; "="; "<"; ">"; "+"; "-"; "*"; "/"; "%"; "@"; "^" ]
 
 let private unescape ln =
@@ -300,6 +300,36 @@ and private lexWith (src: string) (keepComments: bool) : Token[] =
                     comments.Add(ln, i + 1, line.Substring i)
 
                 i <- line.Length
+            elif c = '0' && i + 2 < line.Length && "xXbBoO".Contains line[i + 1] then
+                // 0xFF, 0b1010, 0o17 (with _ separators); up to 64 bits, so 0xFFFF_FFFF_FFFF_FFFF is -1
+                let radix =
+                    match Char.ToLower line[i + 1] with
+                    | 'x' -> 16
+                    | 'b' -> 2
+                    | _ -> 8
+
+                let isDigit (d: char) = Uri.IsHexDigit d && Convert.ToInt32(string d, 16) < radix
+                i <- i + 2
+                let s = i
+
+                while i < line.Length && (isDigit line[i] || line[i] = '_') do
+                    i <- i + 1
+
+                let digits = line.Substring(s, i - s).Replace("_", "")
+
+                if digits = "" then
+                    fail ln (sprintf "expected digits after 0%c" line[s - 1])
+
+                if i < line.Length && Char.IsLetterOrDigit line[i] then
+                    fail ln (sprintf "'%c' isn't a digit in base %d" line[i] radix)
+
+                let value =
+                    try
+                        Convert.ToUInt64(digits, radix)
+                    with :? OverflowException ->
+                        fail ln "integer literal too large (more than 64 bits)"
+
+                add (KInt(int64 value))
             elif Char.IsDigit c then
                 let s = i
 
@@ -518,6 +548,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         match peek () with
         | KSym ">" -> advance ()
         | KSym ">>" -> toks[pos.Value] <- { toks[pos.Value] with tok = KSym ">" }
+        | KSym ">>>" -> toks[pos.Value] <- { toks[pos.Value] with tok = KSym ">>" } // list<list<list<int>>>
         | _ -> err "'>'"
 
     /// A unit of measure: m, m/s^2, kg m/s^2, 'u, 1 (inside <...> after a numeric type).
@@ -1041,7 +1072,13 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
 
         l
 
-    and cmpE () = binary [ "="; "<>"; "<"; ">"; "<="; ">=" ] consE
+    and cmpE () = binary [ "="; "<>"; "<"; ">"; "<="; ">=" ] bitOrE
+
+    // bitwise operators on integers, tighter than comparison (so x &&& m = 0 needs no parentheses)
+    and bitOrE () = binary [ "|||" ] bitXorE
+    and bitXorE () = binary [ "^^^" ] bitAndE
+    and bitAndE () = binary [ "&&&" ] shiftE
+    and shiftE () = binary [ "<<<"; ">>>" ] consE
 
     // right-associative :: and @
     and consE () =
@@ -1063,6 +1100,10 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         if isSym "-" || isSym "~-" then
             advance ()
             Neg(unary ())
+        elif isSym "~~~" then
+            // bitwise not: x ^^^ (all ones)
+            advance ()
+            Bin("^^^", unary (), Lit -1L)
         elif peek () = KKw "not" then
             advance ()
             Not(unary ())

@@ -217,7 +217,8 @@ let run (prog: Program) : MFun list =
                 |> List.fold
                     (fun acc (i, t) ->
                         let h = call "Hash.hash" t [ comp a i t ] tInt
-                        mk (CBin("+", mk (CBin("*", acc, mk (CInt 31L) tInt)) tInt, h)) tInt)
+                        // wrapping: a hash may overflow on purpose
+                        mk (CPrim("wrap+", [ mk (CPrim("wrap*", [ acc; mk (CInt 31L) tInt ])) tInt; h ])) tInt)
                     (mk (CInt 17L) tInt)
             | _ -> Syntax.fail 0 (sprintf "tuples have no %s" q)
 

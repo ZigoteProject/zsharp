@@ -25,7 +25,8 @@ and TV =
     | Unbound of int * Kind
     | Link of Ty
 
-let ints = set [ "int"; "i8"; "i16"; "i32"; "u8"; "u16"; "u32"; "u64"; "usize" ]
+// int and usize are the machine word (64 bits, or 32 on a 32-bit chip); i64 and u64 always 64
+let ints = set [ "int"; "i8"; "i16"; "i32"; "i64"; "u8"; "u16"; "u32"; "u64"; "usize" ]
 let unsigned = set [ "u8"; "u16"; "u32"; "u64"; "usize" ]
 let floats = set [ "f64"; "f32" ]
 let nums = ints + floats
@@ -56,7 +57,7 @@ let hasBuiltinImpl (tr: string) (n: string) =
 // callback<F>: FFI only
 let builtinCons = dict [ "array", 1; "Buffer", 1; "ref", 1; "callback", 1 ]
 
-let typeAliases = dict [ "i64", "int"; "c_int", "i32"; "float", "f64"; "double", "f64" ]
+let typeAliases = dict [ "c_int", "i32"; "float", "f64"; "double", "f64" ]
 
 let tcon n = TCon(n, [])
 let tInt, tBool, tUnit, tStr, tCStr = tcon "int", tcon "bool", tcon "unit", tcon "string", tcon "cstr"

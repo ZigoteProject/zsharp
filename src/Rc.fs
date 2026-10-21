@@ -280,6 +280,20 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
                 | Some v -> re (CAssign(x, mk (CPrim("slot.moved", [ rc owned borrowed v ])) v.ty))
                 | None -> re (CAssign(x, rc owned borrowed v))
             | CPrim("slot.take", _) -> e // the variable's own reference, moved out
+            | CPrim(("array.get" | "Array.length" | "String.length" | "String.byte") as op, ({ k = CLocal x } as a) :: rest) when
+                not (rest |> List.exists (fun r -> (freeVars r).Contains x))
+                ->
+                // reading an element or the length borrows the array (or string): no dup before,
+                // no drop inside; if this was x's last use, x is dropped after
+                let rest' = rcList (owned.Remove x) (borrowed.Add x) rest
+                let read = re (CPrim(op + "#b", a :: rest'))
+
+                if owned.Contains x then
+                    let r = tmp ()
+                    vtypes[r] <- e.ty
+                    re (CLet(r, read, mk (CDrop(x, vtypes[x], mk (CLocal r) e.ty)) e.ty))
+                else
+                    read
             | CAssign(x, v) -> re (CAssign(x, rc owned borrowed v))
             | CArraySet(x, i, v) ->
                 match rcList owned borrowed [ i; v ] with

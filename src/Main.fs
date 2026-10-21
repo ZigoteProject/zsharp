@@ -141,11 +141,23 @@ let private newProject (name: string) =
 let main argv =
     Codegen.debugInfo <- Array.contains "-g" argv
 
+    if Array.contains "-Os" argv then
+        optLevel <- "-Os"
+        Codegen.optimizeSize <- true
+
+    let argv = argv |> Array.filter ((<>) "-Os")
+
     // --target <triple> (e.g. aarch64-linux-musl): a cross build, taken out of the arguments
     let argv =
         match Array.tryFindIndex ((=) "--target") argv with
         | Some i when i + 1 < argv.Length ->
-            Codegen.target <- argv[i + 1]
+            // a chip name selects the bare-metal runtime; Codegen sees its triple
+            match mcus.TryGetValue argv[i + 1] with
+            | true, m ->
+                mcu <- Some m
+                Codegen.target <- m.triple
+            | _ -> Codegen.target <- argv[i + 1]
+
             Array.append argv[.. i - 1] argv[i + 2 ..]
         | _ -> argv
 

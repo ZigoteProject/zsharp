@@ -28,6 +28,8 @@
 
   <ItemGroup>
     <None Include="../runtime/rt.c" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../runtime/rt-embedded.c" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../runtime/boards/*.ld" LinkBase="boards" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../runtime/prelude.zs" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
