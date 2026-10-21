@@ -230,7 +230,8 @@ type private Global =
 
 /// modules: (file, module name, declarations) in dependency order; the prelude and the main
 /// file have no module name (their declarations are global).
-let check (requireMain: bool) (modules: (string * string option * (int * Decl) list) list) : Program =
+/// collect: report every declaration's error (editors) instead of stopping at the first.
+let check (requireMain: bool) (collect: bool) (modules: (string * string option * (int * Decl) list) list) : Program =
     let decls = modules |> List.collect (fun (_, _, ds) -> ds)
     let types = Dictionary<string, TypeInfo>()
     let ctors = Dictionary<string, string * int>() // constructor -> union, tag
@@ -279,6 +280,47 @@ let check (requireMain: bool) (modules: (string * string option * (int * Decl) l
     let tyvars = Dictionary<string, Ty>() // 'a in the current function's annotations
     let counter = ref 0
     let measures = HashSet<string>() // [<Measure>] types
+    let diagnostics = ResizeArray<Diagnostic>()
+    let hovers = ResizeArray<Hover>()
+    let currentFile = ref ""
+
+    /// Remembers the type at a node's source position.
+    let record (node: obj) (name: string) (t: Ty) (inlay: bool) =
+        match positions.TryGetValue node with
+        | true, (l, c, len) ->
+            hovers.Add
+                { hfile = currentFile.Value
+                  hline = l
+                  hcol = c
+                  hlen = max len name.Length
+                  name = name
+                  hty = t
+                  inlay = inlay }
+        | _ -> ()
+
+    /// Errors raised while checking a positioned node (a name, call or field) point at it.
+    let at (node: obj) (f: unit -> 'r) : 'r =
+        try
+            f ()
+        with CompileError(0, msg) when positions.ContainsKey node ->
+            let l, c, _ = positions[node]
+            raise (CompileErrorPos(l, c, msg))
+
+    let colOf (node: obj) =
+        match positions.TryGetValue node with
+        | true, (_, c, _) -> c
+        | _ -> 0
+
+    /// Parameters that are plain names, with their types.
+    let recordParams (orig: Param list) (pars: (string * string * Ty) list) =
+        if orig.Length = pars.Length then
+            List.iter2
+                (fun (p: Pat, ann: SType option) (_, _, t) ->
+                    match p with
+                    | PIdent(x, None) -> record p x t ann.IsNone
+                    | _ -> ())
+                orig
+                pars
     let clayouts = HashSet<string>() // [<CLayout>] records
     let exports = ResizeArray<Export>()
     let currentModule = ref (None: string option)
@@ -506,7 +548,9 @@ let check (requireMain: bool) (modules: (string * string option * (int * Decl) l
                         | _ -> None) (Some PWild)
 
             CPCtor(u, tag, List.map2 (pat names) subs fields)
-        | PIdent(x, None) -> CPVar(name x, ty)
+        | PIdent(x, None) ->
+            record p x ty true
+            CPVar(name x, ty)
         | PIdent(c, Some _) -> fail 0 (sprintf "unknown constructor '%s'" c)
         | PTuple ps ->
             let ts = ps |> List.map (fun _ -> fresh kAny)
@@ -529,6 +573,7 @@ let check (requireMain: bool) (modules: (string * string option * (int * Decl) l
 
     let rec infer (env: Map<string, Local>) (depth: int) (e: Expr) : CExpr =
         let inf = infer env depth
+        let node = e
 
         match e with
         | At(ln, e) ->
@@ -536,14 +581,26 @@ let check (requireMain: bool) (modules: (string * string option * (int * Decl) l
                 let c = infer env depth e
                 mk (CLine(ln, c)) c.ty
             with CompileError(0, msg) ->
-                fail ln msg
+                raise (CompileErrorPos(ln, colOf node, msg))
         | Lit n -> mk (CInt n) (fresh kInt)
         | FloatLit f -> mk (CFloat f) (fresh kFloat)
         | BoolLit b -> mk (CBool b) tBool
         | StrLit s -> mk (CStr s) (fresh kStrLit)
         | UnitLit -> mk CUnit tUnit
-        | Var x -> value env depth x
-        | Call(f, args) -> call env depth f args
+        | Var x ->
+            let r = at node (fun () -> value env depth x)
+            record node x r.ty false
+            r
+        | Call(f, args) ->
+            let r = at node (fun () -> call env depth f args)
+
+            let headTy =
+                match r.k with
+                | CApp(h, _) -> h.ty
+                | _ -> r.ty
+
+            record node f headTy false
+            r
         | App(Field(r, f), args) ->
             let cr = inf r
             settle cr.ty
@@ -552,9 +609,10 @@ let check (requireMain: bool) (modules: (string * string option * (int * Decl) l
             | Some(m: MemberInfo) when not m.isStatic && not m.isProperty -> memberCall env depth m (Some cr) args f
             | _ -> apply env depth (field cr f) args None
         | App(h, args) -> apply env depth (inf h) args None
-        | Lambda(ps, body) ->
-            let ps, body = lowerParams ps body
+        | Lambda(ps0, body) ->
+            let ps, body = lowerParams ps0 body
             let pars = ps |> List.map (fun (x, ann) -> x, uniq x, annot ann)
+            recordParams ps0 pars
 
             let envB =
                 pars
@@ -572,9 +630,10 @@ let check (requireMain: bool) (modules: (string * string option * (int * Decl) l
             let cb = infer envB (depth + 1) body
             let ptys = pars |> List.map (fun (_, _, t) -> t)
             mk (CLam(pars |> List.map (fun (_, u, t) -> u, t), cb)) (funTy ptys cb.ty)
-        | LetFun(name, isRec, ps, ret, body, rest) ->
-            let ps, body = lowerParams ps body
+        | LetFun(name, isRec, ps0, ret, body, rest) ->
+            let ps, body = lowerParams ps0 body
             let pars = ps |> List.map (fun (x, ann) -> x, uniq x, annot ann)
+            recordParams ps0 pars
             let rty = annot ret
             let fty = funTy (pars |> List.map (fun (_, _, t) -> t)) rty
 
@@ -599,13 +658,16 @@ let check (requireMain: bool) (modules: (string * string option * (int * Decl) l
 
             let cb = infer envB (depth + 1) body
             expect (sprintf "result of '%s'" name) rty cb.ty
+            record node name fty false
             let cr = infer (env.Add(name, self)) depth rest
             mk (CLetFun(self.u, isRec, pars |> List.map (fun (_, u, t) -> u, t), cb, cr)) cr.ty
-        | Let(PIdent(x, None), ann, v, rest) when not (isCtor x) ->
+        | Let(PIdent(x, None) as p, ann, v, rest) when not (isCtor x) ->
             let cv =
                 match ann with
                 | Some a -> inferHint env depth (toTy None a) v
                 | None -> inf v
+
+            record p x cv.ty ann.IsNone
             ann |> Option.iter (fun a -> expect (sprintf "value of '%s'" x) (toTy None a) cv.ty)
 
             let l =
@@ -766,13 +828,18 @@ let check (requireMain: bool) (modules: (string * string option * (int * Decl) l
                     mk (CField(mk (CLocal tmp) cr.ty, i)) (substGen targs (snd defs[i])))
 
             mk (CLet(tmp, cr, built)) built.ty
-        | Field(r, f) -> field (inf r) f
+        | Field(r, f) ->
+            let cr = inf r
+            let res = at node (fun () -> field cr f)
+            record node f res.ty false
+            res
         | Question _ -> fail 0 "'?' is only supported as `let x = e?` or as a whole statement (for now)"
         | DeriveCtx(ctx, e) ->
             try
                 inf e
-            with CompileError(l, msg) ->
-                fail l (sprintf "%s: %s" ctx msg)
+            with
+            | CompileError(l, msg) -> fail l (sprintf "%s: %s" ctx msg)
+            | CompileErrorPos(l, c, msg) -> raise (CompileErrorPos(l, c, sprintf "%s: %s" ctx msg))
         | ForIn(x, xs, body) ->
             let cxs = inf xs
             settle cxs.ty
@@ -1495,7 +1562,7 @@ let check (requireMain: bool) (modules: (string * string option * (int * Decl) l
                 let c = inferHint env depth hint inner
                 mk (CLine(ln, c)) c.ty
             with CompileError(0, msg) ->
-                fail ln msg
+                raise (CompileErrorPos(ln, colOf e, msg))
         | RecordLit fields -> recordLit env depth (Some hint) fields
         | _ -> infer env depth e
 
@@ -1599,11 +1666,12 @@ let check (requireMain: bool) (modules: (string * string option * (int * Decl) l
         : (Global * Dictionary<string, Ty>) list =
         let prepared =
             items
-            |> List.map (fun (ln, name, isRec, ps, ret, body, expected) ->
+            |> List.map (fun (ln, name, isRec, ps0, ret, body, expected) ->
                 try
                     tyvars.Clear()
-                    let ps, body = lowerParams ps body
+                    let ps, body = lowerParams ps0 body
                     let pars = ps |> List.map (fun (x, ann) -> x, uniq x, annot ann)
+                    recordParams ps0 pars
                     let rty = annot ret
                     let fty = funTy (pars |> List.map (fun (_, _, t) -> t)) rty
 
@@ -1842,8 +1910,9 @@ let check (requireMain: bool) (modules: (string * string option * (int * Decl) l
         try
             try
                 declareImpl tr head defs
-            with CompileError(l, msg) ->
-                fail l (sprintf "%s: %s" context msg)
+            with
+            | CompileError(l, msg) -> fail l (sprintf "%s: %s" context msg)
+            | CompileErrorPos(l, c, msg) -> raise (CompileErrorPos(l, c, sprintf "%s: %s" context msg))
         finally
             tyvars.Clear()
 
@@ -1974,7 +2043,13 @@ let check (requireMain: bool) (modules: (string * string option * (int * Decl) l
                 if globals.ContainsKey name || externs.ContainsKey name then
                     fail 0 (sprintf "'%s' is already defined" name)
 
-                defineGroup [ ln, name, isRec, ps, ret, body ]
+                try
+                    defineGroup [ ln, name, isRec, ps, ret, body ]
+                with _ ->
+                    globals.Remove name |> ignore // keep later declarations from seeing a half-defined function
+                    reraise ()
+
+                record d name globals[name].ty false
             | Trait(name, tp, methods) ->
                 if traitMethods.Keys |> Seq.exists (fun k -> k.StartsWith(name + ".")) then
                     fail 0 (sprintf "trait '%s' is already defined" name)
@@ -2111,15 +2186,53 @@ let check (requireMain: bool) (modules: (string * string option * (int * Decl) l
             | _ -> fail 0 "'main' must take one unit parameter: let main () = ..."
         | _ -> fail 0 "no 'main' function"
 
+    // errors that mention a declaration that already failed are just its consequences
+    let failed = HashSet<string>()
+
+    let report (dg: Diagnostic) =
+        if not collect then
+            raise (CompileErrorAt(dg.file, dg.line, dg.col, dg.msg))
+        elif not (failed |> Seq.exists (fun n -> dg.msg.Contains("'" + n + "'"))) then
+            diagnostics.Add dg
+
+    let declaredNames (d: Decl) =
+        let rec go d =
+            match d with
+            | Fun(n, _, _, _, _)
+            | TypeDecl(n, _, _, _) -> [ n ]
+            | Attrs(_, d)
+            | Private d -> go d
+            | _ -> []
+
+        go d
+
     for file, modName, decls in modules do
         currentModule.Value <- modName
         opens.Value <- []
+        currentFile.Value <- file
 
         for ln, d in decls do
+            let diag l c msg =
+                { file = file
+                  line = l
+                  col = c
+                  msg = msg }
+
             try
                 declare ln d
-            with CompileError(l, msg) ->
-                raise (CompileErrorAt(file, (if l = 0 then ln else l), msg))
+            with
+            | CompileError(l, msg) ->
+                report (diag (if l = 0 then ln else l) 0 msg)
+
+                for n in declaredNames d do
+                    failed.Add n |> ignore
+                    failed.Add(qualify n) |> ignore
+            | CompileErrorPos(l, c, msg) ->
+                report (diag l c msg)
+
+                for n in declaredNames d do
+                    failed.Add n |> ignore
+                    failed.Add(qualify n) |> ignore
 
     currentModule.Value <- None
     let mainFile, _, _ = List.last modules
@@ -2128,7 +2241,11 @@ let check (requireMain: bool) (modules: (string * string option * (int * Decl) l
         if requireMain || globals.ContainsKey "main" then
             checkMain ()
     with CompileError(_, msg) ->
-        raise (CompileErrorAt(mainFile, 0, msg))
+        report
+            { file = mainFile
+              line = 0
+              col = 0
+              msg = msg }
 
     { types = types
       externs = externs
@@ -2136,4 +2253,6 @@ let check (requireMain: bool) (modules: (string * string option * (int * Decl) l
       traitMethods = traitMethods
       impls = impls
       exports = List.ofSeq exports
-      clayouts = clayouts }
+      clayouts = clayouts
+      errors = List.ofSeq diagnostics
+      hovers = List.ofSeq hovers }

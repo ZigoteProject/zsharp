@@ -1,1 +1,1 @@
-tests/err_dot.zs:1: error: cannot resolve '.Length': the type of this expression isn't known here; add a type annotation
+tests/err_dot.zs:1:15: error: cannot resolve '.Length': the type of this expression isn't known here; add a type annotation

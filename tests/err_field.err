@@ -1,1 +1,1 @@
-tests/err_field.zs:4: error: field 'y': expected int, got bool
+tests/err_field.zs:4:11: error: field 'y': expected int, got bool

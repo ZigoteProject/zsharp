@@ -1,1 +1,1 @@
-tests/err_noequality.zs:5: error: operator '=' does not support type Handle (it needs Eq)
+tests/err_noequality.zs:5:14: error: operator '=' does not support type Handle (it needs Eq)

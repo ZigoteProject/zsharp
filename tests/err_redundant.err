@@ -1,1 +1,1 @@
-tests/err_redundant.zs:2: error: this match case is never reached
+tests/err_redundant.zs:2:3: error: this match case is never reached

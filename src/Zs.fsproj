@@ -17,6 +17,8 @@
     <Compile Include="Lift.fs" />
     <Compile Include="Rc.fs" />
     <Compile Include="Codegen.fs" />
+    <Compile Include="Driver.fs" />
+    <Compile Include="Lsp.fs" />
     <Compile Include="Main.fs" />
   </ItemGroup>
 

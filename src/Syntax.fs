@@ -6,7 +6,12 @@ open System.Globalization
 open System.Text
 
 exception CompileError of line: int * msg: string
-exception CompileErrorAt of file: string * line: int * msg: string // once the file is known
+exception CompileErrorPos of line: int * col: int * msg: string // with a column (parser errors)
+exception CompileErrorAt of file: string * line: int * col: int * msg: string // col 0 = unknown
+
+/// Source positions (line, column, length) of AST nodes, by node identity: identifiers,
+/// binders, calls (their head) and statements. Kept beside the AST so it stays plain.
+let positions = Dictionary<obj, int * int * int>(HashIdentity.Reference)
 
 /// line 0 = "unknown here"; the nearest enclosing statement/declaration fills it in.
 let fail line msg = raise (CompileError(line, msg))
@@ -155,6 +160,8 @@ type Tok =
 type Token =
     { tok: Tok
       line: int
+      col: int // 1-based; 0 for layout tokens
+      len: int
       adj: bool } // no whitespace before it (F#: `f(x)` binds tighter than `f (x)`)
 
 let showTok =
@@ -212,6 +219,8 @@ let lex (src: string) : Token[] =
             toks.Add
                 { tok = t
                   line = ln
+                  col = start + 1
+                  len = max 1 (i - start)
                   adj = start > 0 && line[start - 1] <> ' ' }
 
         while i < line.Length && line[i] = ' ' do
@@ -405,9 +414,19 @@ let lex (src: string) : Token[] =
                 i <- i + s.Length
 
     for _ in 2 .. indents.Count do
-        toks.Add { tok = KDedent; line = lines.Length; adj = false }
+        toks.Add
+            { tok = KDedent
+              line = lines.Length
+              col = 0
+              len = 0
+              adj = false }
 
-    toks.Add { tok = KEof; line = lines.Length; adj = false }
+    toks.Add
+        { tok = KEof
+          line = lines.Length
+          col = 0
+          len = 0
+          adj = false }
     toks.ToArray()
 
 // ---------------------------------------------------------------- parser
@@ -415,13 +434,30 @@ let lex (src: string) : Token[] =
 let private cons a b = Call("::", [ Tuple [ a; b ] ])
 
 /// Parses a whole program, or (exprOnly) a single expression.
-let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list * Expr option =
+let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (int * Decl) list * Expr option =
     let pos = ref 0
     let peek () = toks[pos.Value].tok
     let peek2 () = toks[min (pos.Value + 1) (toks.Length - 1)].tok
     let line () = toks[pos.Value].line
+
+    /// Records where a node came from (the current token, or a given token index).
+    let mark (ti: int) (node: 'n) : 'n =
+        if track then
+            let t = toks[ti]
+            positions[box node] <- (t.line, t.col, t.len)
+
+        node
+
+    let copyPos (fromNode: obj) (node: 'n) : 'n =
+        match positions.TryGetValue fromNode with
+        | true, p when track -> positions[box node] <- p
+        | _ -> ()
+
+        node
     let advance () = pos.Value <- pos.Value + 1
-    let err what = fail (line ()) (sprintf "expected %s, found %s" what (showTok (peek ())))
+    let err what =
+        let t = toks[pos.Value]
+        raise (CompileErrorPos(t.line, t.col, sprintf "expected %s, found %s" what (showTok t.tok)))
 
     let expect t what =
         if peek () = t then advance () else err what
@@ -666,7 +702,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
 
         match t with
         | KId "_" -> PWild
-        | KId x -> PIdent(x, None)
+        | KId x -> mark (pos.Value - 1) (PIdent(x, None))
         | KInt n -> PInt n
         | KSym("-" | "~-") ->
             match peek () with
@@ -717,11 +753,12 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
         match peek (), peek2 () with
         | KSym "(", KId _ when (toks[min (pos.Value + 2) (toks.Length - 1)].tok = KSym ":") ->
             advance ()
+            let xi = pos.Value
             let x = ident ()
             advance ()
             let t = ty ()
             expect (KSym ")") "')'"
-            PIdent(x, None), Some t
+            mark xi (PIdent(x, None)), Some t
         | _ -> patAtom (), None
 
     let startsParam t =
@@ -742,7 +779,10 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
             expect KDedent "end of block"
             e
         else
-            assignment (expr ())
+            // a one-line block is a statement too, so its errors have a position
+            let si = pos.Value
+            let ln = line ()
+            mark si (At(ln, assignment (expr ())))
 
     /// `lhs <- rhs` (statements, and single-line blocks such as `then x <- 1`)
     and assignment lhs =
@@ -762,6 +802,8 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
 
     and seq () =
         let ln = line ()
+        let si = pos.Value
+        let stmt (ln, e) = mark si (At(ln, e))
 
         if peek () = KKw "let" then
             advance ()
@@ -777,14 +819,15 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
                 let ann = optTy ()
                 expect (KSym "=") "'='"
                 let v = block ()
-                At(ln, LetMut(x, ann, v, rest ln))
+                stmt(ln, LetMut(x, ann, v, rest ln))
             | KId f, next when (isRec || Char.IsLower f[0] || f[0] = '_') && f <> "_" && startsParam next ->
+                let fi = pos.Value
                 advance ()
                 let ps = parameters ()
                 let ret = optTy ()
                 expect (KSym "=") "'='"
                 let body = block ()
-                At(ln, LetFun(f, isRec, ps, ret, body, rest ln))
+                stmt(ln, mark fi (LetFun(f, isRec, ps, ret, body, rest ln)))
             | _ ->
                 let p = pattern ()
                 let ann = optTy ()
@@ -792,15 +835,16 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
                 let v = block ()
 
                 match v with
-                | Question e when ann.IsNone -> At(ln, TryBind(p, e, rest ln))
-                | _ -> At(ln, Let(p, ann, v, rest ln))
+                | Question e
+                | At(_, Question e) when ann.IsNone -> stmt(ln, TryBind(p, e, rest ln))
+                | _ -> stmt(ln, Let(p, ann, v, rest ln))
         else
             match assignment (expr ()) with
             | Question q when peek () = KNewline ->
                 advance ()
-                At(ln, TryBind(PWild, q, seq ()))
+                stmt(ln, TryBind(PWild, q, seq ()))
             | e ->
-                let e = At(ln, e)
+                let e = stmt(ln, e)
 
                 if peek () = KNewline then
                     advance ()
@@ -902,7 +946,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
 
             l <-
                 match compose () with
-                | Var f -> Call(f, [ l ])
+                | Var f as v -> copyPos v (Call(f, [ l ]))
                 | Call(f, args) -> Call(f, args @ [ l ])
                 | App(h, args) -> App(h, args @ [ l ])
                 | f -> App(f, [ l ])
@@ -999,7 +1043,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
     and app () =
         let e =
             match atom () with
-            | Var f when startsAtom () -> Call(f, [ while startsAtom () do yield atom () ])
+            | Var f as v when startsAtom () -> copyPos v (Call(f, [ while startsAtom () do yield atom () ]))
             | head when startsAtom () -> App(head, [ while startsAtom () do yield atom () ])
             | head -> head
 
@@ -1019,7 +1063,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
 
                 e <-
                     match e with
-                    | Var f -> Call(f, [ arg ])
+                    | Var f -> copyPos e (Call(f, [ arg ]))
                     | Call(f, args) -> Call(f, args @ [ arg ])
                     | _ -> App(e, [ arg ])
             else
@@ -1031,7 +1075,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
                     expect (KSym "]") "']'"
                     e <- Index(e, i)
                 else
-                    e <- Field(e, ident ())
+                    e <- mark pos.Value (Field(e, ident ()))
 
         e
 
@@ -1083,7 +1127,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
         | KFloat f -> measured (FloatLit f)
         | KStr s -> StrLit s
         | KInterp parts -> interpolate ln parts
-        | KId x -> Var x
+        | KId x -> mark (pos.Value - 1) (Var x)
         | KKw "true" -> BoolLit true
         | KKw "false" -> BoolLit false
         | KSym "{" -> record ()
@@ -1117,9 +1161,10 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
             if isExpr then
                 let e =
                     try
-                        (snd (parseTokens (lex s) true)).Value
-                    with CompileError(_, msg) ->
-                        fail ln msg
+                        (snd (parseTokens (lex s) true false)).Value
+                    with
+                    | CompileError(_, msg)
+                    | CompileErrorPos(_, _, msg) -> fail ln msg
 
                 Call("string", [ e ])
             else
@@ -1533,6 +1578,8 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
                 advance ()
 
             // an active pattern: (|Even|Odd|) or (|Int|_|)
+            let ni = pos.Value
+
             let name =
                 if isSym "(" && peek2 () = KSym "|" then
                     advance ()
@@ -1555,7 +1602,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
 
             let ret = optTy ()
             expect (KSym "=") "'='"
-            let f = Fun(name, isRec, ps, ret, block ())
+            let f = mark ni (Fun(name, isRec, ps, ret, block ()))
             ln, (if isPrivate then Private f else f)
         | _ -> err "'let', 'type' or 'extern'"
 
@@ -1574,4 +1621,4 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) : (int * Decl) list
               elif peek () <> KEof then err "end of line" ],
         None
 
-let parse (toks: Token[]) : (int * Decl) list = fst (parseTokens toks false)
+let parse (toks: Token[]) : (int * Decl) list = fst (parseTokens toks false true)

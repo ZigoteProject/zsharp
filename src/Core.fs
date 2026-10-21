@@ -407,7 +407,26 @@ type Program =
       traitMethods: Dictionary<string, TraitMethod> // "Show.show" -> method
       impls: Dictionary<string * string, Dictionary<string, string>> // (trait, type) -> method -> function
       exports: Export list
-      clayouts: HashSet<string> } // [<CLayout>] records
+      clayouts: HashSet<string> // [<CLayout>] records
+      errors: Diagnostic list // when type-checking in collect mode
+      hovers: Hover list } // inferred types at source positions (editor support)
+
+and Diagnostic =
+    { file: string
+      line: int
+      col: int // 0 = unknown
+      msg: string }
+
+/// What an identifier at a position is: a use, or a binder (an inlay-hint candidate when its
+/// type wasn't written).
+and Hover =
+    { hfile: string
+      hline: int
+      hcol: int
+      hlen: int
+      name: string
+      hty: Ty
+      inlay: bool }
 
 /// [<Export "cname">]: a C entry point for a monomorphic function.
 and Export =

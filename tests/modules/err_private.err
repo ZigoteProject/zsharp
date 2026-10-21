@@ -1,1 +1,1 @@
-tests/modules/err_private.zs:2: error: 'Geometry.pi' is private to module Geometry
+tests/modules/err_private.zs:2:11: error: 'Geometry.pi' is private to module Geometry

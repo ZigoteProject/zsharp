@@ -13,7 +13,8 @@ for t in $(find tests -name '*.zs' | sort); do
   base=${t%.zs}
   [ -f "$base.out" ] || [ -f "$base.err" ] || continue
   if [ -f "$base.err" ]; then
-    actual=$(bin/zs build "$t" -o "$tmp/exe" 2>&1); expected=$(cat "$base.err")
+    # compare the error lines, not the source snippets under them
+    actual=$(bin/zs build "$t" -o "$tmp/exe" 2>&1 | grep -v '^ [ 0-9]* | '); expected=$(cat "$base.err")
   elif ! bin/zs build "$t" -o "$tmp/exe" 2>"$tmp/build.log"; then
     actual=$(cat "$tmp/build.log"); expected=$(cat "$base.out")
   else

@@ -1,1 +1,1 @@
-tests/err_capture.zs:3: error: mutable variable 'n' cannot be captured by a closure; use a ref cell
+tests/err_capture.zs:3:21: error: mutable variable 'n' cannot be captured by a closure; use a ref cell
