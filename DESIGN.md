@@ -127,6 +127,58 @@ let same = { x = 1.0<m>; y = 2.0<m> } = { x = 1.0<m>; y = 2.0<m> }   // true, st
   - **Partial** ones (`(|P|_|)`, returning `option`) never count toward coverage, the same as a guarded case.
   - Parameterised ones (`(|DivBy|_|) 3`) are supported.
 
+### 2.2 Default fields, named and optional arguments
+
+There are two mechanisms. Curried `let` functions get neither, so their types stay plain.
+
+**Default values for record fields.** A literal may omit any field that has a default:
+
+```fsharp
+type Config =
+  { host: string = "localhost"
+    port: int = 8080
+    timeout: int = port / 100          // may refer to earlier fields
+    tls: option<TlsConfig> = None }    // option fields need an explicit default
+
+let connect (cfg: Config) = ...
+connect { port = 9000 }                // the "options record" idiom replaces named arguments on functions
+```
+
+**Named, optional and default arguments on members** (tupled, as in F#):
+
+```fsharp
+type Http =
+  static member Get(url: string, ?timeout: int = 30, ?headers: list<string * string>) = ...
+
+Http.Get("https://x", timeout = 5)     // inside Get: timeout is int, headers is option<_>
+```
+
+**Named fields on union cases:** construction and patterns can use the field names from the declaration. Union fields have no defaults.
+
+```fsharp
+type Shape = Circle of radius: f64 | Rect of w: f64 * h: f64
+let c = Circle(radius = 2.0)
+match s with
+| Rect(h = h) -> h                     // unnamed fields are wildcards
+| Circle _ -> 0.0
+```
+
+**Rules:**
+- **When defaults run:** a default is any expression. It is evaluated at the call or construction site each time, after the values given explicitly. It may refer to earlier fields or parameters.
+  - Defaults expand at the call site, so they cost nothing at runtime: there is no callee-side `option` check, and no allocation.
+  - Values are immutable, so Python's shared-mutable-default trap can't happen.
+- **Optional parameters without a default:** an optional parameter with no default (`?headers`) is an `option<_>` in the body. An omitted argument is the static `None`.
+- **Named arguments:** in a member call, `name = value` is a named argument when `name` is one of that member's parameters. Everywhere else, `x = 1` is still equality.
+  - Positional arguments come first.
+  - Each parameter may be given at most once.
+- **Record literals:**
+  - **Picking the type:** the literal's fields must identify one record type, using the expected type when it is known. When defaults make the fields ambiguous, an annotation is required, as in F#.
+  - **Required fields:** a field without a default must always be given, and a missing one is an error naming that field.
+  - **`option` fields:** these get a default only from an explicit `= None`.
+- **`derive` (§3.1):** `fromJson` uses a field's default when the key is missing.
+- **C export:** exported members have all parameters required. C has no defaults.
+- **Library versioning:** a changed default reaches users when they recompile (the same as C#/Kotlin, and consistent with shipping Core IR).
+
 ## 3. Traits (replacing interfaces and SRTP)
 
 ```fsharp
@@ -482,5 +534,9 @@ Plan: ROADMAP "Editor tooling track".
 | 21 | Target order | Linux x64/arm64, macOS arm64, Windows x64, WASM | default |
 | 22 | User code generation | `derive` over record and union shapes (§3.1); no macros, no comptime | default |
 | 23 | Editor support | tree-sitter grammar + `zs lsp` + `zs mcp`, Zed extension first | decided |
+| 24 | Named/optional/default args | default record fields + named/optional/default on members only; none on curried functions | decided |
+| 25 | `option` record fields | default only with explicit `= None` | decided |
+| 26 | Default expressions | any expression, evaluated at the call site, may use earlier fields/parameters | decided |
+| 27 | Union case fields | named construction and patterns; no defaults | decided |
 
 "Default" means chosen by me and open to change until the phase that implements it begins.

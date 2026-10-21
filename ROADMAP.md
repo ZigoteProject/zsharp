@@ -77,7 +77,9 @@ gdb, qemu-user, zig). `./dev ./test.sh` runs the suite inside it, plain `./dev` 
 - **Scope:**
   - **Traits:** monomorphized, with `Num`/`Ord`/`Eq`/`Hash`/`Show`. Operators become traits.
   - **Equality:** automatic structural `=`, `compare`, `hash` and `%A`, with `[<NoEquality>]`/`[<NoComparison>]`.
-  - **Members:** `member`/`static member` on records and unions, with type-directed dot resolution.
+  - **Members:** `member`/`static member` on records and unions, with type-directed dot resolution. Named, optional (`?x`) and default (`?x = e`) arguments, expanded at the call site.
+  - **Record field defaults:** `{ port: int = 8080 }`; record literals may omit defaulted fields.
+  - **Named union fields:** `Circle(radius = 2.0)` and `| Rect(h = h) ->` (DESIGN §2.2).
   - **Units of measure:** `[<Measure>]` types and `f64<m/s>`, using Kennedy unification.
   - **Active patterns:** total, partial and parameterised, integrated into the exhaustiveness checker.
   - **Modules:** one file is one module, with `open`/`private`. The compiler follows imports from `zs build main.zs`.
