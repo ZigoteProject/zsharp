@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <Compile Include="Syntax.fs" />
+    <Compile Include="Typer.fs" />
     <Compile Include="Codegen.fs" />
     <Compile Include="Main.fs" />
   </ItemGroup>

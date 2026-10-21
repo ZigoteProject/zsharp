@@ -3,20 +3,7 @@ module Codegen
 open System.Collections.Generic
 open System.Text
 open Syntax
-
-type Sig =
-    { args: Ty list
-      variadic: bool
-      ret: Ty
-      sym: string }
-
-let llty =
-    function
-    | TInt -> "i64"
-    | TCInt -> "i32"
-    | TBool -> "i1"
-    | TCStr -> "ptr"
-    | TUnit -> "void"
+open Typer
 
 let private arith =
     dict [ "+", "add"; "-", "sub"; "*", "mul"; "/", "sdiv"; "%", "srem" ]
@@ -24,19 +11,47 @@ let private arith =
 let private cmp =
     dict [ "=", "eq"; "<>", "ne"; "<", "slt"; ">", "sgt"; "<=", "sle"; ">=", "sge" ]
 
-let private isInt t = t = TInt || t = TCInt
-
-let private mismatch what expected actual =
-    fail 0 (sprintf "%s: expected %s, got %s" what (tyName expected) (tyName actual))
-
-// ponytail: type checking is fused into codegen (no inference); phase 1 splits out HM typecheck
-/// Compiles a program to textual LLVM IR.
-let compile (decls: (int * Decl) list) : string =
+// Representation:
+//   int i64, c_int i32, bool i1, cstr ptr, unit {} (value: zeroinitializer)
+//   tuples and records: LLVM struct values
+//   unions: ptr to a heap cell { i32 tag, field... }; nullary constructors point to a constant
+// ponytail: every union is boxed; keep small non-recursive ones inline when perf matters
+/// Compiles a type-checked program to textual LLVM IR.
+let compile (prog: Program) : string =
     let globals = StringBuilder()
     let funcs = StringBuilder()
-    let fns = Dictionary<string, Sig>()
-    let syms = HashSet<string>()
+    let ctorGlobals = HashSet<string>()
     let strCount = ref 0
+
+    globals.AppendLine("declare ptr @malloc(i64)").AppendLine("declare void @llvm.trap()") |> ignore
+
+    let union u =
+        match prog.types[u] with
+        | UnionDef cs -> cs
+        | RecordDef _ -> failwith "not a union"
+
+    let rec llty (t: Ty) =
+        match resolve t with
+        | TCon "int" -> "i64"
+        | TCon "c_int" -> "i32"
+        | TCon "bool" -> "i1"
+        | TCon "cstr" -> "ptr"
+        | TCon "unit" -> "{}"
+        | TCon n ->
+            match prog.types[n] with
+            | RecordDef fs -> structTy (List.map snd fs)
+            | UnionDef _ -> "ptr"
+        | TTuple ts -> structTy ts
+        | TVar _ -> failwith "unresolved type"
+
+    and structTy ts =
+        "{ " + (ts |> List.map llty |> String.concat ", ") + " }"
+
+    let cellTy fields = structTy (TCon "c_int" :: fields)
+
+    // C functions returning unit are void
+    let retTy (s: FunSig) =
+        if s.isExtern && resolve s.ret = TCon "unit" then "void" else llty s.ret
 
     let str (s: string) =
         let bytes = Encoding.UTF8.GetBytes s
@@ -58,8 +73,8 @@ let compile (decls: (int * Decl) list) : string =
 
         name
 
-    /// Returns the body's type, its result operand, and its instructions.
-    let genBody (pars: (string * Ty) list) (retHint: Ty option) (body: Expr) =
+    /// Returns the body's result operand and its instructions.
+    let genBody (pars: (string * Ty) list) (body: CExpr) =
         let out = StringBuilder()
         let n = ref 0
         let block = ref "entry"
@@ -75,237 +90,237 @@ let compile (decls: (int * Decl) list) : string =
             out.AppendLine(l + ":") |> ignore
             block.Value <- l
 
-        // hint: expected type, lets integer literals become c_int where C wants one
-        let rec gen (env: Map<string, Ty * string>) (hint: Ty option) (e: Expr) : Ty * string =
-            match e with
-            | At(ln, e) ->
+        let instr (fmt: string) =
+            let r = tmp ()
+            emit (r + " = " + fmt)
+            r
+
+        let phi ty (incoming: (string * string) list) =
+            incoming
+            |> List.map (fun (v, b) -> sprintf "[ %s, %%%s ]" v b)
+            |> String.concat ", "
+            |> sprintf "phi %s %s" ty
+            |> instr
+
+        /// Continues at a fresh block when `cond` holds, otherwise jumps to failL.
+        let guardOr cond failL =
+            let ok = fresh "ok"
+            emit (sprintf "br i1 %s, label %%%s, label %%%s" cond ok failL)
+            label ok
+
+        /// Emits the test of pattern p against v (of type t); returns env extended with its bindings.
+        let rec test (p: CPat) (t: Ty) (v: string) failL (env: Map<string, string>) =
+            match p with
+            | CPWild -> env
+            | CPVar(x, _) -> env.Add(x, v)
+            | CPAs(p, x, _) -> (test p t v failL env).Add(x, v)
+            | CPInt k ->
+                guardOr (instr (sprintf "icmp eq %s %s, %d" (llty t) v k)) failL
+                env
+            | CPBool b ->
+                guardOr (instr (sprintf "icmp eq i1 %s, %b" v b)) failL
+                env
+            | CPTuple ps ->
+                let ts =
+                    match resolve t with
+                    | TTuple ts -> ts
+                    | _ -> failwith "tuple pattern on non-tuple"
+
+                List.zip ps ts
+                |> List.indexed
+                |> List.fold
+                    (fun env (i, (p, et)) -> test p et (instr (sprintf "extractvalue %s %s, %d" (llty t) v i)) failL env)
+                    env
+            | CPCtor(u, tag, ps) ->
+                let fields = snd (List.item tag (union u))
+                guardOr (instr (sprintf "icmp eq i32 %s, %d" (instr (sprintf "load i32, ptr %s" v)) tag)) failL
+                let cell = cellTy fields
+
+                List.zip ps fields
+                |> List.indexed
+                |> List.fold
+                    (fun env (i, (p, ft)) ->
+                        let fp = instr (sprintf "getelementptr %s, ptr %s, i32 0, i32 %d" cell v (i + 1))
+                        test p ft (instr (sprintf "load %s, ptr %s" (llty ft) fp)) failL env)
+                    env
+            | CPOr(a, b) ->
+                // both sides bind the same variables; merge them with phis
+                let altL, okL = fresh "alt", fresh "or"
+                let vars = patVars a
+                let envA = test a t v altL env
+                let fromA = vars |> List.map (fun (x, _) -> envA[x]), block.Value
+                emit (sprintf "br label %%%s" okL)
+                label altL
+                let envB = test b t v failL env
+                let fromB = vars |> List.map (fun (x, _) -> envB[x]), block.Value
+                emit (sprintf "br label %%%s" okL)
+                label okL
+
+                vars
+                |> List.indexed
+                |> List.fold
+                    (fun (env: Map<_, _>) (i, (x, xt)) ->
+                        env.Add(x, phi (llty xt) [ (fst fromA)[i], snd fromA; (fst fromB)[i], snd fromB ]))
+                    env
+
+        let rec gen (env: Map<string, string>) (e: CExpr) : string =
+            match e.k with
+            | CLine(ln, e) ->
                 try
-                    gen env hint e
+                    gen env e
                 with CompileError(0, msg) ->
                     fail ln msg
-            | Lit n -> (if hint = Some TCInt then TCInt else TInt), string n
-            | BoolLit b -> TBool, (if b then "true" else "false")
-            | StrLit s -> TCStr, str s
-            | UnitLit -> TUnit, ""
-            | Var x ->
-                match env.TryFind x with
-                | Some v -> v
-                | None when fns.ContainsKey x -> fail 0 (sprintf "'%s' is a function; call it (no first-class functions yet)" x)
-                | None -> fail 0 (sprintf "unknown name '%s'" x)
-            | Neg e ->
-                let t, v = gen env hint e
+            | CInt k -> string k
+            | CBool b -> if b then "true" else "false"
+            | CStr s -> str s
+            | CUnit -> "zeroinitializer"
+            | CLocal x -> env[x]
+            | CNeg a -> instr (sprintf "sub %s 0, %s" (llty a.ty) (gen env a))
+            | CNot a -> instr (sprintf "xor i1 %s, true" (gen env a))
+            | CBin(op, a, b) ->
+                let va = gen env a
+                let vb = gen env b
 
-                if not (isInt t) then
-                    mismatch "operand of '-'" TInt t
-
-                let r = tmp ()
-                emit (sprintf "%s = sub %s 0, %s" r (llty t) v)
-                t, r
-            | Not e ->
-                let t, v = gen env None e
-
-                if t <> TBool then
-                    mismatch "operand of 'not'" TBool t
-
-                let r = tmp ()
-                emit (sprintf "%s = xor i1 %s, true" r v)
-                TBool, r
-            | Bin(op, a, b) ->
-                let ta, va = gen env (if cmp.ContainsKey op then None else hint) a
-                let tb, vb = gen env (Some ta) b
-
-                if ta <> tb then
-                    mismatch (sprintf "right operand of '%s'" op) ta tb
-
-                let r = tmp ()
-
+                // ponytail: '/' and '%' by zero are UB; add a trap check with debug builds
                 if arith.ContainsKey op then
-                    if not (isInt ta) then
-                        mismatch (sprintf "operand of '%s'" op) TInt ta
-
-                    // ponytail: '/' and '%' by zero are UB; add a trap check with debug builds
-                    emit (sprintf "%s = %s %s %s, %s" r (arith[op]) (llty ta) va vb)
-                    ta, r
+                    instr (sprintf "%s %s %s, %s" (arith[op]) (llty a.ty) va vb)
                 else
-                    if not (isInt ta || (ta = TBool && (op = "=" || op = "<>"))) then
-                        fail 0 (sprintf "cannot compare values of type %s with '%s'" (tyName ta) op)
-
-                    emit (sprintf "%s = icmp %s %s %s, %s" r (cmp[op]) (llty ta) va vb)
-                    TBool, r
-            | If(c, t, e) ->
-                let tc, vc = gen env None c
-
-                if tc <> TBool then
-                    mismatch "condition of 'if'" TBool tc
-
-                let lt, le, lend = fresh "then", fresh "else", fresh "endif"
-                emit (sprintf "br i1 %s, label %%%s, label %%%s" vc lt le)
+                    instr (sprintf "icmp %s %s %s, %s" (cmp[op]) (llty a.ty) va vb)
+            | CIf(c, t, f) ->
+                let vc = gen env c
+                let lt, lf, lend = fresh "then", fresh "else", fresh "endif"
+                emit (sprintf "br i1 %s, label %%%s, label %%%s" vc lt lf)
                 label lt
-                let tt, vt = gen env hint t
+                let vt = gen env t
                 let bt = block.Value
                 emit (sprintf "br label %%%s" lend)
-                label le
-
-                let te, ve =
-                    match e with
-                    | Some e -> gen env (Some tt) e
-                    | None when tt <> TUnit -> fail 0 "'if' without 'else' must have type unit"
-                    | None -> TUnit, ""
-
-                let be = block.Value
+                label lf
+                let vf = gen env f
+                let bf = block.Value
                 emit (sprintf "br label %%%s" lend)
-
-                if tt <> te then
-                    mismatch "'else' branch" tt te
-
                 label lend
+                phi (llty e.ty) [ vt, bt; vf, bf ]
+            | CLet(x, v, body) -> gen (env.Add(x, gen env v)) body
+            | CSeq(a, b) ->
+                gen env a |> ignore
+                gen env b
+            | CTuple xs ->
+                let ty = llty e.ty
+                let vs = xs |> List.map (gen env)
 
-                if tt = TUnit then
-                    TUnit, ""
-                else
-                    let r = tmp ()
-                    emit (sprintf "%s = phi %s [ %s, %%%s ], [ %s, %%%s ]" r (llty tt) vt bt ve be)
-                    tt, r
-            | Let(x, ann, v, rest) ->
-                let t, value = gen env ann v
+                List.zip xs vs
+                |> List.indexed
+                |> List.fold (fun agg (i, (x, v)) -> instr (sprintf "insertvalue %s %s, %s %s, %d" ty agg (llty x.ty) v i)) "poison"
+            | CField(r, i) -> instr (sprintf "extractvalue %s %s, %d" (llty r.ty) (gen env r) i)
+            | CCtor(u, tag, []) ->
+                let g = sprintf "@zs.ctor.%s.%s" u (fst (List.item tag (union u)))
 
-                if ann.IsSome && ann.Value <> t then
-                    mismatch (sprintf "value of '%s'" x) ann.Value t
+                if ctorGlobals.Add g then
+                    globals.AppendLine(sprintf "%s = private unnamed_addr constant { i32 } { i32 %d }" g tag) |> ignore
 
-                gen (env.Add(x, (t, value))) hint rest
-            | Seq(a, b) ->
-                gen env None a |> ignore
-                gen env hint b
-            | Call("ignore", [ a ]) when not (fns.ContainsKey "ignore") ->
-                gen env None a |> ignore
-                TUnit, ""
-            | Call(f, args) ->
-                let s =
-                    match fns.TryGetValue f with
-                    | true, s -> s
-                    | _ when env.ContainsKey f -> fail 0 (sprintf "'%s' is not a function" f)
-                    | _ -> fail 0 (sprintf "unknown function '%s'" f)
+                g
+            | CCtor(u, tag, args) ->
+                let vs = args |> List.map (gen env)
+                let cell = cellTy (snd (List.item tag (union u)))
+                let size = instr (sprintf "getelementptr %s, ptr null, i32 1" cell)
+                // ponytail: cells are never freed; Perceus RC (phase 2) frees them
+                let c = instr (sprintf "call ptr @malloc(i64 %s)" (instr (sprintf "ptrtoint ptr %s to i64" size)))
+                emit (sprintf "store i32 %d, ptr %s" tag c)
 
-                let nFixed = s.args.Length
+                List.zip args vs
+                |> List.iteri (fun i (a, v) ->
+                    let fp = instr (sprintf "getelementptr %s, ptr %s, i32 0, i32 %d" cell c (i + 1))
+                    emit (sprintf "store %s %s, ptr %s" (llty a.ty) v fp))
 
-                if args.Length < nFixed || (args.Length > nFixed && not s.variadic) then
-                    fail 0 (sprintf "'%s' expects %d argument(s), got %d" f nFixed args.Length)
+                c
+            | CCall(f, args) ->
+                let s = prog.sigs[f]
 
                 let argv =
                     args
                     |> List.mapi (fun i a ->
-                        if i < nFixed then
-                            let pt = s.args[i]
-                            let t, v = gen env (Some pt) a
+                        let v = gen env a
 
-                            if t <> pt then
-                                mismatch (sprintf "argument %d of '%s'" (i + 1) f) pt t
-
-                            sprintf "%s %s" (llty t) v
+                        if i < s.pars.Length then
+                            sprintf "%s %s" (llty a.ty) v
                         else
-                            let t, v = gen env None a
+                            match resolve a.ty with
+                            | TCon "bool" -> "i32 " + instr (sprintf "zext i1 %s to i32" v) // C default promotion
+                            | TCon("int" | "c_int" | "cstr") -> sprintf "%s %s" (llty a.ty) v
+                            | t -> fail 0 (sprintf "a %s cannot be passed to a C variadic function" (show t)))
 
-                            match t with
-                            | TUnit -> fail 0 "cannot pass unit to a C variadic function"
-                            | TBool -> // C default argument promotion
-                                let r = tmp ()
-                                emit (sprintf "%s = zext i1 %s to i32" r v)
-                                "i32 " + r
-                            | _ -> sprintf "%s %s" (llty t) v)
+                let ret = retTy s
 
                 let fnTy =
                     if s.variadic then
-                        sprintf "%s (%s, ...)" (llty s.ret) (s.args |> List.map llty |> String.concat ", ")
+                        sprintf "%s (%s, ...)" ret (s.pars |> List.map llty |> String.concat ", ")
                     else
-                        llty s.ret
+                        ret
 
                 let call = sprintf "call %s %s(%s)" fnTy s.sym (String.concat ", " argv)
 
-                if s.ret = TUnit then
+                if ret = "void" then
                     emit call
-                    TUnit, ""
+                    "zeroinitializer"
                 else
-                    let r = tmp ()
-                    emit (sprintf "%s = %s" r call)
-                    s.ret, r
+                    instr call
+            | CMatch(s, cases) ->
+                // ponytail: clauses are tested one after another; decision trees when match speed matters
+                let v = gen env s
+                let endL = fresh "mend"
+                let mutable next = fresh "case"
+                let results = ResizeArray()
+                emit (sprintf "br label %%%s" next)
 
-        let env =
-            pars |> List.fold (fun (m: Map<_, _>) (x, t) -> m.Add(x, (t, "%p." + x))) Map.empty
+                for p, guard, body in cases do
+                    label next
+                    let failL = fresh "case"
+                    let env = test p s.ty v failL env
 
+                    if guard.IsSome then
+                        guardOr (gen env guard.Value) failL
+
+                    results.Add(gen env body, block.Value)
+                    emit (sprintf "br label %%%s" endL)
+                    next <- failL
+
+                label next
+                emit "call void @llvm.trap()" // unreachable: the type checker proved exhaustiveness
+                emit "unreachable"
+                label endL
+                phi (llty e.ty) (List.ofSeq results)
+
+        let env = pars |> List.fold (fun (m: Map<_, _>) (x, _) -> m.Add(x, "%p." + x)) Map.empty
         out.AppendLine "entry:" |> ignore
-        let t, v = gen env retHint body
-        t, v, out.ToString()
+        let v = gen env body
+        v, out.ToString()
 
-    for ln, d in decls do
-        try
-            match d with
-            | Extern(name, args, variadic, ret) ->
-                if not (syms.Add("@" + name)) then
-                    fail 0 (sprintf "'%s' is already declared" name)
+    for KeyValue(name, s) in prog.sigs do
+        if s.isExtern && name <> "malloc" then
+            let ps = (s.pars |> List.map llty) @ (if s.variadic then [ "..." ] else [])
+            globals.AppendLine(sprintf "declare %s @%s(%s)" (retTy s) name (String.concat ", " ps)) |> ignore
 
-                fns[name] <-
-                    { args = args
-                      variadic = variadic
-                      ret = ret
-                      sym = "@" + name }
+    for name, pars, body in prog.funs do
+        let s = prog.sigs[name]
+        let typed = List.zip pars s.pars
+        let v, text = genBody typed body
+        let ps = typed |> List.map (fun (x, t) -> sprintf "%s %%p.%s" (llty t) x) |> String.concat ", "
+        let rt = llty s.ret
 
-                let ps = (args |> List.map llty) @ (if variadic then [ "..." ] else [])
+        funcs
+            .AppendLine(sprintf "define %s %s(%s) {" rt s.sym ps)
+            .Append(text)
+            .AppendLine(sprintf "  ret %s %s" rt v)
+            .AppendLine("}")
+            .AppendLine()
+        |> ignore
 
-                globals.AppendLine(sprintf "declare %s @%s(%s)" (llty ret) name (String.concat ", " ps))
-                |> ignore
-            | Fun(name, isRec, pars, ret, body) ->
-                let sym = "@zs." + name
-
-                if not (syms.Add sym) then
-                    fail 0 (sprintf "'%s' is already defined" name)
-
-                if pars |> List.exists (fun (_, t) -> t = TUnit) then
-                    fail 0 "parameters of type unit are not allowed"
-
-                if (pars |> List.map fst |> List.distinct).Length <> pars.Length then
-                    fail 0 "duplicate parameter name"
-
-                let mk r =
-                    { args = List.map snd pars
-                      variadic = false
-                      ret = r
-                      sym = sym }
-
-                // phase 0 has no inference: an unannotated 'let rec' is assumed to return int
-                if isRec then
-                    fns[name] <- mk (defaultArg ret TInt)
-
-                let t, v, text = genBody pars ret body
-                let rt = if isRec then defaultArg ret TInt else defaultArg ret t
-
-                if t <> rt then
-                    mismatch (sprintf "result of '%s'" name) rt t
-
-                fns[name] <- mk rt
-                let ps = pars |> List.map (fun (x, t) -> sprintf "%s %%p.%s" (llty t) x) |> String.concat ", "
-                funcs.AppendLine(sprintf "define %s %s(%s) {" (llty rt) sym ps).Append(text) |> ignore
-
-                funcs
-                    .AppendLine(if rt = TUnit then "  ret void" else sprintf "  ret %s %s" (llty rt) v)
-                    .AppendLine("}")
-                    .AppendLine()
-                |> ignore
-        with CompileError(0, msg) ->
-            fail ln msg
-
-    // C entry point; the int result becomes the exit code
+    // C entry point; an int result becomes the exit code
     let main =
-        match fns.TryGetValue "main" with
-        | true, s when s.sym = "@zs.main" ->
-            if not s.args.IsEmpty then
-                fail 0 "'main' must take no parameters: let main () = ..."
-
-            match s.ret with
-            | TUnit -> "  call void @zs.main()\n  ret i32 0"
-            | TCInt -> "  %r = call i32 @zs.main()\n  ret i32 %r"
-            | TInt -> "  %r = call i64 @zs.main()\n  %c = trunc i64 %r to i32\n  ret i32 %c"
-            | t -> fail 0 (sprintf "'main' must return int, c_int or unit, not %s" (tyName t))
-        | _ -> fail 0 "no 'main' function"
+        match resolve prog.sigs["main"].ret with
+        | TCon "unit" -> "  call {} @zs.main()\n  ret i32 0"
+        | TCon "c_int" -> "  %r = call i32 @zs.main()\n  ret i32 %r"
+        | _ -> "  %r = call i64 @zs.main()\n  %c = trunc i64 %r to i32\n  ret i32 %c"
 
     funcs.AppendLine("define i32 @main() {").AppendLine(main).AppendLine("}") |> ignore
     globals.ToString() + "\n" + funcs.ToString()

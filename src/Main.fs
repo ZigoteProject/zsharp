@@ -22,7 +22,7 @@ let private build (src: string) (out: string) (emitLlvm: bool) =
             if not (File.Exists src) then
                 fail 0 "file not found"
 
-            Some(File.ReadAllText src |> lex |> parse |> Codegen.compile)
+            Some(File.ReadAllText src |> lex |> parse |> Typer.check |> Codegen.compile)
         with CompileError(line, msg) ->
             if line > 0 then
                 eprintfn "%s:%d: error: %s" src line msg

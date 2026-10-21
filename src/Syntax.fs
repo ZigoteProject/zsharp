@@ -9,20 +9,19 @@ exception CompileError of line: int * msg: string
 /// line 0 = "unknown here"; the nearest enclosing statement/declaration fills it in.
 let fail line msg = raise (CompileError(line, msg))
 
-type Ty =
-    | TInt
-    | TCInt
-    | TBool
-    | TCStr
-    | TUnit
+type SType =
+    | STName of string
+    | STTuple of SType list
 
-let tyName =
-    function
-    | TInt -> "int"
-    | TCInt -> "c_int"
-    | TBool -> "bool"
-    | TCStr -> "cstr"
-    | TUnit -> "unit"
+type Pat =
+    | PWild
+    | PIdent of string * Pat option // variable, or constructor with optional payload
+    | PInt of int64
+    | PBool of bool
+    | PUnit
+    | PTuple of Pat list
+    | POr of Pat * Pat
+    | PAs of Pat * string
 
 type Expr =
     | Lit of int64
@@ -30,18 +29,28 @@ type Expr =
     | StrLit of string
     | UnitLit
     | Var of string
-    | Call of string * Expr list // phase 0: only named functions are callable
+    | Call of string * Expr list // phase 1: only named functions and constructors are callable
     | Bin of string * Expr * Expr
     | Neg of Expr
     | Not of Expr
     | If of Expr * Expr * Expr option
-    | Let of string * Ty option * Expr * Expr
+    | Let of Pat * SType option * Expr * Expr
     | Seq of Expr * Expr
+    | Tuple of Expr list
+    | RecordLit of (string * Expr) list
+    | Update of Expr * (string * Expr) list
+    | Field of Expr * string
+    | Match of Expr * (Pat * Expr option * Expr) list
     | At of int * Expr // source line, for error messages
 
+type TypeBody =
+    | RecordTy of (string * SType) list
+    | UnionTy of (string * SType list) list
+
 type Decl =
-    | Extern of name: string * args: Ty list * variadic: bool * ret: Ty
-    | Fun of name: string * isRec: bool * pars: (string * Ty) list * ret: Ty option * body: Expr
+    | Extern of name: string * args: SType list * variadic: bool * ret: SType
+    | Fun of name: string * isRec: bool * pars: (string * SType option) list * ret: SType option * body: Expr
+    | TypeDecl of name: string * TypeBody
 
 // ---------------------------------------------------------------- lexer
 
@@ -71,11 +80,14 @@ let showTok =
     | KEof -> "end of file"
 
 let keywords =
-    set [ "let"; "rec"; "if"; "then"; "else"; "extern"; "true"; "false"; "not" ]
+    set
+        [ "let"; "rec"; "if"; "then"; "else"; "extern"; "true"; "false"; "not"
+          "match"; "with"; "when"; "type"; "of"; "as" ]
 
 // longest first
 let symbols =
-    [ "..."; "->"; "|>"; "<>"; "<="; ">="; "&&"; "||"; "("; ")"; ":"; "="; "<"; ">"; "+"; "-"; "*"; "/"; "%" ]
+    [ "..."; "->"; "|>"; "<>"; "<="; ">="; "&&"; "||"
+      "("; ")"; "{"; "}"; ","; ";"; "|"; "."; ":"; "="; "<"; ">"; "+"; "-"; "*"; "/"; "%" ]
 
 let private unescape ln =
     function
@@ -86,13 +98,13 @@ let private unescape ln =
     | '"' -> '"'
     | c -> fail ln (sprintf "unknown escape '\\%c'" c)
 
-/// Offside rule: emits KIndent / KDedent / KNewline at line starts outside parentheses.
-/// A line starting with '|>' continues the previous one.
+/// Offside rule: emits KIndent / KDedent / KNewline at line starts outside brackets.
+/// A line starting with '|>' continues the previous one; a new line inside '{ }' acts as ';'.
 let lex (src: string) : Token[] =
     let toks = ResizeArray<Token>()
     let indents = Stack<int>()
     indents.Push 0
-    let mutable depth = 0
+    let brackets = Stack<char>()
     let mutable first = true
     let lines = src.Replace("\r\n", "\n").Split '\n'
 
@@ -108,7 +120,7 @@ let lex (src: string) : Token[] =
         let rest = line.Substring i
         let blank = rest = "" || rest.StartsWith "//"
 
-        if not blank && depth = 0 && not (rest.StartsWith "|>") then
+        if not blank && brackets.Count = 0 && not (rest.StartsWith "|>") then
             if rest[0] = '\t' then
                 fail ln "tabs are not allowed for indentation"
 
@@ -129,6 +141,12 @@ let lex (src: string) : Token[] =
                     fail ln "inconsistent indentation"
 
                 add KNewline
+        elif not blank && brackets.Count > 0 && brackets.Peek() = '{' && not (rest.StartsWith "}") then
+            match toks[toks.Count - 1].tok with
+            | KSym ";"
+            | KSym "{"
+            | KKw "with" -> ()
+            | _ -> add (KSym ";")
 
         while i < line.Length do
             let c = line[i]
@@ -187,8 +205,8 @@ let lex (src: string) : Token[] =
 
                 let s = sym.Value
 
-                if s = "(" then depth <- depth + 1
-                if s = ")" then depth <- max 0 (depth - 1)
+                if s = "(" || s = "{" then brackets.Push s[0]
+                if (s = ")" || s = "}") && brackets.Count > 0 then brackets.Pop() |> ignore
                 add (KSym s)
                 i <- i + s.Length
 
@@ -220,18 +238,42 @@ let parse (toks: Token[]) : (int * Decl) list =
             s
         | _ -> err "identifier"
 
-    let ty () =
-        let t =
-            match peek () with
-            | KId "int" -> TInt
-            | KId "c_int" -> TCInt
-            | KId "bool" -> TBool
-            | KId "cstr" -> TCStr
-            | KId "unit" -> TUnit
-            | _ -> err "type"
+    /// Consumes a case-separating '|', possibly at the start of the next line.
+    let nextBar () =
+        if peek () = KNewline && peek2 () = KSym "|" then
+            advance ()
 
-        advance ()
-        t
+        if isSym "|" then
+            advance ()
+            true
+        else
+            false
+
+    let rec tyAtom () =
+        match peek () with
+        | KId n ->
+            advance ()
+            STName n
+        | KSym "(" ->
+            advance ()
+            let t = ty ()
+            expect (KSym ")") "')'"
+            t
+        | _ -> err "type"
+
+    and ty () =
+        let first = tyAtom ()
+
+        if isSym "*" then
+            let items = ResizeArray [ first ]
+
+            while isSym "*" do
+                advance ()
+                items.Add(tyAtom ())
+
+            STTuple(List.ofSeq items)
+        else
+            first
 
     let optTy () =
         if isSym ":" then
@@ -239,6 +281,83 @@ let parse (toks: Token[]) : (int * Decl) list =
             Some(ty ())
         else
             None
+
+    let startsPatAtom t =
+        match t with
+        | KId _
+        | KInt _
+        | KSym "-"
+        | KKw "true"
+        | KKw "false"
+        | KSym "(" -> true
+        | _ -> false
+
+    let rec pattern () =
+        let mutable p = orPat ()
+
+        while peek () = KKw "as" do
+            advance ()
+            p <- PAs(p, ident ())
+
+        p
+
+    and orPat () =
+        let mutable p = tuplePat ()
+
+        while isSym "|" do
+            advance ()
+            p <- POr(p, tuplePat ())
+
+        p
+
+    and tuplePat () =
+        let first = appPat ()
+
+        if isSym "," then
+            let items = ResizeArray [ first ]
+
+            while isSym "," do
+                advance ()
+                items.Add(appPat ())
+
+            PTuple(List.ofSeq items)
+        else
+            first
+
+    and appPat () =
+        match peek () with
+        | KId c when c <> "_" && startsPatAtom (peek2 ()) ->
+            advance ()
+            PIdent(c, Some(patAtom ()))
+        | _ -> patAtom ()
+
+    and patAtom () =
+        let t = peek ()
+
+        if not (startsPatAtom t) then
+            err "pattern"
+
+        advance ()
+
+        match t with
+        | KId "_" -> PWild
+        | KId x -> PIdent(x, None)
+        | KInt n -> PInt n
+        | KSym "-" ->
+            match peek () with
+            | KInt n ->
+                advance ()
+                PInt -n
+            | _ -> err "integer"
+        | KKw "true" -> PBool true
+        | KKw "false" -> PBool false
+        | _ when isSym ")" ->
+            advance ()
+            PUnit
+        | _ ->
+            let p = pattern ()
+            expect (KSym ")") "')'"
+            p
 
     let rec block () =
         if peek () = KIndent then
@@ -254,7 +373,7 @@ let parse (toks: Token[]) : (int * Decl) list =
 
         if peek () = KKw "let" then
             advance ()
-            let name = ident ()
+            let p = pattern ()
             let ann = optTy ()
             expect (KSym "=") "'='"
             let v = block ()
@@ -263,7 +382,7 @@ let parse (toks: Token[]) : (int * Decl) list =
                 fail ln "'let' must be followed by an expression on the next line"
 
             advance ()
-            At(ln, Let(name, ann, v, seq ()))
+            At(ln, Let(p, ann, v, seq ()))
         else
             let e = At(ln, expr ())
 
@@ -288,6 +407,37 @@ let parse (toks: Token[]) : (int * Decl) list =
                 If(c, t, Some(block ()))
             else
                 If(c, t, None)
+        elif peek () = KKw "match" then
+            advance ()
+            let s = expr ()
+            expect (KKw "with") "'with'"
+            let indented = peek () = KIndent
+
+            if indented then
+                advance ()
+
+            nextBar () |> ignore
+            let cases = ResizeArray()
+            let mutable go = true
+
+            while go do
+                let p = pattern ()
+
+                let guard =
+                    if peek () = KKw "when" then
+                        advance ()
+                        Some(expr ())
+                    else
+                        None
+
+                expect (KSym "->") "'->'"
+                cases.Add(p, guard, block ())
+                go <- nextBar ()
+
+            if indented then
+                expect KDedent "end of block"
+
+            Match(s, List.ofSeq cases)
         else
             pipe ()
 
@@ -359,21 +509,25 @@ let parse (toks: Token[]) : (int * Decl) list =
         | KId _
         | KKw "true"
         | KKw "false"
-        | KSym "(" -> true
+        | KSym "("
+        | KSym "{" -> true
         | _ -> false
 
     and app () =
-        match peek () with
-        | KId f ->
-            advance ()
-            let args = [ while startsAtom () do yield atom () ]
-
-            if args.IsEmpty then Var f
-            elif args = [ UnitLit ] then Call(f, [])
-            else Call(f, args)
-        | _ -> atom ()
+        match atom () with
+        | Var f when startsAtom () -> Call(f, [ while startsAtom () do yield atom () ])
+        | head -> head
 
     and atom () =
+        let mutable e = primary ()
+
+        while isSym "." do
+            advance ()
+            e <- Field(e, ident ())
+
+        e
+
+    and primary () =
         if not (startsAtom ()) then
             err "expression"
 
@@ -386,18 +540,121 @@ let parse (toks: Token[]) : (int * Decl) list =
         | KId x -> Var x
         | KKw "true" -> BoolLit true
         | KKw "false" -> BoolLit false
+        | KSym "{" -> record ()
         | _ when isSym ")" ->
             advance ()
             UnitLit
         | _ ->
+            let first = expr ()
+
+            if isSym "," then
+                let items = ResizeArray [ first ]
+
+                while isSym "," do
+                    advance ()
+                    items.Add(expr ())
+
+                expect (KSym ")") "')'"
+                Tuple(List.ofSeq items)
+            else
+                expect (KSym ")") "')'"
+                first
+
+    // after '{':  { f = e; ... }  or  { e with f = e; ... }
+    and record () =
+        let fields () =
+            let items = ResizeArray()
+            let mutable go = true
+
+            while go do
+                let f = ident ()
+                expect (KSym "=") "'='"
+                items.Add(f, expr ())
+
+                if isSym ";" then
+                    advance ()
+
+                go <- not (isSym "}")
+
+            advance ()
+            List.ofSeq items
+
+        match peek (), peek2 () with
+        | KId _, KSym "=" -> RecordLit(fields ())
+        | _ ->
             let e = expr ()
-            expect (KSym ")") "')'"
-            e
+            expect (KKw "with") "'with'"
+            Update(e, fields ())
+
+    let typeBody () =
+        if isSym "{" then
+            advance ()
+            let fields = ResizeArray()
+            let mutable go = true
+
+            while go do
+                let f = ident ()
+                expect (KSym ":") "':'"
+                fields.Add(f, ty ())
+
+                if isSym ";" then
+                    advance ()
+
+                go <- not (isSym "}")
+
+            advance ()
+            RecordTy(List.ofSeq fields)
+        else
+            // payload field: optional 'name:' then a type; '*' separates fields
+            let field () =
+                match peek (), peek2 () with
+                | KId _, KSym ":" ->
+                    advance ()
+                    advance ()
+                | _ -> ()
+
+                tyAtom ()
+
+            let cases = ResizeArray()
+            nextBar () |> ignore
+            let mutable go = true
+
+            while go do
+                let c = ident ()
+                let fields = ResizeArray()
+
+                if peek () = KKw "of" then
+                    advance ()
+                    fields.Add(field ())
+
+                    while isSym "*" do
+                        advance ()
+                        fields.Add(field ())
+
+                cases.Add(c, List.ofSeq fields)
+                go <- nextBar ()
+
+            UnionTy(List.ofSeq cases)
 
     let decl () =
         let ln = line ()
 
         match peek () with
+        | KKw "type" ->
+            advance ()
+            let name = ident ()
+            expect (KSym "=") "'='"
+            let indented = peek () = KIndent
+
+            if indented then
+                advance ()
+
+            let body = typeBody ()
+
+            if indented then
+                expect KDedent "end of block"
+
+            ln, TypeDecl(name, body)
         | KKw "extern" ->
             // extern name : t1 -> t2 -> ... -> ret
             advance ()
@@ -428,7 +685,9 @@ let parse (toks: Token[]) : (int * Decl) list =
             if variadic && List.last pars <> None then
                 fail ln "'...' must be the last parameter"
 
-            let args = pars |> List.choose id |> List.filter (fun t -> t <> TUnit)
+            let args =
+                pars |> List.choose id |> List.filter (fun t -> t <> STName "unit")
+
             ln, Extern(name, args, variadic, ret)
         | KKw "let" ->
             advance ()
@@ -446,7 +705,7 @@ let parse (toks: Token[]) : (int * Decl) list =
                 match peek (), peek2 () with
                 | KId x, _ ->
                     advance ()
-                    pars.Add(x, TInt)
+                    pars.Add(x, None)
                 | KSym "(", KSym ")" ->
                     advance ()
                     advance ()
@@ -457,7 +716,7 @@ let parse (toks: Token[]) : (int * Decl) list =
                     expect (KSym ":") "':'"
                     let t = ty ()
                     expect (KSym ")") "')'"
-                    pars.Add(x, t)
+                    pars.Add(x, Some t)
                 | _ -> go <- false
 
             if pars.Count = 0 && not unitParam then
@@ -466,7 +725,7 @@ let parse (toks: Token[]) : (int * Decl) list =
             let ret = optTy ()
             expect (KSym "=") "'='"
             ln, Fun(name, isRec, List.ofSeq pars, ret, block ())
-        | _ -> err "'let' or 'extern'"
+        | _ -> err "'let', 'type' or 'extern'"
 
     [ while peek () <> KEof do
           yield decl ()

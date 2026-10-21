@@ -1,0 +1,6 @@
+q = (11, 2)
+areas: 12 12 0
+swap: 1 1
+zero small negative big
+both: 3 1 0
+as-pattern ok, area 12

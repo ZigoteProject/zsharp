@@ -1,0 +1,1 @@
+tests/err_field.zs:4: error: field 'y': expected int, got bool

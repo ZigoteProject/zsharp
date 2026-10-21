@@ -1,0 +1,4 @@
+(let x0 = (3 + 4) in ((if x0 > 0 then (x0 * (0 + 10)) else -1) + (1 * -x0)))
+value = 63, steps = 16, depth = 5
+(let x0 = (3 + 4) in ((if x0 > 0 then (x0 * 10) else -1) + -x0))
+value = 63, steps = 12, size 18 -> 14

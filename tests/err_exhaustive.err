@@ -1,0 +1,1 @@
+tests/err_exhaustive.zs:7: error: match is not exhaustive; missing case: Rect (_, _)
