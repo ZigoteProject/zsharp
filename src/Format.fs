@@ -212,10 +212,14 @@ let format (src: string) : Result<string, string> =
     let result = String.concat "\n" out + "\n"
 
     let same (a: Token[]) (b: Token[]) =
+        // a hole's column in $"…" moves with the indentation
         let kinds (ts: Token[]) =
             ts
             |> Array.filter (fun t -> t.tok <> KEof)
-            |> Array.map (fun t -> t.tok)
+            |> Array.map (fun t ->
+                match t.tok with
+                | KInterp parts -> KInterp(parts |> List.map (fun (e, s, _) -> e, s, 0))
+                | k -> k)
 
         kinds a = kinds b
 

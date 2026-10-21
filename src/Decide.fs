@@ -226,7 +226,16 @@ let private lowerMatch (types: Dictionary<string, TypeInfo>) (resTy: Ty) (cols0:
             else
                 // a join point: parameters for the variables, and for what it reads from outside
                 let fv = freeVars tree
-                let outer = refs tree |> List.filter (fun (x, _) -> fv.Contains x && not (index.ContainsKey x)) |> List.distinctBy fst
+
+                // a `let mutable` the tree assigns stays itself: a parameter would be a copy
+                let rec assigned (e: CExpr) =
+                    match e.k with
+                    | CAssign(x, _)
+                    | CArraySet(x, _, _) -> x :: List.collect assigned (children e.k)
+                    | k -> List.collect assigned (children k)
+
+                let assigned = set (assigned tree)
+                let outer = refs tree |> List.filter (fun (x, _) -> fv.Contains x && not (index.ContainsKey x) && not (assigned.Contains x)) |> List.distinctBy fst
 
                 for x, t in outer do
                     varTy[x] <- t

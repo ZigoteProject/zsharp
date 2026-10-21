@@ -1,0 +1,22 @@
+// a messy file
+type Point = { x:f64; y:f64 }
+let norm (p:Point)= Math.sqrt(p.x * p.x + p.y * p.y)
+
+let rec fact n =
+  if n <= 1 then 1
+  else n * fact(n - 1)
+let main ( ) =
+  let xs = [ 1; 2; 3 ] // some numbers
+  let ys = xs |> List.map(fun x ->
+    x * 2)
+  let a = [| 1; 2 |]
+  println $"{a.[ 0 ]} {fact 5} {norm {x=3.0;y=4.0}} {-1} {List.sum ys}"
+  match xs with
+  |[] -> println "none"
+  |x :: _ -> println(string x)
+  // a deeper comment
+  let r = { x = 1.0
+    y = 2.0 }
+  let neg = f -x
+  0
+own source formats to itself: true
