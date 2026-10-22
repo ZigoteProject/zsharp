@@ -4737,7 +4737,7 @@
     },
     "identifier": {
       "type": "PATTERN",
-      "value": "[A-Za-z_][A-Za-z0-9_]*"
+      "value": "[A-Za-z_][A-Za-z0-9_]*|``[^`\\n]+``"
     },
     "qualified_identifier": {
       "type": "TOKEN",

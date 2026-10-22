@@ -365,7 +365,8 @@ module.exports = grammar({
 
     // ------------------------------------------------------------ tokens
 
-    identifier: $ => /[A-Za-z_][A-Za-z0-9_]*/,
+    // ``name``: a name that may be a keyword (Parallel.for is defined as ``for``)
+    identifier: $ => /[A-Za-z_][A-Za-z0-9_]*|``[^`\n]+``/,
     qualified_identifier: $ => token(seq(/[A-Z][A-Za-z0-9_]*/, repeat1(seq('.', /[A-Za-z_][A-Za-z0-9_]*/)))),
     number: $ => token(choice(/0[xX][0-9a-fA-F_]+/, /0[bB][01_]+/, /0[oO][0-7_]+/, /[0-9][0-9_]*\.[0-9][0-9_]*([eE][+-]?[0-9]+)?/, /[0-9][0-9_]*/)),
     measured_number: $ => seq($.number, token.immediate('<'), $.measure, '>'),
