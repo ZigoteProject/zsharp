@@ -47,6 +47,7 @@ module.exports = grammar({
 
   conflicts: $ => [
     [$.match_expression],
+    [$.function_expression],
     [$.if_expression],
     [$._parameter, $._pattern_atom],
     [$.type_name, $.measure],
@@ -208,14 +209,17 @@ module.exports = grammar({
     let_function: $ => seq('let', optional('rec'), field('name', choice($.identifier, $.operator_name)), repeat1($._parameter), optional($.type_annotation), '=', field('body', $._body),
       repeat(seq($._newline, $.and_definition))),
     let_mutable: $ => seq('let', 'mutable', field('name', $.identifier), optional($.type_annotation), '=', field('value', $._body)),
-    assignment: $ => prec.right(PREC.assign, seq($._expression, '<-', $._expression)),
+    // x <- e, and x += e (each operator's compound: a place written once)
+    assignment: $ => prec.right(PREC.assign, seq($._expression, field('operator', choice('<-', '+=', '-=', '*=', '/=', '%=', '&&&=', '|||=', '^^^=')), $._expression)),
 
     // ------------------------------------------------------------ expressions
 
     _expression: $ => choice(
       $.if_expression,
       $.match_expression,
+      $.function_expression,
       $.lambda,
+      $.yield_expression,
       $.unsafe_expression,
       $.for_expression,
       $.while_expression,
@@ -247,7 +251,20 @@ module.exports = grammar({
       '|', field('pattern', $._pattern), optional(seq('when', field('guard', $._expression))), '->', field('body', $._body),
     )),
 
+    // function | p -> e …: a lambda matching its argument
+    function_expression: $ => seq(
+      'function',
+      choice(
+        seq($.single_rule, repeat($.match_rule)), // function Some x -> x | None -> 0
+        repeat1(seq(optional($._newline), $.match_rule)),
+        seq($._indent, repeat1(seq(optional($._newline), $.match_rule)), $._dedent),
+      ),
+    ),
+
     lambda: $ => prec.right(seq('fun', repeat1($._parameter), '->', $._body)),
+
+    // in a list or array expression: yield e, or yield! xs for each of xs
+    yield_expression: $ => prec.right(seq('yield', optional(token.immediate('!')), $._expression)),
 
     // unsafe e, or unsafe and an indented block
     unsafe_expression: $ => prec.right(seq('unsafe', $._body)),
@@ -258,7 +275,7 @@ module.exports = grammar({
         seq($._expression, '..', $._expression, optional(seq('..', $._expression))),
         $._expression,
       ),
-      'do', field('body', $._body),
+      choice('do', '->'), field('body', $._body), // -> e yields e, in a list expression
     ),
     while_expression: $ => seq('while', field('condition', $._expression), 'do', field('body', $._body)),
 
@@ -312,7 +329,9 @@ module.exports = grammar({
     ),
 
     member_access: $ => prec.left(PREC.member, seq($._primary, '.', field('member', $.identifier))),
-    index_access: $ => prec.left(PREC.member, seq($._primary, '.', '[', $._expression, ']')),
+    index_access: $ => prec.left(PREC.member, seq($._primary, '.', '[', choice($._expression, $.slice_range), ']')),
+    // a.[i..j], a.[i..], a.[..j]
+    slice_range: $ => choice(seq($._expression, '..', optional($._expression)), seq('..', $._expression)),
     parenthesized_expression: $ => seq('(', $._expression, ')'),
     // (>>=), or a built-in operator as a function: (+)
     operator_value: $ => seq('(', choice($._custom_operator, '+', '-', '*', '/', '%', '=', '<>', '<', '>', '<=', '>=', '&&&', '|||', '^^^', '<<<', '>>>', '@', '::'), ')'),

@@ -17,16 +17,18 @@
 [
   "let" "rec" "and" "mutable" "private" "type" "of" "with" "member" "static" "extern" "import" "open"
   "module" "namespace" "trait" "impl" "abstract" "derive" "fun" "match" "when" "as" "if" "then" "else"
-  "for" "in" "do" "while" "not" "use" "return" "unsafe" "dyn"
+  "for" "in" "do" "while" "not" "use" "return" "unsafe" "dyn" "function" "yield"
 ] @keyword
 
 (let_bang "!" @keyword)
 (do_bang "!" @keyword)
 (return_expression "!" @keyword)
+(yield_expression "!" @keyword)
 (computation_expression builder: (identifier) @keyword)
 
 [
   "=" "<>" "<" ">" "<=" ">=" "+" "-" "*" "/" "%" "|>" ">>" "&&" "||" "&&&" "|||" "^^^" "<<<" ">>>" "~~~" "::" "@" "->" "<-" "?"
+  "+=" "-=" "*=" "/=" "%=" "&&&=" "|||=" "^^^="
   ".." "^"
 ] @operator
 

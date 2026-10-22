@@ -113,6 +113,10 @@
             "named": true
           },
           {
+            "type": "function_expression",
+            "named": true
+          },
+          {
             "type": "identifier",
             "named": true
           },
@@ -206,6 +210,10 @@
           },
           {
             "type": "while_expression",
+            "named": true
+          },
+          {
+            "type": "yield_expression",
             "named": true
           }
         ]
@@ -483,6 +491,10 @@
           "named": true
         },
         {
+          "type": "function_expression",
+          "named": true
+        },
+        {
           "type": "identifier",
           "named": true
         },
@@ -576,6 +588,10 @@
         },
         {
           "type": "while_expression",
+          "named": true
+        },
+        {
+          "type": "yield_expression",
           "named": true
         }
       ]
@@ -663,7 +679,50 @@
   {
     "type": "assignment",
     "named": true,
-    "fields": {},
+    "fields": {
+      "operator": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "%=",
+            "named": false
+          },
+          {
+            "type": "&&&=",
+            "named": false
+          },
+          {
+            "type": "*=",
+            "named": false
+          },
+          {
+            "type": "+=",
+            "named": false
+          },
+          {
+            "type": "-=",
+            "named": false
+          },
+          {
+            "type": "/=",
+            "named": false
+          },
+          {
+            "type": "<-",
+            "named": false
+          },
+          {
+            "type": "^^^=",
+            "named": false
+          },
+          {
+            "type": "|||=",
+            "named": false
+          }
+        ]
+      }
+    },
     "children": {
       "multiple": true,
       "required": true,
@@ -694,6 +753,10 @@
         },
         {
           "type": "for_expression",
+          "named": true
+        },
+        {
+          "type": "function_expression",
           "named": true
         },
         {
@@ -790,6 +853,10 @@
         },
         {
           "type": "while_expression",
+          "named": true
+        },
+        {
+          "type": "yield_expression",
           "named": true
         }
       ]
@@ -992,6 +1059,10 @@
           "named": true
         },
         {
+          "type": "function_expression",
+          "named": true
+        },
+        {
           "type": "identifier",
           "named": true
         },
@@ -1086,6 +1157,10 @@
         {
           "type": "while_expression",
           "named": true
+        },
+        {
+          "type": "yield_expression",
+          "named": true
         }
       ]
     }
@@ -1132,6 +1207,10 @@
         },
         {
           "type": "for_expression",
+          "named": true
+        },
+        {
+          "type": "function_expression",
           "named": true
         },
         {
@@ -1252,6 +1331,10 @@
         },
         {
           "type": "while_expression",
+          "named": true
+        },
+        {
+          "type": "yield_expression",
           "named": true
         }
       ]
@@ -1372,6 +1455,10 @@
           "named": true
         },
         {
+          "type": "function_expression",
+          "named": true
+        },
+        {
           "type": "identifier",
           "named": true
         },
@@ -1489,6 +1576,10 @@
         },
         {
           "type": "while_expression",
+          "named": true
+        },
+        {
+          "type": "yield_expression",
           "named": true
         }
       ]
@@ -1692,6 +1783,10 @@
             "named": true
           },
           {
+            "type": "function_expression",
+            "named": true
+          },
+          {
             "type": "identifier",
             "named": true
           },
@@ -1785,6 +1880,10 @@
           },
           {
             "type": "while_expression",
+            "named": true
+          },
+          {
+            "type": "yield_expression",
             "named": true
           }
         ]
@@ -1910,6 +2009,10 @@
             "named": true
           },
           {
+            "type": "function_expression",
+            "named": true
+          },
+          {
             "type": "identifier",
             "named": true
           },
@@ -2003,6 +2106,10 @@
           },
           {
             "type": "while_expression",
+            "named": true
+          },
+          {
+            "type": "yield_expression",
             "named": true
           }
         ]
@@ -2130,6 +2237,10 @@
           "named": true
         },
         {
+          "type": "function_expression",
+          "named": true
+        },
+        {
           "type": "function_type",
           "named": true
         },
@@ -2251,6 +2362,10 @@
         },
         {
           "type": "while_expression",
+          "named": true
+        },
+        {
+          "type": "yield_expression",
           "named": true
         }
       ]
@@ -2394,6 +2509,10 @@
           "named": true
         },
         {
+          "type": "function_expression",
+          "named": true
+        },
+        {
           "type": "identifier",
           "named": true
         },
@@ -2488,6 +2607,10 @@
         {
           "type": "while_expression",
           "named": true
+        },
+        {
+          "type": "yield_expression",
+          "named": true
         }
       ]
     }
@@ -2534,6 +2657,10 @@
           },
           {
             "type": "for_expression",
+            "named": true
+          },
+          {
+            "type": "function_expression",
             "named": true
           },
           {
@@ -2630,6 +2757,10 @@
           },
           {
             "type": "while_expression",
+            "named": true
+          },
+          {
+            "type": "yield_expression",
             "named": true
           }
         ]
@@ -2742,6 +2873,10 @@
           "named": true
         },
         {
+          "type": "function_expression",
+          "named": true
+        },
+        {
           "type": "identifier",
           "named": true
         },
@@ -2835,6 +2970,29 @@
         },
         {
           "type": "while_expression",
+          "named": true
+        },
+        {
+          "type": "yield_expression",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "function_expression",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "match_rule",
+          "named": true
+        },
+        {
+          "type": "single_rule",
           "named": true
         }
       ]
@@ -2967,6 +3125,10 @@
             "named": true
           },
           {
+            "type": "function_expression",
+            "named": true
+          },
+          {
             "type": "identifier",
             "named": true
           },
@@ -3060,6 +3222,10 @@
           },
           {
             "type": "while_expression",
+            "named": true
+          },
+          {
+            "type": "yield_expression",
             "named": true
           }
         ]
@@ -3105,6 +3271,10 @@
             "named": true
           },
           {
+            "type": "function_expression",
+            "named": true
+          },
+          {
             "type": "identifier",
             "named": true
           },
@@ -3198,6 +3368,10 @@
           },
           {
             "type": "while_expression",
+            "named": true
+          },
+          {
+            "type": "yield_expression",
             "named": true
           }
         ]
@@ -3243,6 +3417,10 @@
             "named": true
           },
           {
+            "type": "function_expression",
+            "named": true
+          },
+          {
             "type": "identifier",
             "named": true
           },
@@ -3336,6 +3514,10 @@
           },
           {
             "type": "while_expression",
+            "named": true
+          },
+          {
+            "type": "yield_expression",
             "named": true
           }
         ]
@@ -3453,6 +3635,10 @@
           "named": true
         },
         {
+          "type": "function_expression",
+          "named": true
+        },
+        {
           "type": "identifier",
           "named": true
         },
@@ -3521,6 +3707,10 @@
           "named": true
         },
         {
+          "type": "slice_range",
+          "named": true
+        },
+        {
           "type": "string",
           "named": true
         },
@@ -3546,6 +3736,10 @@
         },
         {
           "type": "while_expression",
+          "named": true
+        },
+        {
+          "type": "yield_expression",
           "named": true
         }
       ]
@@ -3611,6 +3805,10 @@
           "named": true
         },
         {
+          "type": "function_expression",
+          "named": true
+        },
+        {
           "type": "identifier",
           "named": true
         },
@@ -3705,6 +3903,10 @@
         {
           "type": "while_expression",
           "named": true
+        },
+        {
+          "type": "yield_expression",
+          "named": true
         }
       ]
     }
@@ -3751,6 +3953,10 @@
         },
         {
           "type": "for_expression",
+          "named": true
+        },
+        {
+          "type": "function_expression",
           "named": true
         },
         {
@@ -3867,6 +4073,10 @@
         },
         {
           "type": "wildcard",
+          "named": true
+        },
+        {
+          "type": "yield_expression",
           "named": true
         }
       ]
@@ -3991,6 +4201,10 @@
             "named": true
           },
           {
+            "type": "function_expression",
+            "named": true
+          },
+          {
             "type": "identifier",
             "named": true
           },
@@ -4084,6 +4298,10 @@
           },
           {
             "type": "while_expression",
+            "named": true
+          },
+          {
+            "type": "yield_expression",
             "named": true
           }
         ]
@@ -4209,6 +4427,10 @@
             "named": true
           },
           {
+            "type": "function_expression",
+            "named": true
+          },
+          {
             "type": "identifier",
             "named": true
           },
@@ -4302,6 +4524,10 @@
           },
           {
             "type": "while_expression",
+            "named": true
+          },
+          {
+            "type": "yield_expression",
             "named": true
           }
         ]
@@ -4363,6 +4589,10 @@
             "named": true
           },
           {
+            "type": "function_expression",
+            "named": true
+          },
+          {
             "type": "identifier",
             "named": true
           },
@@ -4456,6 +4686,10 @@
           },
           {
             "type": "while_expression",
+            "named": true
+          },
+          {
+            "type": "yield_expression",
             "named": true
           }
         ]
@@ -4571,6 +4805,10 @@
             "named": true
           },
           {
+            "type": "function_expression",
+            "named": true
+          },
+          {
             "type": "identifier",
             "named": true
           },
@@ -4664,6 +4902,10 @@
           },
           {
             "type": "while_expression",
+            "named": true
+          },
+          {
+            "type": "yield_expression",
             "named": true
           }
         ]
@@ -4781,6 +5023,10 @@
             "named": true
           },
           {
+            "type": "function_expression",
+            "named": true
+          },
+          {
             "type": "identifier",
             "named": true
           },
@@ -4875,6 +5121,10 @@
           {
             "type": "while_expression",
             "named": true
+          },
+          {
+            "type": "yield_expression",
+            "named": true
           }
         ]
       }
@@ -4924,6 +5174,10 @@
         },
         {
           "type": "for_expression",
+          "named": true
+        },
+        {
+          "type": "function_expression",
           "named": true
         },
         {
@@ -5020,6 +5274,10 @@
         },
         {
           "type": "while_expression",
+          "named": true
+        },
+        {
+          "type": "yield_expression",
           "named": true
         }
       ]
@@ -5141,6 +5399,10 @@
             "named": true
           },
           {
+            "type": "function_expression",
+            "named": true
+          },
+          {
             "type": "identifier",
             "named": true
           },
@@ -5234,6 +5496,10 @@
           },
           {
             "type": "while_expression",
+            "named": true
+          },
+          {
+            "type": "yield_expression",
             "named": true
           }
         ]
@@ -5299,6 +5565,10 @@
             "named": true
           },
           {
+            "type": "function_expression",
+            "named": true
+          },
+          {
             "type": "identifier",
             "named": true
           },
@@ -5392,6 +5662,10 @@
           },
           {
             "type": "while_expression",
+            "named": true
+          },
+          {
+            "type": "yield_expression",
             "named": true
           }
         ]
@@ -5429,6 +5703,10 @@
             "named": true
           },
           {
+            "type": "function_expression",
+            "named": true
+          },
+          {
             "type": "identifier",
             "named": true
           },
@@ -5522,6 +5800,10 @@
           },
           {
             "type": "while_expression",
+            "named": true
+          },
+          {
+            "type": "yield_expression",
             "named": true
           }
         ]
@@ -5791,6 +6073,10 @@
             "named": true
           },
           {
+            "type": "function_expression",
+            "named": true
+          },
+          {
             "type": "identifier",
             "named": true
           },
@@ -5885,6 +6171,10 @@
           {
             "type": "while_expression",
             "named": true
+          },
+          {
+            "type": "yield_expression",
+            "named": true
           }
         ]
       },
@@ -5969,6 +6259,10 @@
         },
         {
           "type": "for_expression",
+          "named": true
+        },
+        {
+          "type": "function_expression",
           "named": true
         },
         {
@@ -6069,6 +6363,10 @@
         },
         {
           "type": "while_expression",
+          "named": true
+        },
+        {
+          "type": "yield_expression",
           "named": true
         }
       ]
@@ -6453,6 +6751,10 @@
           "named": true
         },
         {
+          "type": "function_expression",
+          "named": true
+        },
+        {
           "type": "identifier",
           "named": true
         },
@@ -6546,6 +6848,10 @@
         },
         {
           "type": "while_expression",
+          "named": true
+        },
+        {
+          "type": "yield_expression",
           "named": true
         }
       ]
@@ -6816,6 +7122,10 @@
           "named": true
         },
         {
+          "type": "function_expression",
+          "named": true
+        },
+        {
           "type": "identifier",
           "named": true
         },
@@ -6909,6 +7219,10 @@
         },
         {
           "type": "while_expression",
+          "named": true
+        },
+        {
+          "type": "yield_expression",
           "named": true
         }
       ]
@@ -7000,6 +7314,10 @@
           "named": true
         },
         {
+          "type": "function_expression",
+          "named": true
+        },
+        {
           "type": "identifier",
           "named": true
         },
@@ -7093,6 +7411,10 @@
         },
         {
           "type": "while_expression",
+          "named": true
+        },
+        {
+          "type": "yield_expression",
           "named": true
         }
       ]
@@ -7143,6 +7465,10 @@
           "named": true
         },
         {
+          "type": "function_expression",
+          "named": true
+        },
+        {
           "type": "identifier",
           "named": true
         },
@@ -7237,6 +7563,10 @@
         {
           "type": "while_expression",
           "named": true
+        },
+        {
+          "type": "yield_expression",
+          "named": true
         }
       ]
     }
@@ -7283,6 +7613,10 @@
           },
           {
             "type": "for_expression",
+            "named": true
+          },
+          {
+            "type": "function_expression",
             "named": true
           },
           {
@@ -7380,6 +7714,10 @@
           {
             "type": "while_expression",
             "named": true
+          },
+          {
+            "type": "yield_expression",
+            "named": true
           }
         ]
       },
@@ -7457,6 +7795,149 @@
           }
         ]
       }
+    }
+  },
+  {
+    "type": "slice_range",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "application",
+          "named": true
+        },
+        {
+          "type": "array",
+          "named": true
+        },
+        {
+          "type": "binary_expression",
+          "named": true
+        },
+        {
+          "type": "boolean",
+          "named": true
+        },
+        {
+          "type": "char",
+          "named": true
+        },
+        {
+          "type": "computation_expression",
+          "named": true
+        },
+        {
+          "type": "for_expression",
+          "named": true
+        },
+        {
+          "type": "function_expression",
+          "named": true
+        },
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "if_expression",
+          "named": true
+        },
+        {
+          "type": "index_access",
+          "named": true
+        },
+        {
+          "type": "interpolated_string",
+          "named": true
+        },
+        {
+          "type": "lambda",
+          "named": true
+        },
+        {
+          "type": "list",
+          "named": true
+        },
+        {
+          "type": "match_expression",
+          "named": true
+        },
+        {
+          "type": "measured_number",
+          "named": true
+        },
+        {
+          "type": "member_access",
+          "named": true
+        },
+        {
+          "type": "number",
+          "named": true
+        },
+        {
+          "type": "operator_value",
+          "named": true
+        },
+        {
+          "type": "parenthesized_expression",
+          "named": true
+        },
+        {
+          "type": "prefix_expression",
+          "named": true
+        },
+        {
+          "type": "qualified_identifier",
+          "named": true
+        },
+        {
+          "type": "question",
+          "named": true
+        },
+        {
+          "type": "record",
+          "named": true
+        },
+        {
+          "type": "record_update",
+          "named": true
+        },
+        {
+          "type": "string",
+          "named": true
+        },
+        {
+          "type": "tuple",
+          "named": true
+        },
+        {
+          "type": "typed_expression",
+          "named": true
+        },
+        {
+          "type": "unary_expression",
+          "named": true
+        },
+        {
+          "type": "unit",
+          "named": true
+        },
+        {
+          "type": "unsafe_expression",
+          "named": true
+        },
+        {
+          "type": "while_expression",
+          "named": true
+        },
+        {
+          "type": "yield_expression",
+          "named": true
+        }
+      ]
     }
   },
   {
@@ -7605,6 +8086,10 @@
           "named": true
         },
         {
+          "type": "function_expression",
+          "named": true
+        },
+        {
           "type": "identifier",
           "named": true
         },
@@ -7698,6 +8183,10 @@
         },
         {
           "type": "while_expression",
+          "named": true
+        },
+        {
+          "type": "yield_expression",
           "named": true
         }
       ]
@@ -8054,6 +8543,10 @@
           "named": true
         },
         {
+          "type": "function_expression",
+          "named": true
+        },
+        {
           "type": "identifier",
           "named": true
         },
@@ -8148,6 +8641,10 @@
         {
           "type": "while_expression",
           "named": true
+        },
+        {
+          "type": "yield_expression",
+          "named": true
         }
       ]
     }
@@ -8197,6 +8694,10 @@
         },
         {
           "type": "for_expression",
+          "named": true
+        },
+        {
+          "type": "function_expression",
           "named": true
         },
         {
@@ -8298,6 +8799,10 @@
         {
           "type": "while_expression",
           "named": true
+        },
+        {
+          "type": "yield_expression",
+          "named": true
         }
       ]
     }
@@ -8336,6 +8841,10 @@
         },
         {
           "type": "for_expression",
+          "named": true
+        },
+        {
+          "type": "function_expression",
           "named": true
         },
         {
@@ -8432,6 +8941,10 @@
         },
         {
           "type": "while_expression",
+          "named": true
+        },
+        {
+          "type": "yield_expression",
           "named": true
         }
       ]
@@ -8528,6 +9041,10 @@
           "named": true
         },
         {
+          "type": "function_expression",
+          "named": true
+        },
+        {
           "type": "identifier",
           "named": true
         },
@@ -8622,6 +9139,10 @@
         {
           "type": "while_expression",
           "named": true
+        },
+        {
+          "type": "yield_expression",
+          "named": true
         }
       ]
     }
@@ -8681,6 +9202,10 @@
             "named": true
           },
           {
+            "type": "function_expression",
+            "named": true
+          },
+          {
             "type": "identifier",
             "named": true
           },
@@ -8774,6 +9299,10 @@
           },
           {
             "type": "while_expression",
+            "named": true
+          },
+          {
+            "type": "yield_expression",
             "named": true
           }
         ]
@@ -8825,6 +9354,10 @@
             "named": true
           },
           {
+            "type": "function_expression",
+            "named": true
+          },
+          {
             "type": "identifier",
             "named": true
           },
@@ -8918,6 +9451,10 @@
           },
           {
             "type": "while_expression",
+            "named": true
+          },
+          {
+            "type": "yield_expression",
             "named": true
           }
         ]
@@ -8955,6 +9492,10 @@
             "named": true
           },
           {
+            "type": "function_expression",
+            "named": true
+          },
+          {
             "type": "identifier",
             "named": true
           },
@@ -9049,6 +9590,10 @@
           {
             "type": "while_expression",
             "named": true
+          },
+          {
+            "type": "yield_expression",
+            "named": true
           }
         ]
       }
@@ -9058,6 +9603,149 @@
     "type": "wildcard",
     "named": true,
     "fields": {}
+  },
+  {
+    "type": "yield_expression",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "application",
+          "named": true
+        },
+        {
+          "type": "array",
+          "named": true
+        },
+        {
+          "type": "binary_expression",
+          "named": true
+        },
+        {
+          "type": "boolean",
+          "named": true
+        },
+        {
+          "type": "char",
+          "named": true
+        },
+        {
+          "type": "computation_expression",
+          "named": true
+        },
+        {
+          "type": "for_expression",
+          "named": true
+        },
+        {
+          "type": "function_expression",
+          "named": true
+        },
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "if_expression",
+          "named": true
+        },
+        {
+          "type": "index_access",
+          "named": true
+        },
+        {
+          "type": "interpolated_string",
+          "named": true
+        },
+        {
+          "type": "lambda",
+          "named": true
+        },
+        {
+          "type": "list",
+          "named": true
+        },
+        {
+          "type": "match_expression",
+          "named": true
+        },
+        {
+          "type": "measured_number",
+          "named": true
+        },
+        {
+          "type": "member_access",
+          "named": true
+        },
+        {
+          "type": "number",
+          "named": true
+        },
+        {
+          "type": "operator_value",
+          "named": true
+        },
+        {
+          "type": "parenthesized_expression",
+          "named": true
+        },
+        {
+          "type": "prefix_expression",
+          "named": true
+        },
+        {
+          "type": "qualified_identifier",
+          "named": true
+        },
+        {
+          "type": "question",
+          "named": true
+        },
+        {
+          "type": "record",
+          "named": true
+        },
+        {
+          "type": "record_update",
+          "named": true
+        },
+        {
+          "type": "string",
+          "named": true
+        },
+        {
+          "type": "tuple",
+          "named": true
+        },
+        {
+          "type": "typed_expression",
+          "named": true
+        },
+        {
+          "type": "unary_expression",
+          "named": true
+        },
+        {
+          "type": "unit",
+          "named": true
+        },
+        {
+          "type": "unsafe_expression",
+          "named": true
+        },
+        {
+          "type": "while_expression",
+          "named": true
+        },
+        {
+          "type": "yield_expression",
+          "named": true
+        }
+      ]
+    }
   },
   {
     "type": "!",
@@ -9076,11 +9764,19 @@
     "named": false
   },
   {
+    "type": "%=",
+    "named": false
+  },
+  {
     "type": "&&",
     "named": false
   },
   {
     "type": "&&&",
+    "named": false
+  },
+  {
+    "type": "&&&=",
     "named": false
   },
   {
@@ -9096,7 +9792,15 @@
     "named": false
   },
   {
+    "type": "*=",
+    "named": false
+  },
+  {
     "type": "+",
+    "named": false
+  },
+  {
+    "type": "+=",
     "named": false
   },
   {
@@ -9105,6 +9809,10 @@
   },
   {
     "type": "-",
+    "named": false
+  },
+  {
+    "type": "-=",
     "named": false
   },
   {
@@ -9121,6 +9829,10 @@
   },
   {
     "type": "/",
+    "named": false
+  },
+  {
+    "type": "/=",
     "named": false
   },
   {
@@ -9212,6 +9924,10 @@
     "named": false
   },
   {
+    "type": "^^^=",
+    "named": false
+  },
+  {
     "type": "_",
     "named": false
   },
@@ -9286,6 +10002,10 @@
   },
   {
     "type": "fun",
+    "named": false
+  },
+  {
+    "type": "function",
     "named": false
   },
   {
@@ -9433,6 +10153,10 @@
     "named": false
   },
   {
+    "type": "yield",
+    "named": false
+  },
+  {
     "type": "{",
     "named": false
   },
@@ -9454,6 +10178,10 @@
   },
   {
     "type": "|||",
+    "named": false
+  },
+  {
+    "type": "|||=",
     "named": false
   },
   {
