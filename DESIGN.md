@@ -72,8 +72,10 @@ let sumTo n =                            // imperative code is fine; mutation st
 
 - **Bindings:** `let`, `let mutable` with `<-`, `let rec`, and shadowing.
   - A `let mutable` can't be captured by a closure (an F# rule that §5 relies on); `ref` cells can.
+  - **Compound assignment (planned, phase 9.6):** `+=`, `-=`, `*=`, `/=`, `%=`, `&&&=`, `|||=` and `^^^=` on anything `<-` assigns (a `let mutable`, a `ref`'s `.Value`, an array or `Buffer` element), with the place evaluated once: `total.Value += i * i`.
   - **Top-level values:**
     - **Constants:** built from literals, operators, conditionals, constructors, records, tuples, conversions and other constants. They're inlined at each use, and an unannotated number constant takes the type each use needs, like a literal. Their names resolve where they're defined.
+      - **Generic (planned, phase 9.6):** a constant whose type has type variables is generalized, as F# generalizes values, so `let empty : Map<'k, 'v> = MapLeaf` is a `Map` of any type. The library's empty collections become values (`Map.empty`, `Set.empty`), with no `()`.
     - **Other values:** these are computed once at startup, before `main`, in module order then declaration order, and freed at exit.
     - **Order:** declarations are in order, so nothing can read a value before it's initialized.
     - **Libraries:** a library (`--lib`) has no startup, so it can only have constants.
@@ -86,7 +88,8 @@ let sumTo n =                            // imperative code is fine; mutation st
   - **`char`:** a Unicode scalar value (32 bits), written `'a'`, `'\n'` or `'\u{1F600}'`. It has equality, ordering, hashing and printing, and `match` on character literals, but no arithmetic. `int c` and `char n` convert.
   - **Strings and characters:** `for c in s` decodes a string's UTF-8 character by character; `String.length` stays the byte length. The `Char` functions classify ASCII.
   - **SIMD vectors** `f32x4`, `i32x8`, `u8x32`, … (§8).
-- **Data:** tuples, records (`{ p with x = 1.0 }`), unions; library types `option`, `result`, `list`, `array`, `Buffer`, `ref`, `Map`, `Set`, `HashMap`.
+- **Data:** tuples, records (`{ p with x = 1.0 }`), unions; library types `option`, `result`, `list`, `array`, `Buffer`, `ref`, `Map`, `Set`, `HashMap`, and `span` **(planned, phase 9.6, §5.1)**.
+  - **List and array expressions (planned, phase 9.6):** `[ for x in xs -> f x ]`, `[ for x in xs do if p x then yield f x ]`, and the same in `[| … |]`. They lower to the pipelines fusion makes one loop of (§9.1), so no list is built in between.
 - **Functions:**
   - Curried, with closures (`fun x -> …`), `|>`, `>>` and partial application.
   - **Blocks inside brackets:** inside a bracket, a line ending in `->` (or `then`, `else`, `do`) and deeper lines after it open a block, as at the top level. So `xs |> List.map (fun x ->` can be followed by a multi-line body, and `Parser (fun cs ->` by a `match`. The block ends at the bracket's closer or at a line left of it.
@@ -97,6 +100,7 @@ let sumTo n =                            // imperative code is fine; mutation st
 - **Pattern matching:**
   - Supports nesting, literals (numbers, characters, strings, bools), tuples, records (`{ x = 0; y = y }`, fields left out match anything), union cases (positional or by field name), lists, guards, `as` and or-patterns that bind variables.
   - Patterns work in `match`, `let`, function parameters (`let norm { x = x; y = y } = …`), lambdas and `for` loops.
+  - **`function` (planned, phase 9.6):** `function | p -> … | q -> …` is `fun x -> match x with …`.
   - A match that misses a case is an **error** naming an example of the missing value (`missing case: { kind = C }`). So is a case that can never match.
 - **Errors:** `result` with a postfix `?` that returns the error early (`let x = parse s?`, or `parse s?` as a statement). `?` applies to the whole call before it. `result { }` does the same for a block, with `let!` (§4). `?` on an `option` in a function that returns one **(planned, phase 9.6)**.
 - **Panics:** for bugs, not errors a caller handles. These all panic: an out-of-bounds index, division by zero, integer overflow, a failed `assert`, an explicit `panic`.
@@ -313,6 +317,7 @@ form says the same, where it matters.
   - **Which types:** numbers, `bool`, tuples, records, and **small unions**: unions that aren't recursive and have at most 4 fields over all their cases, none of them heap data.
   - **Small unions:** these are a tag plus fields, e.g. `option<int>`, `result<int, f64>`, enums, and state machines with number fields. They never allocate.
   - **Enums:** a union whose cases have no fields is one byte, so an array of them is a byte per element. Other small unions have a 32-bit tag, which costs no space next to their fields and no extension on a 32-bit chip.
+  - **Fixed-size arrays (planned, phase 9.6):** `fixed<'a, N>` holds its N elements inline, so a record with one matches a C struct's array field (§11).
 - **Heap objects:** strings, arrays, `Buffer`, `ref`, closures, lists, and the other unions.
   - **Header:** each object starts with one word: a 32-bit reference count, and on a 64-bit target beside it the case tag of a union cell (when the union has more than one case with fields) and where the object came from (the pool's size class, §5.2). On a 32-bit chip the count is the word, and a union cell with a tag has a word for it after. Strings and arrays add a word-sized length, closures their code and a pointer to what describes them (§9.1). A list cell is the header, the head and the tail.
   - **The count's range:** past 2³¹ references, a count turns negative and stays so: the object is never freed, as Koka's sticky counts. (Koka's header also has the number of fields to scan, for a generic drop; Z#'s drops are generated per type.)
@@ -324,6 +329,10 @@ form says the same, where it matters.
   - `Array.set a i x` returns the changed array.
   - **`Buffer<'a>`:** a fixed-size *shared* mutable array, for when a write must be seen through every alias (a ring buffer handed to C, a shared scratch buffer).
   - This is a deliberate difference from F#, whose arrays are shared mutable references.
+- **Spans (planned, phase 9.6):** `span<'a>` is a window into an array, a string or a `Buffer`, without copying: its owner, an offset and a length. It holds a reference to its owner, so it can't dangle, and it's read-only over arrays and strings (they're values) and writable over a `Buffer`.
+  - **Slices:** `a.[1..3]`, `a.[..n]` and `a.[i..]` on an array or a `Buffer` are spans, not copies. A string's slice is a string, as in F#, at byte offsets that must fall between characters (a panic otherwise), and `String.bytes s` is its bytes as a `span<u8>`, for parsers, without a copy.
+  - **Where one is expected:** an array or a `Buffer` becomes a span with no conversion written, as a value becomes a `dyn` (§3), so the library's reading functions (`Array.sum`, `fold`, `exists`, …) take spans and work on all three. Parsers and IO take spans.
+  - **C:** a span crosses to C as a pointer and a length (§11), and a span over C memory is made only in `unsafe`.
 
 ### 5.2 Perceus reference counting
 
@@ -352,9 +361,10 @@ before it. Mutable cells can: a `ref` or `Buffer` holding a value that points ba
 - **Finding them:** `ZS_LEAKCHECK=1` reports the objects still allocated at exit, so a test suite run with it (as `./test.sh` runs the compiler's) catches a cycle the tests make.
 - **Warning about them (planned, phase 12):** a type that can reach itself through a `ref` or `Buffer` field, not through `weak`, gets a warning naming the path, which `[<Cyclic>]` on the type silences. A cycle through a closure isn't caught, since a function type doesn't say what it captures.
 
+**The pool:** in a program without threads, objects up to 256 bytes come from the runtime's pool: a free list per 8-byte size class, carved from 64 KB chunks, with each object's class in its header (§5.1). Freeing one puts it on its list, and the next object of that size takes it, so allocating and freeing tiny objects calls no system allocator, and ThinLTO inlines both into the program (`binarytrees` takes 0.26× C's time, which calls `malloc` and `free` for each node, and 23% less memory: a node is 24 bytes, where `malloc` gives C's 32). Larger objects, programs with threads, and sanitizer and valgrind builds (`ZS_NO_POOL`) use `malloc`. The pool keeps its chunks until the program ends.
+
 **Escape hatches:** `Arena.with (fun () -> …)` for bulk allocation that's freed at once, and raw
 `ptr<'a>` inside `unsafe` expressions (§11).
-- **The pool:** in a program without threads, objects up to 256 bytes come from the runtime's pool: a free list per 8-byte size class, carved from 64 KB chunks, with each object's class in its header (§5.1). Freeing one puts it on its list, and the next object of that size takes it, so allocating and freeing tiny objects calls no system allocator, and ThinLTO inlines both into the program (`binarytrees` takes 0.26× C's time, which calls `malloc` and `free` for each node, and 23% less memory: a node is 24 bytes, where `malloc` gives C's 32). Larger objects, programs with threads, and sanitizer and valgrind builds (`ZS_NO_POOL`) use `malloc`. The pool keeps its chunks until the program ends.
 - **Arenas:** what the function allocates comes from the arena's 64 KB blocks, bumped through, one malloc each. An object dying frees nothing, and the blocks go together when the arena's last object has: when the function returns, or later if something it made lives on. So an arena can't be misused into a dangling pointer, and needs no escape analysis or annotations. Objects in an arena are counted as any others; only their memory is the arena's.
 
 ### 5.3 What code without `unsafe` guarantees
@@ -523,7 +533,7 @@ There are three levels, from free to manual.
 - **Implementation language:** F# (.NET 10). Self-hosting is optional and late (phase 11).
 - **Reading the optimizer:** `ZS_DUMP_CORE=name` prints the Core of the functions whose name contains `name`, after reference counting. `ZS_NO_DECIDE=1` compiles matches clause by clause, for comparison. `ZS_NO_CACHE=1` checks everything again instead of using the cache.
 - **Backend:** textual LLVM IR passed to clang, so reading the `.ll` file is the debugger (`--emit-llvm` writes the whole program as one module). A switch to the LLVM C API was to come when compile time demanded it, and phase 9 measured that it doesn't: parsing the text is 2.6% of clang's time on a program's 8 MB of IR, and the module cache skips the IR of unchanged modules.
-  - **Linking:** a host build compiles the modules and the runtime to bitcode and optimizes them together at the link (ThinLTO, lld, with its cache), so the runtime's allocation functions inline into the program. `--profile-generate` and `--profile-use <file>` add PGO; a module's IR names it after its source file, so a profile finds its internal functions in the next build. On microcontrollers the runtime stays a separate object: as bitcode it changed nothing at `-Os` and cost 1.4–3.1 KB of flash at `-O2` ([the report](docs/reports/microcontrollers.md)).
+  - **Linking:** a host build compiles the modules and the runtime to bitcode and optimizes them together at the link (ThinLTO, lld, with its cache; `ZS_NO_LTO=1` turns it off), so the runtime's allocation functions inline into the program. `--profile-generate` and `--profile-use <file>` add PGO; a module's IR names it after its source file, so a profile finds its internal functions in the next build. On microcontrollers the runtime stays a separate object: as bitcode it changed nothing at `-Os` and cost 1.4–3.1 KB of flash at `-O2` ([the report](docs/reports/microcontrollers.md)).
   - **A module per source file:** a host build of a program of several files makes one LLVM module per file, with a copy of each library function and generic instance it uses, so LLVM inlines within a module as it would in one big one; what needs one address in the program (top-level values, the static cells of cases without fields) is defined in each and merged by the linker. A single-file program, and `--emit-llvm`, `-g`, `--lib`, `--sanitize`, cross and microcontroller builds, are one module.
   - **Compiled once:** the modules and the runtime compile in parallel, and each object is kept in `~/.cache/zs/objects` under a hash of its IR. Every pass names what it makes per function, so a file whose functions didn't change gives byte-identical IR, and a rebuild compiles only the modules whose code changed.
   - **The module cache** (phase 9): each module's object is also kept in `~/.cache/zs/modules` under a key of what its code is made from: the compiler and its settings, the program's types, the module's functions after lambda lifting (a structural hash) with their borrowed parameters, and the signatures of what it calls in other modules. A module whose key is there skips reference counting, LLVM IR and clang. The passes before, and the analysis of borrowed parameters, run over the whole program, since a module's code depends on them.
@@ -546,23 +556,23 @@ There are three levels, from free to manual.
 
 LLVM is excellent at scalar loops and register allocation. It knows nothing about closures,
 unions or which values are unique, so Z# does the functional-language optimizations itself,
-and gives LLVM the facts it can't prove.
+and gives LLVM the facts it can't prove. Everything in this table is built.
 
-| Layer | Optimization | Status |
-|---|---|---|
-| Representation | Small non-recursive unions as plain values; enums as bytes | done |
-| Representation | Cases without fields are static cells, matched by address; a union cell has a tag only when several cases have fields; `option<string>` and other unions of `option`'s shape over a pointer are the pointer (no cell for `Some`) | done |
-| Mono | Fusion: a pipeline of `map`s and `filter`s from `List.init`, a list, `Array.init` or an array into `sum`/`sumBy`/`fold`/`length`/`iter` is one loop; one of several stages that builds a list or an array builds only that. Pure lambdas only (decision 36) | done |
-| Core | Uncurrying: a function whose body is a lambda takes its parameters (`let f x = fun y -> …` has two); a closure applied to several arguments calls code taking them all when it takes that many, through the closure's static description (drop function, arity, full entry), instead of building a closure per argument | done |
-| Perceus | Ownership, drop specialization, reuse, borrowing, moves out of mutables, borrowed reads and fields, re-matching | done |
-| Codegen | Copy-on-write checks hoisted out of loops; loop versioning that proves bounds once for innermost call-free loops | done |
-| Codegen | Overflow checks via `llvm.*.with.overflow`, which LLVM drops when ranges prove them safe | done |
-| Codegen | `print` of an interpolation prints the pieces, without building the string | done |
-| LLVM facts | `!range` on lengths, `inbounds nuw` element access, `noalias` allocator with `allockind`, `inlinehint` on higher-order functions, `optsize` at `-Os` | done |
-| Core | Inlining of small functions. Decision trees for matches: no value is tested twice, and a part reached on several paths is a join point (a block with phis) that reuse tokens pass through | done |
-| Core | Known constructors: a match on a value whose case is known (built there, bound by `let`, or taken by an enclosing case) takes its case at compile time, testing inside its fields directly. Case of case: a match on a match or an `if` moves into its branches, with join points for bodies several reach. A lambda bound by `let` and only called is applied in place. So an inlined `Option.map` or `Result.bind` and the match on its result build no `option` or `result` | done |
-| Representation | A one-word object header: a 32-bit count, a union cell's tag and the pool's size class (64-bit targets). The pool: free lists of 8-byte size classes, inlined into the program | done (phase 9) |
-| Linking | ThinLTO with the runtime, PGO | done (phase 9) on the host. On microcontrollers the runtime stays separate: as bitcode it changes nothing at `-Os` and costs flash at `-O2` |
+| Layer | Optimization |
+|---|---|
+| Representation | Small non-recursive unions as plain values; enums as bytes |
+| Representation | Cases without fields are static cells, matched by address; a union cell has a tag only when several cases have fields; `option<string>` and other unions of `option`'s shape over a pointer are the pointer (no cell for `Some`) |
+| Mono | Fusion: a pipeline of `map`s and `filter`s from `List.init`, a list, `Array.init` or an array into `sum`/`sumBy`/`fold`/`length`/`iter` is one loop; one of several stages that builds a list or an array builds only that. Pure lambdas only (decision 36) |
+| Core | Uncurrying: a function whose body is a lambda takes its parameters (`let f x = fun y -> …` has two); a closure applied to several arguments calls code taking them all when it takes that many, through the closure's static description (drop function, arity, full entry), instead of building a closure per argument |
+| Perceus | Ownership, drop specialization, reuse, borrowing, moves out of mutables, borrowed reads and fields, re-matching |
+| Codegen | Copy-on-write checks hoisted out of loops; loop versioning that proves bounds once for innermost call-free loops |
+| Codegen | Overflow checks via `llvm.*.with.overflow`, which LLVM drops when ranges prove them safe |
+| Codegen | `print` of an interpolation prints the pieces, without building the string |
+| LLVM facts | `!range` on lengths, `inbounds nuw` element access, `noalias` allocator with `allockind`, `inlinehint` on higher-order functions, `optsize` at `-Os` |
+| Core | Inlining of small functions. Decision trees for matches: no value is tested twice, and a part reached on several paths is a join point (a block with phis) that reuse tokens pass through |
+| Core | Known constructors: a match on a value whose case is known (built there, bound by `let`, or taken by an enclosing case) takes its case at compile time, testing inside its fields directly. Case of case: a match on a match or an `if` moves into its branches, with join points for bodies several reach. A lambda bound by `let` and only called is applied in place. So an inlined `Option.map` or `Result.bind` and the match on its result build no `option` or `result` |
+| Representation | A one-word object header: a 32-bit count, a union cell's tag and the pool's size class (64-bit targets). The pool: free lists of 8-byte size classes, inlined into the program (phase 9) |
+| Linking | ThinLTO with the runtime, and PGO, on the host (phase 9). On microcontrollers the runtime stays separate: as bitcode it changes nothing at `-Os` and costs flash at `-O2` |
 
 **Performance contract:**
 - **Microcontrollers:** the suite in `bench/mcu` compares each program with its C version (same clang, same chip, under QEMU) [(results)](docs/reports/microcontrollers.md).
@@ -619,6 +629,8 @@ import c "raylib.h"                              // like Zig's @cImport
   - **Scalars:** numbers, `bool`, `unit` (void).
   - **Pointers:** `cstr` (`const char *`; a Z# string passes as its bytes) and `cptr` (any other pointer, opaque).
   - **Structs:** `[<CLayout>]` records, passed by value. On x86-64, a struct whose parts don't all fit in the argument registers left goes on the stack whole, as C passes it.
+  - **Fixed-size arrays (planned, phase 9.6):** a field of type `fixed<u8, 16>` holds its 16 elements inline, as C's `uint8_t data[16]`, so a `[<CLayout>]` record matches a struct with one, and `import c` brings such structs in. A number is allowed as a type argument in `fixed` and nowhere else, so the type system gains no general type-level numbers. A `fixed` is a value, indexed like an array.
+  - **Spans (planned, phase 9.6):** a `span<'a>` crosses as a pointer and a length; one over C memory is made only in `unsafe` (§5.1).
   - **Callbacks:** `callback<A -> R>`, a function pointer plus `void *` user data.
   - **Raw pointers:** `ptr<'a>` to C data, with `Ptr.read`, `write`, `add`, `alloc`, `free` and `cast` inside `unsafe` expressions (an expression or an indented block), outside of which they're compile errors.
   - **C function pointers:** `fnptr<A -> B -> R>` is `R (*)(A, B)`, called like a function inside `unsafe`, with C's conventions.
@@ -630,7 +642,7 @@ import c "raylib.h"                              // like Zig's @cImport
     - enum values, which become constants, as do `#define` numbers, strings and struct literals such as `CLITERAL(Color){ … }`.
   - **Types:** `char*` becomes `cstr`, other pointers `cptr`, and enum types `i32`. `long` follows the word; `long long` is `i64`.
   - **Function pointers** (struct fields such as `double (*area)(double, double)`, typedef'd or not) become `fnptr` types.
-  - **What's left out:** unions, arrays, `static inline` functions and opaque structs by value. Using one gives an error that says why.
+  - **What's left out:** unions, arrays, `static inline` functions and opaque structs by value. Using one gives an error that says why. Fixed-size array fields are **(planned, phase 9.6)** and unions wait for phase 12.
   - **Caching and editors:**
     - The header is found next to the importing file, then on the system path.
     - The result is cached in memory, and saved with a copy of the header in `.zs-cache/cimport/`, so editors without clang or the header still get it.
@@ -655,7 +667,7 @@ checker, so tools can't drift from the compiler.
     - They're checked out into `.zs-cache/deps/`, and `zs.lock` pins each commit; commit `zs.lock` with the project.
     - `zs fetch` checks them out and `zs update` moves them to the newest commit of their `rev`. The language server never fetches.
   - **Modules:** found next to the importing file, then in each dependency, transitively.
-  - **Commands:** `zs new`, `zs build` (to `build/<name>`), `zs run`, `zs check`, `zs test`. Builds take `-g`, `-Os`, `--target`, `--lib`, `--emit-llvm`, `--sanitize` and `--time`.
+  - **Commands:** `zs new`, `zs fetch`, `zs update`, `zs build` (to `build/<name>`), `zs run`, `zs check`, `zs test`, `zs doc`, `zs fmt`, `zs lsp` and `zs mcp`. Builds take `-g`, `-Os`, `--target`, `--cpu`, `--lib`, `--emit-llvm`, `--sanitize`, `--profile-generate`, `--profile-use` and `--time`.
 - **Tests:** `[<Test>]` marks a `unit -> unit` function. `zs test` runs each test in its own process, so a failure or panic fails only that test. A failed `assert` names its file and line. **(planned, track D):** tests as values (`test`, `testList`, focus, `testSequenced`) in place of `[<Test>]`, as in Expecto, with a process per test kept; `--stress` runs; benchmarks as values; asserts that print both sides, inline expect tests, properties whose generators read a byte stream (shrinking it, as Hypothesis does, and fuzzed by libFuzzer through the same stream), doc tests, and coverage through llvm-cov.
 - **Debugging:** `zs build -g` builds at `-O0` with DWARF.
   - gdb breaks on Z# functions and lines, steps, and shows backtraces.
@@ -700,12 +712,12 @@ checker, so tools can't drift from the compiler.
 | 21 | Async | one cold `Task<'a>` + `Task.start`; general computation expressions; CPS, which the effects spike before phase 6 chose (§6) | done |
 | 22 | Threads | v1 single-threaded event loop; in v2 a work-stealing pool and a loop per thread, with non-atomic RC and a negative count marking the objects that crossed threads (§7.1) | decided |
 | 23 | Effect handlers | designed now (§6.1), built in v3; one-shot, evidence passing | decided |
-| 24 | Float semantics | strict IEEE; `[<FastMath>]` opt-in per function | default |
+| 24 | Float semantics | strict IEEE; `[<FastMath>]` opt-in per function (§8) | decided |
 | 25 | SIMD API | portable `f32x8`-style value types + target intrinsics (§8) | decided |
 | 26 | From Zig | cross-compilation through `zig cc`; a checked opt-in instead of no-hidden-allocation (`[<NoAlloc>]`, #42). Not adopted: explicit allocators, comptime | decided |
 | 27 | Libraries | source packages (path, git + `zs.lock`), checked Core cached per module; no binary IR format | decided |
 | 28 | Strings and `char` | UTF-8 strings, `Length` is bytes; `char` is a Unicode scalar; `for c in s` decodes UTF-8 (malformed bytes become U+FFFD) | decided |
-| 29 | Target order | Linux x64/arm64; bare-metal Cortex-M; macOS arm64, Windows x64 (a targets track, build-only until a machine runs the tests); WASM | decided |
+| 29 | Target order | Linux x64/arm64; bare-metal Cortex-M; macOS arm64 (the suite in CI, phase 12), Windows x64 (build-only until a machine runs the tests); WASM | decided |
 | 30 | Who it's for first | native libraries used from C, CLI tools, microcontroller firmware; games over C libraries next | decided |
 | 31 | Callbacks into C | `callback<A -> R>` = `R (*)(void *user, A)` + `void *user`; borrowed for the call | decided |
 | 32 | Editor support | tree-sitter grammar + `zs lsp` + `zs mcp`, Zed extension first | decided |
@@ -727,5 +739,10 @@ checker, so tools can't drift from the compiler.
 | 48 | A thread's tasks | a loop per thread; `Task.spawn` runs a task on a loop thread to the end, and its result comes back; tasks don't move between threads, so what a task holds needn't be Share (§7) | decided |
 | 49 | SIMD functions | a built-in module per vector type (`F32x8.load`), not generic functions over vectors: HM can't relate a vector type to its element type without type families (§8) | decided |
 | 50 | SIMD integer overflow | vectors wrap, as their instructions do; scalars stay checked (§8) | decided |
+| 51 | Backend | textual LLVM IR passed to clang, in the self-hosted compiler too: phase 9 measured parsing the text at 2.6% of clang's time, the module cache skips unchanged modules' IR, and LLVM's release has no shared libLLVM to bind to (§9) | decided |
+| 52 | Spans | `span<'a>`: an owner, an offset and a length, holding a reference to the owner; read-only over arrays and strings, writable over a `Buffer`; slices are spans, a string's slice a string; an array or a `Buffer` becomes a span where one is expected (§5.1) | decided |
+| 53 | Fixed-size arrays | `fixed<'a, N>`, inline, a value indexed like an array; a number is a type argument there and nowhere else, so no general type-level numbers (§11) | decided |
+| 54 | Generic constants | a top-level constant whose type has type variables is generalized, as F# generalizes values; the empty collections are values, not functions (§2.1) | decided |
+| 55 | Compound assignment | `+=`, `-=`, `*=`, `/=`, `%=`, `&&&=`, `\|\|\|=` and `^^^=` on anything `<-` assigns, with the place evaluated once; not F# syntax, so under decision 34's rule (§2.1) | decided |
 
 "Default" means chosen by me and open to change until the phase that implements it begins.

@@ -102,6 +102,7 @@ Before phase 10, with phases 9–9.6 built:
 - **How many kinds:** references (`ref`, `Buffer`, `weak`, `span`, `ptr`) and functions (plain, `share<F>`, `callback<F>`, `fnptr`), before effect handlers add effect rows. Any two a programmer can't tell apart from their names and the errors are merged, or the guide shows when to use which.
 - **Errors a newcomer meets:** 30 programs with the mistakes F# and C programmers make first (a missing case, a captured `let mutable`, a `ref` sent to a thread, a wrong function kind, a missing impl, a `?` in a function returning `unit`, …). Each error names the problem, points at it, and says what to write instead.
 - **Scope:** phase 12's deferred features and the tracks' *after phase 11* items are sorted into before 0.1 and after it, so the work left to the first users is a list with an end.
+- **Phase 11, go or no-go:** decided here, with that list in hand: the compiler is rewritten in Z# before 0.1, or 0.1 ships the .NET compiler and the rewrite follows it. The tracks' *before phase 11* items stay first either way.
 
 **Exit tests:**
 - `tests/newcomer/`: the 30 programs, each with its expected error, checked by `./test.sh`.
@@ -121,13 +122,12 @@ Before phase 10, with phases 9–9.6 built:
 
 ### Phase 11: self-hosting (optional)
 The compiler, rewritten in Z#, compiles itself, and the second-generation build is
-byte-identical.
+byte-identical. Whether it comes before 0.1 is decided at the third design review.
 - **What the F# compiler uses today:** no NuGet packages, only .NET's own library. Each use needs a replacement first:
   - **Packages (track K):**
     - **`libclang`:** `import c` runs `clang -ast-dump=json`, parses JSON up to 10,000 levels deep, and reads macros with regular expressions. libclang's C API replaces all three.
     - **`xxhash`:** cache keys use SHA-256 in one place, but don't need a cryptographic hash. xxHash is one C header, so wrapping it is less code than writing a hash.
-    - **`llvm`:** the C API, so code is built through typed calls instead of IR text. (The F# backend keeps textual IR: phase 9 measured its parsing at 3% of clang's time.)
-    - **Not needed:** `git` (stays a process), regex (two uses left after libclang), TOML (the manifest's subset is parsed by hand already).
+    - **Not needed:** `llvm` (the backend keeps textual IR, decision 51: phase 9 measured its parsing at 2.6% of clang's time, and LLVM's release has no shared libLLVM to bind to), `git` (stays a process), regex (two uses left after libclang), TOML (the manifest's subset is parsed by hand already).
   - **Library (track S):**
     - **Processes:** standard error and input, and an environment (item 7). `Process.run` captures only standard output today, and clang reports errors on standard error.
     - **IO:** reading N bytes from standard input (LSP's `Content-Length` framing), whole-file bytes, binary reading and writing into a `Buffer<u8>` (snapshots), `Path.getFullPath` and `getRelativePath`, `File.exists`, `move` and modification times (the cache's LRU), `Directory.exists`, temporary files.
@@ -196,11 +196,7 @@ Items marked *after phase 11* wait for phase 12, which picks what 0.1 needs from
 Tier 2 (DESIGN §10): every phase keeps `bench/mcu` working and within its ratios.
 - **Next:**
   1. **Interrupt handlers:** `[<Interrupt "SysTick">] let tick () = …`, placed in the vector table, with the rules for sharing state with them.
-  2. **`[<NoAlloc>]` (DESIGN §10):** a compile error if a function, or anything it calls, may allocate or free heap memory. The error names the call chain down to the allocation (a string, a closure, a boxed union, …).
-     - **Checked on Z#'s own IR,** after borrow inference, unboxing and list fusion, so the result doesn't depend on `-O`, and a fused pipeline or a small union passes.
-     - **Externs** count as not allocating: C is outside the check.
-     - **Interrupt handlers** are `NoAlloc` implicitly, since the allocator isn't reentrant.
-     - **`--no-heap`:** the whole program is checked, and the image has no heap.
+  2. **`[<NoAlloc>]` and `--no-heap`** (DESIGN §10, decision 42): a compile error naming the call chain if a function, or anything it calls, may allocate or free heap memory; `--no-heap` checks the whole program.
   3. **Constants in flash:** constant arrays placed in flash, instead of startup values copied to RAM.
   4. **More boards:** *(after phase 11)* linker scripts for STM32F4 and RP2040, flashing through `probe-rs` or OpenOCD, and RTT output as an alternative to semihosting.
   5. **RISC-V:** *(after phase 11)* ESP32-C3, under QEMU first.
@@ -381,7 +377,7 @@ and modules found transitively. Packages stay source (decision 27).
   7. **Commands:** *(after phase 11)* `zs add json@1.2`, `zs remove` and `zs tree`.
   8. **Workspaces:** *(after phase 11)* `[workspace] members = […]`, with one lock file and one cache.
 - **Later: an index, not a registry.** Git URLs work without anyone running a service. When names are worth having, an index can be a git repository that maps each name to a URL and a hash, so that `json = "1.2"` works. `zs publish` opens a pull request against it.
-- **First-party packages** (`zsharp/…`, kept building by the compiler's CI): before phase 11, `libclang`, `llvm` and `xxhash`, which the compiler itself uses. *After phase 11:* `http` (client and server on `Net.Tcp` and `Task`, parsing with llhttp), `regex` (over PCRE2), `tls` (over mbedTLS), `sqlite`, `raylib`, and `cli` (argument parsing derived from a record, the one written in Z#).
+- **First-party packages** (`zsharp/…`, kept building by the compiler's CI): before phase 11, `libclang` and `xxhash`, which the compiler itself uses. *After phase 11:* `http` (client and server on `Net.Tcp` and `Task`, parsing with llhttp), `regex` (over PCRE2), `tls` (over mbedTLS), `sqlite`, `raylib`, and `cli` (argument parsing derived from a record, the one written in Z#).
 - **Exit tests:**
   - *After phase 11:* a diamond (A needs C ≥ 1.1, B needs C ≥ 1.3) resolves to C 1.3 on every machine, and `json` and `json/v2` build in one program.
   - *After phase 11:* a project uses `zsharp/sqlite` after nothing more than `zs add`.
@@ -390,11 +386,11 @@ and modules found transitively. Packages stay source (decision 27).
 
 ## Ordering rationale
 - **Phase L came before 5 and 6.** Builders, `Task` and optimizations should be built on the language's final shape. Top-level constants also unblocked microcontroller work.
-- **Phase 5 comes before V and 6.** CPS tasks are only cheap once inlining and reuse work, and benchmarking first keeps that claim honest.
+- **Phase 5 came before V and 6.** CPS tasks are only cheap once inlining and reuse work, and benchmarking first kept that claim honest.
 - **Phase V came before 6,** for phase L's reason: `dyn Trait`, `weak` and `unsafe` are part of the language CEs and `Task` build on.
-- **Phase 7 comes after 6.** The thread pool backs both `Task.blocking` and the multi-threaded scheduler.
-- **Phase 8 comes after 5 and 7.** Vectorization relies on phase 5's representation and aliasing work, and parallel SIMD kernels are the real-world case.
-- **Phases 9.5 and 9.6 split infrastructure from language.** Incremental builds, threads and cycle warnings come first, so the language features that follow are tested on fast builds.
+- **Phase 7 came after 6.** The thread pool backs both `Task.blocking` and the multi-threaded scheduler.
+- **Phase 8 came after 5 and 7.** Vectorization relies on phase 5's representation and aliasing work, and parallel SIMD kernels are the real-world case.
+- **Phases 9.5 and 9.6 split infrastructure from language.** Incremental builds and threads come first, so the language features that follow are tested on fast builds.
 - **The third design review comes before phase 10.** Effect handlers add effect rows to every function type, the biggest change to the language left, so what the language already has is settled and pruned first.
 - **Phase 10 comes last** of the language phases. It needs Task's API stable and opaque, and Perceus; DESIGN §6.1 lists what must stay true until then.
 - **Phase 12 comes after 11** (or after 10 if 11 is skipped): a release is worth making once the language is settled, and self-hosting has shaken out the bugs a large program finds.
