@@ -140,6 +140,23 @@ abstract hash : 'a -> int
 
 The value's hash code.
 
+### `Dispose`
+
+```zsharp
+trait Dispose<'a>
+```
+
+What `use x = e` gives back when its scope ends (and, in a task, when the task is cancelled):
+a socket closed, a file shut, a handle released.
+
+#### `Dispose.dispose`
+
+```zsharp
+abstract dispose : 'a -> unit
+```
+
+Releases what the value holds.
+
 ## Types
 
 ### `ShapeKind`

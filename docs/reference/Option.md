@@ -103,3 +103,51 @@ Option.toResult : 'a -> option<'b> -> result<'b, 'a>
 
 `Ok x` for `Some x`, `Error err` for `None`.
 
+### `Option.Builder.bind`
+
+```zsharp
+Option.Builder.bind : option<'a> -> ('a -> option<'b>) -> option<'b>
+```
+
+`let!`: the rest with the value of `Some`, or `None`.
+
+### `Option.Builder.ret`
+
+```zsharp
+Option.Builder.ret : 'a -> option<'a>
+```
+
+`return x`: `Some x`.
+
+### `Option.Builder.zero`
+
+```zsharp
+Option.Builder.zero : unit -> option<unit>
+```
+
+An `if` without `else`, or a body that ends in a statement: `Some ()`.
+
+### `Option.Builder.delay`
+
+```zsharp
+Option.Builder.delay : (unit -> 'a) -> 'a
+```
+
+The body, run now.
+
+### `Option.Builder.using`
+
+```zsharp
+Option.Builder.using : 'a -> ('a -> 'b) -> 'b when 'a : Dispose
+```
+
+`use x = e`: the rest with `x`, which is disposed after it.
+
+### `Option.Builder.forEach`
+
+```zsharp
+Option.Builder.forEach : list<'a> -> ('a -> option<unit>) -> option<unit>
+```
+
+`for x in xs do`: the body for each element, until one gives `None`.
+

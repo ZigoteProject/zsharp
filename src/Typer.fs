@@ -243,6 +243,26 @@ let private builtins =
           b "Weak.get" "weak.get" [ kAny ] (f (TCon("weak", [ a ])) (TCon("option", [ a ]))) 1
           b "Arena.with" "arena.with" [ kAny ] (f (f tUnit a) a) 1
           b "Runtime.mallocs" "Runtime.mallocs" [] (f tUnit tInt) 1
+          // the event loop and sockets (runtime/rt.c), which Std's Task and Tcp wrap
+          b "Native.loopPost" "Loop.post" [] (f (f tUnit tUnit) tUnit) 1
+          b "Native.loopWait" "Loop.wait" [] (f tInt (f tBool (f (f tUnit tUnit) tUnit))) 3
+          b "Native.loopUnwait" "Loop.unwait" [] (f tInt (f tBool tUnit)) 2
+          b "Native.loopTimer" "Loop.timer" [] (f tInt (f (f tUnit tUnit) tInt)) 2
+          b "Native.loopUntimer" "Loop.untimer" [] (f tInt tUnit) 1
+          b "Native.loopStep" "Loop.step" [] (f tUnit tBool) 1
+          b "Native.loopClose" "Loop.close" [] (f tUnit tUnit) 1
+          b "Native.loopEnter" "Loop.enter" [] (f tUnit tBool) 1
+          b "Native.loopLeave" "Loop.leave" [] (f tUnit tUnit) 1
+          b "Native.loopBlocking" "Loop.blocking" [] (f (f tUnit tUnit) (f (f tUnit tUnit) tUnit)) 2
+          b "Native.tcpListen" "Tcp.listen" [] (f tStr (f tInt tInt)) 2
+          b "Native.tcpAccept" "Tcp.accept" [] (f tInt tInt) 1
+          b "Native.tcpConnect" "Tcp.connect" [] (f tStr (f tInt tInt)) 2
+          b "Native.socketError" "Tcp.error" [] (f tInt tInt) 1
+          b "Native.fdRead" "Fd.read" [] (f tInt (f (TCon("Buffer", [ tcon "u8" ])) (f tInt (f tInt tInt)))) 4
+          b "Native.fdWrite" "Fd.write" [] (f tInt (f (TCon("Buffer", [ tcon "u8" ])) (f tInt (f tInt tInt)))) 4
+          b "Native.fdWriteText" "Fd.write" [] (f tInt (f tStr (f tInt (f tInt tInt)))) 4
+          b "Native.fdClose" "Fd.close" [] (f tInt tUnit) 1
+          b "Native.errorText" "Errno.text" [] (f tInt tStr) 1
           b "Native.argc" "Env.argc" [] (f tUnit tInt) 1
           b "Native.arg" "Env.arg" [] (f tInt tStr) 1
           b "Native.hasVariable" "Env.has" [] (f tStr tBool) 1
@@ -1986,6 +2006,24 @@ let checkFrom
             builtinCall env depth f args
         elif externs.ContainsKey f then
             externCall env depth f args
+        elif f.Contains ".Builder." then
+            // a computation expression's form, and its builder lacks the function for it
+            let i = f.LastIndexOf '.'
+            let fn = f.Substring(i + 1)
+            let builder = f.Substring(0, i)
+            let w = string (System.Char.ToLower builder[0]) + builder.Substring(1, builder.IndexOf '.' - 1)
+
+            let form =
+                match fn with
+                | "bind" -> "let! and do!"
+                | "ret" -> "return"
+                | "zero" -> "an if without else, and a body that ends in a statement"
+                | "using" -> "use"
+                | "forEach" -> "for"
+                | "delay" -> "its body"
+                | _ -> fn
+
+            fail 0 (sprintf "%s { } needs %s.%s, for %s" w builder fn form)
         else
             match splitQualified env f with
             | Some e -> infer env depth (App(e, args))

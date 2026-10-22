@@ -13,9 +13,9 @@ open Syntax
 let private openers = set [ "("; "["; "[|"; "{"; "[<" ]
 let private closers = set [ ")"; "]"; "|]"; "}"; ">]" ]
 
-/// Where spacing carries meaning (f(x) vs f (x), f -x, 9.58<s>, x?, list<int>) or is a matter
+/// Where spacing carries meaning (f(x) vs f (x), f -x, 9.58<s>, x?, list<int>, let!) or is a matter
 /// of taste the source already settled, it stays as written.
-let private asWritten = set [ "("; ")"; "<"; ">"; "."; "?"; "^"; "|"; "~-"; ">>"; ":"; "<-" ]
+let private asWritten = set [ "("; ")"; "<"; ">"; "."; "?"; "^"; "|"; "~-"; ">>"; ":"; "<-"; "!" ]
 
 let private isOperand (tok: Tok) =
     match tok with

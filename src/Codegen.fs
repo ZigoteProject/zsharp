@@ -138,6 +138,24 @@ declare ptr @zs_process_run(ptr, ptr)
 declare i_W @zs_process_code()
 declare zeroext i1 @zs_eof()
 declare void @zs_eprintln(ptr)
+declare void @zs_loop_post(ptr)
+declare void @zs_loop_wait(i_W, i1 zeroext, ptr)
+declare void @zs_loop_unwait(i_W, i1 zeroext)
+declare i_W @zs_loop_timer(i_W, ptr)
+declare void @zs_loop_untimer(i_W)
+declare zeroext i1 @zs_loop_step()
+declare void @zs_loop_close()
+declare zeroext i1 @zs_loop_enter()
+declare void @zs_loop_leave()
+declare void @zs_loop_blocking(ptr, ptr)
+declare i_W @zs_tcp_listen(ptr, i_W)
+declare i_W @zs_tcp_accept(i_W)
+declare i_W @zs_tcp_connect(ptr, i_W)
+declare i_W @zs_socket_error(i_W)
+declare i_W @zs_fd_read(i_W, ptr, i_W, i_W)
+declare i_W @zs_fd_write(i_W, ptr, i_W, i_W)
+declare void @zs_fd_close(i_W)
+declare ptr @zs_error_text(i_W)
 
 ; a count above 0 is a thread-local object's, 0 a static one's (never freed); below 0 will be a
 ; shared object's, counted atomically (DESIGN §7.1). The fast paths test for that already
@@ -216,13 +234,57 @@ free:
 done:
   ret void
 }
+
+; the event loop's ways with the closures it owns (unit -> unit, runtime/rt.c): call one and give
+; up the loop's reference, only call it (on Task.blocking's helper thread), only give it up
+define weak_odr void @zs_clo_run(ptr %c) {
+entry:
+  %cp = getelementptr { i_W, ptr }, ptr %c, i32 0, i32 1
+  %code = load ptr, ptr %cp
+  call {} %code(ptr %c, {} zeroinitializer)
+  call void @zs.drop.clo(ptr %c)
+  ret void
+}
+
+define weak_odr void @zs_clo_call(ptr %c) {
+entry:
+  %cp = getelementptr { i_W, ptr }, ptr %c, i32 0, i32 1
+  %code = load ptr, ptr %cp
+  call {} %code(ptr %c, {} zeroinitializer)
+  ret void
+}
+
+define weak_odr void @zs_clo_drop(ptr %c) {
+entry:
+  call void @zs.drop.clo(ptr %c)
+  ret void
+}
 """
 
 /// Primitives implemented by runtime functions: C name, result type, parameter types (unit
-/// parameters omitted). Arguments are borrowed by the runtime and dropped after the call.
+/// parameters omitted). Arguments are borrowed by the runtime and dropped after the call,
+/// except those marked with !, whose reference the runtime keeps (the event loop's callbacks).
 let private runtimePrims =
     dict
-        [ "String.sub", ("zs_str_sub", "ptr", [ "ptr"; "i_W"; "i_W" ])
+        [ "Loop.post", ("zs_loop_post", "void", [ "ptr!" ])
+          "Loop.wait", ("zs_loop_wait", "void", [ "i_W"; "i1 zeroext"; "ptr!" ])
+          "Loop.unwait", ("zs_loop_unwait", "void", [ "i_W"; "i1 zeroext" ])
+          "Loop.timer", ("zs_loop_timer", "i_W", [ "i_W"; "ptr!" ])
+          "Loop.untimer", ("zs_loop_untimer", "void", [ "i_W" ])
+          "Loop.step", ("zs_loop_step", "zeroext i1", [])
+          "Loop.close", ("zs_loop_close", "void", [])
+          "Loop.enter", ("zs_loop_enter", "zeroext i1", [])
+          "Loop.leave", ("zs_loop_leave", "void", [])
+          "Loop.blocking", ("zs_loop_blocking", "void", [ "ptr!"; "ptr!" ])
+          "Tcp.listen", ("zs_tcp_listen", "i_W", [ "ptr"; "i_W" ])
+          "Tcp.accept", ("zs_tcp_accept", "i_W", [ "i_W" ])
+          "Tcp.connect", ("zs_tcp_connect", "i_W", [ "ptr"; "i_W" ])
+          "Tcp.error", ("zs_socket_error", "i_W", [ "i_W" ])
+          "Fd.read", ("zs_fd_read", "i_W", [ "i_W"; "ptr"; "i_W"; "i_W" ])
+          "Fd.write", ("zs_fd_write", "i_W", [ "i_W"; "ptr"; "i_W"; "i_W" ])
+          "Fd.close", ("zs_fd_close", "void", [ "i_W" ])
+          "Errno.text", ("zs_error_text", "ptr", [ "i_W" ])
+          "String.sub", ("zs_str_sub", "ptr", [ "ptr"; "i_W"; "i_W" ])
           "String.byte", ("zs_str_byte", "zeroext i8", [ "ptr"; "i_W" ])
           "String.ofByte", ("zs_str_of_byte", "ptr", [ "i8 zeroext" ])
           "String.indexOfFrom", ("zs_str_index_of", "i_W", [ "ptr"; "ptr"; "i_W" ])
@@ -2390,7 +2452,7 @@ let compile
             | _ when runtimePrims.ContainsKey op ->
                 let fn, ret, pts = runtimePrims[op]
                 let real = List.zip args vs |> List.filter (fun (a, _) -> prune a.ty <> tUnit)
-                let argv = List.zip pts real |> List.map (fun (pt, (_, v)) -> pt + " " + v) |> String.concat ", "
+                let argv = List.zip pts real |> List.map (fun (pt, (_, v)) -> pt.TrimEnd '!' + " " + v) |> String.concat ", "
                 let call = sprintf "call %s @%s(%s)" ret fn argv
 
                 let r =
@@ -2401,7 +2463,7 @@ let compile
                         em.Instr call
 
                 for k, (a, v) in List.indexed real do
-                    if not (borrowed0 && k = 0) then
+                    if not (borrowed0 && k = 0) && not ((List.item k pts).EndsWith "!") then
                         dropValue em a.ty v
 
                 r

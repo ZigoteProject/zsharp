@@ -98,7 +98,7 @@ let sumTo n =                            // imperative code is fine; mutation st
   - Supports nesting, literals (numbers, characters, strings, bools), tuples, records (`{ x = 0; y = y }`, fields left out match anything), union cases (positional or by field name), lists, guards, `as` and or-patterns that bind variables.
   - Patterns work in `match`, `let`, function parameters (`let norm { x = x; y = y } = …`), lambdas and `for` loops.
   - A match that misses a case is an **error** naming an example of the missing value (`missing case: { kind = C }`). So is a case that can never match.
-- **Errors:** `result` with a postfix `?` that returns the error early (`let x = parse s?`, or `parse s?` as a statement). A `result { }` builder is **(planned, phase 6)**.
+- **Errors:** `result` with a postfix `?` that returns the error early (`let x = parse s?`, or `parse s?` as a statement). `result { }` does the same for a block, with `let!` (§4).
 - **Panics:** for bugs, not errors a caller handles. These all panic: an out-of-bounds index, division by zero, integer overflow, a failed `assert`, an explicit `panic`.
   - A panic prints a message (and a backtrace where the C library supports it), then stops the program at once: no unwinding, no cleanup, exit status 134, no core dump. `ZS_ABORT=1` makes it a real `abort()` for a debugger.
   - Panics can't be caught. So there are no landing pads, and nothing unwinds through C frames.
@@ -267,7 +267,7 @@ The full example is `tests/json.zs`.
   - There are no field attributes yet, such as renaming a JSON key.
   - Declarations generated from a schema, as F# type providers do, would be a later generalization of `import c`.
 
-## 4. Computation expressions (planned, phase 6)
+## 4. Computation expressions
 
 These are F#'s builder syntax, kept general so that async, `result`, `option`, parsers and
 generators are libraries, not compiler features.
@@ -283,19 +283,26 @@ let loadUser id =
   }
 ```
 
-A builder is a **module**, not an object, so it resolves statically and inlines.
+A builder is a **module**, not an object, so it resolves statically and inlines: `w { }` uses
+`W.Builder` (`task { }` is `Task.Builder`, `option { }` `Option.Builder`). The parser rewrites
+the forms into calls of its functions:
 
 | Form | Rewrites to |
 |---|---|
+| the whole body | `B.delay (fun () -> body)`, so a cold computation (a task) runs it when it runs |
 | `let! x = m in rest` | `B.bind m (fun x -> rest)` |
 | `do! m` | `B.bind m (fun () -> …)` |
 | `return e` / `return! m` | `B.ret e` / `m` |
 | `use x = e` | `B.using e (fun x -> …)` |
 | `for x in xs do` | `B.forEach xs (fun x -> …)` |
-| `if c then m` (no else) | `B.zero` on the missing branch |
+| `if c then m` (no else), or a body ending in a statement | `B.zero ()` on the missing branch |
 
-The compiler checks a builder's shape with a `Builder` trait, so a missing `bind` is a type
-error at the use site.
+**Checking a builder:** a form whose function the builder lacks is a compile error at that
+form, naming it (`counter { } needs Counter.Builder.bind, for let! and do!`). DESIGN first had a
+`Builder` trait check this, but a builder's functions are over a type constructor (`bind`
+takes an `M<'a>` for any `'a`), which Z#'s traits, over one type, can't name; the check per
+form says the same, where it matters.
+- **Outside builders:** `use x = e` in plain code disposes `x` after the rest of its block.
 
 ## 5. Memory
 
@@ -355,7 +362,7 @@ before it. Mutable cells can: a `ref` or `Buffer` holding a value that points ba
 | No uninitialised reads | Every binding has a value; arrays are created filled |
 | No out-of-bounds access | Indexing is bounds-checked; in loops the checks are proved once before the loop where possible (§9) |
 | No data races | `let mutable` can't be captured; the `Share` trait (planned, phase 7, §7) |
-| Deterministic cleanup | RC, plus `use` (planned, phase 6), which also runs when a task is cancelled |
+| Deterministic cleanup | RC, plus `use`, which also runs when a task is cancelled |
 | No silent overflow | Integer overflow traps in every build, as in Swift. Wrapping is explicit: `Int.wrappingAdd`, `Int.wrappingSub`, `Int.wrappingMul`, or `[<Wrapping>]` on a function, whose integer `+ - *` wrap. Division by zero traps |
 
 **Not guaranteed (and still memory-safe):** leaks through cycles of `ref` cells or `Buffer`s (§5.2).
@@ -363,16 +370,17 @@ before it. Mutable cells can: a `ref` or `Buffer` holding a value that points ba
 **Unsafe on purpose:** `extern` calls, `Mmio.*` register accesses, and `unsafe` expressions
 with raw pointers (§11).
 
-## 6. Concurrency: `Task` (planned, phase 6)
+## 6. Concurrency: `Task`
 
-> **Decision gate (before phase 6).** Async could otherwise be built three times: CPS `Task`
-> in phase 6, state machines in phase 9, effects in phase 10. So a time-boxed spike comes first:
-> one built-in `Async` effect with one-shot resumptions, compiled by evidence passing (§6.1).
-> - **If it type-checks and meets the phase 5 performance bar:** `Task` is a library over
->   effects from the start, and most of phase 9's `Task` work goes away.
-> - **If not:** the CPS design below stands.
->
-> Either way, the `Task` API in this section is what users see.
+> **Decision gate (before phase 6), decided: CPS.** A time-boxed spike compiled one built-in
+> `Async` effect by evidence passing with yield bubbling, against CPS, by hand
+> ([the report](docs/reports/effects-spike.md)). At run time the effect is better: an await that
+> completes at once allocates nothing (CPS: 5 allocations), and one that suspends 2 (CPS: 7). But
+> knowing which calls may yield takes effect rows on every function type, polymorphic through
+> generic code such as `List.iter`, which is phase 10's work; without them, every closure call
+> would pay, or `await` outside a task would compile. So the CPS design below stands, phase 9's
+> state machines take the allocations away, and phase 10 may move `Task` onto an `Async`
+> effect. The `Task` API in this section is what users see either way.
 
 There is **one type, `Task<'a>`, and it is cold.** A task is a value that describes work.
 Defining it does nothing, and running it twice runs the work twice. `Task.start` gives a hot
@@ -391,16 +399,16 @@ let main () =
   0
 ```
 
-- **Implementation:** a library on top of §4. Each `let!` becomes a continuation closure.
-  - Continuations are almost always unique, so Perceus reuses them in place. A loop that waits repeatedly settles into steady memory, not one allocation per await.
-  - Bind chains use `musttail`, so the stack doesn't grow.
+- **Implementation:** a library on top of §4 (`lib/std/Threading/Task.zs`): a task is its work, given its cancellation and a continuation, so each `let!` becomes a continuation closure.
+  - A loop that waits repeatedly settles into steady memory: each wait's closures are freed after it. The echo server holds 10,000 connections in 21 MB, flat for the 34 minutes of a soak test so far (`bench/echo/soak.sh`). The allocations per bind go in phase 9.
+  - **The stack:** a continuation called inside another (an await that completes at once) is counted, and the 64th goes through the event loop instead, so a run of them doesn't grow the stack.
   - Later, `task { }` may be lowered to stackless state machines with no change to the source (phase 9).
 - **Structured concurrency:**
-  - Child tasks can't outlive the scope that started them (`Task.both`, `all`, `race`, `scope`).
-  - Cancellation flows down implicitly.
-  - Cancelling drops the continuation, so RC releases what it captured and `use` resources close.
-- **Event loop:** about 300 lines of C over epoll/kqueue (io_uring later), linked only if `Task` is used. v1 is single-threaded, and v2 makes the scheduler multi-threaded (phase 7).
-- **Blocking C calls:** `Task.blocking (fun () -> sqlite3_step db)` moves the call to a helper thread. In v1 that's the only use of threads.
+  - Child tasks can't outlive the scope that started them: `Task.both`, `all`, `race` and `timeout` wait for theirs, and `Task.scope` for those `Task.start` started in it (a `Promise` gives each one's result).
+  - Cancellation flows down: a task's cancellation has its children's under it, and a race cancels its loser.
+  - Cancelling a task drops what it waits on (its continuation, so RC releases what that captured) and disposes what it bound with `use`, newest first.
+- **Event loop:** C in `runtime/rt.c` over epoll (kqueue comes with macOS, track T; io_uring later): callbacks waiting for descriptors, timers in a heap, and a queue of ready callbacks, all Z# closures the loop owns. v1 is single-threaded, and v2 makes the scheduler multi-threaded (phase 7).
+- **Blocking C calls:** `Task.blocking (fun () -> sqlite3_step db)` moves the call to a helper thread, which signals the loop through a pipe when it's done. In v1 that's the only use of threads, and the runtime counts objects atomically only in a program that uses it. Until phase 7's `Share` can check it, the function must not share reference-counted values with the rest of the program while it runs; `File.readAllTextAsync` gives it copies.
 
 ### 6.1 Effect handlers (planned, phase 10, v3)
 
@@ -514,8 +522,8 @@ There are three levels, from free to manual.
 - **The library** (`lib/`) is Z#, in three layers:
   - **Prelude** (`lib/prelude.zs`): the global names: the operator traits and their derives, `option`, `result`, `id`, `fst`, `min`, ….
   - **Core** (`lib/core`): what needs no operating system, so every target has it: collections, text, options, results, `Math`, `Mmio`.
-  - **Std** (`lib/std`): what needs one: `Console`, `Environment`, `IO` and `Diagnostics`. A microcontroller build doesn't load it, and a name from it is a compile error that says why.
-  - **Namespaces, as in .NET:** `Collections` (`List`, `Array`, `Buffer`, `Map`, `Set`, `HashMap`), `Text` (`String`, `Char`), `IO` (`File`, `Directory`, `Path`) and `Diagnostics` (`Process`, `Stopwatch`). They are open in every module at the lowest precedence, so `List.map` is `Collections.List.map` unless a program defines its own, and full names work too.
+  - **Std** (`lib/std`): what needs one: `Console`, `Environment`, `IO`, `Diagnostics`, `Threading` and `Net`. A microcontroller build doesn't load it, and a name from it is a compile error that says why.
+  - **Namespaces, as in .NET:** `Collections` (`List`, `Array`, `Buffer`, `Map`, `Set`, `HashMap`), `Text` (`String`, `Char`), `IO` (`File`, `Directory`, `Path`), `Diagnostics` (`Process`, `Stopwatch`), `Threading` (`Task`) and `Net` (`Tcp`). They are open in every module at the lowest precedence, so `List.map` is `Collections.List.map` unless a program defines its own, and full names work too.
   - **Names:** modules have .NET's names (`Directory`, `Environment`, `Stopwatch`) and functions F#'s style (`File.readAllText`, `Directory.list`, `Environment.getVariable`).
   - **Built-in functions:** what the runtime provides is built into the compiler under its full name (`Text.String.length`, `IO.File.exists`). The operating-system calls the library wraps are under `Native`, which programs don't use.
 
@@ -565,7 +573,7 @@ needed. C structs by value follow the target's convention: x86-64 System V, or A
   - a static heap with size-class free lists (64 KB or 8 KB);
   - semihosting output and exit;
   - a peak heap and stack report at exit.
-- **What's missing:** Std, the part of the library that needs an operating system (`Console`, `Environment`, `IO`, `Diagnostics`). A microcontroller build doesn't load it, and using it is a compile error that says why (§9).
+- **What's missing:** Std, the part of the library that needs an operating system (`Console`, `Environment`, `IO`, `Diagnostics`, `Threading`, `Net`). A microcontroller build doesn't load it, and using it is a compile error that says why (§9).
 - **Hardware:** `Mmio.read32/write32/read8/write8` are volatile register accesses, and `Runtime.ticks ()` counts cycles.
 - **Registers as constants:** a top-level constant such as `let uart = usize 0x40004000` is inlined, so a register access compiles to a store to an immediate address.
 - **Planned (microcontroller track):** interrupt handlers (`[<Interrupt "SysTick">]`), constant arrays in flash, RISC-V (ESP32-C3) and more boards (linker scripts in `runtime/boards`).
@@ -619,7 +627,7 @@ import c "raylib.h"                              // like Zig's @cImport
   - **No calls back:** the hook must not call into the library, whose state is undefined after a panic.
   - **A host that must survive a library's bugs** runs it in a separate process.
 - **Callbacks:** a C `void (*cb)(void *user, …)` paired with `void *user` receives a Z# closure; the compiler generates the thunk. The closure is borrowed for the call, so a callback can't be stored by C.
-- **With `Task` (planned, phase 6):** a blocking C call goes through `Task.blocking` (§6).
+- **With `Task`:** a blocking C call goes through `Task.blocking` (§6).
 
 ## 12. Tooling
 
@@ -670,9 +678,9 @@ checker, so tools can't drift from the compiler.
 | 16 | Default expressions | any expression, evaluated at the use site, may use earlier fields/parameters | decided |
 | 17 | Union case fields | named construction and patterns; no defaults | decided |
 | 18 | Record literal type | from the expected type, through branches and elements; else the fields, among the records in scope: the nearest scope, then the latest declaration | decided |
-| 19 | `?` operator | `let p = e?` and statement `e?`; general positions with `result { }` (phase 6) | decided |
+| 19 | `?` operator | `let p = e?` and statement `e?`; for a block, `result { }` with `let!` | decided |
 | 20 | Code generation by users | `derive` over record and union shapes; no macros, no comptime | decided |
-| 21 | Async | one cold `Task<'a>` + `Task.start`; general computation expressions; an effects spike decides CPS vs effects before phase 6 | decided |
+| 21 | Async | one cold `Task<'a>` + `Task.start`; general computation expressions; CPS, which the effects spike before phase 6 chose (§6) | done |
 | 22 | Threads | v1 single-threaded event loop; multi-threading in v2, with non-atomic RC and a negative count marking the objects that crossed threads (§7.1) | decided |
 | 23 | Effect handlers | designed now (§6.1), built in v3; one-shot, evidence passing | decided |
 | 24 | Float semantics | strict IEEE; `[<FastMath>]` opt-in per function | default |
@@ -697,5 +705,6 @@ checker, so tools can't drift from the compiler.
 | 43 | `dyn Trait` | the value boxed with its type's impl table; made where a `dyn` is expected, with no conversion written; for traits whose methods take the value first and don't mention its type elsewhere (§3) | decided |
 | 44 | Arenas | `Arena.with (fun () -> …)`: what the function allocates comes from the arena's blocks, freed together when the arena's last object goes. An object that lives on keeps its blocks, so arenas are memory-safe without escape analysis (§5.2) | decided |
 | 45 | Z# objects in C | an opaque `zs_handle` with its own count (`zs_retain`, `zs_release`); a returned handle is the caller's, a passed one is lent for the call (§11) | decided |
+| 46 | Computation expressions' builders | a module `W.Builder` for `w { }`; the body goes to `delay`; a missing function is an error at the form that needs it, not a trait (§4) | decided |
 
 "Default" means chosen by me and open to change until the phase that implements it begins.

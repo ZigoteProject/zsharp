@@ -31,6 +31,17 @@ let appendAllText (path: string) (text: string) =
   Native.appendFile path text
   ioResult ()
 
+/// The whole file as a string, read on `Task.blocking`'s helper thread so tasks go on meanwhile.
+let readAllTextAsync (path: string) : Task<result<string, string>> =
+  let path = String.sub path 0 (String.length path) // the helper thread's own copy
+  Task.blocking (fun () -> readAllText path)
+
+/// Replaces the file's contents with `text`, on `Task.blocking`'s helper thread.
+let writeAllTextAsync (path: string) (text: string) : Task<result<unit, string>> =
+  let path = String.sub path 0 (String.length path)
+  let text = String.sub text 0 (String.length text)
+  Task.blocking (fun () -> writeAllText path text)
+
 /// Deletes the file.
 let delete (path: string) =
   Native.deleteFile path

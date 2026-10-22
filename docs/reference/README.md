@@ -23,3 +23,5 @@ The names every program has without qualification: the operator traits and their
 | none | [Console](Console.md), [Environment](Environment.md) |
 | `IO` | [File](IO.File.md), [Directory](IO.Directory.md), [Path](IO.Path.md) |
 | `Diagnostics` | [Process](Diagnostics.Process.md), [Stopwatch](Diagnostics.Stopwatch.md) |
+| `Threading` | [Task](Threading.Task.md) |
+| `Net` | [Tcp](Net.Tcp.md) |

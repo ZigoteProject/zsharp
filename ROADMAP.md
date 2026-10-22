@@ -15,45 +15,38 @@ OCaml for the host benchmarks).
  v1, single-threaded:  0 ─ 1 ─ 2 ─ 3 ─ 4 ─ L ─ 5 optimizer I ─ V v1 completion ─ 6 CE + Task
  v2, threads:          7 parallelism ─ 8 SIMD ─ 9 optimizer II
  v3:                   10 effect handlers ─ (11 self-hosting)
- alongside:            E editors, M microcontrollers, T more targets, P type providers
+ alongside:            E editors, M microcontrollers, T more targets, P type providers,
+                       S library, K packages
 
- done: 0–5, L and V        now: 6
+ done: 0–6, L and V        now: 7
 ```
 
 - **v1 (phases 0–6, L and V):** the complete single-threaded language. It is fast, memory-safe, has C interop, and runs async on one event loop.
 - **v2 (phases 7–9):** threads, parallelism, SIMD and the final performance work.
 - **v3 (phase 10+):** effect handlers.
-- **Tracks:** editor tooling (E), microcontrollers (M), more targets (T) and type providers (P) run alongside the main line.
+- **Tracks:** editor tooling (E), microcontrollers (M), more targets (T), type providers (P), the library (S) and packages (K) run alongside the main line.
 
 ## Where things stand
 
 **Works today:**
-- **Language:** inference (lambdas get their parameter types from the call), records with defaults, unions, exhaustive matching (record, string and character patterns), active patterns, units of measure, traits, `dyn` values, derives, members with named and optional arguments, nested modules with their own fields and traits, closures, generics, custom operators, `char`, multi-line and raw strings, raw pointers in `unsafe`.
+- **Language:** inference (lambdas get their parameter types from the call), records with defaults, unions, exhaustive matching (record, string and character patterns), active patterns, units of measure, traits, `dyn` values, derives, members with named and optional arguments, nested modules with their own fields and traits, closures, generics, custom operators, `char`, multi-line and raw strings, raw pointers in `unsafe`, computation expressions (`option { }`, `result { }`, `task { }`).
 - **Memory and performance:** Perceus RC with borrowing and reuse, copy-on-write arrays, weak references, arenas, checked arithmetic, and an optimizer that inlines, uncurries, resolves known constructors and fuses pipelines. On the host benchmarks it's within 1.21× of C with C's peak memory, except `fib` (2.0×: overflow checks; 1.1× of C with the same checks). On compute code it's as fast as C on a Cortex-M.
-- **Library:** a prelude, Core (collections, text, options, results: every target) and Std (console, environment, files, paths, processes, timing: targets with an OS), in .NET-style namespaces.
+- **Library:** a prelude, Core (collections, text, options, results: every target) and Std (console, environment, files, paths, processes, timing, tasks and TCP: targets with an OS), in .NET-style namespaces.
+- **Concurrency:** `Task` on a single-threaded event loop, with structured concurrency, cancellation that disposes `use` values, timers, TCP sockets, and `Task.blocking` for C calls that block.
 - **C:** C import and export (static and shared libraries), C function pointers, Z# objects held by C as handles, and a panic hook for C hosts.
 - **Targets:** x86-64, aarch64 (cross), Cortex-M4 and M0+ (bare metal).
 - **Tooling:** projects with path and git dependencies, `zs test`/`fmt`/`doc`, gdb debug info (strings, records and unions as values), and an LSP, MCP server and Zed extension.
 
 **Known gaps** (in priority order, each with the phase or track that closes it):
-1. **Concurrency (phase 6):** no computation expressions or `Task`; I/O blocks.
-2. **C ABI (track M):** 32-bit ARM passes structs by value with the x86-64 rules.
-3. **Weak references and arenas on microcontrollers (track M):** they're hosted-only so far; the embedded runtime lacks their functions.
-4. **Debug info (track E):** lists and other boxed unions aren't shown as gdb values (plain unions are).
-5. **Editor (track E):** no signature help, rename or code actions; the formatter doesn't reflow long lines.
-6. **Targets (track T):** no macOS or Windows builds.
+1. **Threads (phase 7):** nothing checks that `Task.blocking`'s function shares no reference-counted values with the rest of the program (`Share` will), and there's no parallelism yet.
+2. **Task speed (phase 9):** each `let!` allocates its continuation; state machines take that away.
+3. **C ABI (track M):** 32-bit ARM passes structs by value with the x86-64 rules.
+4. **Weak references and arenas on microcontrollers (track M):** they're hosted-only so far; the embedded runtime lacks their functions.
+5. **Debug info (track E):** lists and other boxed unions aren't shown as gdb values (plain unions are).
+6. **Editor (track E):** no signature help, rename or code actions; the formatter doesn't reflow long lines.
+7. **Targets (track T):** no macOS or Windows builds (and so no kqueue loop yet).
 
 ## Next
-
-### Phase 6: computation expressions and Task
-- **Gate first** (DESIGN §6): a time-boxed spike of a single `Async` effect with evidence passing. Its result decides whether `Task` is a library over effects (and phase 10 moves up) or CPS.
-- **Scope:**
-  - **CE syntax:** builders as modules plus a `Builder` trait: `let!`, `do!`, `return`, `return!`, `use`, `for`, `if`.
-  - **Libraries:** `result { }`, `option { }`.
-  - **`Task<'a>`:** cold, with structured concurrency (`both`, `all`, `race`, `scope`) and cancellation that runs `use` cleanup.
-  - **Runtime:** a single-threaded epoll/kqueue event loop in `rt.c`, and `Task.blocking`.
-  - **I/O and timing:** sockets, files and timers.
-- **Exit test:** a TCP echo server holding 10k concurrent connections, with flat memory over a 1-hour soak test, valgrind-clean on shutdown.
 
 ### Phase 7: parallelism
 - **Scope:**
@@ -160,14 +153,72 @@ JSON API, a CSV file or a database is checked against its shape.
   - A program reads a JSON document and a CSV file through provided types, with completion and hover on their fields in Zed.
   - A changed sample makes the code that no longer fits a compile error that names the field.
 
+### Library (S)
+The prelude, Core and Std grow toward what an F# programmer reaches for on the first day, in
+DESIGN §9's layers.
+- **What goes where:**
+  - **Prelude:** a name is global only if F# has it global and most programs use it. It stays small.
+  - **Core:** needs no OS, so every target gets it. Most new code goes here.
+  - **Std:** needs the OS, or defines a type that packages must agree on (a JSON value, a time).
+  - **A package (track K):** formats and protocols with many reasonable designs, such as HTTP, regex, argument parsing, TLS and databases.
+- **Each addition:** `///` docs, its reference page, a test, and for Core, a microcontroller build.
+- **Next:**
+  1. **Iteration:** `for x in` works on lists and arrays only. A trait would make it work on `Map`, `Set`, `HashMap`, `Buffer` and user types. It iterates internally (a `forEach` that can stop early), as CE `for` already does. This needs design first. Lazy `Seq` waits for phase 10's `seq { }`.
+  2. **Collections:** the rest of F#'s `List`/`Array`/`Map`/`Set`: `groupBy`, `countBy`, `chunkBySize`, `windowed`, `pairwise`, `scan`, `foldBack`, `tryFindIndex`, `Array.binarySearch`, `Map.change`, `Set.isSubset`, …. Also `Buffer`'s missing functions (push, pop, clear), and `Queue`, `Stack`, `PriorityQueue` and `HashSet`.
+  3. **Numbers:**
+     - **`Math`:** it has only `abs` and `sqrt` so far. The rest of libm comes as LLVM intrinsics (`floor`, `ceil`, `round`, `pow`, `exp`, `log`, trigonometry), plus `clamp`, `pi` and `e`.
+     - **Integers:** `Int.checkedAdd` (returning an `option`), saturating arithmetic, and the bit operations (`popCount`, `leadingZeros`, `rotateLeft`) that microcontroller code needs.
+     - **`Random`:** a seeded PCG in Core, and `Random.shared`, seeded from the OS, in Std.
+  4. **Text:**
+     - **Functions:** `padLeft`/`padRight`, `trimStart`/`trimEnd` and `splitLines`.
+     - **Formatting:** format specifiers in interpolation (`$"{x:F2}"`, `{n:X8}`).
+     - **UTF-8:** `Text.Utf8` converts between bytes and strings, with validation.
+     - **`StringBuilder`:** only if measuring shows that reuse doesn't already make `s <- s + x` in a loop linear.
+  5. **JSON in Core:** a `Json` union with parse and print, plus `ToJson`/`FromJson` derives (the example in DESIGN §3.1). Track P's provider and the packages build on it.
+  6. **Time:** `Duration` as an integer of nanoseconds, using units of measure. `DateTime` is UTC, with `utcNow` and ISO 8601 parsing and printing. Time zones are a package.
+  7. **IO:**
+     - **Streams:** `File.openRead` and `openWrite` give readers and writers (`readLine`, `readBytes`, `write`), closed by `use`.
+     - **Files and directories:** `readAllBytes`, `File.exists`, `Directory.exists`, recursive listing, copy, move and temporary files.
+     - **Processes:** `Process.start` with pipes, an exit code and an environment, awaitable from a task.
+  8. **Net:** UDP, and name lookup through `Task.blocking getaddrinfo`. TLS and HTTP are packages.
+  9. **Tests:** `Assert.equal` prints both values through `Show` and points at the first difference.
+- **Freeze at 1.0:** a review checks every name against .NET and F#. After it, renaming something takes a `[<Deprecated "use X">]` warning for one release.
+- **Exit tests:**
+  - Ten Advent of Code puzzles written with only the prelude, Core and Std, with no helper that F#'s library already has.
+  - In `examples/`: grep, a JSON pretty-printer and `tail -f`, each under 100 lines.
+  - Every Core module builds for Cortex-M0+.
+
+### Packages (K)
+**Today:** path and git dependencies, `zs.lock` pinning commits, `zs fetch` and `zs update`,
+and modules found transitively. Packages stay source (decision 27).
+- **Next:**
+  1. **Namespaced dependencies:** a dependency's modules sit under the name it has in `zs.toml` (`Json.Parser`), so two packages that both have a `Util` module don't collide. This comes first, before there are packages to break.
+  2. **Versions:** `json = { git = "…", version = "1.2" }` picks among `v1.x.y` tags.
+     - **Minimal version selection,** as in Go: each package gets the highest of the minimum versions asked for it. A build is reproducible without a solver.
+     - **Major versions are separate packages** (`json` and `json/v2`), so one program can use both.
+  3. **Internal modules:** modules under a package's `internal/` directory are visible only inside it (Go's rule, with no new keyword).
+  4. **C dependencies:** a `[c]` section (`link`, `pkg-config`, and C sources compiled with `zig cc`) means a package that wraps sqlite or raylib needs no flags from the projects that use it.
+  5. **Targets:** a package that uses Std can't be a dependency of a microcontroller build. The error comes when the build starts and names the package, not some module deep inside it.
+  6. **Integrity:** `zs.lock` keeps a hash of each checkout's contents and checks it. `zs vendor` copies the dependencies into the repository, and `--offline` fails instead of fetching.
+  7. **Commands:** `zs add json@1.2`, `zs remove` and `zs tree`.
+  8. **Workspaces:** `[workspace] members = […]`, with one lock file and one cache.
+- **Later: an index, not a registry.** Git URLs work without anyone running a service. When names are worth having, an index can be a git repository that maps each name to a URL and a hash, so that `json = "1.2"` works. `zs publish` opens a pull request against it.
+- **First-party packages** (`zsharp/…`, kept building by the compiler's CI): `http` (client and server, on `Net.Tcp` and `Task`), `regex`, `cli` (argument parsing derived from a record), `tls` and `sqlite` (over C libraries), and `raylib`.
+- **Exit tests:**
+  - A diamond (A needs C ≥ 1.1, B needs C ≥ 1.3) resolves to C 1.3 on every machine, and `json` and `json/v2` build in one program.
+  - A project uses `zsharp/sqlite` after nothing more than `zs add`.
+  - A microcontroller project that depends on a Std package fails with an error naming that package.
+  - `examples/echo`, rebuilt on `zsharp/http`, serves HTTP.
+
 ## Ordering rationale
 - **Phase L came before 5 and 6.** Builders, `Task` and optimizations should be built on the language's final shape. Top-level constants also unblocked microcontroller work.
 - **Phase 5 comes before V and 6.** CPS tasks are only cheap once inlining and reuse work, and benchmarking first keeps that claim honest.
-- **Phase V comes before 6,** for phase L's reason: `dyn Trait`, `weak` and `unsafe` are part of the language CEs and `Task` build on.
+- **Phase V came before 6,** for phase L's reason: `dyn Trait`, `weak` and `unsafe` are part of the language CEs and `Task` build on.
 - **Phase 7 comes after 6.** The thread pool backs both `Task.blocking` and the multi-threaded scheduler.
 - **Phase 8 comes after 5 and 7.** Vectorization relies on phase 5's representation and aliasing work, and parallel SIMD kernels are the real-world case.
 - **Phase 10 comes last.** It needs Task's API stable and opaque, and Perceus; DESIGN §6.1 lists what must stay true until then.
-- **The tracks (E, M, T, P) run alongside.** Each phase keeps their tests passing.
+- **The tracks (E, M, T, P, S, K) run alongside.** Each phase keeps their tests passing.
+- **K1 (namespaced dependencies) comes before anything else in S or K:** it's the only change that would break packages people have already written. The first-party packages come after K2, so they can have versions.
 
 ## Done
 
@@ -374,3 +425,16 @@ debugging, before phase 6 builds computation expressions and `Task` on the final
   - C holds a tree and a closure as handles, valgrind-clean (`tests/chandle`); structs past the argument registers (`tests/cimport/abi.zs`).
   - `tests/debug/gdb.sh` prints a string, a record and a union.
   - Kennedy's general case (`tests/units/kennedy.zs`).
+
+### Phase 6: computation expressions and Task ✅
+- **The gate** (DESIGN §6): the spike compiled one built-in `Async` effect by evidence passing with yield bubbling, and CPS, by hand (`bench/effects`, [the report](docs/reports/effects-spike.md)). The effect allocates less (none for an await that completes at once, against CPS's 5; 2 for one that suspends, against 7), but it can't be type-checked without effect rows on function types, polymorphic through generic code, which are phase 10's. So `Task` is CPS, as planned; phase 9's state machines take the allocations away.
+- **Computation expressions** (DESIGN §4, decision 46): `w { }` uses the module `W.Builder`. The parser rewrites `let!`, `do!`, `return`, `return!`, `use`, `for` and an `if` without `else` into its `bind`, `ret`, `using`, `forEach` and `zero`, and the whole body into `delay`, so a cold task runs it when it runs. A form whose function the builder lacks is an error at that form; DESIGN's `Builder` trait couldn't name functions over a type constructor. A line ending in `name {` opens a block, as `->` does. `use x = e` works in plain code too, with the prelude's `Dispose` trait.
+- **Libraries:** `option { }` and `result { }` (`Option.Builder`, `Result.Builder`).
+- **`Task<'a>`** (`lib/std/Threading/Task.zs`): cold, its work given a cancellation and a continuation.
+  - **Structured concurrency:** `Task.both`, `all`, `race`, `timeout`, and `Task.scope` with `Task.start` (a `Promise` gives a started task's result; `Task.wait`, `Task.fulfill`). Child tasks can't outlive what started them.
+  - **Cancellation** flows down through each task's cancellation, and a race cancels its loser: what it waits on is dropped (RC releases the continuation) and what it bound with `use` is disposed, newest first.
+  - **The stack:** a continuation called inside another is counted, and the 64th goes through the event loop, so a run of awaits that complete at once doesn't grow the stack.
+- **Runtime** (`runtime/rt.c`): an epoll event loop (kqueue with macOS, track T) owning Z# closures (each program's IR has the functions it calls them with), with descriptors, a timer heap and a ready queue; `Task.blocking` runs a function on a helper thread that signals the loop through a pipe, and the runtime counts objects atomically only in programs that use it.
+- **I/O and timing:** `Task.sleep`; `Net.Tcp`'s `listen`, `accept`, `connect`, `read`, `write` and `writeText` over non-blocking sockets (`Task.waitFor` for others); `File.readAllTextAsync` and `writeAllTextAsync` on the helper thread.
+- **Exit test:** the echo server (`examples/echo`) holding 10,000 connections, each sending a line a second and checking its echo: 20,884 KB at every minute from the first to the 34th, when that run was stopped; the full hour of `bench/echo/soak.sh` is still to run. Under valgrind with 10,000 connections for 30 s (288,928 round trips), stopped by a client's `quit` with the connections still open: exit 0, no errors or leaks. `./test.sh` runs it with 1,000 connections (under valgrind with `--valgrind`): `tests/task/echo.sh`.
+- **Tests:** `tests/ce.zs`, `tests/err_builder.zs`, `tests/task/basics.zs` (timers, both, all, race and timeout cancelling with `use`, scope, `Task.blocking`, async files).

@@ -1,0 +1,17 @@
+b after 10 ms
+a after 30 ms
+both: 30 10
+y after 5 ms
+z after 10 ms
+x after 20 ms
+all: [20; 5; 10]
+fast after 10 ms
+slow's resource closed
+race: 10
+slow's resource closed
+timeout: None
+other after 5 ms
+child after 15 ms
+scope: 30
+blocking: 42
+file: Ok written by a task

@@ -28,11 +28,12 @@ let main () =
 |---|---|
 | Data | records with defaults, unions, pattern matching with exhaustiveness checks, active patterns, units of measure |
 | Functions | closures, pipelines whose lambdas take their types from the call, custom operators, members with named and optional arguments |
-| Types | traits for operators, equality, ordering and printing; derived for records and unions, or written as derives in Z# |
-| Values | copy-on-write arrays, persistent `Map`/`Set`, `HashMap`, checked integer overflow |
+| Types | traits for operators, equality, ordering and printing; derived for records and unions, or written as derives in Z#; `dyn` values |
+| Concurrency | `task { }` on an event loop: timers, TCP sockets, `both`/`all`/`race`, scopes, cancellation that disposes `use` values; `option { }` and `result { }` |
+| Values | copy-on-write arrays, persistent `Map`/`Set`, `HashMap`, checked integer overflow, weak references, arenas |
 | Performance | within 1.21× of C on the [host benchmarks](docs/reports/host.md), with C's peak memory, except `fib` at 2.0×, all overflow checks (C with the same checks takes 1.8×); [as fast as C](docs/reports/microcontrollers.md) on Cortex-M compute code |
 | Projects | `zs.toml` with path and git dependencies, `zs test`, `zs fmt`, `zs doc` |
-| C | `extern`, `import c`, structs by value (System V and AAPCS64), callbacks, `[<Export>]` libraries |
+| C | `extern`, `import c`, structs by value (System V and AAPCS64), callbacks, C function pointers, raw pointers in `unsafe`, `[<Export>]` static and shared libraries holding Z# objects as handles |
 | Debugging and targets | DWARF debug info for gdb; cross-compiling with `--target` (`aarch64-linux-musl`, or `cortex-m4` and `cortex-m0plus` bare metal) |
 | Editors | Zed extension, `zs lsp` for any editor, `zs mcp` for AI agents |
 

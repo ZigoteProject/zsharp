@@ -48,6 +48,12 @@ trait Hash<'a> =
   /// The value's hash code.
   abstract hash : 'a -> int
 
+/// What `use x = e` gives back when its scope ends (and, in a task, when the task is cancelled):
+/// a socket closed, a file shut, a handle released.
+trait Dispose<'a> =
+  /// Releases what the value holds.
+  abstract dispose : 'a -> unit
+
 /// What `match Shape.kind with` distinguishes inside a `derive`.
 type ShapeKind =
   /// The type being derived for is a record.

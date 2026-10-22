@@ -158,7 +158,7 @@ let measDiv (a: Ty) (b: Ty) = TMeas(normMeas (TMeas([], [ a, 1; b, -1 ])))
 
 /// The library's namespaces, open in every module at the lowest precedence: `List.map` is
 /// Collections.List.map and `File.exists` IO.File.exists, unless the program defines its own.
-let autoOpens = [ "Collections"; "Text"; "IO"; "Diagnostics" ]
+let autoOpens = [ "Collections"; "Text"; "IO"; "Diagnostics"; "Threading"; "Net" ]
 
 /// A name as programs write it: without an auto-opened namespace (Collections.Map -> Map).
 let shortName (q: string) =

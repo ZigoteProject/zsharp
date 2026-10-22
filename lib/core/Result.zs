@@ -40,3 +40,36 @@ let toOption r =
   match r with
   | Ok x -> Some x
   | Error _ -> None
+
+/// The `result { }` builder: `let! x = r` stops with the `Error` when `r` is one, and
+/// `return x` is `Ok x`.
+module Builder =
+  /// `let!`: the rest with the value of `Ok`, or the `Error`.
+  let bind r f =
+    match r with
+    | Ok x -> f x
+    | Error e -> Error e
+
+  /// `return x`: `Ok x`.
+  let ret x = Ok x
+
+  /// An `if` without `else`, or a body that ends in a statement: `Ok ()`.
+  let zero () = Ok ()
+
+  /// The body, run now.
+  let delay f = f ()
+
+  /// `use x = e`: the rest with `x`, which is disposed after it.
+  let using x f =
+    let r = f x
+    dispose x
+    r
+
+  /// `for x in xs do`: the body for each element, until one gives an `Error`.
+  let rec forEach xs f =
+    match xs with
+    | [] -> Ok ()
+    | x :: rest ->
+      match f x with
+      | Ok () -> forEach rest f
+      | Error e -> Error e

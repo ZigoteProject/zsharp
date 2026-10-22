@@ -53,6 +53,12 @@ if [ -z "$target" ]; then
 bin/zs build tests/json.zs -o "$tmp/time-exe" --time 2>"$tmp/time.log" >/dev/null
 echo "time tests/json.zs: $(grep -E '^(parse|total)' "$tmp/time.log" | tr -s ' ' | tr '\n' ';' | sed 's/;$//')"
 
+# tasks over sockets: the echo server holding 1,000 connections, stopped by a client (under
+# valgrind with --valgrind)
+vg=(); [ $valgrind = 1 ] && vg=(--valgrind)
+if diff <(tests/task/echo.sh "${vg[@]}" 2>&1) tests/task/echo.expected >"$tmp/echo.diff"; then echo "ok   tests/task/echo.sh (an echo server, 1,000 connections)"
+else echo "FAIL tests/task/echo.sh"; cat "$tmp/echo.diff"; fail=1; fi
+
 # the checked library and modules, cached between builds: the same program from the cache
 if diff <(tests/cache.sh 2>&1) tests/cache.expected >"$tmp/cache.diff"; then echo "ok   tests/cache.sh (checked library, modules and compiled modules cached)"
 else echo "FAIL tests/cache.sh"; cat "$tmp/cache.diff"; fail=1; fi

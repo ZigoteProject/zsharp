@@ -20,6 +20,7 @@ its exact output.
 10. [Tools](10-tools.md): the `zs` command line, formatting, docs, debugging, Zed and other editors
 11. [Microcontrollers](11-microcontrollers.md): bare-metal Cortex-M, hardware registers, fast and small code
 12. [Memory](12-memory.md): reference counting, cycles and weak references, arenas
+13. [Computation expressions and tasks](13-tasks.md): `option { }`, `result { }`, `task { }`, running tasks at once, cancellation, sockets
 
 **Reference:**
 - [The library reference](../reference/README.md), generated from its doc comments by `zs doc`.

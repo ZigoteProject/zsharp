@@ -1,0 +1,196 @@
+# Threading.Task
+
+Tasks: work that may wait (for input, a timer, other tasks) without blocking the program,
+run by one event loop. `task { }` writes one, and `Task.run` runs it from `main`.
+
+## Types
+
+### `Cancel`
+
+```zsharp
+type Cancel
+```
+
+A task's cancellation: whether it has been cancelled, and what to do then (stop waiting,
+dispose what `use` bound). A task started by `both`, `all`, `race` or `Task.start` has its
+own, under its parent's, so cancelling a task cancels what it started.
+
+### `Task`
+
+```zsharp
+type Task<'a>
+```
+
+Work that may wait (for input, a timer, other tasks) and then gives an `'a`. A task is cold:
+making one does nothing, and running it twice does the work twice.
+
+#### `Task`
+
+```zsharp
+| Task of (Cancel -> ('a -> unit) -> unit)
+```
+
+The work, given its cancellation and what to do with its result.
+
+### `Scope`
+
+```zsharp
+type Scope
+```
+
+The tasks started in a `Task.scope` with `Task.start`: they can't outlive it.
+
+### `Promise`
+
+```zsharp
+type Promise<'a>
+```
+
+A result to come: a task's started with `Task.start`, or one given with `Task.fulfill`.
+`Task.wait` waits for it.
+
+## Functions
+
+### `Task.ret`
+
+```zsharp
+Task.ret : 'a -> Task<'a>
+```
+
+A task that gives `x` at once.
+
+### `Task.bind`
+
+```zsharp
+Task.bind : Task<'a> -> ('a -> Task<'b>) -> Task<'b>
+```
+
+The task `t`, then the task `f` makes from its result: what `let!` is.
+
+### `Task.map`
+
+```zsharp
+Task.map : ('a -> 'b) -> Task<'a> -> Task<'b>
+```
+
+The task's result with `f` applied.
+
+### `Task.run`
+
+```zsharp
+Task.run : Task<'a> -> 'a
+```
+
+Runs the task on the event loop until it has finished, and gives its result: how `main`
+starts tasks (inside one, `let!` waits for another).
+
+### `Task.sleep`
+
+```zsharp
+Task.sleep : int -> Task<unit>
+```
+
+Waits `ms` milliseconds.
+
+### `Task.waitFor`
+
+```zsharp
+Task.waitFor : int -> bool -> Task<unit>
+```
+
+Waits until the file descriptor can be read (or, with write, written) without blocking:
+for libraries over non-blocking system calls, as `Tcp` is.
+
+### `Task.both`
+
+```zsharp
+Task.both : Task<'a> -> Task<'b> -> Task<'a * 'b>
+```
+
+Runs both tasks at once, and gives both results once both have finished.
+
+### `Task.all`
+
+```zsharp
+Task.all : list<Task<'a>> -> Task<list<'a>>
+```
+
+Runs the tasks at once, and gives their results, in order, once all have finished.
+
+### `Task.race`
+
+```zsharp
+Task.race : Task<'a> -> Task<'a> -> Task<'a>
+```
+
+Runs both tasks at once, and gives the result of the first to finish. The other is
+cancelled: what it waits for is dropped, and what it bound with `use` disposed.
+
+### `Task.timeout`
+
+```zsharp
+Task.timeout : int -> Task<'a> -> Task<option<'a>>
+```
+
+The task's result, or `None` when it takes longer than `ms` milliseconds (it's cancelled then).
+
+### `Task.promise`
+
+```zsharp
+Task.promise : unit -> Promise<'a>
+```
+
+A promise with no result yet: `Task.fulfill` gives it one.
+
+### `Task.fulfill`
+
+```zsharp
+Task.fulfill : Promise<'a> -> 'a -> unit
+```
+
+Gives the promise its result (only the first time), and the tasks waiting for it go on.
+
+### `Task.wait`
+
+```zsharp
+Task.wait : Promise<'a> -> Task<'a>
+```
+
+Waits for the promise's result.
+
+### `Task.scope`
+
+```zsharp
+Task.scope : (Scope -> Task<'a>) -> Task<'a>
+```
+
+Runs `body` with a scope for tasks to run alongside it (`Task.start`). The scope finishes
+once its body has and every task started in it has finished or been cancelled.
+
+### `Task.start`
+
+```zsharp
+Task.start : Scope -> Task<'a> -> Promise<'a>
+```
+
+Starts `t` in the scope now, running alongside what started it: the promise gives its
+result (`Task.wait`). The scope doesn't finish before it does.
+
+### `Task.cancel`
+
+```zsharp
+Task.cancel : Scope -> unit
+```
+
+Cancels the tasks started in the scope (and what they started).
+
+### `Task.blocking`
+
+```zsharp
+Task.blocking : (unit -> 'a) -> Task<'a>
+```
+
+Runs `f` on a helper thread, for a C call that blocks (a database's, say) while the event
+loop goes on. Until phase 7 can check it, `f` must not share reference-counted values with
+the rest of the program while it runs: give it copies.
+

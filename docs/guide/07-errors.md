@@ -37,6 +37,7 @@ error: negative age: -1
 **Working with results without matching:**
 - `Result.map`, `Result.bind`, `Result.mapError` and `Result.defaultValue` transform or unwrap a result.
 - `Option.toResult` turns a `None` into an error.
+- **`result { }`:** a block whose `let!` stops at the first error, the way `?` stops a function ([Computation expressions](13-tasks.md#computation-expressions)); `option { }` does the same for `None`.
 
 ## Panics
 

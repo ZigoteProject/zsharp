@@ -59,6 +59,39 @@ let toResult err o =
   | Some x -> Ok x
   | None -> Error err
 
+/// The `option { }` builder: `let! x = o` stops with `None` when `o` is `None`, and `return x`
+/// is `Some x`.
+module Builder =
+  /// `let!`: the rest with the value of `Some`, or `None`.
+  let bind o f =
+    match o with
+    | Some x -> f x
+    | None -> None
+
+  /// `return x`: `Some x`.
+  let ret x = Some x
+
+  /// An `if` without `else`, or a body that ends in a statement: `Some ()`.
+  let zero () = Some ()
+
+  /// The body, run now.
+  let delay f = f ()
+
+  /// `use x = e`: the rest with `x`, which is disposed after it.
+  let using x f =
+    let r = f x
+    dispose x
+    r
+
+  /// `for x in xs do`: the body for each element, until one gives `None`.
+  let rec forEach xs f =
+    match xs with
+    | [] -> Some ()
+    | x :: rest ->
+      match f x with
+      | Some () -> forEach rest f
+      | None -> None
+
 type option<'a> with
   /// Whether the option holds a value.
   member o.IsSome = Option.isSome o

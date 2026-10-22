@@ -45,6 +45,22 @@ File.appendAllText : string -> string -> result<unit, string>
 
 Adds `text` to the end of the file (creating it if needed).
 
+### `File.readAllTextAsync`
+
+```zsharp
+File.readAllTextAsync : string -> Task<result<string, string>>
+```
+
+The whole file as a string, read on `Task.blocking`'s helper thread so tasks go on meanwhile.
+
+### `File.writeAllTextAsync`
+
+```zsharp
+File.writeAllTextAsync : string -> string -> Task<result<unit, string>>
+```
+
+Replaces the file's contents with `text`, on `Task.blocking`'s helper thread.
+
 ### `File.delete`
 
 ```zsharp

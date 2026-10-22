@@ -72,7 +72,7 @@ mug 2 Emma 9
 **Three layers:**
 - **Prelude:** the names every program has without qualification: the operator traits (`Eq`, `Ord`, `Show`, …), `option` and `result`, and functions such as `print`, `ignore`, `fst` and `min`.
 - **Core:** what needs no operating system, so every target has it, microcontrollers included: lists, arrays, maps, sets, strings, characters, options and results.
-- **Std:** what needs an operating system: the console, the environment, files, directories, paths, processes and timing. On a microcontroller, using it is a compile error that says so.
+- **Std:** what needs an operating system: the console, the environment, files, directories, paths, processes, timing, tasks and TCP. On a microcontroller, using it is a compile error that says so.
 
 **Namespaces:** modules are grouped in namespaces, as in .NET.
 
@@ -82,7 +82,9 @@ mug 2 Emma 9
 | `Text` | `String`, `Char` | |
 | `IO` | | `File`, `Directory`, `Path` |
 | `Diagnostics` | | `Process`, `Stopwatch` |
-| none | `Option`, `Result`, `Math`, `Int`, `Runtime`, `Mmio` | `Console`, `Environment` |
+| `Threading` | | `Task` |
+| `Net` | | `Tcp` |
+| none | `Option`, `Result`, `Math`, `Int`, `Runtime`, `Mmio`, `Ptr`, `Weak`, `Arena` | `Console`, `Environment` |
 
 - **Opened everywhere:** these namespaces are open in every module, so `List.map` is `Collections.List.map` and `File.readAllText` is `IO.File.readAllText`.
 - **Your names come first:** the library's names have the lowest precedence. A program's own `List.top` or `Text.wrap` is found before them, and `List.map` still finds the library's.

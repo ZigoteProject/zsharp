@@ -1,0 +1,1 @@
+tests/err_builder.zs:10:7: error: counter { } needs Counter.Builder.bind, for let! and do!

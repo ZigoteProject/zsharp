@@ -393,6 +393,10 @@ and private lexWith (src: string) (keepComments: bool) : Token[] =
                     match toks[toks.Count - 1].tok with
                     | KSym "->"
                     | KKw("then" | "else" | "do") -> true
+                    // `task {` ending a line: a computation expression's body, a block
+                    | KSym "{" when toks.Count > 1 && (match toks[toks.Count - 2].tok with
+                                                       | KId _ -> true
+                                                       | _ -> false) -> true
                     | _ -> false
 
                 // a block inside the bracket, as at the top level: (fun x -> and a deeper line
@@ -1115,7 +1119,23 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         let si = pos.Value
         let stmt (ln, e) = mark si (At(ln, e))
 
-        if peek () = KKw "let" then
+        if peek () = KId "use" && (match peek2 () with
+                                   | KId _ -> true
+                                   | _ -> false) then
+            // use x = e: x is disposed (Dispose.dispose) after the rest of the block
+            advance ()
+            let xi = pos.Value
+            let x = ident ()
+            expect (KSym "=") "'='"
+            let v = block ()
+
+            if peek () <> KNewline then
+                fail ln "'use' must be followed by the rest of the block on the next line"
+
+            advance ()
+            let after = seq ()
+            stmt(ln, Let(mark xi (PIdent(x, None)), None, v, Let(PIdent("$use", None), None, after, Seq(Call("Dispose.dispose", [ Var x ]), Var "$use"))))
+        elif peek () = KKw "let" then
             advance ()
             let isRec = peek () = KKw "rec"
 
@@ -1562,6 +1582,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         | KFloat f -> measured (FloatLit f)
         | KStr s -> StrLit s
         | KInterp parts -> interpolate ln parts
+        | KId x when ceAhead () -> computation ln x
         | KId x -> mark (pos.Value - 1) (Var x)
         | KKw "true" -> BoolLit true
         | KKw "false" -> BoolLit false
@@ -1680,6 +1701,221 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
             let e = expr ()
             expect (KKw "with") "'with'"
             Update(e, fields ())
+
+    /// After a name, at `{`: whether a computation expression's body follows rather than a
+    /// record: an indented block, or a statement only a computation expression starts with.
+    and ceAhead () =
+        isSym "{"
+        && (match toks[min (pos.Value + 1) (toks.Length - 1)].tok with
+            | KIndent
+            | KKw("let" | "do" | "for" | "if" | "match" | "while")
+            | KId("return" | "use") -> true
+            | _ -> false)
+
+    /// `w { … }`, a computation expression (DESIGN §4): its statements become calls of the
+    /// builder module's functions (W.Builder: task { } uses Task.Builder): `let!` and `do!`
+    /// bind, `return` ret, `use` using, `for` forEach, and an `if` without `else`, or a body
+    /// ending in a plain statement, zero. `return!` is the computation itself. The whole body
+    /// is given to delay as a function, so a cold computation (a task) runs it when it runs.
+    and computation (ln: int) (w: string) =
+        let builder = string (Char.ToUpper w[0]) + w.Substring 1 + ".Builder."
+        advance () // {
+
+        let body =
+            if peek () = KIndent then
+                advance ()
+                let e = ceStmts builder true
+                expect KDedent "end of block"
+                e
+            else
+                ceStmts builder false
+
+        expect (KSym "}") "'}'"
+        At(ln, Call(builder + "delay", [ Lambda([ PUnit, None ], body) ]))
+
+    /// A block in a computation expression: after `then`, `else`, `do` or `->`.
+    and ceBlock (builder: string) =
+        if peek () = KIndent then
+            advance ()
+            let e = ceStmts builder true
+            expect KDedent "end of block"
+            e
+        else
+            ceStmts builder false
+
+    /// A computation expression's statements: with many, every statement of the block (one
+    /// per line), else one (a block on the line it starts).
+    and ceStmts (builder: string) (many: bool) : Expr =
+        let ln = line ()
+        let si = pos.Value
+        let stmt e = mark si (At(ln, e))
+        let call f args = Call(builder + f, args)
+        let unitPat = PUnit, None
+
+        // `!` right after the keyword: let!, do!, return!
+        let bang () =
+            if isSym "!" && toks[pos.Value].adj then
+                advance ()
+                true
+            else
+                false
+
+        // the statements after this one, if any
+        let next () =
+            if many && peek () = KNewline then
+                advance ()
+                Some(ceStmts builder true)
+            else
+                None
+
+        let needNext what =
+            match next () with
+            | Some r -> r
+            | None -> fail ln (sprintf "a computation expression can't end with %s: return something after it" what)
+
+        // a statement giving the builder's unit, then the rest
+        let thenRest (e: Expr) =
+            match next () with
+            | Some rest -> stmt (call "bind" [ e; Lambda([ unitPat ], rest) ])
+            | None -> stmt e
+
+        match peek () with
+        | KKw "let" when (match peek2 () with
+                          | KSym "!" -> true
+                          | _ -> false) ->
+            advance ()
+            advance ()
+            let p = pattern ()
+            expect (KSym "=") "'='"
+            let v = block ()
+            stmt (call "bind" [ v; Lambda([ p, None ], needNext "let!") ])
+        | KKw "do" when peek2 () = KSym "!" ->
+            advance ()
+            advance ()
+            let v = block ()
+
+            let rest =
+                match next () with
+                | Some r -> r
+                | None -> call "ret" [ UnitLit ]
+
+            stmt (call "bind" [ v; Lambda([ unitPat ], rest) ])
+        | KId "return" ->
+            advance ()
+            let e = if bang () then block () else call "ret" [ block () ]
+
+            if many && peek () = KNewline then
+                fail (line ()) "nothing can follow return in a computation expression"
+
+            stmt e
+        | KId "use" when (match peek2 () with
+                          | KId _ -> true
+                          | _ -> false) ->
+            advance ()
+            let xi = pos.Value
+            let x = ident ()
+            expect (KSym "=") "'='"
+            let v = block ()
+
+            let rest =
+                match next () with
+                | Some r -> r
+                | None -> call "zero" [ UnitLit ]
+
+            stmt (call "using" [ v; Lambda([ mark xi (PIdent(x, None)), None ], rest) ])
+        | KKw "for" when (
+            // for x in xs do: the builder's forEach; a range (for i in a .. b) is a plain loop
+            let save = pos.Value
+            advance ()
+            pattern () |> ignore
+            let ok = peek () = KKw "in" && (advance (); pipe () |> ignore; peek () = KKw "do")
+            pos.Value <- save
+            ok) ->
+            advance ()
+            let p = pattern ()
+            expect (KKw "in") "'in'"
+            let xs = pipe ()
+            expect (KKw "do") "'do'"
+            let body = ceBlock builder
+            thenRest (call "forEach" [ xs; Lambda([ p, None ], body) ])
+        | KKw "if" ->
+            advance ()
+            let c = expr ()
+            expect (KKw "then") "'then'"
+            let t = ceBlock builder
+
+            if peek () = KNewline && peek2 () = KKw "else" then
+                advance ()
+
+            let e =
+                if peek () = KKw "else" then
+                    advance ()
+                    ceBlock builder
+                else
+                    call "zero" [ UnitLit ]
+
+            thenRest (If(c, t, Some e))
+        | KKw "match" ->
+            advance ()
+            let s = expr ()
+            expect (KKw "with") "'with'"
+            let indented = peek () = KIndent
+
+            if indented then
+                advance ()
+
+            nextBar () |> ignore
+            let cases = ResizeArray()
+            let mutable go = true
+
+            while go do
+                let p = pattern ()
+
+                let guard =
+                    if peek () = KKw "when" then
+                        advance ()
+                        Some(expr ())
+                    else
+                        None
+
+                expect (KSym "->") "'->'"
+                cases.Add(p, guard, ceBlock builder)
+                go <- nextBar ()
+
+            if indented then
+                expect KDedent "end of block"
+
+            thenRest (Match(s, List.ofSeq cases))
+        | KKw "let" ->
+            // a plain let: a value, or a local function
+            advance ()
+            let isRec = peek () = KKw "rec"
+
+            if isRec then
+                advance ()
+
+            match peek (), peek2 () with
+            | KId f, nxt when (isRec || Char.IsLower f[0] || f[0] = '_') && f <> "_" && startsParam nxt ->
+                let fi = pos.Value
+                advance ()
+                let ps = parameters ()
+                let ret = optTy ()
+                expect (KSym "=") "'='"
+                let body = block ()
+                stmt (mark fi (LetFun(f, isRec, ps, ret, body, needNext "let")))
+            | _ ->
+                let p = pattern ()
+                let ann = optTy ()
+                expect (KSym "=") "'='"
+                let v = block ()
+                stmt (Let(p, ann, v, needNext "let"))
+        | _ ->
+            // a plain statement (of type unit)
+            let e = assignment (expr ())
+
+            match next () with
+            | Some rest -> stmt (Seq(e, rest))
+            | None -> stmt (Seq(e, call "zero" [ UnitLit ]))
 
     let typeBody () =
         if peek () = KKw "member" || peek () = KKw "static" then

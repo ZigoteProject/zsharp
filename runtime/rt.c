@@ -23,6 +23,14 @@ typedef struct {
 
 static int64_t live; // objects currently allocated, reported at exit when ZS_LEAKCHECK is set
 
+// counting objects: atomic when the program runs code on Task.blocking's helper thread (the
+// driver compiles this file with ZS_THREADS then), plain otherwise
+#ifdef ZS_THREADS
+#define COUNT(x, d) __atomic_fetch_add(&(x), (d), __ATOMIC_RELAXED)
+#else
+#define COUNT(x, d) ((x) += (d))
+#endif
+
 // A panic stops the program at once (no cleanup) with exit status 134, like abort() but without
 // a core dump, so system crash reporters don't flag every panic. ZS_ABORT=1 aborts for real
 // (a core file for a debugger).
@@ -60,9 +68,9 @@ static int64_t allocations, mallocs;
 void *zs_alloc(zs_int size) {
     void *p = malloc((size_t)size);
     if (!p) zs_panic_c("out of memory");
-    live++;
-    allocations++;
-    mallocs++;
+    COUNT(live, 1);
+    COUNT(allocations, 1);
+    COUNT(mallocs, 1);
     return p;
 }
 
@@ -92,7 +100,7 @@ int64_t zs_ticks(void) {
 }
 
 void zs_free(void *p) {
-    live--;
+    COUNT(live, -1);
     free(p);
 }
 
@@ -306,8 +314,8 @@ void *zs_alloc_checked(zs_int size) {
     void *p = a->next;
     a->next += n;
     a->live++;
-    live++;
-    allocations++;
+    COUNT(live, 1);
+    COUNT(allocations, 1);
     return p;
 }
 
@@ -319,7 +327,7 @@ void zs_free_checked(void *p) {
         zs_free(p);
         return;
     }
-    live--;
+    COUNT(live, -1);
     if (--a->live == 0 && !a->open) arena_release(a);
 }
 
@@ -553,7 +561,7 @@ void zs_println(zs_str *s) {
 extern char **environ;
 static int g_argc;
 static char **g_argv;
-static zs_str *io_error;
+static _Thread_local zs_str *io_error; // per thread: Task.blocking's helper reads files too
 
 void zs_set_args(int32_t argc, char **argv) {
     g_argc = argc;
@@ -678,7 +686,7 @@ zs_str *zs_dir_list(zs_str *path) {
 }
 
 // Runs prog with NUL-separated args (no shell), stdout captured, stderr passed through.
-static int64_t process_code;
+static _Thread_local int64_t process_code;
 
 zs_int zs_process_code(void) { return process_code; }
 
@@ -761,3 +769,461 @@ zs_str *zs_process_run(zs_str *prog, zs_str *args) {
 
 // a test build's argument: which test to run
 zs_int zs_test_index(void) { return g_argc > 1 ? strtoll(g_argv[1], NULL, 10) : -1; }
+
+// ---- the event loop (Task.run): callbacks waiting for file descriptors, timers, a queue of
+// callbacks ready to run, and jobs on a helper thread (Task.blocking). A callback is a Z#
+// closure taking unit, which the loop owns: zs_clo_run calls it and gives up the loop's
+// reference, zs_clo_drop just gives it up (both are in each program's IR). Single-threaded:
+// only the helper thread's job runs elsewhere.
+#include <fcntl.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <pthread.h>
+#include <sys/epoll.h>
+#include <sys/socket.h>
+
+void zs_clo_run(void *c);
+void zs_clo_call(void *c);
+void zs_clo_drop(void *c);
+
+typedef struct {
+    void *read, *write; // the callbacks waiting for the descriptor to be readable, writable
+    uint32_t armed;     // the events epoll watches for it
+} fd_wait;
+
+typedef struct {
+    int64_t at; // CLOCK_MONOTONIC nanoseconds
+    zs_int id;
+    void *cb;
+    size_t pos; // in the heap
+} zs_timer;
+
+typedef struct job {
+    void *work, *done;
+    struct job *next;
+} job;
+
+static struct {
+    bool stepping; // inside zs_loop_step: a callback can't run Task.run itself
+    int ep;        // the epoll instance, -1 until it's needed
+    fd_wait *fds;  // by descriptor
+    size_t nfds;   // fds' length
+    size_t waits;  // callbacks waiting for descriptors
+    void **queue;  // ready callbacks, a ring
+    size_t qhead, qlen, qcap;
+    zs_timer **heap; // the timers, a min-heap by time
+    size_t ntimers, heapcap;
+    ptrtab timers; // id -> timer, to cancel one
+    zs_int next_timer;
+    int depth; // continuations called inside others (zs_loop_enter)
+    // Task.blocking: a helper thread runs the jobs, and writes a byte to `wake` for each done
+    bool helping;
+    int wake[2];
+    pthread_t helper;
+    pthread_mutex_t mu;
+    pthread_cond_t cv;
+    job *todo, *todo_last, *done; // under mu
+    size_t jobs;                  // not finished yet
+} L = {.ep = -1};
+
+static int64_t now_ns(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (int64_t)t.tv_sec * 1000000000 + t.tv_nsec;
+}
+
+static void ensure_ep(void) {
+    if (L.ep < 0 && (L.ep = epoll_create1(EPOLL_CLOEXEC)) < 0) zs_panic_c("epoll_create1 failed");
+}
+
+void zs_loop_post(void *cb) {
+    if (L.qlen == L.qcap) {
+        size_t cap = L.qcap ? 2 * L.qcap : 64;
+        void **q = malloc(cap * sizeof(void *));
+        if (!q) zs_panic_c("out of memory");
+        for (size_t i = 0; i < L.qlen; i++) q[i] = L.queue[(L.qhead + i) % L.qcap];
+        free(L.queue);
+        L.queue = q;
+        L.qhead = 0;
+        L.qcap = cap;
+    }
+    L.queue[(L.qhead + L.qlen++) % L.qcap] = cb;
+}
+
+static void *queue_pop(void) {
+    void *cb = L.queue[L.qhead];
+    L.qhead = (L.qhead + 1) % L.qcap;
+    L.qlen--;
+    return cb;
+}
+
+// a continuation may be called inside the current one (true: the caller calls zs_loop_leave
+// after it), or should go through the queue, so a run of awaits that complete at once doesn't
+// grow the stack without end
+bool zs_loop_enter(void) {
+    if (L.depth >= 64) return false;
+    L.depth++;
+    return true;
+}
+
+void zs_loop_leave(void) { L.depth--; }
+
+// the events epoll watches for fd: those it has callbacks for
+static void fd_arm(zs_int fd) {
+    fd_wait *w = &L.fds[fd];
+    uint32_t want = (w->read ? EPOLLIN : 0) | (w->write ? EPOLLOUT : 0);
+    if (want == w->armed) return;
+    struct epoll_event ev = {.events = want, .data.fd = (int)fd};
+    int op = !w->armed ? EPOLL_CTL_ADD : !want ? EPOLL_CTL_DEL : EPOLL_CTL_MOD;
+    if (epoll_ctl(L.ep, op, (int)fd, &ev) != 0 && op != EPOLL_CTL_DEL) zs_panic_c("epoll_ctl failed (a descriptor that isn't a socket or pipe?)");
+    w->armed = want;
+}
+
+// cb runs once fd is readable (or writable)
+void zs_loop_wait(zs_int fd, bool write, void *cb) {
+    ensure_ep();
+    if ((size_t)fd >= L.nfds) {
+        size_t n = L.nfds ? L.nfds : 64;
+        while (n <= (size_t)fd) n *= 2;
+        fd_wait *f = realloc(L.fds, n * sizeof(fd_wait));
+        if (!f) zs_panic_c("out of memory");
+        memset(f + L.nfds, 0, (n - L.nfds) * sizeof(fd_wait));
+        L.fds = f;
+        L.nfds = n;
+    }
+    void **slot = write ? &L.fds[fd].write : &L.fds[fd].read;
+    if (*slot) zs_panic_c("two tasks wait for the same descriptor at once");
+    *slot = cb;
+    L.waits++;
+    fd_arm(fd);
+}
+
+// the callback waiting for fd goes, uncalled (its task was cancelled)
+void zs_loop_unwait(zs_int fd, bool write) {
+    if ((size_t)fd >= L.nfds) return;
+    void **slot = write ? &L.fds[fd].write : &L.fds[fd].read;
+    void *cb = *slot;
+    if (!cb) return;
+    *slot = NULL;
+    L.waits--;
+    fd_arm(fd);
+    zs_clo_drop(cb);
+}
+
+static void heap_set(size_t i, zs_timer *t) {
+    L.heap[i] = t;
+    t->pos = i;
+}
+
+static void heap_up(size_t i) {
+    zs_timer *t = L.heap[i];
+    while (i > 0 && L.heap[(i - 1) / 2]->at > t->at) {
+        heap_set(i, L.heap[(i - 1) / 2]);
+        i = (i - 1) / 2;
+    }
+    heap_set(i, t);
+}
+
+static void heap_down(size_t i) {
+    zs_timer *t = L.heap[i];
+    for (;;) {
+        size_t c = 2 * i + 1;
+        if (c >= L.ntimers) break;
+        if (c + 1 < L.ntimers && L.heap[c + 1]->at < L.heap[c]->at) c++;
+        if (L.heap[c]->at >= t->at) break;
+        heap_set(i, L.heap[c]);
+        i = c;
+    }
+    heap_set(i, t);
+}
+
+static void heap_remove(zs_timer *t) {
+    size_t i = t->pos;
+    zs_timer *last = L.heap[--L.ntimers];
+    if (i < L.ntimers) {
+        heap_set(i, last);
+        heap_up(i);
+        heap_down(last->pos);
+    }
+}
+
+// cb runs in ms milliseconds; the result names the timer for zs_loop_untimer
+zs_int zs_loop_timer(zs_int ms, void *cb) {
+    if (L.ntimers == L.heapcap) {
+        L.heapcap = L.heapcap ? 2 * L.heapcap : 64;
+        zs_timer **h = realloc(L.heap, L.heapcap * sizeof(zs_timer *));
+        if (!h) zs_panic_c("out of memory");
+        L.heap = h;
+    }
+    zs_timer *t = malloc(sizeof(zs_timer));
+    if (!t) zs_panic_c("out of memory");
+    *t = (zs_timer){now_ns() + (ms > 0 ? ms : 0) * 1000000, ++L.next_timer, cb, 0};
+    L.heap[L.ntimers++] = t;
+    heap_up(L.ntimers - 1);
+    tab_put(&L.timers, (void *)(uintptr_t)t->id, t);
+    return t->id;
+}
+
+// the timer goes, its callback uncalled (its task was cancelled)
+void zs_loop_untimer(zs_int id) {
+    zs_timer *t = tab_remove(&L.timers, (void *)(uintptr_t)id);
+    if (!t) return;
+    heap_remove(t);
+    void *cb = t->cb;
+    free(t);
+    zs_clo_drop(cb);
+}
+
+static void *helper_main(void *unused) {
+    (void)unused;
+    pthread_mutex_lock(&L.mu);
+    for (;;) {
+        while (!L.todo && L.helping) pthread_cond_wait(&L.cv, &L.mu);
+        if (!L.todo) break;
+        job *j = L.todo;
+        L.todo = j->next;
+        pthread_mutex_unlock(&L.mu);
+        zs_clo_call(j->work);
+        pthread_mutex_lock(&L.mu);
+        j->next = L.done;
+        L.done = j;
+        ssize_t w = write(L.wake[1], "x", 1);
+        (void)w;
+    }
+    pthread_mutex_unlock(&L.mu);
+    return NULL;
+}
+
+// Task.blocking: work runs on the helper thread, then done runs here
+void zs_loop_blocking(void *work, void *done) {
+    if (!L.helping) {
+        ensure_ep();
+        if (pipe2(L.wake, O_CLOEXEC | O_NONBLOCK) != 0) zs_panic_c("pipe2 failed");
+        struct epoll_event ev = {.events = EPOLLIN, .data.fd = L.wake[0]};
+        epoll_ctl(L.ep, EPOLL_CTL_ADD, L.wake[0], &ev);
+        pthread_mutex_init(&L.mu, NULL);
+        pthread_cond_init(&L.cv, NULL);
+        L.helping = true;
+        if (pthread_create(&L.helper, NULL, helper_main, NULL) != 0) zs_panic_c("pthread_create failed");
+    }
+    job *j = malloc(sizeof(job));
+    if (!j) zs_panic_c("out of memory");
+    *j = (job){work, done, NULL};
+    pthread_mutex_lock(&L.mu);
+    if (L.todo) L.todo_last->next = j;
+    else L.todo = j;
+    L.todo_last = j;
+    pthread_cond_signal(&L.cv);
+    pthread_mutex_unlock(&L.mu);
+    L.jobs++;
+}
+
+// the jobs the helper has finished: their work closures go, and their callbacks run in order
+static void jobs_done(void) {
+    char buf[64];
+    while (read(L.wake[0], buf, sizeof buf) > 0) {}
+    pthread_mutex_lock(&L.mu);
+    job *j = L.done, *order = NULL;
+    L.done = NULL;
+    pthread_mutex_unlock(&L.mu);
+    for (job *next; j; j = next) { // newest first: reversed
+        next = j->next;
+        j->next = order;
+        order = j;
+    }
+    for (job *next; order; order = next) {
+        next = order->next;
+        zs_clo_drop(order->work);
+        zs_loop_post(order->done);
+        free(order);
+        L.jobs--;
+    }
+}
+
+// Runs what's ready, then waits once for a descriptor, a timer or a job. False when nothing is
+// left that could happen (Task.run then stops).
+bool zs_loop_step(void) {
+    if (L.stepping) zs_panic_c("Task.run inside a task: use let! there instead");
+    L.stepping = true;
+    for (size_t n = L.qlen; n > 0 && L.qlen; n--) zs_clo_run(queue_pop());
+    L.stepping = false;
+    int64_t now = now_ns();
+    while (L.ntimers && L.heap[0]->at <= now) {
+        zs_timer *t = L.heap[0];
+        heap_remove(t);
+        tab_remove(&L.timers, (void *)(uintptr_t)t->id);
+        zs_loop_post(t->cb);
+        free(t);
+    }
+    if (L.qlen) return true;
+    if (!L.waits && !L.ntimers && !L.jobs) return false;
+    int timeout = -1;
+    if (L.ntimers) {
+        int64_t d = L.heap[0]->at - now;
+        timeout = d <= 0 ? 0 : (int)((d + 999999) / 1000000);
+    }
+    ensure_ep();
+    struct epoll_event evs[256];
+    int k = epoll_wait(L.ep, evs, 256, timeout);
+    if (k < 0 && errno != EINTR) zs_panic_c("epoll_wait failed");
+    for (int i = 0; i < k; i++) {
+        int fd = evs[i].data.fd;
+        if (L.helping && fd == L.wake[0]) {
+            jobs_done();
+            continue;
+        }
+        fd_wait *w = &L.fds[fd];
+        uint32_t e = evs[i].events;
+        if (w->read && (e & (EPOLLIN | EPOLLHUP | EPOLLERR))) {
+            zs_loop_post(w->read);
+            w->read = NULL;
+            L.waits--;
+        }
+        if (w->write && (e & (EPOLLOUT | EPOLLHUP | EPOLLERR))) {
+            zs_loop_post(w->write);
+            w->write = NULL;
+            L.waits--;
+        }
+        fd_arm(fd);
+    }
+    return true;
+}
+
+// Task.run has finished: what still waits goes (uncalled), the helper thread stops, and the
+// loop's memory is freed (a later Task.run starts afresh)
+void zs_loop_close(void) {
+    if (L.helping) {
+        pthread_mutex_lock(&L.mu);
+        L.helping = false;
+        pthread_cond_signal(&L.cv);
+        pthread_mutex_unlock(&L.mu);
+        pthread_join(L.helper, NULL);
+        for (job *j = L.todo, *next; j; j = next) {
+            next = j->next;
+            zs_clo_drop(j->work);
+            zs_clo_drop(j->done);
+            free(j);
+        }
+        for (job *j = L.done, *next; j; j = next) {
+            next = j->next;
+            zs_clo_drop(j->work);
+            zs_clo_drop(j->done);
+            free(j);
+        }
+        close(L.wake[0]);
+        close(L.wake[1]);
+        pthread_mutex_destroy(&L.mu);
+        pthread_cond_destroy(&L.cv);
+    }
+    while (L.qlen) zs_clo_drop(queue_pop());
+    for (size_t fd = 0; fd < L.nfds; fd++) {
+        if (L.fds[fd].read) zs_clo_drop(L.fds[fd].read);
+        if (L.fds[fd].write) zs_clo_drop(L.fds[fd].write);
+    }
+    while (L.ntimers) {
+        zs_timer *t = L.heap[--L.ntimers];
+        tab_remove(&L.timers, (void *)(uintptr_t)t->id);
+        zs_clo_drop(t->cb);
+        free(t);
+    }
+    if (L.ep >= 0) close(L.ep);
+    free(L.fds);
+    free(L.queue);
+    free(L.heap);
+    L = (typeof(L)){.ep = -1};
+}
+
+// ---- sockets and descriptors (Net.Tcp): non-blocking, so a task waits for them in the loop.
+// Failures are -errno, and -1000 for "it would block, wait first"; Native.errorText gives the
+// text.
+typedef struct {
+    zs_int rc, len;
+    uint8_t data[];
+} zs_bytes; // a Buffer<u8>, and a string's object too
+
+static zs_int failed(void) { return errno == EAGAIN || errno == EWOULDBLOCK ? -1000 : -(zs_int)errno; }
+
+static int resolve(zs_str *host, zs_int port, bool passive, struct addrinfo **res) {
+    struct addrinfo hints = {.ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM, .ai_flags = passive ? AI_PASSIVE : 0};
+    char p[24];
+    snprintf(p, sizeof p, "%lld", (long long)port);
+    int rc = getaddrinfo(host->len ? host->data : NULL, p, &hints, res);
+    if (rc != 0) errno = rc == EAI_SYSTEM ? errno : EADDRNOTAVAIL;
+    return rc;
+}
+
+zs_int zs_tcp_listen(zs_str *host, zs_int port) {
+    struct addrinfo *res;
+    if (resolve(host, port, true, &res) != 0) return failed();
+    int fd = socket(res->ai_family, res->ai_socktype | SOCK_NONBLOCK | SOCK_CLOEXEC, res->ai_protocol);
+    int one = 1;
+    if (fd >= 0) setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    if (fd < 0 || bind(fd, res->ai_addr, res->ai_addrlen) != 0 || listen(fd, 4096) != 0) {
+        int e = errno;
+        if (fd >= 0) close(fd);
+        freeaddrinfo(res);
+        errno = e;
+        return failed();
+    }
+    freeaddrinfo(res);
+    return fd;
+}
+
+zs_int zs_tcp_accept(zs_int fd) {
+    int c = accept4((int)fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
+    if (c < 0) return failed();
+    int one = 1;
+    setsockopt(c, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+    return c;
+}
+
+// a connection being made: writable once it's made (or failed: zs_socket_error says)
+zs_int zs_tcp_connect(zs_str *host, zs_int port) {
+    struct addrinfo *res;
+    if (resolve(host, port, false, &res) != 0) return failed();
+    int fd = socket(res->ai_family, res->ai_socktype | SOCK_NONBLOCK | SOCK_CLOEXEC, res->ai_protocol);
+    if (fd < 0 || (connect(fd, res->ai_addr, res->ai_addrlen) != 0 && errno != EINPROGRESS)) {
+        int e = errno;
+        if (fd >= 0) close(fd);
+        freeaddrinfo(res);
+        errno = e;
+        return failed();
+    }
+    int one = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+    freeaddrinfo(res);
+    return fd;
+}
+
+zs_int zs_socket_error(zs_int fd) {
+    int e = 0;
+    socklen_t n = sizeof e;
+    getsockopt((int)fd, SOL_SOCKET, SO_ERROR, &e, &n);
+    return e;
+}
+
+zs_int zs_fd_read(zs_int fd, zs_bytes *b, zs_int off, zs_int n) {
+    if (off < 0 || n < 0 || off > b->len || n > b->len - off) zs_panic_c("read: range out of the buffer");
+    ssize_t r = read((int)fd, b->data + off, (size_t)n);
+    return r < 0 ? failed() : r;
+}
+
+// writes from a Buffer<u8> or a string's bytes; a closed connection is an error, not SIGPIPE
+zs_int zs_fd_write(zs_int fd, zs_bytes *b, zs_int off, zs_int n) {
+    if (off < 0 || n < 0 || off > b->len || n > b->len - off) zs_panic_c("write: range out of the data");
+    ssize_t r = send((int)fd, b->data + off, (size_t)n, MSG_NOSIGNAL);
+    if (r < 0 && errno == ENOTSOCK) r = write((int)fd, b->data + off, (size_t)n);
+    return r < 0 ? failed() : r;
+}
+
+void zs_fd_close(zs_int fd) {
+    if ((size_t)fd < L.nfds) { // what waits for it can't happen any more
+        zs_loop_unwait(fd, false);
+        zs_loop_unwait(fd, true);
+        L.fds[fd].armed = 0;
+    }
+    close((int)fd);
+}
+
+zs_str *zs_error_text(zs_int e) { return zs_str_from_c(e == -1000 ? "it would block" : strerror((int)(e < 0 ? -e : e))); }

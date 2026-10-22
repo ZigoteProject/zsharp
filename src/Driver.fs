@@ -388,7 +388,7 @@ let private coreFiles =
       "Text/String"; "Text/Char"; "Collections/Map"; "Collections/Set"; "Collections/HashMap" ]
 
 let private stdFiles =
-    [ "Console"; "Environment"; "IO/File"; "IO/Directory"; "IO/Path"; "Diagnostics/Process"; "Diagnostics/Stopwatch" ]
+    [ "Console"; "Environment"; "Threading/Task"; "IO/File"; "IO/Directory"; "IO/Path"; "Diagnostics/Process"; "Diagnostics/Stopwatch"; "Net/Tcp" ]
 
 /// The library rooted at `root` for one check: (path, module name, declarations), the prelude
 /// first (its names are global), then Core, then (when hosted) Std.
@@ -689,20 +689,31 @@ let private lower (mainPath: string) (isLib: bool) =
 
         Ok(prog, funs)
 
-/// Whether the program has weak references or arenas (Codegen.checkedHeap).
-let private checkedHeap (funs: Mono.MFun list) =
+/// Whether the program uses one of these primitives.
+let private usesPrim (prims: Set<string>) (funs: Mono.MFun list) =
     let rec uses (e: Core.CExpr) =
         match e.k with
-        | Core.CPrim(("weak.new" | "arena.with"), _) -> true
+        | Core.CPrim(p, _) when prims.Contains p -> true
         | k -> Core.children k |> List.exists uses
 
     funs |> List.exists (fun f -> uses f.body)
+
+/// Whether the program has weak references or arenas (Codegen.checkedHeap).
+let private checkedHeap = usesPrim (set [ "weak.new"; "arena.with" ])
+
+/// The runtime's defines: ZS_THREADS when the program runs code on Task.blocking's helper
+/// thread, so the runtime counts objects atomically.
+let mutable private rtDefines: string list = []
+
+let private setRuntime (funs: Mono.MFun list) =
+    Codegen.checkedHeap <- checkedHeap funs
+    rtDefines <- if usesPrim (set [ "Loop.blocking" ]) funs then [ "-DZS_THREADS" ] else []
 
 /// The program as one LLVM module (and the C header of its exports).
 let compileProgram (mainPath: string) (isLib: bool) =
     lower mainPath isLib
     |> Result.map (fun (prog, funs) ->
-        Codegen.checkedHeap <- checkedHeap funs
+        setRuntime funs
         timed "LLVM IR" (fun () -> Codegen.compile prog.types prog.externs prog.exports prog.tests prog.values prog.clayouts None funs))
 
 /// How a program is split into LLVM modules: one per source file of the program, holding that
@@ -790,7 +801,7 @@ let private partition (mainPath: string) (prog: Core.Program) (funs: Mono.MFun l
 let private compileParts (mainPath: string) =
     lower mainPath false
     |> Result.map (fun (prog, funs) ->
-        Codegen.checkedHeap <- checkedHeap funs
+        setRuntime funs
 
         timed "LLVM IR" (fun () ->
             let compile part = fst (Codegen.compile prog.types prog.externs prog.exports prog.tests prog.values prog.clayouts part funs)
@@ -878,7 +889,7 @@ let private linkParts (parts: string list) (out: string) : string option =
     let flags = [ optLevel ]
     let all = Array.ofList ((File.ReadAllText(runtimeFile "rt.c"), true) :: (parts |> List.map (fun ir -> ir, false)))
     let sw = Stopwatch.StartNew()
-    let objects = all |> Array.Parallel.map (fun (source, c) -> objectOf source c flags)
+    let objects = all |> Array.Parallel.map (fun (source, c) -> objectOf source c (if c then flags @ rtDefines else flags))
     let compiled = objects |> Array.sumBy (fun o -> match o with Ok(_, true) -> 1 | _ -> 0)
     timings.Add(sprintf "clang (%d of %d new)" compiled objects.Length, sw.Elapsed.TotalMilliseconds)
 
@@ -995,7 +1006,7 @@ let build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) (isLib: 
                     timed "clang" (fun () -> run "clang" (opt @ tclang @ [ "-c"; "-Wno-override-module" ] @ san @ [ ll; "-o"; obj ]))
                     |> Option.orElseWith (fun () ->
                         let linked = links |> Seq.map (fun l -> if l.Contains "/" then l else "-l" + l) |> List.ofSeq
-                        timed "zig cc" (fun () -> cc (opt @ [ obj; runtimeFile "rt.c" ] @ linked @ [ "-o"; out; "-lm" ])))
+                        timed "zig cc" (fun () -> cc (opt @ rtDefines @ [ obj; runtimeFile "rt.c" ] @ linked @ [ "-o"; out; "-lm" ])))
 
                 if File.Exists obj then
                     File.Delete obj
@@ -1010,7 +1021,7 @@ let build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) (isLib: 
 
                 let failure =
                     run "clang" (opt @ pic @ tclang @ [ "-c"; "-Wno-override-module" ] @ san @ [ ll; "-o"; obj ])
-                    |> Option.orElseWith (fun () -> cc (opt @ pic @ [ "-c" ] @ san @ [ runtimeFile "rt.c"; "-o"; rt ]))
+                    |> Option.orElseWith (fun () -> cc (opt @ pic @ rtDefines @ [ "-c" ] @ san @ [ runtimeFile "rt.c"; "-o"; rt ]))
                     |> Option.orElseWith (fun () ->
                         if File.Exists out then
                             File.Delete out
@@ -1030,7 +1041,7 @@ let build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) (isLib: 
                 failure
             else
                 let linked = links |> Seq.map (fun l -> if l.Contains "/" then l else "-l" + l) |> List.ofSeq
-                timed "clang" (fun () -> run "clang" (opt @ [ "-rdynamic"; "-Wno-override-module" ] @ san @ [ ll; runtimeFile "rt.c" ] @ linked @ [ "-o"; out; "-lm" ]))
+                timed "clang" (fun () -> run "clang" (opt @ rtDefines @ [ "-rdynamic"; "-Wno-override-module" ] @ san @ [ ll; runtimeFile "rt.c" ] @ linked @ [ "-o"; out; "-lm" ]))
 
         if not emitLlvm then
             File.Delete ll
