@@ -7,8 +7,8 @@ set -eu
 cd "$(dirname "$0")/../.."
 seconds=${1:-3600}; n=${2:-10000}; port=${3:-9910}
 dir=$(mktemp -d)
-bin/zs build examples/echo/server.zs -o "$dir/server"
-bin/zs build examples/echo/client.zs -o "$dir/client"
+bin/zs build examples/echo/server.zs -o "$dir/server" --release
+bin/zs build examples/echo/client.zs -o "$dir/client" --release
 "$dir/server" "$port" > "$dir/server.log" 2>&1 & srv=$!
 sleep 1
 "$dir/client" "$port" "$n" "$seconds" 1000 quit > "$dir/client.log" 2>&1 & cli=$!

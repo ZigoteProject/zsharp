@@ -142,15 +142,38 @@ let private newProject (name: string) =
         printfn "created %s: zs.toml, src/main.zs (cd %s && zs run)" name name
         0
 
-[<EntryPoint>]
-let main argv =
+/// Whether this process is the build server (zs build --time says so).
+let mutable private served = false
+
+/// One command's work, as zs runs it: from the defaults, so a build server (serve) can run
+/// many in a row.
+let private run (argv: string[]) =
+    Driver.release <- false
+    Driver.optAsked <- None
+    Driver.profileGenerate <- false
+    Driver.profileUse <- None
+    Driver.cpu <- None
+    Driver.mcu <- None
+    Driver.testBuild <- false
+    Driver.threadSanitizer <- false
+    Codegen.optimizeSize <- false
+    Codegen.target <- ""
     Codegen.debugInfo <- Array.contains "-g" argv
 
     if Array.contains "-Os" argv then
-        optLevel <- "-Os"
+        Driver.optAsked <- Some "-Os"
         Codegen.optimizeSize <- true
 
-    let argv = argv |> Array.filter ((<>) "-Os")
+    // -O0 … -O3: clang's optimization level, in place of the build's (-O0 for a debug build,
+    // -O2 for --release)
+    for o in [ "-O0"; "-O1"; "-O2"; "-O3" ] do
+        if Array.contains o argv then
+            Driver.optAsked <- Some o
+
+    // --release: optimized, with ThinLTO; profiles are for release builds
+    Driver.release <- Array.contains "--release" argv || Array.contains "--profile-generate" argv || Array.contains "--profile-use" argv
+
+    let argv = argv |> Array.filter (fun a -> not (List.contains a [ "-Os"; "-O0"; "-O1"; "-O2"; "-O3"; "--release" ]))
 
     // --profile-generate, --profile-use <file>: profile-guided optimization, taken out of the
     // arguments
@@ -285,7 +308,7 @@ let main argv =
             for phase, ms in timings do
                 eprintfn "%-20s %8.1f ms" phase ms
 
-            eprintfn "%-20s %8.1f ms" "total" (Seq.sumBy snd timings)
+            eprintfn "%-20s %8.1f ms" (if served then "total (build server)" else "total") (Seq.sumBy snd timings)
 
         if ok then 0 else 1
     | [ "check"; src ] ->
@@ -450,5 +473,124 @@ let main argv =
             Rpc.input <- new Rpc.PrefixedStream([| byte first |], stdin)
             if char first = '{' then Mcp.serve () else Lsp.serve ()
     | _ ->
-        eprintfn "usage: zs new <name>\n       zs fetch | zs update\n       zs build [<file.zs> [-o <out>] [--lib]] [-g] [-Os] [--target <triple>] [--emit-llvm] [--sanitize[=thread]] [--cpu <name>] [--profile-generate | --profile-use <file>] [--time]\n       zs run [<file.zs> [-g] [--sanitize[=thread]] --] [program arguments…]\n       zs check <file.zs>\n       zs test [<file.zs>] [name filters…]\n       zs doc <file.zs>\n       zs fmt [--check] <files…>\n       zs lsp\n       zs mcp"
+        eprintfn "usage: zs new <name>\n       zs fetch | zs update\n       zs build [<file.zs> [-o <out>] [--lib]] [--release] [-g] [-O0|-O1|-O2|-O3|-Os] [--target <triple>] [--emit-llvm] [--sanitize[=thread]] [--cpu <name>] [--profile-generate | --profile-use <file>] [--time]\n       zs run [<file.zs> [--release] [-g] [--sanitize[=thread]] --] [program arguments…]\n       zs check <file.zs>\n       zs test [<file.zs>] [name filters…]\n       zs doc <file.zs>\n       zs fmt [--check] <files…>\n       zs lsp\n       zs mcp"
         2
+
+/// The build server: zs build asks it to build (one build at a time, in the request's
+/// directory, its output sent back), so a rebuild finds the compiler started and warm: its
+/// code compiled, the library's results and the program's in memory. It ends after ten idle
+/// minutes, or when asked to (zs server stop). A request is the directory and the arguments,
+/// a reply the exit code and the output, each NUL-separated UTF-8 read to the end.
+let private unixSocket () =
+    new Net.Sockets.Socket(Net.Sockets.AddressFamily.Unix, Net.Sockets.SocketType.Stream, Net.Sockets.ProtocolType.Unspecified)
+
+let private readAll (socket: Net.Sockets.Socket) =
+    use mem = new MemoryStream()
+    let buf = Array.zeroCreate<byte> 65536
+    let mutable n = socket.Receive buf
+
+    while n > 0 do
+        mem.Write(buf, 0, n)
+        n <- socket.Receive buf
+
+    Text.Encoding.UTF8.GetString(mem.ToArray()).Split '\000'
+
+let private sendAll (socket: Net.Sockets.Socket) (fields: string list) =
+    socket.Send(Text.Encoding.UTF8.GetBytes(String.concat "\000" fields)) |> ignore
+    socket.Shutdown Net.Sockets.SocketShutdown.Send
+
+let rec private serve (path: string) =
+    served <- true
+    Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+
+    // another server started first (two builds found none): it answers, this one ends
+    let answered =
+        try
+            use probe = unixSocket ()
+            probe.Connect(Net.Sockets.UnixDomainSocketEndPoint path)
+            sendAll probe [ ""; "ping" ]
+            true
+        with _ -> false
+
+    if not answered then
+        if File.Exists path then
+            File.Delete path // a server that ended without removing it: nothing answers there
+
+        serveAt path
+
+and private serveAt (path: string) =
+    use listener = unixSocket ()
+    listener.Bind(Net.Sockets.UnixDomainSocketEndPoint path)
+    listener.Listen 16
+    let mutable go = true
+
+    while go && listener.Poll(600_000_000, Net.Sockets.SelectMode.SelectRead) do
+        try
+            use conn = listener.Accept()
+
+            match List.ofArray (readAll conn) with
+            | [ _; "stop" ] -> go <- false
+            | [ _; "ping" ] -> ()
+            | cwd :: argv ->
+                let out, err = new StringWriter(), new StringWriter()
+                let stdout, stderr = Console.Out, Console.Error
+                Console.SetOut out
+                Console.SetError err
+                Environment.CurrentDirectory <- cwd
+
+                let code =
+                    try
+                        try
+                            run (Array.ofList argv)
+                        with e ->
+                            eprintfn "zs: %s" (string e)
+                            70
+                    finally
+                        Console.SetOut stdout
+                        Console.SetError stderr
+
+                sendAll conn [ string code; string out; string err ]
+            | [] -> ()
+        with _ -> () // a client that went away
+
+    try File.Delete path with _ -> ()
+
+/// Sends a command to the build server; None when there's none (one is started for the next).
+let private viaServer (argv: string[]) : int option =
+    let path = serverSocket ()
+
+    try
+        use socket = unixSocket ()
+        socket.Connect(Net.Sockets.UnixDomainSocketEndPoint path)
+        sendAll socket (Environment.CurrentDirectory :: List.ofArray argv)
+
+        match readAll socket with
+        | [| code; out; err |] ->
+            Console.Out.Write out
+            Console.Error.Write err
+            Some(int code)
+        | _ -> None
+    with _ ->
+        if argv <> [| "stop" |] then
+            // started apart from this process (its own pipes, so a caller reading this one's
+            // output isn't kept waiting), with this environment
+            try
+                let info = ProcessStartInfo(Environment.ProcessPath, [ "server"; path ])
+                info.RedirectStandardInput <- true
+                info.RedirectStandardOutput <- true
+                info.RedirectStandardError <- true
+                Process.Start info |> ignore
+            with _ -> ()
+
+        None
+
+[<EntryPoint>]
+let main argv =
+    match List.ofArray argv with
+    | [ "server"; "stop" ] -> viaServer [| "stop" |] |> ignore; 0
+    | [ "server"; path ] -> serve path; 0
+    | "build" :: _ when isNull (Environment.GetEnvironmentVariable "ZS_NO_SERVER") ->
+        match viaServer argv with
+        | Some code -> code
+        | None -> run argv
+    | _ -> run argv

@@ -18,12 +18,12 @@ best() { # the best wall time of 3 runs in ms: best <command…>
 }
 printf "%-8s %-8s %10s %10s %8s\n" target program "Z# (ms)" "C (ms)" "Z# / C"
 for b in dot nbody blur; do
-  bin/zs build bench/simd/$b.zs -o $out/$b --cpu=x86-64-v3
+  bin/zs build bench/simd/$b.zs -o $out/$b --cpu=x86-64-v3 --release
   clang -O2 -march=x86-64-v3 bench/simd/$b.c -o $out/$b-c -lm
   awk -v b=$b -v z=$(best $out/$b) -v c=$(best $out/$b-c) 'BEGIN { printf "%-8s %-8s %10d %10d %8.3f\n", "x86-64", b, z, c, z / c }'
 done
 for b in dot nbody blur; do
-  bin/zs build bench/simd/$b.zs -o $out/$b-arm --target aarch64-linux-musl
+  bin/zs build bench/simd/$b.zs -o $out/$b-arm --target aarch64-linux-musl --release
   zig cc -target aarch64-linux-musl -O2 bench/simd/$b.c -o $out/$b-arm-c -lm
   awk -v b=$b -v z=$(best qemu-aarch64 $out/$b-arm) -v c=$(best qemu-aarch64 $out/$b-arm-c) 'BEGIN { printf "%-8s %-8s %10d %10d %8.3f\n", "aarch64", b, z, c, z / c }'
 done

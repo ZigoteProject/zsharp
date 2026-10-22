@@ -19,7 +19,7 @@ best() { # the best wall time of 3 runs in ms: best <threads> <program> <n>
 printf "%-14s %8s %8s %8s %7s %7s\n" program "1 (ms)" "8 (ms)" "16 (ms)" "x8" "x16"
 for p in mandelbrot:8000 nbody:6000; do
   name=${p%:*}; n=${p#*:}
-  bin/zs build bench/parallel/$name.zs -o $out/$name
+  bin/zs build bench/parallel/$name.zs -o $out/$name --release
   clang -O2 bench/parallel/$name.c -o $out/$name-c -lm
   for v in $name $name-c; do
     one=$(best 1 $out/$v $n); eight=$(best 8 $out/$v $n); sixteen=$(best 16 $out/$v $n)
@@ -27,7 +27,7 @@ for p in mandelbrot:8000 nbody:6000; do
   done
 done
 for name in mandelbrot nbody; do
-  bin/zs build bench/parallel/$name.zs -o $out/$name-tsan --sanitize=thread
+  bin/zs build bench/parallel/$name.zs -o $out/$name-tsan --sanitize=thread --release
   timeout 300 $out/$name-tsan 600 > /dev/null 2> $out/tsan.log || { cat $out/tsan.log; exit 1; }
   if grep -q "ThreadSanitizer" $out/tsan.log; then cat $out/tsan.log; exit 1; fi
   echo "$name: ThreadSanitizer reports nothing"

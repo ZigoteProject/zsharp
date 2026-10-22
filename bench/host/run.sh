@@ -30,7 +30,7 @@ langs="zs c ctrap rust swift zig ocaml fsharp"
 build() {
   local src=bench/host/$2 out=$t/$2-$1
   case $1 in
-    zs) bin/zs build "$src.zs" -o "$out" ;;
+    zs) bin/zs build "$src.zs" -o "$out" --release ;;
     c) clang -O2 "$src.c" -o "$out" -lm ;;
     ctrap) clang -O2 -ftrapv "$src.c" -o "$out" -lm ;;
     rust) rustc --edition 2021 -C opt-level=3 "$t/$2.rs" -o "$out" ;;

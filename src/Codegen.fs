@@ -213,6 +213,10 @@ done:
 ; (count 0, never freed), compared by its address
 @zs.none = private constant { i_W } { i_W 0 }
 
+; every empty array literal ([||]): a static object (count 0, never freed) of length 0, so an
+; empty array costs no allocation (and a write to it copies it first, as to any shared array)
+@zs.noelems = private constant { i_W, i_W } { i_W 0, i_W 0 }
+
 ; true when this was the last reference (the caller frees the object)
 define private i1 @zs.release(ptr %p) alwaysinline {
 entry:
@@ -422,6 +426,10 @@ let private floatConst (ty: string) (f: float) =
 /// number and bool types.
 let mutable debugInfo = false
 
+/// Whether clang optimizes the module (not -O0): unoptimized, a call to itself in tail position
+/// must be a musttail call, for constant stack.
+let mutable optimized = true
+
 /// Optimizing for size (zs build -Os): optsize functions, and loop versioning only for small loops.
 let mutable optimizeSize = false
 
@@ -513,7 +521,12 @@ let compile
     : string * string =
     let shared = if part.IsSome then "linkonce_odr hidden" else "private" // one address in the whole program
     let prelude = if threaded then replaceDef (replaceDef prelude threadedDup) threadedRelease else prelude
-    let top = StringBuilder(prelude.Replace("@zs.none = private constant", sprintf "@zs.none = %s constant" shared))
+    let top =
+        StringBuilder(
+            prelude
+                .Replace("@zs.none = private constant", sprintf "@zs.none = %s constant" shared)
+                .Replace("@zs.noelems = private constant", sprintf "@zs.noelems = %s constant" shared)
+        )
     let helpers = StringBuilder()
     let funcs = StringBuilder()
     let generated = HashSet<string>()
@@ -2747,7 +2760,7 @@ let compile
                 if tail && proto fd = selfProto then
                     // a call to itself is left to LLVM to make a loop (which can then be inlined into
                     // callers); other tail calls, and all at -O0, must be tail calls (constant stack)
-                    let kind = if f = selfName && not debugInfo then "tail" else "musttail"
+                    let kind = if f = selfName && optimized && not debugInfo then "tail" else "musttail"
                     let r = em.Instr(sprintf "%s call %s %s(%s)" kind rt (sym f) argv)
                     em.Emit(sprintf "ret %s %s" rt r)
                     em.Dead()
@@ -3582,7 +3595,7 @@ let compile
                     | TCon("array", [ el ]) -> el
                     | _ -> failwith "array literal type"
 
-                let a = newArray el (string vs.Length)
+                let a = if vs.IsEmpty then "@zs.noelems" else newArray el (string vs.Length)
 
                 vs
                 |> List.iteri (fun i v ->

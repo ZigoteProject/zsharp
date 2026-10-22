@@ -5,7 +5,8 @@ cd "$(dirname "$0")/../../.."
 ulimit -v 4000000
 (cd editors/tree-sitter-zsharp && timeout 300 tree-sitter generate >/dev/null) || { echo "generate failed"; exit 1; }
 total=0
-for f in ${@:-$(find tests lib examples -name '*.zs' | sort)}; do
+# (tests/newcomer: the mistakes newcomers make, some in another language's syntax on purpose)
+for f in ${@:-$(find tests lib examples -name '*.zs' -not -path 'tests/newcomer/*' | sort)}; do
   out=$(timeout 10 tree-sitter parse --grammar-path editors/tree-sitter-zsharp "$f" 2>/dev/null)
   [ $? = 124 ] && { echo "TIMEOUT $f"; continue; }
   lines=$(printf '%s\n' "$out" | grep -o '(\(ERROR\|MISSING[^[]*\) \[[0-9]*' | grep -o '[0-9]*$' | sort -un | head -${N:-3})

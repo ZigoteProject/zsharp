@@ -8,6 +8,7 @@ set -u
 cd "$(dirname "$0")"
 dotnet build src -c Release -o bin --nologo -v q || exit 1
 export ZS_LEAKCHECK=1 ZS_BACKTRACE=0  # report leaked objects at exit; deterministic panic output
+export ZS_NO_SERVER=1  # each build in its own process (tests/server.sh tests the build server)
 valgrind=0; target=""; tgt=(); qemu=()
 while [ $# -gt 0 ]; do
   case $1 in
@@ -169,6 +170,9 @@ else echo "FAIL tests/lsp/session.sh"; diff <(echo "$expected") <(echo "$actual"
 # the other's diagnostics again (tests/lsp/modules.sh)
 if diff <(tests/lsp/modules.sh bin/zs 2>&1) tests/lsp/modules.out >"$tmp/lspm.diff"; then echo "ok   tests/lsp/modules.sh"
 else echo "FAIL tests/lsp/modules.sh"; cat "$tmp/lspm.diff"; fail=1; fi
+# the build server: the binary an in-process build makes, errors and exit codes back
+if diff <(tests/server.sh 2>&1) tests/server.expected >"$tmp/server.diff"; then echo "ok   tests/server.sh (the build server)"
+else echo "FAIL tests/server.sh"; cat "$tmp/server.diff"; fail=1; fi
 
 # editors may start zs without arguments: it detects LSP or MCP from the first byte
 printf '#!/bin/sh\nexec %s/bin/zs\n' "$PWD" > "$tmp/zs-bare"; chmod +x "$tmp/zs-bare"

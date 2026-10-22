@@ -387,6 +387,22 @@ let mcus =
 /// then holds its triple.
 let mutable mcu: Mcu option = None
 
+/// A release build (zs build --release): optimized (-O2) and, on the host, with ThinLTO. A debug
+/// build, the default, compiles the program at -O0 for a fast edit loop (the runtime at -O2);
+/// Z#'s own passes (fusion, inlining, reference counting) run in both, so a program allocates the
+/// same in both. A microcontroller's build is optimized either way: -O0 code doesn't fit a chip.
+let mutable release = false
+
+/// The optimization level asked for (-O0 … -O3, or -Os for size), if one was.
+let mutable optAsked: string option = None
+
+/// The optimization level for clang: what was asked, else -O2 for a release build or a chip
+/// and -O0 for a debug build.
+let optLevel () =
+    match optAsked with
+    | Some o -> o
+    | None -> if release || mcu.IsSome then "-O2" else "-O0"
+
 /// The library that ships with zs: lib/ next to it.
 let libraryDir = runtimeFile "lib"
 
@@ -431,6 +447,22 @@ let private hashOf (parts: string list) =
 
 let private hashBytes (b: byte[]) =
     Convert.ToHexString(Security.Cryptography.SHA256.HashData b).Substring(0, 32).ToLowerInvariant()
+
+/// Where the build server for this compiler and this environment listens (zs build asks it,
+/// Main.serve answers): a Unix socket in the cache, named after the compiler and what of the
+/// environment it and the tools it runs read. Another environment has a server of its own.
+let serverSocket () =
+    let named =
+        [ "PATH"; "HOME"; "XDG_CACHE_HOME"; "TMPDIR"; "CPATH"; "C_INCLUDE_PATH"; "LIBRARY_PATH"; "CC"; "CFLAGS"; "LDFLAGS"; "LANG"; "LC_ALL" ]
+        |> List.map (fun v -> v + "=" + (Environment.GetEnvironmentVariable v |> Option.ofObj |> Option.defaultValue ""))
+
+    let ours =
+        [ for kv in Environment.GetEnvironmentVariables() |> Seq.cast<Collections.DictionaryEntry> do
+              let k = string kv.Key
+              if k.StartsWith "ZS_" || k.StartsWith "DOTNET_" then yield k + "=" + string kv.Value ]
+        |> List.sort
+
+    Path.GetFullPath(Path.Combine(cacheRoot (), "servers", (hashOf (compilerId.Value :: named @ ours)).Substring(0, 16) + ".sock"))
 
 module private Array =
     /// The elements after the first n (all of them dropped when there are fewer).
@@ -983,6 +1015,7 @@ let private lift (mainPath: string) (isLib: bool) =
                 // [<Target>] and [<Multiversion>] functions stay whole: their code is for features
                 // their callers may not have
                 Codegen.targets <- prog.targets
+                Codegen.optimized <- optLevel () <> "-O0"
                 Codegen.cpu <- cpu
                 Inline.kept <- fun n -> prog.targets.ContainsKey(Core.baseFunName n)
                 let inline' = if Codegen.debugInfo then id else Inline.uncurry fixedNames >> Inline.run
@@ -1174,6 +1207,7 @@ let private compileUnits (mainPath: string) (cachedObject: string -> string opti
     | _ :: _ -> Error prog.errors
     | [] ->
         Codegen.targets <- prog.targets
+        Codegen.optimized <- optLevel () <> "-O0"
         Codegen.cpu <- cpu
         // [<Target>] and [<Multiversion>] functions stay whole: their code is for features their
         // callers may not have
@@ -1590,19 +1624,18 @@ let exec (exe: string) (args: string list) (capture: bool) : int * string =
         p.WaitForExit()
         p.ExitCode, ""
 
-/// The optimization level for clang: -O2, or -Os (zs build -Os) for size.
-let mutable optLevel = "-O2"
-
 /// The optimization level, and the processor when --cpu names one: -march on x86-64, -mcpu
 /// elsewhere (as clang takes them).
-let private optFlags () =
+let private cpuFlags () =
     let x86 =
         if Codegen.target = "" then
             Runtime.InteropServices.RuntimeInformation.OSArchitecture = Runtime.InteropServices.Architecture.X64
         else
             Codegen.target.StartsWith "x86_64"
 
-    optLevel :: (cpu |> Option.map (fun c -> (if x86 then "-march=" else "-mcpu=") + c) |> Option.toList)
+    cpu |> Option.map (fun c -> (if x86 then "-march=" else "-mcpu=") + c) |> Option.toList
+
+let private optFlags () = optLevel () :: cpuFlags ()
 
 /// Runs a tool; None, or the failure with its output.
 let private run (exe: string) (args: string list) =
@@ -1626,12 +1659,15 @@ let private profileFlags () =
 /// ThinLTO for a host executable: modules and the runtime compiled to bitcode, then optimized
 /// together at the link (lld, with its cache), so the runtime's allocation functions inline
 /// into the program. Only when lld is there.
-let private thinLto =
+let private lld =
     lazy
         (let path = Environment.GetEnvironmentVariable "PATH"
-         not (isNull path)
-         && path.Split ':' |> Array.exists (fun d -> d <> "" && File.Exists(Path.Combine(d, "ld.lld")))
-         && isNull (Environment.GetEnvironmentVariable "ZS_NO_LTO"))
+         not (isNull path) && path.Split ':' |> Array.exists (fun d -> d <> "" && File.Exists(Path.Combine(d, "ld.lld"))))
+
+let private thinLto = lazy (lld.Value && isNull (Environment.GetEnvironmentVariable "ZS_NO_LTO"))
+
+/// ThinLTO in this build: a release one, with lld.
+let private useLto () = release && thinLto.Value
 
 /// The object compiled from source (LLVM IR, or C with c) with these clang flags: from the
 /// cache when it has one for exactly this source and these flags, else compiled and kept
@@ -1671,7 +1707,7 @@ let private objectOf (source: string) (cFile: string option) (flags: string list
 
 /// The clang flags of a host build's objects.
 let private objectFlags () =
-    let lto = if thinLto.Value then [ "-flto=thin" ] else []
+    let lto = if useLto () then [ "-flto=thin" ] else []
     optFlags () @ fst (profileFlags ()) @ lto
 
 /// Where the module cache keeps the object of a module's key, built with this build's flags.
@@ -1703,7 +1739,7 @@ let private keepModule (key: string) (obj: string) =
 /// Compiles a program's LLVM modules to objects in parallel (each one the caches haven't seen),
 /// the runtime too, and links them into an executable.
 let private linkParts (modules: Module list) (out: string) : string option =
-    let lto = if thinLto.Value then [ "-flto=thin" ] else []
+    let lto = if useLto () then [ "-flto=thin" ] else []
     let flags = objectFlags ()
     let sw = Stopwatch.StartNew()
 
@@ -1711,7 +1747,10 @@ let private linkParts (modules: Module list) (out: string) : string option =
         Array.ofList (None :: List.map Some modules)
         |> Array.Parallel.map (fun m ->
             match m with
-            | None -> objectOf (File.ReadAllText(runtimeFile "rt.c")) (Some(runtimeFile "rt.c")) (flags @ rtDefines)
+            | None ->
+                // the runtime optimized in a debug build too (a program debugs its own code)
+                let rtFlags = if useLto () then flags else "-O2" :: cpuFlags () @ fst (profileFlags ())
+                objectOf (File.ReadAllText(runtimeFile "rt.c")) (Some(runtimeFile "rt.c")) (rtFlags @ rtDefines)
             | Some(Cached obj) -> Ok(obj, false)
             | Some(Fresh(ir, key)) ->
                 objectOf ir None flags
@@ -1729,7 +1768,10 @@ let private linkParts (modules: Module list) (out: string) : string option =
         evict (Path.Combine(cacheRoot (), "modules")) "*.o" 256
         let files = objects |> Array.map (fun o -> match o with Ok(f, _) -> f | Error _ -> "") |> List.ofArray
         let linked = links |> Seq.map (fun l -> if l.Contains "/" then l else "-l" + l) |> List.ofSeq
-        let ltoLink = if lto.IsEmpty then [] else [ "-fuse-ld=lld"; "-Wl,--thinlto-cache-dir=" + Path.Combine(cacheRoot (), "lto") ]
+        let ltoLink =
+            if not lto.IsEmpty then [ "-fuse-ld=lld"; "-Wl,--thinlto-cache-dir=" + Path.Combine(cacheRoot (), "lto") ]
+            elif lld.Value then [ "-fuse-ld=lld" ] // faster than the system's linker
+            else []
         timed "link" (fun () -> run "clang" (flags @ ltoLink @ [ "-rdynamic" ] @ files @ linked @ [ "-o"; out; "-lm" ]))
 
 /// .zs -> LLVM IR -> clang (with the runtime) -> native executable, or with isLib a static

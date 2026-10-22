@@ -8,7 +8,10 @@ set -u
 cd "$(dirname "$0")/../.."
 n=${1:-10}
 zs=${2:-bin/zs}
-t=${KEEP:-$(mktemp -d)}; [ -z "${KEEP:-}" ] && trap 'rm -rf "$t"' EXIT; mkdir -p "$t"
+t=${KEEP:-$(mktemp -d)}; mkdir -p "$t"
+# the build servers this run starts (zs build's, and the uncached builds') end with it
+stop() { "$zs" server stop >/dev/null 2>&1; ZS_NO_CACHE=1 "$zs" server stop >/dev/null 2>&1; [ -z "${KEEP:-}" ] && rm -rf "$t"; }
+trap stop EXIT
 export XDG_CACHE_HOME=$t/cache # a cache of its own, empty at first
 
 module() { # module <k> <variant>: about 120 lines

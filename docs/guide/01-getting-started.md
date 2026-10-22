@@ -41,7 +41,10 @@ Save it as `hello.zs`, then:
 zs run hello.zs          # build and run
 zs build hello.zs        # build ./hello
 ./hello
+zs build hello.zs --release   # optimized, for measuring and shipping
 ```
+
+A plain `zs build` is a debug build: quick to make, its code unoptimized. `--release` optimizes the program and, across its files, inlines at the link (ThinLTO), which takes longer ([Programs](08-programs.md#builds)).
 
 ## A project
 

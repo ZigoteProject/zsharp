@@ -110,7 +110,7 @@ json = { git = "https://github.com/someone/json", rev = "v1.2" }  # tag, branch 
 | Command | Does |
 |---|---|
 | `zs new <name>` | creates a project: `zs.toml`, `src/main.zs`, `.gitignore` |
-| `zs build` | builds `build/<name>` |
+| `zs build` | builds `build/<name>` (`--release` for an optimized one) |
 | `zs run [args…]` | builds and runs, passing the arguments |
 | `zs test [filters…]` | runs the `[<Test>]` functions in `src/` and `tests/` |
 | `zs fetch` | checks out the git dependencies |
@@ -119,6 +119,17 @@ json = { git = "https://github.com/someone/json", rev = "v1.2" }  # tag, branch 
 **Dependencies:**
 - **Modules:** a dependency is another project, and its modules are found in the folder of its `main`.
 - **Git dependencies:** they're checked out into `.zs-cache/deps/`. `zs.lock` records the exact commit of each, so builds are reproducible and need no network once fetched; commit `zs.lock` with your project. The builds and `zs test` fetch what's missing.
+
+## Builds
+
+**Debug and release:**
+- **Debug** (`zs build`, the default): the program's code isn't optimized (`-O0`), so a build after an edit takes a tenth of a second or two. Z#'s own work is the same in both: a debug build allocates what a release one does, and tail calls still run in constant stack.
+- **Release** (`zs build --release`): optimized (`-O2`), and inlined across the program's files and the runtime at the link (ThinLTO), for measuring and shipping. `--profile-generate` and `--profile-use` are release builds.
+- **Levels:** `-O0` to `-O3` and `-Os` set clang's level for either. A microcontroller's build is optimized either way, since unoptimized code doesn't fit a chip.
+
+**Rebuilds:** only what an edit reaches is checked and compiled again. A module whose code didn't change comes from the cache in `~/.cache/zs`, which the editor's language server shares. `zs build --time` names the modules it checked and the files it compiled.
+
+**The build server:** `zs build` hands its work to a compiler that stays running between builds, so a rebuild skips starting it. The first build starts one and builds on its own; the server ends after ten idle minutes, or with `zs server stop`. Each cache directory and environment has its own, and `ZS_NO_SERVER=1` builds in the process instead.
 
 ## Arguments, files and processes
 
