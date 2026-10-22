@@ -1,0 +1,1 @@
+tests/err_simd.zs:4: error: Simd.X86.hadd4 needs the CPU feature sse3: build with --cpu (x86-64-v3, say), or mark the function [<Target "sse3">] (or [<Multiversion>])

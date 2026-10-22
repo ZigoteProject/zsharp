@@ -30,7 +30,73 @@ let ints = set [ "int"; "i8"; "i16"; "i32"; "i64"; "u8"; "u16"; "u32"; "u64"; "u
 let unsigned = set [ "u8"; "u16"; "u32"; "u64"; "usize" ]
 let floats = set [ "f64"; "f32" ]
 let nums = ints + floats
-let prims = nums + set [ "bool"; "char"; "string"; "cstr"; "cptr"; "unit" ] // cptr: any other C pointer, opaque
+
+/// SIMD vectors (DESIGN §8): 128-, 256- and 512-bit vectors of each number type (f32x4, f64x4,
+/// i8x32, u16x8, …), LLVM's <n x T>: name, element type, lanes. Masks (what comparing two
+/// vectors lane by lane gives) are mask2 … mask64, <n x i1>.
+let vectorTypes =
+    [ for e, bits in [ "f32", 32; "f64", 64; "i8", 8; "i16", 16; "i32", 32; "i64", 64; "u8", 8; "u16", 16; "u32", 32; "u64", 64 ] do
+          for width in [ 128; 256; 512 ] do
+              sprintf "%sx%d" e (width / bits), e, width / bits ]
+
+let vectorInfo = vectorTypes |> List.map (fun (n, e, k) -> n, (e, k)) |> dict
+let maskTypes = [ 2; 4; 8; 16; 32; 64 ] |> List.map (fun k -> sprintf "mask%d" k, k)
+let maskLanes = dict maskTypes
+let isVectorName (n: string) = vectorInfo.ContainsKey n
+let isMaskName (n: string) = maskLanes.ContainsKey n
+let simdNames = set (List.map (fun (n, _, _) -> n) vectorTypes @ List.map fst maskTypes)
+
+/// Target intrinsics (DESIGN §8): Simd.X86's and Simd.Arm's functions, each an LLVM intrinsic
+/// for one architecture: name, the intrinsic, parameter types, result type, and the CPU feature
+/// it needs ("": every x86-64, which has SSE2, or every aarch64, which has NEON).
+let simdIntrinsics =
+    [ "Simd.X86.rsqrt4", "llvm.x86.sse.rsqrt.ps", [ "f32x4" ], "f32x4", ""
+      "Simd.X86.rsqrt8", "llvm.x86.avx.rsqrt.ps.256", [ "f32x8" ], "f32x8", "avx"
+      "Simd.X86.rcp4", "llvm.x86.sse.rcp.ps", [ "f32x4" ], "f32x4", ""
+      "Simd.X86.rcp8", "llvm.x86.avx.rcp.ps.256", [ "f32x8" ], "f32x8", "avx"
+      "Simd.X86.hadd4", "llvm.x86.sse3.hadd.ps", [ "f32x4"; "f32x4" ], "f32x4", "sse3"
+      "Simd.X86.hadd8", "llvm.x86.avx.hadd.ps.256", [ "f32x8"; "f32x8" ], "f32x8", "avx"
+      "Simd.X86.movemask4", "llvm.x86.sse.movmsk.ps", [ "f32x4" ], "i32", ""
+      "Simd.X86.movemask8", "llvm.x86.avx.movmsk.ps.256", [ "f32x8" ], "i32", "avx"
+      "Simd.X86.movemaskBytes16", "llvm.x86.sse2.pmovmskb.128", [ "i8x16" ], "i32", ""
+      "Simd.X86.movemaskBytes32", "llvm.x86.avx2.pmovmskb", [ "i8x32" ], "i32", "avx2"
+      "Simd.X86.shuffleBytes16", "llvm.x86.ssse3.pshuf.b.128", [ "i8x16"; "i8x16" ], "i8x16", "ssse3"
+      "Simd.X86.shuffleBytes32", "llvm.x86.avx2.pshuf.b", [ "i8x32"; "i8x32" ], "i8x32", "avx2"
+      "Simd.X86.maddPairs8", "llvm.x86.sse2.pmadd.wd", [ "i16x8"; "i16x8" ], "i32x4", ""
+      "Simd.X86.maddPairs16", "llvm.x86.avx2.pmadd.wd", [ "i16x16"; "i16x16" ], "i32x8", "avx2"
+      "Simd.X86.sadBytes16", "llvm.x86.sse2.psad.bw", [ "u8x16"; "u8x16" ], "u64x2", ""
+      "Simd.X86.sadBytes32", "llvm.x86.avx2.psad.bw", [ "u8x32"; "u8x32" ], "u64x4", "avx2"
+      "Simd.Arm.rsqrtEstimate4", "llvm.aarch64.neon.frsqrte.v4f32", [ "f32x4" ], "f32x4", ""
+      "Simd.Arm.recipEstimate4", "llvm.aarch64.neon.frecpe.v4f32", [ "f32x4" ], "f32x4", ""
+      "Simd.Arm.pairwiseAdd4", "llvm.aarch64.neon.faddp.v4f32", [ "f32x4"; "f32x4" ], "f32x4", ""
+      "Simd.Arm.tableLookup16", "llvm.aarch64.neon.tbl1.v16i8", [ "i8x16"; "i8x16" ], "i8x16", ""
+      "Simd.Arm.dotBytes16", "llvm.aarch64.neon.sdot.v4i32.v16i8", [ "i32x4"; "i8x16"; "i8x16" ], "i32x4", "dotprod" ]
+
+/// x86-64's SIMD features, each implying those before it.
+let x86Levels = [ "sse"; "sse2"; "sse3"; "ssse3"; "sse4.1"; "sse4.2"; "avx"; "avx2" ]
+
+/// What --cpu's x86-64 microarchitecture levels have, by the levels' definitions.
+let x86CpuFeatures =
+    dict
+        [ "x86-64", [ "sse2" ]
+          "x86-64-v2", [ "sse4.2"; "popcnt" ]
+          "x86-64-v3", [ "avx2"; "fma"; "bmi"; "bmi2"; "f16c" ]
+          "x86-64-v4", [ "avx2"; "fma"; "bmi"; "bmi2"; "f16c"; "avx512f"; "avx512bw"; "avx512cd"; "avx512dq"; "avx512vl" ] ]
+
+/// Whether these features (with what each implies) include the one needed.
+let featuresInclude (have: string list) (need: string) =
+    need = ""
+    || List.contains need have
+    || (match List.tryFindIndex ((=) need) x86Levels with
+        | Some i -> have |> List.exists (fun h -> match List.tryFindIndex ((=) h) x86Levels with
+                                                  | Some j -> j >= i
+                                                  | None -> h = "fma" && i <= 6 || h.StartsWith "avx512")
+        | None -> false)
+
+/// The module of a SIMD type's functions: F32x4 for f32x4, Mask4 for mask4.
+let simdModule (n: string) = string (System.Char.ToUpper n[0]) + n.Substring 1
+
+let prims = nums + simdNames + set [ "bool"; "char"; "string"; "cstr"; "cptr"; "unit" ] // cptr: any other C pointer, opaque
 let kAny = { allowed = None; traits = Set.empty }
 let private allow s = { allowed = Some s; traits = Set.empty }
 let kInt, kFloat, kNumeric = allow ints, allow floats, allow nums
@@ -41,14 +107,16 @@ let kTrait (t: string) = { allowed = None; traits = set [ t ] }
 
 /// Built-in impls of the prelude's operator traits for primitive types.
 let builtinImpls =
+    let vectors = set (List.map (fun (n, _, _) -> n) vectorTypes)
+
     dict
-        [ "Add", nums.Add "string"
-          "Num", nums
-          "Eq", nums + set [ "string"; "bool"; "char"; "unit" ]
+        [ "Add", nums + vectors |> Set.add "string"
+          "Num", nums + vectors
+          "Eq", nums + simdNames + set [ "string"; "bool"; "char"; "unit" ]
           "Ord", nums + set [ "string"; "char" ]
-          "Show", nums + set [ "string"; "bool"; "char" ]
+          "Show", nums + simdNames + set [ "string"; "bool"; "char" ]
           "Hash", nums + set [ "string"; "bool"; "char" ]
-          "Share", nums + set [ "string"; "bool"; "char"; "unit" ] ]
+          "Share", nums + simdNames + set [ "string"; "bool"; "char"; "unit" ] ]
 
 let hasBuiltinImpl (tr: string) (n: string) =
     match builtinImpls.TryGetValue tr with
@@ -572,6 +640,9 @@ type Program =
       values: (string * string) list // top-level values computed at startup, in order: name, init function
       tests: string list // [<Test>] functions (unit -> unit), in source order
       clayouts: HashSet<string> // [<CLayout>] records
+      /// [<Target "avx2,fma">] functions: "target" and the features; [<Multiversion("avx2",
+      /// "sse4.2")>] ones: "multiversion" and a version's features each
+      targets: Dictionary<string, string list>
       errors: Diagnostic list // when type-checking in collect mode
       hovers: Hover list // inferred types at source positions (editor support)
       memberNames: Dictionary<string, string list> } // type -> its members (completion)
@@ -636,6 +707,16 @@ and private plainUnionIn (types: Dictionary<string, TypeInfo>) (visiting: Set<st
     | _ -> false
 
 let needsRc (types: Dictionary<string, TypeInfo>) t = heapIn types Set.empty t
+
+/// The function a monomorphized name comes from: f for f<int>, and for f$lam2 (a lambda in f).
+let baseFunName (n: string) =
+    let n = match n.IndexOf '$' with
+            | -1 -> n
+            | i -> n.Substring(0, i)
+
+    match n.IndexOf '<' with
+    | i when i > 0 -> n.Substring(0, i)
+    | _ -> n
 
 /// What keeps a type's values from being shared between threads (the Share trait, DESIGN §7):
 /// None when they can be. Numbers, strings and the like, share<F> functions, the values threads

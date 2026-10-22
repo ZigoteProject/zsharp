@@ -31,6 +31,7 @@ let main () =
 | Types | traits for operators, equality, ordering and printing; derived for records and unions, or written as derives in Z#; `dyn` values |
 | Concurrency | `task { }` on an event loop per thread: timers, TCP sockets, `both`/`all`/`race`, scopes, cancellation that disposes `use` values, `Task.spawn` onto every core; `option { }` and `result { }` |
 | Parallelism | a work-stealing thread pool (`Parallel.both`/`for`/`reduce`, `Array.Parallel`), `Atomic`, `Mutex`, `Channel`; what crosses threads is checked at compile time, and only shared objects have atomic reference counts |
+| SIMD | portable vectors (`f32x8`, `u8x16`, … with masks and shuffles), `[<FastMath>]`, `--cpu`, `[<Target>]`, `[<Multiversion>]`, x86-64 and aarch64 intrinsics; within 10% of C with intrinsics |
 | Values | copy-on-write arrays, persistent `Map`/`Set`, `HashMap`, checked integer overflow, weak references, arenas |
 | Performance | within 1.21× of C on the [host benchmarks](docs/reports/host.md), with C's peak memory, except `fib` at 2.0×, all overflow checks (C with the same checks takes 1.8×); [as fast as C](docs/reports/microcontrollers.md) on Cortex-M compute code |
 | Projects | `zs.toml` with path and git dependencies, `zs test`, `zs fmt`, `zs doc` |

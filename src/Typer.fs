@@ -179,6 +179,54 @@ type private Builtin =
       ty: Ty
       arity: int }
 
+/// The functions on SIMD vectors and masks (DESIGN §8), a module per type (F32x4.splat,
+/// Mask8.any), built into the compiler: b makes each one's entry.
+let private simdBuiltins (b: string -> string -> Kind list -> Ty -> int -> string * Builtin) =
+    let f x y = TFun(x, y)
+
+    [ for n, e, k in vectorTypes do
+          let v, et, m = tcon n, tcon e, simdModule n
+          let mask = tcon (sprintf "mask%d" k)
+          let arr = TCon("array", [ et ])
+          b (m + ".splat") "vec.splat" [] (f et v) 1
+          b (m + ".load") "vec.load" [] (f arr (f tInt v)) 2
+          b (m + ".store") "vec.store" [] (f arr (f tInt (f v arr))) 3
+          b (m + ".get") "vec.get" [] (f v (f tInt et)) 2
+          b (m + ".set") "vec.set" [] (f v (f tInt (f et v))) 3
+          b (m + ".init") "vec.init" [] (f (f tInt et) v) 1
+          b (m + ".sum") "vec.sum" [] (f v et) 1
+          b (m + ".min") "vec.min" [] (f v (f v v)) 2
+          b (m + ".max") "vec.max" [] (f v (f v v)) 2
+          b (m + ".reduceMin") "vec.reduceMin" [] (f v et) 1
+          b (m + ".reduceMax") "vec.reduceMax" [] (f v et) 1
+          b (m + ".abs") "vec.abs" [] (f v v) 1
+
+          for c in [ "equal"; "notEqual"; "lessThan"; "lessOrEqual"; "greaterThan"; "greaterOrEqual" ] do
+              b (m + "." + c) ("vec." + c) [] (f v (f v mask)) 2
+
+          b (m + ".select") "vec.select" [] (f mask (f v (f v v))) 3
+          b (m + ".shuffle") "vec.shuffle" [] (f v (f v (f (TCon("array", [ tInt ])) v))) 3
+
+          if floats.Contains e then
+              for g in [ "sqrt"; "floor"; "ceil"; "round" ] do
+                  b (m + "." + g) ("vec." + g) [] (f v v) 1
+
+              b (m + ".mulAdd") "vec.mulAdd" [] (f v (f v (f v v))) 3
+
+          // from the other vectors with as many lanes, lane by lane
+          for n2, _, k2 in vectorTypes do
+              if k2 = k && n2 <> n then
+                  b (m + ".of" + simdModule n2) "vec.convert" [] (f (tcon n2) v) 1
+      for name, intr, ps, r, _ in simdIntrinsics do
+          b name ("llvm:" + intr) [] (List.foldBack (fun p acc -> f (tcon p) acc) ps (tcon r)) ps.Length
+      for mn, _ in maskTypes do
+          let mt, mm = tcon mn, simdModule mn
+          b (mm + ".any") "mask.any" [] (f mt tBool) 1
+          b (mm + ".all") "mask.all" [] (f mt tBool) 1
+          b (mm + ".count") "mask.count" [] (f mt tInt) 1
+          b (mm + ".not") "mask.not" [] (f mt mt) 1
+          b (mm + ".get") "mask.get" [] (f mt (f tInt tBool)) 2 ]
+
 let private builtins =
     let a = TGen 0
     let f x y = TFun(x, y)
@@ -220,6 +268,7 @@ let private builtins =
           b "Collections.Array.set" "array.update" [ kAny ] (f (TCon("array", [ a ])) (f tInt (f a (TCon("array", [ a ]))))) 3
           b "Collections.Buffer.create" "Array.create" [ kAny ] (f tInt (f a (TCon("Buffer", [ a ])))) 2
           b "Collections.Buffer.length" "Array.length" [ kAny ] (f (TCon("Buffer", [ a ])) tInt) 1
+          b "Collections.Array.copy" "array.copy" [ kAny ] (f (TCon("array", [ a ])) (TCon("array", [ a ]))) 1
           b "Collections.Buffer.ofArray" "array.copy" [ kAny ] (f (TCon("array", [ a ])) (TCon("Buffer", [ a ]))) 1
           b "Collections.Buffer.toArray" "array.copy" [ kAny ] (f (TCon("Buffer", [ a ])) (TCon("array", [ a ]))) 1
           b "Int.wrappingAdd" "wrap+" [ kInt ] (f a (f a a)) 2
@@ -317,6 +366,7 @@ let private builtins =
 
                 b t "conv" [ kConvertible ] (f a (tcon target)) 1 ]
         @ [ b "char" "conv" [ kIntOrChar ] (f a tChar) 1 ]
+        @ simdBuiltins b
     )
 
 /// The built-in functions only `unsafe` code may call: raw memory through ptr<T>.
@@ -370,6 +420,7 @@ type State =
       counter: int ref // for unique names
       measures: HashSet<string> // [<Measure>] types
       clayouts: HashSet<string> // [<CLayout>] records
+      targets: Dictionary<string, string list> // [<Target>] and [<Multiversion>] functions (Program.targets)
       exports: ResizeArray<Export>
       tests: ResizeArray<string>
       consts: Dictionary<string, Expr> // constants (top-level and from import c): their uses are the expression
@@ -409,6 +460,7 @@ let private freshState () =
       counter = ref 0
       measures = HashSet()
       clayouts = HashSet()
+      targets = Dictionary()
       exports = ResizeArray()
       tests = ResizeArray()
       consts = Dictionary()
@@ -601,6 +653,7 @@ let checkFrom
 
     let mainNested = st.mainNested
     let wrapping = ref false // checking a [<Wrapping>] function: its integer + - * wrap
+    let fastMath = ref false // checking a [<FastMath>] function: its float + - * / may be reassociated
     let unsafeOn = ref false // inside `unsafe`
     let nestedModules = st.nestedModules
 
@@ -1633,7 +1686,18 @@ let checkFrom
     and arith (op: string) (ca: CExpr) (cb: CExpr) : CExpr =
         let isArith = List.contains op [ "+"; "-"; "*"; "/"; "%" ]
 
-        if List.contains op [ "&&&"; "|||"; "^^^"; "<<<"; ">>>" ] then
+        let simdBits =
+            match prune ca.ty with
+            | TCon(n, []) when isMaskName n -> List.contains op [ "&&&"; "|||"; "^^^" ]
+            | TCon(n, []) when isVectorName n -> ints.Contains(fst vectorInfo[n]) && List.contains op [ "&&&"; "|||"; "^^^"; "<<<"; ">>>" ]
+            | _ -> false
+
+        if simdBits then
+            // lane by lane, on integer vectors and masks; a vector's shift takes one int amount
+            let rt = if op = "<<<" || op = ">>>" then tInt else ca.ty
+            expect (sprintf "right operand of '%s'" op) rt cb.ty
+            mk (CBin(op, ca, cb)) ca.ty
+        elif List.contains op [ "&&&"; "|||"; "^^^"; "<<<"; ">>>" ] then
             // bitwise: both operands the same integer type (a shift amount too)
             try
                 unify (fresh kInt) ca.ty
@@ -1665,6 +1729,9 @@ let checkFrom
             // in a [<Wrapping>] function, + - * on integers wrap around (decided once the
             // operand type is known: on floats and strings they stay the usual ones)
             let op = if wrapping.Value && List.contains op [ "+"; "-"; "*" ] then "wrap" + op else op
+            // in a [<FastMath>] function, + - * / on floats are LLVM's fast ones (Mono keeps the
+            // mark only on floats and float vectors)
+            let op = if fastMath.Value && List.exists (fun (o: string) -> op.EndsWith o) [ "+"; "-"; "*"; "/" ] then "fast" + op else op
             mk (CBin(op, ca, cb)) (if isArith then ca.ty else tBool)
 
     /// Does either operand carry a unit of measure (so * and / combine units)?
@@ -3239,15 +3306,41 @@ let checkFrom
                       fname = q
                       pars = ptys |> List.filter (fun t -> prune t <> tUnit)
                       ret = resolve ret }
-            | Attrs([ "Wrapping", [] ], (Fun _ as f)) ->
+            | Attrs(attrs, (Fun(name, _, _, _, _) as f)) when
+                attrs |> List.forall (fun (a, _) -> List.contains a [ "Wrapping"; "FastMath"; "Target"; "Multiversion" ])
+                ->
                 // [<Wrapping>]: integer + - * in the function, its lambdas included, wrap around
-                // instead of panicking on overflow (hashes, checksums)
-                wrapping.Value <- true
+                // instead of panicking on overflow (hashes, checksums). [<FastMath>]: float + - * /
+                // may be reassociated (so a reduction vectorizes) and assume no NaNs or infinities
+                let has a = attrs |> List.exists (fst >> (=) a)
+                wrapping.Value <- has "Wrapping"
+                fastMath.Value <- has "FastMath"
 
                 try
                     declare ln f
                 finally
                     wrapping.Value <- false
+                    fastMath.Value <- false
+
+                // [<Target "avx2,fma">]: compiled for those CPU features; [<Multiversion("avx2",
+                // "sse4.2")>]: a version for each, and one for the baseline, chosen at startup
+                let features (args: string list) =
+                    if args |> List.exists (fun f -> f = "" || f.Contains " ") then
+                        fail 0 "CPU features are names such as \"avx2\", or several separated by commas: \"avx2,fma\""
+
+                    args
+
+                match has "Target", has "Multiversion" with
+                | true, true -> fail 0 "a function is either [<Target>] or [<Multiversion>], not both"
+                | true, _ ->
+                    match attrs |> List.find (fst >> (=) "Target") |> snd |> features with
+                    | [ fs ] -> st.targets[qualify name] <- [ "target"; fs ]
+                    | _ -> fail 0 "[<Target>] takes the features as one string: [<Target \"avx2,fma\">]"
+                | _, true ->
+                    match attrs |> List.find (fst >> (=) "Multiversion") |> snd |> features with
+                    | [] -> fail 0 "[<Multiversion>] takes a version's features each: [<Multiversion(\"avx2,fma\", \"sse4.2\")>]"
+                    | versions -> st.targets[qualify name] <- "multiversion" :: versions
+                | _ -> ()
             | Attrs([ "Test", [] ], (Fun(name, _, _, _, _) as f)) ->
                 declare ln f
                 let q = qualify name
@@ -3407,6 +3500,7 @@ let checkFrom
       values = List.ofSeq valueList
       tests = List.ofSeq tests
       clayouts = clayouts
+      targets = st.targets
       errors = List.ofSeq diagnostics
       hovers = List.ofSeq hovers
       memberNames =

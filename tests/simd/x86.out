@@ -1,0 +1,6 @@
+rsqrt close: true
+movemask 3
+pmaddwd <5, 25, 61, 113>
+psadbw <56, 56>
+hadd <5, 25, 5, 25>
+pshufb <45, 42, 39, 36, 33, 30, 27, 24, 21, 18, 15, 12, 9, 6, 3, 0>

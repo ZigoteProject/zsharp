@@ -88,6 +88,8 @@ declare void @zs_exit(i_W) noreturn
 declare void @llvm.memcpy.p0.p0.i_W(ptr, ptr, i_W, i1)
 declare void @zs_panic(ptr) noreturn
 declare void @zs_panic_c(ptr) noreturn
+declare ptr @zs_str_of_lanes(ptr, i_W, i_W)
+declare zeroext i1 @zs_cpu_supports(ptr)
 declare void @zs_loop_spawn(ptr)
 declare i_W @zs_loop_expect(ptr)
 declare void @zs_loop_fulfill(i_W)
@@ -410,6 +412,16 @@ let mutable target = ""
 /// weak cell), and a cell Perceus reuses is reported. Other programs pay for none of it.
 let mutable checkedHeap = false
 
+/// [<Target>] and [<Multiversion>] functions (Program.targets), set by the driver.
+let mutable targets = Dictionary<string, string list>()
+
+/// --cpu's name (the driver sets it), for the check that an intrinsic's features are there.
+let mutable cpu: string option = None
+
+/// The program has SIMD vectors of 32 or 64 bytes, which need that alignment in memory: its
+/// objects come from zs_alloc_wide, aligned to 64 bytes.
+let mutable wideVectors = false
+
 /// The program runs code on more than one thread (Parallel, Task.blocking): a value crossing to
 /// another thread has its objects marked shared, whose counts change atomically (DESIGN §7.1).
 /// Programs without threads have the plain counts.
@@ -447,6 +459,7 @@ let private resolveWord (ir: string) =
         let line = sized line
         let cut = line.IndexOf " c\""
         let head, tail = if cut < 0 then line, "" else line.Substring(0, cut), line.Substring cut
+        let head = if wideVectors then head.Replace("@zs_alloc(", "@zs_alloc_wide(") else head
         let head = if checkedHeap then head.Replace("@zs_alloc(", "@zs_alloc_checked(").Replace("@zs_free(", "@zs_free_checked(") else head
         head.Replace("i_W", w).Replace("HDR2", h2).Replace("HDR1", h1) + tail)
     |> String.concat "\n"
@@ -507,6 +520,10 @@ let compile
         | TCon("f32", []) -> "float"
         | TCon("bool", []) -> "i1"
         | TCon("unit", []) -> "{}"
+        | TCon(n, []) when isVectorName n ->
+            let e, k = vectorInfo[n]
+            sprintf "<%d x %s>" k (llty (tcon e))
+        | TCon(n, []) when isMaskName n -> sprintf "<%d x i1>" maskLanes[n]
         | TCon(("cstr" | "cptr" | "string" | "array" | "ref" | "weak" | "ptr" | "fnptr" | "Atomic" | "Mutex" | "Channel"), _)
         | TFun _ -> "ptr"
         | TCon(n, _) when isDynName n -> "ptr"
@@ -825,6 +842,96 @@ let compile
             em.Instr(sprintf "trunc i64 %s to i32" (em.Instr(sprintf "xor i64 %s, %s" v hi)))
         else
             v
+
+    /// A call to an LLVM intrinsic, declared the first time: name (llvm.sqrt.v4f32), result type,
+    /// typed arguments.
+    let intrinsic (em: Emitter) (name: string) (ret: string) (args: (string * string) list) (flags: string) =
+        let decl = sprintf "declare %s @%s(%s)" ret name (args |> List.map fst |> String.concat ", ")
+
+        if generated.Add decl then
+            helpers.Append(decl + "\n") |> ignore
+
+        em.Instr(sprintf "call %s%s @%s(%s)" flags ret name (args |> List.map (fun (t, v) -> t + " " + v) |> String.concat ", "))
+
+    /// A SIMD type's lanes and their LLVM type (a mask's are i1), and LLVM's name for it in an
+    /// intrinsic's (v4f32).
+    let simdShape (t: Ty) =
+        let n = tyName t
+
+        let e, k =
+            match vectorInfo.TryGetValue n with
+            | true, (e, k) -> e, k
+            | _ -> "bool", maskLanes[n]
+
+        let et = llty (tcon e)
+        let suffix = match et with
+                     | "float" -> "f32"
+                     | "double" -> "f64"
+                     | t -> t
+        e, k, et, sprintf "v%d%s" k suffix
+
+    /// x in every lane of a <k x et>.
+    let splat (em: Emitter) (k: int) (et: string) (x: string) =
+        let one = em.Instr(sprintf "insertelement <%d x %s> poison, %s %s, i32 0" k et et x)
+        em.Instr(sprintf "shufflevector <%d x %s> %s, <%d x %s> poison, <%d x i32> zeroinitializer" k et one k et k)
+
+    /// Whether any lane of a <k x i1> is true.
+    let anyLane (em: Emitter) (k: int) (m: string) =
+        intrinsic em (sprintf "llvm.vector.reduce.or.v%di1" k) "i1" [ sprintf "<%d x i1>" k, m ] ""
+
+    /// + - * / % on SIMD vectors, lane by lane (integers wrap, as SIMD instructions do, and
+    /// integer division checks every lane's divisor), bitwise operators on integer vectors and
+    /// masks (a shift's amount, an int, for every lane), and = <> on whole vectors.
+    let simdBin (em: Emitter) (op: string) (t: Ty) (a: string) (b: string) (fast: bool) =
+        let e, k, et, _ = simdShape t
+        let lt = llty t
+        let isF = floats.Contains e
+        let uns = unsigned.Contains e
+        let op = if op.StartsWith "wrap" then op.Substring 4 else op
+
+        match op with
+        | "="
+        | "<>" ->
+            let c = em.Instr(sprintf "%s %s %s, %s" (if isF then "fcmp oeq" else "icmp eq") lt a b)
+            let all = intrinsic em (sprintf "llvm.vector.reduce.and.v%di1" k) "i1" [ sprintf "<%d x i1>" k, c ] ""
+            if op = "=" then all else em.Instr(sprintf "xor i1 %s, true" all)
+        | "&&&" -> em.Instr(sprintf "and %s %s, %s" lt a b)
+        | "|||" -> em.Instr(sprintf "or %s %s, %s" lt a b)
+        | "^^^" -> em.Instr(sprintf "xor %s %s, %s" lt a b)
+        | "<<<"
+        | ">>>" ->
+            // modulo the lane's width, as for one integer
+            let bits = int (et.Substring 1)
+            let w = llty tInt
+            let wbits = int (w.Substring 1)
+
+            let amount =
+                if wbits = bits then b
+                elif wbits > bits then em.Instr(sprintf "trunc %s %s to %s" w b et)
+                else em.Instr(sprintf "sext %s %s to %s" w b et)
+
+            let amount = em.Instr(sprintf "and %s %s, %d" et amount (bits - 1))
+            let instr = if op = "<<<" then "shl" elif uns then "lshr" else "ashr"
+            em.Instr(sprintf "%s %s %s, %s" instr lt a (splat em k et amount))
+        | _ when isF -> em.Instr(sprintf "%s%s %s %s, %s" farith[op] (if fast then " fast" else "") lt a b)
+        | "+"
+        | "-"
+        | "*" -> em.Instr(sprintf "%s %s %s, %s" arith[op] lt a b)
+        | _ ->
+            // / and %: no lane divides by zero, nor MIN by -1 (which doesn't fit)
+            let zero = em.Instr(sprintf "icmp eq %s %s, zeroinitializer" lt b)
+            check em (em.Instr(sprintf "xor i1 %s, true" (anyLane em k zero))) "division by zero"
+
+            if not uns then
+                let bits = int (et.Substring 1)
+                let minv = if bits = 64 then string System.Int64.MinValue else string (-(1L <<< (bits - 1)))
+                let isMin = em.Instr(sprintf "icmp eq %s %s, %s" lt a (splat em k et minv))
+                let isNeg1 = em.Instr(sprintf "icmp eq %s %s, %s" lt b (splat em k et "-1"))
+                let bad = em.Instr(sprintf "and <%d x i1> %s, %s" k isMin isNeg1)
+                check em (em.Instr(sprintf "xor i1 %s, true" (anyLane em k bad))) "integer overflow"
+
+            let instr = (if uns then "u" else "s") + (if op = "/" then "div" else "rem")
+            em.Instr(sprintf "%s %s %s, %s" instr lt a b)
 
     /// Integer + - * that panics on overflow (llvm.*.with.overflow), in every build.
     let checkedArith (em: Emitter) (op: string) (unsigned: bool) (lt: string) (a: string) (b: string) =
@@ -1584,8 +1691,11 @@ let compile
         let linkage = if part.IsSome then "linkonce_odr hidden" else "internal"
         top.AppendLine(sprintf "%s = %s global %s zeroinitializer" (valueSym v) linkage (llty valueTypes[v])) |> ignore
 
-    let genFun (f: MFun) =
+    /// f's definition, named name, compiled for the CPU features (LLVM's target-features: avx2,fma
+    /// becomes +avx2,+fma; "" for the baseline).
+    let genFunAs (f: MFun) (name: string) (features: string) =
         let em = Emitter()
+        let featureList = if features = "" then [] else features.Split ',' |> Array.map (fun f -> f.Trim()) |> List.ofArray
 
         // this function's debug scope, and the line being generated
         let sp =
@@ -1801,9 +1911,11 @@ let compile
         let versioning = HashSet<CExpr>(HashIdentity.Reference) // for loops being generated as versions
         let uncheckedReads = HashSet<CExpr>(HashIdentity.Reference) // a.[i] proved in bounds
 
-        /// The array reads of a for loop's body that versioning can prove in bounds: a.[x],
-        /// a.[x ± c], a.[c - x], with a and c not assigned in the loop (c a constant or a variable
-        /// bound outside it). Returns the read nodes with (array, coefficient of x, c).
+        /// The array reads of a for loop's body that versioning can prove in bounds: a.[i] and
+        /// SIMD loads from a (F32x8.load a i, which read lanes elements), where i is x plus or minus
+        /// constants and variables bound outside the loop (c - x too), with a and those variables
+        /// not assigned in the loop. Returns the read nodes with (array, coefficient of x, the other
+        /// terms with their signs, lanes).
         let affineReads (env: Map<string, Binding>) (x: string) (body: CExpr) =
             let assigned = HashSet<string>()
 
@@ -1822,21 +1934,39 @@ let compile
                 | CLocal y -> y <> x && env.ContainsKey y && not (assigned.Contains y)
                 | _ -> false
 
-            let affine (idx: CExpr) =
+            // i as coef * x + the sum of the signed terms, each invariant; None if it isn't
+            let rec linear (sign: int) (idx: CExpr) : (int * (int * CExpr) list) option =
                 match idx.k with
-                | CLocal y when y = x -> Some(1, None)
-                | CBin("+", { k = CLocal y }, c)
-                | CBin("+", c, { k = CLocal y }) when y = x && invariant c -> Some(1, Some c)
-                | CBin("-", c, { k = CLocal y }) when y = x && invariant c -> Some(-1, Some c)
+                | CLocal y when y = x -> Some(sign, [])
+                | _ when invariant idx -> Some(0, [ sign, idx ])
+                | CBin(("+" | "-") as op, a, b) ->
+                    match linear sign a, linear (if op = "+" then sign else -sign) b with
+                    | Some(ca, ta), Some(cb, tb) -> Some(ca + cb, ta @ tb)
+                    | _ -> None
+                | CLine(_, e) -> linear sign e
                 | _ -> None
 
-            let found = ResizeArray<CExpr * (CExpr * int * CExpr option)>()
+            let affine (idx: CExpr) =
+                match linear 1 idx with
+                | Some((1 | -1) as coef, terms) -> Some(coef, terms)
+                | _ -> None
+
+            // an array the loop doesn't assign: a variable, or a field of one
+            let rec stable (a: CExpr) =
+                match a.k with
+                | CLocal arr -> arr <> x && env.ContainsKey arr && not (assigned.Contains arr)
+                | CField(r, _) -> stable r
+                | _ -> false
+
+            let found = ResizeArray<CExpr * (CExpr * int * (int * CExpr) list * int)>()
 
             let rec walk (e: CExpr) =
                 match e.k with
-                | CPrim("array.get#b", [ ({ k = CLocal arr } as a); idx ]) when arr <> x && env.ContainsKey arr && not (assigned.Contains arr) ->
+                | CPrim(("array.get#b" | "vec.load#b") as op, [ a; idx ]) when stable a ->
+                    let lanes = if op = "vec.load#b" then snd vectorInfo[tyName e.ty] else 1
+
                     match affine idx with
-                    | Some(coef, c) -> found.Add(e, (a, coef, c))
+                    | Some(coef, terms) -> found.Add(e, (a, coef, terms, lanes))
                     | None -> ()
 
                     walk idx
@@ -1858,6 +1988,19 @@ let compile
             | k -> children k |> List.exists hasLoop
 
         let rec nodes (e: CExpr) = 1 + (children e.k |> List.sumBy nodes)
+
+        let debugVersioning (x: string) (step: CExpr) (body: CExpr) (env: Map<string, Binding>) =
+            if not (isNull (System.Environment.GetEnvironmentVariable "ZS_DBGV")) then
+                eprintfn "CFor %s step=%A hasLoop=%b affine=%d" x step.k (hasLoop body) (affineReads env x body).Length
+
+            false
+
+        // a for loop's step that's a constant above 0 (as written: for x in a .. 8 .. b)
+        let rec positiveStep (s: CExpr) =
+            match s.k with
+            | CInt n -> n >= 1L
+            | CLine(_, s) -> positiveStep s
+            | _ -> false
 
         // at -Os only small bodies: duplicating them costs a few dozen bytes
         let versionedReads env x body =
@@ -2346,10 +2489,14 @@ let compile
                 let vb = gen env false b
                 let t = a.ty
                 let lt = llty t
+                // a [<FastMath>] function's float + - * /: LLVM's fast ones
+                let fast = op.StartsWith "fast"
+                let op = if fast then op.Substring 4 else op
                 // a [<Wrapping>] function's + - *: wrapping on integers, the usual ones otherwise
                 let op = if op.StartsWith "wrap" && not (ints.Contains(tyName t)) then op.Substring 4 else op
 
                 match tyName t with
+                | n when isVectorName n || isMaskName n -> simdBin em op t va vb fast
                 | "string" ->
                     let r =
                         if op = "+" then
@@ -2364,7 +2511,7 @@ let compile
                 | "unit" -> if op = "=" then "true" else "false"
                 | _ when isFloat t ->
                     if farith.ContainsKey op then
-                        em.Instr(sprintf "%s %s %s, %s" (farith[op]) lt va vb)
+                        em.Instr(sprintf "%s%s %s %s, %s" (farith[op]) (if fast then " fast" else "") lt va vb)
                     else
                         em.Instr(sprintf "fcmp %s %s %s, %s" (fcmp[op]) lt va vb)
                 | _ when op = "&&&" -> em.Instr(sprintf "and %s %s, %s" lt va vb)
@@ -2398,8 +2545,10 @@ let compile
             | CNeg a ->
                 let va = gen env false a
 
-                if isFloat a.ty then
+                if isFloat a.ty || (isVectorName (tyName a.ty) && floats.Contains(fst vectorInfo[tyName a.ty])) then
                     em.Instr(sprintf "fneg %s %s" (llty a.ty) va)
+                elif isVectorName (tyName a.ty) then
+                    em.Instr(sprintf "sub %s zeroinitializer, %s" (llty a.ty) va) // wrapping, lane by lane
                 else
                     checkedArith em "-" (isUnsigned a.ty) (llty a.ty) "0" va
             | CNot a -> em.Instr(sprintf "xor i1 %s, true" (gen env false a))
@@ -2487,9 +2636,11 @@ let compile
                     uniqueSlots.Remove x |> ignore
 
                 r
-            | CFor(x, a, { k = CInt 1L }, b, body) when not (versioning.Contains e) && not (versionedReads env x body).IsEmpty ->
-                // loop versioning: if every a.[x ± c] the loop reads is in bounds for the whole
-                // range, run a copy of the loop without those bounds checks; otherwise the checked one
+            | CFor(x, a, step, b, body) when (debugVersioning x step body env) -> "dbg"
+            | CFor(x, a, step, b, body) when positiveStep step && not (versioning.Contains e) && not (versionedReads env x body).IsEmpty ->
+                // loop versioning: if every a.[x ± c] (and SIMD load) the loop reads is in bounds
+                // for the whole range, run a copy of the loop without those bounds checks; otherwise
+                // the checked one
                 let reads = versionedReads env x body
                 let lt = llty a.ty
                 let va = gen env false a
@@ -2509,17 +2660,26 @@ let compile
                 let ok =
                     reads
                     |> List.fold
-                        (fun ok (arr: CExpr, coef, c) ->
-                            let cv = match c with Some c -> value c | None -> "0"
+                        (fun ok (arr: CExpr, coef, terms, lanes) ->
+                            // the index's other terms summed (any overflow fails the test)
+                            let cv, bad =
+                                terms
+                                |> List.fold
+                                    (fun (acc, bad) (sign, t) -> ovf (if sign > 0 then "add" else "sub") acc (value t) bad)
+                                    ("0", "false")
+
                             let lo, hi, bad =
                                 if coef > 0 then
-                                    let lo, bad = ovf "add" va cv "false"
+                                    let lo, bad = ovf "add" va cv bad
                                     let hi, bad = ovf "add" vb cv bad
                                     lo, hi, bad
                                 else
-                                    let lo, bad = ovf "sub" cv vb "false"
+                                    let lo, bad = ovf "sub" cv vb bad
                                     let hi, bad = ovf "sub" cv va bad
                                     lo, hi, bad
+
+                            // a SIMD load reads lanes elements from its index
+                            let hi, bad = if lanes > 1 then ovf "add" hi (string (lanes - 1)) bad else hi, bad
 
                             let len = loadLen em (em.Instr(sprintf "getelementptr { i_W, i_W }, ptr %s, i32 0, i32 1" (value arr)))
                             let inRange = em.Instr(sprintf "and i1 %s, %s" (em.Instr(sprintf "icmp sge %s %s, 0" lt lo)) (em.Instr(sprintf "icmp slt %s %s, %s" lt hi len)))
@@ -2618,6 +2778,171 @@ let compile
                 let len = loadLen em lenp
                 check em (em.Instr(sprintf "icmp ult i_W %s, %s" i len)) "index out of bounds"
 
+            // SIMD vectors and masks (DESIGN §8): their functions, a module per type (F32x8.load)
+            let simdPrim (op: string) (args: CExpr list) (vs: string list) (argTy: int -> Ty) (ty: Ty) (borrowed0: bool) (unchecked: bool) =
+                let arg i = List.item i vs
+                // the vector type the function is about: its result's, store's third argument's, or
+                // the first argument's
+                let vt =
+                    if List.contains op [ "vec.splat"; "vec.load"; "vec.init"; "vec.convert"; "vec.select"; "vec.shuffle"; "vec.set" ] then ty
+                    elif op = "vec.store" then argTy 2
+                    else argTy 0
+                let e, k, et, sfx = simdShape vt
+                let lt = llty vt
+                let isF = floats.Contains e
+                let uns = unsigned.Contains e
+                let mask = sprintf "<%d x i1>" k
+                let un (name: string) = intrinsic em (sprintf "llvm.%s.%s" name sfx) lt [ lt, arg 0 ] ""
+                let bin (name: string) = intrinsic em (sprintf "llvm.%s.%s" name sfx) lt [ lt, arg 0; lt, arg 1 ] ""
+                let lane (i: string) = check em (em.Instr(sprintf "icmp ult i_W %s, %d" i k)) "lane out of range"
+
+                // the k elements of array arg 0 from index i: all of them in it, or a panic
+                let inArray (a: string) (i: string) =
+                    let len = loadLen em (em.Instr(sprintf "getelementptr { i_W, i_W }, ptr %s, i32 0, i32 1" a))
+                    let ok1 = em.Instr(sprintf "icmp ult i_W %s, %s" i len)
+                    let ok2 = em.Instr(sprintf "icmp ule i_W %d, %s" k (em.Instr(sprintf "sub i_W %s, %s" len i)))
+                    check em (em.Instr(sprintf "and i1 %s, %s" ok1 ok2)) "index out of bounds"
+                    em.Instr(sprintf "getelementptr inbounds nuw { i_W, i_W, [0 x %s] }, ptr %s, i32 0, i32 2, i_W %s" et a i)
+
+                let align =
+                    match et with
+                    | "i8" -> "1"
+                    | "i16" -> "2"
+                    | "i32"
+                    | "float" -> "4"
+                    | _ -> "8"
+
+                match op with
+                | "vec.splat" -> splat em k et (arg 0)
+                | "vec.load" ->
+                    // unchecked: a versioned loop proved it in bounds
+                    let p =
+                        if unchecked then
+                            em.Instr(sprintf "getelementptr inbounds nuw { i_W, i_W, [0 x %s] }, ptr %s, i32 0, i32 2, i_W %s" et (arg 0) (arg 1))
+                        else
+                            inArray (arg 0) (arg 1)
+
+                    let v = em.Instr(sprintf "load %s, ptr %s, align %s" lt p align)
+                    if not borrowed0 then dropValue em (argTy 0) (arg 0)
+                    v
+                | "vec.store" ->
+                    // the array with the lanes written from index i (in place when it was unique)
+                    let u = em.Instr(sprintf "call ptr %s(ptr %s)" (uniqueFn (argTy 0) false) (arg 0))
+                    let p = inArray u (arg 1)
+                    em.Emit(sprintf "store %s %s, ptr %s, align %s" lt (arg 2) p align)
+                    u
+                | "vec.get" ->
+                    lane (arg 1)
+                    em.Instr(sprintf "extractelement %s %s, i_W %s" lt (arg 0) (arg 1))
+                | "vec.set" ->
+                    lane (arg 1)
+                    em.Instr(sprintf "insertelement %s %s, %s %s, i_W %s" lt (arg 0) et (arg 2) (arg 1))
+                | "vec.init" ->
+                    // f 0, …, f (k - 1), in order
+                    let code = em.Instr(sprintf "load ptr, ptr %s" (em.Instr(sprintf "getelementptr { i_W, ptr }, ptr %s, i32 0, i32 1" (arg 0))))
+
+                    let v =
+                        [ 0 .. k - 1 ]
+                        |> List.fold
+                            (fun acc i ->
+                                let x = em.Instr(sprintf "call %s %s(ptr %s, i_W %d)" et code (arg 0) i)
+                                em.Instr(sprintf "insertelement %s %s, %s %s, i32 %d" lt acc et x i))
+                            "poison"
+
+                    dropValue em (argTy 0) (arg 0)
+                    v
+                | "vec.sum" ->
+                    // in no particular order (floats: a tree, as SIMD code adds them)
+                    if isF then
+                        intrinsic em (sprintf "llvm.vector.reduce.fadd.%s" sfx) et [ et, "-0.0"; lt, arg 0 ] "reassoc "
+                    else
+                        intrinsic em (sprintf "llvm.vector.reduce.add.%s" sfx) et [ lt, arg 0 ] ""
+                | "vec.min" -> bin (if isF then "minnum" elif uns then "umin" else "smin")
+                | "vec.max" -> bin (if isF then "maxnum" elif uns then "umax" else "smax")
+                | "vec.reduceMin"
+                | "vec.reduceMax" ->
+                    let which = if op = "vec.reduceMin" then "min" else "max"
+                    let name = if isF then "f" + which elif uns then "u" + which else "s" + which
+                    intrinsic em (sprintf "llvm.vector.reduce.%s.%s" name sfx) et [ lt, arg 0 ] ""
+                | "vec.abs" ->
+                    if isF then un "fabs"
+                    elif uns then arg 0
+                    else intrinsic em (sprintf "llvm.abs.%s" sfx) lt [ lt, arg 0; "i1", "false" ] ""
+                | "vec.equal"
+                | "vec.notEqual"
+                | "vec.lessThan"
+                | "vec.lessOrEqual"
+                | "vec.greaterThan"
+                | "vec.greaterOrEqual" ->
+                    let rel =
+                        match op.Substring 4 with
+                        | "equal" -> "eq"
+                        | "notEqual" -> "ne"
+                        | "lessThan" -> "lt"
+                        | "lessOrEqual" -> "le"
+                        | "greaterThan" -> "gt"
+                        | _ -> "ge"
+
+                    if isF then
+                        em.Instr(sprintf "fcmp %s %s %s, %s" (if rel = "ne" then "une" else "o" + rel) lt (arg 0) (arg 1))
+                    else
+                        let pred = if rel = "eq" || rel = "ne" then rel elif uns then "u" + rel else "s" + rel
+                        em.Instr(sprintf "icmp %s %s %s, %s" pred lt (arg 0) (arg 1))
+                | "vec.select" ->
+                    let vt = argTy 1
+                    em.Instr(sprintf "select %s %s, %s %s, %s %s" (llty (argTy 0)) (arg 0) (llty vt) (arg 1) (llty vt) (arg 2))
+                | "vec.shuffle" ->
+                    // the lanes the indices pick from a's then b's: constants
+                    let rec literal (c: CExpr) =
+                        match c.k with
+                        | CLine(_, c) -> literal c
+                        | CPrim("array.lit", xs) when xs |> List.forall (fun x -> match x.k with CInt _ -> true | _ -> false) ->
+                            Some(xs |> List.map (fun x -> match x.k with CInt n -> n | _ -> 0L))
+                        | _ -> None
+
+                    match literal (List.item 2 args) with
+                    | Some ix when ix.Length = k && ix |> List.forall (fun i -> i >= 0L && i < int64 (2 * k)) ->
+                        dropValue em (argTy 2) (arg 2)
+                        let m = ix |> List.map (sprintf "i32 %d") |> String.concat ", "
+                        em.Instr(sprintf "shufflevector %s %s, %s %s, <%d x i32> <%s>" lt (arg 0) lt (arg 1) k m)
+                    | _ -> fail 0 (sprintf "%s.shuffle's indices must be an array literal of %d numbers from 0 to %d" (simdModule (tyName vt)) k (2 * k - 1))
+                | "vec.sqrt" -> un "sqrt"
+                | "vec.floor" -> un "floor"
+                | "vec.ceil" -> un "ceil"
+                | "vec.round" -> un "roundeven"
+                | "vec.mulAdd" -> intrinsic em (sprintf "llvm.fma.%s" sfx) lt [ lt, arg 0; lt, arg 1; lt, arg 2 ] ""
+                | "vec.convert" ->
+                    // lane by lane, from the argument's type: floats saturate into integers
+                    let e1, _, et1, sfx1 = simdShape (argTy 0)
+                    let lt1 = llty (argTy 0)
+                    let bits (t: string) = if t = "float" then 32 elif t = "double" then 64 else int (t.Substring 1)
+
+                    match floats.Contains e1, isF with
+                    | true, true ->
+                        if bits et1 = bits et then arg 0
+                        else em.Instr(sprintf "%s %s %s to %s" (if bits et1 < bits et then "fpext" else "fptrunc") lt1 (arg 0) lt)
+                    | false, true -> em.Instr(sprintf "%s %s %s to %s" (if unsigned.Contains e1 then "uitofp" else "sitofp") lt1 (arg 0) lt)
+                    | true, false -> intrinsic em (sprintf "llvm.%s.sat.%s.%s" (if uns then "fptoui" else "fptosi") sfx sfx1) lt [ lt1, arg 0 ] ""
+                    | false, false ->
+                        if bits et1 = bits et then arg 0
+                        elif bits et1 > bits et then em.Instr(sprintf "trunc %s %s to %s" lt1 (arg 0) lt)
+                        else em.Instr(sprintf "%s %s %s to %s" (if unsigned.Contains e1 then "zext" else "sext") lt1 (arg 0) lt)
+                | "mask.any" -> anyLane em k (arg 0)
+                | "mask.all" -> intrinsic em (sprintf "llvm.vector.reduce.and.v%di1" k) "i1" [ mask, arg 0 ] ""
+                | "mask.count" ->
+                    let bitsN = em.Instr(sprintf "bitcast %s %s to i%d" mask (arg 0) k)
+                    let n = intrinsic em (sprintf "llvm.ctpop.i%d" k) (sprintf "i%d" k) [ sprintf "i%d" k, bitsN ] ""
+                    let w = llty tInt
+                    let wbits = int (w.Substring 1)
+                    if wbits = k then n elif wbits > k then em.Instr(sprintf "zext i%d %s to %s" k n w) else em.Instr(sprintf "trunc i%d %s to %s" k n w)
+                | "mask.not" ->
+                    let ones = List.replicate k "i1 true" |> String.concat ", "
+                    em.Instr(sprintf "xor %s %s, <%s>" mask (arg 0) ones)
+                | "mask.get" ->
+                    lane (arg 1)
+                    em.Instr(sprintf "extractelement %s %s, i_W %s" mask (arg 0) (arg 1))
+                | _ -> failwithf "Codegen: unknown SIMD function %s" op
+
             // how an Atomic stores its value: as it is, except a bool, which is a byte (atomic
             // operations take whole bytes)
             let atomicRep (t: Ty) =
@@ -2659,6 +2984,15 @@ let compile
                 let lt = llty t
 
                 match tyName t with
+                | n when isVectorName n || isMaskName n ->
+                    // <1, 2, 3, 4>: the lanes from memory, a mask's as bytes
+                    let e, k, _, _ = simdShape t
+                    let lanes, v = if isMaskName n then sprintf "<%d x i8>" k, em.Instr(sprintf "zext %s %s to <%d x i8>" lt (arg 0) k) else lt, arg 0
+                    let slot = "%" + em.Fresh "lanes"
+                    em.Alloca(sprintf "%s = alloca %s" slot lanes)
+                    em.Emit(sprintf "store %s %s, ptr %s" lanes v slot)
+                    let kind = [ "f32"; "f64"; "i8"; "i16"; "i32"; "i64"; "u8"; "u16"; "u32"; "u64"; "bool" ] |> List.findIndex ((=) e)
+                    em.Instr(sprintf "call ptr @zs_str_of_lanes(ptr %s, i_W %d, i_W %d)" slot kind k)
                 | "string" -> arg 0
                 | "bool" -> em.Instr(sprintf "call ptr @zs_str_of_bool(i1 zeroext %s)" (arg 0))
                 | "char" -> em.Instr(sprintf "call ptr @zs_str_of_char(i32 %s)" (arg 0))
@@ -3017,6 +3351,40 @@ let compile
                 em.Emit(sprintf "call void @zs_chan_close(ptr %s)" (arg 0))
                 dropValue em (argTy 0) (arg 0)
                 "zeroinitializer"
+            | _ when op.StartsWith "vec." || op.StartsWith "mask." -> simdPrim op args vs argTy ty borrowed0 unchecked
+            | _ when op.StartsWith "llvm:" ->
+                // a target intrinsic (Simd.X86, Simd.Arm): for its architecture only
+                let name = op.Substring 5
+                let arch = if name.StartsWith "llvm.x86." then "x86_64" else "aarch64"
+
+                let building =
+                    if target = "" then
+                        if Runtime.InteropServices.RuntimeInformation.OSArchitecture = Runtime.InteropServices.Architecture.X64 then "x86_64" else "aarch64"
+                    else
+                        target.Split('-')[0]
+
+                let zsName, _, _, _, need = simdIntrinsics |> List.find (fun (_, i, _, _, _) -> i = name)
+
+                if building <> arch then
+                    fail 0 (sprintf "%s is for %s; this build is for %s" zsName arch building)
+
+                // the CPU feature it needs: the target's baseline has it, or --cpu, or the
+                // function's [<Target>] (an unknown --cpu, native say, is trusted)
+
+                let cpuHas =
+                    match cpu with
+                    | None -> Some [ "sse2" ]
+                    | Some c when arch = "x86_64" && x86CpuFeatures.ContainsKey c -> Some x86CpuFeatures[c]
+                    | Some _ -> None
+
+                match cpuHas with
+                | Some have when arch = "x86_64" && not (featuresInclude (have @ featureList) need) ->
+                    fail 0 (sprintf "%s needs the CPU feature %s: build with --cpu (x86-64-v3, say), or mark the function [<Target \"%s\">] (or [<Multiversion>])" zsName need need)
+                | _ when arch = "aarch64" && need <> "" && cpu.IsNone && not (List.contains need featureList) ->
+                    fail 0 (sprintf "%s needs the CPU feature %s: build with --cpu, or mark the function [<Target \"%s\">] (or [<Multiversion>])" zsName need need)
+                | _ -> ()
+
+                intrinsic em name (llty ty) (List.zip (args |> List.map (fun a -> llty a.ty)) vs) ""
             | "weak.new" ->
                 let t = argTy 0
 
@@ -3188,7 +3556,64 @@ let compile
             | Some p when p.called.Contains f.name -> "hidden"
             | _ -> "internal"
 
-        funcs.Append(sprintf "define %s %s %s(%s)%s%s {\n%s}\n\n" linkage rt (sym f.name) ps hint dbg em.Body) |> ignore
+        let linkage = if name <> f.name then "internal" else linkage // a version: only its dispatcher calls it
+
+        let features =
+            if features = "" then ""
+            else sprintf " \"target-features\"=\"%s\"" (features.Split ',' |> Array.map (fun f -> "+" + f.Trim()) |> String.concat ",")
+
+        funcs.Append(sprintf "define %s %s %s(%s)%s%s%s {\n%s}\n\n" linkage rt (sym name) ps hint features dbg em.Body) |> ignore
+
+    /// A [<Multiversion>] function: a version for each set of features, and one for the baseline;
+    /// its own name is a dispatcher that picks one the first time (the first the CPU has, in
+    /// order) and calls it.
+    let multiversion (f: MFun) (versions: string list) =
+        for v in versions do
+            genFunAs f (f.name + "." + v) v
+
+        genFunAs f (f.name + ".default") ""
+        let rt = llty f.ret
+        let ps = f.pars |> List.map (fun (x, t) -> sprintf "%s %%p.%s" (llty t) x) |> String.concat ", "
+        let slot = sprintf "@\"mv.%s\"" f.name
+        top.AppendLine(sprintf "%s = internal global ptr null" slot) |> ignore
+        let em = Emitter()
+        let cached = em.Instr(sprintf "load atomic ptr, ptr %s monotonic, align HDR1" slot)
+        em.Emit(sprintf "br i1 %s, label %%pick, label %%go" (em.Instr(sprintf "icmp eq ptr %s, null" cached)))
+        em.Label "pick"
+
+        let chosen =
+            List.foldBack
+                (fun (v: string) (rest: string) ->
+                    let name = sprintf "@\"cpu.%s\"" v
+
+                    if generated.Add name then
+                        top.AppendLine(sprintf "%s = private unnamed_addr constant [%d x i8] c\"%s\\00\"" name (v.Length + 1) v) |> ignore
+
+                    let ok = em.Instr(sprintf "call i1 @zs_cpu_supports(ptr %s)" name)
+                    em.Instr(sprintf "select i1 %s, ptr %s, ptr %s" ok (sym (f.name + "." + v)) rest))
+                versions
+                (sym (f.name + ".default"))
+
+        em.Emit(sprintf "store atomic ptr %s, ptr %s monotonic, align HDR1" chosen slot)
+        em.Emit "br label %go"
+        em.Label "go"
+        let p = em.Instr(sprintf "phi ptr [ %s, %%entry ], [ %s, %%pick ]" cached chosen)
+        let args = f.pars |> List.map (fun (x, t) -> sprintf "%s %%p.%s" (llty t) x) |> String.concat ", "
+        let r = em.Instr(sprintf "musttail call %s %s(%s)" rt p args)
+        em.Emit(sprintf "ret %s %s" rt r)
+
+        let linkage =
+            match part with
+            | Some p when p.called.Contains f.name -> "hidden"
+            | _ -> "internal"
+
+        funcs.Append(sprintf "define %s %s %s(%s) {\n%s}\n\n" linkage rt (sym f.name) ps em.Body) |> ignore
+
+    let genFun (f: MFun) =
+        match targets.TryGetValue(baseFunName f.name) with
+        | true, "multiversion" :: versions when not (f.name.Contains "$") -> multiversion f versions
+        | true, [ "target"; features ] -> genFunAs f f.name features
+        | _ -> genFunAs f f.name ""
 
     for KeyValue(name, s) in externs do
         let ret, sret = cRet s.ret
@@ -3200,7 +3625,6 @@ let compile
         if defined f.name then
             genFun f
 
-    /// Runs the initializers in order, storing each value (main's prologue).
     /// Runs the initializers in order, storing each value (main's prologue). With threads, a
     /// value threads can share is marked shared: any of them may read it.
     let initValues () =

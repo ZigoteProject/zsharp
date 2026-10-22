@@ -18,11 +18,11 @@ OCaml for the host benchmarks).
  alongside:            E editors, M microcontrollers, T more targets, P type providers,
                        S library, K packages
 
- done: 0–7, L and V        now: 8
+ done: 0–8, L and V        now: 9
 ```
 
 - **v1 (phases 0–6, L and V):** the complete single-threaded language. It is fast, memory-safe, has C interop, and runs async on one event loop.
-- **v2 (phases 7–9):** threads and parallelism (done), SIMD and the final performance work.
+- **v2 (phases 7–9):** threads and parallelism, SIMD (both done), and the final performance work.
 - **v3 (phase 10+):** effect handlers.
 - **Tracks:** editor tooling (E), microcontrollers (M), more targets (T), type providers (P), the library (S) and packages (K) run alongside the main line.
 
@@ -34,6 +34,7 @@ OCaml for the host benchmarks).
 - **Library:** a prelude, Core (collections, text, options, results: every target) and Std (console, environment, files, paths, processes, timing, tasks and TCP: targets with an OS), in .NET-style namespaces.
 - **Concurrency:** `Task` on an event loop per thread, with structured concurrency, cancellation that disposes `use` values, timers, TCP sockets, `Task.spawn` to run tasks on every core, and `Task.blocking` for C calls that block.
 - **Parallelism:** a work-stealing thread pool (`Parallel.both`, `for`, `reduce`, `Array.Parallel`), `Atomic`, `Mutex` and `Channel`; what crosses threads is checked at compile time (`Share`, `share<F>`), and only shared objects have atomic reference counts.
+- **SIMD:** portable vectors of every number type at 128, 256 and 512 bits (`f32x8`, `u8x16`, …) with masks and shuffles, `[<FastMath>]`, `--cpu`, `[<Target>]` and `[<Multiversion>]`, and x86-64 and aarch64 intrinsics; within 10% of C with intrinsics on both.
 - **C:** C import and export (static and shared libraries), C function pointers, Z# objects held by C as handles, and a panic hook for C hosts.
 - **Targets:** x86-64, aarch64 (cross), Cortex-M4 and M0+ (bare metal).
 - **Tooling:** projects with path and git dependencies, `zs test`/`fmt`/`doc`, gdb debug info (strings, records and unions as values), and an LSP, MCP server and Zed extension.
@@ -52,14 +53,6 @@ OCaml for the host benchmarks).
 7. **Targets (track T):** no macOS or Windows builds (and so no kqueue loop yet).
 
 ## Next
-
-### Phase 8: SIMD
-- **Scope:**
-  - **Vector types:** portable `f32x4`, `f32x8`, `f64x4`, `i32x8`, … with operators, `load`/`store`/`splat`/`shuffle`/`select` and reductions.
-  - **Float control:** `[<FastMath>]`.
-  - **Target control:** `--cpu`, `[<Target>]`, `[<Multiversion>]`.
-  - **Intrinsics:** `Simd.X86`, `Simd.Arm`.
-- **Exit test:** dot product, nbody and an image blur in SIMD Z# run within **10% of C with intrinsics**, from the same source on x86-64 and aarch64.
 
 ### Phase 9: optimizer II
 - **Scope:**
@@ -452,3 +445,23 @@ debugging, before phase 6 builds computation expressions and `Task` on the final
   - **ThreadSanitizer** reports nothing for both, nor for `tests/parallel/basics.zs` and `tests/task/spawn.zs`, which `./test.sh` runs under it.
   - **A `ref` sent to another thread** is a compile error, captured directly, through a local function, in a record, sent on a channel, or reached as a top-level value (`tests/err_share.zs`, `err_share_global.zs`, `err_share_param.zs`).
 - **Tests:** `tests/parallel/basics.zs` (every API; captured and top-level values; copy-on-write of a shared array; trees built in arenas on other threads; the same output on 1, 2 and 16 workers), `tests/task/spawn.zs`, and `tests/task/echo.sh` with `--threads`. Valgrind and the aarch64 suite pass.
+
+### Phase 8: SIMD ✅
+- **Vector types** (DESIGN §8, decisions 49 and 50): every number type at 128, 256 and 512 bits (`f32x4` … `u64x8`, 30 types) and masks (`mask2` … `mask64`), built in as LLVM's `<n x T>`, printed as `<1, 2, 3>`.
+  - **Operators:** `+ - * / %` lane by lane through `Add`, `Num` and `Eq` (`=` on whole vectors); integer vectors wrap, and integer division checks every lane; `&&& ||| ^^^`, and shifts by an `int`, on integer vectors and masks.
+  - **Functions,** a module per type (`F32x8.load`): `splat`, `init`, `load`, `store` (in place when unique), `get`, `set`, `sum`, `min`, `max`, `reduceMin`, `reduceMax`, `abs`, six comparisons giving masks, `select`, `shuffle` (constant indices, checked), conversions between vectors with as many lanes (saturating into integers), and `sqrt`, `floor`, `ceil`, `round`, `mulAdd` for floats; masks' `any`, `all`, `count`, `not`, `get`.
+  - **Memory:** a program with 32- or 64-byte vectors allocates 64-byte aligned (`zs_alloc_wide`), and arrays of them size their header by the vector's alignment.
+- **Bounds checks out of loops:** loop versioning takes `for` loops with any constant step, SIMD loads, and indices that are the loop variable plus or minus values the loop doesn't change (`up + x - 1`); reading an array through a record field (`b.x`) borrows it as reading a variable's does.
+- **`[<FastMath>]`:** a function's float `+ - * /` become LLVM's `fast` ones, so its reductions vectorize.
+- **Targets:** `--cpu` (`-march` on x86-64, `-mcpu` elsewhere); `[<Target "avx2,fma">]` (LLVM's target-features; such a function isn't inlined into others); `[<Multiversion("avx2,fma", "sse4.2")>]`: a version for each and the baseline, behind a dispatcher that asks the runtime once (`zs_cpu_supports`: cpuid on x86-64, the auxiliary vector on aarch64 Linux).
+- **Intrinsics:** `Simd.X86` (16: `rsqrt`, `rcp`, `hadd`, `movemask`, `pshufb`, `pmaddwd`, `psadbw` at 128 and 256 bits) and `Simd.Arm` (5: `frsqrte`, `frecpe`, `faddp`, `tbl`, `sdot`). One for the other architecture, or needing a feature the build doesn't have (a known `--cpu` level, or the function's `[<Target>]`), is a compile error saying which.
+- **Library:** `Array.copy` copies at once (a builtin).
+- **Exit test** (`bench/simd/run.sh`, best of 3 runs, C with AVX or NEON intrinsics; x86-64 for x86-64-v3, aarch64 cross-compiled and run under qemu-user):
+
+  | | dot | nbody | blur |
+  |---|---|---|---|
+  | x86-64, Z# / C | 65 / 63 ms (1.03) | 83 / 82 ms (1.01) | 77 / 74 ms (1.04) |
+  | aarch64, Z# / C | 6062 / 6132 ms (0.99) | 14662 / 14722 ms (1.00) | 3266 / 3135 ms (1.04) |
+
+  The same Z# source for both: a `f32x8` is one AVX register on x86-64 and two NEON registers on aarch64. The blur blurs between two images in both (allocating an image a pass cost Z# 2.5× before).
+- **Tests:** `tests/simd/basics.zs` (every operation, at 128, 256 and 512 bits), `attributes.zs`, `x86.zs`, `arm.zs` (built for aarch64 and run under qemu by `./test.sh`), `err_simd.zs`. The microcontroller suite runs as before.

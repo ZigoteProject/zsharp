@@ -72,14 +72,6 @@ Array.toList : array<'a> -> list<'a>
 
 A list with the array's elements, in order.
 
-### `Array.copy`
-
-```zsharp
-Array.copy : array<'a> -> array<'a>
-```
-
-A new array with the same elements.
-
 ### `Array.mapi`
 
 ```zsharp
@@ -159,6 +151,14 @@ Array.sortWith : ('a -> 'a -> 'b) -> array<'a> -> array<'a> when 'b : Ord
 ```
 
 A new array sorted with `f` (like `compare`). Stable.
+
+### `Array.copy`
+
+```zsharp
+Array.copy : array<'a> -> array<'a>
+```
+
+A new array with the same elements (copied at once, as by `memcpy`).
 
 ### `Array.create`
 

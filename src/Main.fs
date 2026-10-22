@@ -152,6 +152,18 @@ let main argv =
 
     let argv = argv |> Array.filter ((<>) "-Os")
 
+    // --cpu <name> or --cpu=<name> (native, x86-64-v3, neoverse-n1, …): the processor to
+    // compile for, taken out of the arguments
+    let argv =
+        match Array.tryFindIndex (fun (a: string) -> a = "--cpu" || a.StartsWith "--cpu=") argv with
+        | Some i when argv[i].StartsWith "--cpu=" ->
+            Driver.cpu <- Some(argv[i].Substring 6)
+            Array.append argv[.. i - 1] argv[i + 1 ..]
+        | Some i when i + 1 < argv.Length ->
+            Driver.cpu <- Some argv[i + 1]
+            Array.append argv[.. i - 1] argv[i + 2 ..]
+        | _ -> argv
+
     // --target <triple> (e.g. aarch64-linux-musl): a cross build, taken out of the arguments
     let argv =
         match Array.tryFindIndex ((=) "--target") argv with
@@ -424,5 +436,5 @@ let main argv =
             Rpc.input <- new Rpc.PrefixedStream([| byte first |], stdin)
             if char first = '{' then Mcp.serve () else Lsp.serve ()
     | _ ->
-        eprintfn "usage: zs new <name>\n       zs fetch | zs update\n       zs build [<file.zs> [-o <out>] [--lib]] [-g] [-Os] [--target <triple>] [--emit-llvm] [--sanitize[=thread]] [--time]\n       zs run [<file.zs> [-g] [--sanitize[=thread]] --] [program arguments…]\n       zs check <file.zs>\n       zs test [<file.zs>] [name filters…]\n       zs doc <file.zs>\n       zs fmt [--check] <files…>\n       zs lsp\n       zs mcp"
+        eprintfn "usage: zs new <name>\n       zs fetch | zs update\n       zs build [<file.zs> [-o <out>] [--lib]] [-g] [-Os] [--target <triple>] [--emit-llvm] [--sanitize[=thread]] [--cpu <name>] [--time]\n       zs run [<file.zs> [-g] [--sanitize[=thread]] --] [program arguments…]\n       zs check <file.zs>\n       zs test [<file.zs>] [name filters…]\n       zs doc <file.zs>\n       zs fmt [--check] <files…>\n       zs lsp\n       zs mcp"
         2

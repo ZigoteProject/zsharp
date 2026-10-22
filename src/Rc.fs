@@ -9,6 +9,13 @@ open Core
 open Mono
 
 /// entries: the functions called from outside (main, C exports), which own their parameters.
+/// The variable a value is, or a field (of a field…) of: what a read through it borrows.
+let rec private rootLocal (e: CExpr) =
+    match e.k with
+    | CLocal x -> Some x
+    | CField(r, _) -> rootLocal r
+    | _ -> None
+
 let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (entries: Set<string>) (funs: MFun list) : MFun list =
     let heap t = needsRc types t
     let mk k ty = { k = k; ty = ty }
@@ -629,11 +636,15 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (entrie
                 vtypes[t] <- e.ty
                 re (CLet(t, e, mk (CDup(t, e.ty, mk (CLocal t) e.ty)) e.ty))
             | CGlobalVal _ -> e
-            | CPrim(("array.get" | "Array.length" | "String.length" | "String.byte") as op, ({ k = CLocal x } as a) :: rest) when
-                not (rest |> List.exists (fun r -> (live r).Contains x))
+            | CPrim(("array.get" | "Array.length" | "String.length" | "String.byte" | "vec.load") as op, a :: rest) when
+                (match rootLocal a with
+                 | Some x -> not (rest |> List.exists (fun r -> (live r).Contains x))
+                 | None -> false)
                 ->
-                // reading an element or the length borrows the array (or string): no dup before,
-                // no drop inside; if this was x's last use, x is dropped after
+                // reading an element or the length borrows the array (or string), a variable or
+                // a record field of one: no dup before, no drop inside; if this was x's last use,
+                // x is dropped after
+                let x = (rootLocal a).Value
                 let rest' = rcList (owned.Remove x) (borrowed.Add x) rest
                 let read = re (CPrim(op + "#b", a :: rest'))
 

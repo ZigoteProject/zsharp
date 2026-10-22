@@ -384,7 +384,7 @@ let libraryDir = runtimeFile "lib"
 /// (core/Collections/List.zs is Collections.List). Core needs no operating system, so every
 /// target has it; Std is for targets that have one.
 let private coreFiles =
-    [ "Option"; "Result"; "Math"; "Int"; "Runtime"; "Mmio"; "Ptr"; "Weak"; "Arena"; "Collections/List"; "Collections/Array"; "Collections/Buffer"
+    [ "Option"; "Result"; "Math"; "Int"; "Runtime"; "Mmio"; "Ptr"; "Weak"; "Arena"; "Simd"; "Simd/X86"; "Simd/Arm"; "Collections/List"; "Collections/Array"; "Collections/Buffer"
       "Text/String"; "Text/Char"; "Collections/Map"; "Collections/Set"; "Collections/HashMap" ]
 
 let private stdFiles =
@@ -645,6 +645,10 @@ let private timed (phase: string) (f: unit -> 'a) : 'a =
 /// zs test: build the [<Test>] functions with a test dispatcher in place of `main`.
 let mutable testBuild = false
 
+/// --cpu: the processor to compile for (native, x86-64-v3, neoverse-n1, …); None for the
+/// target's baseline.
+let mutable cpu: string option = None
+
 /// --sanitize=thread: a sanitized build checks for data races (ThreadSanitizer) instead of
 /// memory errors (AddressSanitizer and UndefinedBehaviorSanitizer).
 let mutable threadSanitizer = false
@@ -670,6 +674,11 @@ let private lower (mainPath: string) (isLib: bool) =
             try
                 // a -g build keeps every function whole, so breakpoints on them hit
                 let fixedNames = set ("main" :: prog.tests @ (prog.exports |> List.map (fun e -> e.fname)))
+                // [<Target>] and [<Multiversion>] functions stay whole: their code is for features
+                // their callers may not have
+                Codegen.targets <- prog.targets
+                Codegen.cpu <- cpu
+                Inline.kept <- fun n -> prog.targets.ContainsKey(Core.baseFunName n)
                 let inline' = if Codegen.debugInfo then id else Inline.uncurry fixedNames >> Inline.run
                 // ZS_NO_DECIDE=1: matches as written, to compare with decision trees
                 let decide = if isNull (Environment.GetEnvironmentVariable "ZS_NO_DECIDE") then Decide.run prog.types else id
@@ -723,8 +732,25 @@ let private threaded =
 /// runtime counts objects atomically and locks its tables.
 let mutable private rtDefines: string list = []
 
+/// Whether the program has SIMD vectors of 32 or 64 bytes (Codegen.wideVectors).
+let private wideVectors (funs: Mono.MFun list) =
+    let rec wide (t: Core.Ty) =
+        match Core.prune t with
+        | Core.TCon(n, args) ->
+            (match Core.vectorInfo.TryGetValue n with
+             | true, (e, k) -> k * (if e = "f32" then 32 elif e = "f64" then 64 else int (e.Substring 1)) > 128
+             | _ -> false)
+            || List.exists wide args
+        | Core.TTuple ts -> List.exists wide ts
+        | Core.TFun(a, b) -> wide a || wide b
+        | _ -> false
+
+    let rec inExpr (e: Core.CExpr) = wide e.ty || Core.children e.k |> List.exists inExpr
+    funs |> List.exists (fun f -> wide f.ret || f.pars |> List.exists (snd >> wide) || inExpr f.body)
+
 let private setRuntime (funs: Mono.MFun list) =
     Codegen.checkedHeap <- checkedHeap funs
+    Codegen.wideVectors <- wideVectors funs
     Codegen.threaded <- threaded funs
     rtDefines <- if Codegen.threaded then [ "-DZS_THREADS" ] else []
 
@@ -864,6 +890,17 @@ let exec (exe: string) (args: string list) (capture: bool) : int * string =
 /// The optimization level for clang: -O2, or -Os (zs build -Os) for size.
 let mutable optLevel = "-O2"
 
+/// The optimization level, and the processor when --cpu names one: -march on x86-64, -mcpu
+/// elsewhere (as clang takes them).
+let private optFlags () =
+    let x86 =
+        if Codegen.target = "" then
+            Runtime.InteropServices.RuntimeInformation.OSArchitecture = Runtime.InteropServices.Architecture.X64
+        else
+            Codegen.target.StartsWith "x86_64"
+
+    optLevel :: (cpu |> Option.map (fun c -> (if x86 then "-march=" else "-mcpu=") + c) |> Option.toList)
+
 /// Runs a tool; None, or the failure with its output.
 let private run (exe: string) (args: string list) =
     let code, output = exec exe args true
@@ -905,7 +942,7 @@ let private objectOf (source: string) (c: bool) (flags: string list) : Result<st
 /// Compiles a program's LLVM modules to objects in parallel (each one the cache hasn't seen),
 /// the runtime too, and links them into an executable.
 let private linkParts (parts: string list) (out: string) : string option =
-    let flags = [ optLevel ]
+    let flags = optFlags ()
     let all = Array.ofList ((File.ReadAllText(runtimeFile "rt.c"), true) :: (parts |> List.map (fun ir -> ir, false)))
     let sw = Stopwatch.StartNew()
     let objects = all |> Array.Parallel.map (fun (source, c) -> objectOf source c (if c then flags @ rtDefines else flags))
@@ -976,7 +1013,7 @@ let build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) (isLib: 
             elif threadSanitizer then [ "-fsanitize=thread"; "-g" ]
             else [ "-fsanitize=address,undefined"; "-g" ]
         // -g: unoptimized, so stepping follows the source
-        let opt = if Codegen.debugInfo then [ "-O0"; "-g" ] else [ optLevel ]
+        let opt = if Codegen.debugInfo then [ "-O0"; "-g" ] else optFlags ()
 
         // a cross build (--target): clang compiles the IR for the target, and zig cc compiles the
         // runtime and links against Zig's bundled libc (musl: a static binary, no sysroot needed)
@@ -1096,8 +1133,73 @@ let docAbove (file: string) (line: int) : string option =
     if doc.Count = 0 then None else Some(String.concat "\n" doc)
 
 /// Docs for functions built into the compiler (they have no definition to read a comment from).
+/// The SIMD functions' docs: every vector type's module has the same functions.
+let private simdDocs =
+    [ for n, e, k in Core.vectorTypes do
+          let m = Core.simdModule n
+          let isF = Core.floats.Contains e
+          m + ".splat", sprintf "A %s with `x` in every lane." n
+          m + ".load", sprintf "The %d elements of the array from index `i` (all of them in it, or a panic)." k
+          m + ".store", "The array with the lanes written into it from index `i`: in place when nothing else refers to it (arrays are values)."
+          m + ".get", sprintf "Lane `i` (0 to %d)." (k - 1)
+          m + ".set", "The vector with lane `i` replaced by `x`."
+          m + ".init", sprintf "The vector of `f 0`, …, `f %d`." (k - 1)
+          m + ".sum", "The lanes added together, in no particular order (a tree, as SIMD code adds them)."
+          m + ".min", "Lane by lane, the smaller."
+          m + ".max", "Lane by lane, the larger."
+          m + ".reduceMin", "The smallest lane."
+          m + ".reduceMax", "The largest lane."
+          m + ".abs", "Lane by lane, the absolute value."
+          m + ".equal", sprintf "Lane by lane, whether `a`'s equals `b`'s: a mask%d." k
+          m + ".notEqual", sprintf "Lane by lane, whether `a`'s differs from `b`'s: a mask%d." k
+          m + ".lessThan", sprintf "Lane by lane, whether `a`'s is less than `b`'s: a mask%d." k
+          m + ".lessOrEqual", sprintf "Lane by lane, whether `a`'s is at most `b`'s: a mask%d." k
+          m + ".greaterThan", sprintf "Lane by lane, whether `a`'s is greater than `b`'s: a mask%d." k
+          m + ".greaterOrEqual", sprintf "Lane by lane, whether `a`'s is at least `b`'s: a mask%d." k
+          m + ".select", "Lane by lane, `a`'s where the mask is true, else `b`'s."
+          m + ".shuffle", sprintf "The lanes the indices pick (an array literal of %d constants): 0 to %d from `a`, %d to %d from `b`." k (k - 1) k (2 * k - 1)
+
+          if isF then
+              m + ".sqrt", "Lane by lane, the square root."
+              m + ".floor", "Lane by lane, the largest integer not above it."
+              m + ".ceil", "Lane by lane, the smallest integer not below it."
+              m + ".round", "Lane by lane, the nearest integer (halves to the even one)."
+              m + ".mulAdd", "Lane by lane, `a * b + c`, rounded once (a fused multiply-add)."
+
+          for n2, _, k2 in Core.vectorTypes do
+              if k2 = k && n2 <> n then
+                  m + ".of" + Core.simdModule n2, sprintf "A %s converted lane by lane (a float into an integer saturates)." n2
+      for mn, k in Core.maskTypes do
+          let mm = Core.simdModule mn
+          mm + ".any", "Whether any lane is true."
+          mm + ".all", "Whether every lane is true."
+          mm + ".count", "How many lanes are true."
+          mm + ".not", "Each lane negated."
+          mm + ".get", sprintf "Lane `i` (0 to %d)." (k - 1)
+      "Simd.X86.rsqrt4", "An estimate of 1 / sqrt x per lane, to within 1.5 × 2^-12 (SSE's rsqrtps)."
+      "Simd.X86.rsqrt8", "An estimate of 1 / sqrt x per lane, to within 1.5 × 2^-12 (AVX's vrsqrtps)."
+      "Simd.X86.rcp4", "An estimate of 1 / x per lane, to within 1.5 × 2^-12 (SSE's rcpps)."
+      "Simd.X86.rcp8", "An estimate of 1 / x per lane, to within 1.5 × 2^-12 (AVX's vrcpps)."
+      "Simd.X86.hadd4", "Pairs added: a0+a1, a2+a3, b0+b1, b2+b3 (SSE3's haddps)."
+      "Simd.X86.hadd8", "Pairs added within each 128-bit half (AVX's vhaddps)."
+      "Simd.X86.movemask4", "The lanes' sign bits as the low bits of an i32 (SSE's movmskps)."
+      "Simd.X86.movemask8", "The lanes' sign bits as the low bits of an i32 (AVX's vmovmskps)."
+      "Simd.X86.movemaskBytes16", "The bytes' top bits as the low bits of an i32 (SSE2's pmovmskb)."
+      "Simd.X86.movemaskBytes32", "The bytes' top bits as an i32 (AVX2's vpmovmskb)."
+      "Simd.X86.shuffleBytes16", "The bytes of `a` the indices in `b` pick; an index with its top bit set gives 0 (SSSE3's pshufb)."
+      "Simd.X86.shuffleBytes32", "pshufb within each 128-bit half (AVX2's vpshufb)."
+      "Simd.X86.maddPairs8", "The products of the i16 lanes, adjacent pairs added into i32s (SSE2's pmaddwd)."
+      "Simd.X86.maddPairs16", "pmaddwd over 256 bits (AVX2's vpmaddwd)."
+      "Simd.X86.sadBytes16", "The sums of absolute differences of each 8 bytes, as u64s (SSE2's psadbw)."
+      "Simd.X86.sadBytes32", "psadbw over 256 bits (AVX2's vpsadbw)."
+      "Simd.Arm.rsqrtEstimate4", "An estimate of 1 / sqrt x per lane, to 8 bits (NEON's frsqrte)."
+      "Simd.Arm.recipEstimate4", "An estimate of 1 / x per lane, to 8 bits (NEON's frecpe)."
+      "Simd.Arm.pairwiseAdd4", "Pairs added: a0+a1, a2+a3, b0+b1, b2+b3 (NEON's faddp)."
+      "Simd.Arm.tableLookup16", "The bytes of `a` the indices in `b` pick; an index past 15 gives 0 (NEON's tbl)."
+      "Simd.Arm.dotBytes16", "`acc` plus, per i32 lane, the dot product of 4 i8s of `a` and of `b` (the dotprod extension's sdot)." ]
+
 let builtinDocs =
-    dict
+    dict (
         [ "print", "Writes the string to standard output, without a newline."
           "println", "Writes the string and a newline to standard output."
           "eprintln", "Writes the string and a newline to standard error."
@@ -1120,6 +1222,7 @@ let builtinDocs =
           "Text.String.ofCStr", "A Z# string copied from a C string (`const char*`)."
           "Text.String.indexOfFrom", "The byte index of the first `sub` in `s` at or after byte `from`, or -1."
           "Collections.Array.set", "`a` with element `i` replaced by `x`. Arrays are values: `a` itself is unchanged (it is reused in place when nothing else refers to it)."
+          "Collections.Array.copy", "A new array with the same elements (copied at once, as by `memcpy`)."
           "Collections.Buffer.create", "A Buffer of `n` copies of `x`. A Buffer is shared and mutable: a write is seen through every reference."
           "Collections.Buffer.length", "The number of elements."
           "Collections.Buffer.ofArray", "A new Buffer with the array's elements."
@@ -1165,6 +1268,8 @@ let builtinDocs =
           "Environment.exit", "Ends the program now with the exit code (output is flushed; nothing else is cleaned up)."
           "IO.File.exists", "Whether `path` names an existing regular file."
           "IO.Directory.exists", "Whether `path` names an existing directory." ]
+        @ simdDocs
+    )
 
 /// A documented item of a source file, found by reading its declarations.
 type DocItem =

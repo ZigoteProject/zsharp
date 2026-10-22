@@ -592,6 +592,7 @@ let write (out: Stream) (st: State) (position: obj -> (int * int * int) option) 
     int' c st.counter.Value
     strSeq c st.measures
     strSeq c st.clayouts
+    dict' c str (fun c (vs: string list) -> list' c str vs) st.targets
     seq' c (fun c (e: Export) -> str c e.cname; str c e.fname; list' c ty e.pars; ty c e.ret) st.exports
     strSeq c st.tests
     dict' c str expr st.consts
@@ -1109,6 +1110,7 @@ let read (input: Stream) (place: obj -> int * int * int -> unit) : State =
     let counter = ref (rint c)
     let measures = set (HashSet()) rstr
     let clayouts = set (HashSet()) rstr
+    let targets = rdict c (Dictionary()) rstr (fun c -> rlist c rstr)
 
     let exports =
         resize (ResizeArray()) (fun c ->
@@ -1158,6 +1160,7 @@ let read (input: Stream) (place: obj -> int * int * int -> unit) : State =
       counter = counter
       measures = measures
       clayouts = clayouts
+      targets = targets
       exports = exports
       tests = tests
       consts = consts

@@ -90,6 +90,10 @@ let uncurry (fixedNames: Set<string>) (funs: MFun list) : MFun list =
             let ps, b = merge (f.pars, body)
             { f with pars = ps; ret = b.ty; body = b })
 
+/// Functions never inlined into others: [<Target>] and [<Multiversion>] ones, whose code is for
+/// CPU features their callers may not have (the driver sets it).
+let mutable kept: string -> bool = fun _ -> false
+
 /// Inlines calls to small functions that don't call themselves. Callees are done first, so a
 /// copy carries what was inlined into it.
 let run (funs: MFun list) : MFun list =
@@ -111,7 +115,7 @@ let run (funs: MFun list) : MFun list =
     let small =
         funs
         |> List.filter (fun f ->
-            f.name <> "main" && size f.body <= 60 && not (localFunctions f.body) && not (calls f.body |> List.contains f.name))
+            f.name <> "main" && not (kept f.name) && size f.body <= 60 && not (localFunctions f.body) && not (calls f.body |> List.contains f.name))
         |> List.map (fun f -> f.name)
         |> Set.ofList
 

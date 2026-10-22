@@ -66,6 +66,11 @@ for t in tests/parallel/basics tests/task/spawn; do
   else echo "FAIL $t.zs under ThreadSanitizer"; head -40 "$tmp/tsan.log"; fail=1; fi
 done
 
+# aarch64's intrinsics (Simd.Arm): built for it and run under qemu
+if command -v qemu-aarch64 >/dev/null && bin/zs build tests/simd/arm.zs --target aarch64-linux-musl -o "$tmp/arm" 2>"$tmp/arm.log" \
+   && [ "$(qemu-aarch64 "$tmp/arm" 2>&1)" = "$(cat tests/simd/arm.expected)" ]; then echo "ok   tests/simd/arm.zs (built for aarch64, under qemu)"
+else echo "FAIL tests/simd/arm.zs"; cat "$tmp/arm.log"; fail=1; fi
+
 # the checked library and modules, cached between builds: the same program from the cache
 if diff <(tests/cache.sh 2>&1) tests/cache.expected >"$tmp/cache.diff"; then echo "ok   tests/cache.sh (checked library, modules and compiled modules cached)"
 else echo "FAIL tests/cache.sh"; cat "$tmp/cache.diff"; fail=1; fi

@@ -85,7 +85,7 @@ let sumTo n =                            // imperative code is fine; mutation st
 - **Other types:** `bool`, `string` (UTF-8 bytes, reference-counted, immutable), `unit`.
   - **`char`:** a Unicode scalar value (32 bits), written `'a'`, `'\n'` or `'\u{1F600}'`. It has equality, ordering, hashing and printing, and `match` on character literals, but no arithmetic. `int c` and `char n` convert.
   - **Strings and characters:** `for c in s` decodes a string's UTF-8 character by character; `String.length` stays the byte length. The `Char` functions classify ASCII.
-  - **SIMD vectors** `f32x4`, `i32x8`, … are **(planned, phase 8)**.
+  - **SIMD vectors** `f32x4`, `i32x8`, `u8x32`, … (§8).
 - **Data:** tuples, records (`{ p with x = 1.0 }`), unions; library types `option`, `result`, `list`, `array`, `Buffer`, `ref`, `Map`, `Set`, `HashMap`.
 - **Functions:**
   - Curried, with closures (`fun x -> …`), `|>`, `>>` and partial application.
@@ -480,22 +480,24 @@ Written down before the optimizer was tuned (phase 5), so that phase 7 didn't un
   - **Atomic counts everywhere,** as in Swift: every count pays for the rare shared value.
   - **Copying at the crossing,** as in Erlang, or allowing only unique values to cross: a parallel map over one large shared tree, the common case, needs sharing.
 
-## 8. SIMD (planned, phase 8)
+## 8. SIMD
 
 There are three levels, from free to manual.
 
 1. **Autovectorization:** the compiler emits IR that LLVM can vectorize.
    - Arrays of plain values are contiguous.
    - Element access uses `inbounds nuw` addressing, and lengths carry range metadata.
-   - Bounds checks move out of loops (§9).
-   - Floats are strict IEEE by default. `[<FastMath>]` on a function allows reassociation, so reductions vectorize.
+   - Bounds checks move out of loops (§9): a `for` loop with a constant step checks the reads at its index, plus or minus values it doesn't change, once before it runs.
+   - Floats are strict IEEE by default. `[<FastMath>]` on a function makes its float `+ - * /` LLVM's `fast` ones (the type checker marks them, as `[<Wrapping>]` does integers'), so reductions vectorize.
 2. **Portable vector types** (like Zig's `@Vector`, C#'s `Vector128`):
-   - The types `f32x4`, `f32x8`, `f64x2`, `i32x8`, `u8x32`, … map to LLVM `<N x T>`.
-   - They come with operators through `Num`/`Ord`, plus `load`, `store`, `splat`, `shuffle`, `select` and reductions.
-   - LLVM handles operations a target lacks.
-3. **Target intrinsics:** `Simd.X86` and `Simd.Arm`, thin externs to LLVM intrinsics.
-   - **Choosing the CPU:** `--cpu=native|x86-64-v3|…`, or per function with `[<Target("avx2")>]`.
-   - **Choosing at startup:** `[<Multiversion("avx2", "sse4.2")>]` builds several versions and picks one when the program starts.
+   - Every number type at 128, 256 and 512 bits (`f32x4`, `f32x8`, `f64x2`, `i32x8`, `u8x32`, …) is a built-in type, LLVM's `<n x T>`, and lane-wise comparisons give masks (`mask4`, LLVM's `<4 x i1>`).
+   - **Operators** through `Add`, `Num` and `Eq` (`=` on whole vectors). Integer vectors wrap on overflow, as SIMD instructions do; integer division checks every lane. Bitwise operators and shifts on integer vectors.
+   - **Functions** in a module per type (`F32x8.load`): `splat`, `init`, `load`, `store`, `get`, `set`, `sum`, `min`, `max`, `reduceMin`, `reduceMax`, `abs`, the comparisons, `select`, `shuffle` (constant indices), conversions between vectors with as many lanes (floats saturate into integers), and `sqrt`, `floor`, `ceil`, `round`, `mulAdd` for floats. Each is an LLVM instruction or intrinsic, which LLVM splits or scalarizes where a target lacks it.
+   - **Memory:** `load` and `store` take an array of the element type and an index; `store` gives the array back, in place when unique, as `Array.set` does. A program with 32- or 64-byte vectors allocates its objects 64-byte aligned (`zs_alloc_wide`), so a vector field or element is as aligned as LLVM expects.
+3. **Target intrinsics:** `Simd.X86` and `Simd.Arm`, thin wrappers over LLVM's intrinsics (`rsqrt8`, `shuffleBytes16`, `tableLookup16`, …), each for its architecture. One that needs a feature beyond the target's baseline (SSE2, NEON) is a compile error unless `--cpu` or the function's attributes provide it.
+   - **Choosing the CPU:** `--cpu=native|x86-64-v3|…` for the whole program (clang's `-march`, or `-mcpu` off x86), or per function with `[<Target "avx2,fma">]` (LLVM's `target-features`; such a function isn't inlined into others).
+   - **Choosing at startup:** `[<Multiversion("avx2,fma", "sse4.2")>]` compiles a version for each and one for the baseline; the function's own name is a dispatcher that asks the runtime (`zs_cpu_supports`: cpuid on x86-64, the auxiliary vector on aarch64 Linux) the first time and calls the first version the CPU has.
+- **Performance:** `bench/simd` (a dot product, an n-body step over 1,024 bodies, a 3×3 blur) runs within 10% of C with AVX or NEON intrinsics, from one source on x86-64 and on aarch64.
 
 ## 9. Compiler
 
@@ -689,7 +691,7 @@ checker, so tools can't drift from the compiler.
 | 22 | Threads | v1 single-threaded event loop; in v2 a work-stealing pool and a loop per thread, with non-atomic RC and a negative count marking the objects that crossed threads (§7.1) | decided |
 | 23 | Effect handlers | designed now (§6.1), built in v3; one-shot, evidence passing | decided |
 | 24 | Float semantics | strict IEEE; `[<FastMath>]` opt-in per function | default |
-| 25 | SIMD API | portable `f32x8`-style value types + target intrinsics | default |
+| 25 | SIMD API | portable `f32x8`-style value types + target intrinsics (§8) | decided |
 | 26 | From Zig | cross-compilation through `zig cc`; a checked opt-in instead of no-hidden-allocation (`[<NoAlloc>]`, #42). Not adopted: explicit allocators, comptime | decided |
 | 27 | Libraries | source packages (path, git + `zs.lock`), checked Core cached per module; no binary IR format | decided |
 | 28 | Strings and `char` | UTF-8 strings, `Length` is bytes; `char` is a Unicode scalar; `for c in s` decodes UTF-8 (malformed bytes become U+FFFD) | decided |
@@ -713,5 +715,7 @@ checker, so tools can't drift from the compiler.
 | 46 | Computation expressions' builders | a module `W.Builder` for `w { }`; the body goes to `delay`; a missing function is an error at the form that needs it, not a trait (§4) | decided |
 | 47 | Functions that cross threads | `share<F>`, checked where a function becomes one (its captures Share, through captured local functions), and after monomorphization for the top-level values it reaches; not a closure type per lambda (as in Rust) nor an effect on every function type (§7) | decided |
 | 48 | A thread's tasks | a loop per thread; `Task.spawn` runs a task on a loop thread to the end, and its result comes back; tasks don't move between threads, so what a task holds needn't be Share (§7) | decided |
+| 49 | SIMD functions | a built-in module per vector type (`F32x8.load`), not generic functions over vectors: HM can't relate a vector type to its element type without type families (§8) | decided |
+| 50 | SIMD integer overflow | vectors wrap, as their instructions do; scalars stay checked (§8) | decided |
 
 "Default" means chosen by me and open to change until the phase that implements it begins.

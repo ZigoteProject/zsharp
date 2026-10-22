@@ -395,3 +395,48 @@ int64_t zs_ticks(void) {
 __attribute__((section(".vectors"), used)) static void *const vectors[16] = {
     &_estack, Reset_Handler, fault, fault, fault, fault, fault, 0, 0, 0, 0, fault, fault, 0, fault, SysTick_Handler,
 };
+
+// SIMD on a microcontroller: LLVM does a vector's operations lane by lane (with what DSP
+// instructions the chip has), so a wide vector needs no more than a word's alignment
+void *zs_alloc_wide(zs_int size) { return zs_alloc(size); }
+
+// [<Multiversion>]: a microcontroller runs the baseline version
+bool zs_cpu_supports(const char *features) {
+    (void)features;
+    return false;
+}
+
+// a vector's lanes as text, <1, 2, 3> (see rt.c)
+zs_str *zs_str_of_lanes(const void *p, zs_int kind, zs_int n) {
+    static const int sizes[] = {4, 8, 1, 2, 4, 8, 1, 2, 4, 8, 1};
+    char buf[512];
+    zs_int len = 0;
+    buf[len++] = '<';
+    for (zs_int i = 0; i < n; i++) {
+        const char *q = (const char *)p + i * sizes[kind];
+        zs_str *s;
+        switch (kind) {
+        case 0: s = zs_str_of_f32(*(const float *)q); break;
+        case 1: s = zs_str_of_f64(*(const double *)q); break;
+        case 2: s = zs_str_of_i64(*(const int8_t *)q); break;
+        case 3: s = zs_str_of_i64(*(const int16_t *)q); break;
+        case 4: s = zs_str_of_i64(*(const int32_t *)q); break;
+        case 5: s = zs_str_of_i64(*(const int64_t *)q); break;
+        case 6: s = zs_str_of_u64(*(const uint8_t *)q); break;
+        case 7: s = zs_str_of_u64(*(const uint16_t *)q); break;
+        case 8: s = zs_str_of_u64(*(const uint32_t *)q); break;
+        case 9: s = zs_str_of_u64(*(const uint64_t *)q); break;
+        default: s = zs_str_of_bool(*(const uint8_t *)q != 0); break;
+        }
+        if (len + s->len + 3 > (zs_int)sizeof buf) zs_panic_c("a vector too long to show");
+        if (i > 0) {
+            buf[len++] = ',';
+            buf[len++] = ' ';
+        }
+        memcpy(buf + len, s->data, (size_t)s->len);
+        len += s->len;
+        zs_free(s);
+    }
+    buf[len++] = '>';
+    return str_of(buf, len);
+}

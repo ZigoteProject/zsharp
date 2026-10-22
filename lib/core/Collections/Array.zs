@@ -53,9 +53,6 @@ let toList a =
     if i < 0 then acc else go (a.[i] :: acc) (i - 1)
   go [] (Array.length a - 1)
 
-/// A new array with the same elements.
-let copy a = Array.init (Array.length a) (fun i -> a.[i])
-
 /// Like `Array.map`, with each element's index: `f i x`.
 let mapi f a = Array.init (Array.length a) (fun i -> f i a.[i])
 

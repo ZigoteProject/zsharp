@@ -76,6 +76,17 @@ void *zs_alloc(zs_int size) {
     return p;
 }
 
+// zs_alloc for a program with SIMD vectors of 32 or 64 bytes (the compiler swaps it in): each
+// object aligned to 64 bytes, so a vector field or element is aligned as LLVM expects
+void *zs_alloc_wide(zs_int size) {
+    void *p = aligned_alloc(64, ((size_t)size + 63) & ~(size_t)63);
+    if (!p) zs_panic_c("out of memory");
+    COUNT(live, 1);
+    COUNT(allocations, 1);
+    COUNT(mallocs, 1);
+    return p;
+}
+
 /// Runtime.allocations (): heap objects allocated so far (tests check copy-on-write with it).
 zs_int zs_allocations(void) { return allocations; }
 
@@ -384,12 +395,17 @@ void zs_reused(void *p) {
     HEAP_UNLOCK();
 }
 
+static void boxes_sweep(void);
+
 static void leak_report(void) {
     if (getenv("ZS_LEAKCHECK") && live != 0)
         fprintf(stderr, "leak check: %" PRId64 " object(s) still allocated\n", live);
 }
 
-__attribute__((constructor)) static void zs_init(void) { atexit(leak_report); }
+__attribute__((constructor)) static void zs_init(void) {
+    atexit(leak_report);
+    atexit(boxes_sweep); // before the leak report; after what's registered later (the loop threads' stop)
+}
 
 static zs_str *str_new(zs_int len) {
     zs_str *s = zs_alloc((int64_t)sizeof(zs_str) + len + 1);
@@ -490,6 +506,51 @@ zs_str *zs_str_of_char(int32_t c) {
 zs_str *zs_str_from_c(const char *c) { return str_of(c, (int64_t)strlen(c)); }
 
 zs_str *zs_str_of_bool(bool v) { return v ? str_of("true", 4) : str_of("false", 5); }
+
+// a vector's lanes as text, <1, 2, 3>: kind is the element type (0 f32, 1 f64, 2 i8, 3 i16,
+// 4 i32, 5 i64, 6 u8, 7 u16, 8 u32, 9 u64; 10 a mask's lanes, as bytes), n the number of lanes
+zs_str *zs_str_of_lanes(const void *p, zs_int kind, zs_int n) {
+    static const int sizes[] = {4, 8, 1, 2, 4, 8, 1, 2, 4, 8, 1};
+    size_t cap = 64, len = 0;
+    char *buf = malloc(cap);
+    if (!buf) zs_panic_c("out of memory");
+    buf[len++] = '<';
+    for (zs_int i = 0; i < n; i++) {
+        const char *q = (const char *)p + i * sizes[kind];
+        zs_str *s;
+        switch (kind) {
+        case 0: s = zs_str_of_f32(*(const float *)q); break;
+        case 1: s = zs_str_of_f64(*(const double *)q); break;
+        case 2: s = zs_str_of_i64(*(const int8_t *)q); break;
+        case 3: s = zs_str_of_i64(*(const int16_t *)q); break;
+        case 4: s = zs_str_of_i64(*(const int32_t *)q); break;
+        case 5: s = zs_str_of_i64(*(const int64_t *)q); break;
+        case 6: s = zs_str_of_u64(*(const uint8_t *)q); break;
+        case 7: s = zs_str_of_u64(*(const uint16_t *)q); break;
+        case 8: s = zs_str_of_u64(*(const uint32_t *)q); break;
+        case 9: s = zs_str_of_u64(*(const uint64_t *)q); break;
+        default: s = zs_str_of_bool(*(const uint8_t *)q != 0); break;
+        }
+        if (len + (size_t)s->len + 3 > cap) {
+            cap = 2 * (len + (size_t)s->len + 3);
+            char *nb = realloc(buf, cap);
+            if (!nb) zs_panic_c("out of memory");
+            buf = nb;
+        }
+        if (i > 0) {
+            buf[len++] = ',';
+            buf[len++] = ' ';
+        }
+        memcpy(buf + len, s->data, (size_t)s->len);
+        len += (size_t)s->len;
+        zs_free(s);
+    }
+    buf[len++] = '>';
+    zs_str *r = str_of(buf, (zs_int)len);
+    free(buf);
+    return r;
+}
+
 
 // ---- string primitives (arguments borrowed; results owned)
 
@@ -853,8 +914,10 @@ typedef struct {
 // task's result coming back (done only: a token, zs_loop_expect)
 typedef struct job {
     void *work, *done;
-    struct inbox *box; // a token's loop
+    struct inbox *box;        // a token's loop
     struct job *next;
+    struct job *prev_t, *next_t; // a token not yet used, in its loop's list of them
+    int refs;                    // a token's: its loop's and the spawned task's (under box->mu)
 } job;
 
 // what other threads hand a loop, under mu; freed when the loop has closed and no token for it
@@ -869,7 +932,13 @@ typedef struct inbox {
     pthread_t helper;
     int refs; // the loop's, and one per token not yet used
     bool closed;
+    job *tokens;             // not yet used (a loop that closes drops their done closures, its own)
+    struct inbox *next_box;  // in all_boxes
 } inbox;
+
+// every inbox, so those a token outlived (its spawned task dropped at exit) go at exit too
+static inbox *all_boxes;
+static pthread_mutex_t boxes_mu = PTHREAD_MUTEX_INITIALIZER;
 
 static _Thread_local struct {
     bool stepping; // inside zs_loop_step: a callback can't run Task.run itself
@@ -1038,6 +1107,13 @@ void zs_loop_untimer(zs_int id) {
 }
 
 static void box_free(inbox *b) {
+    pthread_mutex_lock(&boxes_mu);
+    for (inbox **p = &all_boxes; *p; p = &(*p)->next_box)
+        if (*p == b) {
+            *p = b->next_box;
+            break;
+        }
+    pthread_mutex_unlock(&boxes_mu);
     pthread_mutex_destroy(&b->mu);
     pthread_cond_destroy(&b->cv);
     close(b->wake[0]);
@@ -1056,6 +1132,10 @@ static inbox *box_get(void) {
         b->refs = 1;
         struct epoll_event ev = {.events = EPOLLIN, .data.fd = b->wake[0]};
         epoll_ctl(L.ep, EPOLL_CTL_ADD, b->wake[0], &ev);
+        pthread_mutex_lock(&boxes_mu);
+        b->next_box = all_boxes;
+        all_boxes = b;
+        pthread_mutex_unlock(&boxes_mu);
         L.box = b;
     }
     return L.box;
@@ -1092,7 +1172,7 @@ void zs_loop_blocking(void *work, void *done) {
     inbox *b = box_get();
     job *j = malloc(sizeof(job));
     if (!j) zs_panic_c("out of memory");
-    *j = (job){work, done, NULL, NULL};
+    *j = (job){work, done, NULL, NULL, NULL, NULL, 0};
     pthread_mutex_lock(&b->mu);
     if (!b->helping) {
         b->helping = true;
@@ -1112,20 +1192,28 @@ zs_int zs_loop_expect(void *done) {
     inbox *b = box_get();
     job *j = malloc(sizeof(job));
     if (!j) zs_panic_c("out of memory");
-    *j = (job){NULL, done, b, NULL};
+    *j = (job){NULL, done, b, NULL, NULL, NULL, 2};
     pthread_mutex_lock(&b->mu);
     b->refs++;
+    j->next_t = b->tokens;
+    if (b->tokens) b->tokens->prev_t = j;
+    b->tokens = j;
     pthread_mutex_unlock(&b->mu);
     L.jobs++;
     return (zs_int)(intptr_t)j;
 }
 
-// on any thread: the token's done goes to its loop. A loop that has closed meanwhile can't run
-// it, and no other thread may drop it (its objects are that loop's): it's left
+// on any thread: the token's done goes to its loop (a loop that has closed meanwhile dropped it)
 void zs_loop_fulfill(zs_int token) {
     job *j = (job *)(intptr_t)token;
     inbox *b = j->box;
     pthread_mutex_lock(&b->mu);
+    j->refs--; // the spawned task's
+    // out of the list of tokens not yet used: to the loop, or (it has closed, and dropped the
+    // done closure) gone
+    if (j->prev_t) j->prev_t->next_t = j->next_t;
+    else b->tokens = j->next_t;
+    if (j->next_t) j->next_t->prev_t = j->prev_t;
     if (!b->closed) box_put(b, j);
     else free(j);
     bool last = --b->refs == 0;
@@ -1157,7 +1245,35 @@ static void box_take(void) {
             zs_loop_post(order->done);
             L.jobs--;
         }
-        free(order);
+        free(order); // a token: the spawned task let go when it fulfilled it
+    }
+}
+
+// at exit, once the threads that run tasks have stopped: the inboxes left (closed, with tokens
+// of tasks that were dropped unfinished) and those tokens
+static void boxes_sweep(void) {
+    pthread_mutex_lock(&boxes_mu);
+    inbox *b = all_boxes;
+    all_boxes = NULL;
+    pthread_mutex_unlock(&boxes_mu);
+    for (inbox *next; b; b = next) {
+        next = b->next_box;
+        if (!b->closed) { // a loop still open (exit called inside a task): left as it is
+            pthread_mutex_lock(&boxes_mu);
+            b->next_box = all_boxes;
+            all_boxes = b;
+            pthread_mutex_unlock(&boxes_mu);
+            continue;
+        }
+        for (job *j = b->tokens, *nj; j; j = nj) {
+            nj = j->next_t;
+            free(j);
+        }
+        pthread_mutex_destroy(&b->mu);
+        pthread_cond_destroy(&b->cv);
+        close(b->wake[0]);
+        close(b->wake[1]);
+        free(b);
     }
 }
 
@@ -1239,7 +1355,7 @@ void zs_loop_spawn(void *work) {
     inbox *b = T.boxes[atomic_fetch_add(&T.next, 1) % (unsigned)T.n];
     job *j = malloc(sizeof(job));
     if (!j) zs_panic_c("out of memory");
-    *j = (job){work, NULL, NULL, NULL};
+    *j = (job){work, NULL, NULL, NULL, NULL, NULL, 0};
     pthread_mutex_lock(&b->mu);
     box_put(b, j);
     pthread_mutex_unlock(&b->mu);
@@ -1316,6 +1432,13 @@ void zs_loop_close(void) {
         pthread_mutex_lock(&b->mu);
         job *ready = b->ready;
         b->ready = NULL;
+        // the tokens still out: their done closures are this loop's (dropped here); a token
+        // stays in the list until its zs_loop_fulfill comes, or the program ends
+        for (job *j = b->tokens; j; j = j->next_t) {
+            zs_clo_drop(j->done);
+            j->done = NULL;
+            j->refs--;
+        }
         bool last = --b->refs == 0; // tokens still out keep it for their zs_loop_fulfill
         pthread_mutex_unlock(&b->mu);
         for (job *j = ready, *next; j; j = next) {
@@ -1451,7 +1574,7 @@ typedef struct {
     void (*run)(void *clo, void *out);
     void *clo;
     atomic_int done;
-    _Alignas(16) char result[]; // what run stores
+    _Alignas(64) char result[]; // what run stores (a SIMD vector, say)
 } par_job;
 
 typedef struct {
@@ -1638,7 +1761,7 @@ zs_int zs_par_workers(void) {
 // a job running clo (the job takes its reference) with run, whose result takes size bytes
 void *zs_par_fork(void *clo, void (*run)(void *, void *), zs_int size) {
     pthread_once(&pool_once, pool_start);
-    par_job *j = aligned_alloc(16, (sizeof(par_job) + (size_t)size + 15) & ~(size_t)15);
+    par_job *j = aligned_alloc(64, (sizeof(par_job) + (size_t)size + 63) & ~(size_t)63);
     if (!j) zs_panic_c("out of memory");
     j->run = run;
     j->clo = clo;
@@ -1778,4 +1901,73 @@ void zs_chan_free(zs_chan *c) {
     pthread_cond_destroy(&c->not_full);
     free(c->slots);
     zs_free(c);
+}
+
+// ---- CPU features ([<Multiversion>]): whether the CPU has each of the features, named as LLVM
+// names them and separated by commas ("avx2,fma"). A name it doesn't know is a feature it
+// doesn't have.
+#if defined(__x86_64__) || defined(__i386__)
+static bool cpu_has(const char *f, size_t n) {
+#define HAS(name) \
+    if (n == sizeof(name) - 1 && !memcmp(f, name, n)) return __builtin_cpu_supports(name)
+    HAS("cmov");
+    HAS("popcnt");
+    HAS("sse");
+    HAS("sse2");
+    HAS("sse3");
+    HAS("ssse3");
+    HAS("sse4.1");
+    HAS("sse4.2");
+    HAS("avx");
+    HAS("avx2");
+    HAS("fma");
+    HAS("bmi");
+    HAS("bmi2");
+    HAS("aes");
+    HAS("pclmul");
+    HAS("avx512f");
+    HAS("avx512vl");
+    HAS("avx512bw");
+    HAS("avx512dq");
+    HAS("avx512cd");
+#undef HAS
+    return false;
+}
+#elif defined(__aarch64__) && defined(__linux__)
+#include <sys/auxv.h>
+static bool cpu_has(const char *f, size_t n) {
+    // the kernel's hwcap bits (asm/hwcap.h), written out for older headers
+    unsigned long hw = getauxval(AT_HWCAP), hw2 = getauxval(AT_HWCAP2);
+#define HAS(name, bits) \
+    if (n == sizeof(name) - 1 && !memcmp(f, name, n)) return (bits) != 0
+    HAS("neon", 1);
+    HAS("fp-armv8", 1);
+    HAS("aes", hw & (1ul << 3));
+    HAS("sha2", hw & (1ul << 6));
+    HAS("crc", hw & (1ul << 7));
+    HAS("lse", hw & (1ul << 8));
+    HAS("fullfp16", hw & (1ul << 10));
+    HAS("dotprod", hw & (1ul << 20));
+    HAS("sve", hw & (1ul << 22));
+    HAS("sve2", hw2 & (1ul << 1));
+    HAS("i8mm", hw2 & (1ul << 13));
+    HAS("bf16", hw2 & (1ul << 14));
+#undef HAS
+    return false;
+}
+#else
+static bool cpu_has(const char *f, size_t n) {
+    (void)f, (void)n;
+    return false;
+}
+#endif
+
+bool zs_cpu_supports(const char *features) {
+    for (const char *p = features; *p;) {
+        const char *e = strchr(p, ',');
+        size_t n = e ? (size_t)(e - p) : strlen(p);
+        if (!cpu_has(p, n)) return false;
+        p += n + (e ? 1 : 0);
+    }
+    return true;
 }
