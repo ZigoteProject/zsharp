@@ -134,4 +134,4 @@ let rec accepting (l: TcpListener) (s: Scope) : Task<unit> =
   }
 ```
 
-It holds 10,000 connections in 21 MB, and its memory stays flat under traffic: the same 20,884 KB at every minute of a 34-minute soak test (`bench/echo/soak.sh`).
+It holds 10,000 connections in 21 MB, and its memory stays flat under traffic: the same 20,936 KB at every minute of an hour-long soak test (`bench/echo/soak.sh`), through 32.6 million round trips.

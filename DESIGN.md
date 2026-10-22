@@ -400,7 +400,7 @@ let main () =
 ```
 
 - **Implementation:** a library on top of §4 (`lib/std/Threading/Task.zs`): a task is its work, given its cancellation and a continuation, so each `let!` becomes a continuation closure.
-  - A loop that waits repeatedly settles into steady memory: each wait's closures are freed after it. The echo server holds 10,000 connections in 21 MB, flat for the 34 minutes of a soak test so far (`bench/echo/soak.sh`). The allocations per bind go in phase 9.
+  - A loop that waits repeatedly settles into steady memory: each wait's closures are freed after it. The echo server holds 10,000 connections in 21 MB, flat for the hour of a soak test (`bench/echo/soak.sh`: 32.6 million round trips, none failed). The allocations per bind go in phase 9.
   - **The stack:** a continuation called inside another (an await that completes at once) is counted, and the 64th goes through the event loop instead, so a run of them doesn't grow the stack.
   - Later, `task { }` may be lowered to stackless state machines with no change to the source (phase 9).
 - **Structured concurrency:**
