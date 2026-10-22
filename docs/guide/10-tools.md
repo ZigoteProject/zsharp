@@ -72,14 +72,20 @@ let main () =
 `zs build -g` builds without optimization and with DWARF debug info, so gdb works with the Z# source:
 - **Breakpoints and stepping:** break on a function (`break square`) or a line (`break prog.zs:12`), then step with `next` and `step`.
 - **Backtraces:** `bt` shows Z# files and lines.
-- **Values:** arguments and local variables of number and bool types are shown.
+- **Values:** arguments and local variables are shown when they are numbers, bools or chars, strings (as their text), or tuples, records and unions of those. A union shows its case and every case's fields; a string inside a record is a pointer to its object, which `print *r.name` shows.
 
 ```
-Breakpoint 1, square (n=1) at prog.zs:3
-3	  let result = n * n
+Breakpoint 1, square (n=1) at prog.zs:9
+9	  let result = n * n
 (gdb) bt
-#0  square (n=1) at prog.zs:3
-#1  main () at prog.zs:9
+#0  square (n=1) at prog.zs:9
+#1  main () at prog.zs:17
+(gdb) print name
+$1 = 0x405260 "squares"
+(gdb) print range
+$2 = {lo = 1, hi = 3}
+(gdb) print summary
+$3 = {case = Large, Small = 0, Large.0 = 14, Large.1 = 7}
 ```
 
 **Memory checking:** `--sanitize` builds with AddressSanitizer and UndefinedBehaviorSanitizer, and valgrind works on any build.

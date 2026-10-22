@@ -13,3 +13,8 @@ D2 d2_swap(D2 v);
 Mix mix_add(Mix v, double d);
 Big big_sum(Big v, Big w);
 double many(F4 a, D2 b, Mix c, Big d, P3 e, C4 f);
+// out of argument registers (x86-64: 6 integer, 8 SSE): a struct that doesn't fit whole in
+// the ones left goes on the stack whole, and later scalars still take the registers left
+double d2_six(D2 a, D2 b, D2 c, D2 d, D2 e, D2 f);
+long p3_after(long a, long b, long c, long d, long e, P3 p, long f);
+Big big_after(long a, long b, long c, long d, P3 p, long e);

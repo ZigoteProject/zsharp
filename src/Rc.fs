@@ -8,7 +8,8 @@ module Rc
 open Core
 open Mono
 
-let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: MFun list) : MFun list =
+/// entries: the functions called from outside (main, C exports), which own their parameters.
+let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (entries: Set<string>) (funs: MFun list) : MFun list =
     let heap t = needsRc types t
     let mk k ty = { k = k; ty = ty }
     // temporaries numbered per function (each thread does one at a time): a function's code
@@ -26,13 +27,14 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (funs: 
     // reads (a.[i], lengths) or passes on to a borrowed parameter is borrowed. The caller keeps
     // ownership and the callee neither dups nor drops it, so a closure or array threaded
     // through a loop costs no reference counting. Only for functions called directly (not
-    // closures, which are called through code pointers, nor main).
+    // closures, which are called through code pointers, nor the entries).
     let borrowedParams =
-        let asValues = System.Collections.Generic.HashSet<string>([ "main" ])
+        let asValues = System.Collections.Generic.HashSet<string>(entries)
 
         let rec values (e: CExpr) =
             match e.k with
             | CMkClosure(n, _) -> asValues.Add n |> ignore
+            | CPrim(op, _) when op.StartsWith "fn:" -> asValues.Add(op.Substring 3) |> ignore // in a vtable
             | _ -> ()
 
             children e.k |> List.iter values

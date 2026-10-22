@@ -2,7 +2,7 @@
 /// declarations (externs, [<CLayout>] records, constants). Declarations come from clang's JSON
 /// AST (-ast-dump=json), constants from its macro listing (-E -dD). Only what the header itself
 /// declares is imported, not the headers it includes. Whatever can't cross the C boundary
-/// (unions, arrays, function pointers, static inline functions) is left out, with a reason
+/// (unions, arrays, static inline functions) is left out, with a reason
 /// recorded in Syntax.skippedC.
 module CImport
 
@@ -90,7 +90,29 @@ and private zsType' (ctx: Ctx) (depth: int) (qt: string) : Result<SType, string>
     match t with
     | _ when depth > 20 -> Error(sprintf "'%s' is an opaque struct (pass a pointer to it, as cptr)" t) // typedef struct X X;
     | _ when scalars.ContainsKey t -> name scalars[t]
-    | _ when t.Contains "(" -> Error "it uses a function pointer"
+    | _ when t.Contains "(" ->
+        // a function pointer, R (*)(A, B): fnptr<A -> B -> R>, or fnptr<unit -> R> for one
+        // that takes nothing
+        let m = Regex.Match(t, @"^(.*)\(\*\)\s*\((.*)\)$")
+        let ps = if m.Success then m.Groups[2].Value.Trim() else ""
+
+        if not m.Success || ps.Contains "(" then
+            Error "it uses a function type other than a pointer to a function of C values"
+        else
+            let ps = if ps = "" || ps = "void" then [] else ps.Split ',' |> List.ofArray |> List.map (fun p -> p.Trim())
+
+            if List.contains "..." ps then
+                Error "it uses a pointer to a variadic function"
+            else
+                let parts = (ps |> List.map (zsType ctx)) @ [ zsType ctx m.Groups[1].Value ]
+
+                match parts |> List.tryPick (function Error e -> Some e | Ok _ -> None) with
+                | Some e -> Error e
+                | None ->
+                    let ts = parts |> List.map (function Ok t -> t | Error _ -> failwith "unreachable")
+                    let args, ret = List.take ps.Length ts, List.last ts
+                    let args = if args.IsEmpty then [ STName("unit", []) ] else args
+                    Ok(STName("fnptr", [ List.foldBack (fun a acc -> STFun(a, acc)) args ret ]))
     | _ when t.Contains "[" -> Error "it uses an array"
     | _ when t.EndsWith "*" ->
         match normalize (t.Substring(0, t.Length - 1)) with
@@ -386,12 +408,21 @@ let private importUncached (header: string) (dir: string) : Imported =
 // ---- the on-disk cache: an editor without clang or the header (Zed's Flatpak sandbox) reads
 // what the last successful import wrote, in <project>/.zs-cache/cimport/
 
+// a type: "name", [ "name", arguments… ], or { "fun": [ parameter, result ] }
 let rec private styJson (t: SType) : JsonNode =
     match t with
     | STName(n, []) -> JsonValue.Create n
+    | STName(n, args) -> JsonArray((JsonValue.Create n :> JsonNode) :: (args |> List.map styJson) |> Array.ofList)
+    | STFun(a, b) -> JsonObject(dict [ "fun", JsonArray(styJson a, styJson b) :> JsonNode ])
     | _ -> failwith "C import: unexpected type"
 
-let private styOf (n: JsonNode) = STName(n.GetValue<string>(), [])
+let rec private styOf (n: JsonNode) : SType =
+    match n with
+    | :? JsonArray as a -> STName(a[0].GetValue<string>(), [ for i in 1 .. a.Count - 1 -> styOf a[i] ])
+    | :? JsonObject as o ->
+        let f = o["fun"].AsArray()
+        STFun(styOf f[0], styOf f[1])
+    | _ -> STName(n.GetValue<string>(), [])
 
 let rec private exprJson (e: Expr) : JsonNode =
     match e with

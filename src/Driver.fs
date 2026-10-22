@@ -384,7 +384,7 @@ let libraryDir = runtimeFile "lib"
 /// (core/Collections/List.zs is Collections.List). Core needs no operating system, so every
 /// target has it; Std is for targets that have one.
 let private coreFiles =
-    [ "Option"; "Result"; "Math"; "Int"; "Runtime"; "Mmio"; "Collections/List"; "Collections/Array"; "Collections/Buffer"
+    [ "Option"; "Result"; "Math"; "Int"; "Runtime"; "Mmio"; "Ptr"; "Weak"; "Arena"; "Collections/List"; "Collections/Array"; "Collections/Buffer"
       "Text/String"; "Text/Char"; "Collections/Map"; "Collections/Set"; "Collections/HashMap" ]
 
 let private stdFiles =
@@ -673,7 +673,7 @@ let private lower (mainPath: string) (isLib: bool) =
                 let mono = timed "simplify" (fun () -> if Codegen.debugInfo then mono else Simplify.run prog.types mono)
                 let mono = timed "decision trees" (fun () -> decide mono)
                 let lifted = timed "lift closures" (fun () -> Lift.run mono)
-                let counted = timed "reference counting" (fun () -> Rc.run prog.types lifted)
+                let counted = timed "reference counting" (fun () -> Rc.run prog.types fixedNames lifted)
 
                 // ZS_DUMP_CORE=name: the Core of matching functions after reference counting
                 match Environment.GetEnvironmentVariable "ZS_DUMP_CORE" with
@@ -689,10 +689,20 @@ let private lower (mainPath: string) (isLib: bool) =
 
         Ok(prog, funs)
 
+/// Whether the program has weak references or arenas (Codegen.checkedHeap).
+let private checkedHeap (funs: Mono.MFun list) =
+    let rec uses (e: Core.CExpr) =
+        match e.k with
+        | Core.CPrim(("weak.new" | "arena.with"), _) -> true
+        | k -> Core.children k |> List.exists uses
+
+    funs |> List.exists (fun f -> uses f.body)
+
 /// The program as one LLVM module (and the C header of its exports).
 let compileProgram (mainPath: string) (isLib: bool) =
     lower mainPath isLib
     |> Result.map (fun (prog, funs) ->
+        Codegen.checkedHeap <- checkedHeap funs
         timed "LLVM IR" (fun () -> Codegen.compile prog.types prog.externs prog.exports prog.tests prog.values prog.clayouts None funs))
 
 /// How a program is split into LLVM modules: one per source file of the program, holding that
@@ -728,6 +738,7 @@ let private partition (mainPath: string) (prog: Core.Program) (funs: Mono.MFun l
             match e.k with
             | Core.CCallDirect(g, _)
             | Core.CMkClosure(g, _) -> acc.Add g |> ignore
+            | Core.CPrim(op, _) when op.StartsWith "fn:" -> acc.Add(op.Substring 3) |> ignore // in a vtable
             | _ -> ()
 
             Core.children e.k |> List.iter walk
@@ -779,6 +790,8 @@ let private partition (mainPath: string) (prog: Core.Program) (funs: Mono.MFun l
 let private compileParts (mainPath: string) =
     lower mainPath false
     |> Result.map (fun (prog, funs) ->
+        Codegen.checkedHeap <- checkedHeap funs
+
         timed "LLVM IR" (fun () ->
             let compile part = fst (Codegen.compile prog.types prog.externs prog.exports prog.tests prog.values prog.clayouts part funs)
 
@@ -989,18 +1002,24 @@ let build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) (isLib: 
 
                 failure
             elif isLib then
-                // objects for the program and the runtime, archived, plus the header
+                // objects for the program and the runtime, position-independent so they link
+                // into a shared library too, archived (or, for a .so, linked as one), plus the header
                 let obj = Path.ChangeExtension(ll, ".o")
                 let rt = Path.ChangeExtension(ll, ".rt.o")
+                let pic = [ "-fPIC" ]
 
                 let failure =
-                    run "clang" (opt @ tclang @ [ "-c"; "-Wno-override-module" ] @ san @ [ ll; "-o"; obj ])
-                    |> Option.orElseWith (fun () -> cc (opt @ [ "-c" ] @ san @ [ runtimeFile "rt.c"; "-o"; rt ]))
+                    run "clang" (opt @ pic @ tclang @ [ "-c"; "-Wno-override-module" ] @ san @ [ ll; "-o"; obj ])
+                    |> Option.orElseWith (fun () -> cc (opt @ pic @ [ "-c" ] @ san @ [ runtimeFile "rt.c"; "-o"; rt ]))
                     |> Option.orElseWith (fun () ->
                         if File.Exists out then
                             File.Delete out
 
-                        run "llvm-ar" [ "rcs"; out; obj; rt ])
+                        if out.EndsWith ".so" then
+                            let linked = links |> Seq.map (fun l -> if l.Contains "/" then l else "-l" + l) |> List.ofSeq
+                            cc (opt @ [ "-shared" ] @ san @ [ obj; rt ] @ linked @ [ "-o"; out; "-lm" ])
+                        else
+                            run "llvm-ar" [ "rcs"; out; obj; rt ])
 
                 File.WriteAllText(Path.ChangeExtension(out, ".h"), header)
 
@@ -1076,6 +1095,20 @@ let builtinDocs =
           "Int.wrappingSub", "`a - b`, wrapping around on overflow instead of panicking."
           "Int.wrappingMul", "`a * b`, wrapping around on overflow instead of panicking."
           "Runtime.allocations", "The number of heap objects allocated so far."
+          "Runtime.mallocs", "The number of times memory was taken from the system allocator: for an object, or for an arena's block."
+          "Ptr.read", "The value the pointer points to. Unsafe: only inside `unsafe`."
+          "Ptr.write", "Writes the value where the pointer points. Unsafe."
+          "Ptr.add", "The pointer moved by a number of elements (pointer arithmetic). Unsafe."
+          "Ptr.null", "The null pointer."
+          "Ptr.isNull", "Whether the pointer is null."
+          "Ptr.alloc", "C memory for a number of elements, zeroed (C's `calloc`); give it back with `Ptr.free`. Unsafe."
+          "Ptr.free", "Frees memory from `Ptr.alloc` (C's `free`). Unsafe."
+          "Ptr.ofCPtr", "A C pointer (`cptr`, as `import c` gives one) as a typed pointer. Unsafe."
+          "Ptr.toCPtr", "The pointer as a `cptr`, to pass to a C function that takes one."
+          "Ptr.cast", "The same address as a pointer to another type. Unsafe."
+          "Weak.create", "A weak reference to the object: it doesn't keep the object alive."
+          "Weak.get", "`Some` object while it lives (with a reference of its own), `None` once it has gone."
+          "Arena.with", "Runs the function with an arena: what it allocates comes from the arena's blocks, freed at once when the last of those objects goes (when the function returns, unless something it made lives on)."
           "Math.sqrt", "The square root of an `f64` or `f32` (NaN for a negative number): one instruction where the hardware has it."
           "Runtime.ticks", "A cycle counter for timing code: on a Cortex-M the SysTick count, elsewhere nanoseconds."
           "Mmio.read32", "Reads the 32-bit hardware register at an address (a volatile load)."

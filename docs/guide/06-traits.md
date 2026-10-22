@@ -71,7 +71,7 @@ let main () =
 ## Your own traits
 
 `trait Name<'a>` declares the functions with `abstract`.
-- **Calling:** a trait's functions are called like any function. The type decides which implementation runs, and that's resolved at compile time, so there's no runtime dispatch.
+- **Calling:** a trait's functions are called like any function. The type decides which implementation runs, and that's resolved at compile time, so there's no runtime dispatch (unless the value is a `dyn`, below).
 - **Generic functions:** a generic function that uses a trait function works for every type that implements it. The requirement is inferred; hover shows it, e.g. `twice : 'a -> string when 'a : Describe`.
 - **Impls that need impls:** an impl for a generic type may need impls for its parts. `Describe<list<'a>>` below needs `Describe<'a>`, also inferred.
 
@@ -102,6 +102,44 @@ let main () =
 ```text
 the number 4 / the number 4
 yes, then no, then nothing
+```
+
+## dyn: values of different types together
+
+**A trait as a type:** `dyn Shape` is a value of any type that implements `Shape`, so values of different types can go in one list, or be returned from different branches.
+- **Making one:** a value becomes a `dyn Shape` where one is expected: a list or a parameter declared with that type, a function's declared result, or `(x : dyn Shape)`.
+- **Calling:** the trait's functions work on it as on any type that implements the trait, and a generic function over the trait takes it too. A call goes through a table of the value's own impl, chosen when the value was made.
+- **Which traits:** every function of the trait must take the value first and not mention its type anywhere else. `Show` qualifies, `Ord` doesn't: `compare` would need two values of the same type.
+
+```zsharp
+trait Shape<'a> =
+  abstract area : 'a -> f64
+  abstract name : 'a -> string
+
+type Circle = { r: f64 }
+
+type Rect = Rect of f64 * f64
+
+impl Shape<Circle> =
+  let area c = 3.14 * c.r * c.r
+  let name _ = "circle"
+
+impl Shape<Rect> =
+  let area (Rect (w, h)) = w * h
+  let name _ = "rect"
+
+let main () =
+  let shapes: list<dyn Shape> = [ { r = 1.0 }; Rect (2.0, 3.0) ]
+  for s in shapes do
+    println $"{name s}: {area s}"
+  println $"total area {List.sumBy area shapes}"
+  0
+```
+
+```text
+circle: 3.14
+rect: 6
+total area 9.14
 ```
 
 ## Writing a derive

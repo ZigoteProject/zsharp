@@ -14,7 +14,7 @@ The names every program has without qualification: the operator traits and their
 |---|---|
 | `Collections` | [List](Collections.List.md), [Array](Collections.Array.md), [Buffer](Collections.Buffer.md), [Map](Collections.Map.md), [Set](Collections.Set.md), [HashMap](Collections.HashMap.md) |
 | `Text` | [String](Text.String.md), [Char](Text.Char.md) |
-| none | [Option](Option.md), [Result](Result.md), [Math](Math.md), [Int](Int.md), [Runtime](Runtime.md), [Mmio](Mmio.md) |
+| none | [Option](Option.md), [Result](Result.md), [Math](Math.md), [Int](Int.md), [Runtime](Runtime.md), [Mmio](Mmio.md), [Ptr](Ptr.md), [Weak](Weak.md), [Arena](Arena.md) |
 
 ## Std: targets with an operating system
 

@@ -30,9 +30,10 @@ Canvas *canvas_new(int w, int h);
 int canvas_paint(Canvas *c, Point p);
 void canvas_free(Canvas *c);
 
-// left out, with reasons
-int sum_array(int xs[4]);
+// a function pointer parameter comes across as fnptr<i32 -> i32>
 void apply(int (*f)(int), int x);
+
+// left out, with reasons
 static inline int twice(int x) { return 2 * x; }
 typedef union { int i; float f; } Number;
 Number number_of(int i);

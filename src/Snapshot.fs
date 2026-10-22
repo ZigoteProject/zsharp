@@ -329,6 +329,9 @@ let rec private expr (c: W) (e: Expr) =
         | At(l, a) ->
             tag c 35
             int' c l
+            expr c a
+        | Unsafe a ->
+            tag c 36
             expr c a)
 
 and private param (c: W) (p: Pat, t: SType option) =
@@ -822,6 +825,7 @@ let rec private rexpr (c: R) : Expr =
         | 34 ->
             let a = rexpr c
             Typed(a, rstype c)
+        | 36 -> Unsafe(rexpr c)
         | _ ->
             let l = rint c
             At(l, rexpr c))

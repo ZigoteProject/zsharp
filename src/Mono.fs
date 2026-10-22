@@ -128,6 +128,22 @@ let run (prog: Program) : MFun list =
 
         mk k resTy
 
+    /// A trait's methods, in the order of a dyn Trait's vtable (by name).
+    let methodLists = Dictionary<string, string list>()
+
+    let methodsOf (tr: string) =
+        match methodLists.TryGetValue tr with
+        | true, ms -> ms
+        | _ ->
+            let ms = prog.traitMethods.Values |> Seq.filter (fun m -> m.owner = tr) |> Seq.map (fun m -> m.name) |> Seq.sort |> List.ofSeq
+            methodLists[tr] <- ms
+            ms
+
+    let isDyn (t: Ty) =
+        match prune t with
+        | TCon(n, []) -> isDynName n
+        | _ -> false
+
     /// Trait method `q` at its instantiation, applied to args (possibly none).
     let rec dispatch (q: string) (inst: Ty list) (headTy: Ty) (args: CExpr list) (resTy: Ty) : CExpr =
         let tm = prog.traitMethods[q]
@@ -144,6 +160,8 @@ let run (prog: Program) : MFun list =
         let inline' (args: CExpr list) res =
             match prune t with
             | TTuple ts -> tupleMethod q ts args res
+            // a dyn value: the method its vtable has, given the value and the other arguments
+            | _ when isDyn t -> mk (CPrim(sprintf "dyn.call:%d" (List.findIndex ((=) tm.name) (methodsOf tm.owner)), args)) res
             | _ -> builtinMethod q t args res
 
         let isTuple =
@@ -151,7 +169,7 @@ let run (prog: Program) : MFun list =
             | TTuple _ -> true
             | _ -> false
 
-        if not (isPrim t || isTuple) || prog.impls.ContainsKey((tm.owner, showFull t)) then
+        if not (isPrim t || isTuple || isDyn t) || prog.impls.ContainsKey((tm.owner, showFull t)) then
             let f = implFn tm.owner tm.name t headTy
             if args.IsEmpty then f else mk (CApp(f, args)) resTy
         elif args.Length = arity then
@@ -224,6 +242,48 @@ let run (prog: Program) : MFun list =
 
         List.foldBack (fun (x, e: CExpr) acc -> mk (CLet(x, e, acc)) acc.ty) bound body
 
+    /// The functions in the vtable of a dyn Trait over type t, one per method: each takes the dyn
+    /// value and the method's other arguments, and applies t's impl to the value it holds. They
+    /// are ordinary functions, so the passes after this one see them (and call the impl with as
+    /// many arguments as it takes).
+    let entries = HashSet<string>()
+
+    let entryFor (tr: string) (m: string) (t: Ty) : string =
+        let name = sprintf "dyn:%s#%s" (mangle tr [ t ]) m
+
+        if entries.Add name then
+            let tm = prog.traitMethods[tr + "." + m]
+            let methodTy = substGen [ t ] tm.ty
+
+            let rec split ty =
+                match prune ty with
+                | TFun(a, r) ->
+                    let ps, res = split r
+                    a :: ps, res
+                | r -> [], r
+
+            let ps, res = split methodTy
+            let dynTy = TCon("dyn:" + tr, [])
+            let others = ps.Tail |> List.mapi (fun i p -> sprintf "$a%d" i, p)
+            let value = mk (CPrim("dyn.unbox", [ mk (CLocal "$self") dynTy ])) t
+            let body = dispatch (tr + "." + m) [ t ] methodTy (value :: (others |> List.map (fun (x, p) -> mk (CLocal x) p))) res
+
+            // where it is from, for debug info: the impl's file
+            let file =
+                match prog.impls.TryGetValue((tr, (match prune t with TCon(n, _) -> n | t -> showFull t))) with
+                | true, table when defs.ContainsKey table[m] -> defs[table[m]].file
+                | _ -> (Seq.head defs.Values).file
+
+            out.Add
+                { name = name
+                  pars = ("$self", dynTy) :: others
+                  ret = res
+                  body = body
+                  file = file
+                  line = 1 }
+
+        name
+
     /// An operator on a non-primitive type calls the type's trait impl.
     let operator (op: string) (a: CExpr) (b: CExpr) (resTy: Ty) : CExpr =
         let tr, m = opTrait[op]
@@ -259,6 +319,12 @@ let run (prog: Program) : MFun list =
 
         let rec ex (e: CExpr) : CExpr =
             match e.k with
+            | CPrim(op, [ v ]) when op.StartsWith "dyn.box:" ->
+                // a value made a dyn Trait: its vtable's functions at the value's type
+                let tr = op.Substring 8
+                let t = ct v.ty
+                let refs = methodsOf tr |> List.map (fun m -> mk (CPrim("fn:" + entryFor tr m t, [])) tUnit)
+                mk (CPrim(op, ex v :: refs)) (ct e.ty)
             | CApp({ k = CGlobal(q, Some gi) } as h, args) when prog.traitMethods.ContainsKey q ->
                 dispatch q (List.map ct gi) (ct h.ty) (List.map ex args) (ct e.ty)
             | CGlobal(q, Some gi) when prog.traitMethods.ContainsKey q -> dispatch q (List.map ct gi) (ct e.ty) [] (ct e.ty)

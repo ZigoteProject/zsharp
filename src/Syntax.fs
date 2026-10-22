@@ -74,6 +74,7 @@ type Expr =
     | DeriveCtx of string * Expr // prefixes errors inside a derive expansion ("field name: ...")
     | Measured of Expr * SType // 9.58<s>
     | Typed of Expr * SType // (e: T)
+    | Unsafe of Expr // unsafe e: raw pointers and C function pointers allowed inside
     | At of int * Expr // source line, for error messages
 
 and Param = Pat * SType option
@@ -166,6 +167,7 @@ let mapExpr (f: Expr -> Expr) (e: Expr) : Expr =
     | DeriveCtx(c, a) -> DeriveCtx(c, f a)
     | Measured(a, m) -> Measured(f a, m)
     | Typed(a, t) -> Typed(f a, t)
+    | Unsafe a -> Unsafe(f a)
     | At(l, a) -> At(l, f a)
 
 // ---------------------------------------------------------------- lexer
@@ -212,7 +214,7 @@ let showTok =
 let keywords =
     set
         [ "let"; "rec"; "if"; "then"; "else"; "extern"; "true"; "false"; "not"; "match"; "with"; "when"
-          "type"; "of"; "as"; "fun"; "for"; "in"; "do"; "while"; "mutable"; "member"; "static"; "trait"; "impl"; "abstract"; "derive"; "open"; "module"; "namespace"; "private"; "and" ]
+          "type"; "of"; "as"; "fun"; "for"; "in"; "do"; "while"; "mutable"; "member"; "static"; "trait"; "impl"; "abstract"; "derive"; "open"; "module"; "namespace"; "private"; "and"; "unsafe" ]
 
 // longest first
 let symbols =
@@ -839,6 +841,12 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
             | KTyVar v ->
                 advance ()
                 STVar v
+            | KId "dyn" when (match peek2 () with
+                              | KId _ -> true
+                              | _ -> false) ->
+                // dyn Trait: a value of any type that implements the trait
+                advance ()
+                STName("dyn", [ STName(ident (), []) ])
             | KId n ->
                 advance ()
 
@@ -1267,6 +1275,10 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
 
             expect (KSym "->") "'->'"
             Lambda(ps, block ())
+        | KKw "unsafe" ->
+            // unsafe e, or unsafe and an indented block: raw pointer operations allowed inside
+            advance ()
+            Unsafe(block ())
         | KKw "while" ->
             advance ()
             let c = expr ()

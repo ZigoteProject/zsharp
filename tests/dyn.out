@@ -1,0 +1,9 @@
+circle: 3
+rect: 6
+unit square: 1
+total 10
+doubled [6; 12; 2]
+circle of radius 10
+circle: 12, rect: 5
+bigger [circle; rect]
+1, two, 3.5, { r = 4 }, (5, true)

@@ -200,7 +200,7 @@ let report x = Console.println (describe x)    // inferred: 'a -> unit when 'a :
 
 - **Dispatch:** resolved statically and monomorphized, with no runtime cost.
   - A generic function's trait requirements are inferred, and so are an impl's requirements on its type arguments. For example, `impl Show<list<'a>>` needs `Show<'a>`.
-  - **`dyn Trait`** (vtables for heterogeneous collections and plugin APIs) is **(planned, phase V)**.
+  - **`dyn Trait`:** for heterogeneous collections and plugin APIs, a value of any type implementing the trait. It's a heap object holding the value and a pointer to a table of its type's impl (built when the value is made, at its type), so a call is one indirect call. A value becomes a `dyn` where one is expected (a declared type, a parameter, a result), with no conversion written. A trait can be `dyn` when each of its methods takes the value first and doesn't mention its type elsewhere: `Show` can, `Ord` can't.
 - **Operators are traits:** `Add` (`+`, `zero`), `Num` (`- * / %`, negation), `Eq`, `Ord`. They have built-in impls for primitives, and user types implement them with `impl`.
 - **Built-in derives:** `Eq`, `Ord`, `Hash` and `Show` come from prelude derives (§3.1), applied automatically the first time a type needs them. An `impl` overrides them.
 - **Auto traits:** `Share` (§7) will be derived structurally by the compiler, and can't be implemented by hand **(planned, phase 7)**.
@@ -337,11 +337,14 @@ its last use.
 before it. Mutable cells can: a `ref` or `Buffer` holding a value that points back to it
 (directly, or through a closure that captures it).
 - **What happens:** RC never frees such a cycle. It leaks silently, and it stays memory-safe. There is no cycle collector, which would need a GC's tracing.
-- **Avoiding them:** back-pointers (a child's parent, a list of observers) are `weak` references **(planned, phase V)**, which don't keep their target alive. Otherwise, breaking a cycle is the program's job, as in Swift.
+- **Avoiding them:** back-pointers (a child's parent, a list of observers) are `weak<'a>` references, which don't keep their object alive: `Weak.get w` is `Some x` while it lives. Otherwise, breaking a cycle is the program's job, as in Swift.
+  - **How:** the weak references to an object share a cell { count, object }, found from the object through a table. An object dying empties its cell: when it's freed, and when Perceus reuses its cell for another object, which the reuse reports.
+  - **Who pays:** only a program with weak references (or arenas) allocates and frees through the runtime's checked functions; the others' code is what it was.
 - **Finding them:** `ZS_LEAKCHECK=1` reports the objects still allocated at exit, so a test suite run with it (as `./test.sh` runs the compiler's) catches a cycle the tests make.
 
-**Escape hatches (planned, phase V):** `Arena.with (fun a -> …)` for bulk allocation that's
-freed at once, and raw `ptr<'a>` inside `unsafe` expressions.
+**Escape hatches:** `Arena.with (fun () -> …)` for bulk allocation that's freed at once, and raw
+`ptr<'a>` inside `unsafe` expressions (§11).
+- **Arenas:** what the function allocates comes from the arena's 64 KB blocks, bumped through, one malloc each. An object dying frees nothing, and the blocks go together when the arena's last object has: when the function returns, or later if something it made lives on. So an arena can't be misused into a dangling pointer, and needs no escape analysis or annotations. Objects in an arena are counted as any others; only their memory is the arena's.
 
 ### 5.3 What code without `unsafe` guarantees
 
@@ -358,7 +361,7 @@ freed at once, and raw `ptr<'a>` inside `unsafe` expressions.
 **Not guaranteed (and still memory-safe):** leaks through cycles of `ref` cells or `Buffer`s (§5.2).
 
 **Unsafe on purpose:** `extern` calls, `Mmio.*` register accesses, and `unsafe` expressions
-with raw pointers **(planned, phase V)**.
+with raw pointers (§11).
 
 ## 6. Concurrency: `Task` (planned, phase 6)
 
@@ -592,22 +595,25 @@ import c "raylib.h"                              // like Zig's @cImport
 - **FFI types:**
   - **Scalars:** numbers, `bool`, `unit` (void).
   - **Pointers:** `cstr` (`const char *`; a Z# string passes as its bytes) and `cptr` (any other pointer, opaque).
-  - **Structs:** `[<CLayout>]` records, passed by value.
+  - **Structs:** `[<CLayout>]` records, passed by value. On x86-64, a struct whose parts don't all fit in the argument registers left goes on the stack whole, as C passes it.
   - **Callbacks:** `callback<A -> R>`, a function pointer plus `void *` user data.
-  - **Planned (phase V):** typed raw pointers `ptr<'a>` with `Ptr.read`/`write` and pointer arithmetic inside `unsafe`, and C function pointers callable from Z#.
+  - **Raw pointers:** `ptr<'a>` to C data, with `Ptr.read`, `write`, `add`, `alloc`, `free` and `cast` inside `unsafe` expressions (an expression or an indented block), outside of which they're compile errors.
+  - **C function pointers:** `fnptr<A -> B -> R>` is `R (*)(A, B)`, called like a function inside `unsafe`, with C's conventions.
+  - **Z# objects:** any other reference-counted value (a union's cell, a list, a closure, a `dyn` value) crosses as an opaque `zs_handle` with its own count, `zs_retain` and `zs_release` in the generated header. A handle a function returns is the caller's; one passed in is lent for the call.
 - **`import c`:** clang reads the header, with `-ast-dump=json` for declarations and `-E -dD` for macros. Only what that header itself declares is imported.
   - **What comes across:**
     - functions, which become externs;
     - structs, named or `typedef`'d, which become `[<CLayout>]` records;
     - enum values, which become constants, as do `#define` numbers, strings and struct literals such as `CLITERAL(Color){ … }`.
   - **Types:** `char*` becomes `cstr`, other pointers `cptr`, and enum types `i32`. `long` follows the word; `long long` is `i64`.
-  - **What's left out:** unions, arrays, function pointers, `static inline` functions and opaque structs by value. Using one gives an error that says why.
+  - **Function pointers** (struct fields such as `double (*area)(double, double)`, typedef'd or not) become `fnptr` types.
+  - **What's left out:** unions, arrays, `static inline` functions and opaque structs by value. Using one gives an error that says why.
   - **Caching and editors:**
     - The header is found next to the importing file, then on the system path.
     - The result is cached in memory, and saved with a copy of the header in `.zs-cache/cimport/`, so editors without clang or the header still get it.
     - In the editor, hover shows the C declaration and the header's comment.
 - **Exporting:** `[<Export "name">]` functions must be monomorphic, with C types only. `zs build --lib` produces a static library (`.a`) and a header (`.h`).
-  - **Planned (phase V):** shared libraries (`.so`), and RC objects crossing as opaque handles (`Rc.retain`/`Rc.release`).
+  - **Shared libraries:** an output ending in `.so` is one. The archive's code is position-independent too, so a C shared library can link it whole (`--whole-archive`).
 - **Panics in a C host:** a library reports the errors its caller can handle as `result`. A panic is a bug in the library, and it ends the host process, as Rust's `panic = "abort"` does.
   - **The hook:** `zs_set_panic_hook(void (*hook)(const char *message))`, declared in every generated header, runs after the message is printed. It can log, flush or save the host's state, or end the process its own way (`exit`). If it returns, the process stops as before.
   - **No calls back:** the hook must not call into the library, whose state is undefined after a panic.
@@ -630,7 +636,7 @@ checker, so tools can't drift from the compiler.
 - **Tests:** `[<Test>]` marks a `unit -> unit` function. `zs test` runs each test in its own process, so a failure or panic fails only that test. A failed `assert` names its file and line.
 - **Debugging:** `zs build -g` builds at `-O0` with DWARF.
   - gdb breaks on Z# functions and lines, steps, and shows backtraces.
-  - Number and bool locals and arguments are visible. Strings, records and unions are **(planned, phase V)**.
+  - Locals and arguments are visible when they are numbers, bools, chars, strings (shown as their text), or tuples, records and plain unions of those (a union as its case and fields).
 - **Documentation:** `///` comments above a declaration document it.
   - **Where they show:** hover, completion, the MCP `docs` tool, and `zs doc <file>`, which writes Markdown.
   - **The library:** fully documented, with one reference page per module in `docs/reference` (built-in functions included), which `./test.sh` keeps current.
@@ -680,7 +686,7 @@ checker, so tools can't drift from the compiler.
 | 32 | Editor support | tree-sitter grammar + `zs lsp` + `zs mcp`, Zed extension first | decided |
 | 33 | Formatter | `zs fmt`, one style, no configuration; lossless syntax tree for reflow (planned) | decided |
 | 34 | Surface syntax | the freeze is lifted. Missing F# syntax comes first (phase L); new non-F# syntax needs a design discussion | decided |
-| 35 | Kept in v1 though not yet needed | `ptr<'a>` + `unsafe`, `Arena`, `dyn Trait`, `weak` references, built in phase V before CEs and `Task` | decided |
+| 35 | Kept in v1 though not yet needed | `ptr<'a>` + `unsafe`, `Arena`, `dyn Trait`, `weak` references, built in phase V before CEs and `Task` | done |
 | 36 | Optimizations that change evaluation order | only for pure code (fusion requires pure lambdas, and stages that can't panic when the consumer's function has effects; printing pieces evaluates them all first) | decided |
 | 37 | Library organization | prelude (global names) / Core (no OS: every target) / Std (needs an OS); .NET-style namespaces open everywhere at the lowest precedence; .NET module names, F# function names | decided |
 | 38 | Operator precedence | F#'s: custom operators by their first character; `\|>` and `>>` at the comparison level, above `&&` and `\|\|` (they used to be the loosest) | decided |
@@ -688,5 +694,8 @@ checker, so tools can't drift from the compiler.
 | 40 | Reference cycles | not collected; `weak` references for back-pointers, `ZS_LEAKCHECK=1` to find leaks | decided |
 | 41 | Lambda arguments | typed after the call's other arguments when a parameter has no annotation, with the parameter types the call expects; `x \|> fun p -> body` is `let p = x` | decided |
 | 42 | Code that must not touch the heap | `[<NoAlloc>]` functions and `--no-heap` programs, checked at compile time on Z#'s IR after its optimizations; freeing counts; externs trusted; interrupt handlers implicitly `NoAlloc` (§10) | default |
+| 43 | `dyn Trait` | the value boxed with its type's impl table; made where a `dyn` is expected, with no conversion written; for traits whose methods take the value first and don't mention its type elsewhere (§3) | decided |
+| 44 | Arenas | `Arena.with (fun () -> …)`: what the function allocates comes from the arena's blocks, freed together when the arena's last object goes. An object that lives on keeps its blocks, so arenas are memory-safe without escape analysis (§5.2) | decided |
+| 45 | Z# objects in C | an opaque `zs_handle` with its own count (`zs_retain`, `zs_release`); a returned handle is the caller's, a passed one is lent for the call (§11) | decided |
 
 "Default" means chosen by me and open to change until the phase that implements it begins.

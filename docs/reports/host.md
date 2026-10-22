@@ -93,7 +93,7 @@ them print the same result.
 ## What is left, and why
 
 - **`fib`, 2.04× C:** these are overflow checks (DESIGN decision 4), which Swift pays too. `[<Wrapping>]` on the function removes them where wrapping is wanted. Against C with the same checks, it's 1.12×, which is what phase 5's exit test asks of it.
-- **`binarytrees`, 1.21×:** this is `malloc` and `free` per node. `Arena.with` (phase V) would match Zig and OCaml for trees that die together.
+- **`binarytrees`, 1.21×:** this is `malloc` and `free` per node. With `Arena.with` around each tree (phase V), the same program takes 0.63× C's time (1.02 s against 1.99 s, and C's 1.63 s, measured together on one machine), at 26% more peak memory than C, since an arena's cells are 32 bytes and its blocks are freed a tree at a time. An arena is the program's choice, so the table keeps the program without one.
 - **`rbtree`, 1.07×:** the persistent algorithm against C's in-place one. Reuse already makes most inserts allocation-free.
 
 ## How the comparison could mislead

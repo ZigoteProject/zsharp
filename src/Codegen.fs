@@ -76,6 +76,9 @@ let private prelude =
     """declare noalias ptr @zs_alloc(i_W) allockind("alloc,uninitialized") allocsize(0) "alloc-family"="zs"
 declare void @zs_free(ptr allocptr) allockind("free") "alloc-family"="zs"
 declare i_W @zs_allocations()
+declare i_W @zs_mallocs()
+declare ptr @zs_ptr_alloc(i_W, i_W)
+declare void @zs_ptr_free(ptr)
 declare i64 @zs_ticks()
 declare void @zs_set_args(i32, ptr)
 declare i_W @zs_test_index()
@@ -83,6 +86,15 @@ declare void @zs_exit(i_W) noreturn
 declare void @llvm.memcpy.p0.p0.i_W(ptr, ptr, i_W, i1)
 declare void @zs_panic(ptr) noreturn
 declare void @zs_panic_c(ptr) noreturn
+declare ptr @zs_weak_new(ptr)
+declare ptr @zs_weak_target(ptr)
+declare void @zs_weak_free(ptr)
+declare void @zs_arena_open()
+declare void @zs_arena_close()
+declare void @zs_reused(ptr)
+declare ptr @zs_handle_new(ptr, ptr)
+declare ptr @zs_handle_get(ptr)
+declare void @zs_release(ptr)
 declare ptr @zs_str_concat(ptr, ptr)
 declare i_W @zs_str_cmp(ptr, ptr)
 declare i_W @zs_str_hash(ptr)
@@ -176,6 +188,21 @@ done:
   ret void
 }
 
+; a dyn Trait value: { count, vtable, the value }; the vtable's first entry frees it
+define private void @zs.drop.dyn(ptr %p) {
+entry:
+  %last = call i1 @zs.release(ptr %p)
+  br i1 %last, label %free, label %done
+free:
+  %vp = getelementptr { i_W, ptr }, ptr %p, i32 0, i32 1
+  %vt = load ptr, ptr %vp
+  %f = load ptr, ptr %vt
+  call void %f(ptr %p)
+  ret void
+done:
+  ret void
+}
+
 define private void @zs.drop.clo(ptr %p) {
 entry:
   %last = call i1 @zs.release(ptr %p)
@@ -239,6 +266,11 @@ let mutable optimizeSize = false
 /// The target triple (zs build --target), "" for the host (x86-64 Linux). It decides the C ABI.
 let mutable target = ""
 
+/// The program has weak references or arenas: its objects are allocated and freed through the
+/// runtime's checked functions (an arena's objects aren't malloc's; a dying object empties its
+/// weak cell), and a cell Perceus reuses is reported. Other programs pay for none of it.
+let mutable checkedHeap = false
+
 // ponytail: a bare-metal target (cortex-m4, cortex-m0plus) passes C structs by value with the
 // x86-64 rules, which are wrong for 32-bit ARM AAPCS; scalars and pointers are right
 
@@ -271,6 +303,7 @@ let private resolveWord (ir: string) =
         let line = sized line
         let cut = line.IndexOf " c\""
         let head, tail = if cut < 0 then line, "" else line.Substring(0, cut), line.Substring cut
+        let head = if checkedHeap then head.Replace("@zs_alloc(", "@zs_alloc_checked(").Replace("@zs_free(", "@zs_free_checked(") else head
         head.Replace("i_W", w).Replace("HDR2", h2).Replace("HDR1", h1) + tail)
     |> String.concat "\n"
 
@@ -329,8 +362,9 @@ let compile
         | TCon("f32", []) -> "float"
         | TCon("bool", []) -> "i1"
         | TCon("unit", []) -> "{}"
-        | TCon(("cstr" | "cptr" | "string" | "array" | "ref"), _)
+        | TCon(("cstr" | "cptr" | "string" | "array" | "ref" | "weak" | "ptr" | "fnptr"), _)
         | TFun _ -> "ptr"
+        | TCon(n, _) when isDynName n -> "ptr"
         | TCon(n, args) ->
             match types[n].def with
             | RecordDef fs -> structTy (fs |> List.map (fun (_, ft) -> substGen args ft))
@@ -351,6 +385,10 @@ let compile
 
     let isFloat t = floats.Contains(tyName t)
     let isUnsigned t = unsigned.Contains(tyName t)
+
+    /// A Z# object C holds as an opaque handle (Typer.isHandle): reference counted, a pointer,
+    /// not a string.
+    let isHandle (t: Ty) = heap t && llty t = "ptr" && tyName t <> "string"
 
     let union (t: Ty) =
         match prune t with
@@ -415,8 +453,6 @@ let compile
         "{ i_W, ptr, ptr" + (env |> List.map (fun f -> ", " + llty f) |> String.concat "") + " }"
 
     // ------------------------------------------------------------ C ABI (x86-64 System V, AAPCS64)
-    // ponytail: running out of argument registers isn't modelled (x86-64 then passes a struct on
-    // the stack whole; AAPCS64 HFAs then need alignstack(8)), which matters only past 6-8 struct args
 
     /// Size, alignment and scalar fields (offset, LLVM type) of a C-representable type.
     let rec cLayout (t: Ty) : int * int * (int * string) list =
@@ -492,6 +528,40 @@ let compile
     let abiOf (t: Ty) = abiFor t false
     let cParam (t: Ty) = if llty t = "i1" then "i1 zeroext" else llty t
 
+    /// How each parameter of a C function is passed. x86-64 System V: a struct goes in
+    /// registers only when all its eightbytes fit in the ones left (6 for integers, less one
+    /// for an sret pointer, and 8 for floating point); otherwise it goes on the stack whole, as
+    /// a struct in memory does. A scalar past the registers goes on the stack by itself, which
+    /// LLVM does. AAPCS64's rules for the arrays it is given are LLVM's own.
+    let cModes (pars: Ty list) (sret: bool) : Abi list =
+        let mutable ints = if sret then 5 else 6
+        let mutable sses = 8
+
+        pars
+        |> List.map (fun t ->
+            match prune t with
+            | TCon("callback", _) ->
+                ints <- ints - 2
+                Scalar
+            | TCon("unit", []) -> Scalar
+            | _ ->
+                match abiOf t with
+                | Scalar ->
+                    if llty t = "double" || llty t = "float" then sses <- sses - 1 else ints <- ints - 1
+                    Scalar
+                | Pieces ps when isArm64 () -> Pieces ps
+                | Pieces ps ->
+                    let ni = ps |> List.filter (fun p -> p.StartsWith "i") |> List.length
+                    let ns = ps.Length - ni
+
+                    if ni <= ints && ns <= sses then
+                        ints <- ints - ni
+                        sses <- sses - ns
+                        Pieces ps
+                    else
+                        Memory
+                | Memory -> Memory)
+
     /// A struct passed in memory: x86-64 copies it onto the stack (byval); AAPCS64 passes a
     /// pointer to a copy the caller made.
     let byval (t: Ty) =
@@ -535,16 +605,19 @@ let compile
 
         em.Instr(sprintf "load %s, ptr %s" (llty t) slot)
 
-    /// The LLVM parameter types (with attributes) a C parameter of this type becomes.
-    let cParams (t: Ty) : string list =
+    /// The LLVM parameter types (with attributes) a C parameter of this type becomes, passed so.
+    let cParamsAs (t: Ty) (mode: Abi) : string list =
         match prune t with
         | TCon("callback", _) -> [ "ptr"; "ptr" ]
         | TCon("unit", []) -> []
         | _ ->
-            match abiOf t with
+            match mode with
             | Scalar -> [ cParam t ]
             | Pieces ps -> ps
             | Memory -> [ byval t ]
+
+    /// The LLVM parameters of a C function taking these (after an sret pointer, if it has one).
+    let cParamList (pars: Ty list) (sret: bool) = List.map2 cParamsAs pars (cModes pars sret) |> List.concat
 
     let sizeOf (em: Emitter) (ty: string) =
         let p = em.Instr(sprintf "getelementptr %s, ptr null, i32 1" ty)
@@ -716,6 +789,13 @@ let compile
     and dropFn (t: Ty) : string =
         match prune t with
         | TFun _ -> "@zs.drop.clo"
+        | TCon(n, _) when isDynName n -> "@zs.drop.dyn"
+        | TCon("weak", _) ->
+            // a weak reference's cell: the runtime frees it (and forgets its object)
+            if generated.Add "@zs.drop.weak" then
+                helpers.Append "define private void @zs.drop.weak(ptr %p) {\nentry:\n  %last = call i1 @zs.release(ptr %p)\n  br i1 %last, label %free, label %done\nfree:\n  call void @zs_weak_free(ptr %p)\n  ret void\ndone:\n  ret void\n}\n\n" |> ignore
+
+            "@zs.drop.weak"
         | TCon("string", _) -> "@zs.drop.str"
         | TTuple _ -> structHelper "drop" t
         | TCon(n, _) when (match types.TryGetValue n with
@@ -935,6 +1015,27 @@ let compile
 
         name
 
+    /// The vtable of a dyn Trait over type t: a function freeing the dyn (and dropping the value
+    /// it holds), then the trait's methods for t.
+    let vtable (tr: string) (t: Ty) (entries: string list) =
+        let name = sprintf "@\"vt.%s.%s\"" tr (showFull t)
+
+        if generated.Add name then
+            let drop = sprintf "@\"dyndrop.%s\"" (showFull t)
+
+            if generated.Add drop then
+                let em = Emitter()
+                let v = em.Instr(sprintf "load %s, ptr %s" (llty t) (em.Instr(sprintf "getelementptr { i_W, ptr, %s }, ptr %%p, i32 0, i32 2" (llty t))))
+                em.Emit "call void @zs_free(ptr %p)"
+                dropValue em t v
+                em.Emit "ret void"
+                helpers.Append(sprintf "define private void %s(ptr %%p) {\n%s}\n\n" drop em.Body) |> ignore
+
+            let slots = ("ptr " + drop) :: (entries |> List.map (fun f -> "ptr " + sym f))
+            top.AppendLine(sprintf "%s = private unnamed_addr constant { %s } { %s }" name (slots |> List.map (fun _ -> "ptr") |> String.concat ", ") (String.concat ", " slots)) |> ignore
+
+        name
+
     let staticClosure (f: string) =
         let name = sprintf "@\"cloS.%s\"" f
 
@@ -1019,26 +1120,147 @@ let compile
 
     let diTypes = Dictionary<string, string>()
 
-    /// The DWARF type of a variable, for the types gdb can show as values.
-    let diType (t: Ty) =
-        let basic name bits enc =
-            match diTypes.TryGetValue name with
+    /// The field types of a value that is an LLVM struct: a tuple's or a record's, or a plain
+    /// union's tag and then every case's fields.
+    let structFields (t: Ty) : Ty list =
+        match prune t with
+        | TTuple ts -> ts
+        | TCon(n, args) ->
+            match types[n].def with
+            | RecordDef fs -> fs |> List.map (snd >> substGen args)
+            | UnionDef cs -> tcon (if tagTy cs = "i8" then "u8" else "i32") :: (cs |> List.collect snd |> List.map (substGen args))
+        | _ -> []
+
+    /// Size and alignment in bytes, as LLVM (and C) lays the value out.
+    let rec sizeAlign (t: Ty) : int * int =
+        match llty t with
+        | "i1"
+        | "i8" -> 1, 1
+        | "i16" -> 2, 2
+        | "i32"
+        | "float" -> 4, 4
+        | "i64"
+        | "double" -> 8, 8
+        | "ptr" -> pointerBytes (), pointerBytes ()
+        | "{}" -> 0, 1
+        | _ ->
+            let size, align, _ = layout (structFields t)
+            size, align
+
+    /// A struct's size and alignment, and each field's offset.
+    and layout (ts: Ty list) : int * int * int list =
+        let mutable off = 0
+        let mutable align = 1
+
+        let offsets =
+            [ for t in ts do
+                  let s, a = sizeAlign t
+                  off <- (off + a - 1) / a * a
+                  yield off
+                  off <- off + s
+                  align <- max align a ]
+
+        (off + align - 1) / align * align, align, offsets
+
+    /// The DWARF type of a variable, for the types gdb can show as values: numbers, bool, char,
+    /// strings (as their text), and tuples, records and plain unions of those. With field, the
+    /// type of a struct's field: a string there is a pointer to its object (print *p for it).
+    let rec diType' (field: bool) (t: Ty) : string option =
+        let named (key: string) (make: unit -> string) =
+            match diTypes.TryGetValue key with
             | true, id -> Some id
             | _ ->
-                let id = meta (sprintf "!DIBasicType(name: \"%s\", size: %d, encoding: %s)" name bits enc)
-                diTypes[name] <- id
+                let id = make ()
+                diTypes[key] <- id
                 Some id
 
-        match tyName t with
-        | "int" -> basic "int" 64 "DW_ATE_signed"
-        | ("i8" | "i16" | "i32") as n -> basic n (int (n.Substring 1)) "DW_ATE_signed"
-        | ("u8" | "u16" | "u32" | "u64") as n -> basic n (int (n.Substring 1)) "DW_ATE_unsigned"
-        | "usize" -> basic "usize" 64 "DW_ATE_unsigned"
-        | "f64" -> basic "f64" 64 "DW_ATE_float"
-        | "f32" -> basic "f32" 32 "DW_ATE_float"
-        | "bool" -> basic "bool" 8 "DW_ATE_boolean"
-        | "char" -> basic "char" 32 "DW_ATE_UTF"
+        let basic name bits enc =
+            named name (fun () -> meta (sprintf "!DIBasicType(name: \"%s\", size: %d, encoding: %s)" name bits enc))
+
+        let pointer (key: string) (target: string) =
+            named key (fun () -> meta (sprintf "!DIDerivedType(tag: DW_TAG_pointer_type, baseType: %s, size: %d)" target (8 * pointerBytes ())))
+
+        /// A struct: its members, named, at their offsets (members gdb can't show are left out).
+        let structOf (name: string) (fields: (string * Ty) list) =
+            named ("struct " + showFull t) (fun () ->
+                let size, _, offsets = layout (List.map snd fields)
+
+                let members =
+                    List.zip fields offsets
+                    |> List.choose (fun ((f, ft), off) ->
+                        diType' true ft
+                        |> Option.map (fun dt ->
+                            let bits, _ = sizeAlign ft
+                            meta (sprintf "!DIDerivedType(tag: DW_TAG_member, name: \"%s\", baseType: %s, size: %d, offset: %d)" f dt (8 * bits) (8 * off))))
+
+                meta (sprintf "!DICompositeType(tag: DW_TAG_structure_type, name: \"%s\", size: %d, elements: !{%s})" name (8 * size) (String.concat ", " members)))
+
+        match prune t with
+        | TCon("int", []) -> basic "int" (8 * pointerBytes ()) "DW_ATE_signed"
+        | TCon(("i8" | "i16" | "i32" | "i64") as n, []) -> basic n (int (n.Substring 1)) "DW_ATE_signed"
+        | TCon(("u8" | "u16" | "u32" | "u64") as n, []) -> basic n (int (n.Substring 1)) "DW_ATE_unsigned"
+        | TCon("usize", []) -> basic "usize" (8 * pointerBytes ()) "DW_ATE_unsigned"
+        | TCon("f64", []) -> basic "f64" 64 "DW_ATE_float"
+        | TCon("f32", []) -> basic "f32" 32 "DW_ATE_float"
+        | TCon("bool", []) -> basic "bool" 8 "DW_ATE_boolean"
+        | TCon("char", []) -> basic "char" 32 "DW_ATE_UTF"
+        | TCon("string", []) when field ->
+            // the object: { count, length, bytes }
+            let bytes = basic "u8" 8 "DW_ATE_unsigned_char" |> Option.get
+            let word = basic "int" (8 * pointerBytes ()) "DW_ATE_signed" |> Option.get
+
+            named "string object" (fun () ->
+                let w = 8 * pointerBytes ()
+                let arr = meta (sprintf "!DICompositeType(tag: DW_TAG_array_type, baseType: %s, elements: !{!DISubrange(count: -1)})" bytes)
+                let m name ty off = meta (sprintf "!DIDerivedType(tag: DW_TAG_member, name: \"%s\", baseType: %s, size: %d, offset: %d)" name ty w off)
+                meta (sprintf "!DICompositeType(tag: DW_TAG_structure_type, name: \"string\", size: %d, elements: !{%s, %s, %s})" (2 * w) (m "count" word 0) (m "length" word w) (m "bytes" arr (2 * w)))) |> Option.bind (pointer "string*")
+        | TCon("string", []) ->
+            // a variable: a pointer to its bytes (the declaration adds the offset), so gdb prints the text
+            basic "char" 8 "DW_ATE_signed_char" |> Option.bind (pointer "char*")
+        | TTuple ts -> structOf (show t) (ts |> List.mapi (fun i ft -> sprintf "Item%d" (i + 1), ft))
+        | TCon(n, args) when (match types.TryGetValue n with
+                              | true, { def = RecordDef _ } -> true
+                              | _ -> false) ->
+            match types[n].def with
+            | RecordDef fs -> structOf (show t) (fs |> List.map (fun (f, ft) -> f, substGen args ft))
+            | UnionDef _ -> None
+        | TCon(n, args) when (match types.TryGetValue n with
+                              | true, { def = UnionDef _ } -> plainUnion types t
+                              | _ -> false) ->
+            // the tag as an enumeration of the cases; then each case's fields, named after it
+            let _, cases = union t
+            let tagBits = if tagTy cases = "i8" then 8 else 32
+
+            let enum =
+                named ("enum " + showFull t) (fun () ->
+                    let items = cases |> List.mapi (fun i (c, _) -> sprintf "!DIEnumerator(name: \"%s\", value: %d)" (shortName c) i)
+                    meta (sprintf "!DICompositeType(tag: DW_TAG_enumeration_type, name: \"%s\", size: %d, elements: !{%s})" (show t) tagBits (String.concat ", " items)))
+
+            if cases |> List.forall (fun (_, fs) -> fs.IsEmpty) then
+                enum // an enum: its value is the tag
+            else
+                let fields =
+                    cases
+                    |> List.collect (fun (c, fs) ->
+                        let c = shortName c
+                        fs |> List.mapi (fun j ft -> (if fs.Length = 1 then c else sprintf "%s.%d" c j), ft))
+
+                named ("struct " + showFull t) (fun () ->
+                    let size, _, offsets = layout (structFields t)
+                    let tagMember = meta (sprintf "!DIDerivedType(tag: DW_TAG_member, name: \"case\", baseType: %s, size: %d, offset: 0)" enum.Value tagBits)
+
+                    let members =
+                        List.zip fields (List.tail offsets)
+                        |> List.choose (fun ((f, ft), off) ->
+                            diType' true ft
+                            |> Option.map (fun dt ->
+                                let bits, _ = sizeAlign ft
+                                meta (sprintf "!DIDerivedType(tag: DW_TAG_member, name: \"%s\", baseType: %s, size: %d, offset: %d)" f dt (8 * bits) (8 * off))))
+
+                    meta (sprintf "!DICompositeType(tag: DW_TAG_structure_type, name: \"%s\", size: %d, elements: !{%s})" (show t) (8 * size) (String.concat ", " (tagMember :: members))))
         | _ -> None
+
+    let diType = diType' false
 
     /// The name a variable has in the source (unique names are x.12; temporaries start with $).
     let sourceName (x: string) =
@@ -1108,7 +1330,12 @@ let compile
 
                     let argPart = if arg > 0 then sprintf ", arg: %d" arg else ""
                     let var = meta (sprintf "!DILocalVariable(name: \"%s\"%s, scope: %s, file: %s, line: %d, type: %s)" name argPart sp (diFile f.file) (max 1 line) dt)
-                    em.Raw(sprintf "#dbg_declare(ptr %s, %s, !DIExpression(), %s)" p var loc)
+
+                    match prune t with
+                    | TCon("string", []) ->
+                        // its value is the address of its bytes: the object's, past the count and length
+                        em.Raw(sprintf "#dbg_value(ptr %s, %s, !DIExpression(DW_OP_deref, DW_OP_plus_uconst, %d, DW_OP_stack_value), %s)" p var (2 * pointerBytes ()) loc)
+                    | _ -> em.Raw(sprintf "#dbg_declare(ptr %s, %s, !DIExpression(), %s)" p var loc)
                 | _ -> ()
         let selfProto = proto f
         let selfName = f.name
@@ -1358,6 +1585,102 @@ let compile
                   | Some(Slot p) when not (shared.Contains x) && not (uniqueSlots.Contains x) -> yield x, p, t
                   | _ -> () ]
 
+        /// A call of a C function (an extern, or a function pointer's value) with the values of
+        /// the arguments:  strings as their bytes, closures for callback<F> parameters as callback and
+        /// user data, Z# objects as handles, structs by the C ABI's rules.
+        let cCall (callee: string) (s: ExternSig) (args: CExpr list) (vs: string list) =
+            let ret, sret = cRet s.ret
+            let modes = cModes s.pars sret
+            let handles = ResizeArray<string>() // handles made for the call, released after it
+
+            let argv =
+                List.zip args vs
+                |> List.mapi (fun i (a, v) ->
+                    let fixedC = i < s.pars.Length
+
+                    match tyName a.ty with
+                    | "string" -> "ptr " + em.Instr(sprintf "getelementptr inbounds i8, ptr %s, i_W HDR2" v)
+                    | _ when fixedC ->
+                        let pt = List.item i s.pars
+
+                        match prune pt with
+                        | TCon("callback", [ f ]) -> sprintf "ptr %s, ptr %s" (thunk f) v // the closure is the user data
+                        | TCon("unit", []) -> ""
+                        | _ when isHandle pt ->
+                            // the value's reference goes into a handle C borrows for the call
+                            let h = em.Instr(sprintf "call ptr @zs_handle_new(ptr %s, ptr %s)" v (dropFn pt))
+                            handles.Add h
+                            "ptr " + h
+                        | _ ->
+                            match List.item i modes with
+                            | Scalar -> sprintf "%s %s" (cParam pt) v
+                            | Pieces ps -> toPieces em pt v ps |> List.map (fun (t, x) -> t + " " + x) |> String.concat ", "
+                            | Memory ->
+                                let slot = slotFor em pt
+                                em.Emit(sprintf "store %s %s, ptr %s" (llty pt) v slot)
+                                sprintf "%s %s" (byval pt) slot
+                    // C default argument promotions for variadic arguments
+                    | "bool" -> "i32 " + em.Instr(sprintf "zext i1 %s to i32" v)
+                    | "i8"
+                    | "i16" -> "i32 " + em.Instr(sprintf "sext %s %s to i32" (llty a.ty) v)
+                    | "u8"
+                    | "u16" -> "i32 " + em.Instr(sprintf "zext %s %s to i32" (llty a.ty) v)
+                    | "f32" -> "double " + em.Instr(sprintf "fpext float %s to double" v)
+                    | n when prims.Contains n && n <> "unit" -> sprintf "%s %s" (llty a.ty) v
+                    | _ -> fail 0 (sprintf "a %s cannot be passed to a C variadic function" (show a.ty)))
+                |> List.filter ((<>) "")
+
+            let retSlot = if sret then Some(slotFor em s.ret) else None
+            let sretP = retSlot |> Option.map (fun p -> sprintf "ptr sret(%s) %s" (llty s.ret) p) |> Option.toList
+            let argv = sretP @ argv |> String.concat ", "
+
+            let fnTy =
+                if s.variadic then
+                    let sretT = if sret then [ sprintf "ptr sret(%s)" (llty s.ret) ] else []
+                    sprintf "%s (%s)" ret (sretT @ cParamList s.pars sret @ [ "..." ] |> String.concat ", ")
+                else
+                    ret
+
+            let call = sprintf "call %s %s(%s)" fnTy callee argv
+
+            let r =
+                if ret = "void" then
+                    em.Emit call
+
+                    match retSlot with
+                    | Some p -> em.Instr(sprintf "load %s, ptr %s" (llty s.ret) p)
+                    | None -> "zeroinitializer"
+                else
+                    let c = em.Instr call
+
+                    match abiFor s.ret true with
+                    | _ when isHandle s.ret ->
+                        // C gave a handle: the object, with a reference of its own; the handle goes
+                        let o = em.Instr(sprintf "call ptr @zs_handle_get(ptr %s)" c)
+                        em.Emit(sprintf "call void @zs_release(ptr %s)" c)
+                        o
+                    | Scalar -> c
+                    | Pieces [ p ] -> fromPieces em s.ret [ p, c ]
+                    | Pieces ps -> fromPieces em s.ret (ps |> List.mapi (fun k p -> p, em.Instr(sprintf "extractvalue %s %s, %d" ret c k)))
+                    | Memory -> failwith "unreachable"
+
+            for h in handles do
+                em.Emit(sprintf "call void @zs_release(ptr %s)" h)
+
+            List.zip args vs
+            |> List.iteri (fun i (a, v) ->
+                let callback =
+                    i < s.pars.Length
+                    && (match prune (List.item i s.pars) with
+                        | TCon("callback", _) -> true
+                        | _ -> false)
+
+                // the string's bytes / the callback's closure were borrowed
+                if tyName a.ty = "string" || callback then
+                    dropValue em a.ty v)
+
+            r
+
         let lookup (env: Map<string, Binding>) x t =
             match (match env.TryFind x with
                    | Some b -> b
@@ -1496,6 +1819,10 @@ let compile
                 let uniq, shared, join = em.Fresh "unique", em.Fresh "shared", em.Fresh "dropped"
                 em.Emit(sprintf "br i1 %s, label %%%s, label %%%s" (em.Instr(sprintf "call i1 @zs.release(ptr %s)" v)) uniq shared)
                 em.Label uniq
+
+                // the cell is reused: the object it held has died (its weak references see that)
+                if checkedHeap && tok.IsSome then
+                    em.Emit(sprintf "call void @zs_reused(ptr %s)" v)
 
                 fields
                 |> List.iteri (fun i ft ->
@@ -1775,77 +2102,7 @@ let compile
                     "poison"
                 else
                     em.Instr(sprintf "%scall %s %s(%s)" (if tail then "tail " else "") rt (sym f) argv)
-            | CExtern(name, args) ->
-                let s = externs[name]
-                let vs = args |> List.map (gen env false)
-
-                let argv =
-                    List.zip args vs
-                    |> List.mapi (fun i (a, v) ->
-                        let fixedC = i < s.pars.Length
-
-                        match tyName a.ty with
-                        | "string" -> "ptr " + em.Instr(sprintf "getelementptr inbounds i8, ptr %s, i_W HDR2" v)
-                        | _ when fixedC ->
-                            let pt = List.item i s.pars
-
-                            match prune pt with
-                            | TCon("callback", [ f ]) -> sprintf "ptr %s, ptr %s" (thunk f) v // the closure is the user data
-                            | TCon("unit", []) -> ""
-                            | _ ->
-                                match abiOf pt with
-                                | Scalar -> sprintf "%s %s" (cParam pt) v
-                                | Pieces ps -> toPieces em pt v ps |> List.map (fun (t, x) -> t + " " + x) |> String.concat ", "
-                                | Memory ->
-                                    let slot = slotFor em pt
-                                    em.Emit(sprintf "store %s %s, ptr %s" (llty pt) v slot)
-                                    sprintf "%s %s" (byval pt) slot
-                        // C default argument promotions for variadic arguments
-                        | "bool" -> "i32 " + em.Instr(sprintf "zext i1 %s to i32" v)
-                        | "i8"
-                        | "i16" -> "i32 " + em.Instr(sprintf "sext %s %s to i32" (llty a.ty) v)
-                        | "u8"
-                        | "u16" -> "i32 " + em.Instr(sprintf "zext %s %s to i32" (llty a.ty) v)
-                        | "f32" -> "double " + em.Instr(sprintf "fpext float %s to double" v)
-                        | n when prims.Contains n && n <> "unit" -> sprintf "%s %s" (llty a.ty) v
-                        | _ -> fail 0 (sprintf "a %s cannot be passed to a C variadic function" (show a.ty)))
-                    |> List.filter ((<>) "")
-
-                let ret, sret = cRet s.ret
-                let retSlot = if sret then Some(slotFor em s.ret) else None
-                let argv = (retSlot |> Option.map (fun p -> sprintf "ptr sret(%s) %s" (llty s.ret) p) |> Option.toList) @ argv |> String.concat ", "
-
-                let fnTy =
-                    if s.variadic then
-                        sprintf "%s (%s)" ret ((s.pars |> List.collect cParams) @ [ "..." ] |> String.concat ", ")
-                    else
-                        ret
-
-                let call = sprintf "call %s @%s(%s)" fnTy name argv
-
-                let r =
-                    if ret = "void" then
-                        em.Emit call
-
-                        match retSlot with
-                        | Some p -> em.Instr(sprintf "load %s, ptr %s" (llty s.ret) p)
-                        | None -> "zeroinitializer"
-                    else
-                        let c = em.Instr call
-
-                        match abiFor s.ret true with
-                        | Scalar -> c
-                        | Pieces [ p ] -> fromPieces em s.ret [ p, c ]
-                        | Pieces ps -> fromPieces em s.ret (ps |> List.mapi (fun k p -> p, em.Instr(sprintf "extractvalue %s %s, %d" ret c k)))
-                        | Memory -> failwith "unreachable"
-
-                for a, v in List.zip args vs do
-                    match tyName a.ty, prune a.ty with
-                    | "string", _
-                    | _, TFun _ -> dropValue em a.ty v // the string's bytes / the callback's closure were borrowed
-                    | _ -> ()
-
-                r
+            | CExtern(name, args) -> cCall ("@" + name) externs[name] args (args |> List.map (gen env false))
             | CMkClosure(f, []) -> staticClosure f
             | CMkClosure(f, args) ->
                 let vs = args |> List.map (gen env false)
@@ -2254,6 +2511,120 @@ let compile
                 em.Emit(sprintf "store volatile %s %s, ptr %s" w (arg 1) p)
                 "zeroinitializer"
             | "Runtime.ticks" -> em.Instr "call i64 @zs_ticks()"
+            | "Runtime.mallocs" -> em.Instr "call i_W @zs_mallocs()"
+            | "weak.new" ->
+                let t = argTy 0
+
+                if not (heap t && llty t = "ptr") then
+                    fail 0 (sprintf "weak<%s> isn't possible: a weak reference is to an object (a union's cell, a ref, an array, a string, a closure or a dyn value)" (show t))
+
+                // the cell takes no reference to the object; the argument's is given up
+                let w = em.Instr(sprintf "call ptr @zs_weak_new(ptr %s)" (arg 0))
+                dropValue em t (arg 0)
+                w
+            | "weak.get" ->
+                // Some object (with a reference of its own) while it lives, else None
+                let t =
+                    match prune ty with
+                    | TCon(_, [ t ]) -> t
+                    | _ -> failwith "weak.get"
+
+                let target = em.Instr(sprintf "call ptr @zs_weak_target(ptr %s)" (arg 0))
+                dropValue em (argTy 0) (arg 0)
+                let _, cases = union ty
+                let tagOf (c: string) = cases |> List.findIndex (fun (n, _) -> n = c)
+                let aliveL, deadL, gotL = em.Fresh "alive", em.Fresh "dead", em.Fresh "got"
+                em.Emit(sprintf "br i1 %s, label %%%s, label %%%s" (em.Instr(sprintf "icmp ne ptr %s, null" target)) aliveL deadL)
+                em.Label aliveL
+                let x = "$weak" + em.Fresh ""
+                let some = gen (env.Add(x, Ssa target)) false { k = CCtor("option", tagOf "Some", [ { k = CLocal x; ty = t } ]); ty = ty }
+                let fromSome = em.Block
+                em.Emit(sprintf "br label %%%s" gotL)
+                em.Label deadL
+                let none = gen env false { k = CCtor("option", tagOf "None", []); ty = ty }
+                let fromNone = em.Block
+                em.Emit(sprintf "br label %%%s" gotL)
+                em.Label gotL
+                phi (llty ty) [ some, fromSome; none, fromNone ]
+            | "arena.with" ->
+                // f () with an arena open: what it allocates comes from the arena's blocks
+                em.Emit "call void @zs_arena_open()"
+                let code = em.Instr(sprintf "load ptr, ptr %s" (em.Instr(sprintf "getelementptr { i_W, ptr }, ptr %s, i32 0, i32 1" (arg 0))))
+                let r = em.Instr(sprintf "call %s %s(ptr %s, {} zeroinitializer)" (llty ty) code (arg 0))
+                em.Emit "call void @zs_arena_close()"
+                dropValue em (argTy 0) (arg 0)
+                r
+            | _ when op.StartsWith "fn:" -> "zeroinitializer" // a function named for a vtable
+            | _ when op.StartsWith "dyn.box:" ->
+                // { count, vtable, value }: the value moves in; the vtable frees it, then has
+                // the trait's methods for the value's type
+                let t = argTy 0
+                let cell = sprintf "{ i_W, ptr, %s }" (llty t)
+                let vt = vtable (op.Substring 8) t (args |> List.tail |> List.map (fun a -> match a.k with CPrim(f, _) -> f.Substring 3 | _ -> failwith "vtable entry"))
+                let c = em.Instr(sprintf "call ptr @zs_alloc(i_W %s)" (sizeOf em cell))
+                em.Emit(sprintf "store i_W 1, ptr %s" c)
+                em.Emit(sprintf "store ptr %s, ptr %s" vt (em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 1" cell c)))
+                em.Emit(sprintf "store %s %s, ptr %s" (llty t) (arg 0) (em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 2" cell c)))
+                c
+            | "dyn.unbox" ->
+                // the value a dyn holds, with a reference of its own; the dyn's is given up
+                let v = em.Instr(sprintf "load %s, ptr %s" (llty ty) (em.Instr(sprintf "getelementptr { i_W, ptr, %s }, ptr %s, i32 0, i32 2" (llty ty) (arg 0))))
+                dupValue em ty v
+                dropValue em (argTy 0) (arg 0)
+                v
+            | _ when op.StartsWith "dyn.call:" ->
+                // the method at this index of the vtable, given the dyn (whose reference it takes)
+                // and the other arguments
+                let i = int (op.Substring 9)
+                let vt = em.Instr(sprintf "load ptr, ptr %s" (em.Instr(sprintf "getelementptr { i_W, ptr }, ptr %s, i32 0, i32 1" (arg 0))))
+                let entry = em.Instr(sprintf "load ptr, ptr %s" (em.Instr(sprintf "getelementptr ptr, ptr %s, i32 %d" vt (i + 1))))
+                let argv = List.zip args vs |> List.map (fun (a, v) -> sprintf "%s %s" (llty a.ty) v) |> String.concat ", "
+                em.Instr(sprintf "call %s %s(%s)" (llty ty) entry argv)
+            // raw pointers (ptr<T>): T is C data (the type checker allows nothing else), so
+            // nothing is counted
+            | "ptr.read" ->
+                if heap ty then fail 0 (sprintf "Ptr.read: a ptr<%s> can't be read, since %s is reference counted" (show ty) (show ty))
+                if llty ty = "{}" then "zeroinitializer" else em.Instr(sprintf "load %s, ptr %s" (llty ty) (arg 0))
+            | "ptr.write" ->
+                let vt = argTy 1
+                if heap vt then fail 0 (sprintf "Ptr.write: a ptr<%s> can't be written, since %s is reference counted" (show vt) (show vt))
+                if llty vt <> "{}" then em.Emit(sprintf "store %s %s, ptr %s" (llty vt) (arg 1) (arg 0))
+                "zeroinitializer"
+            | "ptr.add" ->
+                let el =
+                    match prune (argTy 0) with
+                    | TCon("ptr", [ el ]) -> el
+                    | _ -> failwith "ptr.add"
+
+                if llty el = "{}" then arg 0 else em.Instr(sprintf "getelementptr %s, ptr %s, i_W %s" (llty el) (arg 0) (arg 1))
+            | "ptr.null" -> "null"
+            | "ptr.isNull" -> em.Instr(sprintf "icmp eq ptr %s, null" (arg 0))
+            | "ptr.cast" -> arg 0
+            | "ptr.alloc" ->
+                let el =
+                    match prune ty with
+                    | TCon("ptr", [ el ]) -> el
+                    | _ -> failwith "ptr.alloc"
+
+                em.Instr(sprintf "call ptr @zs_ptr_alloc(i_W %s, i_W %s)" (arg 0) (sizeOf em (llty el)))
+            | "ptr.free" ->
+                em.Emit(sprintf "call void @zs_ptr_free(ptr %s)" (arg 0))
+                "zeroinitializer"
+            | "fnptr.call" ->
+                // a C function pointer called with C's conventions, as an extern is
+                let rec split t =
+                    match prune t with
+                    | TFun(a, r) ->
+                        let ps, res = split r
+                        a :: ps, res
+                    | r -> [], r
+
+                let pars =
+                    match prune (argTy 0) with
+                    | TCon("fnptr", [ f ]) -> fst (split f) |> List.filter (fun p -> prune p <> tUnit)
+                    | _ -> failwith "fnptr.call"
+
+                cCall (arg 0) { pars = pars; ret = ty; variadic = false } (List.tail args) (List.tail vs)
             | "Runtime.allocations" -> em.Instr "call i_W @zs_allocations()"
             | "token.null" -> "null" // no cell to build in (a jump to a join point)
             | "Math.sqrt" ->
@@ -2317,7 +2688,7 @@ let compile
     for KeyValue(name, s) in externs do
         let ret, sret = cRet s.ret
         let sretP = if sret then [ sprintf "ptr sret(%s)" (llty s.ret) ] else []
-        let ps = sretP @ (s.pars |> List.collect cParams) @ (if s.variadic then [ "..." ] else [])
+        let ps = sretP @ cParamList s.pars sret @ (if s.variadic then [ "..." ] else [])
         top.AppendLine(sprintf "declare %s @%s(%s)" ret name (String.concat ", " ps)) |> ignore
 
     for f in funs do
@@ -2384,6 +2755,8 @@ let compile
         if sret then
             cps.Add(sprintf "ptr sret(%s) align 8 %%ret" (llty e.ret))
 
+        let modes = cModes (fd.pars |> List.map snd) sret
+
         let args =
             fd.pars
             |> List.mapi (fun i (_, t) ->
@@ -2391,8 +2764,12 @@ let compile
 
                 match prune t with
                 | TCon("unit", []) -> t, "zeroinitializer"
+                | _ when isHandle t ->
+                    // C lends the handle: the object, with a reference of its own for the function
+                    cps.Add(sprintf "ptr %s" n)
+                    t, em.Instr(sprintf "call ptr @zs_handle_get(ptr %s)" n)
                 | _ ->
-                    match abiOf t with
+                    match List.item i modes with
                     | Scalar ->
                         cps.Add(sprintf "%s %s" (cParam t) n)
                         t, n
@@ -2414,6 +2791,9 @@ let compile
 
         match prune e.ret, abiFor e.ret true with
         | TCon("unit", []), _ -> em.Emit "ret void"
+        | _ when isHandle e.ret ->
+            // the result's reference goes to a new handle, the caller's to release
+            em.Emit(sprintf "ret ptr %s" (em.Instr(sprintf "call ptr @zs_handle_new(ptr %s, ptr %s)" r (dropFn e.ret))))
         | _, Memory ->
             em.Emit(sprintf "store %s %s, ptr %%ret" (llty e.ret) r)
             em.Emit "ret void"
@@ -2432,6 +2812,10 @@ let compile
     // the header: [<CLayout>] structs, then prototypes
     let rec cName (t: Ty) =
         match prune t with
+        | t when isHandle t -> "zs_handle"
+        | TCon("ptr", [ p ]) -> (match prune p with TCon("unit", []) -> "void" | p -> cName p) + "*"
+        | TCon("cptr", []) -> "void*"
+        | TCon("fnptr", [ f ]) -> cFnPtr f ""
         | TCon("int", []) -> "intptr_t"
         | TCon(("i8" | "i16" | "i32" | "i64") as n, []) -> sprintf "int%s_t" (n.Substring 1)
         | TCon(("u8" | "u16" | "u32" | "u64") as n, []) -> sprintf "uint%s_t" (n.Substring 1)
@@ -2444,24 +2828,47 @@ let compile
         | TCon(n, []) -> n.Replace('.', '_')
         | t -> failwithf "no C name for %s" (show t)
 
+    /// A C function pointer's declarator: R (*name)(A, B).
+    and cFnPtr (f: Ty) (name: string) =
+        let rec split t =
+            match prune t with
+            | TFun(a, r) ->
+                let ps, res = split r
+                a :: ps, res
+            | r -> [], r
+
+        let ps, r = split f
+        let ps = ps |> List.filter (fun p -> prune p <> tUnit) |> List.map cName
+        sprintf "%s (*%s)(%s)" (cName r) name (if ps.IsEmpty then "void" else String.concat ", " ps)
+
+    /// A C declaration of `name` with this type (a function pointer's name goes inside it).
+    let cDecl (t: Ty) (name: string) =
+        match prune t with
+        | TCon("fnptr", [ f ]) -> cFnPtr f name
+        | t -> sprintf "%s %s" (cName t) name
+
     let header =
         StringBuilder(
             "// Generated by zs. Do not edit.\n#pragma once\n#include <stdbool.h>\n#include <stddef.h>\n#include <stdint.h>\n\n"
             + "// Runs when the library panics, after the message is printed (to log, flush or save state).\n"
             + "// The process stops when it returns. It must not call back into the library.\n"
             + "void zs_set_panic_hook(void (*hook)(const char *message));\n\n"
+            + "// A Z# value held by C: an object with its own count. zs_retain adds a reference and\n"
+            + "// zs_release gives one up (the last one frees the object). A handle a function returns is\n"
+            + "// the caller's to release; one passed to a function is only borrowed for the call.\n"
+            + "typedef struct zs_handle_ *zs_handle;\nvoid zs_retain(zs_handle h);\nvoid zs_release(zs_handle h);\n\n"
         )
 
     for KeyValue(n, info) in types do
         match info.def with
         | RecordDef fs when clayouts.Contains n ->
             let name = n.Replace('.', '_')
-            let fields = fs |> List.map (fun (f, ft) -> sprintf "    %s %s;" (cName ft) f) |> String.concat "\n"
+            let fields = fs |> List.map (fun (f, ft) -> sprintf "    %s;" (cDecl ft f)) |> String.concat "\n"
             header.Append(sprintf "typedef struct %s {\n%s\n} %s;\n\n" name fields name) |> ignore
         | _ -> ()
 
     for e in exports do
-        let ps = e.pars |> List.mapi (fun i t -> sprintf "%s p%d" (cName t) i)
+        let ps = e.pars |> List.mapi (fun i t -> cDecl t (sprintf "p%d" i))
         header.Append(sprintf "%s %s(%s);\n" (cName e.ret) e.cname (if ps.IsEmpty then "void" else String.concat ", " ps)) |> ignore
 
     if debugInfo then

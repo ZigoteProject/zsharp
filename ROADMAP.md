@@ -17,7 +17,7 @@ OCaml for the host benchmarks).
  v3:                   10 effect handlers ─ (11 self-hosting)
  alongside:            E editors, M microcontrollers, T more targets
 
- done: 0–5 and L        now: V
+ done: 0–5, L and V        now: 6
 ```
 
 - **v1 (phases 0–6, L and V):** the complete single-threaded language. It is fast, memory-safe, has C interop, and runs async on one event loop.
@@ -28,45 +28,22 @@ OCaml for the host benchmarks).
 ## Where things stand
 
 **Works today:**
-- **Language:** inference (lambdas get their parameter types from the call), records with defaults, unions, exhaustive matching (record, string and character patterns), active patterns, units of measure, traits, derives, members with named and optional arguments, nested modules with their own fields and traits, closures, generics, custom operators, `char`, multi-line and raw strings.
-- **Memory and performance:** Perceus RC with borrowing and reuse, copy-on-write arrays, checked arithmetic, and an optimizer that inlines, uncurries, resolves known constructors and fuses pipelines. On the host benchmarks it's within 1.21× of C with C's peak memory, except `fib` (2.0×: overflow checks; 1.1× of C with the same checks). On compute code it's as fast as C on a Cortex-M.
+- **Language:** inference (lambdas get their parameter types from the call), records with defaults, unions, exhaustive matching (record, string and character patterns), active patterns, units of measure, traits, `dyn` values, derives, members with named and optional arguments, nested modules with their own fields and traits, closures, generics, custom operators, `char`, multi-line and raw strings, raw pointers in `unsafe`.
+- **Memory and performance:** Perceus RC with borrowing and reuse, copy-on-write arrays, weak references, arenas, checked arithmetic, and an optimizer that inlines, uncurries, resolves known constructors and fuses pipelines. On the host benchmarks it's within 1.21× of C with C's peak memory, except `fib` (2.0×: overflow checks; 1.1× of C with the same checks). On compute code it's as fast as C on a Cortex-M.
 - **Library:** a prelude, Core (collections, text, options, results: every target) and Std (console, environment, files, paths, processes, timing: targets with an OS), in .NET-style namespaces.
-- **C:** C import and export, with a panic hook for C hosts.
+- **C:** C import and export (static and shared libraries), C function pointers, Z# objects held by C as handles, and a panic hook for C hosts.
 - **Targets:** x86-64, aarch64 (cross), Cortex-M4 and M0+ (bare metal).
-- **Tooling:** projects with path and git dependencies, `zs test`/`fmt`/`doc`, gdb debug info, and an LSP, MCP server and Zed extension.
+- **Tooling:** projects with path and git dependencies, `zs test`/`fmt`/`doc`, gdb debug info (strings, records and unions as values), and an LSP, MCP server and Zed extension.
 
 **Known gaps** (in priority order, each with the phase or track that closes it):
-1. **v1 features (phase V):** no `weak` references, `Arena`, `dyn Trait`, or `ptr<'a>` with `unsafe`.
-2. **C ABI (phase V; 32-bit ARM in track M):**
-   - running out of argument registers isn't modelled (x86-64 then passes a struct on the stack whole);
-   - 32-bit ARM passes structs by value with the x86-64 rules;
-   - C function pointers can't be called from Z#;
-   - no `.so` output, and the `--lib` archive isn't position-independent, so it can't be linked into another shared library (a Zig or C `.so`).
-3. **Debug info (phase V):** strings, records and unions aren't shown as gdb values.
-4. **Units of measure (phase V):** Kennedy's general case (a fresh variable) isn't implemented, so unannotated `*` across different units needs annotations.
+1. **Concurrency (phase 6):** no computation expressions or `Task`; I/O blocks.
+2. **C ABI (track M):** 32-bit ARM passes structs by value with the x86-64 rules.
+3. **Weak references and arenas on microcontrollers (track M):** they're hosted-only so far; the embedded runtime lacks their functions.
+4. **Debug info (track E):** lists and other boxed unions aren't shown as gdb values (plain unions are).
 5. **Editor (track E):** no signature help, rename or code actions; the formatter doesn't reflow long lines.
 6. **Targets (track T):** no macOS or Windows builds.
 
 ## Next
-
-### Phase V: v1 completion
-What DESIGN keeps in v1 beyond the syntax (decision 35), and the gaps left in C interop and
-debugging. It comes before phase 6 so that computation expressions and `Task` build on the
-final language.
-- **Scope:**
-  - **Memory:** `weak<'a>` references, for back-pointers that don't keep their target alive (DESIGN §5.2), and `Arena.with` for allocation freed all at once.
-  - **Unsafe code:** `ptr<'a>` with `Ptr.read`/`write` and pointer arithmetic inside `unsafe` expressions (DESIGN §5.3), and calling C function pointers.
-  - **Dynamic dispatch:** `dyn Trait`, vtables for heterogeneous collections and plugin APIs (DESIGN §3).
-  - **C interop:** argument-register exhaustion on x86-64, `.so` output, `--lib` archives built with `-fPIC` so they link into a host's shared library, and RC objects crossing as opaque handles (`Rc.retain`/`Rc.release`).
-  - **Debug info:** strings, records and unions as gdb values.
-  - **Units of measure:** Kennedy's general case, so unannotated `*` across units infers.
-- **Exit tests:**
-  - A tree with `weak` parent links is freed completely (valgrind- and `ZS_LEAKCHECK`-clean).
-  - `binarytrees` with an arena per tree calls `malloc` per arena block, not per node.
-  - A list of `dyn Shape` values from different types, and a C library's struct of function pointers called from Z#.
-  - A C program links the library as a `.so`.
-  - A C shared library links a `--lib` archive whole (`--whole-archive`), and a C program calls Z# through it.
-  - `tests/debug/gdb.sh` prints a string, a record and a union.
 
 ### Phase 6: computation expressions and Task
 - **Gate first** (DESIGN §6): a time-boxed spike of a single `Async` effect with evidence passing. Its result decides whether `Task` is a library over effects (and phase 10 moves up) or CPS.
@@ -139,6 +116,7 @@ Tier 2 (DESIGN §10): every phase keeps `bench/mcu` working and within its ratio
   5. **RISC-V:** ESP32-C3, under QEMU first.
   6. **32-bit ARM C ABI:** AAPCS for structs by value.
   7. **Heap:** reusing blocks larger than 256 bytes, and a heap size set in `zs.toml`.
+  8. **Weak references and arenas:** the embedded runtime's versions of their functions (the host's use the C library's allocator).
 - **Later:** async on bare metal (phase 6 `Task` over interrupts, with no OS).
 
 ### Editor tooling (E)
@@ -157,6 +135,7 @@ same support through a thin extension each.
 - **E2b, rest:** signature help, rename, code actions (add missing match cases, add an annotation).
 - **F2:** a lossless syntax tree, so `zs fmt` can reflow lines to 100 columns; `zs fmt --stdin`; range formatting.
 - **E3, rest:** `definition` and `explain` tools.
+- **Debug info, rest:** lists and other boxed unions as gdb values.
 - **Exit tests:**
   - A 2,000-line file re-checks within 100 ms in Zed.
   - Given a file with a type error, Zed's agent fixes it using only the MCP tools.
@@ -361,3 +340,25 @@ Before more of phase 5:
   - The microcontroller suite: the same counts, flash and memory as before, on both chips at both levels ([the report](docs/reports/microcontrollers.md)).
   - A one-function change rebuilds in **under 1 second**: 0.46 s for 10 modules (877 lines), 0.86 s for 30 (2,617 lines), with the published compiler (`bench/compile/run.sh`).
   - `tests/representation.zs`, `tests/uncurry.zs`, `tests/simplify.zs`, `tests/fusion.zs`, `tests/cache.sh`, `tests/modules/parts.zs`.
+
+### Phase V: v1 completion ✅
+What DESIGN kept in v1 beyond the syntax (decision 35), and the gaps left in C interop and
+debugging, before phase 6 builds computation expressions and `Task` on the final language.
+- **`dyn Trait`** (DESIGN §3, decision 43): a value of any type implementing the trait, as a heap object holding the value and a pointer to its type's table of the trait's methods (made when the value is, at its type, by monomorphization: each entry an ordinary function the later passes optimize). A value becomes a `dyn` where one is expected (a declared type, a parameter, a result, through `if` and `match` branches and list elements), with no conversion written. A trait whose method doesn't take the value first, or mentions its type elsewhere (`Ord`'s `compare`), can't be `dyn`, with an error that says which method.
+- **Weak references** (DESIGN §5.2): `weak<'a>` to an object, `Weak.create` and `Weak.get`. The weak references to an object share a cell found from it through a table; an object dying empties the cell, whether it's freed or Perceus reuses its cell for another object (which the reuse reports). Only a program with weak references or arenas allocates and frees through the runtime's checked functions: the host benchmarks' instruction counts are unchanged.
+- **Arenas** (DESIGN §5.2, decision 44): `Arena.with (fun () -> …)`. What the function allocates comes from the arena's 64 KB blocks, a malloc each (the arena's own record is in its first block), and the blocks go together when the arena's last object does. An object that lives on keeps its blocks, so an arena is memory-safe with no escape analysis. (DESIGN had `fun a ->`; the arena needs no handle, since it's the allocations of the function's run.)
+- **Unsafe code** (DESIGN §11): `ptr<'a>` to C data with `Ptr.read`, `write`, `add`, `alloc`, `free` and `cast` inside `unsafe` (an expression or an indented block), and C function pointers, `fnptr<A -> R>`, called like functions inside `unsafe` with C's conventions. `import c` brings function pointer fields and parameters across as `fnptr`s.
+- **C interop:**
+  - **Argument registers:** on x86-64, a struct whose parts don't all fit in the registers left (6 integer, 8 SSE, less an sret pointer) goes on the stack whole, and later scalars still take the registers left, as C does; for externs, exports and function pointers.
+  - **Shared libraries:** `--lib -o x.so` builds one, and the `--lib` archive's code is position-independent, so a C shared library links it whole.
+  - **Handles** (decision 45): any other reference-counted Z# value crosses as an opaque `zs_handle` with its own count, `zs_retain` and `zs_release` in the generated header: a handle a function returns is the caller's, one passed in is lent for the call (exported functions now own their parameters, as main does).
+- **Debug info:** gdb shows strings as their text, and tuples, records and plain unions (a union's case as an enumeration, then each case's fields) by field; an enum is its case's name.
+- **Units of measure:** Kennedy's general case. When no variable's exponent divides the others, the one with the smallest becomes a fresh variable times the rest's quotients, and the rest is solved again: `same (sq x) (cube y)` makes x's unit some `'w^3` and y's `'w^2`, with no annotations.
+- **Exit tests:**
+  - A tree with `weak` parent links is freed completely, valgrind- and `ZS_LEAKCHECK`-clean, and a weak reference sees its object die when Perceus reuses the object's cell (`tests/weak.zs`).
+  - `binarytrees` with an arena per tree calls `malloc` per arena block, not per node: 2 mallocs per tree of 31 nodes, 3 per tree of 2,047, against 2,047 without the arena (`tests/arena.zs`).
+  - A list of `dyn Shape` values from different types, built-in and derived impls through `dyn Show` (`tests/dyn.zs`), and a C library's struct of function pointers called from Z# (`tests/cimport/ops.zs`).
+  - A C program links the library as a `.so`, and a C shared library links a `--lib` archive whole (`--whole-archive`) with a C program calling Z# through it (`test.sh`, over `tests/cexport`).
+  - C holds a tree and a closure as handles, valgrind-clean (`tests/chandle`); structs past the argument registers (`tests/cimport/abi.zs`).
+  - `tests/debug/gdb.sh` prints a string, a record and a union.
+  - Kennedy's general case (`tests/units/kennedy.zs`).

@@ -2,5 +2,5 @@
 import c "shapes.h"
 
 let main () =
-  apply 1 2
+  number_of 1
   0

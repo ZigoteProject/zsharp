@@ -55,18 +55,33 @@ _Noreturn void zs_panic_c(const char *msg) {
 
 _Noreturn void zs_panic(zs_str *msg) { zs_panic_c(msg->data); }
 
-static int64_t allocations;
+static int64_t allocations, mallocs;
 
 void *zs_alloc(zs_int size) {
     void *p = malloc((size_t)size);
     if (!p) zs_panic_c("out of memory");
     live++;
     allocations++;
+    mallocs++;
     return p;
 }
 
 /// Runtime.allocations (): heap objects allocated so far (tests check copy-on-write with it).
 zs_int zs_allocations(void) { return allocations; }
+
+/// Runtime.mallocs (): the times memory was taken from the system allocator, for an object or
+/// for an arena's block.
+zs_int zs_mallocs(void) { return mallocs; }
+
+// Ptr.alloc / Ptr.free: C memory for n elements of a size, zeroed
+void *zs_ptr_alloc(zs_int n, zs_int size) {
+    if (n < 0) zs_panic_c("Ptr.alloc: negative count");
+    void *p = calloc((size_t)(n ? n : 1), (size_t)size);
+    if (!p) zs_panic_c("out of memory");
+    return p;
+}
+
+void zs_ptr_free(void *p) { free(p); }
 
 #include <time.h>
 /// Runtime.ticks (): a monotonic clock in nanoseconds (on a Cortex-M: SysTick counts).
@@ -79,6 +94,239 @@ int64_t zs_ticks(void) {
 void zs_free(void *p) {
     live--;
     free(p);
+}
+
+// ---- handles: a Z# object held by C (zs_handle in a generated header). A handle has a count of
+// its own (zs_retain, zs_release) and holds one reference to the object, which the object's drop
+// function gives up when the handle's last reference goes.
+typedef struct {
+    zs_int rc;
+    void (*drop)(void *);
+    void *obj;
+} zs_handle;
+
+zs_handle *zs_handle_new(void *obj, void (*drop)(void *)) {
+    zs_handle *h = zs_alloc((zs_int)sizeof(zs_handle));
+    h->rc = 1;
+    h->drop = drop;
+    h->obj = obj;
+    return h;
+}
+
+// the object, with a new reference for Z#
+void *zs_handle_get(zs_handle *h) {
+    if (!h) zs_panic_c("a null zs_handle was passed to Z#");
+    zs_int *rc = h->obj;
+    if (*rc > 0) (*rc)++;
+    return h->obj;
+}
+
+void zs_retain(zs_handle *h) {
+    if (h) h->rc++;
+}
+
+void zs_release(zs_handle *h) {
+    if (!h || --h->rc > 0) return;
+    void *obj = h->obj;
+    void (*drop)(void *) = h->drop;
+    zs_free(h);
+    drop(obj);
+}
+
+// ---- a table from addresses to pointers (open addressing, linear probing), for weak references
+// and arenas. Its memory is the C library's, and goes when the table is empty again.
+typedef struct {
+    void **keys, **vals;
+    size_t cap, count;
+} ptrtab;
+
+// Fibonacci hashing: the product's high half, so aligned addresses (an arena's blocks are on
+// 64 KB boundaries) spread over the table
+static size_t tab_slot(const ptrtab *t, const void *k) {
+    return (size_t)(((uint64_t)(uintptr_t)k * 0x9E3779B97F4A7C15ull) >> 32) & (t->cap - 1);
+}
+
+static void *tab_get(const ptrtab *t, const void *k) {
+    if (!t->count) return NULL;
+    for (size_t i = tab_slot(t, k);; i = (i + 1) & (t->cap - 1)) {
+        if (t->keys[i] == k) return t->vals[i];
+        if (!t->keys[i]) return NULL;
+    }
+}
+
+static void tab_put(ptrtab *t, void *k, void *v) {
+    if (2 * (t->count + 1) > t->cap) {
+        ptrtab n = {calloc(t->cap ? 2 * t->cap : 16, sizeof(void *)), calloc(t->cap ? 2 * t->cap : 16, sizeof(void *)), t->cap ? 2 * t->cap : 16, 0};
+        if (!n.keys || !n.vals) zs_panic_c("out of memory");
+        for (size_t i = 0; i < t->cap; i++)
+            if (t->keys[i]) tab_put(&n, t->keys[i], t->vals[i]);
+        free(t->keys);
+        free(t->vals);
+        *t = n;
+    }
+    size_t i = tab_slot(t, k);
+    while (t->keys[i]) i = (i + 1) & (t->cap - 1);
+    t->keys[i] = k;
+    t->vals[i] = v;
+    t->count++;
+}
+
+// removes k and returns its value (NULL if it isn't there); later entries of its run move back
+static void *tab_remove(ptrtab *t, const void *k) {
+    if (!t->count) return NULL;
+    size_t m = t->cap - 1, i = tab_slot(t, k);
+    while (t->keys[i] != k) {
+        if (!t->keys[i]) return NULL;
+        i = (i + 1) & m;
+    }
+    void *v = t->vals[i];
+    for (size_t j = (i + 1) & m; t->keys[j]; j = (j + 1) & m) {
+        size_t home = tab_slot(t, t->keys[j]);
+        bool stays = i < j ? (i < home && home <= j) : (i < home || home <= j);
+        if (!stays) {
+            t->keys[i] = t->keys[j];
+            t->vals[i] = t->vals[j];
+            i = j;
+        }
+    }
+    t->keys[i] = t->vals[i] = NULL;
+    if (--t->count == 0) {
+        free(t->keys);
+        free(t->vals);
+        *t = (ptrtab){0};
+    }
+    return v;
+}
+
+// ---- weak references (weak<T>): references that don't keep their object alive. The weak
+// references to one object share a cell { count, object }, found from the object in a table, and
+// the object dying (freed, or its cell reused for another) empties the cell. A program that uses
+// weak references or arenas allocates and frees through zs_alloc_checked and zs_free_checked.
+typedef struct {
+    zs_int rc;
+    void *target;
+} zs_weak;
+
+static ptrtab weaks;
+
+zs_weak *zs_weak_new(void *target) {
+    bool dies = *(zs_int *)target != 0; // a static object never does: its cells aren't in the table
+    zs_weak *w = dies ? tab_get(&weaks, target) : NULL;
+    if (w) {
+        w->rc++;
+        return w;
+    }
+    w = zs_alloc((zs_int)sizeof(zs_weak));
+    w->rc = 1;
+    w->target = target;
+    if (dies) tab_put(&weaks, target, w);
+    return w;
+}
+
+// the object, with a new reference, or NULL once it has died
+void *zs_weak_target(zs_weak *w) {
+    zs_int *t = w->target;
+    if (t && *t > 0) (*t)++;
+    return t;
+}
+
+// the cell's last reference has gone
+void zs_weak_free(zs_weak *w) {
+    if (w->target && *(zs_int *)w->target != 0) tab_remove(&weaks, w->target);
+    zs_free(w);
+}
+
+// ---- arenas (Arena.with): what a function allocates comes from large blocks, bumped through. An
+// object dying frees nothing; the arena's blocks go at once when its last object has died: when
+// the function returns, or later if something it made lives on. The arena's own record is in its
+// first block, so it takes one malloc per block.
+#define ARENA_BLOCK ((size_t)64 * 1024)
+
+typedef struct zs_arena {
+    struct zs_arena *parent; // the arena open around this one
+    void *blocks;            // the newest first, each starting with a block_head
+    char *next, *end;        // the free part of the newest block
+    zs_int live;             // objects in the arena that haven't died
+    bool open;               // Arena.with hasn't returned yet
+} zs_arena;
+
+typedef struct {
+    void *next;
+    zs_arena *arena;
+} block_head;
+
+#define ARENA_HEAD ((sizeof(block_head) + 15) & ~(size_t)15)
+
+static zs_arena *arena;     // the innermost open arena
+static ptrtab arena_blocks; // each block's address -> its arena
+
+static char *arena_block(zs_arena *a) {
+    char *b = aligned_alloc(ARENA_BLOCK, ARENA_BLOCK);
+    if (!b) zs_panic_c("out of memory");
+    mallocs++;
+    *(block_head *)b = (block_head){a ? a->blocks : NULL, a};
+    return b;
+}
+
+void zs_arena_open(void) {
+    char *b = arena_block(NULL);
+    zs_arena *a = (zs_arena *)(b + ARENA_HEAD);
+    *a = (zs_arena){arena, b, b + ARENA_HEAD + ((sizeof(zs_arena) + 15) & ~(size_t)15), b + ARENA_BLOCK, 0, true};
+    ((block_head *)b)->arena = a;
+    tab_put(&arena_blocks, b, a);
+    arena = a;
+}
+
+static void arena_release(zs_arena *a) {
+    for (void *b = a->blocks, *next; b; b = next) { // the oldest block, holding *a, is the last
+        next = ((block_head *)b)->next;
+        tab_remove(&arena_blocks, b);
+        free(b);
+    }
+}
+
+void zs_arena_close(void) {
+    zs_arena *a = arena;
+    arena = a->parent;
+    a->open = false;
+    if (a->live == 0) arena_release(a);
+}
+
+void *zs_alloc_checked(zs_int size) {
+    zs_arena *a = arena;
+    if (!a || (size_t)size > ARENA_BLOCK / 4) return zs_alloc(size); // a big object is malloc's
+    size_t n = ((size_t)size + 15) & ~(size_t)15;
+    if (a->next + n > a->end) {
+        char *b = arena_block(a);
+        a->blocks = b;
+        tab_put(&arena_blocks, b, a);
+        a->next = b + ARENA_HEAD;
+        a->end = b + ARENA_BLOCK;
+    }
+    void *p = a->next;
+    a->next += n;
+    a->live++;
+    live++;
+    allocations++;
+    return p;
+}
+
+void zs_free_checked(void *p) {
+    zs_weak *w = weaks.count ? tab_remove(&weaks, p) : NULL;
+    if (w) w->target = NULL;
+    zs_arena *a = arena_blocks.count ? tab_get(&arena_blocks, (void *)((uintptr_t)p & ~(uintptr_t)(ARENA_BLOCK - 1))) : NULL;
+    if (!a) {
+        zs_free(p);
+        return;
+    }
+    live--;
+    if (--a->live == 0 && !a->open) arena_release(a);
+}
+
+// a cell Perceus reuses for another object: the object it held has died
+void zs_reused(void *p) {
+    zs_weak *w = weaks.count ? tab_remove(&weaks, p) : NULL;
+    if (w) w->target = NULL;
 }
 
 static void leak_report(void) {

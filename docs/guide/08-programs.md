@@ -193,6 +193,7 @@ A failing assert names its location, e.g. `FAIL emptyHasNone` followed by `panic
 **What the compiler does:**
 - **Checks:** it checks units through arithmetic. Adding meters to seconds is an error, and multiplying or dividing combines units.
 - **No cost at run time:** units are erased after checking, so a program with units compiles to the same code as one without.
+- **Generic units:** `f64<'u>` takes any unit, and inference solves for units as it does for types: given `sq : f64<'u> -> f64<'u^2>` and `cube`, `same (sq x) (cube y)` needs no annotations, and makes x's unit some `'w^3` and y's `'w^2`.
 
 ```zsharp
 [<Measure>] type m

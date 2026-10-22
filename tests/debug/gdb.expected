@@ -1,16 +1,25 @@
-Breakpoint 1 file prog.zs, line 3.
-Breakpoint 1, square (n=1) at prog.zs:3
-3	  let result = n * n
-#0  square (n=1) at prog.zs:3
-#1  ADDR in main () at prog.zs:9
+Breakpoint 1 file prog.zs, line 9.
+Breakpoint 1, square (n=1) at prog.zs:9
+9	  let result = n * n
+#0  square (n=1) at prog.zs:9
+#1  ADDR in main () at prog.zs:17
 #2  ADDR in main ()
 n = 1
-4	  result
+10	  result
 $1 = 1
-9	    let sq = square i
-10	    total <- total + sq
+17	    let sq = square i
+18	    total <- total + sq
+range = {lo = 1, hi = 3}
 total = 0
 i = 1
 sq = 1
 ratio = 0
 ok = false
+summary = {case = Small, Small = 0, Large.0 = 0, Large.1 = 0}
+name = ADDR "squares"
+Breakpoint 2 file prog.zs, line 22.
+Breakpoint 2, main () at prog.zs:22
+22	  println $"{name}: total {total} ratio {ratio} ok {ok} {summary}"
+$2 = ADDR "squares"
+$3 = {lo = 1, hi = 3}
+$4 = {case = Large, Small = 0, Large.0 = 14, Large.1 = 7}

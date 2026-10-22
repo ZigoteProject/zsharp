@@ -186,4 +186,24 @@ for c in $(find tests -name main.c | sort); do
   if [ "$actual" == "$expected" ]; then echo "ok   $c"
   else echo "FAIL $c"; diff <(echo "$expected") <(echo "$actual") | head -20; fail=1; fi
 done
+# shared libraries (host only): a C program links the library as a .so, and a C shared library
+# links a --lib archive whole (--whole-archive, so the archive needs position-independent code)
+# with a C program calling Z# through it
+if [ -z "$target" ]; then
+  so="$tmp/so"; mkdir -p "$so"; run=(); [ $valgrind = 1 ] && run=(valgrind -q --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=all --error-exitcode=99)
+  for kind in so whole; do
+    if [ $kind = so ]; then
+      built=$(bin/zs build tests/cexport/lib.zs --lib -o "$so/lib.so" 2>&1 && clang -I"$so" tests/cexport/main.c "$so/lib.so" -Wl,-rpath,"$so" -o "$so/exe" 2>&1)
+    else
+      built=$(bin/zs build tests/cexport/lib.zs --lib -o "$so/lib.a" 2>&1 \
+        && clang -shared -I"$so" tests/cexport/host.c -Wl,--whole-archive "$so/lib.a" -Wl,--no-whole-archive -lm -o "$so/libhost.so" 2>&1 \
+        && clang -I"$so" tests/cexport/main.c -L"$so" -lhost -Wl,-rpath,"$so" -o "$so/exe" 2>&1)
+    fi
+    if [ $? = 0 ]; then actual=$("${run[@]}" "$so/exe" 2>&1); [ $? = 99 ] && actual="$actual
+(valgrind reported memory errors or leaks)"; else actual=$built; fi
+    what="tests/cexport/main.c linking the library as a .so"; [ $kind = whole ] && what="tests/cexport/main.c through a C .so holding the --lib archive whole"
+    if [ "$actual" == "$(cat tests/cexport/main.out)" ]; then echo "ok   $what"
+    else echo "FAIL $what"; diff tests/cexport/main.out <(echo "$actual") | head -20; fail=1; fi
+  done
+fi
 exit $fail

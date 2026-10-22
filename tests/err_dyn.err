@@ -1,0 +1,1 @@
+tests/err_dyn.zs:6:22: error: value for a dyn Shape: int does not implement Shape

@@ -8,3 +8,19 @@ Big big_sum(Big v, Big w) { return (Big){ v.a + w.a, v.b + w.b, v.c + w.c }; }
 double many(F4 a, D2 b, Mix c, Big d, P3 e, C4 f) {
   return a.a + a.d + b.a + b.b + c.a + c.b + d.a + d.c + e.x + e.z + f.r + f.a;
 }
+
+double d2_six(D2 a, D2 b, D2 c, D2 d, D2 e, D2 f) {
+    D2 v[] = {a, b, c, d, e, f};
+    double r = 0;
+    for (int i = 0; i < 6; i++) r = r * 100 + v[i].a * 10 + v[i].b;
+    return r;
+}
+
+long p3_after(long a, long b, long c, long d, long e, P3 p, long f) {
+    return ((((((a * 10 + b) * 10 + c) * 10 + d) * 10 + e) * 10 + p.x) * 10 + p.y) * 10 + p.z + f * 100000000;
+}
+
+Big big_after(long a, long b, long c, long d, P3 p, long e) {
+    Big r = {(int)(a + b + c + d + e), p.x * 1.0, p.y * 10.0 + p.z};
+    return r;
+}

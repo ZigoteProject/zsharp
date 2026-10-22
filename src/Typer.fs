@@ -53,22 +53,35 @@ let rec private occurs r t =
     | TMeas(_, vs) -> vs |> List.exists (fst >> occurs r)
     | TGen _ -> false
 
-/// Unifies two units of measure (Kennedy): solve a/b = 1 for the variable with the smallest
-/// exponent, when every other exponent is divisible by it.
-let private unifyMeas (a: Ty) (b: Ty) =
+/// Unifies two units of measure (Kennedy): solves a/b = 1 for the variable v with the smallest
+/// exponent e. When e divides every other exponent, v = rest^(-1/e). Otherwise v becomes a fresh
+/// variable times rest^(-floor(k/e)), which leaves every other exponent smaller than e, and the
+/// rest is solved again: so 'u^2 = 'v^3 gives 'u = 'w^3 and 'v = 'w^2. Rigid variables (a
+/// generic function's own) can't be solved for; when only they are left, the units differ.
+let rec private unifyMeas (a: Ty) (b: Ty) =
+    let floorDiv k e = if (k % e <> 0) && ((k < 0) <> (e < 0)) then k / e - 1 else k / e
+
     match normMeas (measDiv a b) with
     | [], [] -> ()
-    | _, [] -> raise Mismatch
     | us, vs ->
-        let v, e = vs |> List.minBy (snd >> abs)
+        let solvable = vs |> List.filter (fun (v, _) -> match prune v with TVar _ -> true | _ -> false)
+
+        if solvable.IsEmpty then
+            raise Mismatch
+
+        let v, e = solvable |> List.minBy (snd >> abs)
         let others = vs |> List.filter (fun (w, _) -> not (obj.ReferenceEquals(w, v)))
-        let divisible = (us |> List.forall (fun (_, k) -> k % e = 0)) && (others |> List.forall (fun (_, k) -> k % e = 0))
 
         match prune v with
-        | TVar r when divisible ->
+        | TVar r when (us |> List.forall (fun (_, k) -> k % e = 0)) && (others |> List.forall (fun (_, k) -> k % e = 0)) ->
             // v^e * rest = 1  =>  v = rest^(-1/e)
             r.Value <- Link(TMeas(us |> List.map (fun (u, k) -> u, -k / e), others |> List.map (fun (w, k) -> w, -k / e)))
-        | _ -> raise Mismatch // ponytail: Kennedy's general case (a fresh variable) hasn't been needed yet
+        | TVar _ when solvable.Length = 1 -> raise Mismatch // v^e = units e doesn't divide (rigid variables are units here)
+        | TVar r ->
+            let w = fresh kAny
+            r.Value <- Link(TMeas(us |> List.map (fun (u, k) -> u, -(floorDiv k e)), (w, 1) :: (others |> List.map (fun (x, k) -> x, -(floorDiv k e)))))
+            unifyMeas a b
+        | _ -> raise Mismatch
 
 let private satisfies (k: Kind) t =
     let allowedOk =
@@ -216,6 +229,20 @@ let private builtins =
           b "Mmio.write8" "mmio.write.u8" [] (f (tcon "usize") (f (tcon "u8") tUnit)) 2
           b "Runtime.ticks" "Runtime.ticks" [] (f tUnit (tcon "u64")) 1
           b "Math.sqrt" "Math.sqrt" [ kFloat ] (f a a) 1
+          b "Ptr.read" "ptr.read" [ kAny ] (f (TCon("ptr", [ a ])) a) 1
+          b "Ptr.write" "ptr.write" [ kAny ] (f (TCon("ptr", [ a ])) (f a tUnit)) 2
+          b "Ptr.add" "ptr.add" [ kAny ] (f (TCon("ptr", [ a ])) (f tInt (TCon("ptr", [ a ])))) 2
+          b "Ptr.null" "ptr.null" [ kAny ] (f tUnit (TCon("ptr", [ a ]))) 1
+          b "Ptr.isNull" "ptr.isNull" [ kAny ] (f (TCon("ptr", [ a ])) tBool) 1
+          b "Ptr.alloc" "ptr.alloc" [ kAny ] (f tInt (TCon("ptr", [ a ]))) 1
+          b "Ptr.free" "ptr.free" [ kAny ] (f (TCon("ptr", [ a ])) tUnit) 1
+          b "Ptr.ofCPtr" "ptr.cast" [ kAny ] (f (tcon "cptr") (TCon("ptr", [ a ]))) 1
+          b "Ptr.toCPtr" "ptr.cast" [ kAny ] (f (TCon("ptr", [ a ])) (tcon "cptr")) 1
+          b "Ptr.cast" "ptr.cast" [ kAny; kAny ] (f (TCon("ptr", [ a ])) (TCon("ptr", [ TGen 1 ]))) 1
+          b "Weak.create" "weak.new" [ kAny ] (f a (TCon("weak", [ a ]))) 1
+          b "Weak.get" "weak.get" [ kAny ] (f (TCon("weak", [ a ])) (TCon("option", [ a ]))) 1
+          b "Arena.with" "arena.with" [ kAny ] (f (f tUnit a) a) 1
+          b "Runtime.mallocs" "Runtime.mallocs" [] (f tUnit tInt) 1
           b "Native.argc" "Env.argc" [] (f tUnit tInt) 1
           b "Native.arg" "Env.arg" [] (f tInt tStr) 1
           b "Native.hasVariable" "Env.has" [] (f tStr tBool) 1
@@ -242,6 +269,9 @@ let private builtins =
                 b t "conv" [ kConvertible ] (f a (tcon target)) 1 ]
         @ [ b "char" "conv" [ kIntOrChar ] (f a tChar) 1 ]
     )
+
+/// The built-in functions only `unsafe` code may call: raw memory through ptr<T>.
+let private unsafeBuiltins = set [ "Ptr.read"; "Ptr.write"; "Ptr.add"; "Ptr.alloc"; "Ptr.free"; "Ptr.ofCPtr"; "Ptr.cast" ]
 
 type private Local =
     { u: string // unique name in Core
@@ -408,6 +438,7 @@ let checkFrom
     userImpl <-
         fun tr t ->
             match prune t with
+            | TCon(n, []) when isDynName n -> n.Substring 4 = tr // dyn Trait implements its trait
             | TCon(n, args) ->
                 if not (implRequires.ContainsKey((tr, n))) then
                     autoDerive tr n |> ignore
@@ -492,6 +523,7 @@ let checkFrom
     let recordHints = Dictionary<Expr, Ty>(HashIdentity.Reference) // record literal -> expected type
     let literalRecords = st.literalRecords
     let lambdaHints = Dictionary<Expr, Ty>(HashIdentity.Reference) // lambda -> the function type expected of it
+    let dynHints = Dictionary<Expr, Ty>(HashIdentity.Reference) // expression -> the dyn Trait expected of it
     let currentModule = ref (None: string option)
     let opens = ref ([]: string list) // most recent first
     let privates = st.privates
@@ -509,6 +541,7 @@ let checkFrom
 
     let mainNested = st.mainNested
     let wrapping = ref false // checking a [<Wrapping>] function: its integer + - * wrap
+    let unsafeOn = ref false // inside `unsafe`
     let nestedModules = st.nestedModules
 
     /// The name a declaration gets in the current module.
@@ -585,6 +618,30 @@ let checkFrom
 
     let mk k ty = { k = k; ty = ty }
 
+    /// The type dyn Trait, once the trait's methods are known to allow it: each takes the value
+    /// first and doesn't mention its type anywhere else (so a call can pass the value it has).
+    let dynOf (tr: string) =
+        for m in traitMethods.Values do
+            if m.owner = tr then
+                let ok =
+                    match m.ty with
+                    | TFun(TGen 0, rest) ->
+                        let rec mentions t =
+                            match t with
+                            | TGen 0 -> true
+                            | TCon(_, ts)
+                            | TTuple ts -> List.exists mentions ts
+                            | TFun(a, b) -> mentions a || mentions b
+                            | _ -> false
+
+                        not (mentions rest)
+                    | _ -> false
+
+                if not ok then
+                    fail 0 (sprintf "dyn %s isn't possible: method '%s' must take the value first and not mention its type elsewhere (%s)" (shortName tr) m.name (show m.ty))
+
+        TCon("dyn:" + tr, [])
+
     /// tparams: Some names inside a type definition (they become TGen), None in a function.
     let rec toTy (tparams: string list option) st =
         match st with
@@ -601,6 +658,10 @@ let checkFrom
                     let t = fresh kAny
                     tyvars[v] <- t
                     t
+        | STName("dyn", [ STName(tr, []) ]) ->
+            match resolveWith traitNames.Contains tr with
+            | Some full -> dynOf full
+            | None -> fail 0 (sprintf "unknown trait '%s' in dyn %s" tr tr)
         | STName(n, args) ->
             let n =
                 match typeAliases.TryGetValue n with
@@ -871,7 +932,31 @@ let checkFrom
         | PNamed _ -> fail 0 "named field patterns need a constructor: C(field = p)"
         | PArgs _ -> fail 0 "only constructors and active patterns take arguments"
 
+    /// An expression's Core; where a dyn Trait is expected of it, its value as one.
     let rec infer (env: Map<string, Local>) (depth: int) (e: Expr) : CExpr =
+        match dynHints.TryGetValue e with
+        | true, hint ->
+            dynHints.Remove e |> ignore
+            toDyn (inferNode env depth e) hint
+        | _ -> inferNode env depth e
+
+    /// A value where a dyn Trait is expected: as it is when it's one already (or its type isn't
+    /// known yet), else with its type's impl of the trait.
+    and toDyn (c: CExpr) (hint: Ty) : CExpr =
+        match prune c.ty, prune hint with
+        | TCon(n, []), _ when isDynName n -> c
+        | TVar r, _ when (kindOf r).allowed.IsSome ->
+            // a literal: its own type (int, f64, string), made a dyn
+            settle c.ty
+            toDyn c hint
+        | TVar _, _ -> c
+        | t, TCon(d, []) ->
+            let tr = d.Substring 4
+            expect (sprintf "value for a dyn %s" (shortName tr)) (fresh (kTrait tr)) t
+            mk (CPrim("dyn.box:" + tr, [ c ])) hint
+        | _ -> c
+
+    and inferNode (env: Map<string, Local>) (depth: int) (e: Expr) : CExpr =
         let inf = infer env depth
         let node = e
 
@@ -1251,6 +1336,14 @@ let checkFrom
             recordKey node f res.ty false key false
             res
         | Question _ -> fail 0 "'?' is only supported as `let x = e?` or as a whole statement (for now)"
+        | Unsafe a ->
+            let outer = unsafeOn.Value
+            unsafeOn.Value <- true
+
+            try
+                inf a
+            finally
+                unsafeOn.Value <- outer
         | DeriveCtx(ctx, e) ->
             try
                 inf e
@@ -1969,10 +2062,49 @@ let checkFrom
             cargs, t.Value
 
     and apply env depth (ch: CExpr) (args: Expr list) (name: string option) : CExpr =
-        let cargs, t = checkArgs env depth ch.ty args name
-        mk (CApp(ch, cargs)) t
+        match prune ch.ty with
+        | TCon("fnptr", [ f ]) -> fnptrCall env depth ch f args
+        | _ ->
+            let cargs, t = checkArgs env depth ch.ty args name
+            mk (CApp(ch, cargs)) t
+
+    /// A call through a C function pointer (fnptr<A -> B -> R>), inside `unsafe`: with all its
+    /// arguments at once, passed as to an extern.
+    and fnptrCall env depth (fp: CExpr) (f: Ty) (args: Expr list) : CExpr =
+        if not unsafeOn.Value then
+            fail 0 "calling a C function pointer is unsafe: call it inside `unsafe`"
+
+        let rec split t =
+            match prune t with
+            | TFun(a, r) ->
+                let ps, res = split r
+                a :: ps, res
+            | r -> [], r
+
+        let ps, ret = split f
+        let ps = ps |> List.filter (fun p -> prune p <> tUnit)
+        let args = if ps.IsEmpty && args = [ UnitLit ] then [] else args
+
+        if args.Length <> ps.Length then
+            fail 0 (sprintf "this C function pointer takes %d argument(s), got %d" ps.Length args.Length)
+
+        let cargs =
+            List.mapi2
+                (fun i p a ->
+                    let ca = inferHint env depth p a
+                    let what = sprintf "argument %d of the C function pointer" (i + 1)
+                    // a string is passed to C as a pointer to its bytes
+                    if prune p = tCStr then expect what (fresh kStrLit) ca.ty else expect what p ca.ty
+                    ca)
+                ps
+                args
+
+        mk (CPrim("fnptr.call", fp :: cargs)) ret
 
     and builtinCall env depth name (args: Expr list) : CExpr =
+        if unsafeBuiltins.Contains name && not unsafeOn.Value then
+            fail 0 (sprintf "'%s' is unsafe: use it inside `unsafe`" name)
+
         let b = builtins[name]
         let t, _ = instantiate b.kinds b.ty
         let cargs, finalTy = checkArgs env depth t args (Some name)
@@ -2076,8 +2208,29 @@ let checkFrom
     /// Notes the expected type on the record literals and lambdas that produce e's value: through
     /// if and match branches, the tails of let and sequences, and tuple, list and array elements.
     and pushHint (hint: Ty) (e: Expr) =
+        // a dyn Trait goes on to the expressions that give the value, through branches and tails
+        let passes =
+            match e with
+            | At _
+            | If(_, _, Some _)
+            | Match _
+            | Seq _
+            | Let _
+            | LetMut _
+            | LetFun _
+            | LetRecGroup _
+            | Unsafe _ -> true
+            | _ -> false
+
+        match prune hint with
+        | TCon(n, []) when isDynName n && not passes -> dynHints[e] <- hint
+        | _ -> pushInto hint e
+
+    /// pushHint's structural part.
+    and pushInto (hint: Ty) (e: Expr) =
         match e with
-        | At(_, a) -> pushHint hint a
+        | At(_, a)
+        | Unsafe a -> pushHint hint a
         | Lambda _ ->
             match prune hint with
             | TFun _ -> lambdaHints[e] <- hint
@@ -2370,12 +2523,46 @@ let checkFrom
 
         defineGroup items
 
-    /// Types that can cross the C boundary: numbers, bool, cstr, unit and [<CLayout>] records.
+    /// Types that can cross the C boundary: numbers, bool, cstr, cptr, unit, [<CLayout>] records,
+    /// typed pointers to those (ptr<T>) and C function pointers (fnptr<A -> R>).
     let rec checkCType (what: string) (t: Ty) =
         match prune t with
         | TCon(n, []) when nums.Contains n || n = "bool" || n = "cstr" || n = "cptr" || n = "unit" -> ()
         | TCon(n, []) when clayouts.Contains n -> ()
+        | TCon("ptr", [ p ]) ->
+            match prune p with
+            | TCon("unit", []) -> ()
+            | p -> checkCType what p
+        | TCon("fnptr", [ f ]) -> checkFnPtr what f
         | t -> fail 0 (sprintf "%s: type %s cannot cross the C boundary (mark records [<CLayout>])" what (show t))
+
+    /// fnptr<A -> B -> R>: a C function pointer R (*)(A, B), its parameters and result C types
+    /// (unit -> R takes none).
+    and checkFnPtr (what: string) (f: Ty) =
+        match prune f with
+        | TFun(a, r) ->
+            checkCType what a
+
+            match prune r with
+            | TFun _ -> checkFnPtr what r
+            | r -> checkCType what r
+        | t -> fail 0 (sprintf "%s: fnptr<%s> needs a function type such as fnptr<i32 -> i32>" what (show t))
+
+    /// A Z# value C holds as an opaque handle (zs_handle, with zs_retain and zs_release): a
+    /// reference-counted object such as a union's cell, an array, a ref, a closure or a dyn value.
+    /// Strings cross as their bytes instead, and records and tuples are values.
+    let isHandle (t: Ty) =
+        match prune t with
+        | TCon("string", _)
+        | TTuple _ -> false
+        | TCon(n, _) when (match types.TryGetValue n with
+                           | true, { def = RecordDef _ } -> true
+                           | _ -> false) -> false
+        | t -> needsRc types t
+
+    /// A parameter or result of an extern or an export: a C type, or a handle.
+    let checkCArg (what: string) (t: Ty) =
+        if not (isHandle t) then checkCType what t
 
     /// callback<A -> R>: C sees (R (*)(void* user, A), void* user); A and R are C types.
     let checkCallback (what: string) (f: Ty) =
@@ -2666,7 +2853,7 @@ let checkFrom
 
                     match t with
                     | TCon("callback", [ f ]) when isParam -> checkCallback (sprintf "extern '%s'" name) f
-                    | _ -> checkCType (sprintf "extern '%s'" name) t
+                    | _ -> checkCArg (sprintf "extern '%s'" name) t
 
                     t
 
@@ -2897,9 +3084,9 @@ let checkFrom
                 let what = sprintf "export '%s'" cname
 
                 for t in ptys do
-                    checkCType what t
+                    checkCArg what t
 
-                checkCType what ret
+                checkCArg what ret
 
                 exports.Add
                     { cname = cname

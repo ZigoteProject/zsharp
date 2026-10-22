@@ -56,8 +56,13 @@ let hasBuiltinImpl (tr: string) (n: string) =
 
 /// Built-in generic type constructors and their arity.
 // array<T>: a copy-on-write value; Buffer<T>: the same storage as a shared mutable reference;
-// callback<F>: FFI only
-let builtinCons = dict [ "array", 1; "Buffer", 1; "ref", 1; "callback", 1 ]
+// weak<T>: a reference that doesn't keep its target alive; FFI only: callback<F> (a closure
+// called by C), ptr<T> (a raw C pointer), fnptr<F> (a C function pointer)
+let builtinCons = dict [ "array", 1; "Buffer", 1; "ref", 1; "weak", 1; "callback", 1; "ptr", 1; "fnptr", 1 ]
+
+/// `dyn Trait`: a value of any type implementing the trait, behind a pointer to it and the
+/// impl's methods. Its type is named dyn:<the trait's full name>.
+let isDynName (n: string) = n.StartsWith "dyn:"
 
 let typeAliases = dict [ "c_int", "i32"; "float", "f64"; "double", "f64" ]
 
@@ -185,6 +190,7 @@ let rec showWith (full: bool) t =
         | _, [] -> String.concat " " pos
         | [], _ -> "1/" + String.concat " " neg
         | _ -> String.concat " " pos + "/" + String.concat " " neg
+    | TCon(n, []) when isDynName n && not full -> "dyn " + shortName (n.Substring 4)
     | TCon(n, args) ->
         let n = if full then n else shortName n
         if args.IsEmpty then n else n + "<" + (args |> List.map show |> String.concat ", ") + ">"
@@ -584,8 +590,9 @@ and Export =
 /// unions being looked through, so a recursive union is found (and stays boxed).
 let rec private heapIn (types: Dictionary<string, TypeInfo>) (visiting: Set<string>) t =
     match prune t with
-    | TCon(("string" | "array" | "Buffer" | "ref"), _)
+    | TCon(("string" | "array" | "Buffer" | "ref" | "weak"), _)
     | TFun _ -> true
+    | TCon(n, _) when isDynName n -> true
     | TCon(n, args) ->
         match types.TryGetValue n with
         | true, { def = UnionDef _ } -> visiting.Contains n || not (plainUnionIn types visiting t)
@@ -645,8 +652,9 @@ let unionRep (types: Dictionary<string, TypeInfo>) (t: Ty) : UnionRep =
     // boxes its outer Some)
     let pointer (f: Ty) =
         match prune f with
-        | TCon(("string" | "array" | "Buffer" | "ref"), _)
+        | TCon(("string" | "array" | "Buffer" | "ref" | "weak"), _)
         | TFun _ -> true
+        | TCon(n, _) when isDynName n -> true
         | f ->
             match cases types f with
             | Some cs -> (nicheShaped cs).IsNone && not (plainUnion types f)
