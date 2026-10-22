@@ -17,8 +17,10 @@ type Cancel =
 /// Work that may wait (for input, a timer, other tasks) and then gives an `'a`. A task is cold:
 /// making one does nothing, and running it twice does the work twice.
 type Task<'a> =
-  /// The work, given its cancellation and what to do with its result.
-  | Task of (Cancel -> ('a -> unit) -> unit)
+  { /// The result, when it's there already (`Task.ret`): waiting for it takes no turn of the loop.
+    ready: option<'a>
+    /// Otherwise the work, given its cancellation and what to do with its result.
+    work: Cancel -> ('a -> unit) -> unit }
 
 /// The tasks started in a `Task.scope` with `Task.start`: they can't outlive it.
 type Scope =
@@ -43,10 +45,11 @@ type Promise<'a> =
 module Task =
   let private newCancel () : Cancel = { cancelled = ref false; actions = ref []; nextAction = ref 0 }
 
-  // runs a task's work with this cancellation and continuation, unless it's cancelled already
-  let private runIn (t: Task<'a>) (c: Cancel) (k: 'a -> unit) =
-    let (Task work) = t
-    if not c.cancelled.Value then work c k
+  // a task that does this work when it runs
+  let private pending (work: Cancel -> ('a -> unit) -> unit) : Task<'a> = { ready = None; work = work }
+
+  // the work of a task that's ready: never called
+  let private never (c: Cancel) (k: 'a -> unit) = ()
 
   // adds an action for when c is cancelled; its number removes it (forget) once it's not needed
   let private onCancel (c: Cancel) (f: unit -> unit) =
@@ -81,14 +84,41 @@ module Task =
     else
       Native.loopPost (fun () -> k x)
 
-  /// A task that gives `x` at once.
-  let ret (x: 'a) : Task<'a> = Task (fun _ k -> resume k x)
+  // runs a task with this cancellation and continuation, unless it's cancelled already
+  let private runIn (t: Task<'a>) (c: Cancel) (k: 'a -> unit) =
+    match t.ready with
+    | Some x -> resume k x
+    | None -> if not c.cancelled.Value then t.work c k
 
-  /// The task `t`, then the task `f` makes from its result: what `let!` is.
-  let bind (t: Task<'a>) (f: 'a -> Task<'b>) : Task<'b> = Task (fun c k -> runIn t c (fun x -> runIn (f x) c k))
+  /// Gives a task's result to what waits for it: the end of the code `task { }` compiles to.
+  let complete (k: 'a -> unit) (x: 'a) = resume k x
+
+  /// `use x = …` in a task: x is disposed if the task is cancelled. The number goes to
+  /// `Task.disposed` when the scope ends.
+  let disposeOnCancel (c: Cancel) (x: 'r) : int = onCancel c (fun () -> dispose x)
+
+  /// The end of a `use` scope in a task: x is disposed, and no longer on cancellation.
+  let disposed (c: Cancel) (id: int) (x: 'r) =
+    forget c id
+    dispose x
+
+  /// A task that gives `x` at once.
+  let ret (x: 'a) : Task<'a> = { ready = Some x; work = never }
+
+  /// Lets the other tasks run, then goes on: a turn of the event loop.
+  let yield () : Task<unit> = pending (fun _ k -> Native.loopPost k)
+
+  /// The task `t`, then the task `f` makes from its result.
+  let bind (t: Task<'a>) (f: 'a -> Task<'b>) : Task<'b> =
+    match t.ready with
+    | Some x -> f x
+    | None -> pending (fun c k -> runIn t c (fun x -> runIn (f x) c k))
 
   /// The task's result with `f` applied.
-  let map (f: 'a -> 'b) (t: Task<'a>) : Task<'b> = Task (fun c k -> runIn t c (fun x -> k (f x)))
+  let map (f: 'a -> 'b) (t: Task<'a>) : Task<'b> =
+    match t.ready with
+    | Some x -> ret (f x)
+    | None -> pending (fun c k -> runIn t c (fun x -> k (f x)))
 
   /// Runs the task on the event loop until it has finished, and gives its result: how `main`
   /// starts tasks (inside one, `let!` waits for another).
@@ -104,7 +134,7 @@ module Task =
 
   /// Waits `ms` milliseconds.
   let sleep (ms: int) : Task<unit> =
-    Task (fun c k ->
+    pending (fun c k ->
       let timer = ref 0
       let id = onCancel c (fun () -> Native.loopUntimer timer.Value)
       timer.Value <- Native.loopTimer ms (fun () ->
@@ -114,7 +144,7 @@ module Task =
   /// Waits until the file descriptor can be read (or, with write, written) without blocking:
   /// for libraries over non-blocking system calls, as `Tcp` is.
   let waitFor (fd: int) (write: bool) : Task<unit> =
-    Task (fun c k ->
+    pending (fun c k ->
       let id = onCancel c (fun () -> Native.loopUnwait fd write)
       Native.loopWait fd write (fun () ->
         forget c id
@@ -122,7 +152,7 @@ module Task =
 
   /// Runs both tasks at once, and gives both results once both have finished.
   let both (a: Task<'a>) (b: Task<'b>) : Task<'a * 'b> =
-    Task (fun c k ->
+    pending (fun c k ->
       let ra = ref None
       let rb = ref None
       let (ca, la) = child c
@@ -143,7 +173,7 @@ module Task =
 
   /// Runs the tasks at once, and gives their results, in order, once all have finished.
   let all (ts: list<Task<'a>>) : Task<list<'a>> =
-    Task (fun c k ->
+    pending (fun c k ->
       let n = List.length ts
       if n = 0 then
         resume k []
@@ -165,7 +195,7 @@ module Task =
   /// Runs both tasks at once, and gives the result of the first to finish. The other is
   /// cancelled: what it waits for is dropped, and what it bound with `use` disposed.
   let race (a: Task<'a>) (b: Task<'a>) : Task<'a> =
-    Task (fun c k ->
+    pending (fun c k ->
       let (ca, la) = child c
       let (cb, lb) = child c
       let decided = ref false
@@ -197,7 +227,7 @@ module Task =
 
   /// Waits for the promise's result.
   let wait (p: Promise<'a>) : Task<'a> =
-    Task (fun c k ->
+    pending (fun c k ->
       match p.result.Value with
       | Some x -> resume k x
       | None ->
@@ -211,7 +241,7 @@ module Task =
   /// Runs `body` with a scope for tasks to run alongside it (`Task.start`). The scope finishes
   /// once its body has and every task started in it has finished or been cancelled.
   let scope (body: Scope -> Task<'a>) : Task<'a> =
-    Task (fun c k ->
+    pending (fun c k ->
       let (children, link) = child c
       let s = { children = children; running = ref 0; whenDone = ref None }
       runIn (body s) c (fun x ->
@@ -257,7 +287,7 @@ module Task =
   /// Runs `f` on a helper thread, for a C call that blocks (a database's, say) while the event
   /// loop goes on. `f` crosses threads, so what it captures must be Share, as its result must.
   let blocking (f: share<unit -> 'a>) : Task<'a> =
-    Task (fun c k ->
+    pending (fun c k ->
       let result = Mutex.make None
       Native.loopBlocking (fun () -> Mutex.set result (Some (f ()))) (fun () ->
         match Mutex.get result with
@@ -269,7 +299,7 @@ module Task =
   /// must be Share, as the result must. The task stays on that thread to the end: cancelling
   /// this one doesn't stop it (its result is dropped).
   let spawn (f: share<unit -> Task<'a>>) : Task<'a> =
-    Task (fun c k ->
+    pending (fun c k ->
       let result = Mutex.make None
       let token = Native.loopExpect (fun () ->
         match Mutex.get result with
@@ -279,32 +309,3 @@ module Task =
         runIn (f ()) (newCancel ()) (fun x ->
           Mutex.set result (Some x)
           Native.loopFulfill token)))
-
-  /// The `task { }` builder.
-  module Builder =
-    /// `let!` and `do!`: the rest once the task has given its result.
-    let bind t f = Task.bind t f
-
-    /// `return x`.
-    let ret x = Task.ret x
-
-    /// An `if` without `else`, or a body that ends in a statement.
-    let zero () = Task.ret ()
-
-    /// The body, run when the task runs (a task is cold).
-    let delay (f: unit -> Task<'a>) : Task<'a> = Task (fun c k -> runIn (f ()) c k)
-
-    /// `use x = e`: the rest, with `x` disposed when it finishes or is cancelled.
-    let using (x: 'r) (f: 'r -> Task<'b>) : Task<'b> =
-      Task (fun c k ->
-        let id = onCancel c (fun () -> dispose x)
-        runIn (f x) c (fun r ->
-          forget c id
-          dispose x
-          k r))
-
-    /// `for x in xs do`: the body for each element, one after another.
-    let rec forEach (xs: list<'a>) (f: 'a -> Task<unit>) : Task<unit> =
-      match xs with
-      | [] -> Task.ret ()
-      | x :: rest -> Task.bind (f x) (fun () -> forEach rest f)

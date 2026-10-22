@@ -1,6 +1,6 @@
-1024	 trees of depth 4	 check: 31744	 objects: 32768	 mallocs: 2048
-256	 trees of depth 6	 check: 32512	 objects: 32768	 mallocs: 512
-64	 trees of depth 8	 check: 32704	 objects: 32768	 mallocs: 128
-16	 trees of depth 10	 check: 32752	 objects: 32768	 mallocs: 48
-without an arena, one tree of depth 10: 2047 nodes, mallocs: 2047
+1024	 trees of depth 4	 check: 31744	 objects: 31744	 mallocs: 1024
+256	 trees of depth 6	 check: 32512	 objects: 32512	 mallocs: 256
+64	 trees of depth 8	 check: 32704	 objects: 32704	 mallocs: 64
+16	 trees of depth 10	 check: 32752	 objects: 32752	 mallocs: 16
+without an arena, one tree of depth 10: 2047 nodes, objects: 2047
 kept: 511, inside another arena: 519

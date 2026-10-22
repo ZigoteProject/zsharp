@@ -1,5 +1,5 @@
-fib 2334412
-binarytrees 50919661
-nbody 9042551
-spectralnorm 10203745
-rbtree 34320758
+fib 2339907
+binarytrees 10681216
+nbody 9046475
+spectralnorm 9416315
+rbtree 28602901

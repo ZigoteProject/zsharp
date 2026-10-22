@@ -152,6 +152,20 @@ let main argv =
 
     let argv = argv |> Array.filter ((<>) "-Os")
 
+    // --profile-generate, --profile-use <file>: profile-guided optimization, taken out of the
+    // arguments
+    if Array.contains "--profile-generate" argv then
+        Driver.profileGenerate <- true
+
+    let argv = argv |> Array.filter ((<>) "--profile-generate")
+
+    let argv =
+        match Array.tryFindIndex ((=) "--profile-use") argv with
+        | Some i when i + 1 < argv.Length ->
+            Driver.profileUse <- Some argv[i + 1]
+            Array.append argv[.. i - 1] argv[i + 2 ..]
+        | _ -> argv
+
     // --cpu <name> or --cpu=<name> (native, x86-64-v3, neoverse-n1, …): the processor to
     // compile for, taken out of the arguments
     let argv =
@@ -436,5 +450,5 @@ let main argv =
             Rpc.input <- new Rpc.PrefixedStream([| byte first |], stdin)
             if char first = '{' then Mcp.serve () else Lsp.serve ()
     | _ ->
-        eprintfn "usage: zs new <name>\n       zs fetch | zs update\n       zs build [<file.zs> [-o <out>] [--lib]] [-g] [-Os] [--target <triple>] [--emit-llvm] [--sanitize[=thread]] [--cpu <name>] [--time]\n       zs run [<file.zs> [-g] [--sanitize[=thread]] --] [program arguments…]\n       zs check <file.zs>\n       zs test [<file.zs>] [name filters…]\n       zs doc <file.zs>\n       zs fmt [--check] <files…>\n       zs lsp\n       zs mcp"
+        eprintfn "usage: zs new <name>\n       zs fetch | zs update\n       zs build [<file.zs> [-o <out>] [--lib]] [-g] [-Os] [--target <triple>] [--emit-llvm] [--sanitize[=thread]] [--cpu <name>] [--profile-generate | --profile-use <file>] [--time]\n       zs run [<file.zs> [-g] [--sanitize[=thread]] --] [program arguments…]\n       zs check <file.zs>\n       zs test [<file.zs>] [name filters…]\n       zs doc <file.zs>\n       zs fmt [--check] <files…>\n       zs lsp\n       zs mcp"
         2

@@ -19,7 +19,7 @@ The number of heap objects allocated so far.
 Runtime.mallocs : unit -> int
 ```
 
-The number of times memory was taken from the system allocator: for an object, or for an arena's block.
+The number of times memory was taken from the system allocator: for a chunk of the runtime's object pool, a large object, or an arena's block.
 
 ### `Runtime.ticks`
 

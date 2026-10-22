@@ -13,12 +13,12 @@ the same chip, in speed, flash and RAM?
 | | |
 |---|---|
 | Chips | Cortex-M4F (QEMU `mps2-an386`, 4 MB/4 MB) and Cortex-M0 (QEMU `microbit`, 256 KB flash, 16 KB RAM) |
-| Compilers | Z#: `zs build --target cortex-m4\|cortex-m0plus`. C: clang 22 through `zig cc`, same CPU flags. Both at `-O2` and at `-Os` |
+| Compilers | Z#: `zs build --target cortex-m4\|cortex-m0plus`, its LLVM IR compiled by clang 23.1 (LLVM's release). C: clang 21.1 through `zig cc` (Zig 0.16), same CPU flags. Both at `-O2` and at `-Os` |
 | Runtime | Both link `runtime/rt-embedded.c` (startup, semihosting output, SysTick). The C programs use it only for printing and timing |
 | Heap | Z#: 64 KB on the M4, 8 KB on the M0. C: 1 KB, since C doesn't need one |
 | Speed measure | Instructions executed in the timed part only (printing excluded). QEMU runs with `-icount`, so virtual time advances per instruction, and SysTick reads it. A calibration loop with a known instruction count gives the factor (40 per tick on the M4, 62.5 on the M0). Results are deterministic |
 | Sizes | `llvm-size`: flash = text + data; heap peak from the allocator; stack peak by stack painting |
-| Measured | the compiler at commit `63850ee`, and again at the end of phase 5: the same instruction counts, flash, heap and stack |
+| Measured | the compiler at commit `63850ee`, again at the end of phase 5, and at the end of phase 9 (clang 23.1 for Z#'s IR): the same instruction counts, flash, heap and stack, except `isort` on the Cortex-M0 at `-Os` (1.12× to 0.90×) and `tokens` on the M4 at `-O2` (1.38× to 1.39×) |
 | Reproduce | `./dev bash bench/mcu/run.sh cortex-m4 -O2` (or `-Os`, or `cortex-m0plus`) |
 
 ## The programs
@@ -46,9 +46,9 @@ Both versions print the same result.
 | fib | 1.15 | 1.25 | 1.23 | 1.47 |
 | fib64 | **0.62** | **0.72** | **0.49** | **0.57** |
 | fir | 1.06 | 1.12 | **1.01** | **1.01** |
-| isort | 1.04 | **1.00** | **0.97** | 1.12 |
+| isort | 1.04 | **1.00** | **0.97** | **0.90** |
 | pipeline | 1.26 | **1.00** | 1.48 | 1.28 |
-| tokens | 1.38 | 1.25 | 2.86 | 2.52 |
+| tokens | 1.39 | 1.25 | 2.86 | 2.52 |
 
 **Flash, bytes** (Z# / C, including the shared runtime):
 
@@ -86,6 +86,29 @@ On the way, the measurements found gaps that blocked ordinary firmware code, and
 - **No register access:** there was no way to read or write a hardware register; that's what `Mmio.*` is for now.
 - **Tuple hashing:** it could panic on overflow.
 
+## Linking the runtime as bitcode (phase 9)
+
+On the host, Z#'s modules and the runtime are linked with ThinLTO, so the allocator inlines
+into the program. On these chips the runtime is compiled on its own, as before: phase 9
+measured it again (clang 23.1 for both, the runtime merged in by `ld.lld -r` with LTO), with
+these instructions and flash, bitcode ÷ separate:
+
+| Program | M4 `-O2` | M4 `-Os` | M0 `-O2` | M0 `-Os` |
+|---|---:|---:|---:|---:|
+| crc32 | 0.99 | 1.00 | 1.00 | 1.00 |
+| fib | 1.00 | 1.00 | 1.00 | 1.00 |
+| fir | 0.68 | 1.00 | 1.00 | 1.00 |
+| isort | 1.04 | 1.00 | 0.97 | 1.00 |
+| pipeline | 0.59 | 1.00 | 0.51 | 1.00 |
+| tokens | 1.00 | 1.00 | 1.00 | 1.00 |
+| flash | +1.4 to 2.3 KB | −88 to +112 bytes | +2.5 to 3.1 KB | −96 to +8 bytes |
+
+- **At `-Os`** nothing changes: the same instructions, and flash within about 100 bytes either way.
+- **At `-O2`** two programs gain much, but not from the runtime: `pipeline`'s loop calls nothing in it. Optimized again at the link, the program has its loop's test unswitched. The flash grows by 1.4–3.1 KB, 21–61%.
+- **The clock:** with `Runtime.ticks` inlined, LLVM moves work across the clock's read, out of the timed part, and `isort` and `tokens` measured 4–11% slower. In the table the clock stays out of line, so both builds time the same work.
+
+So the runtime stays a separate object on microcontrollers.
+
 ## What is left, and why
 
 - **`fib`, 1.15–1.47×:** every `+` and `-` that the compiler can't prove safe is overflow-checked (DESIGN decision 4). C has none of these checks; overflow there is undefined behaviour.
@@ -96,6 +119,7 @@ On the way, the measurements found gaps that blocked ordinary firmware code, and
 
 ## How the comparison could mislead
 
+- **Two compilers:** Z#'s IR is compiled by clang 23.1, and the C programs and the runtime by Zig's clang 21.1. `isort` on the M0 at `-Os` went from 1.12× to 0.90× with the change to clang 23.1, so part of that column is the compiler.
 - **Instructions are not cycles:** loads, branches and flash wait states cost differently on a real chip. Ratios between two programs on the same chip are a good guide; absolute times aren't.
 - **`pipeline`:** the Z# version is idiomatic, and fusion turns it into a loop. The C version is the loop a C programmer would write. Without fusion the Z# version was 37× C, so code that fusion doesn't cover (stages that aren't pure lambdas) still allocates.
 - **`fib64`:** this compares Z#'s default `int` (32-bit on these chips) with C's `int64_t`. It shows the benefit of a native-width `int`, not a faster 64-bit addition.

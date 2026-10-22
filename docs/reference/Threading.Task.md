@@ -25,14 +25,6 @@ type Task<'a>
 Work that may wait (for input, a timer, other tasks) and then gives an `'a`. A task is cold:
 making one does nothing, and running it twice does the work twice.
 
-#### `Task`
-
-```zsharp
-| Task of (Cancel -> ('a -> unit) -> unit)
-```
-
-The work, given its cancellation and what to do with its result.
-
 ### `Scope`
 
 ```zsharp
@@ -52,6 +44,31 @@ A result to come: a task's started with `Task.start`, or one given with `Task.fu
 
 ## Functions
 
+### `Task.complete`
+
+```zsharp
+Task.complete : ('a -> unit) -> 'a -> unit
+```
+
+Gives a task's result to what waits for it: the end of the code `task { }` compiles to.
+
+### `Task.disposeOnCancel`
+
+```zsharp
+Task.disposeOnCancel : Cancel -> 'a -> int when 'a : Dispose
+```
+
+`use x = …` in a task: x is disposed if the task is cancelled. The number goes to
+`Task.disposed` when the scope ends.
+
+### `Task.disposed`
+
+```zsharp
+Task.disposed : Cancel -> int -> 'a -> unit when 'a : Dispose
+```
+
+The end of a `use` scope in a task: x is disposed, and no longer on cancellation.
+
 ### `Task.ret`
 
 ```zsharp
@@ -60,13 +77,21 @@ Task.ret : 'a -> Task<'a>
 
 A task that gives `x` at once.
 
+### `Task.yield`
+
+```zsharp
+Task.yield : unit -> Task<unit>
+```
+
+Lets the other tasks run, then goes on: a turn of the event loop.
+
 ### `Task.bind`
 
 ```zsharp
 Task.bind : Task<'a> -> ('a -> Task<'b>) -> Task<'b>
 ```
 
-The task `t`, then the task `f` makes from its result: what `let!` is.
+The task `t`, then the task `f` makes from its result.
 
 ### `Task.map`
 

@@ -2,16 +2,16 @@ without the cache: area: 12 9 12 area:
 states saved: 2
 from the cache: the same program
 first build:
-clang (3 of 3 new)
+module cache (0 of 2) clang (3 of 3 new)
   runs: area: 12 9 12 area: 
 again:
-clang (0 of 3 new)
+module cache (2 of 2) clang (0 of 3 new)
   runs: area: 12 9 12 area: 
 a module changed:
-clang (2 of 3 new)
+module cache (0 of 2) clang (2 of 3 new)
   runs: area: 24 9 24 area: 
 states saved: 3
 the main file changed:
-clang (1 of 3 new)
+module cache (1 of 2) clang (1 of 3 new)
   runs: area: 6 9 6 area: 
 unreadable states: area: 6 9 6 area: 

@@ -75,7 +75,8 @@ let private icmpU = dict [ "=", "eq"; "<>", "ne"; "<", "ult"; ">", "ugt"; "<=", 
 let private fcmp = dict [ "=", "oeq"; "<>", "une"; "<", "olt"; ">", "ogt"; "<=", "ole"; ">=", "oge" ]
 
 let private prelude =
-    """declare noalias ptr @zs_alloc(i_W) allockind("alloc,uninitialized") allocsize(0) "alloc-family"="zs"
+    """; zs_alloc's memory isn't uninitialized: it writes the pool byte of the header word
+declare noalias ptr @zs_alloc(i_W) allockind("alloc") allocsize(0) "alloc-family"="zs"
 declare void @zs_free(ptr allocptr) allockind("free") "alloc-family"="zs"
 declare i_W @zs_allocations()
 declare i_W @zs_mallocs()
@@ -89,6 +90,16 @@ declare void @llvm.memcpy.p0.p0.i_W(ptr, ptr, i_W, i1)
 declare void @zs_panic(ptr) noreturn
 declare void @zs_panic_c(ptr) noreturn
 declare ptr @zs_str_of_lanes(ptr, i_W, i_W)
+declare noalias ptr @zs_coro_alloc(i_W)
+declare token @llvm.coro.id(i32, ptr, ptr, ptr)
+declare i_W @llvm.coro.size.i_W()
+declare ptr @llvm.coro.begin(token, ptr)
+declare token @llvm.coro.save(ptr)
+declare i8 @llvm.coro.suspend(token, i1)
+declare ptr @llvm.coro.free(token, ptr)
+declare void @llvm.coro.end(ptr, i1, token)
+declare void @llvm.coro.resume(ptr)
+declare void @llvm.coro.destroy(ptr)
 declare zeroext i1 @zs_cpu_supports(ptr)
 declare void @zs_loop_spawn(ptr)
 declare i_W @zs_loop_expect(ptr)
@@ -175,17 +186,18 @@ declare i_W @zs_fd_write(i_W, ptr, i_W, i_W)
 declare void @zs_fd_close(i_W)
 declare ptr @zs_error_text(i_W)
 
-; a count above 0 is a thread-local object's, 0 a static one's (never freed), and below 0 a
-; shared object's, -n for n references, counted atomically (DESIGN §7.1): a program with threads
-; has threadedRc's versions of these two, which count it
+; an object's count is the first 32 bits of its header word. Above 0 it's a thread-local
+; object's, 0 a static one's (never freed), and below 0 a shared object's, -n for n references,
+; counted atomically (DESIGN §7.1): a program with threads has threadedRc's versions of these
+; two, which count it. A count past 2^31 turns negative and stays: the object is never freed.
 define private void @zs.dup(ptr %p) alwaysinline {
 entry:
-  %rc = load i_W, ptr %p
-  %local = icmp sgt i_W %rc, 0
+  %rc = load i32, ptr %p
+  %local = icmp sgt i32 %rc, 0
   br i1 %local, label %inc, label %done
 inc:
-  %n = add i_W %rc, 1
-  store i_W %n, ptr %p
+  %n = add i32 %rc, 1
+  store i32 %n, ptr %p
   br label %done
 done:
   ret void
@@ -198,17 +210,17 @@ done:
 ; true when this was the last reference (the caller frees the object)
 define private i1 @zs.release(ptr %p) alwaysinline {
 entry:
-  %rc = load i_W, ptr %p
-  %last = icmp eq i_W %rc, 1
+  %rc = load i32, ptr %p
+  %last = icmp eq i32 %rc, 1
   br i1 %last, label %yes, label %no
 yes:
   ret i1 true
 no:
-  %more = icmp sgt i_W %rc, 1
+  %more = icmp sgt i32 %rc, 1
   br i1 %more, label %dec, label %keep
 dec:
-  %n = sub i_W %rc, 1
-  store i_W %n, ptr %p
+  %n = sub i32 %rc, 1
+  store i32 %n, ptr %p
   br label %keep
 keep:
   ret i1 false
@@ -287,18 +299,18 @@ entry:
 let private threadedDup =
     """define private void @zs.dup(ptr %p) alwaysinline {
 entry:
-  %rc = load atomic i_W, ptr %p monotonic, align HDR1
-  %local = icmp sgt i_W %rc, 0
+  %rc = load atomic i32, ptr %p monotonic, align 4
+  %local = icmp sgt i32 %rc, 0
   br i1 %local, label %inc, label %other
 inc:
-  %n = add i_W %rc, 1
-  store i_W %n, ptr %p
+  %n = add i32 %rc, 1
+  store i32 %n, ptr %p
   br label %done
 other:
-  %shared = icmp slt i_W %rc, 0
+  %shared = icmp slt i32 %rc, 0
   br i1 %shared, label %atomic, label %done
 atomic:
-  %old = atomicrmw sub ptr %p, i_W 1 monotonic
+  %old = atomicrmw sub ptr %p, i32 1 monotonic
   br label %done
 done:
   ret void
@@ -307,24 +319,24 @@ done:
 let private threadedRelease =
     """define private i1 @zs.release(ptr %p) alwaysinline {
 entry:
-  %rc = load atomic i_W, ptr %p monotonic, align HDR1
-  %last = icmp eq i_W %rc, 1
+  %rc = load atomic i32, ptr %p monotonic, align 4
+  %last = icmp eq i32 %rc, 1
   br i1 %last, label %yes, label %no
 yes:
   ret i1 true
 no:
-  %more = icmp sgt i_W %rc, 1
+  %more = icmp sgt i32 %rc, 1
   br i1 %more, label %dec, label %other
 dec:
-  %n = sub i_W %rc, 1
-  store i_W %n, ptr %p
+  %n = sub i32 %rc, 1
+  store i32 %n, ptr %p
   ret i1 false
 other:
-  %shared = icmp slt i_W %rc, 0
+  %shared = icmp slt i32 %rc, 0
   br i1 %shared, label %atomic, label %keep
 atomic:
-  %old = atomicrmw add ptr %p, i_W 1 acq_rel
-  %gone = icmp eq i_W %old, -1
+  %old = atomicrmw add ptr %p, i32 1 acq_rel
+  %gone = icmp eq i32 %old, -1
   ret i1 %gone
 keep:
   ret i1 false
@@ -470,7 +482,8 @@ let private resolveWord (ir: string) =
 type Part =
     { defines: HashSet<string>
       called: HashSet<string>
-      entry: bool }
+      entry: bool
+      file: string } // the source file
 
 /// Compiles closure-converted, RC-annotated functions to textual LLVM IR, plus a C header for
 /// the exported functions. With a part, only that part's functions are defined; the others it
@@ -587,14 +600,35 @@ let compile
 
     let tagged (t: Ty) = repOf' t = Some(Boxed true)
 
-    /// The cell of a boxed union's case: the count, the tag when the union has several cases
-    /// with fields, then the fields.
+    /// Whether a boxed union's cells have a tag word of their own, after the header: on a 32-bit
+    /// target, whose header word is the count. A 64-bit header word holds the tag (DESIGN §5.1).
+    let tagWord (t: Ty) = tagged t && is32 ()
+
+    /// The cell of a boxed union's case: the header word, the tag's own word when tagWord, then
+    /// the fields.
     let cellTy (t: Ty) (tag: int) =
         let fields = snd (List.item tag (snd (union t)))
-        "{ i_W" + (if tagged t then ", i32" else "") + (fields |> List.map (fun f -> ", " + llty f) |> String.concat "") + " }"
+        "{ i_W" + (if tagWord t then ", i32" else "") + (fields |> List.map (fun f -> ", " + llty f) |> String.concat "") + " }"
 
     /// Field j's index in a case's cell.
-    let cellField (t: Ty) (j: int) = j + (if tagged t then 2 else 1)
+    let cellField (t: Ty) (j: int) = j + (if tagWord t then 2 else 1)
+
+    /// Where the tag of the cell at p is, and its type: bytes 4 and 5 of the header word (after
+    /// the 32-bit count; byte 6 is the runtime's), or its own word on a 32-bit target.
+    let tagAt (em: Emitter) (p: string) =
+        if is32 () then em.Instr(sprintf "getelementptr { i_W, i32 }, ptr %s, i32 0, i32 1" p), "i32"
+        else em.Instr(sprintf "getelementptr i8, ptr %s, i_W 4" p), "i16"
+
+    /// The tag of the cell at p, as an i32 (below cases, when given).
+    let loadTag (em: Emitter) (p: string) (cases: int option) =
+        let tp, ty = tagAt em p
+        let range = cases |> Option.map (fun n -> sprintf ", !range !{%s 0, %s %d}" ty ty n) |> Option.defaultValue ""
+        let v = em.Instr(sprintf "load %s, ptr %s%s" ty tp range)
+        if ty = "i32" then v else em.Instr(sprintf "zext %s %s to i32" ty v)
+
+    let storeTag (em: Emitter) (p: string) (tag: int) =
+        let tp, ty = tagAt em p
+        em.Emit(sprintf "store %s %d, ptr %s" ty tag tp)
 
     /// A case without fields of a boxed union: a static cell (count 0, so never freed) with the
     /// tag when the union's cells have one. A match tells it apart by its address.
@@ -604,8 +638,10 @@ let compile
 
         if generated.Add g then
             // not unnamed_addr: the address is what's compared
-            if tagged t then
+            if tagWord t then
                 top.AppendLine(sprintf "%s = %s constant { i_W, i32 } { i_W 0, i32 %d }" g shared tag) |> ignore
+            elif tagged t then
+                top.AppendLine(sprintf "%s = %s constant { i32, i16, i16 } { i32 0, i16 %d, i16 0 }" g shared tag) |> ignore
             else
                 top.AppendLine(sprintf "%s = %s constant { i_W } { i_W 0 }" g shared) |> ignore
 
@@ -1010,10 +1046,10 @@ let compile
                 em.Emit(sprintf "musttail call void %s(ptr %%p)" (shareFn payload))
                 em.Emit "ret void"
             | _ ->
-                let rc = em.Instr "load atomic i_W, ptr %p monotonic, align HDR1"
-                em.Emit(sprintf "br i1 %s, label %%mark, label %%done" (em.Instr(sprintf "icmp sgt i_W %s, 0" rc)))
+                let rc = em.Instr "load atomic i32, ptr %p monotonic, align 4"
+                em.Emit(sprintf "br i1 %s, label %%mark, label %%done" (em.Instr(sprintf "icmp sgt i32 %s, 0" rc)))
                 em.Label "mark"
-                em.Emit(sprintf "store i_W %s, ptr %%p" (em.Instr(sprintf "sub i_W 0, %s" rc)))
+                em.Emit(sprintf "store i32 %s, ptr %%p" (em.Instr(sprintf "sub i32 0, %s" rc)))
 
                 match prune t with
                 | TFun _ ->
@@ -1043,7 +1079,7 @@ let compile
                     let withRefs = cases |> List.indexed |> List.filter (fun (_, (_, fs)) -> List.exists heap fs)
 
                     if tagged t then
-                        let tag = em.Instr(sprintf "load i32, ptr %s" (em.Instr "getelementptr { i_W, i32 }, ptr %p, i32 0, i32 1"))
+                        let tag = loadTag em "%p" None
                         em.Emit(sprintf "switch i32 %s, label %%done [ %s ]" tag (withRefs |> List.map (fun (i, _) -> sprintf "i32 %d, label %%case%d" i i) |> String.concat " "))
                     else
                         match withRefs with
@@ -1093,8 +1129,8 @@ let compile
             // inlined at every write: a count test, and the copy (out of line, cold) only if shared
             let copy = uniqueFn t true
             let em = Emitter()
-            let rc = em.Instr(if threaded then "load atomic i_W, ptr %p monotonic, align HDR1" else "load i_W, ptr %p")
-            em.Emit(sprintf "br i1 %s, label %%same, label %%copy, !prof !{!\"branch_weights\", i32 2000, i32 1}" (em.Instr(sprintf "icmp eq i_W %s, 1" rc)))
+            let rc = em.Instr(if threaded then "load atomic i32, ptr %p monotonic, align 4" else "load i32, ptr %p")
+            em.Emit(sprintf "br i1 %s, label %%same, label %%copy, !prof !{!\"branch_weights\", i32 2000, i32 1}" (em.Instr(sprintf "icmp eq i32 %s, 1" rc)))
             em.Label "same"
             em.Emit "ret ptr %p"
             em.Label "copy"
@@ -1114,7 +1150,7 @@ let compile
             let dst = em.Instr(sprintf "getelementptr i8, ptr %s, i_W HDR1" b)
             let src = em.Instr "getelementptr i8, ptr %p, i_W HDR1"
             em.Emit(sprintf "call void @llvm.memcpy.p0.p0.i_W(ptr %s, ptr %s, i_W %s, i1 false)" dst src (em.Instr(sprintf "sub i_W %s, HDR1" bytes)))
-            em.Emit(sprintf "store i_W 1, ptr %s" b)
+            em.Emit(sprintf "store i32 1, ptr %s" b)
 
             if heap el then
                 // the copy holds its own reference to every element
@@ -1215,8 +1251,7 @@ let compile
                         let withRefs = cases |> List.indexed |> List.filter (fun (_, (_, fs)) -> List.exists heap fs)
 
                         if tagged pt then
-                            let tagp = em.Instr "getelementptr { i_W, i32 }, ptr %p, i32 0, i32 1"
-                            let tag = em.Instr(sprintf "load i32, ptr %s" tagp)
+                            let tag = loadTag em "%p" None
 
                             let targets =
                                 withRefs |> List.map (fun (i, _) -> sprintf "i32 %d, label %%case%d" i i) |> String.concat " "
@@ -1271,7 +1306,7 @@ let compile
         let k = env.Length
         let cell = cloTy (List.map fst env)
         let c = em.Instr(sprintf "call ptr @zs_alloc(i_W %s)" (sizeOf em cell))
-        em.Emit(sprintf "store i_W 1, ptr %s" c)
+        em.Emit(sprintf "store i32 1, ptr %s" c)
         let cp = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 1" cell c)
         em.Emit(sprintf "store ptr %s, ptr %s" (stub f k) cp)
         let ip = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 2" cell c)
@@ -1617,15 +1652,16 @@ let compile
         | TCon("bool", []) -> basic "bool" 8 "DW_ATE_boolean"
         | TCon("char", []) -> basic "char" 32 "DW_ATE_UTF"
         | TCon("string", []) when field ->
-            // the object: { count, length, bytes }
+            // the object: { header word (its count first), length, bytes }
             let bytes = basic "u8" 8 "DW_ATE_unsigned_char" |> Option.get
             let word = basic "int" (8 * pointerBytes ()) "DW_ATE_signed" |> Option.get
+            let count = basic "i32" 32 "DW_ATE_signed" |> Option.get
 
             named "string object" (fun () ->
                 let w = 8 * pointerBytes ()
                 let arr = meta (sprintf "!DICompositeType(tag: DW_TAG_array_type, baseType: %s, elements: !{!DISubrange(count: -1)})" bytes)
-                let m name ty off = meta (sprintf "!DIDerivedType(tag: DW_TAG_member, name: \"%s\", baseType: %s, size: %d, offset: %d)" name ty w off)
-                meta (sprintf "!DICompositeType(tag: DW_TAG_structure_type, name: \"string\", size: %d, elements: !{%s, %s, %s})" (2 * w) (m "count" word 0) (m "length" word w) (m "bytes" arr (2 * w)))) |> Option.bind (pointer "string*")
+                let m name ty size off = meta (sprintf "!DIDerivedType(tag: DW_TAG_member, name: \"%s\", baseType: %s, size: %d, offset: %d)" name ty size off)
+                meta (sprintf "!DICompositeType(tag: DW_TAG_structure_type, name: \"string\", size: %d, elements: !{%s, %s, %s})" (2 * w) (m "count" count 32 0) (m "length" word w w) (m "bytes" arr w (2 * w)))) |> Option.bind (pointer "string*")
         | TCon("string", []) ->
             // a variable: a pointer to its bytes (the declaration adds the offset), so gdb prints the text
             basic "char" 8 "DW_ATE_signed_char" |> Option.bind (pointer "char*")
@@ -1691,10 +1727,73 @@ let compile
         let linkage = if part.IsSome then "linkonce_odr hidden" else "internal"
         top.AppendLine(sprintf "%s = %s global %s zeroinitializer" (valueSym v) linkage (llty valueTypes[v])) |> ignore
 
+    // ---- a task's state machine (task { }): its work is an LLVM coroutine, whose frame follows
+    // a closure header in one object, the face: { count, code, description, the coroutine's
+    // handle, the result slot }. Each wait passes the face as the continuation of the task it
+    // waits for, its code and description set for that task's result type: calling it stores
+    // the result and resumes the coroutine. So a wait allocates nothing; the frame is allocated
+    // once, when the work starts, and the face's last reference going destroys the coroutine
+    // (dropping what a cancelled task held there, task.held).
+
+    /// The face's shared parts: its drop function, its share function (a task waits on the
+    /// thread it runs on: what it holds isn't the face's to mark), and the description it starts
+    /// with.
+    let faceCommon () =
+        if generated.Add "@zs.face.drop" then
+            helpers.Append(
+                "define private void @zs.face.drop(ptr %face) {\nentry:\n  %hp = getelementptr { i_W, ptr, ptr, ptr }, ptr %face, i32 0, i32 3\n  %hdl = load ptr, ptr %hp\n  call void @llvm.coro.destroy(ptr %hdl)\n  call void @zs_free(ptr %face)\n  ret void\n}\n\n"
+            )
+            |> ignore
+
+            let msg = "a waiting task's continuation can't cross threads"
+            top.AppendLine(sprintf "@zs.face.crossing = private unnamed_addr constant [%d x i8] c\"%s\\00\"" (msg.Length + 1) msg) |> ignore
+            helpers.Append "define private void @zs.face.share(ptr %face) {\nentry:\n  call void @zs_panic_c(ptr @zs.face.crossing)\n  unreachable\n}\n\n" |> ignore
+            top.AppendLine "@zs.faceinfo.none = private unnamed_addr constant { ptr, i32, ptr, ptr } { ptr @zs.face.drop, i32 1, ptr null, ptr @zs.face.share }" |> ignore
+
+    /// The face's code and description for a wait whose result is a t: the code stores the
+    /// result in the slot and resumes the coroutine.
+    let faceFor (t: Ty) =
+        faceCommon ()
+        let lt = llty t
+        let code = sprintf "@\"face.%s\"" (showFull t)
+        let info = sprintf "@\"faceinfo.%s\"" (showFull t)
+
+        if generated.Add code then
+            helpers.Append(
+                sprintf
+                    "define private {} %s(ptr %%face, %s %%x) {\nentry:\n  %%slot = getelementptr { i_W, ptr, ptr, ptr, %s }, ptr %%face, i32 0, i32 4\n  store %s %%x, ptr %%slot\n  %%hp = getelementptr { i_W, ptr, ptr, ptr }, ptr %%face, i32 0, i32 3\n  %%hdl = load ptr, ptr %%hp\n  call void @llvm.coro.resume(ptr %%hdl)\n  ret {} zeroinitializer\n}\n\n"
+                    code
+                    lt
+                    lt
+                    lt
+            )
+            |> ignore
+
+            top.AppendLine(sprintf "%s = private unnamed_addr constant { ptr, i32, ptr, ptr } { ptr @zs.face.drop, i32 1, ptr %s, ptr @zs.face.share }" info code) |> ignore
+
+        code, info
+
     /// f's definition, named name, compiled for the CPU features (LLVM's target-features: avx2,fma
     /// becomes +avx2,+fma; "" for the baseline).
     let genFunAs (f: MFun) (name: string) (features: string) =
         let em = Emitter()
+
+        // a task's state machine: f waits (task.suspend, task.abandon), so it's a coroutine
+        let waitTypes =
+            let rec go (e: CExpr) =
+                (match e.k with
+                 | CPrim("task.suspend", _) -> [ e.ty ]
+                 | CPrim("task.abandon", _) -> [ tUnit ]
+                 | _ -> [])
+                @ (children e.k |> List.collect go)
+
+            go f.body
+
+        let coro = not waitTypes.IsEmpty
+
+        // a task's work, which gives its result to what waits for it: its wrapper returns unit
+        if coro && llty f.ret <> "{}" then
+            failwithf "Codegen: %s waits but returns %s" f.name (show f.ret)
         let featureList = if features = "" then [] else features.Split ',' |> Array.map (fun f -> f.Trim()) |> List.ofArray
 
         // this function's debug scope, and the line being generated
@@ -1850,8 +1949,7 @@ let compile
                                 if fs.IsEmpty then
                                     guardOr (em.Instr(sprintf "icmp ne ptr %s, %s" v (nullary t k)))
                         else
-                            let tagp = em.Instr(sprintf "getelementptr { i_W, i32 }, ptr %s, i32 0, i32 1" v)
-                            let tv = em.Instr(sprintf "load i32, ptr %s, !range !{i32 0, i32 %d}" tagp cases.Length)
+                            let tv = loadTag em v (Some cases.Length)
                             guardOr (em.Instr(sprintf "icmp eq i32 %s, %d" tv tag))
 
                     let cell = cellTy t tag
@@ -2270,7 +2368,7 @@ let compile
                 // fields are dup'd before its reference goes (after, that thread may free it)
                 let unique =
                     if threaded then
-                        em.Instr(sprintf "icmp eq i_W %s, 1" (em.Instr(sprintf "load atomic i_W, ptr %s monotonic, align HDR1" v)))
+                        em.Instr(sprintf "icmp eq i32 %s, 1" (em.Instr(sprintf "load atomic i32, ptr %s monotonic, align 4" v)))
                     else
                         em.Instr(sprintf "call i1 @zs.release(ptr %s)" v)
 
@@ -2334,11 +2432,10 @@ let compile
                 em.Emit(sprintf "br label %%%s" join)
                 em.Label join
                 let c = em.Instr(sprintf "phi ptr [ %s, %%%s ], [ %s, %%%s ]" a fromAlloc t reuse)
-                em.Emit(sprintf "store i_W 1, ptr %s" c)
+                em.Emit(sprintf "store i32 1, ptr %s" c)
 
                 if tagged e.ty then
-                    let tp = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 1" cell c)
-                    em.Emit(sprintf "store i32 %d, ptr %s" tag tp)
+                    storeTag em c tag
 
                 List.zip args vs
                 |> List.iteri (fun i (a, v) ->
@@ -2472,11 +2569,10 @@ let compile
                 let vs = args |> List.map (gen env false)
                 let cell = cellTy e.ty tag
                 let c = em.Instr(sprintf "call ptr @zs_alloc(i_W %s)" (sizeOf em cell))
-                em.Emit(sprintf "store i_W 1, ptr %s" c)
+                em.Emit(sprintf "store i32 1, ptr %s" c)
 
                 if tagged e.ty then
-                    let tp = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 1" cell c)
-                    em.Emit(sprintf "store i32 %d, ptr %s" tag tp)
+                    storeTag em c tag
 
                 List.zip args vs
                 |> List.iteri (fun i (a, v) ->
@@ -2744,12 +2840,81 @@ let compile
                 em.Emit(sprintf "br label %%%s" lc)
                 em.Label lend
                 "zeroinitializer"
+            | CPrim(("task.suspend" | "task.abandon") as op, args) -> wait env op args e.ty
             | CPrim(op, args) -> prim env (if uncheckedReads.Contains e then op + "!" else op) args e.ty
             | CGlobal _
             | CApp _
             | CLam _
             | CLetFun _
             | CLetRec _ -> failwithf "Codegen: unexpected node %A" e.k
+
+        /// A wait in a task's state machine: task.suspend(work, c) runs the awaited task's work
+        /// with the face as its continuation, then suspends until the face is called with the
+        /// result; task.abandon suspends for good (the task was cancelled). Both end with
+        /// task.held: what a cancelled task holds here, dropped if the coroutine is destroyed
+        /// at this suspension.
+        and wait env (op: string) (args: CExpr list) (t: Ty) : string =
+            let real, heldNode = List.splitAt (args.Length - 1) args
+
+            let held =
+                match heldNode with
+                | [ { k = CPrim("task.held", xs) } ] -> xs
+                | _ -> []
+
+            let n = em.Fresh "wait"
+            let save =
+                if op = "task.suspend" then
+                    let work = gen env false real[0]
+                    let c = gen env false real[1]
+                    let code, info = faceFor t
+                    em.Emit(sprintf "store ptr %s, ptr %s" code (em.Instr "getelementptr { i_W, ptr, ptr }, ptr %face, i32 0, i32 1"))
+                    em.Emit(sprintf "store ptr %s, ptr %s" info (em.Instr "getelementptr { i_W, ptr, ptr }, ptr %face, i32 0, i32 2"))
+                    em.Emit "call void @zs.dup(ptr %face)" // the awaited task's reference
+                    let save = em.Instr "call token @llvm.coro.save(ptr %coro.hdl)"
+
+                    // work c face, through the closure's description: all at once when it takes
+                    // both, else one at a time
+                    let ct = llty real[1].ty
+                    let inf = em.Instr(sprintf "load ptr, ptr %s" (em.Instr(sprintf "getelementptr { i_W, ptr, ptr }, ptr %s, i32 0, i32 2" work)))
+                    let arity = em.Instr(sprintf "load i32, ptr %s" (em.Instr(sprintf "getelementptr { ptr, i32, ptr }, ptr %s, i32 0, i32 1" inf)))
+                    let fullL, oneL, doneL = n + ".full", n + ".curried", n + ".called"
+                    em.Emit(sprintf "br i1 %s, label %%%s, label %%%s" (em.Instr(sprintf "icmp eq i32 %s, 2" arity)) fullL oneL)
+                    em.Label fullL
+                    let full = em.Instr(sprintf "load ptr, ptr %s" (em.Instr(sprintf "getelementptr { ptr, i32, ptr }, ptr %s, i32 0, i32 2" inf)))
+                    em.Emit(sprintf "call {} %s(ptr %s, %s %s, ptr %%face)" full work ct c)
+                    em.Emit(sprintf "br label %%%s" doneL)
+                    em.Label oneL
+                    let code1 = em.Instr(sprintf "load ptr, ptr %s" (em.Instr(sprintf "getelementptr { i_W, ptr }, ptr %s, i32 0, i32 1" work)))
+                    let partial = em.Instr(sprintf "call ptr %s(ptr %s, %s %s)" code1 work ct c)
+                    let code2 = em.Instr(sprintf "load ptr, ptr %s" (em.Instr(sprintf "getelementptr { i_W, ptr }, ptr %s, i32 0, i32 1" partial)))
+                    em.Emit(sprintf "call {} %s(ptr %s, ptr %%face)" code2 partial)
+                    em.Emit(sprintf "call void @zs.drop.clo(ptr %s)" partial)
+                    em.Emit(sprintf "br label %%%s" doneL)
+                    em.Label doneL
+                    dropValue em real[0].ty work
+                    save
+                else
+                    em.Instr "call token @llvm.coro.save(ptr %coro.hdl)"
+
+            let s = em.Instr(sprintf "call i8 @llvm.coro.suspend(token %s, i1 false)" save)
+            let resumed, cleanup = n + ".resumed", n + ".cleanup"
+            em.Emit(sprintf "switch i8 %s, label %%coro.exit [ i8 0, label %%%s i8 1, label %%%s ]" s resumed cleanup)
+            em.Label cleanup
+
+            for h in held do
+                match h.k with
+                | CLocal x -> dropValue em h.ty (lookup env x h.ty)
+                | _ -> ()
+
+            em.Emit "br label %coro.destroy"
+            em.Label resumed
+
+            if op = "task.suspend" then
+                em.Instr(sprintf "load %s, ptr %s" (llty t) (em.Instr(sprintf "getelementptr { i_W, ptr, ptr, ptr, %s }, ptr %%face, i32 0, i32 4" (llty t))))
+            else
+                em.Emit "unreachable"
+                em.Dead()
+                "poison"
 
         and prim env op (args: CExpr list) (ty: Ty) : string =
             // op!: a read a versioned loop proved in bounds; op#b: the first argument is borrowed
@@ -2954,7 +3119,7 @@ let compile
                 let es = sizeOf em (llty el)
                 let bytes = em.Instr(sprintf "add i_W HDR2, %s" (em.Instr(sprintf "mul i_W %s, %s" n es)))
                 let a = em.Instr(sprintf "call ptr @zs_alloc(i_W %s)" bytes)
-                em.Emit(sprintf "store i_W 1, ptr %s" a)
+                em.Emit(sprintf "store i32 1, ptr %s" a)
                 let lenp = em.Instr(sprintf "getelementptr { i_W, i_W }, ptr %s, i32 0, i32 1" a)
                 em.Emit(sprintf "store i_W %s, ptr %s" n lenp)
                 a
@@ -3076,7 +3241,7 @@ let compile
             | "ref" ->
                 let cell = sprintf "{ i_W, %s }" (llty (argTy 0))
                 let r = em.Instr(sprintf "call ptr @zs_alloc(i_W %s)" (sizeOf em cell))
-                em.Emit(sprintf "store i_W 1, ptr %s" r)
+                em.Emit(sprintf "store i32 1, ptr %s" r)
                 let vp = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 1" cell r)
                 em.Emit(sprintf "store %s %s, ptr %s" (llty (argTy 0)) (arg 0) vp)
                 r
@@ -3196,7 +3361,7 @@ let compile
                 let st, toStore, _ = atomicRep (argTy 0)
                 let cell = sprintf "{ i_W, %s }" st
                 let r = em.Instr(sprintf "call ptr @zs_alloc(i_W %s)" (sizeOf em cell))
-                em.Emit(sprintf "store i_W 1, ptr %s" r)
+                em.Emit(sprintf "store i32 1, ptr %s" r)
                 em.Emit(sprintf "store %s %s, ptr %s" st (toStore (arg 0)) (em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 1" cell r)))
                 r
             | "atomic.get"
@@ -3255,7 +3420,7 @@ let compile
                 let cell = sprintf "{ i_W, i32, %s }" (llty vt)
                 shareValue em vt (arg 0)
                 let r = em.Instr(sprintf "call ptr @zs_alloc(i_W %s)" (sizeOf em cell))
-                em.Emit(sprintf "store i_W 1, ptr %s" r)
+                em.Emit(sprintf "store i32 1, ptr %s" r)
                 em.Emit(sprintf "store i32 0, ptr %s" (em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 1" cell r)))
                 em.Emit(sprintf "store %s %s, ptr %s" (llty vt) (arg 0) (em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 2" cell r)))
                 r
@@ -3435,7 +3600,7 @@ let compile
                 let cell = sprintf "{ i_W, ptr, %s }" (llty t)
                 let vt = vtable (op.Substring 8) t (args |> List.tail |> List.map (fun a -> match a.k with CPrim(f, _) -> f.Substring 3 | _ -> failwith "vtable entry"))
                 let c = em.Instr(sprintf "call ptr @zs_alloc(i_W %s)" (sizeOf em cell))
-                em.Emit(sprintf "store i_W 1, ptr %s" c)
+                em.Emit(sprintf "store i32 1, ptr %s" c)
                 em.Emit(sprintf "store ptr %s, ptr %s" vt (em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 1" cell c)))
                 em.Emit(sprintf "store %s %s, ptr %s" (llty t) (arg 0) (em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 2" cell c)))
                 c
@@ -3535,13 +3700,52 @@ let compile
 
         let env = f.pars |> List.fold (fun (m: Map<_, _>) (x, _) -> m.Add(x, Ssa("%p." + x))) Map.empty
         f.pars |> List.iteri (fun i (x, t) -> declareVar x t ("%p." + x) None (i + 1))
-        let v = gen env true f.body
+
+        if coro then
+            // the face (closure header, the coroutine's handle, the largest result slot) rounded
+            // to 64 bytes, then the coroutine's frame; the ramp's own reference, which the
+            // wrapper below gives up
+            faceCommon ()
+            em.Emit "%coro.id = call token @llvm.coro.id(i32 16, ptr null, ptr null, ptr null)"
+
+            let head =
+                waitTypes
+                |> List.distinct
+                |> List.map (fun t -> sizeOf em (sprintf "{ i_W, ptr, ptr, ptr, %s }" (llty t)))
+                |> List.reduce (fun a b -> em.Instr(sprintf "select i1 %s, i_W %s, i_W %s" (em.Instr(sprintf "icmp ugt i_W %s, %s" a b)) a b))
+
+            let head = em.Instr(sprintf "and i_W %s, -64" (em.Instr(sprintf "add i_W %s, 63" head)))
+            let size = em.Instr "call i_W @llvm.coro.size.i_W()"
+            em.Emit(sprintf "%%face = call ptr @zs_coro_alloc(i_W %s)" (em.Instr(sprintf "add i_W %s, %s" size head)))
+            em.Emit "store i32 1, ptr %face"
+            em.Emit(sprintf "store ptr null, ptr %s" (em.Instr "getelementptr { i_W, ptr, ptr }, ptr %face, i32 0, i32 1"))
+            em.Emit(sprintf "store ptr @zs.faceinfo.none, ptr %s" (em.Instr "getelementptr { i_W, ptr, ptr }, ptr %face, i32 0, i32 2"))
+            let mem = em.Instr(sprintf "getelementptr i8, ptr %%face, i_W %s" head)
+            em.Emit(sprintf "%%coro.hdl = call ptr @llvm.coro.begin(token %%coro.id, ptr %s)" mem)
+            em.Emit(sprintf "store ptr %%coro.hdl, ptr %s" (em.Instr "getelementptr { i_W, ptr, ptr, ptr }, ptr %face, i32 0, i32 3"))
+
+        let v = gen env (not coro) f.body
         let rt = llty f.ret
 
         if debugInfo then
             em.Dbg <- diLoc (max 1 lastLine) sp // returning belongs to the last statement, not the header
 
-        em.Emit(sprintf "ret %s %s" rt v)
+        if coro then
+            // the work has given its result to what waits for it: the final suspension, where
+            // the face's last reference destroys the coroutine
+            let fin = em.Instr "call i8 @llvm.coro.suspend(token none, i1 true)"
+            em.Emit(sprintf "switch i8 %s, label %%coro.exit [ i8 0, label %%coro.never i8 1, label %%coro.destroy ]" fin)
+            em.Label "coro.never"
+            em.Emit "unreachable"
+            em.Label "coro.destroy"
+            em.Emit "%coro.freed = call ptr @llvm.coro.free(token %coro.id, ptr %coro.hdl)"
+            em.Emit "br label %coro.exit"
+            em.Label "coro.exit"
+            em.Emit "call void @llvm.coro.end(ptr %coro.hdl, i1 false, token none)"
+            em.Emit "ret ptr %face"
+        else
+            em.Emit(sprintf "ret %s %s" rt v)
+
         let ps = f.pars |> List.map (fun (x, t) -> sprintf "%s %%p.%s" (llty t) x) |> String.concat ", "
         let dbg = if debugInfo then " !dbg " + sp else ""
 
@@ -3562,7 +3766,15 @@ let compile
             if features = "" then ""
             else sprintf " \"target-features\"=\"%s\"" (features.Split ',' |> Array.map (fun f -> "+" + f.Trim()) |> String.concat ",")
 
-        funcs.Append(sprintf "define %s %s %s(%s)%s%s%s {\n%s}\n\n" linkage rt (sym name) ps hint features dbg em.Body) |> ignore
+        if coro then
+            // the coroutine, and the function as callers know it: it starts the coroutine and
+            // gives up the ramp's reference to the face
+            let coroSym = "@\"zs." + name + ".coro\""
+            funcs.Append(sprintf "define internal ptr %s(%s) presplitcoroutine%s%s {\n%s}\n\n" coroSym ps features dbg em.Body) |> ignore
+            let args = f.pars |> List.map (fun (x, t) -> sprintf "%s %%p.%s" (llty t) x) |> String.concat ", "
+            funcs.Append(sprintf "define %s %s %s(%s)%s {\nentry:\n  %%face = call ptr %s(%s)\n  call void @zs.drop.clo(ptr %%face)\n  ret %s zeroinitializer\n}\n\n" linkage rt (sym name) ps features coroSym args rt) |> ignore
+        else
+            funcs.Append(sprintf "define %s %s %s(%s)%s%s%s {\n%s}\n\n" linkage rt (sym name) ps hint features dbg em.Body) |> ignore
 
     /// A [<Multiversion>] function: a version for each set of features, and one for the baseline;
     /// its own name is a dispatcher that picks one the first time (the first the CPU has, in

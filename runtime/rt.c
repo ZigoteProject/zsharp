@@ -13,12 +13,19 @@
 #include <execinfo.h> // backtraces; musl (cross-compiled builds) has none
 #endif
 
-// Every heap object starts with an int64 reference count: 1+ = live, 0 = static (never freed).
-// zs_int: Z#'s int, the machine word (also the header fields of every heap object)
+// zs_int: Z#'s int, the machine word
 typedef intptr_t zs_int;
 
+// Every heap object starts with a header word: a 32-bit reference count (1+ = live, 0 = static,
+// never freed, below 0 = shared between threads), then the tag of a union's case (bytes 4-5) and
+// where the object came from (byte 6, the pool's; zs_alloc sets it). C code sets the count and
+// leaves the rest.
+#define ZS_HEADER \
+    int32_t rc;   \
+    uint32_t meta
+
 typedef struct {
-    zs_int rc;
+    ZS_HEADER;
     zs_int len;
     char data[]; // len bytes + NUL
 } zs_str;
@@ -67,25 +74,79 @@ _Noreturn void zs_panic(zs_str *msg) { zs_panic_c(msg->data); }
 
 static int64_t allocations, mallocs;
 
+// Objects come from a pool in a program without threads: 8-byte size classes up to 256 bytes,
+// each with a free list, carved from 64 KB chunks; a freed object goes on its class's list, and
+// the next allocation of that size takes it (no system allocator call either way). Byte 6 of
+// the header says where an object came from: its class, or SYSTEM for malloc and aligned_alloc.
+// With threads, a sanitizer or valgrind (ZS_NO_POOL), it's plain malloc, so the tools see every
+// object.
+// ponytail: chunks are kept until exit; a program whose small objects peak once keeps that memory
+#if !defined(ZS_THREADS) && !defined(ZS_NO_POOL)
+#define ZS_POOL 1
+#define POOL_MAX 256
+#define POOL_CHUNK ((size_t)64 * 1024)
+#define FROM(p) (((uint8_t *)(p))[6])
+#define SYSTEM 0xFF
+static void *pool_free[POOL_MAX / 8 + 1];
+static char *pool_next, *pool_end;
+
+static void pool_chunk(void) {
+    pool_next = malloc(POOL_CHUNK);
+    if (!pool_next) zs_panic_c("out of memory");
+    pool_end = pool_next + POOL_CHUNK;
+    COUNT(mallocs, 1);
+}
+#endif
+
 void *zs_alloc(zs_int size) {
+    COUNT(live, 1);
+    COUNT(allocations, 1);
+#if ZS_POOL
+    size_t total = ((size_t)size + 7) & ~(size_t)7;
+    void *p;
+    if (total <= POOL_MAX) {
+        size_t c = total >> 3;
+        p = pool_free[c];
+        if (p) {
+            pool_free[c] = *(void **)p;
+        } else {
+            if ((size_t)(pool_end - pool_next) < total) pool_chunk();
+            p = pool_next;
+            pool_next += total;
+        }
+        FROM(p) = (uint8_t)c;
+        return p;
+    }
+    p = malloc((size_t)size);
+    if (!p) zs_panic_c("out of memory");
+    COUNT(mallocs, 1);
+    FROM(p) = SYSTEM;
+    return p;
+#else
     void *p = malloc((size_t)size);
     if (!p) zs_panic_c("out of memory");
+    COUNT(mallocs, 1);
+    return p;
+#endif
+}
+
+// zs_alloc for a program with SIMD vectors (the compiler swaps it in): each object aligned to
+// 64 bytes, so a vector field or element is aligned as LLVM expects
+void *zs_alloc_wide(zs_int size) {
     COUNT(live, 1);
     COUNT(allocations, 1);
     COUNT(mallocs, 1);
+    void *p = aligned_alloc(64, ((size_t)size + 63) & ~(size_t)63);
+    if (!p) zs_panic_c("out of memory");
+#if ZS_POOL
+    FROM(p) = SYSTEM;
+#endif
     return p;
 }
 
-// zs_alloc for a program with SIMD vectors of 32 or 64 bytes (the compiler swaps it in): each
-// object aligned to 64 bytes, so a vector field or element is aligned as LLVM expects
-void *zs_alloc_wide(zs_int size) {
-    void *p = aligned_alloc(64, ((size_t)size + 63) & ~(size_t)63);
-    if (!p) zs_panic_c("out of memory");
-    COUNT(live, 1);
-    COUNT(allocations, 1);
-    COUNT(mallocs, 1);
-    return p;
-}
+// a task's state machine: its face and coroutine frame, in one object 64-byte aligned (the frame
+// may hold values that need 16)
+void *zs_coro_alloc(zs_int size) { return zs_alloc_wide(size); }
 
 /// Runtime.allocations (): heap objects allocated so far (tests check copy-on-write with it).
 zs_int zs_allocations(void) { return allocations; }
@@ -114,14 +175,26 @@ int64_t zs_ticks(void) {
 
 void zs_free(void *p) {
     COUNT(live, -1);
+#if ZS_POOL
+    size_t c = FROM(p);
+    if (c - 1 < POOL_MAX / 8) {
+        *(void **)p = pool_free[c];
+        pool_free[c] = p;
+    } else if (c == SYSTEM) {
+        free(p);
+    } else {
+        zs_panic_c("an object's header was overwritten (zs_free)");
+    }
+#else
     free(p);
+#endif
 }
 
 // ---- handles: a Z# object held by C (zs_handle in a generated header). A handle has a count of
 // its own (zs_retain, zs_release) and holds one reference to the object, which the object's drop
 // function gives up when the handle's last reference goes.
 typedef struct {
-    zs_int rc;
+    ZS_HEADER;
     void (*drop)(void *);
     void *obj;
 } zs_handle;
@@ -137,7 +210,7 @@ zs_handle *zs_handle_new(void *obj, void (*drop)(void *)) {
 // the object, with a new reference for Z#
 void *zs_handle_get(zs_handle *h) {
     if (!h) zs_panic_c("a null zs_handle was passed to Z#");
-    zs_int *rc = h->obj;
+    int32_t *rc = h->obj;
     if (*rc > 0) (*rc)++;
     return h->obj;
 }
@@ -224,7 +297,7 @@ static void *tab_remove(ptrtab *t, const void *k) {
 // the object dying (freed, or its cell reused for another) empties the cell. A program that uses
 // weak references or arenas allocates and frees through zs_alloc_checked and zs_free_checked.
 typedef struct {
-    zs_int rc;
+    ZS_HEADER;
     void *target;
 } zs_weak;
 
@@ -243,7 +316,7 @@ static pthread_mutex_t heap_mu = PTHREAD_MUTEX_INITIALIZER;
 
 zs_weak *zs_weak_new(void *target) {
     HEAP_LOCK();
-    bool dies = __atomic_load_n((zs_int *)target, __ATOMIC_RELAXED) != 0; // a static object never does: its cells aren't in the table
+    bool dies = __atomic_load_n((int32_t *)target, __ATOMIC_RELAXED) != 0; // a static object never does: its cells aren't in the table
     zs_weak *w = dies ? tab_get(&weaks, target) : NULL;
     if (w) {
         w->rc++;
@@ -262,9 +335,9 @@ zs_weak *zs_weak_new(void *target) {
 void *zs_weak_target(zs_weak *w) {
     if ((uintptr_t)w->target & 1) return (void *)((uintptr_t)w->target & ~(uintptr_t)1);
     HEAP_LOCK();
-    zs_int *t = w->target;
+    int32_t *t = w->target;
     if (t) {
-        zs_int c = __atomic_load_n(t, __ATOMIC_RELAXED);
+        int32_t c = __atomic_load_n(t, __ATOMIC_RELAXED);
         if (c > 0) {
             *t = c + 1; // thread-local: this thread's, as the weak reference is
         } else {
@@ -356,7 +429,7 @@ void zs_arena_close(void) {
 void *zs_alloc_checked(zs_int size) {
     zs_arena *a = arena;
     if (!a || (size_t)size > ARENA_BLOCK / 4) return zs_alloc(size); // a big object is malloc's
-    size_t n = ((size_t)size + 15) & ~(size_t)15;
+    size_t n = ((size_t)size + 7) & ~(size_t)7; // 8-byte aligned, as the pool's (a program with vectors has no arenas: its objects are zs_alloc_wide's)
     HEAP_LOCK();
     if (a->next + n > a->end) {
         char *b = arena_block(a);
@@ -1471,7 +1544,8 @@ void zs_loop_close(void) {
 // Failures are -errno, and -1000 for "it would block, wait first"; Native.errorText gives the
 // text.
 typedef struct {
-    zs_int rc, len;
+    ZS_HEADER;
+    zs_int len;
     uint8_t data[];
 } zs_bytes; // a Buffer<u8>, and a string's object too
 
@@ -1830,7 +1904,7 @@ void zs_unlock(atomic_int *l) {
 // A Z# object: its count is the header, and the drop function it was made with drops what's
 // still in it when it's freed.
 typedef struct {
-    zs_int rc;
+    ZS_HEADER;
     pthread_mutex_t mu;
     pthread_cond_t not_empty, not_full;
     zs_int cap, size, head, len;

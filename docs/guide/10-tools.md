@@ -26,6 +26,9 @@
 | `--sanitize` | AddressSanitizer and UndefinedBehaviorSanitizer |
 | `--sanitize=thread` | ThreadSanitizer, for data races between threads |
 | `--emit-llvm` | keep the LLVM IR (`out.ll`) |
+| `--cpu <name>` | compile for a processor ([SIMD](15-simd.md)) |
+| `--profile-generate` | a program that writes a profile of its run ([below](#profile-guided-optimization)) |
+| `--profile-use <file>` | optimize with a profile |
 | `--time` | how long each compiler phase took |
 
 **Environment variables:**
@@ -33,8 +36,25 @@
 - `ZS_ABORT=1` makes a panic a real `abort()`, with a core dump for a debugger.
 - `ZS_LEAKCHECK=1` reports heap objects still allocated at exit.
 - `ZS_NO_CACHE=1` checks the library and every module again. Otherwise builds, `zs check` and `zs test` keep the checked library, and the checked modules a main file uses, in `~/.cache/zs/checked` (or under `$XDG_CACHE_HOME`). The next build checks only the main file, or the modules too when one of them changed.
+- `ZS_NO_LTO=1` links without ThinLTO (below).
+- `ZS_NO_POOL=1`, at build time, makes the program allocate every object with `malloc` instead of the runtime's pool, so valgrind sees each one (`./test.sh --valgrind` sets it).
 
-**Rebuilds:** a program of several files is compiled one module per file, in parallel, and builds keep each compiled module in `~/.cache/zs/objects`, so a rebuild compiles only the files whose code changed. `--time` shows how many modules a build compiled.
+**Rebuilds:** a program of several files is compiled one module per file, in parallel. Builds keep each compiled module in `~/.cache/zs/modules`, under a key of what its code is made from, so a rebuild generates and compiles only the modules whose code changed. `--time` shows how many came from the cache, and how many objects clang compiled.
+
+**Linking:** the modules and the runtime are compiled to LLVM bitcode and optimized together when they're linked (ThinLTO, with lld), so the runtime's allocation functions inline into the program.
+
+## Profile-guided optimization
+
+A profile of a typical run tells LLVM which branches are taken and which calls are hot:
+
+```sh
+zs build app.zs --profile-generate -o app   # a program that records its run
+./app typical input                         # writes default.profraw (or $LLVM_PROFILE_FILE)
+llvm-profdata merge -o app.profdata default.profraw
+zs build app.zs --profile-use app.profdata -o app
+```
+
+On the host benchmarks it gains a few percent (6% on `binarytrees`); a profile from a run unlike the real ones can lose as much.
 
 ## Formatting
 

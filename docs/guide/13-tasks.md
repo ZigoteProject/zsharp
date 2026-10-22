@@ -48,6 +48,7 @@ Ok 42 Error 'x' isn't a number Error division by zero
 **Work that waits:** a `Task<'a>` is work that may wait, for a timer, a socket or another task, without blocking the program: while it waits, other tasks run. `task { }` writes one, and `Task.run` runs it from `main`.
 - **Cold:** making a task does nothing, and running it twice does the work twice.
 - **One thread:** tasks take turns on one event loop. Each runs until it waits. `Task.spawn` runs one on another thread's loop, to use every core ([chapter 14](14-parallel.md#tasks-on-every-core)).
+- **Cheap waits:** the compiler turns `task { }` into a state machine, allocated once when the task starts, so a wait allocates nothing, and one on a task whose result is ready goes on at once. Waits can be anywhere in the body, inside `for`, `while`, `if` and `match` included, but not inside a function the body defines.
 
 ```zsharp
 let step (name: string) (ms: int) =

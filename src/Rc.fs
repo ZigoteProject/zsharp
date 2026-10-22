@@ -16,7 +16,83 @@ let rec private rootLocal (e: CExpr) =
     | CField(r, _) -> rootLocal r
     | _ -> None
 
-let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (entries: Set<string>) (funs: MFun list) : MFun list =
+/// Borrowed parameters (Perceus borrowing), each function's indices: a heap parameter the
+/// function only applies, reads (a.[i], lengths) or passes on to a borrowed parameter is
+/// borrowed. The caller keeps ownership and the callee neither dups nor drops it, so a closure
+/// or array threaded through a loop costs no reference counting. Only for functions called
+/// directly (not closures, which are called through code pointers, nor the entries). For the
+/// whole program, since a caller's code depends on its callees'.
+let borrowing (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (entries: Set<string>) (funs: MFun list) =
+    let heap t = needsRc types t
+    let asValues = System.Collections.Generic.HashSet<string>(entries)
+
+    let rec values (e: CExpr) =
+        match e.k with
+        | CMkClosure(n, _) -> asValues.Add n |> ignore
+        | CPrim(op, _) when op.StartsWith "fn:" -> asValues.Add(op.Substring 3) |> ignore // in a vtable
+        | _ -> ()
+
+        children e.k |> List.iter values
+
+    for f in funs do
+        values f.body
+
+    let borrowedOf = System.Collections.Generic.Dictionary<string, Set<int>>()
+
+    for f in funs do
+        if not (asValues.Contains f.name) then
+            borrowedOf[f.name] <- f.pars |> List.indexed |> List.filter (fun (_, (_, t)) -> heap t) |> List.map fst |> Set.ofList
+
+    let fnOf = funs |> List.map (fun f -> f.name, f) |> dict
+    let mutable changed = true
+
+    // each round on every core, from the sets of the round before: they only shrink, so the
+    // rounds end at the same sets in any order
+    while changed do
+        let fewer (name: string, set: Set<int>) =
+            // the parameters of the set the body uses in other ways, in one walk
+            let f = fnOf[name]
+            let index = set |> Seq.map (fun i -> fst f.pars[i], i) |> dict
+            let bad = System.Collections.Generic.HashSet<int>()
+
+            let rec walk (e: CExpr) =
+                match e.k with
+                | CLocal x when index.ContainsKey x -> bad.Add index[x] |> ignore
+                | CApplyClo({ k = CLocal x }, args) when index.ContainsKey x -> List.iter walk args
+                | CPrim(("array.get" | "Array.length" | "String.length" | "String.byte"), { k = CLocal x } :: rest) when index.ContainsKey x ->
+                    List.iter walk rest
+                | CCallDirect(g, args) ->
+                    args
+                    |> List.iteri (fun j a ->
+                        match a.k with
+                        | CLocal x when index.ContainsKey x ->
+                            let once = (args |> List.filter (fun b -> b.k = CLocal x)).Length = 1
+
+                            match borrowedOf.TryGetValue g with
+                            | true, bs when once && bs.Contains j -> ()
+                            | _ -> bad.Add index[x] |> ignore
+                        | _ -> walk a)
+                | CAssign(x, _)
+                | CArraySet(x, _, _) when index.ContainsKey x ->
+                    bad.Add index[x] |> ignore
+                    children e.k |> List.iter walk
+                | k -> children k |> List.iter walk
+
+            if not set.IsEmpty then
+                walk f.body
+
+            if bad.Count > 0 then Some(name, set - Set.ofSeq bad) else None
+
+        let updates = borrowedOf |> Seq.map (fun kv -> kv.Key, kv.Value) |> Array.ofSeq |> Array.Parallel.choose fewer
+        changed <- updates.Length > 0
+
+        for name, set in updates do
+            borrowedOf[name] <- set
+
+    borrowedOf
+
+/// Reference counting for funs, with the program's borrowed parameters (borrowing).
+let lower (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (borrowedParams: System.Collections.Generic.Dictionary<string, Set<int>>) (funs: MFun list) : MFun list =
     let heap t = needsRc types t
     let mk k ty = { k = k; ty = ty }
     // temporaries numbered per function (each thread does one at a time): a function's code
@@ -29,76 +105,6 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (entrie
         c.Value
 
     let tmp () = sprintf "$rc%d" (next ())
-
-    // ---- borrowed parameters (Perceus borrowing): a heap parameter the function only applies,
-    // reads (a.[i], lengths) or passes on to a borrowed parameter is borrowed. The caller keeps
-    // ownership and the callee neither dups nor drops it, so a closure or array threaded
-    // through a loop costs no reference counting. Only for functions called directly (not
-    // closures, which are called through code pointers, nor the entries).
-    let borrowedParams =
-        let asValues = System.Collections.Generic.HashSet<string>(entries)
-
-        let rec values (e: CExpr) =
-            match e.k with
-            | CMkClosure(n, _) -> asValues.Add n |> ignore
-            | CPrim(op, _) when op.StartsWith "fn:" -> asValues.Add(op.Substring 3) |> ignore // in a vtable
-            | _ -> ()
-
-            children e.k |> List.iter values
-
-        for f in funs do
-            values f.body
-
-        let borrowedOf = System.Collections.Generic.Dictionary<string, Set<int>>()
-
-        for f in funs do
-            if not (asValues.Contains f.name) then
-                borrowedOf[f.name] <- f.pars |> List.indexed |> List.filter (fun (_, (_, t)) -> heap t) |> List.map fst |> Set.ofList
-
-        let fnOf = funs |> List.map (fun f -> f.name, f) |> dict
-        let mutable changed = true
-
-        while changed do
-            changed <- false
-
-            for KeyValue(name, set) in List.ofSeq borrowedOf do
-                let f = fnOf[name]
-
-                let ok i =
-                    let p = fst f.pars[i]
-                    let mutable bad = false
-
-                    let rec walk (e: CExpr) =
-                        match e.k with
-                        | CLocal x when x = p -> bad <- true
-                        | CApplyClo({ k = CLocal x }, args) when x = p -> List.iter walk args
-                        | CPrim(("array.get" | "Array.length" | "String.length" | "String.byte"), { k = CLocal x } :: rest) when x = p ->
-                            List.iter walk rest
-                        | CCallDirect(g, args) ->
-                            args
-                            |> List.iteri (fun j a ->
-                                match a.k with
-                                | CLocal x when x = p ->
-                                    let once = (args |> List.filter (fun b -> b.k = CLocal p)).Length = 1
-
-                                    match borrowedOf.TryGetValue g with
-                                    | true, bs when once && bs.Contains j -> ()
-                                    | _ -> bad <- true
-                                | _ -> walk a)
-                        | CAssign(x, _)
-                        | CArraySet(x, _, _) when x = p -> bad <- true
-                        | k -> children k |> List.iter walk
-
-                    walk f.body
-                    not bad
-
-                let kept = set |> Set.filter ok
-
-                if kept <> set then
-                    borrowedOf[name] <- kept
-                    changed <- true
-
-        borrowedOf
 
     /// print/println of a string built with + (an interpolation, usually) prints the pieces
     /// instead of joining them: no concatenation, no allocation. Every piece is evaluated first,
@@ -231,6 +237,21 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (entrie
             Set.ofList (go f.body)
 
         let heapVar x = heap vtypes[x]
+
+        // a task's state machine (task.suspend, task.abandon): what's held across a wait, which a
+        // cancelled task drops when its coroutine is destroyed there. held: the owned variables
+        // the code after the current subexpression consumes; muts: the heap `mutable`s in scope
+        let held = ref Set.empty
+        let muts = ref Set.empty
+
+        let holding (extra: Set<string>) (f: unit -> CExpr) =
+            let saved = held.Value
+            held.Value <- Set.union saved extra
+
+            try
+                f ()
+            finally
+                held.Value <- saved
 
         /// The layout of the cell a constructor builds (or a matched case is): with a tag?, and
         /// the field types. None when the case isn't a cell (no fields, or a niche).
@@ -393,7 +414,7 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (entrie
                 let later = fvs[i + 1 ..] |> Array.fold Set.union Set.empty
                 let mine = Set.intersect owned fvs[i]
                 let oi = Set.difference mine later
-                rc oi (Set.union borrowed (Set.difference mine oi)) ei)
+                holding (Set.intersect owned later) (fun () -> rc oi (Set.union borrowed (Set.difference mine oi)) ei))
 
         /// let-binds a non-variable subexpression so it can be inspected by name.
         and viaTemp (owned: Set<string>) (borrowed: Set<string>) (sub: CExpr) (build: CExpr -> CExpr) =
@@ -458,7 +479,7 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (entrie
                 let fb = live body
                 let fvv = live v
                 let ov = Set.difference (Set.intersect owned fvv) fb
-                let v' = rc ov (Set.union borrowed (Set.difference (Set.intersect owned fvv) ov)) v
+                let v' = holding (Set.difference owned ov) (fun () -> rc ov (Set.union borrowed (Set.difference (Set.intersect owned fvv) ov)) v)
                 let ob = Set.difference owned ov
                 let ob = if heap v.ty then ob.Add x else ob
                 re (CLet(x, v', rc ob borrowed body))
@@ -466,8 +487,19 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (entrie
                 let fb = live body
                 let fvv = live v
                 let ov = Set.difference (Set.intersect owned fvv) fb
-                let v' = rc ov (Set.union borrowed (Set.difference (Set.intersect owned fvv) ov)) v
-                re (CLetMut(x, v', rc (Set.difference owned ov) borrowed body))
+                let v' = holding (Set.difference owned ov) (fun () -> rc ov (Set.union borrowed (Set.difference (Set.intersect owned fvv) ov)) v)
+                let saved = muts.Value
+
+                if heap v.ty then
+                    muts.Value <- muts.Value.Add x
+
+                let body' =
+                    try
+                        rc (Set.difference owned ov) borrowed body
+                    finally
+                        muts.Value <- saved
+
+                re (CLetMut(x, v', body'))
             | CSeq(a, b) when heap a.ty ->
                 let t = tmp ()
                 vtypes[t] <- a.ty
@@ -715,6 +747,13 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (entrie
                         re (CLet(r, call, drops dying (mk (CLocal r) e.ty)))
             | CCallDirect(n, xs) -> re (CCallDirect(n, rcList owned borrowed xs))
             | CExtern(n, xs) -> re (CExtern(n, rcList owned borrowed xs))
+            | CPrim(("task.suspend" | "task.abandon") as n, xs) ->
+                // a wait: what the task holds across it (dropped if it's cancelled there) goes
+                // with it, after its arguments, as task.held (variables and mutables)
+                let xs' = rcList owned borrowed xs
+                let vars = Set.union held.Value muts.Value |> Set.filter heapVar |> Set.toList
+                let heldNode = mk (CPrim("task.held", vars |> List.map (fun v -> mk (CLocal v) vtypes[v]))) e.ty
+                re (CPrim(n, xs' @ [ heldNode ]))
             | CPrim(n, xs) -> re (CPrim(n, rcList owned borrowed xs))
             | CMkClosure(n, xs) -> re (CMkClosure(n, rcList owned borrowed xs))
             | CBin(op, a, b) ->
@@ -836,3 +875,5 @@ let run (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (entrie
         funs |> Array.ofList |> Array.Parallel.map rcFun |> List.ofArray
     with :? System.AggregateException as e ->
         raise e.InnerExceptions[0]
+
+let run types (entries: Set<string>) (funs: MFun list) = lower types (borrowing types entries funs) funs

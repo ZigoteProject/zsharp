@@ -1143,6 +1143,58 @@ let checkFrom
             let r = at node (fun () -> value env depth x)
             recordKey node x r.ty false (keyOf env x) false
             r
+        | Call("$task", [ Lambda([ PUnit, None ], body) ]) ->
+            // task { }: a Task whose work is the body, in direct style ($cancel is the task's
+            // cancellation, $await a wait); the code generator makes a state machine of the work
+            // (an LLVM coroutine), so a wait allocates nothing
+            let a = fresh kAny
+            let cancelTy = tcon "Threading.Cancel"
+            let kTy = TFun(a, tUnit)
+            let cl =
+                { u = uniq "$cancel"
+                  ty = cancelTy
+                  mut = false
+                  depth = depth + 1 }
+
+            let ku, ru = uniq "$k", uniq "$result"
+            let cb = infer (env.Add("$cancel", cl)) (depth + 1) body
+            expect "the task's result" a cb.ty
+            let complete = value env depth "Threading.Task.complete"
+            expect "the task's result" (TFun(kTy, TFun(a, tUnit))) complete.ty
+            // the result first, then what waits for it (which waits held meanwhile)
+            let finish = mk (CLet(ru, cb, mk (CApp(complete, [ mk (CLocal ku) kTy; mk (CLocal ru) a ])) tUnit)) tUnit
+            let work = mk (CLam([ cl.u, cancelTy; ku, kTy ], finish)) (TFun(cancelTy, TFun(kTy, tUnit)))
+            let _, noneTag = ctors["None"]
+            mk (CTuple [ mk (CCtor("option", noneTag, [])) (TCon("option", [ a ])); work ]) (TCon("Threading.Task", [ a ]))
+        | Call("$await", [ e ]) ->
+            // let!, do!, return! in a task: the task's ready result, or a wait (task.suspend) for
+            // its work's (none if the task is cancelled already: task.abandon)
+            match env.TryFind "$cancel" with
+            | Some cl when cl.depth = depth ->
+                let ce = infer env depth e
+                let t = fresh kAny
+                expect "the task let! waits for" (TCon("Threading.Task", [ t ])) ce.ty
+                let tv, x = uniq "$task", uniq "$ready"
+                let tvE = mk (CLocal tv) ce.ty
+                let cE = mk (CLocal cl.u) cl.ty
+                let _, someTag = ctors["Some"]
+                let _, noneTag = ctors["None"]
+                let cancelled = fieldsOf "Threading.Cancel" |> List.findIndex (fst >> (=) "cancelled")
+                let flag = mk (CPrim("ref.get", [ mk (CField(cE, cancelled)) (TCon("ref", [ tBool ])) ])) tBool
+                let workTy = TFun(cl.ty, TFun(TFun(t, tUnit), tUnit))
+                let wait = mk (CPrim("task.suspend", [ mk (CField(tvE, 1)) workTy; cE ])) t
+                let notReady = mk (CIf(flag, mk (CPrim("task.abandon", [])) t, wait)) t
+
+                let ready =
+                    CMatch(
+                        mk (CField(tvE, 0)) (TCon("option", [ t ])),
+                        [ CPCtor("option", someTag, [ CPVar(x, t) ]), None, mk (CLocal x) t
+                          CPCtor("option", noneTag, []), None, notReady ]
+                    )
+
+                mk (CLet(tv, ce, mk ready t)) t
+            | Some _ -> fail 0 "let!, do! and return! wait in the task's own body, not in a function inside it"
+            | None -> fail 0 "let!, do! and return! are for a task { }"
         | Call("assert", [ c ]) when not (env.ContainsKey "assert") ->
             // the location goes into the message: "assertion failed at file:line"
             let cc = infer env depth c

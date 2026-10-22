@@ -5,8 +5,8 @@ along with the whole `./test.sh`. Design and rationale: [DESIGN.md](DESIGN.md). 
 language: [the guide](docs/guide/README.md).
 
 **Development** happens in a container (`.devcontainer/Containerfile`: Fedora 44, .NET 10,
-clang/LLVM 22, zig, valgrind, gdb, qemu-user, qemu-system-arm and raylib, plus Rust, Swift and
-OCaml for the host benchmarks).
+clang/LLVM 23.1 (LLVM's release), zig, valgrind, gdb, qemu-user, qemu-system-arm and raylib, plus
+Rust, Swift and OCaml for the host benchmarks).
 - **Commands:** `./dev ./test.sh` runs the suite, plain `./dev` opens a shell, and `./dev --rebuild` rebuilds the image.
 - **One at a time:** run one `./dev` at a time, since runs share `bin/`. The container mounts the repository with a shared SELinux label (`:z`). A tool that mounts it with a private one (`:Z`) cuts off a container that's running.
 - **Test modes:** `./test.sh --valgrind` runs everything under valgrind. `./test.sh --target aarch64-linux-musl` runs it cross-compiled under qemu.
@@ -18,11 +18,11 @@ OCaml for the host benchmarks).
  alongside:            E editors, M microcontrollers, T more targets, P type providers,
                        S library, K packages
 
- done: 0–8, L and V        now: 9
+ done: 0–9, L and V        now: 10
 ```
 
 - **v1 (phases 0–6, L and V):** the complete single-threaded language. It is fast, memory-safe, has C interop, and runs async on one event loop.
-- **v2 (phases 7–9):** threads and parallelism, SIMD (both done), and the final performance work.
+- **v2 (phases 7–9, done):** threads and parallelism, SIMD, and the final performance work.
 - **v3 (phase 10+):** effect handlers.
 - **Tracks:** editor tooling (E), microcontrollers (M), more targets (T), type providers (P), the library (S) and packages (K) run alongside the main line.
 
@@ -30,9 +30,9 @@ OCaml for the host benchmarks).
 
 **Works today:**
 - **Language:** inference (lambdas get their parameter types from the call), records with defaults, unions, exhaustive matching (record, string and character patterns), active patterns, units of measure, traits, `dyn` values, derives, members with named and optional arguments, nested modules with their own fields and traits, closures, generics, custom operators, `char`, multi-line and raw strings, raw pointers in `unsafe`, computation expressions (`option { }`, `result { }`, `task { }`).
-- **Memory and performance:** Perceus RC with borrowing and reuse, copy-on-write arrays, weak references, arenas, checked arithmetic, and an optimizer that inlines, uncurries, resolves known constructors and fuses pipelines. On the host benchmarks it's within 1.21× of C with C's peak memory, except `fib` (2.0×: overflow checks; 1.1× of C with the same checks). On compute code it's as fast as C on a Cortex-M.
+- **Memory and performance:** Perceus RC with borrowing and reuse, copy-on-write arrays, weak references, arenas, checked arithmetic, a pool allocator under a one-word header, an optimizer that inlines, uncurries, resolves known constructors and fuses pipelines, ThinLTO and PGO. On the host benchmarks it's at C's speed or better, with at most C's peak memory, except `fib` (1.76×: overflow checks, which cost C with `-ftrapv` the same). On compute code it's as fast as C on a Cortex-M.
 - **Library:** a prelude, Core (collections, text, options, results: every target) and Std (console, environment, files, paths, processes, timing, tasks and TCP: targets with an OS), in .NET-style namespaces.
-- **Concurrency:** `Task` on an event loop per thread, with structured concurrency, cancellation that disposes `use` values, timers, TCP sockets, `Task.spawn` to run tasks on every core, and `Task.blocking` for C calls that block.
+- **Concurrency:** `Task` on an event loop per thread, compiled to state machines (a wait allocates nothing), with structured concurrency, cancellation that disposes `use` values, timers, TCP sockets, `Task.spawn` to run tasks on every core, and `Task.blocking` for C calls that block.
 - **Parallelism:** a work-stealing thread pool (`Parallel.both`, `for`, `reduce`, `Array.Parallel`), `Atomic`, `Mutex` and `Channel`; what crosses threads is checked at compile time (`Share`, `share<F>`), and only shared objects have atomic reference counts.
 - **SIMD:** portable vectors of every number type at 128, 256 and 512 bits (`f32x8`, `u8x16`, …) with masks and shuffles, `[<FastMath>]`, `--cpu`, `[<Target>]` and `[<Multiversion>]`, and x86-64 and aarch64 intrinsics; within 10% of C with intrinsics on both.
 - **C:** C import and export (static and shared libraries), C function pointers, Z# objects held by C as handles, and a panic hook for C hosts.
@@ -40,30 +40,18 @@ OCaml for the host benchmarks).
 - **Tooling:** projects with path and git dependencies, `zs test`/`fmt`/`doc`, gdb debug info (strings, records and unions as values), and an LSP, MCP server and Zed extension.
 
 **Known gaps** (in priority order, each with the phase or track that closes it):
-1. **Task speed (phase 9):** each `let!` allocates its continuation; state machines take that away.
-2. **Threads, smaller ones:**
+1. **Threads, smaller ones:**
    - Parallel work started by a thread outside the pool (a spawned task, `Task.blocking`'s helper) runs on that thread alone; only the thread that first used the pool forks onto it.
    - A pool job that waits on a channel holds its thread, so a channel between two jobs needs room for what one sends first.
    - Cancelling a task doesn't stop the tasks it spawned onto other threads (their results are dropped).
    - C code calling Z# callbacks or handles from other threads isn't checked.
-3. **C ABI (track M):** 32-bit ARM passes structs by value with the x86-64 rules.
-4. **Weak references and arenas on microcontrollers (track M):** they're hosted-only so far; the embedded runtime lacks their functions.
-5. **Debug info (track E):** lists and other boxed unions aren't shown as gdb values (plain unions are).
-6. **Editor (track E):** no signature help, rename or code actions; the formatter doesn't reflow long lines.
-7. **Targets (track T):** no macOS or Windows builds (and so no kqueue loop yet).
+2. **C ABI (track M):** 32-bit ARM passes structs by value with the x86-64 rules.
+3. **Weak references and arenas on microcontrollers (track M):** they're hosted-only so far; the embedded runtime lacks their functions.
+4. **Debug info (track E):** lists and other boxed unions aren't shown as gdb values (plain unions are).
+5. **Editor (track E):** no signature help, rename or code actions; the formatter doesn't reflow long lines.
+6. **Targets (track T):** no macOS or Windows builds (and so no kqueue loop yet).
 
 ## Next
-
-### Phase 9: optimizer II
-- **Scope:**
-  - **Task speed:** `task { }` as stackless state machines, with no allocation per `let!`.
-  - **Linking and profiling:** ThinLTO and PGO on the host. Measure again on microcontrollers, where bitcode linking of the runtime lost.
-  - **Backend:** the LLVM C API instead of textual IR.
-  - **Build speed:** the passes after type checking run over the whole program in every build (in parallel since phase 5, but most of a rebuild of a large program: 0.6 s of the 0.86 s a 2,600-line program of 30 modules takes); keeping their result per source file would make a rebuild follow the size of the change.
-  - **Object header:** one word: a 32-bit count, the tag and the number of fields to scan, as in Koka. A union cell with a tag has two words today, as do strings and arrays (a count and a length).
-- **Exit tests:**
-  - A Task microbenchmark makes zero allocations per await.
-  - The phase 5 suite reaches **1.2× of C** (`fib`: of C with `-ftrapv`).
 
 ### Phase 10: effect handlers (v3)
 - **Scope:**
@@ -465,3 +453,18 @@ debugging, before phase 6 builds computation expressions and `Task` on the final
 
   The same Z# source for both: a `f32x8` is one AVX register on x86-64 and two NEON registers on aarch64. The blur blurs between two images in both (allocating an image a pass cost Z# 2.5× before).
 - **Tests:** `tests/simd/basics.zs` (every operation, at 128, 256 and 512 bits), `attributes.zs`, `x86.zs`, `arm.zs` (built for aarch64 and run under qemu by `./test.sh`), `err_simd.zs`. The microcontroller suite runs as before.
+
+### Phase 9: optimizer II ✅
+- **Task state machines** (DESIGN §6): `task { }` is compiled in direct style. The parser turns `let!`, `do!` and `return!` into waits in the task's body, and the code generator makes the task's work an LLVM coroutine (switched resume). Its frame is allocated once, when the work starts, behind a closure header (the face); a wait passes the face as the continuation of the task it waits for, with its code set for that task's result type, so a wait allocates nothing, and one whose task is ready goes on at once. A task cancelled at a wait is destroyed there, dropping what it held. `task { }` needs no builder now (`option { }` and `result { }` keep theirs).
+- **The pool** (DESIGN §5.2): in a program without threads, objects up to 256 bytes come from free lists of 8-byte size classes, carved from 64 KB chunks: no system allocator call per object. Larger objects, threads, sanitizers and valgrind (`ZS_NO_POOL`) use `malloc`.
+- **A one-word header** (DESIGN §5.1): the 32-bit count, and on 64-bit targets the tag of a union's case and the pool's size class beside it. A union cell with a tag lost its tag word, and a pooled object needs no allocator word before it. On 32-bit chips the count is the word, and a tag keeps a word of its own, as before. A count past 2³¹ references turns negative and stays: the object is never freed. **Not done as planned:** Koka's number of fields to scan, which drops generated per type have no use for.
+- **ThinLTO** on the host: the modules and the runtime are compiled to bitcode and optimized together at the link (lld, with its cache), so the runtime's allocation functions inline into the program (`ZS_NO_LTO=1` turns it off). `binarytrees`: 0.43 s without it, 0.31 s with it.
+- **PGO:** `zs build --profile-generate`, a run, `llvm-profdata merge`, then `zs build --profile-use <file>`. A module's IR is named after its source file, so the profile finds its internal functions in the next build: named after a temporary file, it found none, and `binarytrees` got 9% slower. With the profile, `binarytrees` is 6% faster and `rbtree` 1–4% (`tests/pgo.sh`).
+- **The module cache:** each module's object is kept under a key of everything its code is made from (the compiler and settings, the types, its functions after lambda lifting with their borrowed parameters, the signatures of what it calls in other modules), so a rebuild runs reference counting, LLVM IR and clang only for the modules that changed. Borrowed parameters are found for the whole program first, in parallel rounds that walk each body once. With the published compiler, a one-function change rebuilds a 30-module program (2,617 lines) in 0.61 s (0.86 s before) and a 10-module one in 0.35 s (0.46 s); a one-line program builds in 0.17 s (0.20 s). First builds are slower with ThinLTO: 2.8 s and 1.4 s (2.5 s and 1.1 s).
+- **LLVM 23.1** in the dev container: LLVM's own release, in `/opt/llvm`.
+- **Microcontrollers, measured again:** linking the runtime as bitcode changes nothing at `-Os`, and at `-O2` costs 1.4–3.1 KB of flash for gains that aren't the runtime's, so it stays a separate object ([the report](docs/reports/microcontrollers.md)).
+- **Not done as planned: the LLVM C API backend.** DESIGN made it wait until compile time demands it, and it doesn't: on a program's 8 MB of IR, clang spends 2.6% of its time parsing the text (0.22 s of 8.4 s), compiling from bitcode instead saves 3%, and the module cache skips unchanged modules' IR altogether. LLVM's release also has no shared libLLVM to bind to.
+- **Exit tests:**
+  - **No allocation per await:** a task that waits 10 times and one that waits 200,000 times both make 7 allocations (`tests/task/awaits.zs`, half the waits on ready tasks, half suspending through the event loop).
+  - **The phase 5 suite within 1.2× of C** (best of 3, [the report](docs/reports/host.md)): `fib` 1.00× of C with `-ftrapv` (1.76× of plain C), `binarytrees` 0.26×, `nbody` 0.88×, `spectralnorm` 0.96× and `rbtree` 0.89×, with less memory than C on the tree programs (26 MB against 34 and 31).
+- **Tests:** `tests/task/awaits.zs`, `tests/pgo.sh`; `tests/cache.sh` checks the module cache, and `tests/arena.zs` gives the same counts with the pool and without it. The suite passes under valgrind and on aarch64 (qemu); the microcontroller suite gives the same counts and flash, except two ratios clang 23 moved.

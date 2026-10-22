@@ -728,6 +728,9 @@ let private cons a b = Call("::", [ Tuple [ a; b ] ])
 /// Parses a whole program, or (exprOnly) a single expression.
 let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (int * Decl) list * Expr option =
     let pos = ref 0
+    // inside a task { }'s body: blocks take let!, do!, return and return! (the body is code in
+    // direct style, compiled into a state machine)
+    let inTask = ref 0
     let peek () = toks[pos.Value].tok
     let peek2 () = toks[min (pos.Value + 1) (toks.Length - 1)].tok
     let line () = toks[pos.Value].line
@@ -1107,7 +1110,33 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
             // a one-line block is a statement too, so its errors have a position
             let si = pos.Value
             let ln = line ()
-            mark si (At(ln, assignment (expr ())))
+
+            match taskForm () with
+            | Some e -> mark si (At(ln, e))
+            | None -> mark si (At(ln, assignment (expr ())))
+
+    /// In a task's body: `return e` (the task's result), `return! t` and `do! t` (waiting for t);
+    /// None for anything else.
+    and taskForm () =
+        let bang () =
+            if isSym "!" && toks[pos.Value].adj then
+                advance ()
+                true
+            else
+                false
+
+        if inTask.Value = 0 then
+            None
+        else
+            match peek () with
+            | KId "return" ->
+                advance ()
+                if bang () then Some(Call("$await", [ block () ])) else Some(block ())
+            | KKw "do" when peek2 () = KSym "!" ->
+                advance ()
+                advance ()
+                Some(Call("$await", [ block () ]))
+            | _ -> None
 
     /// `lhs <- rhs` (statements, and single-line blocks such as `then x <- 1`)
     and assignment lhs =
@@ -1133,7 +1162,8 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         if peek () = KId "use" && (match peek2 () with
                                    | KId _ -> true
                                    | _ -> false) then
-            // use x = e: x is disposed (Dispose.dispose) after the rest of the block
+            // use x = e: x is disposed (Dispose.dispose) after the rest of the block; in a task,
+            // also if the task is cancelled before then
             advance ()
             let xi = pos.Value
             let x = ident ()
@@ -1145,7 +1175,35 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
 
             advance ()
             let after = seq ()
-            stmt(ln, Let(mark xi (PIdent(x, None)), None, v, Let(PIdent("$use", None), None, after, Seq(Call("Dispose.dispose", [ Var x ]), Var "$use"))))
+
+            if inTask.Value > 0 then
+                let id = sprintf "$use%d" xi
+                let onCancel = Call("Threading.Task.disposeOnCancel", [ Var "$cancel"; Var x ])
+                let finish = Call("Threading.Task.disposed", [ Var "$cancel"; Var id; Var x ])
+                stmt(ln, Let(mark xi (PIdent(x, None)), None, v, Let(PIdent(id, None), None, onCancel, Let(PIdent("$use", None), None, after, Seq(finish, Var "$use")))))
+            else
+                stmt(ln, Let(mark xi (PIdent(x, None)), None, v, Let(PIdent("$use", None), None, after, Seq(Call("Dispose.dispose", [ Var x ]), Var "$use"))))
+        elif inTask.Value > 0 && peek () = KKw "let" && peek2 () = KSym "!" then
+            // let! p = t: the rest once the task t has given its result
+            advance ()
+            advance ()
+            let p = pattern ()
+            expect (KSym "=") "'='"
+            let v = block ()
+            stmt(ln, Let(p, None, Call("$await", [ v ]), rest ln))
+        elif inTask.Value > 0 && (peek () = KId "return" || (peek () = KKw "do" && peek2 () = KSym "!")) then
+            // return e: the block's (and the task's) result, last; do! t: then the rest
+            let isReturn = peek () = KId "return"
+            let e = stmt (ln, (taskForm ()).Value)
+
+            if peek () = KNewline then
+                if isReturn then
+                    fail (line ()) "nothing can follow return in a task"
+
+                advance ()
+                Seq(e, seq ())
+            else
+                e
         elif peek () = KKw "let" then
             advance ()
             let isRec = peek () = KKw "rec"
@@ -1731,6 +1789,27 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
     and computation (ln: int) (w: string) =
         let builder = string (Char.ToUpper w[0]) + w.Substring 1 + ".Builder."
         advance () // {
+
+        if w = "task" then
+            // a task: its body in direct style, with let!, do! and return!, which the compiler
+            // makes a state machine of ($task, $await)
+            inTask.Value <- inTask.Value + 1
+
+            let body =
+                try
+                    if peek () = KIndent then
+                        advance ()
+                        let e = seq ()
+                        expect KDedent "end of block"
+                        e
+                    else
+                        block ()
+                finally
+                    inTask.Value <- inTask.Value - 1
+
+            expect (KSym "}") "'}'"
+            At(ln, Call("$task", [ Lambda([ PUnit, None ], body) ]))
+        else
 
         let body =
             if peek () = KIndent then

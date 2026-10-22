@@ -54,7 +54,7 @@ the root has 1 child
 
 ## Arenas
 
-**Bulk allocation:** `Arena.with (fun () -> …)` runs the function with an arena. What it allocates comes from the arena's large blocks, one malloc each, instead of one malloc per object, and the blocks are freed at once.
+**Bulk allocation:** `Arena.with (fun () -> …)` runs the function with an arena. What it allocates comes from the arena's large blocks, bumped through, and the blocks are freed at once, back to the system. (Without an arena, small objects come from the runtime's pool, which keeps the memory of those that die for the next ones.)
 - **When:** for many short-lived objects built together, such as a tree that is built, used and dropped.
 - **Safe:** an object made in the arena that lives on (returned, or stored in a `ref`) keeps the arena's blocks until it goes too, so nothing outlives its memory.
 

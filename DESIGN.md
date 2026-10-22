@@ -284,7 +284,7 @@ let loadUser id =
 ```
 
 A builder is a **module**, not an object, so it resolves statically and inlines: `w { }` uses
-`W.Builder` (`task { }` is `Task.Builder`, `option { }` `Option.Builder`). The parser rewrites
+`W.Builder` (`option { }` is `Option.Builder`, `result { }` `Result.Builder`). The parser rewrites
 the forms into calls of its functions:
 
 | Form | Rewrites to |
@@ -302,6 +302,7 @@ form, naming it (`counter { } needs Counter.Builder.bind, for let! and do!`). DE
 `Builder` trait check this, but a builder's functions are over a type constructor (`bind`
 takes an `M<'a>` for any `'a`), which Z#'s traits, over one type, can't name; the check per
 form says the same, where it matters.
+- **`task { }`** is the one the compiler makes itself (phase 9): its body stays in direct style, its waits (`let!`, `do!`, `return!`) marked, and it becomes a state machine (§6), so a wait allocates no continuation.
 - **Outside builders:** `use x = e` in plain code disposes `x` after the rest of its block.
 
 ## 5. Memory
@@ -313,7 +314,8 @@ form says the same, where it matters.
   - **Small unions:** these are a tag plus fields, e.g. `option<int>`, `result<int, f64>`, enums, and state machines with number fields. They never allocate.
   - **Enums:** a union whose cases have no fields is one byte, so an array of them is a byte per element. Other small unions have a 32-bit tag, which costs no space next to their fields and no extension on a 32-bit chip.
 - **Heap objects:** strings, arrays, `Buffer`, `ref`, closures, lists, and the other unions.
-  - **Header:** each object starts with a word-sized reference count. Strings and arrays add a word-sized length, closures their code and a pointer to what describes them (§9.1), and a union cell its 32-bit case tag, but only when the union has more than one case with fields. A list cell is the count, the head and the tail.
+  - **Header:** each object starts with one word: a 32-bit reference count, and on a 64-bit target beside it the case tag of a union cell (when the union has more than one case with fields) and where the object came from (the pool's size class, §5.2). On a 32-bit chip the count is the word, and a union cell with a tag has a word for it after. Strings and arrays add a word-sized length, closures their code and a pointer to what describes them (§9.1). A list cell is the header, the head and the tail.
+  - **The count's range:** past 2³¹ references, a count turns negative and stays so: the object is never freed, as Koka's sticky counts. (Koka's header also has the number of fields to scan, for a generic drop; Z#'s drops are generated per type.)
   - **Cases without fields** (`[]`, `Leaf`, `None`) are static cells, told apart from the others by their address, so a match tests a pointer and loads nothing.
   - **The `option` niche:** a union of `option`'s shape (one case without fields, one with a single field) whose field is a pointer, such as `option<string>` or `option<list<int>>`, is that pointer, or one static object for `None`. `Some s` allocates nothing.
   - **Static objects:** string literals, constant constructors and the cases without fields are static objects, with count 0, never freed.
@@ -351,6 +353,7 @@ before it. Mutable cells can: a `ref` or `Buffer` holding a value that points ba
 
 **Escape hatches:** `Arena.with (fun () -> …)` for bulk allocation that's freed at once, and raw
 `ptr<'a>` inside `unsafe` expressions (§11).
+- **The pool:** in a program without threads, objects up to 256 bytes come from the runtime's pool: a free list per 8-byte size class, carved from 64 KB chunks, with each object's class in its header (§5.1). Freeing one puts it on its list, and the next object of that size takes it, so allocating and freeing tiny objects calls no system allocator, and ThinLTO inlines both into the program (`binarytrees` takes 0.26× C's time, which calls `malloc` and `free` for each node, and 23% less memory: a node is 24 bytes, where `malloc` gives C's 32). Larger objects, programs with threads, and sanitizer and valgrind builds (`ZS_NO_POOL`) use `malloc`. The pool keeps its chunks until the program ends.
 - **Arenas:** what the function allocates comes from the arena's 64 KB blocks, bumped through, one malloc each. An object dying frees nothing, and the blocks go together when the arena's last object has: when the function returns, or later if something it made lives on. So an arena can't be misused into a dangling pointer, and needs no escape analysis or annotations. Objects in an arena are counted as any others; only their memory is the arena's.
 
 ### 5.3 What code without `unsafe` guarantees
@@ -399,10 +402,11 @@ let main () =
   0
 ```
 
-- **Implementation:** a library on top of §4 (`lib/std/Threading/Task.zs`): a task is its work, given its cancellation and a continuation, so each `let!` becomes a continuation closure.
-  - A loop that waits repeatedly settles into steady memory: each wait's closures are freed after it. The echo server holds 10,000 connections in 21 MB, flat for the hour of a soak test (`bench/echo/soak.sh`: 32.6 million round trips, none failed). The allocations per bind go in phase 9.
+- **Implementation:** a library (`lib/std/Threading/Task.zs`) and a compiled form for `task { }`. A task is its result when it has one at once (`Task.ret`), else its work, given its cancellation and a continuation.
+  - **`task { }` is a state machine** (phase 9): its work is an LLVM coroutine, whose frame is allocated once, when the work starts, behind a closure header (the face). A wait on a task whose result is ready goes on at once. Otherwise it passes the face as that task's continuation, with the face's code set for the result's type (it stores the result and resumes the coroutine), and suspends. So a wait allocates nothing: a task waiting 200,000 times allocates what one waiting 10 times does (`tests/task/awaits.zs`).
+  - **Cancellation:** a task cancelled while it waits is let go by what it waits on, which drops its continuation, the face; a wait that finds its task cancelled already suspends for good. Either way the face's last reference going destroys the coroutine at that wait, dropping what the task held there (reference counting records it at each wait), and the cancellation disposes its `use` values.
+  - A loop that waits repeatedly settles into steady memory. The echo server holds 10,000 connections in 21 MB, flat for the hour of a soak test (`bench/echo/soak.sh`: 32.6 million round trips, none failed).
   - **The stack:** a continuation called inside another (an await that completes at once) is counted, and the 64th goes through the event loop instead, so a run of them doesn't grow the stack.
-  - Later, `task { }` may be lowered to stackless state machines with no change to the source (phase 9).
 - **Structured concurrency:**
   - Child tasks can't outlive the scope that started them: `Task.both`, `all`, `race` and `timeout` wait for theirs, and `Task.scope` for those `Task.start` started in it (a `Promise` gives each one's result).
   - Cancellation flows down: a task's cancellation has its children's under it, and a race cancels its loser.
@@ -512,14 +516,16 @@ There are three levels, from free to manual.
      ─► Closure conversion, lambda lifting                                Lift
      ─► Perceus: ownership, borrowing, moves, reuse, drop specialization  Rc
      ─► LLVM IR (textual), a module per source file                       Codegen
-     ─► clang -O2/-Os per module, in parallel, cached ─► link             Driver
+     ─► clang -O2/-Os per module, in parallel, cached ─► ThinLTO link     Driver
 ```
 
 - **Implementation language:** F# (.NET 10). Self-hosting is optional and late (phase 11).
 - **Reading the optimizer:** `ZS_DUMP_CORE=name` prints the Core of the functions whose name contains `name`, after reference counting. `ZS_NO_DECIDE=1` compiles matches clause by clause, for comparison. `ZS_NO_CACHE=1` checks everything again instead of using the cache.
-- **Backend:** textual LLVM IR passed to clang, so reading the `.ll` file is the debugger (`--emit-llvm` writes the whole program as one module). A switch to the LLVM C API comes when compile time demands it (phase 9).
+- **Backend:** textual LLVM IR passed to clang, so reading the `.ll` file is the debugger (`--emit-llvm` writes the whole program as one module). A switch to the LLVM C API was to come when compile time demanded it, and phase 9 measured that it doesn't: parsing the text is 2.6% of clang's time on a program's 8 MB of IR, and the module cache skips the IR of unchanged modules.
+  - **Linking:** a host build compiles the modules and the runtime to bitcode and optimizes them together at the link (ThinLTO, lld, with its cache), so the runtime's allocation functions inline into the program. `--profile-generate` and `--profile-use <file>` add PGO; a module's IR names it after its source file, so a profile finds its internal functions in the next build. On microcontrollers the runtime stays a separate object: as bitcode it changed nothing at `-Os` and cost 1.4–3.1 KB of flash at `-O2` ([the report](docs/reports/microcontrollers.md)).
   - **A module per source file:** a host build of a program of several files makes one LLVM module per file, with a copy of each library function and generic instance it uses, so LLVM inlines within a module as it would in one big one; what needs one address in the program (top-level values, the static cells of cases without fields) is defined in each and merged by the linker. A single-file program, and `--emit-llvm`, `-g`, `--lib`, `--sanitize`, cross and microcontroller builds, are one module.
   - **Compiled once:** the modules and the runtime compile in parallel, and each object is kept in `~/.cache/zs/objects` under a hash of its IR. Every pass names what it makes per function, so a file whose functions didn't change gives byte-identical IR, and a rebuild compiles only the modules whose code changed.
+  - **The module cache** (phase 9): each module's object is also kept in `~/.cache/zs/modules` under a key of what its code is made from: the compiler and its settings, the program's types, the module's functions after lambda lifting (a structural hash) with their borrowed parameters, and the signatures of what it calls in other modules. A module whose key is there skips reference counting, LLVM IR and clang. The passes before, and the analysis of borrowed parameters, run over the whole program, since a module's code depends on them.
   - **Every core:** the passes that work per function (simplification, decision trees, lifting, reference counting) and code generation per module run in parallel.
 - **Runtimes:** `runtime/rt.c` on an OS, and `runtime/rt-embedded.c` on bare metal (§10). Each is one C file, linked statically.
 - **Generics across libraries:** libraries are **source**, as in Go and Zig.
@@ -553,8 +559,8 @@ and gives LLVM the facts it can't prove.
 | LLVM facts | `!range` on lengths, `inbounds nuw` element access, `noalias` allocator with `allockind`, `inlinehint` on higher-order functions, `optsize` at `-Os` | done |
 | Core | Inlining of small functions. Decision trees for matches: no value is tested twice, and a part reached on several paths is a join point (a block with phis) that reuse tokens pass through | done |
 | Core | Known constructors: a match on a value whose case is known (built there, bound by `let`, or taken by an enclosing case) takes its case at compile time, testing inside its fields directly. Case of case: a match on a match or an `if` moves into its branches, with join points for bodies several reach. A lambda bound by `let` and only called is applied in place. So an inlined `Option.map` or `Result.bind` and the match on its result build no `option` or `result` | done |
-| Representation | A one-word object header: a 32-bit count, the tag and the number of fields to scan, as in Koka | planned (phase 9) |
-| Linking | ThinLTO with the runtime, PGO | planned (phase 9). On microcontrollers, linking the runtime as bitcode was measured and made code bigger and slower |
+| Representation | A one-word object header: a 32-bit count, a union cell's tag and the pool's size class (64-bit targets). The pool: free lists of 8-byte size classes, inlined into the program | done (phase 9) |
+| Linking | ThinLTO with the runtime, PGO | done (phase 9) on the host. On microcontrollers the runtime stays separate: as bitcode it changes nothing at `-Os` and costs flash at `-O2` |
 
 **Performance contract:**
 - **Microcontrollers:** the suite in `bench/mcu` compares each program with its C version (same clang, same chip, under QEMU) [(results)](docs/reports/microcontrollers.md).
@@ -712,7 +718,7 @@ checker, so tools can't drift from the compiler.
 | 43 | `dyn Trait` | the value boxed with its type's impl table; made where a `dyn` is expected, with no conversion written; for traits whose methods take the value first and don't mention its type elsewhere (§3) | decided |
 | 44 | Arenas | `Arena.with (fun () -> …)`: what the function allocates comes from the arena's blocks, freed together when the arena's last object goes. An object that lives on keeps its blocks, so arenas are memory-safe without escape analysis (§5.2) | decided |
 | 45 | Z# objects in C | an opaque `zs_handle` with its own count (`zs_retain`, `zs_release`); a returned handle is the caller's, a passed one is lent for the call (§11) | decided |
-| 46 | Computation expressions' builders | a module `W.Builder` for `w { }`; the body goes to `delay`; a missing function is an error at the form that needs it, not a trait (§4) | decided |
+| 46 | Computation expressions' builders | a module `W.Builder` for `w { }`; the body goes to `delay`; a missing function is an error at the form that needs it, not a trait (§4). `task { }` is the compiler's own, a state machine (phase 9, §6) | decided |
 | 47 | Functions that cross threads | `share<F>`, checked where a function becomes one (its captures Share, through captured local functions), and after monomorphization for the top-level values it reaches; not a closure type per lambda (as in Rust) nor an effect on every function type (§7) | decided |
 | 48 | A thread's tasks | a loop per thread; `Task.spawn` runs a task on a loop thread to the end, and its result comes back; tasks don't move between threads, so what a task holds needn't be Share (§7) | decided |
 | 49 | SIMD functions | a built-in module per vector type (`F32x8.load`), not generic functions over vectors: HM can't relate a vector type to its element type without type families (§8) | decided |

@@ -11,7 +11,7 @@ export ZS_LEAKCHECK=1 ZS_BACKTRACE=0  # report leaked objects at exit; determini
 valgrind=0; target=""; tgt=(); qemu=()
 while [ $# -gt 0 ]; do
   case $1 in
-    --valgrind) valgrind=1 ;;
+    --valgrind) valgrind=1; export ZS_NO_POOL=1 ;; # objects from malloc, so valgrind sees each one
     --target) target=$2; tgt=(--target "$2"); qemu=("qemu-${2%%-*}"); shift ;;
   esac
   shift
@@ -74,10 +74,13 @@ else echo "FAIL tests/simd/arm.zs"; cat "$tmp/arm.log"; fail=1; fi
 # the checked library and modules, cached between builds: the same program from the cache
 if diff <(tests/cache.sh 2>&1) tests/cache.expected >"$tmp/cache.diff"; then echo "ok   tests/cache.sh (checked library, modules and compiled modules cached)"
 else echo "FAIL tests/cache.sh"; cat "$tmp/cache.diff"; fail=1; fi
+if diff <(tests/pgo.sh 2>&1) tests/pgo.expected >"$tmp/pgo.diff"; then echo "ok   tests/pgo.sh (profile-guided optimization finds its profile)"
+else echo "FAIL tests/pgo.sh"; cat "$tmp/pgo.diff"; fail=1; fi
 
 # host benchmarks against C: a Z# program needing more than 5% more instructions than in
-# bench/host/baseline.txt fails (bench/host/run.sh shows times; --update after an improvement)
-if bench/host/run.sh --check >"$tmp/bench.log" 2>&1; then echo "ok   bench/host (instruction counts within 5% of the baseline)"
+# bench/host/baseline.txt fails (bench/host/run.sh shows times; --update after an improvement).
+# Counted as programs are built by default: with the pool, also under --valgrind
+if env -u ZS_NO_POOL bench/host/run.sh --check >"$tmp/bench.log" 2>&1; then echo "ok   bench/host (instruction counts within 5% of the baseline)"
 else echo "FAIL bench/host"; cat "$tmp/bench.log"; fail=1; fi
 
 # zs test: passing and failing [<Test>] functions, each in its own process (exit 1: some fail)
