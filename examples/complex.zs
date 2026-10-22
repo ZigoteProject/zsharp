@@ -91,7 +91,7 @@ let script =
     "fly to mars" ]
 
 let main () =
-  let mutable accounts = Map.empty ()
+  let mutable accounts = Map.empty
   let mutable errors = []
   for line in script do
     let (next, err) = run accounts line

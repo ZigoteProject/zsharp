@@ -18,10 +18,10 @@ the changed map, updated in place when nothing else refers to the old one.
 ### `HashMap.empty`
 
 ```zsharp
-HashMap.empty : unit -> HashMap<'a, 'b>
+let empty : HashMap<'k, 'v>
 ```
 
-An empty hash map.
+An empty hash map (with no buckets yet: the first `add` makes them).
 
 ### `HashMap.tryFind`
 

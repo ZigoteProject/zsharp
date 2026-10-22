@@ -18,13 +18,16 @@ let readSource (path: string) =
     | true, text -> text
     | _ -> File.ReadAllText path
 
-let parseFile (path: string) =
+/// A file's tokens and declarations, from its text.
+let parseText (path: string) (text: string) =
     try
-        let toks = readSource path |> lex
+        let toks = lex text
         toks, parse toks
     with
     | CompileError(l, m) -> raise (CompileErrorAt(path, l, 0, m))
     | CompileErrorPos(l, c, m) -> raise (CompileErrorAt(path, l, c, m))
+
+let parseFile (path: string) = parseText path (readSource path)
 
 /// A zs.toml manifest:
 ///   [package]  name = "wc"  version = "0.1.0"  main = "src/main.zs" (the default)
@@ -312,6 +315,18 @@ let links = ResizeArray<string>()
 
 /// Replaces `import c` declarations with the header's declarations (headers are found next
 /// to the importing file, then on the system include path).
+/// Where a file's C imports are saved (for editors without clang, and as what its checked
+/// result depends on): the project's .zs-cache/cimport, or one next to the file.
+let private cimportDir (path: string) =
+    let dir = Path.GetDirectoryName(Path.GetFullPath path)
+
+    let root =
+        match findProject dir with
+        | Some m -> m.root
+        | None -> dir
+
+    Path.Combine(root, ".zs-cache", "cimport")
+
 let private expandImports (path: string) (decls: (int * Decl) list) =
     let dir = Path.GetDirectoryName(Path.GetFullPath path)
 
@@ -319,12 +334,7 @@ let private expandImports (path: string) (decls: (int * Decl) list) =
     |> List.collect (fun (ln, d) ->
         let imported header =
             try
-                let root =
-                    match findProject dir with
-                    | Some m -> m.root
-                    | None -> dir
-
-                CImport.importHeader header dir (Path.Combine(root, ".zs-cache", "cimport"))
+                CImport.importHeader header dir (cimportDir path)
             with CompileError(_, msg) ->
                 raise (CompileErrorAt(path, ln, 0, msg))
 
@@ -384,30 +394,12 @@ let libraryDir = runtimeFile "lib"
 /// (core/Collections/List.zs is Collections.List). Core needs no operating system, so every
 /// target has it; Std is for targets that have one.
 let private coreFiles =
-    [ "Option"; "Result"; "Math"; "Int"; "Runtime"; "Mmio"; "Ptr"; "Weak"; "Arena"; "Simd"; "Simd/X86"; "Simd/Arm"; "Collections/List"; "Collections/Array"; "Collections/Buffer"
+    [ "Option"; "Result"; "Math"; "Int"; "Runtime"; "Mmio"; "Ptr"; "Weak"; "Arena"; "Simd"; "Simd/X86"; "Simd/Arm"; "Collections/List"; "Collections/Span"; "Collections/Array"; "Collections/Buffer"; "Collections/Fixed"
       "Text/String"; "Text/Char"; "Collections/Map"; "Collections/Set"; "Collections/HashMap" ]
 
 let private stdFiles =
     [ "Console"; "Environment"; "Threading/Atomic"; "Threading/Mutex"; "Threading/Channel"; "Threading/Task"; "Threading/Parallel"
       "Collections/Array/Parallel"; "IO/File"; "IO/Directory"; "IO/Path"; "Diagnostics/Process"; "Diagnostics/Stopwatch"; "Net/Tcp" ]
-
-/// The library rooted at `root` for one check: (path, module name, declarations), the prelude
-/// first (its names are global), then Core, then (when hosted) Std.
-let libraryModules (root: string) (hosted: bool) : (string * string option * (int * Decl) list) list =
-    let load (file: string) =
-        let path = Path.Combine(root, file)
-        let _, decls = parseFile path
-
-        let modName =
-            match decls with
-            | (_, ModuleHeader h) :: _ -> Some h
-            | _ -> None
-
-        path, modName, decls
-
-    load "prelude.zs"
-    :: [ for f in coreFiles -> load ("core/" + f + ".zs") ]
-    @ (if hosted then [ for f in stdFiles -> load ("std/" + f + ".zs") ] else [])
 
 /// The library a file belongs to (the installed one, or lib/ in a checkout of zs): the lib/
 /// directory above it that has prelude.zs and core/.
@@ -422,12 +414,169 @@ let libraryRootOf (file: string) : string option =
 /// Whether a file is part of a library rather than a program.
 let isLibrary (file: string) = (libraryRootOf file).IsSome
 
+/// Where zs caches what it built: the user's cache directory (nothing in it depends on the
+/// project), with checked modules in checked/ and compiled modules in objects/ and modules/.
+let private cacheRoot () =
+    match Environment.GetEnvironmentVariable "XDG_CACHE_HOME" with
+    | null
+    | "" -> Path.Combine(Environment.GetFolderPath Environment.SpecialFolder.UserProfile, ".cache", "zs")
+    | dir -> Path.Combine(dir, "zs")
+
+/// The compiler, as part of every key: a result holds only for the compiler that made it.
+let private compilerId = lazy (Reflection.Assembly.GetExecutingAssembly().ManifestModule.ModuleVersionId.ToString())
+
+let private hashOf (parts: string list) =
+    let bytes = Text.Encoding.UTF8.GetBytes(String.concat "\u0000" parts)
+    Convert.ToHexString(Security.Cryptography.SHA256.HashData bytes).Substring(0, 32).ToLowerInvariant()
+
+let private hashBytes (b: byte[]) =
+    Convert.ToHexString(Security.Cryptography.SHA256.HashData b).Substring(0, 32).ToLowerInvariant()
+
+module private Array =
+    /// The elements after the first n (all of them dropped when there are fewer).
+    let skip' n (a: 'a[]) = if a.Length <= n then [||] else Array.skip n a
+
+/// Keeps the n most recently used files of a cache directory with this extension.
+let private evict (dir: string) (pattern: string) (n: int) =
+    if Directory.Exists dir then
+        for old in DirectoryInfo(dir).GetFiles pattern |> Array.sortByDescending (fun f -> f.LastWriteTimeUtc) |> Array.skip' n do
+            try
+                old.Delete()
+            with _ ->
+                ()
+
+/// Whether builds use the cache (ZS_NO_CACHE=1 turns it off).
+let private cacheOn () = isNull (Environment.GetEnvironmentVariable "ZS_NO_CACHE")
+
+/// What a build needs of a source file before checking it, kept under a key of its text, so an
+/// unchanged file isn't parsed: its `module` header, the modules it may use (`open M`, `M.x`),
+/// its explicit impls (trait, type as written), and whether it imports C (such a file is always
+/// parsed: its declarations come from clang, and its [<Link>]s are the build's).
+type private Summary =
+    { header: string option
+      uses: string list
+      impls: (string * string) list
+      importsC: bool }
+
+let private summaries = Dictionary<string, Summary>()
+
+let private summaryOf (toks: Token[]) (decls: (int * Decl) list) : Summary =
+    let rec qualified (toks: Token[]) =
+        [ for t in toks do
+              match t.tok with
+              | KId s when s.Contains "." && Char.IsUpper s[0] -> yield s.Substring(0, s.IndexOf '.')
+              | KInterp parts ->
+                  for isExpr, text, _ in parts do
+                      if isExpr then
+                          yield! qualified (lex text)
+              | _ -> () ]
+
+    { header =
+        match decls with
+        | (_, ModuleHeader h) :: _ -> Some h
+        | _ -> None
+      uses = [ for _, d in decls do match d with Open m -> yield m | _ -> () ] @ qualified toks |> List.distinct
+      impls = [ for _, d in decls do match d with Impl(tr, STName(n, _), _) -> yield tr, n | _ -> () ]
+      importsC = decls |> List.exists (fun (_, d) -> match d with ImportC _ | Attrs(_, ImportC _) -> true | _ -> false) }
+
+/// A source file: its text, its summary (from the cache when the text is unchanged), and its
+/// tokens and declarations, parsed when needed.
+let private source (path: string) =
+    let text = readSource path
+    let parsed = lazy (parseText path text)
+    let key = hashOf [ compilerId.Value; "parsed"; Path.GetFullPath path; text ]
+    let file = Path.Combine(cacheRoot (), "parsed", key)
+
+    let summary =
+        match summaries.TryGetValue key with
+        | true, s -> s
+        | _ ->
+            let fromDisk =
+                try
+                    if cacheOn () && File.Exists file then
+                        let lines = File.ReadAllLines file
+                        let field (tag: string) = [ for l in lines do if l.StartsWith(tag + " ") then yield l.Substring(tag.Length + 1) ]
+
+                        Some
+                            { header = List.tryHead (field "header")
+                              uses = field "use"
+                              impls = field "impl" |> List.map (fun i -> let p = i.Split ' ' in p[0], p[1])
+                              importsC = Array.contains "importsC" lines }
+                    else
+                        None
+                with _ ->
+                    None
+
+            let s =
+                match fromDisk with
+                | Some s -> s
+                | None ->
+                    let s = summaryOf (fst parsed.Value) (snd parsed.Value)
+
+                    if cacheOn () then
+                        try
+                            Directory.CreateDirectory(Path.GetDirectoryName file) |> ignore
+                            let tmp = file + "." + Guid.NewGuid().ToString "N"
+
+                            File.WriteAllLines(
+                                tmp,
+                                (s.header |> Option.map ((+) "header ") |> Option.toList)
+                                @ (s.uses |> List.map ((+) "use "))
+                                @ (s.impls |> List.map (fun (t, n) -> sprintf "impl %s %s" t n))
+                                @ (if s.importsC then [ "importsC" ] else [])
+                            )
+
+                            File.Move(tmp, file, true)
+                            evict (Path.GetDirectoryName file) "*" 4096
+                        with _ ->
+                            ()
+
+                    s
+
+            summaries[key] <- s
+            s
+
+    text, summary, parsed
+
+/// A module of a check: its file (as the user knows it), module name (None: its names are
+/// global, the prelude's and the main file's), text, explicit impls, declarations (parsed when
+/// needed), the files of the modules it uses, and what its result depends on besides its text
+/// (the C declarations it imports).
+type Loaded =
+    { path: string
+      modName: string option
+      text: string
+      impls: (string * string) list
+      decls: Lazy<(int * Decl) list>
+      uses: string list
+      imported: string }
+
+/// The library rooted at `root` for one check, the prelude first (its names are global), then
+/// Core, then (when hosted) Std.
+let libraryModules (root: string) (hosted: bool) : Loaded list =
+    let load (file: string) =
+        let path = Path.Combine(root, file)
+        let text, summary, parsed = source path
+
+        { path = path
+          modName = summary.header
+          text = text
+          impls = summary.impls
+          decls = lazy (snd parsed.Value)
+          uses = []
+          imported = "" }
+
+    load "prelude.zs"
+    :: [ for f in coreFiles -> load ("core/" + f + ".zs") ]
+    @ (if hosted then [ for f in stdFiles -> load ("std/" + f + ".zs") ] else [])
+
 /// The main file and the modules it uses (`open M` or `M.name`, found as M.zs or m.zs next to
 /// it or in a dependency), dependencies first. Each module is named after its file unless it
 /// has a `module` header.
-let loadModules (mainPath: string) : (string * string option * (int * Decl) list) list =
+let loadModules (mainPath: string) : Loaded list =
     let dirs = moduleDirs mainPath
-    let order = ResizeArray<string * string option * (int * Decl) list>()
+    let order = ResizeArray<Loaded>()
+    let shown = Dictionary<string, string>() // a module's file: the path it was loaded as
     let finished = Dictionary<string, bool>() // module -> fully loaded?
     let display (p: string) = Path.GetRelativePath(Environment.CurrentDirectory, p)
 
@@ -437,37 +586,43 @@ let loadModules (mainPath: string) : (string * string option * (int * Decl) list
         |> List.tryFind (fun f -> File.Exists f || overlay.ContainsKey f)
 
     let rec visit (path: string) (modName: string option) (stack: string list) =
-        let toks, decls =
+        let text, summary, parsed =
             try
-                parseFile path
+                source path
             with CompileErrorAt(file, l, c, m) when file = path ->
                 raise (CompileErrorAt(display path, l, c, m)) // the path as the user knows it, like other errors
 
-        let decls = expandImports path decls
+        let decls =
+            lazy
+                (try
+                    expandImports path (snd parsed.Value)
+                 with CompileErrorAt(file, l, c, m) when file = path ->
+                     raise (CompileErrorAt(display path, l, c, m)))
+
+        // C imports now: their [<Link>]s are the build's, and what clang gave is what the
+        // module's result depends on
+        let imported =
+            if summary.importsC then
+                decls.Force() |> ignore
+
+                [ for _, d in snd parsed.Value do
+                      match d with
+                      | ImportC h
+                      | Attrs(_, ImportC h) ->
+                          let saved = CImport.cacheFile h (cimportDir path)
+                          yield h + "\n" + (if File.Exists saved then File.ReadAllText saved else "")
+                      | _ -> () ]
+                |> String.concat "\n"
+            else
+                ""
 
         let modName =
-            match decls, modName with
-            | (_, ModuleHeader h) :: _, Some _ -> Some h
+            match summary.header, modName with
+            | Some h, Some _ -> Some h
             | _ -> modName
 
         let deps =
-            [ for _, d in decls do
-                  match d with
-                  | Open m -> yield m
-                  | _ -> ()
-
-              let rec qualified (toks: Token[]) =
-                  [ for t in toks do
-                        match t.tok with
-                        | KId s when s.Contains "." && Char.IsUpper s[0] -> yield s.Substring(0, s.IndexOf '.')
-                        | KInterp parts ->
-                            for isExpr, text, _ in parts do
-                                if isExpr then
-                                    yield! qualified (lex text)
-                        | _ -> () ]
-
-              yield! qualified toks ]
-            |> List.distinct
+            summary.uses
             |> List.filter (fun m ->
                 match fileOf m with
                 | Some f -> Some m <> modName && f <> path && f <> Path.GetFullPath mainPath
@@ -483,156 +638,23 @@ let loadModules (mainPath: string) : (string * string option * (int * Decl) list
                 visit (fileOf m).Value (Some m) (m :: stack)
                 finished[m] <- true
 
-        order.Add(display path, modName, decls)
+        shown[path] <- display path
+
+        order.Add
+            { path = display path
+              modName = modName
+              text = text
+              impls = summary.impls
+              decls = decls
+              uses = deps |> List.map (fun m -> shown[(fileOf m).Value])
+              imported = imported }
 
     visit (Path.GetFullPath mainPath) None [ Path.GetFileNameWithoutExtension mainPath ]
     // the main file keeps the path the user gave
     let last = order.Count - 1
-    let _, m, ds = order[last]
-    order[last] <- (mainPath, m, ds)
+    order[last] <- { order[last] with path = mainPath }
     List.ofSeq order
 
-// ---- the checked library, cached between builds (libraries are source, DESIGN §9): the type
-// checker's state after the library, and after the main file's other modules, saved under a
-// hash of the compiler and of those modules' sources. A build whose library and other modules
-// haven't changed starts there and checks only the main file.
-
-/// Where zs caches what it built: the user's cache directory (nothing in it depends on the
-/// project), with checked states in checked/ and compiled modules in objects/.
-let private cacheRoot () =
-    match Environment.GetEnvironmentVariable "XDG_CACHE_HOME" with
-    | null
-    | "" -> Path.Combine(Environment.GetFolderPath Environment.SpecialFolder.UserProfile, ".cache", "zs")
-    | dir -> Path.Combine(dir, "zs")
-
-let private cacheDir () = Path.Combine(cacheRoot (), "checked")
-
-/// The compiler, as part of every key: a state holds only for the compiler that made it.
-let private compilerId = lazy (Reflection.Assembly.GetExecutingAssembly().ManifestModule.ModuleVersionId.ToString())
-
-let private hashOf (parts: string list) =
-    let bytes = Text.Encoding.UTF8.GetBytes(String.concat "\u0000" parts)
-    Convert.ToHexString(Security.Cryptography.SHA256.HashData bytes).Substring(0, 32).ToLowerInvariant()
-
-module private Array =
-    /// The elements after the first n (all of them dropped when there are fewer).
-    let skip' n (a: 'a[]) = if a.Length <= n then [||] else Array.skip n a
-
-/// Keeps the n most recently used files of a cache directory with this extension.
-let private evict (dir: string) (pattern: string) (n: int) =
-    for old in DirectoryInfo(dir).GetFiles pattern |> Array.sortByDescending (fun f -> f.LastWriteTimeUtc) |> Array.skip' n do
-        try
-            old.Delete()
-        with _ ->
-            ()
-
-let private loadState (key: string) : Typer.State option =
-    let file = Path.Combine(cacheDir (), key + ".bin")
-
-    if not (File.Exists file) then
-        None
-    else
-        try
-            use s = new MemoryStream(File.ReadAllBytes file)
-            use r = new BinaryReader(s, Text.Encoding.UTF8, true)
-            // the key before and after: a file that isn't whole is never used
-            if r.ReadString() <> key then failwith "another state"
-            let st = Snapshot.read s (fun o p -> positions[o] <- p)
-            if r.ReadString() <> key then failwith "a broken state"
-            File.SetLastWriteTimeUtc(file, DateTime.UtcNow) // recently used: kept longest
-            Some st
-        with _ ->
-            None // checked again, and saved anew
-
-let private saveState (key: string) (st: Typer.State) =
-    try
-        let dir = cacheDir ()
-        Directory.CreateDirectory dir |> ignore
-        let tmp = Path.Combine(dir, sprintf "%s.%s.tmp" key (Guid.NewGuid().ToString "N"))
-
-        do
-            use s = new MemoryStream()
-            use w = new BinaryWriter(s, Text.Encoding.UTF8, true)
-            w.Write key
-
-            Snapshot.write s st (fun o ->
-                match positions.TryGetValue o with
-                | true, p -> Some p
-                | _ -> None)
-
-            w.Write key
-            w.Flush()
-            File.WriteAllBytes(tmp, s.ToArray())
-
-        // whole or not at all, for builds running at the same time
-        File.Move(tmp, Path.Combine(dir, key + ".bin"), true)
-
-        // the most recently used states are kept (each compiler and set of sources has its own)
-        evict dir "*.bin" 64
-    with _ ->
-        () // not cached: the next build checks everything again
-
-/// Whether builds use the cache (ZS_NO_CACHE=1 turns it off).
-let private cacheOn () = isNull (Environment.GetEnvironmentVariable "ZS_NO_CACHE")
-
-/// Parses and type-checks; with collect, every declaration's error is in the result. With
-/// cached, the checked library and the main file's other modules come from the cache when
-/// their sources haven't changed; their hovers aren't kept, so it's for builds, not editors.
-let checkWith (cached: bool) (mainPath: string) (requireMain: bool) (collect: bool) : Core.Program =
-    positions.Clear()
-    links.Clear()
-    Typer.unavailable.Clear()
-
-    match libraryRootOf mainPath with
-    | Some root ->
-        // a file of the library itself (an editor opening it): that library, checked on its
-        // own rather than as a program that would define everything a second time
-        Typer.check false collect (libraryModules root true)
-    | None ->
-        // a microcontroller has no operating system, so no Std
-        let hosted = mcu.IsNone
-
-        if not hosted then
-            for f in stdFiles do
-                Typer.unavailable.Add(f.Replace('/', '.')) |> ignore
-
-        let program = loadModules mainPath
-
-        if not (cached && cacheOn ()) then
-            Typer.check requireMain collect (libraryModules libraryDir hosted @ program)
-        else
-            let libFiles =
-                "prelude.zs"
-                :: [ for f in coreFiles -> "core/" + f + ".zs" ]
-                @ (if hosted then [ for f in stdFiles -> "std/" + f + ".zs" ] else [])
-                |> List.map (fun f -> Path.Combine(libraryDir, f))
-
-            let deps = List.take (program.Length - 1) program
-            let libKey = hashOf (compilerId.Value :: [ for f in libFiles -> f + "\n" + readSource f ])
-            let depKey = hashOf (libKey :: [ for path, m, _ in deps -> path + "\n" + defaultArg m "" + "\n" + readSource path ])
-
-            let full () =
-                let lib = libraryModules libraryDir hosted
-
-                Typer.checkFrom requireMain collect None (fun i st ->
-                    if i = lib.Length - 1 then saveState libKey st
-                    elif i = lib.Length + deps.Length - 1 then saveState depKey st) (lib @ program)
-
-            try
-                match (if deps.IsEmpty then None else loadState depKey) with
-                | Some st -> Typer.checkFrom requireMain collect (Some st) (fun _ _ -> ()) [ List.last program ]
-                | None ->
-                    match loadState libKey with
-                    | Some st -> Typer.checkFrom requireMain collect (Some st) (fun i st -> if i = deps.Length - 1 then saveState depKey st) program
-                    | None -> full ()
-            with Typer.StaleSnapshot _ ->
-                full () // the program's own positions stay; the snapshot's are never reached again
-
-/// Parses and type-checks everything (with every hover, for editors and tools).
-let check (mainPath: string) (requireMain: bool) (collect: bool) : Core.Program = checkWith false mainPath requireMain collect
-
-/// Source files -> typed Core -> monomorphic -> closure-converted -> RC-annotated -> LLVM IR
-/// (and a C header for [<Export>] functions). A library doesn't need `main`.
 /// Time spent in each compiler phase of the last build (zs build --time).
 let timings = ResizeArray<string * float>()
 
@@ -641,6 +663,289 @@ let private timed (phase: string) (f: unit -> 'a) : 'a =
     let r = f ()
     timings.Add(phase, sw.Elapsed.TotalMilliseconds)
     r
+
+// ---- checked modules, cached between builds (libraries are source, DESIGN §9): each module's
+// result (what it adds to the type checker's state), kept under a key of its source and of what
+// it sees of the modules before it: the interfaces of those it uses (all of the library's), and
+// of the others what's seen without naming them (impls, members of others' types). A build
+// checks only the modules whose key it hasn't seen, and writes the others' results back into
+// the checker's state. The CLI, zs lsp, zs mcp and zs doc share it: in memory in a running
+// server, and in the user's cache directory between runs.
+
+/// A module's checked result: its key; the hashes of what the modules after it see of it, all
+/// of its interface (iface) or what's seen without naming it (global'); and its parts.
+type CheckedModule =
+    { key: string
+      iface: string
+      global': string
+      parts: Snapshot.Parts }
+
+/// The results this process has had, by key, newest last (a server's: what typing changes is
+/// one module's, the others stay); kept at most 512.
+let private inMemory = Dictionary<string, CheckedModule>()
+let private inMemoryOrder = Queue<string>()
+
+let private remember (m: CheckedModule) =
+    if not (inMemory.ContainsKey m.key) then
+        inMemory[m.key] <- m
+        inMemoryOrder.Enqueue m.key
+
+        while inMemoryOrder.Count > 512 do
+            inMemory.Remove(inMemoryOrder.Dequeue()) |> ignore
+
+let private checkedDir () = Path.Combine(cacheRoot (), "checked")
+
+/// A module's result under its key: in memory, or from the cache directory.
+let private loadChecked (key: string) : CheckedModule option =
+    match inMemory.TryGetValue key with
+    | true, m -> Some m
+    | _ ->
+        let file = Path.Combine(checkedDir (), key + ".bin")
+
+        if not (File.Exists file) then
+            None
+        else
+            try
+                use s = new MemoryStream(File.ReadAllBytes file)
+                use r = new BinaryReader(s, Text.Encoding.UTF8, true)
+                // the key before and after: a file that isn't whole is never used
+                if r.ReadString() <> key then failwith "another module"
+                let iface = r.ReadString()
+                let global' = r.ReadString()
+                let part () = r.ReadBytes(r.ReadInt32())
+                let ifaceBytes = part ()
+                let funs = part ()
+                let hovers = part ()
+                if r.ReadString() <> key then failwith "a broken file"
+                File.SetLastWriteTimeUtc(file, DateTime.UtcNow) // recently used: kept longest
+
+                let m =
+                    { key = key
+                      iface = iface
+                      global' = global'
+                      parts =
+                        { iface = ifaceBytes
+                          global' = [||]
+                          funs = funs
+                          hovers = hovers } }
+
+                remember m
+                Some m
+            with _ ->
+                None // checked again, and saved anew
+
+/// Keeps a module's result: in memory, and in the cache directory (whole or not at all).
+let private saveChecked (m: CheckedModule) =
+    remember m
+
+    try
+        let dir = checkedDir ()
+        Directory.CreateDirectory dir |> ignore
+        let tmp = Path.Combine(dir, sprintf "%s.%s.tmp" m.key (Guid.NewGuid().ToString "N"))
+
+        do
+            use s = new FileStream(tmp, FileMode.CreateNew)
+            use w = new BinaryWriter(s, Text.Encoding.UTF8, true)
+            w.Write m.key
+            w.Write m.iface
+            w.Write m.global'
+
+            for part in [ m.parts.iface; m.parts.funs; m.parts.hovers ] do
+                w.Write part.Length
+                w.Write part
+
+            w.Write m.key
+
+        // for builds running at the same time
+        File.Move(tmp, Path.Combine(dir, m.key + ".bin"), true)
+        // the most recently used are kept (each compiler and version of a module has its own)
+        evict dir "*.bin" 4096
+    with _ ->
+        () // not cached: the next build checks it again
+
+/// A module of a check, with what it sees of each module before it (by index): all its
+/// interface, or only what's seen without naming it.
+type private ToCheck =
+    { m: Loaded
+      sees: int -> bool
+      library: bool }
+
+/// A module as a check left it: its file and key, the functions it defines (their names with
+/// how many type variables each is generic over, and their checked Core, read when needed), and
+/// the modules it sees all of (by index).
+type private CheckedUnit =
+    { file: string
+      key: string
+      library: bool
+      names: (string * int) list
+      funs: Lazy<Core.FunDef list>
+      sees: int -> bool }
+
+/// Checks the modules in order (the library's, then the program's), each from the cache when
+/// its key is there; the program has the hovers when asked for (editors, zs doc), and the
+/// functions of the modules checked now (the others' are each unit's).
+let private checkModules (requireMain: bool) (collect: bool) (withHovers: bool) (modules: ToCheck list) : Core.Program * CheckedUnit[] =
+    let modules = Array.ofList modules
+    let library, program = modules |> Array.partition (fun m -> m.library)
+    let names (ms: ToCheck[]) = ms |> Seq.choose (fun m -> m.m.modName) |> List.ofSeq
+    let impls (ms: ToCheck[]) = ms |> Seq.collect (fun m -> m.m.impls) |> List.ofSeq
+    let s = Typer.session requireMain collect (names library) (impls library)
+    // what every program module's key has: the program's modules and explicit impls
+    let programKey = hashOf ("program" :: names program @ (impls program |> List.map (fun (t, n) -> t + " " + n)))
+    let use' = cacheOn ()
+    let results = ResizeArray<CheckedModule>()
+    let units = ResizeArray<CheckedUnit>()
+    let hovers = ResizeArray<Lazy<Core.Hover list>>()
+    let mutable ok = true // no errors so far: results are kept
+    let fresh = ResizeArray<ToCheck>()
+    let restoring = Stopwatch()
+    let checking = Stopwatch()
+    let place (o: obj) (p: int * int * int) = positions[o] <- p
+
+    let position (o: obj) =
+        match positions.TryGetValue o with
+        | true, p -> Some p
+        | _ -> None
+
+    for i, t in Array.indexed modules do
+        let m = t.m
+
+        if i > 0 && not t.library && modules[i - 1].library then
+            s.addProgram (names program) (impls program)
+
+        let key =
+            hashOf (
+                [ compilerId.Value
+                  "check"
+                  m.path
+                  defaultArg m.modName ""
+                  m.text
+                  m.imported
+                  (if t.library then "library" else programKey) ]
+                @ [ for j in 0 .. i - 1 -> if t.sees j then "I" + results[j].iface else "G" + results[j].global' ]
+            )
+
+        match (if use' && ok then loadChecked key else None) with
+        | Some c ->
+            restoring.Start()
+            let names = Snapshot.readModule c.parts.iface s.state place
+            restoring.Stop()
+            results.Add c
+
+            units.Add
+                { file = m.path
+                  key = key
+                  library = t.library
+                  names = names
+                  funs = lazy (Snapshot.readFuns c.parts.funs)
+                  sees = t.sees }
+
+            hovers.Add(lazy (Snapshot.readHovers c.parts.hovers))
+        | None ->
+            fresh.Add t
+            checking.Start()
+            let clean = s.check m.path m.modName m.decls.Value
+            ok <- ok && clean
+            let marks = s.marks ()
+
+            let c =
+                try
+                    let parts = Snapshot.writeModule s.state marks (Seq.skip marks.hovers s.hovers) position
+
+                    { key = key
+                      iface = hashBytes parts.iface
+                      global' = hashBytes parts.global'
+                      parts = parts }
+                with Snapshot.Unwritable _ ->
+                    // not kept, nor anything after it (hashes no key can match)
+                    ok <- false
+                    let never = Guid.NewGuid().ToString "N"
+
+                    { key = key
+                      iface = never
+                      global' = never
+                      parts = { iface = [||]; global' = [||]; funs = [||]; hovers = [||] } }
+
+            if use' && ok then
+                saveChecked c
+
+            checking.Stop()
+            results.Add c
+            let mine = [ for k in marks.funs .. s.state.funs.Count - 1 -> s.state.funs[k] ]
+            let theirHovers = [ for k in marks.hovers .. s.hovers.Count - 1 -> s.hovers[k] ]
+
+            units.Add
+                { file = m.path
+                  key = key
+                  library = t.library
+                  names = mine |> List.map (fun f -> f.name, f.ngen)
+                  funs = lazy mine
+                  sees = t.sees }
+
+            hovers.Add(lazy theirHovers)
+
+    // which of the program's modules were checked (by file name), so a test can tell
+    let names = fresh |> Seq.filter (fun t -> not t.library) |> Seq.map (fun t -> Path.GetFileName t.m.path) |> List.ofSeq
+    timings.Add("restore", restoring.Elapsed.TotalMilliseconds)
+    timings.Add(sprintf "check (%d of %d; program: %s)" fresh.Count modules.Length (if names.IsEmpty then "none" else String.concat " " names), checking.Elapsed.TotalMilliseconds)
+    let prog = s.finish ()
+    { prog with hovers = if withHovers then hovers |> Seq.collect (fun h -> h.Value) |> List.ofSeq else [] }, units.ToArray()
+
+/// Parses and type-checks the main file's program, the library first; with collect, every
+/// declaration's error is in the result; with withHovers, every module's hovers (editors).
+let private checkUnits (withHovers: bool) (mainPath: string) (requireMain: bool) (collect: bool) : Core.Program * CheckedUnit[] =
+    positions.Clear()
+    links.Clear()
+    Typer.unavailable.Clear()
+
+    // each library module sees every one before it
+    let library (root: string) (hosted: bool) =
+        timed "parse library" (fun () -> libraryModules root hosted)
+        |> List.map (fun m ->
+            { m = m
+              sees = fun _ -> true
+              library = true })
+
+    match libraryRootOf mainPath with
+    | Some root ->
+        // a file of the library itself (an editor opening it): that library, checked on its
+        // own rather than as a program that would define everything a second time
+        checkModules false collect withHovers (library root true)
+    | None ->
+        // a microcontroller has no operating system, so no Std
+        let hosted = mcu.IsNone
+
+        if not hosted then
+            for f in stdFiles do
+                Typer.unavailable.Add(f.Replace('/', '.')) |> ignore
+
+        let lib = library libraryDir hosted
+        let program = timed "parse program" (fun () -> loadModules mainPath)
+        let index = program |> List.mapi (fun i m -> m.path, lib.Length + i) |> dict
+        // each program module sees the library and the modules it uses, directly or not
+        let seen = Array.create program.Length Set.empty<int>
+
+        for i, m in List.indexed program do
+            seen[i] <- m.uses |> List.fold (fun acc u -> let j = index[u] in Set.add j (Set.union acc seen[j - lib.Length])) Set.empty
+
+        let mine =
+            program
+            |> List.mapi (fun i m ->
+                { m = m
+                  sees = fun j -> j < lib.Length || seen[i].Contains j
+                  library = false })
+
+        checkModules requireMain collect withHovers (lib @ mine)
+
+/// Parses and type-checks the main file's program, the library first; with collect, every
+/// declaration's error is in the result; with withHovers, every module's hovers (editors).
+let checkProgram (withHovers: bool) (mainPath: string) (requireMain: bool) (collect: bool) : Core.Program =
+    let prog, units = checkUnits withHovers mainPath requireMain collect
+    { prog with funs = units |> Seq.collect (fun u -> u.funs.Value) |> List.ofSeq }
+
+/// Parses and type-checks everything, with every hover (editors and tools).
+let check (mainPath: string) (requireMain: bool) (collect: bool) : Core.Program = checkProgram true mainPath requireMain collect
+
 
 /// zs test: build the [<Test>] functions with a test dispatcher in place of `main`.
 let mutable testBuild = false
@@ -657,7 +962,7 @@ let mutable threadSanitizer = false
 /// counting takes, with its entries (functions called from outside, which own their parameters).
 let private lift (mainPath: string) (isLib: bool) =
     timings.Clear()
-    let prog = timed "parse + check" (fun () -> checkWith true mainPath (not isLib) true)
+    let prog = timed "parse + check (all)" (fun () -> checkProgram false mainPath (not isLib) true)
 
     let prog =
         if testBuild then { prog with funs = prog.funs |> List.filter (fun f -> f.name <> "main") } else prog
@@ -732,17 +1037,41 @@ let private usesPrim (prims: Set<string>) (funs: Mono.MFun list) =
 let private checkedHeap = usesPrim (set [ "weak.new"; "arena.with" ])
 
 /// Whether the program runs code on other threads (Codegen.threaded): the thread pool, a task
-/// spawned or on Task.blocking's helper thread, or values threads share.
-let private threaded =
-    usesPrim (
-        set
-            [ "par.fork"
-              "Loop.blocking"
-              "Loop.spawn"
-              "atomic.make"
-              "mutex.make"
-              "chan.make" ]
-    )
+/// spawned or on Task.blocking's helper thread, values threads share, or a callback C may call
+/// on any thread (callback<share<F>>).
+let private threaded (externs: Dictionary<string, Core.ExternSig>) (funs: Mono.MFun list) =
+    let prims = set [ "par.fork"; "Loop.blocking"; "Loop.spawn"; "atomic.make"; "mutex.make"; "chan.make" ]
+
+    let anyThread (s: Core.ExternSig) =
+        s.pars
+        |> List.exists (fun t ->
+            match Core.prune t with
+            | Core.TCon("callback", [ f ]) ->
+                match Core.prune f with
+                | Core.TCon("share", _) -> true
+                | _ -> false
+            | _ -> false)
+
+    let rec uses (e: Core.CExpr) =
+        match e.k with
+        | Core.CPrim(p, _) when prims.Contains p -> true
+        | Core.CExtern(n, _) when externs.ContainsKey n && anyThread externs[n] -> true
+        | k -> Core.children k |> List.exists uses
+
+    funs |> List.exists (fun f -> uses f.body)
+
+/// Whether a library gives C handles (Z# objects it holds: not strings, records or tuples,
+/// which cross as their bytes and fields), which a C host may use on any thread.
+let private exportsHandles (prog: Core.Program) =
+    let handle (t: Core.Ty) =
+        Core.needsRc prog.types t
+        && (match Core.prune t with
+            | Core.TCon("string", _)
+            | Core.TTuple _ -> false
+            | Core.TCon(n, _) -> not (match prog.types.TryGetValue n with | true, { def = Core.RecordDef _ } -> true | _ -> false)
+            | _ -> true)
+
+    prog.exports |> List.exists (fun e -> handle e.ret || List.exists handle e.pars)
 
 /// The runtime's defines: ZS_THREADS when the program runs code on other threads, so the
 /// runtime counts objects atomically and locks its tables.
@@ -765,10 +1094,11 @@ let private wideVectors (funs: Mono.MFun list) =
     let rec inExpr (e: Core.CExpr) = wide e.ty || Core.children e.k |> List.exists inExpr
     funs |> List.exists (fun f -> wide f.ret || f.pars |> List.exists (snd >> wide) || inExpr f.body)
 
-let private setRuntime (funs: Mono.MFun list) =
+let private setRuntime (prog: Core.Program) (isLib: bool) (funs: Mono.MFun list) =
     Codegen.checkedHeap <- checkedHeap funs
     Codegen.wideVectors <- wideVectors funs
-    Codegen.threaded <- threaded funs
+    // a library's handles may be used on any thread of its C host
+    Codegen.threaded <- threaded prog.externs funs || (isLib && exportsHandles prog)
 
     // ZS_NO_POOL: objects from malloc, one by one, for valgrind (a sanitized build has that too)
     rtDefines <-
@@ -779,537 +1109,462 @@ let private setRuntime (funs: Mono.MFun list) =
 let compileProgram (mainPath: string) (isLib: bool) =
     lower mainPath isLib
     |> Result.map (fun (prog, funs) ->
-        setRuntime funs
+        setRuntime prog isLib funs
         timed "LLVM IR" (fun () -> Codegen.compile prog.types prog.externs prog.exports prog.tests prog.values prog.clayouts None funs))
 
-/// How a program is split into LLVM modules: one per source file of the program, holding that
-/// file's functions and a copy of each library function (or instance of a generic one) they
-/// use, so LLVM inlines within a module as it would in one big module. A file whose functions
-/// don't change compiles to the same IR, which the object cache then reuses.
-let private partition (mainPath: string) (prog: Core.Program) (funs: Mono.MFun list) : Codegen.Part list =
-    // a lifted lambda or local function goes with the function it's in
-    let root (name: string) =
-        match name.IndexOf('$', 1) with
-        | -1 -> name
-        | i -> name.Substring(0, i)
+// ---- a module's code, cached between builds: each source file of the program is an LLVM
+// module of its own functions (its non-generic ones, which the others call), with a copy of
+// each library function and instance of a generic one they use, so LLVM inlines within a
+// module as it would in one big one. Nothing of another module's code is in it but what that
+// module's ABI says of its functions (their types after uncurrying, the parameters they borrow,
+// what they reach that threads can't share): a closure of one goes through a function of its
+// own, and no other module's function is inlined into it. So a module's code is made from its
+// checked result, the library's, the generic functions it copies and the ABIs of what it calls;
+// a key of those (its world) finds its object, and a build makes again only the modules for
+// which one of them changed, monomorphization through code generation.
 
-    let library = Dictionary<string, bool>()
+/// A module's code as the module cache keeps it, under a key of its checked result and the
+/// library's (the rest of what it's made from is in it, checked when it's found).
+let private worldFile (pre: string) = Path.Combine(cacheRoot (), "worlds", pre + ".bin")
 
-    let shared (f: Mono.MFun) =
-        let lib =
-            match library.TryGetValue f.file with
-            | true, b -> b
-            | _ ->
-                let b = f.file = "" || isLibrary f.file
-                library[f.file] <- b
-                b
+let private loadWorld (pre: string) : Snapshot.World option =
+    let file = worldFile pre
 
-        lib || (root f.name).Contains '<'
+    if not (cacheOn ()) || not (File.Exists file) then
+        None
+    else
+        try
+            let w = Snapshot.readWorld (File.ReadAllBytes file)
+            (try File.SetLastWriteTimeUtc(file, DateTime.UtcNow) with _ -> ()) // recently used: kept longest
+            Some w
+        with _ ->
+            None
 
-    let byName = funs |> List.map (fun f -> f.name, f) |> dict
-
-    let calls (f: Mono.MFun) =
-        let acc = HashSet<string>()
-
-        let rec walk (e: Core.CExpr) =
-            match e.k with
-            | Core.CCallDirect(g, _)
-            | Core.CMkClosure(g, _) -> acc.Add g |> ignore
-            | Core.CPrim(op, _) when op.StartsWith "fn:" -> acc.Add(op.Substring 3) |> ignore // in a vtable
-            | _ -> ()
-
-            Core.children e.k |> List.iter walk
-
-        walk f.body
-        acc
-
-    let main = Path.GetFullPath mainPath
-    let owners = funs |> List.filter (shared >> not) |> List.groupBy (fun f -> Path.GetFullPath f.file)
-    let ownerOf = Dictionary<string, string>()
-
-    for file, fs in owners do
-        for f in fs do
-            ownerOf[f.name] <- file
-
-    // what the entry points call: main, the tests, exports and the values' initializers
-    let entryCalls = "main" :: prog.tests @ (prog.exports |> List.map (fun e -> e.fname)) @ (prog.values |> List.map snd)
-    let called = HashSet<string>()
-
-    let parts =
-        owners
-        |> List.map (fun (file, fs) ->
-            let defines = HashSet<string>(fs |> List.map (fun f -> f.name))
-            let queue = Queue<Mono.MFun>(fs)
-
-            while queue.Count > 0 do
-                let f = queue.Dequeue()
-
-                for g in calls f do
-                    match byName.TryGetValue g with
-                    | true, gf when shared gf -> if defines.Add g then queue.Enqueue gf
-                    | true, _ when ownerOf[g] <> file -> called.Add g |> ignore
-                    | _ -> ()
-
-            file, defines)
-
-    for g in entryCalls do
-        match ownerOf.TryGetValue g with
-        | true, file when file <> main -> called.Add g |> ignore
-        | _ -> ()
-
-    parts
-    |> List.map (fun (file, defines) ->
-        { defines = defines
-          called = HashSet<string>(defines |> Seq.filter called.Contains)
-          entry = (file = main)
-          file = file })
-
-/// The program as LLVM modules, one per source file (partition).
-// ---- the module cache: each module's object, kept under a key of everything its code is made
-// from, so a rebuild runs reference counting, LLVM IR and clang only for the modules whose code
-// changed. The passes before, and the analysis of borrowed parameters, still run over the whole
-// program (a module's code depends on their results, which its key holds).
-
-/// A function's structural hash after lambda lifting: every node with its type, every name,
-/// number and line; refs gets the functions it refers to. A new case of Core needs its place
-/// here (the match has no default).
-let private functionHash (f: Mono.MFun) (refs: HashSet<string>) =
-    use ms = new MemoryStream()
-    use w = new BinaryWriter(ms)
-
-    let rec ty (t: Core.Ty) =
-        match Core.prune t with
-        | Core.TCon(n, args) ->
-            w.Write 0uy
-            w.Write n
-            w.Write args.Length
-            List.iter ty args
-        | Core.TFun(a, b) ->
-            w.Write 1uy
-            ty a
-            ty b
-        | Core.TTuple ts ->
-            w.Write 2uy
-            w.Write ts.Length
-            List.iter ty ts
-        | t -> w.Write(Core.showFull t) // units of measure (variables are resolved by now)
-
-    let binding (x: string, t: Core.Ty) =
-        w.Write x
-        ty t
-
-    let bindings (ps: (string * Core.Ty) list) =
-        w.Write ps.Length
-        List.iter binding ps
-
-    let rec pat (p: Core.CPat) =
-        match p with
-        | Core.CPWild -> w.Write 0uy
-        | Core.CPVar(x, t) ->
-            w.Write 1uy
-            binding (x, t)
-        | Core.CPInt n ->
-            w.Write 2uy
-            w.Write n
-        | Core.CPStr s ->
-            w.Write 3uy
-            w.Write s
-        | Core.CPBool b ->
-            w.Write 4uy
-            w.Write b
-        | Core.CPTuple ps ->
-            w.Write 5uy
-            pats ps
-        | Core.CPRecord(r, fs) ->
-            w.Write 6uy
-            w.Write r
-            w.Write fs.Length
-
-            for f, p in fs do
-                w.Write f
-                pat p
-        | Core.CPCtor(u, tag, ps) ->
-            w.Write 7uy
-            w.Write u
-            w.Write tag
-            pats ps
-        | Core.CPOr(a, b) ->
-            w.Write 8uy
-            pat a
-            pat b
-        | Core.CPAs(p, x, t) ->
-            w.Write 9uy
-            pat p
-            binding (x, t)
-
-    and pats (ps: Core.CPat list) =
-        w.Write ps.Length
-        List.iter pat ps
-
-    let rec expr (e: Core.CExpr) =
-        ty e.ty
-
-        match e.k with
-        | Core.CInt n ->
-            w.Write 0uy
-            w.Write n
-        | Core.CFloat x ->
-            w.Write 1uy
-            w.Write x
-        | Core.CBool b ->
-            w.Write 2uy
-            w.Write b
-        | Core.CStr s ->
-            w.Write 3uy
-            w.Write s
-        | Core.CUnit -> w.Write 4uy
-        | Core.CLocal x ->
-            w.Write 5uy
-            w.Write x
-        | Core.CGlobalVal x ->
-            w.Write 6uy
-            w.Write x
-        | Core.CGlobal(g, inst) ->
-            w.Write 7uy
-            w.Write g
-            refs.Add g |> ignore
-
-            match inst with
-            | None -> w.Write -1
-            | Some ts ->
-                w.Write ts.Length
-                List.iter ty ts
-        | Core.CApp(h, args) ->
-            w.Write 8uy
-            expr h
-            exprs args
-        | Core.CLam(ps, b) ->
-            w.Write 9uy
-            bindings ps
-            expr b
-        | Core.CLetFun(n, r, ps, b, rest) ->
-            w.Write 10uy
-            w.Write n
-            w.Write r
-            bindings ps
-            expr b
-            expr rest
-        | Core.CLetRec(fs, rest) ->
-            w.Write 11uy
-            w.Write fs.Length
-
-            for n, ps, b in fs do
-                w.Write n
-                bindings ps
-                expr b
-
-            expr rest
-        | Core.CExtern(n, args) ->
-            w.Write 12uy
-            w.Write n
-            exprs args
-        | Core.CPrim(n, args) ->
-            w.Write 13uy
-            w.Write n
-            if n.StartsWith "fn:" then refs.Add(n.Substring 3) |> ignore
-            exprs args
-        | Core.CBin(op, a, b) ->
-            w.Write 14uy
-            w.Write op
-            expr a
-            expr b
-        | Core.CNeg a ->
-            w.Write 15uy
-            expr a
-        | Core.CNot a ->
-            w.Write 16uy
-            expr a
-        | Core.CIf(a, b, c) ->
-            w.Write 17uy
-            expr a
-            expr b
-            expr c
-        | Core.CLet(x, v, b) ->
-            w.Write 18uy
-            w.Write x
-            expr v
-            expr b
-        | Core.CSeq(a, b) ->
-            w.Write 19uy
-            expr a
-            expr b
-        | Core.CTuple xs ->
-            w.Write 20uy
-            exprs xs
-        | Core.CField(r, i) ->
-            w.Write 21uy
-            expr r
-            w.Write i
-        | Core.CCtor(u, tag, args) ->
-            w.Write 22uy
-            w.Write u
-            w.Write tag
-            exprs args
-        | Core.CMatch(s, cases) ->
-            w.Write 23uy
-            expr s
-            w.Write cases.Length
-
-            for p, g, b in cases do
-                pat p
-
-                match g with
-                | None -> w.Write false
-                | Some g ->
-                    w.Write true
-                    expr g
-
-                expr b
-        | Core.CLetMut(x, v, b) ->
-            w.Write 24uy
-            w.Write x
-            expr v
-            expr b
-        | Core.CAssign(x, v) ->
-            w.Write 25uy
-            w.Write x
-            expr v
-        | Core.CArraySet(x, i, v) ->
-            w.Write 26uy
-            w.Write x
-            expr i
-            expr v
-        | Core.CWhile(a, b) ->
-            w.Write 27uy
-            expr a
-            expr b
-        | Core.CFor(x, a, s, b, body) ->
-            w.Write 28uy
-            w.Write x
-            expr a
-            expr s
-            expr b
-            expr body
-        | Core.CLine(l, a) ->
-            w.Write 29uy
-            w.Write l
-            expr a
-        | Core.CCallDirect(n, args) ->
-            w.Write 30uy
-            w.Write n
-            refs.Add n |> ignore
-            exprs args
-        | Core.CMkClosure(n, args) ->
-            w.Write 31uy
-            w.Write n
-            refs.Add n |> ignore
-            exprs args
-        | Core.CApplyClo(c, args) ->
-            w.Write 32uy
-            expr c
-            exprs args
-        | Core.CDup(x, t, b) ->
-            w.Write 33uy
-            binding (x, t)
-            expr b
-        | Core.CDrop(x, t, b) ->
-            w.Write 34uy
-            binding (x, t)
-            expr b
-        | Core.CDropFields(x, t, tag, keep, tok, b) ->
-            w.Write 35uy
-            binding (x, t)
-            w.Write tag
-            w.Write keep.Count
-            Set.iter (fun (i: int) -> w.Write i) keep
-            w.Write(defaultArg tok "")
-            expr b
-        | Core.CCtorAt(tok, u, tag, args) ->
-            w.Write 36uy
-            w.Write tok
-            w.Write u
-            w.Write tag
-            exprs args
-        | Core.CFreeToken(x, b) ->
-            w.Write 37uy
-            w.Write x
-            expr b
-        | Core.CJoin(n, ps, body, rest) ->
-            w.Write 38uy
-            w.Write n
-            bindings ps
-            expr body
-            expr rest
-        | Core.CJump(n, args) ->
-            w.Write 39uy
-            w.Write n
-            exprs args
-
-    and exprs (es: Core.CExpr list) =
-        w.Write es.Length
-        List.iter expr es
-
-    w.Write f.name
-    bindings f.pars
-    ty f.ret
-    w.Write f.file
-    w.Write f.line
-    expr f.body
-    w.Flush()
-    Convert.ToHexString(Security.Cryptography.SHA256.HashData(ms.ToArray()))
-
-/// A function's signature, as the modules that call it see it.
-let private signature (f: Mono.MFun) =
-    f.name + "(" + (f.pars |> List.map (snd >> Core.showFull) |> String.concat ", ") + ") " + Core.showFull f.ret
-
-/// What every module's code depends on besides its own functions: the compiler, the code
-/// generator's settings, the program's types, C declarations, entry points and values (with
-/// their functions' signatures).
-let private programKey (prog: Core.Program) (byName: IDictionary<string, Mono.MFun>) =
-    let types =
-        prog.types
-        |> Seq.sortBy (fun kv -> kv.Key)
-        |> Seq.map (fun (KeyValue(n, i)) ->
-            let def =
-                match i.def with
-                | Core.RecordDef fs -> fs |> List.map (fun (f, t) -> f + ": " + Core.showFull t) |> String.concat "; "
-                | Core.UnionDef cs -> cs |> List.map (fun (c, ts) -> c + " of " + (ts |> List.map Core.showFull |> String.concat " * ")) |> String.concat " | "
-
-            sprintf "type %s/%d = %s" n i.npars def)
-        |> List.ofSeq
-
-    let signatureOf n =
-        match byName.TryGetValue n with
-        | true, f -> signature f
-        | _ -> n
-
-    let externs =
-        prog.externs
-        |> Seq.sortBy (fun kv -> kv.Key)
-        |> Seq.map (fun (KeyValue(n, s)) -> sprintf "extern %s(%s) %s %b" n (s.pars |> List.map Core.showFull |> String.concat ", ") (Core.showFull s.ret) s.variadic)
-        |> List.ofSeq
-
-    hashOf (
-        [ "module"
-          compilerId.Value
-          sprintf "%b %b %s %b %b %b %b %A" Codegen.debugInfo Codegen.optimizeSize Codegen.target Codegen.checkedHeap Codegen.wideVectors Codegen.threaded testBuild Codegen.cpu ]
-        @ (Codegen.targets |> Seq.sortBy (fun kv -> kv.Key) |> Seq.map (fun kv -> kv.Key + " " + String.concat "," kv.Value) |> List.ofSeq)
-        @ types
-        @ externs
-        @ (prog.exports |> List.map (fun e -> sprintf "export %s %s" e.cname (signatureOf e.fname)))
-        @ (prog.tests |> List.map (fun t -> "test " + signatureOf t))
-        @ (prog.values |> List.map (fun (v, init) -> sprintf "value %s %s" v (signatureOf init)))
-        @ (prog.clayouts |> Seq.sort |> Seq.map (fun c -> "clayout " + c) |> List.ofSeq)
-        @ [ "main " + signatureOf "main" ]
-    )
-
-/// A module's key: the program's, its name and part (None: the program is one module), and its
-/// functions with their borrowed parameters, then the signatures (and borrowed parameters) of
-/// the functions of other modules it refers to.
-let private moduleKey
-    (program: string)
-    (hashes: IDictionary<string, string * HashSet<string>>)
-    (byName: IDictionary<string, Mono.MFun>)
-    (borrowed: Dictionary<string, Set<int>>)
-    (name: string, part: Codegen.Part option)
-    =
-    let defines = (match part with Some p -> p.defines :> seq<string> | None -> byName.Keys) |> Seq.sort |> List.ofSeq
-    let mine = HashSet<string>(defines)
-
-    let borrowedOf n =
-        match borrowed.TryGetValue n with
-        | true, s -> s |> Seq.map string |> String.concat ","
-        | _ -> "owned"
-
-    let others =
-        defines |> Seq.collect (fun n -> snd hashes[n]) |> Seq.filter (mine.Contains >> not) |> Seq.distinct |> Seq.sort |> List.ofSeq
-
-    hashOf (
-        [ program
-          name
-          match part with
-          | None -> "whole"
-          | Some p -> sprintf "part %b %s" p.entry (p.called |> Seq.sort |> String.concat " ") ]
-        @ (defines |> List.map (fun n -> sprintf "%s %s %s" n (fst hashes[n]) (borrowedOf n)))
-        @ (others |> List.map (fun n -> sprintf "%s %s" (match byName.TryGetValue n with | true, f -> signature f | _ -> n) (borrowedOf n)))
-    )
+let private saveWorld (pre: string) (w: Snapshot.World) =
+    if cacheOn () then
+        try
+            let file = worldFile pre
+            Directory.CreateDirectory(Path.GetDirectoryName file) |> ignore
+            let tmp = file + "." + Guid.NewGuid().ToString "N"
+            File.WriteAllBytes(tmp, Snapshot.writeWorld w)
+            File.Move(tmp, file, true) // whole or not at all, for builds running at the same time
+            evict (Path.GetDirectoryName file) "*.bin" 4096
+        with _ ->
+            ()
 
 /// A module of the program: its object from the module cache, or its LLVM IR and key.
 type private Module =
     | Cached of string
     | Fresh of ir: string * key: string
 
-/// The program's modules: a module per source file, or one for a program of one file. A module
-/// whose key cachedObject knows comes from the cache; the others are compiled to LLVM IR.
-let private compileParts (mainPath: string) (cachedObject: string -> string option) =
-    lift mainPath false
-    |> Result.map (fun (prog, funs, entries) ->
-        setRuntime funs
+/// A module made this build: its functions after reference counting, and the other modules'
+/// it calls (their ABI).
+type private Made =
+    { funs: Mono.MFun list
+      calls: Snapshot.AbiFun list }
 
-        let parts =
-            match partition mainPath prog funs with
-            | [ _ ] -> [ None ] // one file: one module, as it always was
-            | parts -> List.map Some parts
+/// The program's modules, a module per source file: each one's object from the module cache
+/// (cachedObject, by key), or its LLVM IR, made for the modules a change reached. A program of
+/// one file is one module, as it always was.
+let private compileUnits (mainPath: string) (cachedObject: string -> string option) =
+    timings.Clear()
+    let prog, units = timed "parse + check (all)" (fun () -> checkUnits false mainPath true true)
 
-        let byName = funs |> List.map (fun f -> f.name, f) |> dict
+    match prog.errors with
+    | _ :: _ -> Error prog.errors
+    | [] ->
+        Codegen.targets <- prog.targets
+        Codegen.cpu <- cpu
+        // [<Target>] and [<Multiversion>] functions stay whole: their code is for features their
+        // callers may not have
+        Inline.kept <- fun n -> prog.targets.ContainsKey(Core.baseFunName n)
+        let lib, mods = units |> Array.partition (fun u -> u.library)
+        let mainUnit = mods[mods.Length - 1]
+        let keyOf = units |> Seq.map (fun u -> u.file, u.key) |> dict
+        let libKey = hashOf ("library" :: [ for u in lib -> u.key ])
+        let decide = isNull (Environment.GetEnvironmentVariable "ZS_NO_DECIDE")
+        // the settings a module's code is made with (its object's are in its key)
+        let settings = sprintf "%b %b %b" Codegen.debugInfo testBuild decide
 
-        let borrowed = timed "borrowed parameters" (fun () -> Rc.borrowing prog.types entries funs)
+        // which module defines each function, and a module's own functions: its non-generic ones
+        // (in a test build, not main)
+        let declaredIn = Dictionary<string, CheckedUnit>()
+        let owner = Dictionary<string, string>()
 
-        // a module is named after its source file (relative to the main one): what a profile
-        // calls its internal functions, which must be the same in every build
-        let nameOf (part: Codegen.Part option) =
-            let main = Path.GetFullPath mainPath
-            let file = match part with Some p -> p.file | None -> main
-            Path.GetRelativePath(Path.GetDirectoryName main, file).Replace('\\', '/')
+        for u in units do
+            for n, ngen in u.names do
+                declaredIn[n] <- u
 
-        let keys =
-            timed "module keys" (fun () ->
-                let hashes =
-                    funs
-                    |> Array.ofList
-                    |> Array.Parallel.map (fun f ->
-                        let refs = HashSet<string>()
-                        let h = functionHash f refs
-                        f.name, (h, refs))
-                    |> dict
+                if not u.library && ngen = 0 && not (testBuild && n = "main") then
+                    owner[n] <- u.file
 
-                let program = programKey prog byName
-                parts |> List.map (fun p -> moduleKey program hashes byName borrowed (nameOf p, p)))
+        // a lifted lambda or local function goes with the function it's in
+        let root (name: string) =
+            match name.IndexOf('$', 1) with
+            | -1 -> name
+            | i -> name.Substring(0, i)
 
-        let cached = keys |> List.map cachedObject
-        let defines (part: Codegen.Part option) = match part with Some p -> p.defines :> seq<string> | None -> byName.Keys
+        let unitOf (name: string) =
+            match owner.TryGetValue(root name) with
+            | true, u -> Some u
+            | _ -> None
 
-        // the functions of the modules to compile, reference counted once (a library function
-        // goes into each module that calls it)
-        let needed = HashSet<string>(List.zip parts cached |> Seq.filter (snd >> Option.isNone) |> Seq.collect (fst >> defines))
-        timings.Add(sprintf "module cache (%d of %d)" (cached |> List.filter Option.isSome |> List.length) parts.Length, 0.0)
+        let ownOf (u: CheckedUnit) = [ for n, ngen in u.names do if owner.ContainsKey n && ngen = 0 then yield n ]
 
-        let lowered =
-            if needed.Count = 0 then
-                dict []
-            else
-                let counted = timed "reference counting" (fun () -> Rc.lower prog.types borrowed (funs |> List.filter (fun f -> needed.Contains f.name)))
+        // the main module also starts the library's values
+        let libraryInits = prog.values |> List.map snd |> List.filter (fun i -> declaredIn.ContainsKey i && declaredIn[i].library)
+        let seeds (u: CheckedUnit) = ownOf u @ (if u.file = mainUnit.file then libraryInits else [])
+
+        let defs = Dictionary<string, Core.FunDef>()
+        let read = HashSet<string>()
+
+        let defOf (name: string) =
+            match defs.TryGetValue name with
+            | true, f -> f
+            | _ ->
+                let u = declaredIn[name]
+
+                if read.Add u.file then
+                    for f in u.funs.Value do
+                        defs[f.name] <- f
+
+                defs[name]
+
+        let pre (u: CheckedUnit) = hashOf [ "world"; compilerId.Value; settings; u.file; u.key; libKey ]
+        let worlds = Dictionary<string, Snapshot.World>()
+        let abiHash = Dictionary<string, string>()
+        let abiFun = Dictionary<string, Snapshot.AbiFun>()
+        let made = Dictionary<string, Made>()
+
+        let accept (u: CheckedUnit) (w: Snapshot.World) =
+            worlds[u.file] <- w
+            abiHash[u.file] <- hashBytes (Snapshot.abiBytes w.abi)
+
+            for f in w.abi do
+                abiFun[f.name] <- f
+
+        let fixedNames = set ("main" :: prog.tests @ (prog.exports |> List.map (fun e -> e.fname)))
+
+        /// Makes the code of these modules: one run of the passes over their own functions and
+        /// the copies they need, the other modules' functions known by their ABI.
+        let make (these: CheckedUnit list) =
+            let mine = HashSet<string>(these |> List.map (fun u -> u.file))
+            let external (g: string) = owner.ContainsKey g && not (mine.Contains owner[g])
+            let roots = these |> List.collect seeds
+            let reachOf (g: string) = match abiFun.TryGetValue g with | true, a -> a.reach | _ -> None
+
+            let monomorphic = timed "monomorphize" (fun () -> Mono.runFrom prog defOf roots external)
+            let reach, _ = Mono.reaching prog monomorphic reachOf
+            let mono = timed "monomorphize" (fun () -> monomorphic |> Mono.checkSharedWith prog reachOf |> Mono.fuse)
+
+            let mayInline (caller: string) (g: string) =
+                match unitOf g with
+                | None -> true
+                | u -> unitOf caller = u
+
+            let mono =
+                if Codegen.debugInfo then mono
+                else timed "inline" (fun () -> mono |> Inline.uncurry fixedNames |> Inline.runWith mayInline)
+
+            let mono = timed "simplify" (fun () -> if Codegen.debugInfo then mono else Simplify.run prog.types mono)
+            let mono = timed "decision trees" (fun () -> if decide then Decide.run prog.types mono else mono)
+
+            let arityOf (g: string) = match abiFun.TryGetValue g with | true, a -> Some a.pars.Length | _ -> None
+            let lifted = timed "lift closures" (fun () -> Lift.runWith arityOf true mono)
+
+            // a task's state machine owns its parameters: they live in its coroutine frame past
+            // the call that starts it
+            let rec waits (e: Core.CExpr) =
+                match e.k with
+                | Core.CPrim(("task.suspend" | "task.abandon"), _) -> true
+                | k -> Core.children k |> List.exists waits
+
+            let machines = lifted |> List.filter (fun f -> waits f.body) |> List.map (fun f -> f.name) |> Set.ofList
+            let borrowedOf (g: string) = match abiFun.TryGetValue g with | true, a -> Some(Set.ofList a.borrowed) | _ -> None
+            let borrowed = timed "borrowed parameters" (fun () -> Rc.borrowingWith prog.types (fixedNames + machines) borrowedOf lifted)
+            let byName = lifted |> List.map (fun f -> f.name, f) |> dict
+            // what the module's code was made from is what monomorphization copied, before
+            // inlining hid some of it
+            let monoByName = monomorphic |> List.map (fun f -> f.name, f) |> dict
+
+            let refs (e: Core.CExpr) =
+                let acc = ResizeArray<string>()
+
+                let rec walk (e: Core.CExpr) =
+                    match e.k with
+                    | Core.CGlobal(g, _)
+                    | Core.CCallDirect(g, _)
+                    | Core.CMkClosure(g, _) -> acc.Add g
+                    | Core.CPrim(op, _) when op.StartsWith "fn:" -> acc.Add(op.Substring 3) // in a vtable
+                    | _ -> ()
+
+                    Core.children e.k |> List.iter walk
+
+                walk e
+                acc
+
+            // what a module's functions reach in a list of functions: those of its own and the
+            // copies (shared ones), and the other modules' it calls
+            let reached (unit: string) (start: string list) (funs: IDictionary<string, Mono.MFun>) =
+                let inModule = HashSet<string>()
+                let others = HashSet<string>()
+                let queue = Queue<string>()
+
+                for n in start do
+                    if funs.ContainsKey n && inModule.Add n then
+                        queue.Enqueue n
+
+                while queue.Count > 0 do
+                    let f = funs[queue.Dequeue()]
+
+                    for g in refs f.body do
+                        if funs.ContainsKey g then
+                            match unitOf g with
+                            | None -> if inModule.Add g then queue.Enqueue g
+                            | Some u when u = unit -> if inModule.Add g then queue.Enqueue g
+                            | Some _ -> others.Add g |> ignore
+                        elif external g || abiFun.ContainsKey g then
+                            others.Add g |> ignore
+
+                inModule, others
+
+            for u in these do
+                let ownNames = ownOf u
+                let start = lifted |> List.filter (fun f -> unitOf f.name = Some u.file) |> List.map (fun f -> f.name)
+                let funsHere, others = reached u.file (start @ seeds u) byName
+
+                // its ABI: its own functions as the others call them
+                let abi =
+                    ownNames
+                    |> List.map (fun n ->
+                        let f = byName[n]
+
+                        ({ name = n
+                           pars = f.pars |> List.map snd
+                           ret = f.ret
+                           borrowed = (match borrowed.TryGetValue n with | true, s -> Set.toList s | _ -> [])
+                           reach = reach n }
+                        : Snapshot.AbiFun))
+
+                // what it was made from: the generic functions it copied (before inlining, so
+                // those inlined count), and the other modules it calls
+                let copied, _ = reached u.file (seeds u) monoByName
+
+                let checks =
+                    [ for n in copied do
+                          match unitOf n with
+                          | None ->
+                              match declaredIn.TryGetValue(Core.baseFunName n) with
+                              | true, d when not d.library && d.file <> u.file -> yield d.file
+                              | _ -> ()
+                          | _ -> () ]
+                    |> List.distinct
+
+                let calls = others |> Seq.choose (fun g -> unitOf g) |> Seq.filter ((<>) u.file) |> Seq.distinct |> List.ofSeq
+                // by name: the order the run made them in depends on what else it made
+                let funs = lifted |> List.filter (fun f -> funsHere.Contains f.name) |> List.sortBy (fun f -> f.name)
+                let facts = [ (if checkedHeap funs then "weak" else ""); (if wideVectors funs then "wide" else ""); (if threaded prog.externs funs then "threads" else "") ] |> List.filter ((<>) "")
+
+                let w: Snapshot.World =
+                    { deps = (checks |> List.sort |> List.map (fun d -> d, "check", keyOf[d])) @ (calls |> List.sort |> List.map (fun d -> d, "abi", "")) // filled below
+                      abi = abi
+                      facts = facts }
+
+                made[u.file] <-
+                    { funs = funs
+                      calls = [] }
+
+                worlds[u.file] <- w
+
+            // the ABIs, now that all of these modules have one; then each one's dependencies on
+            // the others' ABIs, and its code with reference counting
+            for u in these do
+                accept u worlds[u.file]
+
+            for u in these do
+                let w = worlds[u.file]
+                let deps = w.deps |> List.map (fun (d, kind, h) -> if kind = "abi" then d, kind, abiHash[d] else d, kind, h)
+                let w = { w with deps = deps }
+                worlds[u.file] <- w
+                saveWorld (pre u) w
+                let m = made[u.file]
+                let externals = HashSet<string>()
+
+                for f in m.funs do
+                    for g in refs f.body do
+                        if not (m.funs |> List.exists (fun h -> h.name = g)) && abiFun.ContainsKey g then
+                            externals.Add g |> ignore
+
+                // reference counting with the parameters each callee borrows, this module's own and
+                // the others'
+                let all = Dictionary<string, Set<int>>(borrowed)
+
+                for g in externals do
+                    all[g] <- Set.ofList abiFun[g].borrowed
+
+                let counted = timed "reference counting" (fun () -> Rc.lower prog.types all m.funs)
                 dumpCore counted
-                counted |> List.map (fun f -> f.name, f) |> dict
 
-        timed "LLVM IR" (fun () ->
-            // a module's own functions as reference counting made them; the others for their
-            // signatures
-            let compile (part: Codegen.Part option) =
-                let mine = defines part |> HashSet
-                let fs = funs |> List.map (fun f -> if mine.Contains f.name then lowered[f.name] else f)
-                sprintf "source_filename = \"%s\"\n" (nameOf part) + fst (Codegen.compile prog.types prog.externs prog.exports prog.tests prog.values prog.clayouts part fs)
+                made[u.file] <-
+                    { funs = counted
+                      calls = externals |> Seq.map (fun g -> abiFun[g]) |> List.ofSeq }
 
-            try
-                List.zip3 parts keys cached
-                |> Array.ofList
-                |> Array.Parallel.map (fun (part, key, c) ->
-                    match c with
-                    | Some obj -> Cached obj
-                    | None -> Fresh(compile part, key))
-                |> List.ofArray
-            with :? AggregateException as e ->
-                raise e.InnerExceptions[0]))
+        // a module's code is current when what it was made from is: its checked result's key and
+        // the library's (in its key), the generic functions it copied, and the ABIs of the
+        // modules it calls; those come before it, so they're known in order. One made now may
+        // change an ABI a later one was made with: it's made then too.
+        try
+            let mutable pending = List.ofArray mods
+
+            while not pending.IsEmpty do
+                let todo = ResizeArray<CheckedUnit>()
+                let later = ResizeArray<CheckedUnit>()
+
+                for u in pending do
+                    match loadWorld (pre u) with
+                    | Some w ->
+                        let state (d: string, kind: string, h: string) =
+                            match kind with
+                            | "check" -> if keyOf.ContainsKey d && keyOf[d] = h then 1 else 0
+                            | _ ->
+                                match abiHash.TryGetValue d with
+                                | true, current -> if current = h then 1 else 0
+                                | _ -> if todo |> Seq.exists (fun t -> t.file = d) || later |> Seq.exists (fun t -> t.file = d) then 2 else 0
+
+                        let states = w.deps |> List.map state
+
+                        if states |> List.contains 0 then todo.Add u
+                        elif states |> List.contains 2 then later.Add u // waits for an ABI made now
+                        else accept u w
+                    | None -> todo.Add u
+
+                if todo.Count > 0 then
+                    make (List.ofSeq todo)
+
+                pending <- List.ofSeq later
+
+            // the runtime's settings, from every module's code
+            Codegen.checkedHeap <- worlds.Values |> Seq.exists (fun w -> List.contains "weak" w.facts)
+            Codegen.wideVectors <- worlds.Values |> Seq.exists (fun w -> List.contains "wide" w.facts)
+            Codegen.threaded <- worlds.Values |> Seq.exists (fun w -> List.contains "threads" w.facts)
+
+            // ZS_NO_POOL: objects from malloc, one by one, for valgrind (a sanitized build has that too)
+            rtDefines <-
+                (if Codegen.threaded then [ "-DZS_THREADS" ] else [])
+                @ (if isNull (Environment.GetEnvironmentVariable "ZS_NO_POOL") then [] else [ "-DZS_NO_POOL" ])
+
+            // a module's object: under a key of its world, and of what code generation adds
+            let objectKey (u: CheckedUnit) =
+                let w = worlds[u.file]
+
+                hashOf (
+                    [ "module"
+                      pre u
+                      sprintf "%b %b %b %b %s %A %d" Codegen.optimizeSize Codegen.checkedHeap Codegen.wideVectors Codegen.threaded Codegen.target Codegen.cpu mods.Length ]
+                    @ [ for d, kind, h in w.deps -> d + " " + kind + " " + h ]
+                )
+
+            // a module of a program of several files is two LLVM modules: its own functions, and
+            // its copies of library functions and generic instances, which change only when the
+            // copies it needs do (so a change to its code compiles only its own again); a program
+            // of one file is one module, as it always was
+            let kinds = if mods.Length = 1 then [ "whole" ] else [ "own"; "copies" ]
+            let parts = [| for u in mods do for kind in kinds -> u, kind |]
+            let keys = parts |> Array.map (fun (u, kind) -> hashOf [ objectKey u; kind ])
+            let cached = keys |> Array.map cachedObject
+            let missing =
+                [ for i in 0 .. parts.Length - 1 do
+                      let u = fst parts[i]
+
+                      if cached[i].IsNone && not (made.ContainsKey u.file) then
+                          yield u ]
+                |> List.distinctBy (fun u -> u.file)
+
+            // current, but its object is gone (or made with other settings): made again
+            if not missing.IsEmpty then
+                make missing
+
+            timings.Add(sprintf "module cache (%d of %d)" (cached |> Array.filter Option.isSome |> Array.length) parts.Length, 0.0)
+            let names = mods |> Array.filter (fun u -> made.ContainsKey u.file) |> Array.map (fun u -> Path.GetFileName u.file)
+            timings.Add(sprintf "made (%s)" (if names.Length = 0 then "none" else String.concat " " names), 0.0)
+
+            // a module is named after its source file (relative to the main one): what a profile
+            // calls its internal functions, which must be the same in every build
+            let nameOf (file: string) =
+                let main = Path.GetFullPath mainPath
+                Path.GetRelativePath(Path.GetDirectoryName main, Path.GetFullPath file).Replace('\\', '/')
+
+            timed "LLVM IR" (fun () ->
+                let compile (u: CheckedUnit, kind: string) =
+                    let m = made[u.file]
+                    let own = HashSet<string>(ownOf u)
+
+                    let defined =
+                        match kind with
+                        | "own" -> m.funs |> List.filter (fun f -> unitOf f.name = Some u.file)
+                        | "copies" -> m.funs |> List.filter (fun f -> unitOf f.name <> Some u.file)
+                        | _ -> m.funs
+
+                    let part: Codegen.Part option =
+                        match kind with
+                        | "whole" -> None
+                        | _ ->
+                            Some
+                                { defines = HashSet<string>(defined |> List.map (fun f -> f.name))
+                                  called = own
+                                  entry = (kind = "own" && u.file = mainUnit.file)
+                                  copies = (kind = "copies")
+                                  file = Path.GetFullPath u.file }
+
+                    let stub (a: Snapshot.AbiFun) : Mono.MFun =
+                        { name = a.name
+                          pars = a.pars |> List.mapi (fun i t -> sprintf "a%d" i, t)
+                          ret = a.ret
+                          body = { k = Core.CUnit; ty = Core.tUnit }
+                          file = ""
+                          line = 0 }
+
+                    // the other modules' functions it calls, by their ABI; and the entry's: main,
+                    // the tests, exports and the values' initializers
+                    let stubs = m.calls |> List.map stub
+                    let have = HashSet<string>((m.funs @ stubs) |> List.map (fun f -> f.name))
+
+                    let entries =
+                        if u.file <> mainUnit.file then
+                            []
+                        else
+                            [ for n in Set.toList fixedNames @ (prog.values |> List.map snd) do
+                                  match abiFun.TryGetValue n with
+                                  | true, a when have.Add n -> yield stub a
+                                  | _ -> () ]
+
+                    let name = if kind = "copies" then nameOf u.file + "#copies" else nameOf u.file
+
+                    // the functions it calls in the module's other part are declared, from m.funs
+                    let ir =
+                        sprintf "source_filename = \"%s\"\n" name
+                        + fst (Codegen.compile prog.types prog.externs prog.exports prog.tests prog.values prog.clayouts part (m.funs @ stubs @ entries))
+
+                    match Environment.GetEnvironmentVariable "ZS_DUMP_IR" with
+                    | null -> ()
+                    | dir -> File.WriteAllText(Path.Combine(dir, name.Replace('/', '_') + ".ll"), ir)
+
+                    ir
+
+                try
+                    Array.zip3 parts keys cached
+                    |> Array.Parallel.map (fun (p, key, c) ->
+                        match c with
+                        | Some obj -> Cached obj
+                        | None -> Fresh(compile p, key))
+                    |> List.ofArray
+                with :? AggregateException as e ->
+                    // the error itself, with its own stack (a compiler bug's names where it happened)
+                    System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw e.InnerExceptions[0]
+                    failwith "unreachable")
+            |> Ok
+        with CompileError(l, m) ->
+            raise (CompileErrorAt(mainPath, l, 0, m))
 
 /// Runs a program; with capture, returns its stdout and stderr too (stdin is empty).
 let exec (exe: string) (args: string list) (capture: bool) : int * string =
@@ -1427,7 +1682,7 @@ let private moduleObject (key: string) =
 let private cachedModule (key: string) =
     let obj = moduleObject key
 
-    if File.Exists obj then
+    if cacheOn () && File.Exists obj then
         (try File.SetLastWriteTimeUtc(obj, DateTime.UtcNow) with _ -> ()) // recently used: kept longest
         Some obj
     else
@@ -1435,14 +1690,15 @@ let private cachedModule (key: string) =
 
 /// Keeps a module's object under its key for the next build (whole or not at all).
 let private keepModule (key: string) (obj: string) =
-    try
-        let path = moduleObject key
-        Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
-        let tmp = path + "." + Guid.NewGuid().ToString "N"
-        File.Copy(obj, tmp)
-        File.Move(tmp, path, true)
-    with _ ->
-        () // not writable: compiled every time
+    if cacheOn () then
+        try
+            let path = moduleObject key
+            Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+            let tmp = path + "." + Guid.NewGuid().ToString "N"
+            File.Copy(obj, tmp)
+            File.Move(tmp, path, true)
+        with _ ->
+            () // not writable: compiled every time
 
 /// Compiles a program's LLVM modules to objects in parallel (each one the caches haven't seen),
 /// the runtime too, and links them into an executable.
@@ -1510,7 +1766,7 @@ let build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) (isLib: 
     let split = mcu.IsNone && Codegen.target = "" && not isLib && not emitLlvm && not Codegen.debugInfo && not sanitize
 
     if split then
-        catching (fun () -> compileParts src cachedModule)
+        catching (fun () -> compileUnits src cachedModule)
         |> Result.bind (fun parts ->
             match linkParts parts out with
             | None -> Ok()
@@ -1730,7 +1986,18 @@ let builtinDocs =
           "ignore", "Discards a value."
           "ref", "A mutable cell holding the value; read and write it with `r.Value`."
           "Collections.Array.create", "An array of `n` copies of `x`."
-          "Collections.Array.length", "The number of elements."
+          "Collections.Array.length", "The number of elements (of an array, a Buffer or a span)."
+          "Collections.Array.ofSpan", "An array with a copy of the span's elements."
+          "Collections.Span.length", "The number of elements."
+          "Collections.Fixed.length", "The number of elements: the N of fixed<'a, N>."
+          "Collections.Fixed.get", "The element at index `i`. Panics if out of range."
+          "Collections.Fixed.set", "The fixed-size array with element `i` replaced by `x` (a value: the original is unchanged)."
+          "Collections.Fixed.create", "N copies of `x`, N from the type expected of it."
+          "Collections.Fixed.ofArray", "A fixed-size array with the elements of `a`, which must have exactly N (a panic otherwise)."
+          "Collections.Span.ofPtr", "A span over `n` elements of C memory at `p`, in `unsafe`: its lifetime isn't checked, so the span mustn't outlive the memory."
+          "Collections.Buffer.ofSpan", "A new Buffer with a copy of the span's elements."
+          "Text.String.bytes", "The string's bytes (its UTF-8), as a span: no copy."
+          "Text.String.ofBytes", "A string with a copy of the bytes, each malformed UTF-8 byte replaced by U+FFFD."
           "Text.String.length", "The length in bytes (UTF-8)."
           "Text.String.sub", "The `len` bytes of `s` starting at byte `start`. Panics if out of range."
           "Text.String.byte", "The byte at index `i`. Panics if out of range."
@@ -1746,7 +2013,7 @@ let builtinDocs =
           "Collections.Buffer.create", "A Buffer of `n` copies of `x`. A Buffer is shared and mutable: a write is seen through every reference."
           "Collections.Buffer.length", "The number of elements."
           "Collections.Buffer.ofArray", "A new Buffer with the array's elements."
-          "Collections.Buffer.toArray", "An array copy of the Buffer's current elements."
+          "Collections.Buffer.toArray", "An array copy of the elements (of a Buffer, or of any span)."
           "Int.wrappingAdd", "`a + b`, wrapping around on overflow instead of panicking."
           "Int.wrappingSub", "`a - b`, wrapping around on overflow instead of panicking."
           "Int.wrappingMul", "`a * b`, wrapping around on overflow instead of panicking."
@@ -1772,7 +2039,7 @@ let builtinDocs =
           "Threading.Mutex.get", "The value now (with a reference of its own, taken under the lock)."
           "Threading.Mutex.set", "Replaces the value."
           "Threading.Mutex.update", "Replaces the value with `f` of it, holding the lock meanwhile (so updates from several threads don't lose one another), and gives the new value. `f` mustn't use the same mutex."
-          "Threading.Channel.make", "A channel holding up to `capacity` values (at least 1)."
+          "Threading.Channel.make", "A channel holding up to `capacity` values; with 0, a send waits for a receiver to take its value."
           "Threading.Channel.send", "Sends `x`, waiting while the channel is full. Panics once it's closed."
           "Threading.Channel.receive", "The next value, waiting for one: `None` once the channel is closed and empty."
           "Threading.Channel.close", "Closes the channel: receivers get what's left, then `None`; a send panics."

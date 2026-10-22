@@ -9,7 +9,7 @@ type Set<'a> =
 /// Functions on `Set`.
 module Set =
   /// The empty set.
-  let empty () : Set<'a> = { items = MapLeaf }
+  let empty : Set<'a> = { items = MapLeaf }
 
   /// The set with `x` added.
   let add x (s: Set<'a>) = { items = Map.add x () s.items }
@@ -30,7 +30,7 @@ module Set =
   let toList (s: Set<'a>) = Map.keys s.items
 
   /// A set of the list's elements.
-  let ofList (xs: list<'a>) = List.fold (fun s x -> Set.add x s) (Set.empty ()) xs
+  let ofList (xs: list<'a>) = List.fold (fun s x -> Set.add x s) Set.empty xs
 
   /// The elements in either set.
   let union (a: Set<'a>) (b: Set<'a>) = List.fold (fun s x -> Set.add x s) a (Set.toList b)

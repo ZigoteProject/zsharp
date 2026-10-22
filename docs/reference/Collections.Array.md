@@ -27,7 +27,7 @@ An array of `n` elements: `[| f 0; …; f (n - 1) |]`.
 ### `Array.map`
 
 ```zsharp
-Array.map : ('a -> 'b) -> array<'a> -> array<'b>
+Array.map : ('a -> 'b) -> span<'a> -> array<'b>
 ```
 
 A new array with `f` applied to every element.
@@ -35,7 +35,7 @@ A new array with `f` applied to every element.
 ### `Array.iter`
 
 ```zsharp
-Array.iter : ('a -> unit) -> array<'a> -> unit
+Array.iter : ('a -> unit) -> span<'a> -> unit
 ```
 
 Calls `f` on every element, in order.
@@ -43,7 +43,7 @@ Calls `f` on every element, in order.
 ### `Array.fold`
 
 ```zsharp
-Array.fold : ('a -> 'b -> 'a) -> 'a -> array<'b> -> 'a
+Array.fold : ('a -> 'b -> 'a) -> 'a -> span<'b> -> 'a
 ```
 
 Combines the elements from the left, like `List.fold`.
@@ -51,7 +51,7 @@ Combines the elements from the left, like `List.fold`.
 ### `Array.sum`
 
 ```zsharp
-Array.sum : array<'a> -> 'a when 'a : Add
+Array.sum : span<'a> -> 'a when 'a : Add
 ```
 
 The sum of the elements (`Add.zero` for an empty array).
@@ -67,7 +67,7 @@ An array with the list's elements, in order.
 ### `Array.toList`
 
 ```zsharp
-Array.toList : array<'a> -> list<'a>
+Array.toList : span<'a> -> list<'a>
 ```
 
 A list with the array's elements, in order.
@@ -75,7 +75,7 @@ A list with the array's elements, in order.
 ### `Array.mapi`
 
 ```zsharp
-Array.mapi : (int -> 'a -> 'b) -> array<'a> -> array<'b>
+Array.mapi : (int -> 'a -> 'b) -> span<'a> -> array<'b>
 ```
 
 Like `Array.map`, with each element's index: `f i x`.
@@ -83,7 +83,7 @@ Like `Array.map`, with each element's index: `f i x`.
 ### `Array.exists`
 
 ```zsharp
-Array.exists : ('a -> bool) -> array<'a> -> bool
+Array.exists : ('a -> bool) -> span<'a> -> bool
 ```
 
 Whether `f` is true for some element.
@@ -91,7 +91,7 @@ Whether `f` is true for some element.
 ### `Array.contains`
 
 ```zsharp
-Array.contains : 'a -> array<'a> -> bool when 'a : Eq
+Array.contains : 'a -> span<'a> -> bool when 'a : Eq
 ```
 
 Whether the array contains `x` (compared with `=`).
@@ -99,7 +99,7 @@ Whether the array contains `x` (compared with `=`).
 ### `Array.filter`
 
 ```zsharp
-Array.filter : ('a -> bool) -> array<'a> -> array<'a>
+Array.filter : ('a -> bool) -> span<'a> -> array<'a>
 ```
 
 A new array with the elements for which `f` is true.
@@ -107,7 +107,7 @@ A new array with the elements for which `f` is true.
 ### `Array.append`
 
 ```zsharp
-Array.append : array<'a> -> array<'a> -> array<'a>
+Array.append : span<'a> -> span<'a> -> array<'a>
 ```
 
 A new array with the elements of `a` followed by those of `b`.
@@ -131,7 +131,7 @@ A new array of `len` elements starting at index `start`.
 ### `Array.rev`
 
 ```zsharp
-Array.rev : array<'a> -> array<'a>
+Array.rev : span<'a> -> array<'a>
 ```
 
 A new array in reverse order.
@@ -139,7 +139,7 @@ A new array in reverse order.
 ### `Array.sort`
 
 ```zsharp
-Array.sort : array<'a> -> array<'a> when 'a : Ord
+Array.sort : span<'a> -> array<'a> when 'a : Ord
 ```
 
 A new array sorted in ascending order. Stable.
@@ -147,7 +147,7 @@ A new array sorted in ascending order. Stable.
 ### `Array.sortWith`
 
 ```zsharp
-Array.sortWith : ('a -> 'a -> 'b) -> array<'a> -> array<'a> when 'b : Ord
+Array.sortWith : ('a -> 'a -> 'b) -> span<'a> -> array<'a> when 'b : Ord
 ```
 
 A new array sorted with `f` (like `compare`). Stable.
@@ -171,10 +171,18 @@ An array of `n` copies of `x`.
 ### `Array.length`
 
 ```zsharp
-Array.length : array<'a> -> int
+Array.length : span<'a> -> int
 ```
 
-The number of elements.
+The number of elements (of an array, a Buffer or a span).
+
+### `Array.ofSpan`
+
+```zsharp
+Array.ofSpan : span<'a> -> array<'a>
+```
+
+An array with a copy of the span's elements.
 
 ### `Array.set`
 

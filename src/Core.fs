@@ -123,8 +123,15 @@ let hasBuiltinImpl (tr: string) (n: string) =
     | true, s -> s.Contains n
     | _ -> false
 
+/// What a Buffer<T> and a span<T> are after monomorphization: a window into an array's
+/// storage (or a string's bytes, or C memory for a span from Span.ofPtr), as a value of three
+/// words. The owner keeps the storage alive; data points at the first element. A Buffer's
+/// window may be written (in place: a Buffer is shared), a span's only read.
+let windowType = "$window"
+
 /// Built-in generic type constructors and their arity.
-// array<T>: a copy-on-write value; Buffer<T>: the same storage as a shared mutable reference;
+// array<T>: a copy-on-write value; Buffer<T>: a window into such storage, shared and mutable;
+// span<T>: a read-only window into an array, a string's bytes or a Buffer (both windowType);
 // weak<T>: a reference that doesn't keep its target alive; share<F>: a function that may cross
 // threads (what it captures is Share); Atomic<T>, Mutex<T>, Channel<T>: values threads share;
 // FFI only: callback<F> (a closure called by C), ptr<T> (a raw C pointer), fnptr<F> (a C
@@ -133,6 +140,8 @@ let builtinCons =
     dict
         [ "array", 1
           "Buffer", 1
+          "span", 1
+          "fixed", 2
           "ref", 1
           "weak", 1
           "share", 1
@@ -159,9 +168,9 @@ let tCPtr = tcon "cptr"
 
 let mutable private nextVar = 0
 
-/// How many type variables were made (a checked snapshot carries the count on).
-let typeVars () = nextVar
-let setTypeVars (n: int) = nextVar <- max nextVar n
+/// Numbers type variables from 0 again: each module's are its own (they're told apart by
+/// their cells; the number is for showing one).
+let resetTypeVars () = nextVar <- 0
 
 let fresh kind =
     nextVar <- nextVar + 1
@@ -343,6 +352,11 @@ type TypeDef =
     | UnionDef of (string * Ty list) list
 
 type TypeInfo = { npars: int; def: TypeDef }
+
+/// windowType's record: its owner, a pointer to its first element, and its length.
+let windowDef =
+    { npars = 1
+      def = RecordDef [ "$owner", TCon("array", [ TGen 0 ]); "$data", TCon("ptr", [ TGen 0 ]); "$length", TCon("int", []) ] }
 
 // ---------------------------------------------------------------- core IR
 
@@ -680,10 +694,11 @@ and Export =
 /// unions being looked through, so a recursive union is found (and stays boxed).
 let rec private heapIn (types: Dictionary<string, TypeInfo>) (visiting: Set<string>) t =
     match prune t with
-    | TCon(("string" | "array" | "Buffer" | "weak"), _)
+    | TCon(("string" | "array" | "Buffer" | "span" | "weak"), _)
     | TFun _ -> true
     | TCon(n, _) when isCellType n -> true
     | TCon("share", [ f ]) -> heapIn types visiting f
+    | TCon("fixed", [ el; _ ]) -> heapIn types visiting el
     | TCon(n, _) when isDynName n -> true
     | TCon(n, args) ->
         match types.TryGetValue n with
@@ -731,6 +746,7 @@ let rec shareBlocker (onVar: Ty -> unit) (types: Dictionary<string, TypeInfo>) (
         onVar v
         None
     | TCon(n, []) when hasBuiltinImpl "Share" n -> None
+    | TCon("fixed", [ el; _ ]) -> inner visiting el
     | TCon(n, [ TMeas _ ]) when nums.Contains n -> None
     | TMeas _ -> None
     | TCon(("share" | "fnptr" | "Atomic"), _) -> None

@@ -33,7 +33,7 @@ let rec private concrete (inst: Ty list) t =
     | TGen i -> List.item i inst
     | TCon(n, _) when nums.Contains n -> TCon(n, []) // units of measure are erased
     | TMeas _ -> measOne
-    | TCon("Buffer", a) -> TCon("array", List.map (concrete inst) a) // same storage, shared instead of copied
+    | TCon(("Buffer" | "span"), a) -> TCon(windowType, List.map (concrete inst) a) // a window: Core's windowType
     | TCon("share", [ f ]) -> concrete inst f // a function that may cross threads is a function
     | TCon(n, a) -> TCon(n, List.map (concrete inst) a)
     | TFun(a, b) -> TFun(concrete inst a, concrete inst b)
@@ -76,8 +76,10 @@ let private isPrim (t: Ty) =
     | TCon(n, []) -> prims.Contains n
     | _ -> false
 
-let run (prog: Program) : MFun list =
-    let defs = prog.funs |> List.map (fun f -> f.name, f) |> dict
+/// Copies of each function reached from roots, at each instantiation reached: a generic
+/// function once per type arguments, the others once. def: a function's checked definition;
+/// external: a non-generic function another module has the code of, which isn't copied.
+let runFrom (prog: Program) (def: string -> FunDef) (roots: string list) (external: string -> bool) : MFun list =
     let seen = HashSet<string>()
     let queue = Queue<string * Ty list>()
     let out = ResizeArray<MFun>()
@@ -85,7 +87,7 @@ let run (prog: Program) : MFun list =
     let request name inst =
         let m = mangle name inst
 
-        if seen.Add m then
+        if seen.Add m && not (inst.IsEmpty && external name) then
             queue.Enqueue(name, inst)
 
         m
@@ -103,7 +105,7 @@ let run (prog: Program) : MFun list =
         match prog.impls.TryGetValue((tr, tn)) with
         | true, table ->
             let fname = table[m]
-            let fd = defs[fname]
+            let fd = def fname
             let binds = Array.create fd.ngen None
             matchTy binds (List.foldBack (fun (_, p) acc -> TFun(p, acc)) fd.pars fd.ret) methodTy
             let inst = binds |> Array.map (Option.defaultValue tInt) |> List.ofArray
@@ -278,8 +280,8 @@ let run (prog: Program) : MFun list =
             // where it is from, for debug info: the impl's file
             let file =
                 match prog.impls.TryGetValue((tr, (match prune t with TCon(n, _) -> n | t -> showFull t))) with
-                | true, table when defs.ContainsKey table[m] -> defs[table[m]].file
-                | _ -> (Seq.head defs.Values).file
+                | true, table -> (def table[m]).file
+                | _ -> ""
 
             out.Add
                 { name = name
@@ -305,22 +307,12 @@ let run (prog: Program) : MFun list =
         | ">=" -> mk (CBin(op, call, mk (CInt 0L) tInt)) tBool
         | _ -> call
 
-    // roots: main (if any) and every exported function
-    if defs.ContainsKey "main" then
-        request "main" [] |> ignore
-
-    for e in prog.exports do
-        request e.fname [] |> ignore
-
-    for t in prog.tests do
-        request t [] |> ignore
-
-    for _, init in prog.values do
-        request init [] |> ignore
+    for r in roots do
+        request r [] |> ignore
 
     while queue.Count > 0 do
         let name, inst = queue.Dequeue()
-        let f = defs[name]
+        let f = def name
         let ct = concrete inst
         count.Value <- 0 // names numbered per instance: its code doesn't depend on others'
 
@@ -364,6 +356,19 @@ let run (prog: Program) : MFun list =
 
     List.ofSeq out
 
+/// The whole program from its entry points: main, the exported functions, the tests and the
+/// values' initializers.
+let run (prog: Program) : MFun list =
+    let defs = prog.funs |> List.map (fun f -> f.name, f) |> dict
+
+    let roots =
+        (if defs.ContainsKey "main" then [ "main" ] else [])
+        @ (prog.exports |> List.map (fun e -> e.fname))
+        @ prog.tests
+        @ (prog.values |> List.map snd)
+
+    runFrom prog (fun n -> defs[n]) roots (fun _ -> false)
+
 // ---- fusion: a pipeline of maps and filters over a list or an array, ending in a consumer
 // (sum, sumBy, length, fold, iter), becomes one loop that builds no intermediate list or array:
 //   List.init n g, a list, Array.init n g or an array
@@ -377,70 +382,120 @@ let run (prog: Program) : MFun list =
 // usually) still sees the elements in order; the stages must then be unable to panic, so no
 // effect of the consumer happens that a panic in a stage would have prevented.
 
-/// A function given to another thread (share.fn, from the type checker) mustn't reach a
-/// top-level value threads can't share, such as a `ref`: each thread would change it at once.
-/// Checked through what the function calls, after monomorphization so that every trait method
-/// call has its impl; then the marks go.
-let checkShared (prog: Program) (funs: MFun list) : MFun list =
+/// What a function reaches that threads can't share: the first top-level value of a type that
+/// isn't Share it uses, following its calls (and the local functions it calls), with the
+/// functions on the way there, its own first. external: what another module's code says of its
+/// functions (Driver's ABI); unknown functions reach nothing.
+let reaching (prog: Program) (funs: MFun list) (external: string -> (string * string list * Ty) option) =
     let byName = funs |> List.map (fun f -> f.name, f) |> dict
-    // the values of let-bound locals and local functions, by unique name: a crossing function
+    // the values of let-bound locals and local functions, by unique name, per function: one
     // that calls a function it captured runs that one's code
-    let locals = Dictionary<string, CExpr>()
+    let locals = Dictionary<string, Dictionary<string, CExpr>>()
 
-    let rec collect (e: CExpr) =
-        match e.k with
-        | CLetFun(n, _, ps, b, _) -> locals[n] <- { k = CLam(ps, b); ty = e.ty }
-        | CLetRec(fs, _) ->
-            for n, ps, b in fs do
-                locals[n] <- { k = CLam(ps, b); ty = e.ty }
-        | CLet(x, v, _) -> locals[x] <- v
-        | _ -> ()
+    let localsOf (f: MFun) =
+        match locals.TryGetValue f.name with
+        | true, d -> d
+        | _ ->
+            let d = Dictionary<string, CExpr>()
 
-        children e.k |> List.iter collect
+            let rec collect (e: CExpr) =
+                match e.k with
+                | CLetFun(n, _, ps, b, _) -> d[n] <- { k = CLam(ps, b); ty = e.ty }
+                | CLetRec(fs, _) ->
+                    for n, ps, b in fs do
+                        d[n] <- { k = CLam(ps, b); ty = e.ty }
+                | CLet(x, v, _) -> d[x] <- v
+                | _ -> ()
 
-    for f in funs do
-        collect f.body
+                children e.k |> List.iter collect
 
-    let check (file: string) (line: int) (start: CExpr) =
-        let seen = HashSet<string>()
+            collect f.body
+            locals[f.name] <- d
+            d
 
-        let rec walk (path: string list) (e: CExpr) =
+    let memo = Dictionary<string, (string * string list * Ty) option>()
+    let visiting = HashSet<string>()
+    // set when a walk meets a function it's inside of (a cycle): what that one reaches is found
+    // by the walk it's in, so an answer of nothing made meanwhile isn't kept
+    let mutable cut = false
+
+    /// What an expression of function f reaches (f's locals, for the local functions it calls).
+    let rec inExpr (mine: Dictionary<string, CExpr>) (seen: HashSet<string>) (e: CExpr) : (string * string list * Ty) option =
+        let here =
             match e.k with
             | CGlobalVal x ->
                 match shareBlocker ignore prog.types Set.empty e.ty with
-                | Some part ->
-                    let through = if path.IsEmpty then "" else sprintf " (through %s)" (path |> List.rev |> List.map (sprintf "'%s'") |> String.concat ", ")
-                    let holds = if part = e.ty then "" else sprintf ", which holds %s" (show part)
-
-                    raise (Syntax.CompileErrorAt(file, line, 0, sprintf "this function crosses threads, but it uses the top-level value '%s'%s : %s%s, which threads can't share; pass it what it needs instead" x through (show e.ty) holds))
-                | None -> ()
-            | CGlobal(f, _) -> follow path f
-            | CPrim(p, _) when p.StartsWith "fn:" -> follow path (p.Substring 3)
+                | Some _ -> Some(x, [], e.ty)
+                | None -> None
+            | CGlobal(g, _) -> through g
+            | CPrim(p, _) when p.StartsWith "fn:" -> through (p.Substring 3)
             | CLocal x ->
-                match prune e.ty, locals.TryGetValue x with
-                | TFun _, (true, v) when seen.Add x -> walk path v
-                | _ -> ()
-            | _ -> ()
+                match prune e.ty, mine.TryGetValue x with
+                | TFun _, (true, v) when seen.Add x -> inExpr mine seen v
+                | _ -> None
+            | _ -> None
 
-            children e.k |> List.iter (walk path)
+        match here with
+        | Some r -> Some r
+        | None -> children e.k |> List.tryPick (inExpr mine seen)
 
-        and follow path f =
-            match byName.TryGetValue f with
-            | true, fd when seen.Add f -> walk (fd.name.Split('<')[0] :: path) fd.body
-            | _ -> ()
+    /// What calling g reaches, g on the way.
+    and through (g: string) =
+        reach g |> Option.map (fun (x, path, t) -> x, (g.Split('<')[0]) :: path, t)
 
-        walk [] start
+    and reach (g: string) =
+        match memo.TryGetValue g with
+        | true, r -> r
+        | _ ->
+            match byName.TryGetValue g with
+            | true, f when visiting.Add g ->
+                let outer = cut
+                cut <- false
+                let r = inExpr (localsOf f) (HashSet()) f.body
+                visiting.Remove g |> ignore
 
-    let rec strip (file: string) (line: int) (e: CExpr) : CExpr =
+                if r.IsSome || not cut then
+                    memo[g] <- r
+
+                cut <- cut || outer
+                r
+            | true, _ ->
+                cut <- true
+                None
+            | _ -> external g
+
+    reach, (fun (f: MFun) (e: CExpr) -> inExpr (localsOf f) (HashSet()) e)
+
+/// A function given to another thread (share.fn, from the type checker) mustn't reach a
+/// top-level value threads can't share, such as a `ref`: each thread would change it at once.
+/// Checked through what the function calls, after monomorphization so that every trait method
+/// call has its impl (and other modules' functions by what their code says, external); then
+/// the marks go.
+let checkSharedWith (prog: Program) (external: string -> (string * string list * Ty) option) (funs: MFun list) : MFun list =
+    let _, inExpr = reaching prog funs external
+
+    let check (f: MFun) (line: int) (start: CExpr) =
+        match inExpr f start with
+        | Some(x, path, t) ->
+            let through = if path.IsEmpty then "" else sprintf " (through %s)" (path |> List.map (sprintf "'%s'") |> String.concat ", ")
+            let part = shareBlocker ignore prog.types Set.empty t |> Option.defaultValue t
+            let holds = if part = t then "" else sprintf ", which holds %s" (show part)
+
+            raise (Syntax.CompileErrorAt(f.file, line, 0, sprintf "this function crosses threads, but it uses the top-level value '%s'%s : %s%s, which threads can't share; pass it what it needs instead" x through (show t) holds))
+        | None -> ()
+
+    let rec strip (f: MFun) (line: int) (e: CExpr) : CExpr =
         match e.k with
-        | CLine(l, _) -> { e with k = mapChildren (strip file l) e.k }
-        | CPrim("share.fn", [ f ]) ->
-            check file line f
-            strip file line f
-        | CPrim("share.as", [ f ]) -> strip file line f
-        | k -> { e with k = mapChildren (strip file line) k }
+        | CLine(l, _) -> { e with k = mapChildren (strip f l) e.k }
+        | CPrim("share.fn", [ g ]) ->
+            check f line g
+            strip f line g
+        | CPrim("share.as", [ g ]) -> strip f line g
+        | k -> { e with k = mapChildren (strip f line) k }
 
-    funs |> List.map (fun f -> { f with body = strip f.file f.line f.body })
+    funs |> List.map (fun f -> { f with body = strip f f.line f.body })
+
+let checkShared (prog: Program) (funs: MFun list) : MFun list = checkSharedWith prog (fun _ -> None) funs
 
 type private Stage =
     | MapS of CExpr
@@ -530,6 +585,7 @@ let fuse (funs: MFun list) : MFun list =
     let elemOf (t: Ty) =
         match prune t with
         | TCon(("list" | "array"), [ el ]) -> el
+        | TCon(n, [ el ]) when n = windowType -> el // a span or a Buffer: read as an array is
         | t -> failwithf "fusion: %s has no elements" (show t)
 
     /// The pipeline under a consumer of a list (or an array): its stages, in order, and its source.
@@ -537,6 +593,13 @@ let fuse (funs: MFun list) : MFun list =
         let m = if isArray then "Collections.Array." else "Collections.List."
 
         match call xs with
+        | _ when isArray && (match xs.k with
+                             | CPrim(("span.ofArray" | "span.ofBuffer"), _) -> true
+                             | _ -> false) ->
+            // an array as a span: its elements are the span's
+            match xs.k with
+            | CPrim(_, [ a ]) -> chain isArray a stages
+            | _ -> failwith "unreachable"
         | Some(f, [ g; ys ]) when f = m + "map" && pureLambda g 1 -> chain isArray ys (MapS g :: stages)
         | Some(f, [ p; ys ]) when f = m + "filter" && pureLambda p 1 -> chain isArray ys (FilterS p :: stages)
         | Some(f, [ n; g ]) when f = m + "init" && pureLambda g 1 -> Init(n, g), stages

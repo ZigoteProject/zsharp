@@ -17,8 +17,20 @@ let rec private resultAfter n t =
     | n, TFun(_, r) -> resultAfter (n - 1) r
     | _ -> failwith "resultAfter: not a function type"
 
-let run (funs: MFun list) : MFun list =
-    let arity = funs |> List.map (fun f -> f.name, f.pars.Length) |> dict
+/// external: the arity of a function another module has the code of. wrapped: a closure of a
+/// top-level function goes through a function of its maker's own, which calls it, so a function
+/// borrows what it may whatever makes closures of it (a module's code is then the same whichever
+/// modules are made with it, Driver).
+let runWith (external: string -> int option) (wrapped: bool) (funs: MFun list) : MFun list =
+    let arities = funs |> List.map (fun f -> f.name, f.pars.Length) |> dict
+
+    let arity (g: string) =
+        match arities.TryGetValue g with
+        | true, n -> n
+        | _ ->
+            match external g with
+            | Some n -> n
+            | None -> failwithf "Lift: unknown function %s" g
     // per thread, for the function being converted: what it lifts out, its file and line, and
     // its lambdas' numbers (so its code doesn't depend on other functions')
     let out = new System.Threading.ThreadLocal<ResizeArray<MFun>>(fun () -> ResizeArray())
@@ -43,10 +55,37 @@ let run (funs: MFun list) : MFun list =
     let applyChain (f: CExpr) (args: CExpr list) =
         if args.IsEmpty then f else mk (CApplyClo(f, args)) (resultAfter args.Length f.ty)
 
-    let direct f (pre: CExpr list) n (fty: Ty) (args: CExpr list) =
+    /// A closure of top-level function g holding args (owner's): of g itself, or of a function
+    /// of owner's that calls g.
+    let closureOf (owner: string) (g: string) (fty: Ty) (args: CExpr list) =
+        if not wrapped then
+            mk (CMkClosure(g, args)) (resultAfter args.Length fty)
+        else
+            count.Value.Value <- count.Value.Value + 1
+            let w = sprintf "%s$call%d" owner count.Value.Value
+            let rec split n t = if n = 0 then [], t else (match prune t with TFun(a, r) -> (let ps, res = split (n - 1) r in a :: ps, res) | _ -> failwith "closureOf")
+            let ptys, res = split (arity g) fty
+            let ps = ptys |> List.mapi (fun i t -> sprintf "$w%d" i, t)
+            let body = mk (CCallDirect(g, ps |> List.map (fun (x, t) -> mk (CLocal x) t))) res
+
+            out.Value.Add
+                { name = w
+                  pars = ps
+                  ret = res
+                  body = body
+                  file = fst source.Value
+                  line = snd source.Value }
+
+            mk (CMkClosure(w, args)) (resultAfter args.Length fty)
+
+    /// A call of f with its first parameters pre (captures) and these arguments: direct when
+    /// they're enough, else a closure (topLevel: f is a top-level function, see closureOf).
+    let direct owner (topLevel: bool) f (pre: CExpr list) n (fty: Ty) (args: CExpr list) =
         if args.Length >= n then
             let now, later = List.splitAt n args
             applyChain (mk (CCallDirect(f, pre @ now)) (resultAfter n fty)) later
+        elif topLevel then
+            closureOf owner f fty args
         else
             mk (CMkClosure(f, pre @ args)) (resultAfter args.Length fty)
 
@@ -57,15 +96,15 @@ let run (funs: MFun list) : MFun list =
         | CLocal x when lfuns.ContainsKey x ->
             let lf = lfuns[x]
             mk (CMkClosure(lf.lname, capExprs lf.caps)) e.ty
-        | CGlobal(g, _) -> mk (CMkClosure(g, [])) e.ty
+        | CGlobal(g, _) -> closureOf owner g e.ty []
         | CApp(h, args) ->
             let args = List.map cv args
 
             match h.k with
-            | CGlobal(g, _) -> direct g [] arity[g] h.ty args
+            | CGlobal(g, _) -> direct owner true g [] (arity g) h.ty args
             | CLocal x when lfuns.ContainsKey x ->
                 let lf = lfuns[x]
-                direct lf.lname (capExprs lf.caps) lf.arity h.ty args
+                direct owner false lf.lname (capExprs lf.caps) lf.arity h.ty args
             | _ -> applyChain (cv h) args
         | CLam(ps, body) ->
             let caps = captures lfuns e Set.empty
@@ -136,3 +175,5 @@ let run (funs: MFun list) : MFun list =
         funs |> Array.ofList |> Array.Parallel.map one |> List.concat
     with :? System.AggregateException as e ->
         raise e.InnerExceptions[0]
+
+let run (funs: MFun list) : MFun list = runWith (fun _ -> None) false funs

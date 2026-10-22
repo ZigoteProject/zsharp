@@ -146,6 +146,8 @@ Some 36 None
 
 `when` adds a condition to a case.
 
+**`function`:** `function | p -> … | q -> …` is a lambda that matches its argument, for `fun x -> match x with …`: `List.map (function Some n -> n | None -> 0) opts`.
+
 **Checks:** the compiler rejects a `match` that misses a case, naming an example of the missing value, and a case that can never be reached.
 
 ```zsharp

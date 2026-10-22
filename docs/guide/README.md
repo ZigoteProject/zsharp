@@ -12,7 +12,7 @@ its exact output.
 2. [Basics](02-basics.md): values, functions, numbers, strings, control flow, mutation
 3. [Data](03-data.md): tuples, records, unions, options and results, pattern matching
 4. [Functions](04-functions.md): closures, pipelines, generics, members and named arguments
-5. [Collections](05-collections.md): lists, arrays and Buffers, Map, Set, HashMap
+5. [Collections](05-collections.md): lists (and list expressions), arrays and Buffers, spans and slices, fixed-size arrays, Map, Set, HashMap
 6. [Traits](06-traits.md): operators, equality and printing, impls, `dyn` values, derives
 7. [Errors](07-errors.md): results and `?`, panics, overflow
 8. [Programs](08-programs.md): modules, projects and dependencies, files and processes, tests, units of measure
@@ -28,3 +28,4 @@ its exact output.
 - [The library reference](../reference/README.md), generated from its doc comments by `zs doc`.
 - [DESIGN.md](../../DESIGN.md), the language design and the reasons behind it.
 - [ROADMAP.md](../../ROADMAP.md), what's done and what's next.
+- [Proposals](../proposals/README.md), the design documents for features under discussion.

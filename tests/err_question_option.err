@@ -1,0 +1,1 @@
+tests/err_question_option.zs:4:29: error: ? on an option in a function returning result<_, _>: use Option.toResult, or option { }

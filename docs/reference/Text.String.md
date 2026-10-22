@@ -240,6 +240,14 @@ String.byte : string -> int -> u8
 
 The byte at index `i`. Panics if out of range.
 
+### `String.bytes`
+
+```zsharp
+String.bytes : string -> span<u8>
+```
+
+The string's bytes (its UTF-8), as a span: no copy.
+
 ### `String.indexOfFrom`
 
 ```zsharp
@@ -263,6 +271,14 @@ String.ofByte : u8 -> string
 ```
 
 A one-byte string.
+
+### `String.ofBytes`
+
+```zsharp
+String.ofBytes : span<u8> -> string
+```
+
+A string with a copy of the bytes, each malformed UTF-8 byte replaced by U+FFFD.
 
 ### `String.ofCStr`
 

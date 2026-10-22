@@ -47,4 +47,5 @@ let main () =
 ```
 
 Read **[the guide](docs/guide/README.md)** to learn the language. [DESIGN.md](DESIGN.md) covers
-the design and the reasons behind it, and [ROADMAP.md](ROADMAP.md) what's done and what's next.
+the design and the reasons behind it, [ROADMAP.md](ROADMAP.md) what's done and what's next, and
+[docs/proposals](docs/proposals/README.md) the designs under discussion.

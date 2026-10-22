@@ -1,0 +1,1 @@
+tests/err_span_ofptr.zs:3:11: error: Span.ofPtr needs unsafe: the memory's lifetime isn't checked

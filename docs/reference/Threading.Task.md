@@ -227,6 +227,6 @@ Task.spawn : share<unit -> Task<'a>> -> Task<'a> when 'a : Share
 
 Runs the task `f` makes on another thread, which has an event loop of its own, so tasks
 use every core (a server's connections, say). `f` crosses threads, so what it captures
-must be Share, as the result must. The task stays on that thread to the end: cancelling
-this one doesn't stop it (its result is dropped).
+must be Share, as the result must. The task stays on that thread to the end; cancelling
+this one cancels it there (its `use` values are disposed on its thread).
 

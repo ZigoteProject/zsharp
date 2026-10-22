@@ -113,7 +113,14 @@ and private zsType' (ctx: Ctx) (depth: int) (qt: string) : Result<SType, string>
                     let args, ret = List.take ps.Length ts, List.last ts
                     let args = if args.IsEmpty then [ STName("unit", []) ] else args
                     Ok(STName("fnptr", [ List.foldBack (fun a acc -> STFun(a, acc)) args ret ]))
-    | _ when t.Contains "[" -> Error "it uses an array"
+    | _ when Regex.IsMatch(t, @"^[^\[]*\[\d+\]") ->
+        // T[N]: N elements inline, fixed<T, N>; int[3][4] is fixed<fixed<i32, 4>, 3>
+        let m = Regex.Match(t, @"^([^\[]*)\[(\d+)\](.*)$")
+
+        match zsType ctx (m.Groups[1].Value.Trim() + m.Groups[3].Value) with
+        | Ok el -> Ok(STName("fixed", [ el; STName(m.Groups[2].Value, []) ]))
+        | Error e -> Error e
+    | _ when t.Contains "[" -> Error "it uses an array without a length"
     | _ when t.EndsWith "*" ->
         match normalize (t.Substring(0, t.Length - 1)) with
         | "char"
@@ -341,7 +348,10 @@ let private importUncached (header: string) (dir: string) : Imported =
                 let pars =
                     parms
                     |> List.mapi (fun i p ->
-                        match zsType ctx (qualType p) with
+                        // an array parameter is a pointer to its first element, as in C
+                        let pt = Regex.Replace(qualType p, @"^([^\[]*)\[\d*\]", "$1*")
+
+                        match zsType ctx pt with
                         | Ok t -> Ok t
                         | Error e -> Error(sprintf "parameter %d: %s" (i + 1) e))
 
@@ -510,10 +520,13 @@ let private memo = Dictionary<string * string, DateTime * Imported>()
 /// The header's declarations, recording what was left out and editor info for each name.
 /// Cached in memory until the header changes, and on disk in cacheDir for machines where
 /// clang or the header is missing.
+/// Where a header's import is saved in cacheDir.
+let cacheFile (header: string) (cacheDir: string) = Path.Combine(cacheDir, Regex.Replace(header, @"[^A-Za-z0-9_.-]", "_") + ".json")
+
 let importHeader (header: string) (dir: string) (cacheDir: string) : (int * Decl) list =
     let path = Path.Combine(dir, header)
     let stamp = if File.Exists path then File.GetLastWriteTimeUtc path else DateTime.MinValue
-    let cacheFile = Path.Combine(cacheDir, Regex.Replace(header, @"[^A-Za-z0-9_.-]", "_") + ".json")
+    let cacheFile = cacheFile header cacheDir
 
     let r =
         match memo.TryGetValue((header, dir)) with

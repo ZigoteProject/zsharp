@@ -1,9 +1,10 @@
-/// The type checker's state (Typer.State) in a binary form, for the checked library cached
-/// between builds. Written out type by type, without reflection, so reading it back takes a few
-/// milliseconds. An object reached twice is written once, so what is shared stays shared: a
-/// type variable's cell, a syntax node a dictionary is keyed by. Syntax nodes keep their source
-/// positions. A new field of State, or a new case of the syntax tree or of Core (before closure
-/// conversion), needs its place here: tests/cache.sh fails until it has one.
+/// A module's checked result (what it wrote to Typer.State) in a binary form, for the cache
+/// that keeps each module between builds. Written out type by type, without reflection, so
+/// reading it back takes a few milliseconds. In each part, an object reached twice is written
+/// once, so what is shared stays shared: a type variable's cell, a syntax node a table is keyed
+/// by. Syntax nodes keep their source positions. A new field of State, or a new case of the
+/// syntax tree or of Core (before closure conversion), needs its place here: tests/cache.sh
+/// fails until it has one.
 module Snapshot
 
 open System.Collections.Generic
@@ -78,6 +79,10 @@ let private shared (c: W) (o: obj) (pos: bool) (body: unit -> unit) =
         c.ids[o] <- c.ids.Count
 
 let rec private ty (c: W) (t: Ty) =
+    // a linked variable as what it's linked to: equal types give equal bytes (so equal hashes),
+    // however inference got to them
+    let t = prune t
+
     shared c t false (fun () ->
         match t with
         | TCon(n, args) ->
@@ -332,7 +337,22 @@ let rec private expr (c: W) (e: Expr) =
             expr c a
         | Unsafe a ->
             tag c 36
-            expr c a)
+            expr c a
+        | ListComp(isArray, a) ->
+            tag c 37
+            bool' c isArray
+            expr c a
+        | Yield a ->
+            tag c 38
+            expr c a
+        | YieldAll a ->
+            tag c 39
+            expr c a
+        | Slice(a, i, j) ->
+            tag c 40
+            expr c a
+            opt c expr i
+            opt c expr j)
 
 and private param (c: W) (p: Pat, t: SType option) =
     pat c p
@@ -525,86 +545,147 @@ let private deriveDef (c: W) (l: int, n: string, ps: Param list, ret: SType opti
     opt c stype ret
     expr c body
 
-let private dict' (c: W) (k: W -> 'k -> unit) (v: W -> 'v -> unit) (d: Dictionary<'k, 'v>) =
-    c.w.Write d.Count
+let private entries (c: W) (k: W -> 'k -> unit) (v: W -> 'v -> unit) (xs: ('k * 'v) list) =
+    c.w.Write xs.Length
 
-    for KeyValue(key, value) in d do
+    for key, value in xs do
         k c key
         v c value
+
+/// A table's entries the module wrote (in the order first written).
+let private written (t: Table<'k, 'v>) = [ for k in t.Written -> k, t[k] ]
 
 let private pair (c: W) (a: string, b: string) =
     str c a
     str c b
 
-/// Writes the state; position: a syntax node's source position.
-let write (out: Stream) (st: State) (position: obj -> (int * int * int) option) =
-    use w = new BinaryWriter(out, System.Text.Encoding.UTF8, true)
+let private writer (w: BinaryWriter) (position: obj -> (int * int * int) option) =
+    { w = w
+      ids = Dictionary(HashIdentity.Reference)
+      strings = Dictionary()
+      position = position }
 
-    let c =
-        { w = w
-          ids = Dictionary(HashIdentity.Reference)
-          strings = Dictionary()
-          position = position }
+/// Bytes written by f into a writer of their own.
+let private bytesOf (position: obj -> (int * int * int) option) (f: W -> unit) =
+    use s = new MemoryStream()
 
+    do
+        use w = new BinaryWriter(s, System.Text.Encoding.UTF8, true)
+        f (writer w position)
+
+    s.ToArray()
+
+let private memberInfo (c: W) (m: MemberInfo) =
+    str c m.gname
+    bool' c m.isStatic
+    bool' c m.isProperty
+    list' c memberParam m.mpars
+
+let private members' (c: W) (ms: (string * MemberInfo) list) = entries c str memberInfo ms
+
+/// A module's result: what it wrote to the state after marks. iface is what the modules after
+/// it see; global' the part of it they see without naming the module (impls and members for
+/// others' types, automatic derives: only hashed); funs its functions' Core; hovers its hovers.
+type Parts =
+    { iface: byte[]
+      global': byte[]
+      funs: byte[]
+      hovers: byte[] }
+
+/// Writes the module's result; position: a syntax node's source position.
+let writeModule (st: State) (marks: Marks) (hovers: Hover seq) (position: obj -> (int * int * int) option) : Parts =
     let strSeq (c: W) (s: string seq) = seq' c str s
     let optStr (c: W) (s: string option) = opt c str s
-    dict' c str (fun c (i: TypeInfo) -> int' c i.npars; typeDef c i.def) st.types
-    dict' c str (fun c (u, t) -> str c u; int' c t) st.ctors
-    strSeq c st.records
-    dict' c str (fun c ds -> list' c (fun c d -> opt c expr d) ds) st.recordDefaults
-    dict' c str (fun c ns -> list' c optStr ns) st.ctorFieldNames
+    let slice (l: ResizeArray<'a>) (from: int) = [ for i in from .. l.Count - 1 -> l[i] ]
 
-    dict'
-        c
-        str
-        (fun c (ms: Dictionary<string, MemberInfo>) ->
-            dict' c str (fun c (m: MemberInfo) -> str c m.gname; bool' c m.isStatic; bool' c m.isProperty; list' c memberParam m.mpars) ms)
-        st.members
+    let iface =
+        bytesOf position (fun c ->
+            entries c str (fun c (i: TypeInfo) -> int' c i.npars; typeDef c i.def) (written st.types)
+            entries c str (fun c (u, t) -> str c u; int' c t) (written st.ctors)
+            list' c str (slice st.records marks.records)
+            entries c str (fun c ds -> list' c (fun c d -> opt c expr d) ds) (written st.recordDefaults)
+            entries c str (fun c ns -> list' c optStr ns) (written st.ctorFieldNames)
+            entries c str members' (written st.members)
+            strSeq c st.memberTypeNames.Added
+            entries c str (fun c (m: TraitMethod) -> str c m.owner; str c m.name; ty c m.ty; bool' c m.isConst) (written st.traitMethods)
+            entries c str str (written st.traitAliases)
+            strSeq c st.traitNames.Added
+            entries c pair (fun c t -> entries c str str [ for KeyValue(m, f) in t -> m, f ]) (written st.impls)
+            entries c pair (fun c reqs -> list' c (fun c s -> strSeq c s) reqs) (written st.implRequires)
+            entries c str (fun c defs -> list' c deriveDef defs) (written st.derives)
+            entries c str optStr (written st.deriveModules)
+            entries c str (fun c (f, total, n) -> str c f; bool' c total; int' c n) (written st.activePatterns)
+            strSeq c st.apCtors.Added
+            seq' c pair st.autoDerived.Added
+            seq' c pair st.optOut.Added
+            entries c str (fun c (g: Global) -> ty c g.ty; list' c kind g.kinds; int' c g.arity; bool' c g.defining) (written st.globals)
+            entries c str (fun c (s: ExternSig) -> list' c ty s.pars; ty c s.ret; bool' c s.variadic) (written st.externs)
+            strSeq c st.measures.Added
+            strSeq c st.clayouts.Added
+            entries c str (fun c (vs: string list) -> list' c str vs) (written st.targets)
+            list' c (fun c (e: Export) -> str c e.cname; str c e.fname; list' c ty e.pars; ty c e.ret) (slice st.exports marks.exports)
+            list' c str (slice st.tests marks.tests)
+            entries c str expr (written st.consts)
+            entries c str ty (written st.globalValues)
+            list' c pair (slice st.valueList marks.valueList)
+            entries c str optStr (written st.privates)
+            strSeq c st.moduleNames.Added
+            strSeq c st.mainNested.Added
+            strSeq c st.nestedModules.Added
+            entries c str (fun c ms -> list' c str ms) (written st.enclosingOf)
+            // last: the record literals of what's written above (constants, defaults, derives),
+            // which a use elsewhere types as this module did; not those in function bodies
+            entries c expr str (written st.literalRecords |> List.filter (fun (e, _) -> c.ids.ContainsKey e)))
 
-    strSeq c st.memberTypeNames
-    dict' c str (fun c (m: TraitMethod) -> str c m.owner; str c m.name; ty c m.ty; bool' c m.isConst) st.traitMethods
-    dict' c str str st.traitAliases
-    strSeq c st.traitNames
-    dict' c pair (fun c t -> dict' c str str t) st.impls
-    dict' c pair (fun c reqs -> list' c (fun c s -> strSeq c s) reqs) st.implRequires
-    dict' c str (fun c defs -> list' c deriveDef defs) st.derives
-    dict' c str optStr st.deriveModules
-    dict' c str (fun c (f, total, n) -> str c f; bool' c total; int' c n) st.activePatterns
-    strSeq c st.apCtors
-    seq' c pair st.ownImpls
-    seq' c pair st.autoDerived
-    seq' c pair st.optOut
-    dict' c str (fun c (g: Global) -> ty c g.ty; list' c kind g.kinds; int' c g.arity; bool' c g.defining) st.globals
-    dict' c str (fun c (s: ExternSig) -> list' c ty s.pars; ty c s.ret; bool' c s.variadic) st.externs
+    // what's seen without naming the module: impls and automatic derives for (trait, type) with
+    // neither of them its own, and members of others' types
+    let ownTypes = HashSet<string>(st.types.Written)
+    let ownTraits = HashSet<string>(st.traitNames.Added)
+    let others (tr: string, t: string) = not (ownTypes.Contains t || ownTraits.Contains tr)
 
-    seq'
-        c
-        (fun c (f: FunDef) ->
-            str c f.name
-            list' c tyBinding f.pars
-            ty c f.ret
-            cexpr c f.body
-            int' c f.ngen
-            str c f.file
-            int' c f.line)
-        st.funs
+    let global' =
+        bytesOf position (fun c ->
+            entries c pair (fun c t -> entries c str str [ for KeyValue(m, f) in t -> m, f ]) (written st.impls |> List.filter (fst >> others))
+            entries c pair (fun c reqs -> list' c (fun c s -> strSeq c s) reqs) (written st.implRequires |> List.filter (fst >> others))
+            list' c pair (st.autoDerived.Added |> Seq.filter others |> List.ofSeq)
+            entries c str members' (written st.members |> List.filter (fun (t, _) -> not (ownTypes.Contains t))))
 
-    int' c st.counter.Value
-    strSeq c st.measures
-    strSeq c st.clayouts
-    dict' c str (fun c (vs: string list) -> list' c str vs) st.targets
-    seq' c (fun c (e: Export) -> str c e.cname; str c e.fname; list' c ty e.pars; ty c e.ret) st.exports
-    strSeq c st.tests
-    dict' c str expr st.consts
-    dict' c str ty st.globalValues
-    seq' c pair st.valueList
-    dict' c expr str st.literalRecords
-    dict' c str optStr st.privates
-    strSeq c st.moduleNames
-    strSeq c st.mainNested
-    strSeq c st.nestedModules
-    dict' c str (fun c ms -> list' c str ms) st.enclosingOf
-    int' c st.typeVars
+    let funs =
+        bytesOf position (fun c ->
+            list'
+                c
+                (fun c (f: FunDef) ->
+                    str c f.name
+                    list' c tyBinding f.pars
+                    ty c f.ret
+                    cexpr c f.body
+                    int' c f.ngen
+                    str c f.file
+                    int' c f.line)
+                (slice st.funs marks.funs))
+
+    let hovers =
+        bytesOf position (fun c ->
+            seq'
+                c
+                (fun c (h: Hover) ->
+                    str c h.hfile
+                    int' c h.hline
+                    int' c h.hcol
+                    int' c h.hlen
+                    str c h.name
+                    ty c h.hty
+                    str c h.constraints
+                    bool' c h.decl
+                    str c h.key
+                    bool' c h.isDef
+                    bool' c h.inlay)
+                hovers)
+
+    { iface = iface
+      global' = global'
+      funs = funs
+      hovers = hovers }
 
 // ---------------------------------------------------------------- reading
 
@@ -827,6 +908,15 @@ let rec private rexpr (c: R) : Expr =
             let a = rexpr c
             Typed(a, rstype c)
         | 36 -> Unsafe(rexpr c)
+        | 37 ->
+            let isArray = rbool c
+            ListComp(isArray, rexpr c)
+        | 38 -> Yield(rexpr c)
+        | 39 -> YieldAll(rexpr c)
+        | 40 ->
+            let a = rexpr c
+            let i = ropt c rexpr
+            Slice(a, i, ropt c rexpr)
         | _ ->
             let l = rint c
             At(l, rexpr c))
@@ -985,62 +1075,63 @@ let private rderiveDef (c: R) =
     let ret = ropt c rstype
     l, n, ps, ret, rexpr c
 
-let private rdict (c: R) (d: Dictionary<'k, 'v>) (k: R -> 'k) (v: R -> 'v) =
-    for _ in 1 .. c.r.ReadInt32() do
+let private rentries (c: R) (k: R -> 'k) (v: R -> 'v) : ('k * 'v) list =
+    let n = c.r.ReadInt32()
+
+    List.init n (fun _ ->
         let key = k c
-        d[key] <- v c
-
-    d
-
-let private rinto (c: R) (add: 'a -> unit) (f: R -> 'a) =
-    for _ in 1 .. c.r.ReadInt32() do
-        add (f c)
+        key, v c)
 
 let private rpair (c: R) =
     let a = rstr c
     a, rstr c
 
-/// Reads a state write wrote; place o p: a syntax node's source position.
-let read (input: Stream) (place: obj -> int * int * int -> unit) : State =
-    use r = new BinaryReader(input, System.Text.Encoding.UTF8, true)
+let private reader (bytes: byte[]) (place: obj -> int * int * int -> unit) (f: R -> 'a) : 'a =
+    use s = new MemoryStream(bytes, false)
+    use r = new BinaryReader(s, System.Text.Encoding.UTF8, true)
 
-    let c =
+    f
         { r = r
           objs = ResizeArray()
           strs = ResizeArray()
           place = place }
 
-    let set (h: HashSet<'a>) (f: R -> 'a) =
-        rinto c (fun x -> h.Add x |> ignore) f
-        h
+let private rmemberInfo (c: R) : MemberInfo =
+    let g = rstr c
+    let s = rbool c
+    let p = rbool c
 
-    let resize (l: ResizeArray<'a>) (f: R -> 'a) =
-        rinto c l.Add f
-        l
+    { gname = g
+      isStatic = s
+      isProperty = p
+      mpars = rlist c rmemberParam }
 
-    let optStr (c: R) = ropt c rstr
-    let types = rdict c (Dictionary()) rstr (fun c -> (let n = rint c in { npars = n; def = rtypeDef c }))
-    let ctors = rdict c (Dictionary()) rstr (fun c -> (let u = rstr c in u, rint c))
-    let records = resize (ResizeArray()) rstr
-    let recordDefaults = rdict c (Dictionary()) rstr (fun c -> rlist c (fun c -> ropt c rexpr))
-    let ctorFieldNames = rdict c (Dictionary()) rstr (fun c -> rlist c optStr)
+/// Writes a module's result (its iface part) back into the state, as checking it did; place o p:
+/// a syntax node's source position. Returns the functions it defines (its funs part's names),
+/// with the number of type variables each is generic over.
+let readModule (iface: byte[]) (st: State) (place: obj -> int * int * int -> unit) : (string * int) list =
+    reader iface place (fun c ->
+        let names = ResizeArray<string * int>()
 
-    let members =
-        rdict c (Dictionary()) rstr (fun c ->
-            rdict c (Dictionary()) rstr (fun c ->
-                let g = rstr c
-                let s = rbool c
-                let p = rbool c
+        let put (t: Table<'k, 'v>) (k: R -> 'k) (v: R -> 'v) =
+            for key, value in rentries c k v do
+                t[key] <- value
 
-                { gname = g
-                  isStatic = s
-                  isProperty = p
-                  mpars = rlist c rmemberParam }))
+        let add (b: Bag<'a>) (f: R -> 'a) =
+            for x in rlist c f do
+                b.Add x |> ignore
 
-    let memberTypeNames = set (HashSet()) rstr
+        let append (l: ResizeArray<'a>) (f: R -> 'a) = l.AddRange(rlist c f)
+        let optStr (c: R) = ropt c rstr
+        put st.types rstr (fun c -> (let n = rint c in { npars = n; def = rtypeDef c }))
+        put st.ctors rstr (fun c -> (let u = rstr c in u, rint c))
+        append st.records rstr
+        put st.recordDefaults rstr (fun c -> rlist c (fun c -> ropt c rexpr))
+        put st.ctorFieldNames rstr (fun c -> rlist c optStr)
+        put st.members rstr (fun c -> rentries c rstr rmemberInfo)
+        add st.memberTypeNames rstr
 
-    let traitMethods =
-        rdict c (Dictionary()) rstr (fun c ->
+        put st.traitMethods rstr (fun c ->
             let o = rstr c
             let n = rstr c
             let t = rty c
@@ -1050,37 +1141,44 @@ let read (input: Stream) (place: obj -> int * int * int -> unit) : State =
               ty = t
               isConst = rbool c })
 
-    let traitAliases = rdict c (Dictionary()) rstr rstr
-    let traitNames = set (HashSet()) rstr
-    let impls = rdict c (Dictionary()) rpair (fun c -> rdict c (Dictionary()) rstr rstr)
-    let implRequires = rdict c (Dictionary()) rpair (fun c -> rlist c (fun c -> Set.ofList (rlist c rstr)))
-    let derives = rdict c (Dictionary()) rstr (fun c -> rlist c rderiveDef)
-    let deriveModules = rdict c (Dictionary()) rstr optStr
+        put st.traitAliases rstr rstr
+        add st.traitNames rstr
 
-    let activePatterns =
-        rdict c (Dictionary()) rstr (fun c ->
+        put st.impls rpair (fun c ->
+            let d = Dictionary<string, string>()
+
+            for m, f in rentries c rstr rstr do
+                d[m] <- f
+
+            d)
+
+        put st.implRequires rpair (fun c -> rlist c (fun c -> Set.ofList (rlist c rstr)))
+        put st.derives rstr (fun c -> rlist c rderiveDef)
+        put st.deriveModules rstr optStr
+
+        put st.activePatterns rstr (fun c ->
             let f = rstr c
             let total = rbool c
             f, total, rint c)
 
-    let apCtors = set (HashSet()) rstr
-    let ownImpls = set (HashSet()) rpair
-    let autoDerived = set (HashSet()) rpair
-    let optOut = set (HashSet()) rpair
+        add st.apCtors rstr
+        add st.autoDerived rpair
+        add st.optOut rpair
 
-    let globals =
-        rdict c (Dictionary()) rstr (fun c ->
-            let t = rty c
-            let ks = rlist c rkind
-            let a = rint c
+        for name, g in
+            rentries c rstr (fun c ->
+                let t = rty c
+                let ks = rlist c rkind
+                let a = rint c
 
-            { ty = t
-              kinds = ks
-              arity = a
-              defining = rbool c })
+                { ty = t
+                  kinds = ks
+                  arity = a
+                  defining = rbool c }) do
+            st.globals[name] <- g
+            names.Add(name, g.kinds.Length)
 
-    let externs =
-        rdict c (Dictionary()) rstr (fun c ->
+        put st.externs rstr (fun c ->
             let ps = rlist c rty
             let ret = rty c
 
@@ -1089,8 +1187,41 @@ let read (input: Stream) (place: obj -> int * int * int -> unit) : State =
                variadic = rbool c }
             : ExternSig))
 
-    let funs =
-        resize (ResizeArray()) (fun c ->
+        add st.measures rstr
+        add st.clayouts rstr
+        put st.targets rstr (fun c -> rlist c rstr)
+
+        append st.exports (fun c ->
+            let cn = rstr c
+            let fn = rstr c
+            let ps = rlist c rty
+
+            ({ cname = cn
+               fname = fn
+               pars = ps
+               ret = rty c }
+            : Export))
+
+        append st.tests rstr
+        put st.consts rstr rexpr
+        put st.globalValues rstr rty
+
+        for v, init in rlist c rpair do
+            st.valueList.Add(v, init)
+            names.Add(init, 0)
+
+        put st.privates rstr optStr
+        add st.moduleNames rstr
+        add st.mainNested rstr
+        add st.nestedModules rstr
+        put st.enclosingOf rstr (fun c -> rlist c rstr)
+        put st.literalRecords rexpr rstr
+        List.ofSeq names)
+
+/// A module's functions (its funs part).
+let readFuns (funs: byte[]) : FunDef list =
+    reader funs (fun _ _ -> ()) (fun c ->
+        rlist c (fun c ->
             let n = rstr c
             let ps = rlist c rtyBinding
             let ret = rty c
@@ -1105,71 +1236,98 @@ let read (input: Stream) (place: obj -> int * int * int -> unit) : State =
                ngen = ngen
                file = file
                line = rint c }
-            : FunDef))
+            : FunDef)))
 
-    let counter = ref (rint c)
-    let measures = set (HashSet()) rstr
-    let clayouts = set (HashSet()) rstr
-    let targets = rdict c (Dictionary()) rstr (fun c -> rlist c rstr)
+/// A module's hovers (its hovers part).
+let readHovers (hovers: byte[]) : Hover list =
+    reader hovers (fun _ _ -> ()) (fun c ->
+        rlist c (fun c ->
+            let file = rstr c
+            let line = rint c
+            let col = rint c
+            let len = rint c
+            let name = rstr c
+            let t = rty c
+            let cons = rstr c
+            let decl = rbool c
+            let key = rstr c
+            let isDef = rbool c
 
-    let exports =
-        resize (ResizeArray()) (fun c ->
-            let cn = rstr c
-            let fn = rstr c
-            let ps = rlist c rty
+            { hfile = file
+              hline = line
+              hcol = col
+              hlen = len
+              name = name
+              hty = t
+              constraints = cons
+              decl = decl
+              key = key
+              isDef = isDef
+              inlay = rbool c }))
 
-            ({ cname = cn
-               fname = fn
-               pars = ps
-               ret = rty c }
-            : Export))
+// ---------------------------------------------------------------- a module's code
 
-    let tests = resize (ResizeArray()) rstr
-    let consts = rdict c (Dictionary()) rstr rexpr
-    let globalValues = rdict c (Dictionary()) rstr rty
-    let valueList = resize (ResizeArray()) rpair
-    let literalRecords = rdict c (Dictionary(HashIdentity.Reference)) rexpr rstr
-    let privates = rdict c (Dictionary()) rstr optStr
-    let moduleNames = set (HashSet()) rstr
-    let mainNested = set (HashSet()) rstr
-    let nestedModules = set (HashSet()) rstr
-    let enclosingOf = rdict c (Dictionary()) rstr (fun c -> rlist c rstr)
+/// What one module's code shows the others, for each function they may call (its own
+/// non-generic ones): its parameter and result types after uncurrying, the parameters it
+/// borrows, and the first top-level value threads can't share that it reaches (with the
+/// functions on the way).
+type AbiFun =
+    { name: string
+      pars: Ty list
+      ret: Ty
+      borrowed: int list
+      reach: (string * string list * Ty) option }
 
-    { types = types
-      ctors = ctors
-      records = records
-      recordDefaults = recordDefaults
-      ctorFieldNames = ctorFieldNames
-      members = members
-      memberTypeNames = memberTypeNames
-      traitMethods = traitMethods
-      traitAliases = traitAliases
-      traitNames = traitNames
-      impls = impls
-      implRequires = implRequires
-      derives = derives
-      deriveModules = deriveModules
-      activePatterns = activePatterns
-      apCtors = apCtors
-      ownImpls = ownImpls
-      autoDerived = autoDerived
-      optOut = optOut
-      globals = globals
-      externs = externs
-      funs = funs
-      counter = counter
-      measures = measures
-      clayouts = clayouts
-      targets = targets
-      exports = exports
-      tests = tests
-      consts = consts
-      globalValues = globalValues
-      valueList = valueList
-      literalRecords = literalRecords
-      privates = privates
-      moduleNames = moduleNames
-      mainNested = mainNested
-      nestedModules = nestedModules
-      enclosingOf = enclosingOf
-      typeVars = rint c }
+/// A module's code as the module cache keeps it: what it was made from besides its own checked
+/// result (other modules: the key of their checked result, "check", for the generic functions
+/// it has copies of; the hash of their ABI, "abi", for the functions it calls), its ABI, and
+/// what the program's runtime needs to know of it ("weak", "wide", "threads").
+type World =
+    { deps: (string * string * string) list
+      abi: AbiFun list
+      facts: string list }
+
+let private abiFun (c: W) (f: AbiFun) =
+    str c f.name
+    list' c ty f.pars
+    ty c f.ret
+    list' c int' f.borrowed
+    opt c (fun c (x, path, t) -> str c x; list' c str path; ty c t) f.reach
+
+/// A module's ABI in bytes (what its hash is of).
+let abiBytes (abi: AbiFun list) = bytesOf (fun _ -> None) (fun c -> list' c abiFun abi)
+
+let writeWorld (w: World) =
+    bytesOf (fun _ -> None) (fun c ->
+        list' c (fun c (u, kind, h) -> str c u; str c kind; str c h) w.deps
+        list' c abiFun w.abi
+        list' c str w.facts)
+
+let readWorld (bytes: byte[]) : World =
+    reader bytes (fun _ _ -> ()) (fun c ->
+        let deps =
+            rlist c (fun c ->
+                let u = rstr c
+                let kind = rstr c
+                u, kind, rstr c)
+
+        let abi =
+            rlist c (fun c ->
+                let n = rstr c
+                let ps = rlist c rty
+                let ret = rty c
+                let borrowed = rlist c rint
+
+                { name = n
+                  pars = ps
+                  ret = ret
+                  borrowed = borrowed
+                  reach =
+                    ropt c (fun c ->
+                        let x = rstr c
+                        let path = rlist c rstr
+                        x, path, rty c) })
+
+        { deps = deps
+          abi = abi
+          facts = rlist c rstr })

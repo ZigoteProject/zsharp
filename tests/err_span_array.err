@@ -1,0 +1,1 @@
+tests/err_span_array.zs:5:14: error: argument 1 of 'first': expected array<u8>, got span<u8>: Array.ofSpan copies it

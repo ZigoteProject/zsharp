@@ -9,7 +9,8 @@ against C, from desktop CPUs down to microcontrollers.
 
 **Reading this document:** it describes the language as designed. Anything not built yet is
 marked **(planned)**, with the phase or track that builds it. Status and order:
-[ROADMAP.md](ROADMAP.md).
+[ROADMAP.md](ROADMAP.md). A feature not designed yet has a proposal in
+[docs/proposals](docs/proposals/README.md), in the form of F#'s RFCs.
 To learn the language: [the guide](docs/guide/README.md).
 
 ## 1. Goals and non-goals
@@ -72,10 +73,10 @@ let sumTo n =                            // imperative code is fine; mutation st
 
 - **Bindings:** `let`, `let mutable` with `<-`, `let rec`, and shadowing.
   - A `let mutable` can't be captured by a closure (an F# rule that §5 relies on); `ref` cells can.
-  - **Compound assignment (planned, phase 9.6):** `+=`, `-=`, `*=`, `/=`, `%=`, `&&&=`, `|||=` and `^^^=` on anything `<-` assigns (a `let mutable`, a `ref`'s `.Value`, an array or `Buffer` element), with the place evaluated once: `total.Value += i * i`.
+  - **Compound assignment:** `+=`, `-=`, `*=`, `/=`, `%=`, `&&&=`, `|||=` and `^^^=` on anything `<-` assigns (a `let mutable`, a `ref`'s `.Value`, an array or `Buffer` element), with the place evaluated once: `total.Value += i * i`.
   - **Top-level values:**
     - **Constants:** built from literals, operators, conditionals, constructors, records, tuples, conversions and other constants. They're inlined at each use, and an unannotated number constant takes the type each use needs, like a literal. Their names resolve where they're defined.
-      - **Generic (planned, phase 9.6):** a constant whose type has type variables is generalized, as F# generalizes values, so `let empty : Map<'k, 'v> = MapLeaf` is a `Map` of any type. The library's empty collections become values (`Map.empty`, `Set.empty`), with no `()`.
+      - **Generic:** a constant whose type has type variables is generalized, as F# generalizes values, so `let empty : Map<'k, 'v> = MapLeaf` is a `Map` of any type. The library's empty collections become values (`Map.empty`, `Set.empty`), with no `()`.
     - **Other values:** these are computed once at startup, before `main`, in module order then declaration order, and freed at exit.
     - **Order:** declarations are in order, so nothing can read a value before it's initialized.
     - **Libraries:** a library (`--lib`) has no startup, so it can only have constants.
@@ -88,8 +89,8 @@ let sumTo n =                            // imperative code is fine; mutation st
   - **`char`:** a Unicode scalar value (32 bits), written `'a'`, `'\n'` or `'\u{1F600}'`. It has equality, ordering, hashing and printing, and `match` on character literals, but no arithmetic. `int c` and `char n` convert.
   - **Strings and characters:** `for c in s` decodes a string's UTF-8 character by character; `String.length` stays the byte length. The `Char` functions classify ASCII.
   - **SIMD vectors** `f32x4`, `i32x8`, `u8x32`, … (§8).
-- **Data:** tuples, records (`{ p with x = 1.0 }`), unions; library types `option`, `result`, `list`, `array`, `Buffer`, `ref`, `Map`, `Set`, `HashMap`, and `span` **(planned, phase 9.6, §5.1)**.
-  - **List and array expressions (planned, phase 9.6):** `[ for x in xs -> f x ]`, `[ for x in xs do if p x then yield f x ]`, and the same in `[| … |]`. They lower to the pipelines fusion makes one loop of (§9.1), so no list is built in between.
+- **Data:** tuples, records (`{ p with x = 1.0 }`), unions; library types `option`, `result`, `list`, `array`, `Buffer`, `ref`, `Map`, `Set`, `HashMap`, `span` (§5.1) and `fixed` (§5).
+  - **List and array expressions:** `[ for x in xs -> f x ]`, `[ for x in xs do if p x then yield f x ]`, and the same in `[| … |]`. They lower to the pipelines fusion makes one loop of (§9.1), so no list is built in between.
 - **Functions:**
   - Curried, with closures (`fun x -> …`), `|>`, `>>` and partial application.
   - **Blocks inside brackets:** inside a bracket, a line ending in `->` (or `then`, `else`, `do`) and deeper lines after it open a block, as at the top level. So `xs |> List.map (fun x ->` can be followed by a multi-line body, and `Parser (fun cs ->` by a `match`. The block ends at the bracket's closer or at a line left of it.
@@ -100,9 +101,9 @@ let sumTo n =                            // imperative code is fine; mutation st
 - **Pattern matching:**
   - Supports nesting, literals (numbers, characters, strings, bools), tuples, records (`{ x = 0; y = y }`, fields left out match anything), union cases (positional or by field name), lists, guards, `as` and or-patterns that bind variables.
   - Patterns work in `match`, `let`, function parameters (`let norm { x = x; y = y } = …`), lambdas and `for` loops.
-  - **`function` (planned, phase 9.6):** `function | p -> … | q -> …` is `fun x -> match x with …`.
+  - **`function`:** `function | p -> … | q -> …` is `fun x -> match x with …`.
   - A match that misses a case is an **error** naming an example of the missing value (`missing case: { kind = C }`). So is a case that can never match.
-- **Errors:** `result` with a postfix `?` that returns the error early (`let x = parse s?`, or `parse s?` as a statement). `?` applies to the whole call before it. `result { }` does the same for a block, with `let!` (§4). `?` on an `option` in a function that returns one **(planned, phase 9.6)**.
+- **Errors:** `result` with a postfix `?` that returns the error early (`let x = parse s?`, or `parse s?` as a statement). `?` applies to the whole call before it. `result { }` does the same for a block, with `let!` (§4). `?` on an `option` in a function that returns one does the same with `None`.
 - **Panics:** for bugs, not errors a caller handles. These all panic: an out-of-bounds index, division by zero, integer overflow, a failed `assert`, an explicit `panic`.
   - A panic prints a message (and a backtrace where the C library supports it), then stops the program at once: no unwinding, no cleanup, exit status 134, no core dump. `ZS_ABORT=1` makes it a real `abort()` for a debugger.
   - Panics can't be caught. So there are no landing pads, and nothing unwinds through C frames.
@@ -269,7 +270,7 @@ The full example is `tests/json.zs`.
 - **Not included:**
   - Derives can't add members, types or other declarations.
   - There are no field attributes yet, such as renaming a JSON key.
-  - Declarations generated from a schema, as F# type providers do, would be a later generalization of `import c`.
+  - Declarations generated from a data source, as F# type providers do: [proposal 0001](docs/proposals/0001-type-providers.md) generalizes `import c` to providers that write Z# source (track P). A provided JSON record is a record with this derive.
 
 ## 4. Computation expressions
 
@@ -317,7 +318,7 @@ form says the same, where it matters.
   - **Which types:** numbers, `bool`, tuples, records, and **small unions**: unions that aren't recursive and have at most 4 fields over all their cases, none of them heap data.
   - **Small unions:** these are a tag plus fields, e.g. `option<int>`, `result<int, f64>`, enums, and state machines with number fields. They never allocate.
   - **Enums:** a union whose cases have no fields is one byte, so an array of them is a byte per element. Other small unions have a 32-bit tag, which costs no space next to their fields and no extension on a 32-bit chip.
-  - **Fixed-size arrays (planned, phase 9.6):** `fixed<'a, N>` holds its N elements inline, so a record with one matches a C struct's array field (§11).
+  - **Fixed-size arrays:** `fixed<'a, N>` holds its N elements inline, so a record with one matches a C struct's array field (§11).
 - **Heap objects:** strings, arrays, `Buffer`, `ref`, closures, lists, and the other unions.
   - **Header:** each object starts with one word: a 32-bit reference count, and on a 64-bit target beside it the case tag of a union cell (when the union has more than one case with fields) and where the object came from (the pool's size class, §5.2). On a 32-bit chip the count is the word, and a union cell with a tag has a word for it after. Strings and arrays add a word-sized length, closures their code and a pointer to what describes them (§9.1). A list cell is the header, the head and the tail.
   - **The count's range:** past 2³¹ references, a count turns negative and stays so: the object is never freed, as Koka's sticky counts. (Koka's header also has the number of fields to scan, for a generic drop; Z#'s drops are generated per type.)
@@ -329,7 +330,7 @@ form says the same, where it matters.
   - `Array.set a i x` returns the changed array.
   - **`Buffer<'a>`:** a fixed-size *shared* mutable array, for when a write must be seen through every alias (a ring buffer handed to C, a shared scratch buffer).
   - This is a deliberate difference from F#, whose arrays are shared mutable references.
-- **Spans (planned, phase 9.6):** `span<'a>` is a window into an array, a string or a `Buffer`, without copying: its owner, an offset and a length. It holds a reference to its owner, so it can't dangle, and it's read-only over arrays and strings (they're values) and writable over a `Buffer`.
+- **Spans:** `span<'a>` is a window into an array, a string or a `Buffer`, without copying: its owner, a pointer to its first element and a length, three words in registers. It holds a reference to its owner, so it can't dangle, and it's read-only over arrays and strings (they're values) and writable over a `Buffer`, whose slice is a `Buffer` sharing its storage ([proposal 0003](docs/proposals/0003-spans-and-slices.md)); a `Buffer` is such a window itself.
   - **Slices:** `a.[1..3]`, `a.[..n]` and `a.[i..]` on an array or a `Buffer` are spans, not copies. A string's slice is a string, as in F#, at byte offsets that must fall between characters (a panic otherwise), and `String.bytes s` is its bytes as a `span<u8>`, for parsers, without a copy.
   - **Where one is expected:** an array or a `Buffer` becomes a span with no conversion written, as a value becomes a `dyn` (§3), so the library's reading functions (`Array.sum`, `fold`, `exists`, …) take spans and work on all three. Parsers and IO take spans.
   - **C:** a span crosses to C as a pointer and a length (§11), and a span over C memory is made only in `unsafe`.
@@ -469,6 +470,8 @@ let squares = Array.Parallel.init n (fun i -> i * i)
 ```
 
 - **Thread pool:** work stealing with Chase–Lev deques (Lê et al.'s C11 version), a thread per core (`ZS_WORKERS` sets the number). Fork-join: `Parallel.*` halves its range until a part is about 1/32 of a thread's share, forking one half; a join runs the job itself if no one stole it, and other jobs while it waits.
+  - **Any thread forks onto it** ([proposal 0008](docs/proposals/0008-threads.md)): one outside the pool (a task's loop thread, `Task.blocking`'s helper, a C host's) takes a deque of its own the first time, given back when it ends, so `Parallel.for` inside a spawned task uses every worker.
+  - **Waiting jobs:** a job that waits in a channel, or for a mutex past a short spin, tells the pool, which starts a spare worker (or wakes one) while fewer threads than it has cores are left to run jobs, as Java's ForkJoinPool does for a managed blocker. So a channel of capacity zero works between two jobs. Running other jobs while waiting would nest them on the waiting job's stack, and could deadlock on what it holds. Spares are at most twice the cores: with none left free, every job waits for another, and that's a panic rather than a hang.
 - **What crosses: the `Share` trait,** like Rust's `Send` but with no lifetimes. A value may cross threads only if it's immutable or made for threads. Immutable-by-default means nearly all data qualifies.
   - **Share:** numbers, `bool`, `char`, `string`, and records, unions, tuples, lists and arrays (they're values) whose parts are Share; `share<F>` functions; `Atomic`, `Mutex` and `Channel`.
   - **Not Share:** `ref`, `Buffer`, `weak`, `dyn` values, C pointers, and plain functions.
@@ -478,6 +481,7 @@ let squares = Array.Parallel.init n (fun i -> i * i)
 - **Reference counts across threads** (as in Koka and Lean): RC is non-atomic by default. When a value is sent to another thread, its object graph is marked *shared* once, and only those objects use atomic RC from then on (§7.1).
 - **Library:** `Parallel.both`, `for` and `reduce`; `Array.Parallel.init` and `map`; `Atomic` (lock-free, for numbers, `bool` and `char`); `Mutex` (a futex lock, `Mutex.update` under it); `Channel` (bounded, any number of senders and receivers).
 - **Tasks on every core:** each thread has its own event loop. `Task.spawn` hands a `share<unit -> Task<'a>>` to one of a set of loop threads (a thread per core), where the task runs to the end; its result comes back through the spawning loop's inbox (a pipe the loop's epoll watches). `Task.blocking`'s helper thread uses the same inbox. A task never moves between threads: what it holds can be thread-local.
+  - **Cancelling across threads:** cancelling a task cancels the tasks it spawned, each on its own loop: the cancellation goes through that loop's inbox, and the spawned task is cancelled there, disposing its `use` values on the thread that owns them, before the cancelled task's loop goes on. One not yet started doesn't start.
 - **Testing:** `--sanitize=thread` builds with ThreadSanitizer, which `./test.sh` runs over the parallel and spawning tests. The deques use release/acquire and sequentially consistent operations rather than fences, which ThreadSanitizer doesn't model.
 
 ### 7.1 How a value crosses threads
@@ -519,7 +523,7 @@ There are three levels, from free to manual.
 ```
  .zs ─► Lexer (offside rule) ─► Parser ─► AST ─► import c (clang)        Syntax, CImport
      ─► Type check: HM + kinds + traits + units, exhaustiveness ─► Core   Typer, Match, Derive
-        (the library's and other modules' checked state from the cache)   Snapshot, Driver
+        (each module's checked result from the cache, when current)       Snapshot, Driver
      ─► Monomorphize (trait dispatch, units erased) ─► fusion             Mono
      ─► Uncurrying, inlining of small functions                           Inline
      ─► Known constructors, case of case, lambdas applied in place        Simplify
@@ -531,18 +535,19 @@ There are three levels, from free to manual.
 ```
 
 - **Implementation language:** F# (.NET 10). Self-hosting is optional and late (phase 11).
-- **Reading the optimizer:** `ZS_DUMP_CORE=name` prints the Core of the functions whose name contains `name`, after reference counting. `ZS_NO_DECIDE=1` compiles matches clause by clause, for comparison. `ZS_NO_CACHE=1` checks everything again instead of using the cache.
+- **Reading the optimizer:** `ZS_DUMP_CORE=name` prints the Core of the functions whose name contains `name`, after reference counting, and `ZS_DUMP_IR=dir` writes each LLVM module of a build of several files there. `ZS_NO_DECIDE=1` compiles matches clause by clause, for comparison. `ZS_NO_CACHE=1` checks and makes everything again instead of using the cache, keeping only what's kept under a hash of its contents (objects under their IR's).
 - **Backend:** textual LLVM IR passed to clang, so reading the `.ll` file is the debugger (`--emit-llvm` writes the whole program as one module). A switch to the LLVM C API was to come when compile time demanded it, and phase 9 measured that it doesn't: parsing the text is 2.6% of clang's time on a program's 8 MB of IR, and the module cache skips the IR of unchanged modules.
   - **Linking:** a host build compiles the modules and the runtime to bitcode and optimizes them together at the link (ThinLTO, lld, with its cache; `ZS_NO_LTO=1` turns it off), so the runtime's allocation functions inline into the program. `--profile-generate` and `--profile-use <file>` add PGO; a module's IR names it after its source file, so a profile finds its internal functions in the next build. On microcontrollers the runtime stays a separate object: as bitcode it changed nothing at `-Os` and cost 1.4–3.1 KB of flash at `-O2` ([the report](docs/reports/microcontrollers.md)).
-  - **A module per source file:** a host build of a program of several files makes one LLVM module per file, with a copy of each library function and generic instance it uses, so LLVM inlines within a module as it would in one big one; what needs one address in the program (top-level values, the static cells of cases without fields) is defined in each and merged by the linker. A single-file program, and `--emit-llvm`, `-g`, `--lib`, `--sanitize`, cross and microcontroller builds, are one module.
-  - **Compiled once:** the modules and the runtime compile in parallel, and each object is kept in `~/.cache/zs/objects` under a hash of its IR. Every pass names what it makes per function, so a file whose functions didn't change gives byte-identical IR, and a rebuild compiles only the modules whose code changed.
-  - **The module cache** (phase 9): each module's object is also kept in `~/.cache/zs/modules` under a key of what its code is made from: the compiler and its settings, the program's types, the module's functions after lambda lifting (a structural hash) with their borrowed parameters, and the signatures of what it calls in other modules. A module whose key is there skips reference counting, LLVM IR and clang. The passes before, and the analysis of borrowed parameters, run over the whole program, since a module's code depends on them.
+  - **Two modules per source file:** a host build of a program of several files makes two LLVM modules of each file: its own functions (its non-generic ones, which the other files call), and its copies of the library functions and generic instances they use, which are the same code wherever they're copied (`weak_odr`: the linker keeps one), so a change to the file's code compiles only its own module again. What needs one address in the program (top-level values, the static cells of cases without fields) is defined in each that uses it and merged by the linker. A single-file program, and `--emit-llvm`, `-g`, `--lib`, `--sanitize`, cross and microcontroller builds, are one module.
+  - **Nothing of another file's code:** a file's modules hold none of another file's functions, only what its ABI says of them: their types after uncurrying, the parameters they borrow, and the first top-level value threads can't share that each reaches. No other file's function is inlined into a file's code (ThinLTO inlines across files at the link), and a closure of a top-level function goes through a function of its maker's own, so a function borrows what it may whatever makes closures of it. A file's code is then the same whichever files are made with it.
+  - **Compiled once:** the modules and the runtime compile in parallel, and each object is kept in `~/.cache/zs/objects` under a hash of its IR. Every pass names what it makes per function, so a file whose functions didn't change gives byte-identical IR.
+  - **The module cache** (phase 9.5): a file's code is kept (in `~/.cache/zs/worlds`) under a key of its checked result's and the library's, with what else it was made from, checked when it's found: the keys of the files whose generic functions it copied, and the hashes of the ABIs of those it calls. A file whose code is current skips monomorphization through code generation; its objects are in `~/.cache/zs/modules` under that and code generation's settings. One made again that changes its ABI makes the files that call it again too. The passes run per file, all those to make in one run that shares their copies of the library.
   - **Every core:** the passes that work per function (simplification, decision trees, lifting, reference counting) and code generation per module run in parallel.
 - **Runtimes:** `runtime/rt.c` on an OS, and `runtime/rt-embedded.c` on bare metal (§10). Each is one C file, linked statically.
 - **Generics across libraries:** libraries are **source**, as in Go and Zig.
   - **How they're used:** a dependency's modules are type-checked with the program and monomorphized at the program's types.
-  - **Speed:** a build caches the type checker's state after the library, and after the main file's other modules, in the user's cache directory (`~/.cache/zs/checked`), keyed by a hash of the compiler and of those modules' sources. A build whose library and other modules haven't changed starts from there and checks only the main file; one whose main file's modules changed starts from the library. Editors and `zs doc` check everything, since they need every hover.
-  - **Incremental by module (planned, phase 9.5):** each module's checked result is cached under a hash of its source and its dependencies' interfaces, and the passes after checking keep theirs per module. The CLI and the editors share the cache, so a change re-checks and rebuilds only what it reaches.
+  - **Incremental by module** (phase 9.5, [proposal 0007](docs/proposals/0007-incremental-builds.md)): each module's checked result (what it adds to the type checker's state, its functions' Core and its hovers) is kept under a key of its source (and the C declarations it imports) and of what it sees of the modules before it: the interfaces of those it uses, directly or not (all of the library's), and of the others what's seen without naming them (impls and automatic derives for others' types, members of others' types). A build checks only the modules whose key it hasn't seen and restores the others' results, so a change to a function's body checks one module, and a changed interface the modules that use it. A module with errors isn't kept. An unchanged file isn't even parsed: what a build needs of it first (its header, the modules it names, its impls) is kept under its text's hash.
+  - **One cache:** the CLI, `zs lsp`, `zs mcp` and `zs doc` share the results: in memory in a running server (the 512 most recent) and in `~/.cache/zs/checked` between runs. A keystroke in an editor checks the edited module and restores the rest, and the other open documents whose programs have it are checked again. `zs build --time` names the program's modules it checked and the files it made.
   - **No IR format:** there's no binary format to version. Closed-source code ships as an `[<Export>]` C library.
 - **The library** (`lib/`) is Z#, in three layers:
   - **Prelude** (`lib/prelude.zs`): the global names: the operator traits and their derives, `option`, `result`, `id`, `fst`, `min`, ….
@@ -629,12 +634,13 @@ import c "raylib.h"                              // like Zig's @cImport
   - **Scalars:** numbers, `bool`, `unit` (void).
   - **Pointers:** `cstr` (`const char *`; a Z# string passes as its bytes) and `cptr` (any other pointer, opaque).
   - **Structs:** `[<CLayout>]` records, passed by value. On x86-64, a struct whose parts don't all fit in the argument registers left goes on the stack whole, as C passes it.
-  - **Fixed-size arrays (planned, phase 9.6):** a field of type `fixed<u8, 16>` holds its 16 elements inline, as C's `uint8_t data[16]`, so a `[<CLayout>]` record matches a struct with one, and `import c` brings such structs in. A number is allowed as a type argument in `fixed` and nowhere else, so the type system gains no general type-level numbers. A `fixed` is a value, indexed like an array.
-  - **Spans (planned, phase 9.6):** a `span<'a>` crosses as a pointer and a length; one over C memory is made only in `unsafe` (§5.1).
-  - **Callbacks:** `callback<A -> R>`, a function pointer plus `void *` user data.
+  - **Fixed-size arrays:** a field of type `fixed<u8, 16>` holds its 16 elements inline, as C's `uint8_t data[16]`, so a `[<CLayout>]` record matches a struct with one, and `import c` brings such structs in. A number is allowed as a type argument in `fixed` and nowhere else, so the type system gains no general type-level numbers. A `fixed` is a value, indexed like an array.
+  - **Spans:** a `span<'a>` parameter crosses as a pointer and a length; one over C memory is made only in `unsafe` (§5.1).
+  - **Callbacks:** `callback<A -> R>`, a function pointer plus `void *` user data. C calling it on another thread than the one that passed it panics, naming its type; a parameter declared `callback<share<A -> R>>` takes a `share<A -> R>` (what it captures is Share, and marked shared), which C may call on any thread.
   - **Raw pointers:** `ptr<'a>` to C data, with `Ptr.read`, `write`, `add`, `alloc`, `free` and `cast` inside `unsafe` expressions (an expression or an indented block), outside of which they're compile errors.
   - **C function pointers:** `fnptr<A -> B -> R>` is `R (*)(A, B)`, called like a function inside `unsafe`, with C's conventions.
   - **Z# objects:** any other reference-counted value (a union's cell, a list, a closure, a `dyn` value) crosses as an opaque `zs_handle` with its own count, `zs_retain` and `zs_release` in the generated header. A handle a function returns is the caller's; one passed in is lent for the call.
+  - **Handles on C's threads:** a handle of a Share value has its objects marked shared and an atomic count, so a C host may use it on any thread (a library that exports handles counts shared objects atomically, §7.1). Any other handle belongs to the thread that made it, and a use on another (`zs_retain`, `zs_release`, a call into Z#) panics, naming its type.
 - **`import c`:** clang reads the header, with `-ast-dump=json` for declarations and `-E -dD` for macros. Only what that header itself declares is imported.
   - **What comes across:**
     - functions, which become externs;
@@ -642,7 +648,7 @@ import c "raylib.h"                              // like Zig's @cImport
     - enum values, which become constants, as do `#define` numbers, strings and struct literals such as `CLITERAL(Color){ … }`.
   - **Types:** `char*` becomes `cstr`, other pointers `cptr`, and enum types `i32`. `long` follows the word; `long long` is `i64`.
   - **Function pointers** (struct fields such as `double (*area)(double, double)`, typedef'd or not) become `fnptr` types.
-  - **What's left out:** unions, arrays, `static inline` functions and opaque structs by value. Using one gives an error that says why. Fixed-size array fields are **(planned, phase 9.6)** and unions wait for phase 12.
+  - **What's left out:** unions, arrays without a length, `static inline` functions and opaque structs by value. Using one gives an error that says why. Unions wait for phase 12.
   - **Caching and editors:**
     - The header is found next to the importing file, then on the system path.
     - The result is cached in memory, and saved with a copy of the header in `.zs-cache/cimport/`, so editors without clang or the header still get it.
@@ -744,5 +750,19 @@ checker, so tools can't drift from the compiler.
 | 53 | Fixed-size arrays | `fixed<'a, N>`, inline, a value indexed like an array; a number is a type argument there and nowhere else, so no general type-level numbers (§11) | decided |
 | 54 | Generic constants | a top-level constant whose type has type variables is generalized, as F# generalizes values; the empty collections are values, not functions (§2.1) | decided |
 | 55 | Compound assignment | `+=`, `-=`, `*=`, `/=`, `%=`, `&&&=`, `\|\|\|=` and `^^^=` on anything `<-` assigns, with the place evaluated once; not F# syntax, so under decision 34's rule (§2.1) | decided |
+| 56 | Type providers | `module X = import <provider> <args>`, or bare as `import c`: a provider is a program (`zs`'s own, or on PATH) that writes Z# source, checked as a module and cached with its inputs, in the editor too (the language server runs providers); no code runs in the compiler, nothing at run time ([proposal 0001](docs/proposals/0001-type-providers.md)) | proposed |
+| 57 | Iteration | a trait whose first parameter dispatches and whose second the impl determines: `Iter<'c, 'a>` with `forEach`; `for` lowers to it and inlines to one loop over any collection ([proposal 0017](docs/proposals/0017-iteration.md)) | proposed |
+| 58 | Anonymous records, top-level patterns | records typed by their fields, with equality, ordering, hashing and printing; irrefutable patterns at the top level ([proposal 0006](docs/proposals/0006-anonymous-records.md)) | proposed |
+| 59 | Bit fields | `[<Bits>]` records packed into one integer, widths from the field types or `[<Width n>]` and `[<Bit n>]`, reset values as defaults, `Bits.ofU32`/`toU32` ([proposal 0013](docs/proposals/0013-bit-fields.md)) | proposed |
+| 60 | Interrupt handlers | `[<Interrupt "SysTick">]` and `[<Interrupt 38>]` exported under the vector's symbol over weak runtime defaults; a handler is checked as a `share<unit -> unit>` and is `[<NoAlloc>]`; state crosses through `Atomic` and `Spsc` ([proposal 0012](docs/proposals/0012-interrupts-noalloc-intrinsics.md)) | proposed |
+| 61 | Warnings | a severity with a name per kind (`cycle`, `stale-input`, `deprecated`), `[<NoWarn "name">]`, `--strict` for CI; the cycle warning first ([proposal 0021](docs/proposals/0021-warnings.md)) | default |
+| 62 | Tests as values | `Test` values from `test` and `testList`, found by `[<Tests>]`, a process per leaf; `assert` prints both sides and the first difference; inline `expect` rewritten by `--update` ([proposal 0009](docs/proposals/0009-tests-as-values.md)) | default |
+| 63 | Properties | generators read one byte stream and shrinking shrinks it; `Arbitrary` derived; libFuzzer supplies the stream for `zs fuzz` ([proposal 0010](docs/proposals/0010-properties-and-fuzzing.md)) | default |
+| 64 | Package versions | minimal version selection over `v1.x.y` tags, major versions as separate packages, an index as a git repository ([proposal 0018](docs/proposals/0018-packages.md)) | default |
+| 65 | Self-hosting | a redesign in Z# (diagnostics as values, a lossless tree, a session instead of globals, parallel on Z#'s pool, a `Binary` derive), go or no-go at the third design review ([proposal 0020](docs/proposals/0020-self-hosting.md)) | proposed |
+| 66 | One-case unions | no tag, so `type q15 = Q15 of i16` is its field's size ([proposal 0015](docs/proposals/0015-fixed-point.md)) | proposed |
 
 "Default" means chosen by me and open to change until the phase that implements it begins.
+"Proposed" means a draft in [docs/proposals](docs/proposals/README.md), decided at the design
+review that takes it.
+Proposals elaborate decisions 23 ([0002](docs/proposals/0002-effect-handlers.md)), 27 ([0007](docs/proposals/0007-incremental-builds.md), [0018](docs/proposals/0018-packages.md)), 29 ([0022](docs/proposals/0022-targets-macos-windows.md)), 33 ([0019](docs/proposals/0019-syntax-tree.md)), 40 ([0021](docs/proposals/0021-warnings.md)), 42 ([0012](docs/proposals/0012-interrupts-noalloc-intrinsics.md)), 52 ([0003](docs/proposals/0003-spans-and-slices.md)), 53 ([0004](docs/proposals/0004-c-layout.md)), 54 and 55 ([0005](docs/proposals/0005-ergonomics.md)) and 56 ([0001](docs/proposals/0001-type-providers.md)).

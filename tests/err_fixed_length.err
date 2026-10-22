@@ -1,0 +1,1 @@
+tests/err_fixed_length.zs:2:3: error: fixed needs a positive number of elements, written as a literal

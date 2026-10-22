@@ -88,7 +88,7 @@ let private dirOf (src: string) = Path.GetDirectoryName(Path.GetFullPath src)
 let private runTests (src: string) (filter: string list) =
     let names =
         try
-            (Driver.checkWith true src false false).tests
+            (Driver.checkProgram false src false false).tests
         with CompileErrorAt(file, line, col, msg) ->
             printError file line col msg
             []
@@ -291,7 +291,7 @@ let main argv =
     | [ "check"; src ] ->
         // type-check only: every error, nothing built
         try
-            let prog = Driver.checkWith true src true true
+            let prog = Driver.checkProgram false src true true
 
             for e in prog.errors do
                 printError e.file e.line e.col e.msg

@@ -25,10 +25,26 @@ let main () =
 [(1, a); (2, b)] ([5; 8], [3; 1]) [0; 1; 4; 9]
 ```
 
+**List expressions:** `[ for x in xs -> e ]` is the list of `e` for each `x`; inside, `if c then yield e` keeps some, nested `for`s and `let`s and `match`es may yield, and `yield! ys` adds each of `ys`. `[| … |]` is the same for an array. A range is a source too: `[ for i in 1 .. n -> i * i ]`.
+
+```zsharp
+let main () =
+  let xs = [ 5; 3; 8; 1 ]
+  println $"{[ for x in xs -> x * 10 ]} {[ for x in xs do if x > 2 then yield x * x ]}"
+  println $"{[ for i in 1 .. 3 do for j in 1 .. i -> (i, j) ]} {Array.toList [| for i in 0 .. 3 -> i * i |]}"
+  0
+```
+
+```text
+[50; 30; 80; 10] [25; 9; 64]
+[(1, 1); (2, 1); (2, 2); (3, 1); (3, 2); (3, 3)] [0; 1; 4; 9]
+```
+
 **Performance:**
 - The list functions are tail-recursive, so long lists don't exhaust the stack.
 - When a list has only one owner, functions like `List.rev` reuse its cells instead of allocating new ones.
 - A pipeline like `xs |> List.map f |> List.filter p |> List.sum`, with lambdas that only compute, runs as one loop: the lists in between are never built.
+- A list expression is such a pipeline when its body only computes (a `for`, its `if`s, the value yielded), so `List.sum [ for x in xs do if x > 2 then yield x * x ]` builds no list. Any other body runs as written, in order, and builds only the result.
 
 ## Arrays
 
@@ -83,6 +99,58 @@ let main () =
 7 8
 ```
 
+## Spans and slices
+
+A span, `span<'a>`, is a window into an array, a string's bytes or a Buffer, without a copy.
+- **Slices:** `a.[1..3]` is elements 1 to 3 (inclusive, as in F#), and `a.[..n]` and `a.[i..]` run from the start and to the end. A slice of an array or a span is a span; a slice of a Buffer is a Buffer sharing its storage, so a write through either is seen through both; a slice of a string is a string (a copy), at byte offsets that must fall between characters.
+- **Where a span is expected,** an array or a Buffer becomes one with nothing written, so `Array.sum`, `Array.fold`, `Array.map` and the other functions that read arrays take all three.
+- **Read-only:** `s.[i]` reads, and nothing writes through a span. A span holds a reference to what it windows, which lives as long as the span; while it does, a change to the array copies it, as arrays are values.
+- **Bytes:** `String.bytes s` is a string's bytes (its UTF-8) as a `span<u8>`, for parsers; `String.ofBytes` copies bytes into a string.
+
+```zsharp
+let main () =
+  let a = [| 1; 2; 3; 4; 5 |]
+  let mid = a.[1..3]
+  println $"{Array.sum mid} {Array.sum a.[3..]} {mid.[0]} {Span.length mid}"
+  let b = Buffer.ofArray a
+  let front = b.[..1]
+  front.[0] <- 10
+  println $"{b.[0]} {Array.sum b}"
+  let s = "héllo"
+  println $"{s.[0..2]} {(String.bytes s).[0]}"
+  0
+```
+
+```text
+9 9 2 3
+10 24
+hé 104
+```
+
+A slice past the end stops the program, naming it: `panic: slice 4..9 of an array of length 6`.
+
+## Fixed-size arrays
+
+`fixed<'a, N>` holds N elements inline. It's a value, copied like a record and indexed like an array, and N is a number in the type, so `fixed<u8, 16>` and `fixed<u8, 32>` differ. It's what a C struct's array field is (`uint8_t data[16]`), so `[<CLayout>]` records and `import c` use it.
+- **Elements:** `f.[i]` reads, and `f.[i] <- x` writes when `f`, or the record holding it, is `let mutable`.
+- **Making one:** `Fixed.init (fun i -> …)` and `Fixed.create x`, the length from the type expected of them, or `Fixed.ofArray` from an array of as many elements.
+- **Reading:** `Fixed.toArray`, `map`, `fold`, `iter`, and `for x in f do`. Equality, ordering, hashing and printing go element by element.
+
+```zsharp
+type Pixel = { rgb: fixed<u8, 3>; alpha: u8 }
+
+let main () =
+  let mutable p = { rgb = Fixed.ofArray [| u8 10; u8 20; u8 30 |]; alpha = u8 255 }
+  p.rgb.[0] += u8 5
+  let steps: fixed<int, 4> = Fixed.init (fun i -> i * 10)
+  println $"{p.rgb} {Fixed.fold (fun acc x -> acc + int x) 0 p.rgb} {steps} {steps = Fixed.create 0}"
+  0
+```
+
+```text
+[|15; 20; 30|] 65 [|0; 10; 20; 30|] false
+```
+
 ## Map and Set
 
 **`Map<'k, 'v>`:** a persistent sorted map, a balanced tree with O(log n) operations. Adding or removing gives a new map that shares most of its structure with the old one, and the old one stays valid. Keys need an ordering, which every number, string, record, union and tuple has.
@@ -114,7 +182,7 @@ Some 36 Some 37 3 false
 
 ```zsharp
 let main () =
-  let mutable counts = HashMap.empty ()
+  let mutable counts = HashMap.empty
   for w in String.split " " "the cat and the hat and the bat" do
     let n = HashMap.tryFind w counts |> Option.defaultValue 0
     counts <- HashMap.add w (n + 1) counts

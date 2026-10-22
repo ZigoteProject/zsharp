@@ -27,7 +27,7 @@ Sets print as `set [1; 2; 3]`.
 ### `Set.empty`
 
 ```zsharp
-Set.empty : unit -> Set<'a>
+let empty : Set<'a>
 ```
 
 The empty set.

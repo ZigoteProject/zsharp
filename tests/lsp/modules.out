@@ -1,0 +1,6 @@
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"tests/modules/main.zs","diagnostics":[]}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"tests/modules/geometry.zs","diagnostics":[]}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"tests/modules/geometry.zs","diagnostics":[]}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"tests/modules/main.zs","diagnostics":[{"range":{"start":{"line":5,"character":11},"end":{"line":5,"character":22}},"severity":1,"source":"zs","message":"unknown function \u0027describe\u0027"}]}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"tests/modules/geometry.zs","diagnostics":[]}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"tests/modules/main.zs","diagnostics":[]}}

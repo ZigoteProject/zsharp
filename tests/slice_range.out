@@ -1,0 +1,2 @@
+before
+panic: slice 4..9 of an array of length 6

@@ -121,8 +121,10 @@ declare void @zs_weak_free(ptr)
 declare void @zs_arena_open()
 declare void @zs_arena_close()
 declare void @zs_reused(ptr)
-declare ptr @zs_handle_new(ptr, ptr)
+declare ptr @zs_handle_new(ptr, ptr, i1, ptr)
 declare ptr @zs_handle_get(ptr)
+declare void @zs_callback_thread(ptr, ptr)
+declare void @zs_callback_owner(ptr)
 declare void @zs_release(ptr)
 declare ptr @zs_str_concat(ptr, ptr)
 declare i_W @zs_str_cmp(ptr, ptr)
@@ -137,6 +139,10 @@ declare void @zs_print(ptr)
 declare void @zs_println(ptr)
 declare ptr @zs_str_from_c(ptr)
 declare ptr @zs_str_sub(ptr, i_W, i_W)
+declare ptr @zs_str_slice(ptr, i_W, i_W)
+declare ptr @zs_str_of_bytes(ptr, i_W)
+declare void @zs_slice_fail(i_W, i_W, i_W, i_W) noreturn cold
+declare void @zs_fixed_fail(ptr, i_W) noreturn cold
 declare zeroext i8 @zs_str_byte(ptr, i_W)
 declare ptr @zs_str_of_byte(i8 zeroext)
 declare i_W @zs_str_index_of(ptr, ptr, i_W)
@@ -181,8 +187,8 @@ declare i_W @zs_tcp_listen(ptr, i_W)
 declare i_W @zs_tcp_accept(i_W)
 declare i_W @zs_tcp_connect(ptr, i_W)
 declare i_W @zs_socket_error(i_W)
-declare i_W @zs_fd_read(i_W, ptr, i_W, i_W)
-declare i_W @zs_fd_write(i_W, ptr, i_W, i_W)
+declare i_W @zs_fd_read(i_W, ptr, i_W, i_W, i_W)
+declare i_W @zs_fd_write(i_W, ptr, i_W, i_W, i_W)
 declare void @zs_fd_close(i_W)
 declare ptr @zs_error_text(i_W)
 
@@ -352,6 +358,7 @@ let private replaceDef (text: string) (def: string) =
 /// Primitives implemented by runtime functions: C name, result type, parameter types (unit
 /// parameters omitted). Arguments are borrowed by the runtime and dropped after the call,
 /// except those marked with !, whose reference the runtime keeps (the event loop's callbacks).
+/// A `bytes` parameter (a Buffer, a span or a string) is passed as its data and its length.
 let private runtimePrims =
     dict
         [ "Loop.post", ("zs_loop_post", "void", [ "ptr!" ])
@@ -371,8 +378,10 @@ let private runtimePrims =
           "Tcp.accept", ("zs_tcp_accept", "i_W", [ "i_W" ])
           "Tcp.connect", ("zs_tcp_connect", "i_W", [ "ptr"; "i_W" ])
           "Tcp.error", ("zs_socket_error", "i_W", [ "i_W" ])
-          "Fd.read", ("zs_fd_read", "i_W", [ "i_W"; "ptr"; "i_W"; "i_W" ])
-          "Fd.write", ("zs_fd_write", "i_W", [ "i_W"; "ptr"; "i_W"; "i_W" ])
+          "Fd.read", ("zs_fd_read", "i_W", [ "i_W"; "bytes"; "i_W"; "i_W" ])
+          "Fd.write", ("zs_fd_write", "i_W", [ "i_W"; "bytes"; "i_W"; "i_W" ])
+          "String.slice", ("zs_str_slice", "ptr", [ "ptr"; "i_W"; "i_W" ])
+          "String.ofBytes", ("zs_str_of_bytes", "ptr", [ "bytes" ])
           "Fd.close", ("zs_fd_close", "void", [ "i_W" ])
           "Errno.text", ("zs_error_text", "ptr", [ "i_W" ])
           "String.sub", ("zs_str_sub", "ptr", [ "ptr"; "i_W"; "i_W" ])
@@ -478,11 +487,14 @@ let private resolveWord (ir: string) =
 
 /// One of the LLVM modules a program is split into, compiled on its own (in parallel, and
 /// taken from the cache when unchanged): the functions it defines, those of them the other
-/// modules call, and whether it has the entry points (main, the tests, C exports).
+/// modules call, and whether it has the entry points (main, the tests, C exports). With
+/// copies, what it defines are copies of library functions and generic instances, which other
+/// modules may define too (the same code: weak, the linker keeps one).
 type Part =
     { defines: HashSet<string>
       called: HashSet<string>
       entry: bool
+      copies: bool
       file: string } // the source file
 
 /// Compiles closure-converted, RC-annotated functions to textual LLVM IR, plus a C header for
@@ -540,6 +552,7 @@ let compile
         | TCon(("cstr" | "cptr" | "string" | "array" | "ref" | "weak" | "ptr" | "fnptr" | "Atomic" | "Mutex" | "Channel"), _)
         | TFun _ -> "ptr"
         | TCon(n, _) when isDynName n -> "ptr"
+        | TCon("fixed", [ el; TCon(n, []) ]) -> sprintf "[%s x %s]" n (llty el) // N elements inline
         | TCon(n, args) ->
             match types[n].def with
             | RecordDef fs -> structTy (fs |> List.map (fun (_, ft) -> substGen args ft))
@@ -557,6 +570,11 @@ let compile
         match prune t with
         | TCon(n, []) -> n
         | _ -> ""
+
+    let isWin (t: Ty) =
+        match prune t with
+        | TCon(n, _) -> n = windowType
+        | _ -> false
 
     let isFloat t = floats.Contains(tyName t)
     let isUnsigned t = unsigned.Contains(tyName t)
@@ -663,6 +681,16 @@ let compile
         | "i64"
         | "double" as lt -> 8, 8, [ 0, lt ]
         | "ptr" -> pointerBytes (), pointerBytes (), [ 0, "ptr" ]
+        | _ when (match prune t with
+                  | TCon("fixed", _) -> true
+                  | _ -> false) ->
+            // C's T[N]: N elements, T's alignment
+            match prune t with
+            | TCon("fixed", [ el; TCon(n, []) ]) ->
+                let sz, a, sc = cLayout el
+                let k = int n
+                sz * k, a, [ for i in 0 .. k - 1 do for o, s in sc -> i * sz + o, s ]
+            | t -> failwithf "cLayout: %s" (show t)
         | _ ->
             let fs =
                 match prune t with
@@ -738,7 +766,7 @@ let compile
         pars
         |> List.map (fun t ->
             match prune t with
-            | TCon("callback", _) ->
+            | TCon(("callback" | "span"), _) ->
                 ints <- ints - 2
                 Scalar
             | TCon("unit", []) -> Scalar
@@ -807,6 +835,7 @@ let compile
     let cParamsAs (t: Ty) (mode: Abi) : string list =
         match prune t with
         | TCon("callback", _) -> [ "ptr"; "ptr" ]
+        | TCon("span", _) -> [ "ptr"; "i_W" ] // its data and its length (size_t)
         | TCon("unit", []) -> []
         | _ ->
             match mode with
@@ -1002,6 +1031,7 @@ let compile
             let fields =
                 match prune t with
                 | TTuple ts -> ts
+                | TCon("fixed", [ el; TCon(n, []) ]) -> List.replicate (int n) el
                 | TCon(n, args) ->
                     match types[n].def with
                     | RecordDef fs -> fs |> List.map (fun (_, ft) -> substGen args ft)
@@ -1183,7 +1213,8 @@ let compile
 
             "@zs.drop.weak"
         | TCon("string", _) -> "@zs.drop.str"
-        | TTuple _ -> structHelper "drop" t
+        | TTuple _
+        | TCon("fixed", _) -> structHelper "drop" t
         | TCon(n, _) when (match types.TryGetValue n with
                            | true, { def = RecordDef _ } -> true
                            | _ -> false) -> structHelper "drop" t
@@ -1492,22 +1523,45 @@ let compile
 
         name
 
-    /// C entry point for a callback<A -> R>: R thunk(void* user, A) calls the closure `user`.
-    let thunk (f: Ty) : string =
+    /// A handle of value v (its reference goes into it) for C: a Share value's (in a program with
+    /// threads) has its objects marked shared and may be used on any thread; any other's belongs
+    /// to this thread, and a use on another panics, naming its type.
+    let handleOf (em: Emitter) (t: Ty) (v: string) =
+        let shared = threaded && (shareBlocker ignore types Set.empty t).IsNone
+
+        if shared then
+            shareValue em t v
+
+        em.Instr(sprintf "call ptr @zs_handle_new(ptr %s, ptr %s, i1 %b, ptr %s)" v (dropFn t) shared (cstrConst (show t)))
+
+    /// C entry point for a callback<A -> R>: R thunk(void* user, A) calls the closure. With
+    /// shared (callback<share<A -> R>>), user is the closure, which may be called from any
+    /// thread; else user is { the closure, the thread that passed it }, and a call on another
+    /// thread panics.
+    let thunk (f: Ty) (shared: bool) : string =
         let a, r =
             match prune f with
             | TFun(a, r) -> a, r
             | _ -> failwith "callback type"
 
-        let name = sprintf "@\"cb.%s\"" (showFull f)
+        let name = sprintf "@\"cb%s.%s\"" (if shared then ".shared" else "") (showFull f)
 
         if generated.Add name then
             let em = Emitter()
             let unitArg = prune a = tUnit
-            let cp = em.Instr "getelementptr { i_W, ptr }, ptr %user, i32 0, i32 1"
+
+            let clo =
+                if shared then
+                    "%user"
+                else
+                    let owner = em.Instr "getelementptr { ptr, i64 }, ptr %user, i32 0, i32 1"
+                    em.Emit(sprintf "call void @zs_callback_thread(ptr %s, ptr %s)" owner (cstrConst (show f)))
+                    em.Instr "load ptr, ptr %user"
+
+            let cp = em.Instr(sprintf "getelementptr { i_W, ptr }, ptr %s, i32 0, i32 1" clo)
             let code = em.Instr(sprintf "load ptr, ptr %s" cp)
             let av = if unitArg then "zeroinitializer" else "%x"
-            let res = em.Instr(sprintf "call %s %s(ptr %%user, %s %s)" (llty r) code (llty a) av)
+            let res = em.Instr(sprintf "call %s %s(ptr %s, %s %s)" (llty r) code clo (llty a) av)
             let rt, _ = cRet r
             em.Emit(if rt = "void" then "ret void" else sprintf "ret %s %s" (llty r) res)
             let ps = "ptr %user" + (if unitArg then "" else sprintf ", %s %%x" (cParam a))
@@ -1572,6 +1626,7 @@ let compile
     let structFields (t: Ty) : Ty list =
         match prune t with
         | TTuple ts -> ts
+        | TCon("fixed", [ el; TCon(n, []) ]) -> List.replicate (int n) el
         | TCon(n, args) ->
             match types[n].def with
             | RecordDef fs -> fs |> List.map (snd >> substGen args)
@@ -1721,11 +1776,30 @@ let compile
     // ---- top-level values computed at startup: a global each. Declarations are in order, so
     // nothing can read a value before its initializer has run (as in F#)
     let valueSym (v: string) = sprintf "@\"zsv.%s\"" v
-    let valueTypes = values |> List.map (fun (v, init) -> v, fnTable[init].ret) |> dict
+
+    // the entry starts every value; another part has the values it reads (each part defines its
+    // own, the linker merges them), so its code depends on those only
+    let valueTypes =
+        if entry then
+            values |> List.map (fun (v, init) -> v, fnTable[init].ret) |> dict
+        else
+            let read = Dictionary<string, Ty>()
+
+            let rec walk (e: CExpr) =
+                match e.k with
+                | CGlobalVal v -> read[v] <- e.ty
+                | k -> children k |> List.iter walk
+
+            for f in funs do
+                if defined f.name then
+                    walk f.body
+
+            read :> IDictionary<string, Ty>
 
     for v, _ in values do
-        let linkage = if part.IsSome then "linkonce_odr hidden" else "internal"
-        top.AppendLine(sprintf "%s = %s global %s zeroinitializer" (valueSym v) linkage (llty valueTypes[v])) |> ignore
+        if valueTypes.ContainsKey v then
+            let linkage = if part.IsSome then "linkonce_odr hidden" else "internal"
+            top.AppendLine(sprintf "%s = %s global %s zeroinitializer" (valueSym v) linkage (llty valueTypes[v])) |> ignore
 
     // ---- a task's state machine (task { }): its work is an LLVM coroutine, whose frame follows
     // a closure header in one object, the face: { count, code, description, the coroutine's
@@ -2150,11 +2224,27 @@ let compile
                         let pt = List.item i s.pars
 
                         match prune pt with
-                        | TCon("callback", [ f ]) -> sprintf "ptr %s, ptr %s" (thunk f) v // the closure is the user data
+                        | TCon("callback", [ f ]) ->
+                            match prune f with
+                            | TCon("share", [ g ]) ->
+                                // C may call it on any thread: what it captured is shared
+                                shareValue em g v
+                                sprintf "ptr %s, ptr %s" (thunk g true) v // the closure is the user data
+                            | _ ->
+                                // the closure and this thread, which it may be called on only
+                                let user = "%" + em.Fresh "callback"
+                                em.Alloca(sprintf "%s = alloca { ptr, i64 }" user)
+                                em.Emit(sprintf "store ptr %s, ptr %s" v user)
+                                em.Emit(sprintf "call void @zs_callback_owner(ptr %s)" (em.Instr(sprintf "getelementptr { ptr, i64 }, ptr %s, i32 0, i32 1" user)))
+                                sprintf "ptr %s, ptr %s" (thunk f false) user
                         | TCon("unit", []) -> ""
+                        | TCon("span", _) ->
+                            // its data and its length; the owner is borrowed for the call
+                            let part k = em.Instr(sprintf "extractvalue %s %s, %d" (llty a.ty) v k)
+                            sprintf "ptr %s, i_W %s" (part 1) (part 2)
                         | _ when isHandle pt ->
                             // the value's reference goes into a handle C borrows for the call
-                            let h = em.Instr(sprintf "call ptr @zs_handle_new(ptr %s, ptr %s)" v (dropFn pt))
+                            let h = handleOf em pt v
                             handles.Add h
                             "ptr " + h
                         | _ ->
@@ -2215,14 +2305,14 @@ let compile
 
             List.zip args vs
             |> List.iteri (fun i (a, v) ->
-                let callback =
+                let borrowedByC =
                     i < s.pars.Length
                     && (match prune (List.item i s.pars) with
-                        | TCon("callback", _) -> true
+                        | TCon(("callback" | "span"), _) -> true
                         | _ -> false)
 
-                // the string's bytes / the callback's closure were borrowed
-                if tyName a.ty = "string" || callback then
+                // the string's bytes, the callback's closure, the span's owner were borrowed
+                if tyName a.ty = "string" || borrowedByC then
                     dropValue em a.ty v)
 
             r
@@ -2777,7 +2867,10 @@ let compile
                             // a SIMD load reads lanes elements from its index
                             let hi, bad = if lanes > 1 then ovf "add" hi (string (lanes - 1)) bad else hi, bad
 
-                            let len = loadLen em (em.Instr(sprintf "getelementptr { i_W, i_W }, ptr %s, i32 0, i32 1" (value arr)))
+                            let len =
+                                if isWin arr.ty then em.Instr(sprintf "extractvalue %s %s, 2" (llty arr.ty) (value arr))
+                                else loadLen em (em.Instr(sprintf "getelementptr { i_W, i_W }, ptr %s, i32 0, i32 1" (value arr)))
+
                             let inRange = em.Instr(sprintf "and i1 %s, %s" (em.Instr(sprintf "icmp sge %s %s, 0" lt lo)) (em.Instr(sprintf "icmp slt %s %s, %s" lt hi len)))
                             em.Instr(sprintf "and i1 %s, %s" ok (em.Instr(sprintf "and i1 %s, %s" inRange (em.Instr(sprintf "xor i1 %s, true" bad))))))
                         "true"
@@ -2932,6 +3025,26 @@ let compile
                 | TCon("array", [ el ]) -> el, sprintf "{ i_W, i_W, [0 x %s] }" (llty el)
                 | _ -> failwith "not an array"
 
+            // windows (a Buffer, a span: Core's windowType), { owner, data, length }
+            let winEl (t: Ty) =
+                match prune t with
+                | TCon(_, [ el ]) -> el
+                | t -> failwithf "window of %s" (show t)
+
+            let part (t: Ty) (v: string) (k: int) = em.Instr(sprintf "extractvalue %s %s, %d" (llty t) v k)
+
+            let window (t: Ty) (owner: string) (data: string) (n: string) =
+                let lt = llty t
+                let w0 = em.Instr(sprintf "insertvalue %s poison, ptr %s, 0" lt owner)
+                let w1 = em.Instr(sprintf "insertvalue %s %s, ptr %s, 1" lt w0 data)
+                em.Instr(sprintf "insertvalue %s %s, i_W %s, 2" lt w1 n)
+
+            // an array's first element, and its length
+            let arrData (el: Ty) (a: string) =
+                em.Instr(sprintf "getelementptr { i_W, i_W, [0 x %s] }, ptr %s, i32 0, i32 2, i_W 0" (llty el) a)
+
+            let arrLen (a: string) = loadLen em (em.Instr(sprintf "getelementptr { i_W, i_W }, ptr %s, i32 0, i32 1" a))
+
             let elemPtr a i =
                 let el, at = arrTy (argTy 0)
                 // after the bounds check the index is non-negative: nuw tells LLVM an element never
@@ -2979,6 +3092,20 @@ let compile
 
                 match op with
                 | "vec.splat" -> splat em k et (arg 0)
+                | "vec.load" when isWin (argTy 0) ->
+                    // from a span (or a Buffer): the k elements from index i of its data
+                    let t = argTy 0
+                    let data, len = part t (arg 0) 1, part t (arg 0) 2
+
+                    if not unchecked then
+                        let ok1 = em.Instr(sprintf "icmp ult i_W %s, %s" (arg 1) len)
+                        let ok2 = em.Instr(sprintf "icmp ule i_W %d, %s" k (em.Instr(sprintf "sub i_W %s, %s" len (arg 1))))
+                        check em (em.Instr(sprintf "and i1 %s, %s" ok1 ok2)) "index out of bounds"
+
+                    let p = em.Instr(sprintf "getelementptr inbounds %s, ptr %s, i_W %s" et data (arg 1))
+                    let v = em.Instr(sprintf "load %s, ptr %s, align %s" lt p align)
+                    if not borrowed0 then dropValue em t (arg 0)
+                    v
                 | "vec.load" ->
                     // unchecked: a versioned loop proved it in bounds
                     let p =
@@ -3124,7 +3251,160 @@ let compile
                 em.Emit(sprintf "store i_W %s, ptr %s" n lenp)
                 a
 
+            // body i for i from 0 to n - 1
+            let forEach (n: string) (body: string -> unit) =
+                let slot = "%" + em.Fresh "each"
+                em.Alloca(sprintf "%s = alloca i_W" slot)
+                em.Emit(sprintf "store i_W 0, ptr %s" slot)
+                let lc, lb, lend = em.Fresh "econd", em.Fresh "ebody", em.Fresh "eend"
+                em.Emit(sprintf "br label %%%s" lc)
+                em.Label lc
+                let i = em.Instr(sprintf "load i_W, ptr %s" slot)
+                em.Emit(sprintf "br i1 %s, label %%%s, label %%%s" (em.Instr(sprintf "icmp slt i_W %s, %s" i n)) lb lend)
+                em.Label lb
+                body i
+                em.Emit(sprintf "store i_W %s, ptr %s" (em.Instr(sprintf "add i_W %s, 1" i)) slot)
+                em.Emit(sprintf "br label %%%s" lc)
+                em.Label lend
+
             match op with
+            | "fixed.length" ->
+                match prune (argTy 0) with
+                | TCon("fixed", [ _; TCon(n, []) ]) ->
+                    if not borrowed0 then dropValue em (argTy 0) (arg 0)
+                    n
+                | t -> failwithf "fixed.length of %s" (show t)
+            | "fixed.get"
+            | "fixed.set" ->
+                // an element of a fixed-size array (a value): through a copy in memory, which LLVM
+                // keeps in registers when it can
+                let t = argTy 0
+                let el, n =
+                    match prune t with
+                    | TCon("fixed", [ el; TCon(n, []) ]) -> el, n
+                    | t -> failwithf "%s of %s" op (show t)
+
+                check em (em.Instr(sprintf "icmp ult i_W %s, %s" (arg 1) n)) "index out of bounds"
+                let slot = "%" + em.Fresh "fixed"
+                em.Alloca(sprintf "%s = alloca %s" slot (llty t))
+                em.Emit(sprintf "store %s %s, ptr %s" (llty t) (arg 0) slot)
+                let ep = em.Instr(sprintf "getelementptr inbounds %s, ptr %s, i_W 0, i_W %s" (llty t) slot (arg 1))
+                let v = em.Instr(sprintf "load %s, ptr %s" (llty el) ep)
+
+                if op = "fixed.get" then
+                    dupValue em el v
+                    if not borrowed0 then dropValue em t (arg 0)
+                    v
+                else
+                    // the changed one: the old element's reference dropped, the new one's moved in
+                    em.Emit(sprintf "store %s %s, ptr %s" (llty el) (arg 2) ep)
+                    dropValue em el v
+                    em.Instr(sprintf "load %s, ptr %s" (llty t) slot)
+            | "fixed.ofArray" ->
+                // the elements of an array (or a window) of exactly N, copied in
+                let el, n =
+                    match prune ty with
+                    | TCon("fixed", [ el; TCon(n, []) ]) -> el, n
+                    | t -> failwithf "fixed.ofArray of %s" (show t)
+
+                let t = argTy 0
+                let data, len = if isWin t then part t (arg 0) 1, part t (arg 0) 2 else arrData el (arg 0), arrLen (arg 0)
+                let good, bad = em.Fresh "fixedlen", em.Fresh "badlen"
+                em.Emit(sprintf "br i1 %s, label %%%s, label %%%s" (em.Instr(sprintf "icmp eq i_W %s, %s" len n)) good bad)
+                em.Label bad
+                em.Emit(sprintf "call void @zs_fixed_fail(ptr %s, i_W %s)" (cstrConst (show ty)) len)
+                em.Emit "unreachable"
+                em.Label good
+                let slot = "%" + em.Fresh "fixed"
+                em.Alloca(sprintf "%s = alloca %s" slot (llty ty))
+                let bytes = em.Instr(sprintf "mul i_W %s, %s" n (sizeOf em (llty el)))
+                em.Emit(sprintf "call void @llvm.memcpy.p0.p0.i_W(ptr %s, ptr %s, i_W %s, i1 false)" slot data bytes)
+
+                if heap el then
+                    forEach n (fun i ->
+                        let ep = em.Instr(sprintf "getelementptr inbounds %s, ptr %s, i_W 0, i_W %s" (llty ty) slot i)
+                        dupValue em el (em.Instr(sprintf "load %s, ptr %s" (llty el) ep)))
+
+                if not borrowed0 then dropValue em t (arg 0)
+                em.Instr(sprintf "load %s, ptr %s" (llty ty) slot)
+            | "fixed.create" ->
+                // N copies of the value
+                let el, n =
+                    match prune ty with
+                    | TCon("fixed", [ el; TCon(n, []) ]) -> el, n
+                    | t -> failwithf "fixed.create of %s" (show t)
+
+                let slot = "%" + em.Fresh "fixed"
+                em.Alloca(sprintf "%s = alloca %s" slot (llty ty))
+
+                forEach n (fun i ->
+                    let ep = em.Instr(sprintf "getelementptr inbounds %s, ptr %s, i_W 0, i_W %s" (llty ty) slot i)
+                    em.Emit(sprintf "store %s %s, ptr %s" (llty el) (arg 0) ep)
+                    dupValue em el (arg 0))
+
+                dropValue em el (arg 0) // each element took its own reference
+                em.Instr(sprintf "load %s, ptr %s" (llty ty) slot)
+            | "Array.length" when isWin (argTy 0) ->
+                let n = part (argTy 0) (arg 0) 2
+                if not borrowed0 then dropValue em (argTy 0) (arg 0)
+                n
+            | "array.get" when isWin (argTy 0) ->
+                let t = argTy 0
+                let el = winEl t
+
+                if not unchecked then
+                    check em (em.Instr(sprintf "icmp ult i_W %s, %s" (arg 1) (part t (arg 0) 2))) "index out of bounds"
+
+                let ep = em.Instr(sprintf "getelementptr inbounds %s, ptr %s, i_W %s" (llty el) (part t (arg 0) 1) (arg 1))
+                let v = em.Instr(sprintf "load %s, ptr %s" (llty el) ep)
+                dupValue em el v
+                if not borrowed0 then dropValue em t (arg 0)
+                v
+            | "array.set" when isWin (argTy 0) ->
+                // a Buffer's element, written in place: every alias of the window sees it
+                let t = argTy 0
+                let el = winEl t
+                check em (em.Instr(sprintf "icmp ult i_W %s, %s" (arg 1) (part t (arg 0) 2))) "index out of bounds"
+                let ep = em.Instr(sprintf "getelementptr inbounds %s, ptr %s, i_W %s" (llty el) (part t (arg 0) 1) (arg 1))
+                let old = em.Instr(sprintf "load %s, ptr %s" (llty el) ep)
+                em.Emit(sprintf "store %s %s, ptr %s" (llty el) (arg 2) ep)
+                dropValue em el old
+                dropValue em t (arg 0)
+                "zeroinitializer"
+            | "span.ofArray" ->
+                // the array's reference moves into the span
+                window ty (arg 0) (arrData (winEl ty) (arg 0)) (arrLen (arg 0))
+            | "span.ofBuffer" -> arg 0 // the same window, read-only
+            | "span.ofString" ->
+                let n = loadLen em (em.Instr(sprintf "getelementptr i8, ptr %s, i_W HDR1" (arg 0)))
+                window ty (arg 0) (em.Instr(sprintf "getelementptr i8, ptr %s, i_W HDR2" (arg 0))) n
+            | "span.ofPtr" ->
+                // C memory: the owner is a static object (never freed), so no count is kept
+                check em (em.Instr(sprintf "icmp sge i_W %s, 0" (arg 1))) "a span's length can't be negative"
+                window ty "@zs.none" (arg 0) (arg 1)
+            | "window.slice" ->
+                // elements arg 1 to arg 2 (inclusive) of an array or a window: the owner moves into
+                // the slice; out of range, a panic naming the range (arg 3: what is sliced)
+                let t = argTy 0
+                let el = winEl ty
+
+                let owner, data, n =
+                    if isWin t then part t (arg 0) 0, part t (arg 0) 1, part t (arg 0) 2
+                    else arg 0, arrData el (arg 0), arrLen (arg 0)
+
+                let i, j = arg 1, arg 2
+                let j1 = em.Instr(sprintf "add i_W %s, 1" j)
+                let inRange a b = em.Instr(sprintf "icmp sle i_W %s, %s" a b)
+                let ok1 = em.Instr(sprintf "and i1 %s, %s" (inRange "0" i) (inRange i j1))
+                let ok = em.Instr(sprintf "and i1 %s, %s" ok1 (inRange j1 n))
+                let good, bad = em.Fresh "slice", em.Fresh "badslice"
+                em.Emit(sprintf "br i1 %s, label %%%s, label %%%s" ok good bad)
+                em.Label bad
+                em.Emit(sprintf "call void @zs_slice_fail(i_W %s, i_W %s, i_W %s, i_W %s)" i j n (arg 3))
+                em.Emit "unreachable"
+                em.Label good
+                let start = em.Instr(sprintf "getelementptr inbounds %s, ptr %s, i_W %s" (llty el) data i)
+                window ty owner start (em.Instr(sprintf "sub i_W %s, %s" j1 i))
             | "ignore" ->
                 dropValue em (argTy 0) (arg 0)
                 "zeroinitializer"
@@ -3218,7 +3498,16 @@ let compile
                     shareValue em (argTy 0) (arg 0)
 
                 let real = List.zip args vs |> List.filter (fun (a, _) -> prune a.ty <> tUnit)
-                let argv = List.zip pts real |> List.map (fun (pt, (_, v)) -> pt.TrimEnd '!' + " " + v) |> String.concat ", "
+
+                let pass (pt: string) (a: CExpr, v: string) =
+                    match pt with
+                    | "bytes" when isWin a.ty -> sprintf "ptr %s, i_W %s" (part a.ty v 1) (part a.ty v 2)
+                    | "bytes" ->
+                        let n = loadLen em (em.Instr(sprintf "getelementptr i8, ptr %s, i_W HDR1" v))
+                        sprintf "ptr %s, i_W %s" (em.Instr(sprintf "getelementptr i8, ptr %s, i_W HDR2" v)) n
+                    | _ -> pt.TrimEnd '!' + " " + v
+
+                let argv = List.map2 pass pts real |> String.concat ", "
                 let call = sprintf "call %s @%s(%s)" ret fn argv
 
                 let r =
@@ -3286,7 +3575,7 @@ let compile
                 em.Emit(sprintf "br label %%%s" lc)
                 em.Label lend
                 dropValue em el (arg 1) // each slot took its own reference
-                a
+                if isWin ty then window ty a (arrData el a) n else a // Buffer.create: a window over all of it
             | "array.lit" ->
                 let el =
                     match prune ty with
@@ -3319,7 +3608,30 @@ let compile
                 em.Emit(sprintf "store %s %s, ptr %s" (llty el) (arg 2) ep)
                 dropValue em el old
                 u
-            | "array.copy" -> em.Instr(sprintf "call ptr %s(ptr %s)" (uniqueFn (argTy 0) true) (arg 0))
+            | "array.copy" ->
+                match isWin (argTy 0), isWin ty with
+                | false, false -> em.Instr(sprintf "call ptr %s(ptr %s)" (uniqueFn (argTy 0) true) (arg 0))
+                | false, true ->
+                    // Buffer.ofArray: a copy, and a window over all of it
+                    let c = em.Instr(sprintf "call ptr %s(ptr %s)" (uniqueFn (argTy 0) true) (arg 0))
+                    window ty c (arrData (winEl ty) c) (arrLen c)
+                | true, _ ->
+                    // a window's elements in an array of their own (a Buffer over it, for Buffer.ofSpan)
+                    let t = argTy 0
+                    let el = winEl t
+                    let n = part t (arg 0) 2
+                    let a = newArray el n
+                    let dst = arrData el a
+                    let bytes = em.Instr(sprintf "mul i_W %s, %s" n (sizeOf em (llty el)))
+                    em.Emit(sprintf "call void @llvm.memcpy.p0.p0.i_W(ptr %s, ptr %s, i_W %s, i1 false)" dst (part t (arg 0) 1) bytes)
+
+                    if heap el then
+                        forEach n (fun i ->
+                            let ep = em.Instr(sprintf "getelementptr inbounds %s, ptr %s, i_W %s" (llty el) dst i)
+                            dupValue em el (em.Instr(sprintf "load %s, ptr %s" (llty el) ep)))
+
+                    if not borrowed0 then dropValue em t (arg 0)
+                    if isWin ty then window ty a dst n else a
             | "wrap+"
             | "wrap-"
             | "wrap*" ->
@@ -3473,7 +3785,7 @@ let compile
                          | TCon("Channel", [ v ]) -> v
                          | t -> failwithf "chan.make of %s" (show t)
 
-                check em (em.Instr(sprintf "icmp sgt i_W %s, 0" (arg 0))) "a channel's capacity must be at least 1"
+                check em (em.Instr(sprintf "icmp sge i_W %s, 0" (arg 0))) "a channel's capacity can't be negative"
                 em.Instr(sprintf "call ptr @zs_chan_new(i_W %s, i_W %s, ptr %s)" (arg 0) (sizeOf em (llty vt)) (slotDrop vt))
             | "chan.send" ->
                 // the value, shared, moves into the channel (the runtime copies its bytes)
@@ -3754,9 +4066,10 @@ let compile
         let hint =
             if f.pars |> List.exists (fun (_, t) -> match prune t with TFun _ -> true | _ -> false) then " inlinehint" else ""
 
-        // called from another part: external (hidden in the program)
+        // called from another part: external (hidden in the program); a copy: one of the same
         let linkage =
             match part with
+            | Some p when p.copies -> "weak_odr hidden"
             | Some p when p.called.Contains f.name -> "hidden"
             | _ -> "internal"
 
@@ -3816,6 +4129,7 @@ let compile
 
         let linkage =
             match part with
+            | Some p when p.copies -> "weak_odr hidden"
             | Some p when p.called.Contains f.name -> "hidden"
             | _ -> "internal"
 
@@ -3945,7 +4259,7 @@ let compile
         | TCon("unit", []), _ -> em.Emit "ret void"
         | _ when isHandle e.ret ->
             // the result's reference goes to a new handle, the caller's to release
-            em.Emit(sprintf "ret ptr %s" (em.Instr(sprintf "call ptr @zs_handle_new(ptr %s, ptr %s)" r (dropFn e.ret))))
+            em.Emit(sprintf "ret ptr %s" (handleOf em e.ret r))
         | _, Memory ->
             em.Emit(sprintf "store %s %s, ptr %%ret" (llty e.ret) r)
             em.Emit "ret void"
@@ -3993,10 +4307,12 @@ let compile
         let ps = ps |> List.filter (fun p -> prune p <> tUnit) |> List.map cName
         sprintf "%s (*%s)(%s)" (cName r) name (if ps.IsEmpty then "void" else String.concat ", " ps)
 
-    /// A C declaration of `name` with this type (a function pointer's name goes inside it).
-    let cDecl (t: Ty) (name: string) =
+    /// A C declaration of `name` with this type (a function pointer's name goes inside it, and
+    /// an array's length after it: uint8_t data[16]).
+    let rec cDecl (t: Ty) (name: string) =
         match prune t with
         | TCon("fnptr", [ f ]) -> cFnPtr f name
+        | TCon("fixed", [ el; TCon(n, []) ]) -> cDecl el (sprintf "%s[%s]" name n)
         | t -> sprintf "%s %s" (cName t) name
 
     let header =

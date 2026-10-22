@@ -22,7 +22,13 @@ let rec private rootLocal (e: CExpr) =
 /// or array threaded through a loop costs no reference counting. Only for functions called
 /// directly (not closures, which are called through code pointers, nor the entries). For the
 /// whole program, since a caller's code depends on its callees'.
-let borrowing (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (entries: Set<string>) (funs: MFun list) =
+/// external: what another module's code borrows (its functions aren't in funs).
+let borrowingWith
+    (types: System.Collections.Generic.Dictionary<string, TypeInfo>)
+    (entries: Set<string>)
+    (external: string -> Set<int> option)
+    (funs: MFun list)
+    =
     let heap t = needsRc types t
     let asValues = System.Collections.Generic.HashSet<string>(entries)
 
@@ -59,7 +65,7 @@ let borrowing (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (
                 match e.k with
                 | CLocal x when index.ContainsKey x -> bad.Add index[x] |> ignore
                 | CApplyClo({ k = CLocal x }, args) when index.ContainsKey x -> List.iter walk args
-                | CPrim(("array.get" | "Array.length" | "String.length" | "String.byte"), { k = CLocal x } :: rest) when index.ContainsKey x ->
+                | CPrim(("array.get" | "Array.length" | "String.length" | "String.byte" | "fixed.get" | "fixed.length"), { k = CLocal x } :: rest) when index.ContainsKey x ->
                     List.iter walk rest
                 | CCallDirect(g, args) ->
                     args
@@ -68,8 +74,13 @@ let borrowing (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (
                         | CLocal x when index.ContainsKey x ->
                             let once = (args |> List.filter (fun b -> b.k = CLocal x)).Length = 1
 
-                            match borrowedOf.TryGetValue g with
-                            | true, bs when once && bs.Contains j -> ()
+                            let bs =
+                                match borrowedOf.TryGetValue g with
+                                | true, bs -> Some bs
+                                | _ -> if fnOf.ContainsKey g then None else external g
+
+                            match bs with
+                            | Some bs when once && bs.Contains j -> ()
                             | _ -> bad.Add index[x] |> ignore
                         | _ -> walk a)
                 | CAssign(x, _)
@@ -90,6 +101,8 @@ let borrowing (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (
             borrowedOf[name] <- set
 
     borrowedOf
+
+let borrowing types (entries: Set<string>) (funs: MFun list) = borrowingWith types entries (fun _ -> None) funs
 
 /// Reference counting for funs, with the program's borrowed parameters (borrowing).
 let lower (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (borrowedParams: System.Collections.Generic.Dictionary<string, Set<int>>) (funs: MFun list) : MFun list =
@@ -668,7 +681,7 @@ let lower (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (borr
                 vtypes[t] <- e.ty
                 re (CLet(t, e, mk (CDup(t, e.ty, mk (CLocal t) e.ty)) e.ty))
             | CGlobalVal _ -> e
-            | CPrim(("array.get" | "Array.length" | "String.length" | "String.byte" | "vec.load") as op, a :: rest) when
+            | CPrim(("array.get" | "Array.length" | "String.length" | "String.byte" | "vec.load" | "fixed.get" | "fixed.length") as op, a :: rest) when
                 (match rootLocal a with
                  | Some x -> not (rest |> List.exists (fun r -> (live r).Contains x))
                  | None -> false)

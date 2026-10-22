@@ -95,8 +95,9 @@ let uncurry (fixedNames: Set<string>) (funs: MFun list) : MFun list =
 let mutable kept: string -> bool = fun _ -> false
 
 /// Inlines calls to small functions that don't call themselves. Callees are done first, so a
-/// copy carries what was inlined into it.
-let run (funs: MFun list) : MFun list =
+/// copy carries what was inlined into it. mayInline caller callee: whether this callee may be
+/// (a module's code holds none of another module's functions, the driver says).
+let runWith (mayInline: string -> string -> bool) (funs: MFun list) : MFun list =
     let byName = funs |> List.map (fun f -> f.name, f) |> dict
 
     let rec calls (e: CExpr) =
@@ -112,12 +113,24 @@ let run (funs: MFun list) : MFun list =
         | CLetRec _ -> true
         | k -> children k |> List.exists localFunctions
 
-    let small =
+    let candidates =
         funs
-        |> List.filter (fun f ->
-            f.name <> "main" && not (kept f.name) && size f.body <= 60 && not (localFunctions f.body) && not (calls f.body |> List.contains f.name))
-        |> List.map (fun f -> f.name)
-        |> Set.ofList
+        |> List.filter (fun f -> f.name <> "main" && not (kept f.name) && size f.body <= 60 && not (localFunctions f.body))
+        |> List.map (fun f -> f.name, calls f.body |> List.distinct)
+        |> dict
+
+    // not one that can reach itself through others: what a copy carried would depend on which
+    // of them was done first, and a function's code must depend on its own callees only
+    let small =
+        candidates.Keys
+        |> Seq.filter (fun f ->
+            let seen = System.Collections.Generic.HashSet<string>()
+
+            let rec back (g: string) =
+                candidates[g] |> List.exists (fun h -> h = f || (candidates.ContainsKey h && seen.Add h && back h))
+
+            not (back f))
+        |> Set.ofSeq
 
     let done' = System.Collections.Generic.Dictionary<string, CExpr>()
     let visiting = System.Collections.Generic.HashSet<string>()
@@ -138,7 +151,7 @@ let run (funs: MFun list) : MFun list =
         c.Value <- c.Value + 1
         sprintf "%s.i%d" x c.Value
 
-    // a function's body with its calls to small functions inlined
+    // a function's body with its calls to small functions inlined (no small one is in a cycle)
     let rec bodyOf (name: string) : CExpr =
         match done'.TryGetValue name with
         | true, b -> b
@@ -152,7 +165,7 @@ let run (funs: MFun list) : MFun list =
         let e = { e with k = mapChildren (inlineIn caller) e.k }
 
         match e.k with
-        | CApp({ k = CGlobal(g, _) }, args) when small.Contains g && g <> caller && args.Length = byName[g].pars.Length ->
+        | CApp({ k = CGlobal(g, _) }, args) when small.Contains g && g <> caller && args.Length = byName[g].pars.Length && mayInline caller g ->
             let fresh = freshIn caller
             let ps = byName[g].pars |> List.map (fun (p, t) -> p, fresh p, t)
             let body = copy fresh (ps |> List.map (fun (p, p', _) -> p, p') |> Map.ofList) (bodyOf g)
@@ -161,3 +174,5 @@ let run (funs: MFun list) : MFun list =
         | _ -> e
 
     funs |> List.map (fun f -> { f with body = bodyOf f.name })
+
+let run (funs: MFun list) : MFun list = runWith (fun _ _ -> true) funs

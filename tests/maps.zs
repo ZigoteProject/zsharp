@@ -11,7 +11,7 @@ let main () =
   println $"find {Map.tryFind "b" m} {Map.tryFind "z" m} {Map.find "a" m2} count {Map.count m}"
   println $"keys {Map.keys m} values {Map.values m} map {Map.toList (Map.map (fun _ v -> v * 100) m)}"
   // 100k keys inserted in order stay balanced; removing half keeps the rest
-  let mutable big = Map.empty ()
+  let mutable big = Map.empty
   for i in 1 .. 100000 do
     big <- Map.add i (i * 2) big
   println $"big: count {Map.count big} height {height big} find {Map.tryFind 77777 big}"
@@ -27,11 +27,11 @@ let main () =
   let h = HashMap.ofList [ ("x", 1); ("y", 2) ]
   let h2 = HashMap.add "x" 5 h
   println $"hash {HashMap.tryFind "x" h} {HashMap.tryFind "x" h2} {HashMap.count h2} {HashMap.tryFind "q" h}"
-  let mutable counts = HashMap.empty ()
+  let mutable counts = HashMap.empty
   for w in String.split " " "the cat and the hat and the bat" do
     counts <- HashMap.add w (1 + Option.defaultValue 0 (HashMap.tryFind w counts)) counts
   println $"words {List.sort (HashMap.toList counts)}"
-  let mutable many = HashMap.empty ()
+  let mutable many = HashMap.empty
   for i in 1 .. 100000 do
     many <- HashMap.add i i many
   let before = Runtime.allocations ()

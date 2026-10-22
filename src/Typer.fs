@@ -136,7 +136,13 @@ let private expect what expected actual =
     try
         unify expected actual
     with
-    | Mismatch -> fail 0 (sprintf "%s: expected %s, got %s" what (show expected) (show actual))
+    | Mismatch ->
+        let hint =
+            match prune expected, prune actual with
+            | TCon("array", _), TCon("span", _) -> ": Array.ofSpan copies it"
+            | _ -> ""
+
+        fail 0 (sprintf "%s: expected %s, got %s%s" what (show expected) (show actual) hint)
     | NoImpl("Share", t) -> fail 0 (sprintf "%s: %s can't be shared between threads (it isn't Share)" what (show t))
     | NoImpl(tr, t) -> fail 0 (sprintf "%s: %s does not implement %s" what (show t) tr)
 
@@ -189,7 +195,7 @@ let private simdBuiltins (b: string -> string -> Kind list -> Ty -> int -> strin
           let mask = tcon (sprintf "mask%d" k)
           let arr = TCon("array", [ et ])
           b (m + ".splat") "vec.splat" [] (f et v) 1
-          b (m + ".load") "vec.load" [] (f arr (f tInt v)) 2
+          b (m + ".load") "vec.load" [] (f (TCon("span", [ et ])) (f tInt v)) 2
           b (m + ".store") "vec.store" [] (f arr (f tInt (f v arr))) 3
           b (m + ".get") "vec.get" [] (f v (f tInt et)) 2
           b (m + ".set") "vec.set" [] (f v (f tInt (f et v))) 3
@@ -270,7 +276,18 @@ let private builtins =
           b "Collections.Buffer.length" "Array.length" [ kAny ] (f (TCon("Buffer", [ a ])) tInt) 1
           b "Collections.Array.copy" "array.copy" [ kAny ] (f (TCon("array", [ a ])) (TCon("array", [ a ]))) 1
           b "Collections.Buffer.ofArray" "array.copy" [ kAny ] (f (TCon("array", [ a ])) (TCon("Buffer", [ a ]))) 1
-          b "Collections.Buffer.toArray" "array.copy" [ kAny ] (f (TCon("Buffer", [ a ])) (TCon("array", [ a ]))) 1
+          b "Collections.Buffer.toArray" "array.copy" [ kAny ] (f (TCon("span", [ a ])) (TCon("array", [ a ]))) 1
+          b "Collections.Buffer.ofSpan" "array.copy" [ kAny ] (f (TCon("span", [ a ])) (TCon("Buffer", [ a ]))) 1
+          b "Collections.Array.ofSpan" "array.copy" [ kAny ] (f (TCon("span", [ a ])) (TCon("array", [ a ]))) 1
+          b "Collections.Span.length" "Array.length" [ kAny ] (f (TCon("span", [ a ])) tInt) 1
+          b "Collections.Fixed.length" "fixed.length" [ kAny; kAny ] (f (TCon("fixed", [ a; TGen 1 ])) tInt) 1
+          b "Collections.Fixed.get" "fixed.get" [ kAny; kAny ] (f (TCon("fixed", [ a; TGen 1 ])) (f tInt a)) 2
+          b "Collections.Fixed.set" "fixed.set" [ kAny; kAny ] (f (TCon("fixed", [ a; TGen 1 ])) (f tInt (f a (TCon("fixed", [ a; TGen 1 ]))))) 3
+          b "Collections.Fixed.create" "fixed.create" [ kAny; kAny ] (f a (TCon("fixed", [ a; TGen 1 ]))) 1
+          b "Collections.Fixed.ofArray" "fixed.ofArray" [ kAny; kAny ] (f (TCon("span", [ a ])) (TCon("fixed", [ a; TGen 1 ]))) 1
+          b "Collections.Span.ofPtr" "span.ofPtr" [ kAny ] (f (TCon("ptr", [ a ])) (f tInt (TCon("span", [ a ])))) 2
+          b "Text.String.bytes" "span.ofString" [] (f tStr (TCon("span", [ tcon "u8" ]))) 1
+          b "Text.String.ofBytes" "String.ofBytes" [] (f (TCon("span", [ tcon "u8" ])) tStr) 1
           b "Int.wrappingAdd" "wrap+" [ kInt ] (f a (f a a)) 2
           b "Int.wrappingSub" "wrap-" [ kInt ] (f a (f a a)) 2
           b "Int.wrappingMul" "wrap*" [ kInt ] (f a (f a a)) 2
@@ -357,7 +374,7 @@ let private builtins =
           b "Native.listDirectory" "Dir.listRaw" [] (f tStr tStr) 1
           b "Native.runProcess" "Process.runRaw" [] (f tStr (f tStr tStr)) 2
           b "Native.exitCode" "Process.code" [] (f tUnit tInt) 1
-          b "Collections.Array.length" "Array.length" [ kAny ] (f (TCon("array", [ a ])) tInt) 1 ]
+          b "Collections.Array.length" "Array.length" [ kAny ] (f (TCon("span", [ a ])) tInt) 1 ]
         @ [ for t in Seq.append nums [ "float"; "c_int" ] ->
                 let target =
                     match typeAliases.TryGetValue t with
@@ -370,7 +387,11 @@ let private builtins =
     )
 
 /// The built-in functions only `unsafe` code may call: raw memory through ptr<T>.
-let private unsafeBuiltins = set [ "Ptr.read"; "Ptr.write"; "Ptr.add"; "Ptr.alloc"; "Ptr.free"; "Ptr.ofCPtr"; "Ptr.cast" ]
+let private unsafeBuiltins = set [ "Ptr.read"; "Ptr.write"; "Ptr.add"; "Ptr.alloc"; "Ptr.free"; "Ptr.ofCPtr"; "Ptr.cast"; "Collections.Span.ofPtr" ]
+
+/// Builtins over arrays that take a span and read an array, a Buffer or a span alike: an
+/// argument converted to a span for them is passed as it is (Codegen reads all three).
+let private overWindows = set [ "Array.length"; "array.copy"; "vec.load"; "fixed.ofArray" ]
 
 type private Local =
     { u: string // unique name in Core
@@ -390,89 +411,191 @@ type Global =
       arity: int
       mutable defining: bool }
 
+/// One of the checker's tables (State): a dictionary that also remembers the keys written since
+/// its last mark. Those are what a module added or changed: the module's result, which the
+/// cache keeps and a later build writes back instead of checking the module again.
+type Table<'k, 'v when 'k: equality>(cmp: IEqualityComparer<'k>) =
+    let d = Dictionary<'k, 'v>(cmp)
+    let written = HashSet<'k>(cmp)
+    let order = ResizeArray<'k>()
+
+    new() = Table<'k, 'v>(HashIdentity.Structural)
+
+    member _.Item
+        with get (k: 'k) = d[k]
+        and set (k: 'k) (v: 'v) =
+            if written.Add k then
+                order.Add k
+
+            d[k] <- v
+
+    member _.TryGetValue(k: 'k, [<System.Runtime.InteropServices.Out>] v: byref<'v>) = d.TryGetValue(k, &v)
+    member _.ContainsKey(k: 'k) = d.ContainsKey k
+    member _.Remove(k: 'k) = d.Remove k // only after an error, when nothing of the module is kept
+    member _.Count = d.Count
+    member _.Keys = d.Keys
+    member _.Values = d.Values
+    member _.Dict = d
+    /// The keys written since the last mark, in the order first written (still there).
+    member _.Written = order |> Seq.filter d.ContainsKey
+    member _.Mark() =
+        written.Clear()
+        order.Clear()
+
+    interface IEnumerable<KeyValuePair<'k, 'v>> with
+        member _.GetEnumerator() : IEnumerator<KeyValuePair<'k, 'v>> = (d :> IEnumerable<_>).GetEnumerator()
+
+    interface System.Collections.IEnumerable with
+        member _.GetEnumerator() : System.Collections.IEnumerator = (d :> System.Collections.IEnumerable).GetEnumerator()
+
+/// A set of the checker's state that remembers what was added since its last mark (as Table).
+type Bag<'a when 'a: equality>() =
+    let s = HashSet<'a>(HashIdentity.Structural)
+    let added = ResizeArray<'a>()
+
+    member _.Add(x: 'a) =
+        if s.Add x then
+            added.Add x
+            true
+        else
+            false
+
+    member _.Contains(x: 'a) = s.Contains x
+    member _.Count = s.Count
+    member _.Set = s
+    member _.Added = added :> seq<'a>
+    member _.Mark() = added.Clear()
+
+    interface IEnumerable<'a> with
+        member _.GetEnumerator() : IEnumerator<'a> = (s :> IEnumerable<_>).GetEnumerator()
+
+    interface System.Collections.IEnumerable with
+        member _.GetEnumerator() : System.Collections.IEnumerator = (s :> System.Collections.IEnumerable).GetEnumerator()
+
 /// What checking a program's modules has built so far: everything the modules after them can
-/// see. Saved after a prefix of them (the library, say), it lets a later build start there;
-/// Snapshot writes and reads every field.
+/// see. A module's result is what it wrote here (each table's Written, the lists' new items):
+/// Snapshot writes it per module, and writes it back into the state of a later check.
 type State =
-    { types: Dictionary<string, TypeInfo>
-      ctors: Dictionary<string, string * int> // constructor -> union, tag
+    { types: Table<string, TypeInfo>
+      ctors: Table<string, string * int> // constructor -> union, tag
       records: ResizeArray<string> // record types in declaration order
-      recordDefaults: Dictionary<string, Expr option list> // record -> default per field
-      ctorFieldNames: Dictionary<string, string option list> // constructor -> field names
-      members: Dictionary<string, Dictionary<string, MemberInfo>> // type -> member name -> info
-      memberTypeNames: HashSet<string> // the last part of each type in members, a quick test for staticMember
-      traitMethods: Dictionary<string, TraitMethod> // "Show.show" -> method
-      traitAliases: Dictionary<string, string> // "show" -> "Show.show"; "M.describe" -> "M.Describe.describe"
-      traitNames: HashSet<string> // by full name: Show, or M.Describe declared in module M
-      impls: Dictionary<string * string, Dictionary<string, string>> // (trait, type) -> method -> function
-      implRequires: Dictionary<string * string, Set<string> list> // traits each type argument needs
-      derives: Dictionary<string, (int * string * Param list * SType option * Expr) list> // by full name, as traits
-      deriveModules: Dictionary<string, string option> // derive -> the module declaring it
+      recordDefaults: Table<string, Expr option list> // record -> default per field
+      ctorFieldNames: Table<string, string option list> // constructor -> field names
+      members: Table<string, (string * MemberInfo) list> // type -> its members, in declaration order
+      memberTypeNames: Bag<string> // the last part of each type in members, a quick test for staticMember
+      traitMethods: Table<string, TraitMethod> // "Show.show" -> method
+      traitAliases: Table<string, string> // "show" -> "Show.show"; "M.describe" -> "M.Describe.describe"
+      traitNames: Bag<string> // by full name: Show, or M.Describe declared in module M
+      impls: Table<string * string, Dictionary<string, string>> // (trait, type) -> method -> function
+      implRequires: Table<string * string, Set<string> list> // traits each type argument needs
+      derives: Table<string, (int * string * Param list * SType option * Expr) list> // by full name, as traits
+      deriveModules: Table<string, string option> // derive -> the module declaring it
       // active pattern case -> (function, total?, number of parameters before the value)
-      activePatterns: Dictionary<string, string * bool * int>
-      apCtors: HashSet<string> // cases of total active patterns: payload optional
-      ownImpls: HashSet<string * string> // the explicit impls in these modules
-      autoDerived: HashSet<string * string> // automatic derives made so far
-      optOut: HashSet<string * string> // [<NoEquality>] / [<NoComparison>]
-      globals: Dictionary<string, Global>
-      externs: Dictionary<string, ExternSig>
+      activePatterns: Table<string, string * bool * int>
+      apCtors: Bag<string> // cases of total active patterns: payload optional
+      autoDerived: Bag<string * string> // automatic derives made so far
+      optOut: Bag<string * string> // [<NoEquality>] / [<NoComparison>]
+      globals: Table<string, Global>
+      externs: Table<string, ExternSig>
       funs: ResizeArray<FunDef>
-      counter: int ref // for unique names
-      measures: HashSet<string> // [<Measure>] types
-      clayouts: HashSet<string> // [<CLayout>] records
-      targets: Dictionary<string, string list> // [<Target>] and [<Multiversion>] functions (Program.targets)
+      counter: int ref // for unique names, from 0 in each module (so a module's names are its own)
+      measures: Bag<string> // [<Measure>] types
+      clayouts: Bag<string> // [<CLayout>] records
+      targets: Table<string, string list> // [<Target>] and [<Multiversion>] functions (Program.targets)
       exports: ResizeArray<Export>
       tests: ResizeArray<string>
-      consts: Dictionary<string, Expr> // constants (top-level and from import c): their uses are the expression
-      globalValues: Dictionary<string, Ty> // top-level values computed at startup
+      consts: Table<string, Expr> // constants (top-level and from import c): their uses are the expression
+      globalValues: Table<string, Ty> // top-level values computed at startup
       valueList: ResizeArray<string * string> // in initialization order: name, init function
-      literalRecords: Dictionary<Expr, string> // record literal -> the record it built (a constant's, rechecked at each use)
-      privates: Dictionary<string, string option> // qualified name -> owning module
-      moduleNames: HashSet<string> // files' and nested modules, and the namespaces they are in
-      mainNested: HashSet<string> // modules nested in the main file (it has no module name)
-      nestedModules: HashSet<string> // every `module X =` so far, to catch a second one
-      enclosingOf: Dictionary<string, string list> // each module's enclosing modules, innermost first
-      mutable typeVars: int } // type variables made (Core's count)
+      literalRecords: Table<Expr, string> // record literal -> the record it built (a constant's, rechecked at each use)
+      privates: Table<string, string option> // qualified name -> owning module
+      moduleNames: Bag<string> // files' and nested modules, and the namespaces they are in
+      mainNested: Bag<string> // modules nested in the main file (it has no module name)
+      nestedModules: Bag<string> // every `module X =` so far, to catch a second one
+      enclosingOf: Table<string, string list> } // each module's enclosing modules, innermost first
 
 let private freshState () =
-    { types = Dictionary()
-      ctors = Dictionary()
+    { types =
+        let t = Table()
+        t[windowType] <- windowDef // what Buffer and span are after monomorphization
+        t
+      ctors = Table()
       records = ResizeArray()
-      recordDefaults = Dictionary()
-      ctorFieldNames = Dictionary()
-      members = Dictionary()
-      memberTypeNames = HashSet()
-      traitMethods = Dictionary()
-      traitAliases = Dictionary()
-      traitNames = HashSet()
-      impls = Dictionary()
-      implRequires = Dictionary()
-      derives = Dictionary()
-      deriveModules = Dictionary()
-      activePatterns = Dictionary()
-      apCtors = HashSet()
-      ownImpls = HashSet()
-      autoDerived = HashSet()
-      optOut = HashSet()
-      globals = Dictionary()
-      externs = Dictionary()
+      recordDefaults = Table()
+      ctorFieldNames = Table()
+      members = Table()
+      memberTypeNames = Bag()
+      traitMethods = Table()
+      traitAliases = Table()
+      traitNames = Bag()
+      impls = Table()
+      implRequires = Table()
+      derives = Table()
+      deriveModules = Table()
+      activePatterns = Table()
+      apCtors = Bag()
+      autoDerived = Bag()
+      optOut = Bag()
+      globals = Table()
+      externs = Table()
       funs = ResizeArray()
       counter = ref 0
-      measures = HashSet()
-      clayouts = HashSet()
-      targets = Dictionary()
+      measures = Bag()
+      clayouts = Bag()
+      targets = Table()
       exports = ResizeArray()
       tests = ResizeArray()
-      consts = Dictionary()
-      globalValues = Dictionary()
+      consts = Table()
+      globalValues = Table()
       valueList = ResizeArray()
-      literalRecords = Dictionary(HashIdentity.Reference)
-      privates = Dictionary()
-      moduleNames = HashSet()
-      mainNested = HashSet()
-      nestedModules = HashSet()
-      enclosingOf = Dictionary()
-      typeVars = 0 }
+      literalRecords = Table(HashIdentity.Reference)
+      privates = Table()
+      moduleNames = Bag()
+      mainNested = Bag()
+      nestedModules = Bag()
+      enclosingOf = Table() }
+
+/// Where a module's result starts in the state's lists (and the checker's hovers).
+type Marks =
+    { records: int
+      funs: int
+      exports: int
+      tests: int
+      valueList: int
+      hovers: int }
+
+/// Starts a module's result: every table and set forgets what it was written before.
+let markState (st: State) =
+    st.types.Mark()
+    st.ctors.Mark()
+    st.recordDefaults.Mark()
+    st.ctorFieldNames.Mark()
+    st.members.Mark()
+    st.memberTypeNames.Mark()
+    st.traitMethods.Mark()
+    st.traitAliases.Mark()
+    st.traitNames.Mark()
+    st.impls.Mark()
+    st.implRequires.Mark()
+    st.derives.Mark()
+    st.deriveModules.Mark()
+    st.activePatterns.Mark()
+    st.apCtors.Mark()
+    st.autoDerived.Mark()
+    st.optOut.Mark()
+    st.globals.Mark()
+    st.externs.Mark()
+    st.measures.Mark()
+    st.clayouts.Mark()
+    st.targets.Mark()
+    st.consts.Mark()
+    st.globalValues.Mark()
+    st.literalRecords.Mark()
+    st.privates.Mark()
+    st.moduleNames.Mark()
+    st.mainNested.Mark()
+    st.nestedModules.Mark()
+    st.enclosingOf.Mark()
 
 /// modules: (file, module name, declarations) in dependency order; the prelude and the main
 /// file have no module name (their declarations are global).
@@ -487,6 +610,10 @@ let builtinType (name: string) =
 /// driver): a name in one is reported as such rather than as unknown.
 let unavailable = HashSet<string>()
 
+/// Operators on numbers and booleans: pure, as fusion takes them.
+let private pureOps =
+    set [ "+"; "-"; "*"; "/"; "%"; "="; "<>"; "<"; ">"; "<="; ">="; "&&"; "||"; "&&&"; "|||"; "^^^"; "<<<"; ">>>" ]
+
 /// The error for a name nothing defines.
 let private unknown (what: string) (x: string) =
     let inModule (m: string) = [ m; shortName m ] |> List.exists (fun p -> x.StartsWith(p + "."))
@@ -494,27 +621,32 @@ let private unknown (what: string) (x: string) =
     match unavailable |> Seq.tryFind inModule with
     | Some m -> fail 0 (sprintf "'%s' is in %s, part of Std, which needs an operating system; this target has none" x m)
     | None when x <> "" && isOpChar x[0] -> fail 0 (sprintf "unknown operator '%s'; define it with: let (%s) a b = …" x x)
+    | None when x = "yield" -> fail 0 "yield belongs in [ … ], [| … |] or seq { }"
     | None -> fail 0 (sprintf "unknown %s '%s'" what x)
 
-/// A snapshot that can't be used (a later module overrides something it already did).
-exception StaleSnapshot of string
+/// A check of a program's modules, one at a time in dependency order (the prelude and the main
+/// file have no module name: their names are global). Each module is either checked now
+/// (`check`), or written back into `state` from what checking it gave before (by Snapshot,
+/// from the cache), which is the same to the modules after it.
+type Session =
+    { state: State
+      /// Checks a module (file, module name, declarations); false if it had errors. Its result
+      /// is what it wrote to the state, and its hovers: what's after `marks ()`.
+      check: string -> string option -> (int * Decl) list -> bool
+      marks: unit -> Marks
+      hovers: ResizeArray<Hover>
+      /// After the library: the program's file modules and explicit impls (as at the start).
+      addProgram: string list -> (string * string) list -> unit
+      /// The program so far, with `main` checked (when required, or there is one) and every
+      /// error; funs and hovers are the modules checked here.
+      finish: unit -> Program }
 
-/// start: the state after the modules before these (from a snapshot), or None to start from
-/// nothing. snapshot i st: called after the i-th of these modules, with the state so far.
-let checkFrom
-    (requireMain: bool)
-    (collect: bool)
-    (start: State option)
-    (snapshot: int -> State -> unit)
-    (modules: (string * string option * (int * Decl) list) list)
-    : Program =
-    let decls = modules |> List.collect (fun (_, _, ds) -> ds)
-    let st = defaultArg start (freshState ())
-
-    match start with
-    | Some s -> Core.setTypeVars s.typeVars
-    | None -> ()
-
+/// moduleNames: the program's file modules (all of them, so a name can be told from a
+/// module's); manualImpls: the explicit impls of every module, (trait, type as written), which
+/// win over automatic derives. collect: report every declaration's error (editors) instead of
+/// stopping at the first.
+let session (requireMain: bool) (collect: bool) (allModules: string list) (manualImpls: (string * string) list) : Session =
+    let st = freshState ()
     let types = st.types
     let ctors = st.ctors
     let records = st.records
@@ -531,8 +663,8 @@ let checkFrom
     let deriveModules = st.deriveModules
     let activePatterns = st.activePatterns
     let apCtors = st.apCtors
-    // explicit impls anywhere in the program win over automatic derives (filled below)
-    let manualImpls = HashSet<string * string>(st.ownImpls)
+    // explicit impls anywhere in the program win over automatic derives
+    let manualImpls = HashSet<string * string>(manualImpls)
     let optOut = st.optOut
     let mutable autoDerive: string -> string -> bool = fun _ _ -> false // set once derives can run
 
@@ -542,7 +674,7 @@ let checkFrom
             | t when tr = "Share" ->
                 // built in, from the type's parts (its type variables must be Share too)
                 try
-                    (shareBlocker (fun v -> unify (fresh (kTrait "Share")) v) types Set.empty t).IsNone
+                    (shareBlocker (fun v -> unify (fresh (kTrait "Share")) v) types.Dict Set.empty t).IsNone
                 with
                 | Mismatch
                 | NoImpl _ -> false
@@ -598,6 +730,25 @@ let checkFrom
 
     let record (node: obj) (name: string) (t: Ty) (inlay: bool) = recordKey node name t inlay "" false
 
+    /// The type with its variables as a scheme's ('a, 'b, … in order), as a hover or an error
+    /// shows a generic one; a literal's variable (a number constant's) stays.
+    let schemed (t: Ty) =
+        let vars = ResizeArray<TV ref>()
+
+        let rec named (t: Ty) =
+            match prune t with
+            | TVar r when (kindOf r).allowed.IsNone ->
+                if not (vars.Exists(fun v -> obj.ReferenceEquals(v, r))) then
+                    vars.Add r
+
+                TGen(vars.FindIndex(fun v -> obj.ReferenceEquals(v, r)))
+            | TCon(n, ts) -> TCon(n, List.map named ts)
+            | TTuple ts -> TTuple(List.map named ts)
+            | TFun(a, b) -> TFun(named a, named b)
+            | t -> t
+
+        named t
+
     /// Errors raised while checking a positioned node (a name, call or field) point at it.
     let at (node: obj) (f: unit -> 'r) : 'r =
         try
@@ -632,6 +783,7 @@ let checkFrom
     let literalRecords = st.literalRecords
     let lambdaHints = Dictionary<Expr, Ty>(HashIdentity.Reference) // lambda -> the function type expected of it
     let dynHints = Dictionary<Expr, Ty>(HashIdentity.Reference) // expression -> the dyn Trait expected of it
+    let spanHints = Dictionary<Expr, Ty>(HashIdentity.Reference) // expression -> the span expected of it
     let shareHints = Dictionary<Expr, Ty>(HashIdentity.Reference) // expression -> the share<F> expected of it
     // a let-bound local's Core, by its unique name: what a function crossing threads captures
     // when it captures a local function
@@ -640,15 +792,16 @@ let checkFrom
     let opens = ref ([]: string list) // most recent first
     let privates = st.privates
     // files' and nested modules, and the namespaces they are in (Collections from Collections.List):
-    // all of them, so a name can be told from a module's; the state keeps those checked so far
+    // every file's from the start, so a name can be told from a module's (no module's result:
+    // they're in place before the first is marked); nested ones as they're checked
     let withEnclosing (m: string) =
         let parts = m.Split '.'
         [ for k in 1 .. parts.Length -> String.concat "." parts[.. k - 1] ]
 
-    let moduleNames = HashSet<string>(st.moduleNames)
+    let moduleNames = st.moduleNames
 
-    for _, m, _ in modules do
-        for n in m |> Option.map withEnclosing |> Option.defaultValue [] do
+    for m in allModules do
+        for n in withEnclosing m do
             moduleNames.Add n |> ignore
 
     let mainNested = st.mainNested
@@ -715,15 +868,15 @@ let checkFrom
                 fail 0 (sprintf "'%s' is private to module %s" x (defaultArg owner "?"))
             | _ -> q)
 
-    if start.IsNone then
-        types["list"] <-
-            { npars = 1
-              def = UnionDef [ "[]", []; "::", [ TGen 0; TCon("list", [ TGen 0 ]) ] ] }
+    // built in, before any module (so in none's result)
+    types["list"] <-
+        { npars = 1
+          def = UnionDef [ "[]", []; "::", [ TGen 0; TCon("list", [ TGen 0 ]) ] ] }
 
-        ctors["[]"] <- ("list", 0)
-        ctors["::"] <- ("list", 1)
-        ctorFieldNames["[]"] <- []
-        ctorFieldNames["::"] <- [ Some "head"; Some "tail" ]
+    ctors["[]"] <- ("list", 0)
+    ctors["::"] <- ("list", 1)
+    ctorFieldNames["[]"] <- []
+    ctorFieldNames["::"] <- [ Some "head"; Some "tail" ]
 
     let uniq (x: string) =
         counter.Value <- counter.Value + 1
@@ -775,6 +928,20 @@ let checkFrom
             match resolveWith traitNames.Contains tr with
             | Some full -> dynOf full
             | None -> fail 0 (sprintf "unknown trait '%s' in dyn %s" tr tr)
+        | STName("fixed", [ el; len ]) ->
+            // fixed<T, N>: N elements of T inline. N is a positive number, part of the type (a
+            // type variable only in the Fixed module, whose functions work for every N)
+            let n =
+                match len with
+                | STName(d, []) when d <> "" && Seq.forall System.Char.IsDigit d ->
+                    match System.Int32.TryParse d with
+                    | true, k when k > 0 -> TCon(string k, [])
+                    | _ -> fail 0 "fixed needs a positive number of elements, written as a literal"
+                | STVar _ when currentModule.Value = Some "Collections.Fixed" -> toTy tparams len
+                | _ -> fail 0 "fixed needs a positive number of elements, written as a literal"
+
+            TCon("fixed", [ toTy tparams el; n ])
+        | STName(d, []) when d <> "" && System.Char.IsDigit d[0] -> fail 0 "only fixed takes a number as a type argument"
         | STName(n, args) ->
             let n =
                 match typeAliases.TryGetValue n with
@@ -1056,7 +1223,20 @@ let checkFrom
             | true, hint ->
                 shareHints.Remove e |> ignore
                 toShare (inferNode env depth e) hint
-            | _ -> inferNode env depth e
+            | _ ->
+                match spanHints.TryGetValue e with
+                | true, hint ->
+                    spanHints.Remove e |> ignore
+                    toSpan (inferNode env depth e) hint
+                | _ -> inferNode env depth e
+
+    /// An array or a Buffer where a span is expected: a span over all of it.
+    and toSpan (c: CExpr) (hint: Ty) : CExpr =
+        match prune c.ty, prune hint with
+        | TCon(("array" | "Buffer") as k, [ el ]), TCon("span", [ h ]) ->
+            expect "span" h el
+            mk (CPrim((if k = "array" then "span.ofArray" else "span.ofBuffer"), [ c ])) (TCon("span", [ el ]))
+        | _ -> c
 
     /// A function where a share<F> is expected (it crosses threads): as it is when it's one
     /// already (or its type isn't known yet), else checked that what it captures can be shared,
@@ -1093,7 +1273,7 @@ let checkFrom
                             unify (fresh (kTrait "Share")) t
                         with
                         | NoImpl(_, part) ->
-                            let part = shareBlocker ignore types Set.empty t |> Option.defaultValue part
+                            let part = shareBlocker ignore types.Dict Set.empty t |> Option.defaultValue part
                             let holds = if prune part = prune t then "" else sprintf ", which holds %s" (show part)
 
                             match prune t with
@@ -1141,7 +1321,20 @@ let checkFrom
         | UnitLit -> mk CUnit tUnit
         | Var x ->
             let r = at node (fun () -> value env depth x)
-            recordKey node x r.ty false (keyOf env x) false
+
+            // a generic constant (Map.empty) shows its scheme, as F# does: an instance of its
+            // own, not the one this use settles
+            let shown =
+                match env.TryFind x, resolveName x with
+                | None, Some q when consts.ContainsKey q ->
+                    let own = value' Map.empty depth q
+
+                    match schemed own.ty with
+                    | t when t <> own.ty -> t
+                    | _ -> r.ty
+                | _ -> r.ty
+
+            recordKey node x shown false (keyOf env x) false
             r
         | Call("$task", [ Lambda([ PUnit, None ], body) ]) ->
             // task { }: a Task whose work is the body, in direct style ($cancel is the task's
@@ -1379,6 +1572,15 @@ let checkFrom
             let cr = infer (env.Add(x, l)) depth rest
             mk (CLetMut(l.u, cv, cr)) cr.ty
         | Assign(lhs, rhs) ->
+            // the let mutable a place is a field (of a field…) of
+            let rec mutableRoot (e: Expr) =
+                match e with
+                | Var x when (match env.TryFind x with
+                              | Some l -> l.mut
+                              | None -> false) -> Some x
+                | Field(r, _) -> mutableRoot r
+                | _ -> None
+
             match lhs with
             | Var x ->
                 match env.TryFind x with
@@ -1395,6 +1597,15 @@ let checkFrom
                 let ca = inf a
 
                 match prune ca.ty, a with
+                | TCon("span", _), _ -> fail 0 "a span is read-only: slice the Buffer (b.[i..j]) for a window you can write to"
+                | TCon("fixed", _), _ when (match a with
+                                            | Var x -> env.TryFind x |> Option.exists (fun l -> l.mut)
+                                            | _ -> (mutableRoot a).IsSome) ->
+                    // an element of a fixed-size array in a let mutable, or in its record: the
+                    // place gets the changed value
+                    inf (Assign(a, Call("Collections.Fixed.set", [ a; i; rhs ])))
+                | TCon("fixed", _), _ ->
+                    fail 0 "a fixed-size array is a value: declare it (or the record holding it) with `let mutable` to assign an element, or use Fixed.set, which returns the changed one"
                 | TCon("Buffer", _), _ ->
                     // a Buffer is a shared reference: the write is seen through every alias
                     let ci = inf i
@@ -1415,17 +1626,39 @@ let checkFrom
                     expect "array" (TCon("array", [ cv.ty ])) l.ty
                     expect "array index" tInt ci.ty
                     mk (CArraySet(l.u, ci, cv)) tUnit
+                | _ when (mutableRoot a).IsSome ->
+                    // an element of an array in a let mutable record's field: the record with the
+                    // array changed (in place when both are unique)
+                    inf (Assign(a, Call("Collections.Array.set", [ a; i; rhs ])))
                 | _ ->
                     fail
                         0
                         "arrays are values: to change one, declare it with `let mutable a = …` and write `a.[i] <- x`, or use `Array.set a i x`, which returns the changed array (Buffer<'a> is the shared mutable alternative)"
-            | Field(r, "Value") ->
+            | Field(r, "Value") when (mutableRoot r).IsNone ->
+                // a ref's Value
                 let cr = inf r
                 let cv = inf rhs
                 expect "ref cell" (TCon("ref", [ cv.ty ])) cr.ty
                 mk (CPrim("ref.set", [ cr; cv ])) tUnit
-            | Field _ -> fail 0 "record fields are immutable; use { r with field = ... }"
-            | _ -> fail 0 "only mutable variables, array elements and ref cells can be assigned"
+            | Field(r, "Value") when (match prune (inf r).ty with
+                                      | TCon("ref", _) -> true
+                                      | _ -> false) ->
+                // a ref held by a let mutable (or in its record): the ref's Value, not the holder
+                let cr = inf r
+                let cv = inf rhs
+                expect "ref cell" (TCon("ref", [ cv.ty ])) cr.ty
+                mk (CPrim("ref.set", [ cr; cv ])) tUnit
+            | Field _ when (mutableRoot lhs).IsSome ->
+                // a field of a let mutable record, nested or not: p.pos.x <- v is
+                // p <- { p with pos = { p.pos with x = v } }
+                let rec rebuild (place: Expr) (v: Expr) =
+                    match place with
+                    | Field(r, f) -> rebuild r (Update(r, [ f, v ]))
+                    | _ -> v
+
+                inf (Assign(Var (mutableRoot lhs).Value, rebuild lhs rhs))
+            | Field _ -> fail 0 "record fields are immutable: declare the record with `let mutable` to assign one of its fields, or use { r with field = … }"
+            | _ -> fail 0 "only mutable variables, their fields and elements, and ref cells can be assigned"
         | While(c, b) ->
             let cc = inf c
             expect "condition of 'while'" tBool cc.ty
@@ -1461,14 +1694,19 @@ let checkFrom
             let ci = inf i
             let el = fresh kAny
 
-            let container =
-                match prune ca.ty with
-                | TCon("Buffer", _) -> "Buffer"
-                | _ -> "array"
+            match prune ca.ty with
+            | TCon("fixed", [ fel; _ ]) ->
+                expect "array index" tInt ci.ty
+                mk (CPrim("fixed.get", [ ca; ci ])) fel
+            | _ ->
+                let container =
+                    match prune ca.ty with
+                    | TCon(("Buffer" | "span") as c, _) -> c
+                    | _ -> "array"
 
-            expect "indexing" (TCon(container, [ el ])) ca.ty
-            expect "array index" tInt ci.ty
-            mk (CPrim("array.get", [ ca; ci ])) el
+                expect "indexing" (TCon(container, [ el ])) ca.ty
+                expect "array index" tInt ci.ty
+                mk (CPrim("array.get", [ ca; ci ])) el
         | ArrayLit xs ->
             let el = fresh kAny
 
@@ -1569,6 +1807,44 @@ let checkFrom
             with
             | CompileError(l, msg) -> fail l (sprintf "%s: %s" ctx msg)
             | CompileErrorPos(l, c, msg) -> raise (CompileErrorPos(l, c, sprintf "%s: %s" ctx msg))
+        | ListComp(isArray, body) -> listExpression env depth isArray body
+        | Slice(a, i, j) ->
+            // a window (a span, or a Buffer of a Buffer) of elements i to j, or a string's copy;
+            // a bound left out is the start or the end
+            let ca = inf a
+            settle ca.ty
+
+            let kind, resTy =
+                match prune ca.ty with
+                | TCon("array", [ el ]) -> 0L, TCon("span", [ el ])
+                | TCon("Buffer", [ el ]) -> 1L, ca.ty
+                | TCon("span", [ el ]) -> 2L, ca.ty
+                | TCon("string", []) -> 3L, tStr
+                | t -> fail 0 (sprintf "a slice needs an array, a Buffer, a span or a string, not %s" (show t))
+
+            let bound (e: Expr) =
+                let c = inf e
+                expect "slice bound" tInt c.ty
+                c
+
+            let s = uniq "$sliced"
+            let sv = mk (CLocal s) ca.ty
+            let lo = i |> Option.map bound |> Option.defaultValue (mk (CInt 0L) tInt)
+
+            let hi =
+                match j with
+                | Some j -> bound j
+                | None ->
+                    let len = mk (CPrim((if kind = 3L then "String.length" else "Array.length"), [ sv ])) tInt
+                    mk (CBin("-", len, mk (CInt 1L) tInt)) tInt
+
+            let sliced =
+                if kind = 3L then CPrim("String.slice", [ sv; lo; hi ])
+                else CPrim("window.slice", [ sv; lo; hi; mk (CInt kind) tInt ])
+
+            mk (CLet(s, ca, mk sliced resTy)) resTy
+        | Yield _
+        | YieldAll _ -> fail 0 "yield belongs in [ … ], [| … |] or seq { }"
         | ForIn(x, xs, body) ->
             let cxs = inf xs
             settle cxs.ty
@@ -1583,8 +1859,14 @@ let checkFrom
 
             let loop =
                 match prune cxs.ty with
-                | TCon(("array" | "Buffer") as c, _) ->
-                    let len = if c = "array" then "Collections.Array.length" else "Collections.Buffer.length"
+                | TCon(("array" | "Buffer" | "span" | "fixed") as c, _) ->
+                    let len =
+                        match c with
+                        | "array" -> "Collections.Array.length"
+                        | "Buffer" -> "Collections.Buffer.length"
+                        | "fixed" -> "Collections.Fixed.length"
+                        | _ -> "Collections.Span.length"
+
                     For("$i", Lit 0L, None, Bin("-", Call(len, [ Var "$coll" ]), Lit 1L), Let(PIdent(x, None), None, Index(Var "$coll", Var "$i"), body))
                 | TCon("list", _) ->
                     // a while loop over a cursor, so the body may assign outer mutable variables
@@ -1624,20 +1906,35 @@ let checkFrom
                             )
                         )
                     )
-                | t -> fail 0 (sprintf "'for ... in' needs a list, an array or a string, not %s" (show t))
+                | t -> fail 0 (sprintf "'for ... in' needs a list, an array, a Buffer, a span or a string, not %s" (show t))
 
             let cl = infer env' depth loop
             expect "body of 'for'" tUnit cl.ty
             mk (CLet(coll.u, cxs, cl)) tUnit
         | TryBind(p, e, rest) ->
-            // match e with Ok p -> rest | Error err -> Error err
+            // match e with Ok p -> rest | Error err -> Error err, or, on an option, match e with
+            // Some p -> rest | None -> None: the rest of the block (the function's result, or the
+            // lambda's) gives what the early return does. Its errors point at the `?`.
             let ce = inf e
-            let okTy, er = fresh kAny, fresh kAny
-            let resTy = TCon("result", [ okTy; er ])
-            expect "operand of '?'" resTy ce.ty
+
+            let onOption =
+                match prune ce.ty with
+                | TCon("option", _) -> true
+                | _ -> false
+
+            let wrap, payload, other =
+                if onOption then
+                    let a = fresh kAny
+                    TCon("option", [ a ]), a, None
+                else
+                    let okTy, er = fresh kAny, fresh kAny
+                    TCon("result", [ okTy; er ]), okTy, Some er
+
+            at node (fun () -> expect "operand of '?'" wrap ce.ty)
             let names = Dictionary<string, string>()
-            let okTag, errTag = snd ctors["Ok"], snd ctors["Error"]
-            let cp = CPCtor("result", okTag, [ pat names p okTy ])
+            let caseOf (c: string) = snd ctors[c]
+            let union = if onOption then "option" else "result"
+            let cp = CPCtor(union, caseOf (if onOption then "Some" else "Ok"), [ pat names p payload ])
             let vars = patVars cp
 
             let envOk =
@@ -1655,19 +1952,35 @@ let checkFrom
 
             let crest = infer envOk depth rest
 
-            try
-                unify (TCon("result", [ fresh kAny; er ])) crest.ty
-            with Mismatch | NoImpl _ ->
-                let ers =
-                    match prune er with
-                    | TVar _ -> "_"
-                    | t -> show t
+            at node (fun () ->
+                let gives = match other with
+                            | Some er -> TCon("result", [ fresh kAny; er ])
+                            | None -> TCon("option", [ fresh kAny ])
 
-                fail 0 (sprintf "'?' needs the rest of the block to produce a result<_, %s>, but it produces %s" ers (show crest.ty))
+                try
+                    unify gives crest.ty
+                with Mismatch | NoImpl _ ->
+                    match prune crest.ty, other with
+                    | TCon("result", _), None -> fail 0 "? on an option in a function returning result<_, _>: use Option.toResult, or option { }"
+                    | TCon("option", _), Some _ -> fail 0 "? on a result in a function returning option<_>: use Result.toOption, or result { }"
+                    | TCon("unit", []), _ -> fail 0 "? needs the function to return a result or an option; this one returns unit"
+                    | t, Some er ->
+                        let ers =
+                            match prune er with
+                            | TVar _ -> "_"
+                            | t -> show t
 
-            let eu = uniq "$err"
-            let errCase = CPCtor("result", errTag, [ CPVar(eu, er) ]), None, mk (CCtor("result", errTag, [ mk (CLocal eu) er ])) crest.ty
-            let cases = [ (cp, None, crest); errCase ]
+                        fail 0 (sprintf "'?' needs the rest of the block to produce a result<_, %s>, but it produces %s" ers (show t))
+                    | t, None -> fail 0 (sprintf "'?' needs the rest of the block to produce an option, but it produces %s" (show t)))
+
+            let failCase =
+                match other with
+                | Some er ->
+                    let eu = uniq "$err"
+                    CPCtor("result", caseOf "Error", [ CPVar(eu, er) ]), None, mk (CCtor("result", caseOf "Error", [ mk (CLocal eu) er ])) crest.ty
+                | None -> CPCtor("option", caseOf "None", []), None, mk (CCtor("option", caseOf "None", [])) crest.ty
+
+            let cases = [ (cp, None, crest); failCase ]
             Match.check unionCases apCtors.Contains (cases |> List.map (fun (p, _, _) -> p, false))
             mk (CMatch(ce, cases)) crest.ty
         | Match(s, cases) when
@@ -1844,10 +2157,7 @@ let checkFrom
         match prune t with
         | TCon(n, _) ->
             match members.TryGetValue n with
-            | true, table ->
-                match table.TryGetValue f with
-                | true, m -> Some m
-                | _ -> None
+            | true, table -> table |> List.tryFind (fst >> (=) f) |> Option.map snd
             | _ -> None
         | _ -> None
 
@@ -1875,10 +2185,7 @@ let checkFrom
             let t = resolveWith members.ContainsKey t |> Option.defaultValue t
 
             match members.TryGetValue t with
-            | true, table ->
-                match table.TryGetValue(name.Substring(i + 1)) with
-                | true, m when m.isStatic -> Some m
-                | _ -> None
+            | true, table -> table |> List.tryFind (fun (n, m) -> n = name.Substring(i + 1) && m.isStatic) |> Option.map snd
             | _ -> None
 
     /// A member call. Arguments: positional, then `name = value`; missing optional ones take
@@ -2145,16 +2452,24 @@ let checkFrom
     and value' env depth x : CExpr =
         match env.TryFind x with
         | None when consts.ContainsKey x ->
-            // a constant: its expression, typed here (a literal constant takes the type each use needs)
+            // a constant: its expression, typed here (a literal constant takes the type each use
+            // needs), its type variables its own (it's generic: Map.empty at any type, twice in
+            // one function too)
             if inlining.Contains x then
                 fail 0 (sprintf "'%s' is defined in terms of itself" x)
 
             inlining.Add x |> ignore
+            let saved = Dictionary<string, Ty>(tyvars)
+            tyvars.Clear()
 
             try
                 infer Map.empty depth consts[x]
             finally
                 inlining.Remove x |> ignore
+                tyvars.Clear()
+
+                for kv in saved do
+                    tyvars[kv.Key] <- kv.Value
         | None when globalValues.ContainsKey x -> mk (CGlobalVal x) globalValues[x]
         | Some l ->
             if l.mut && l.depth < depth then
@@ -2365,11 +2680,24 @@ let checkFrom
 
     and builtinCall env depth name (args: Expr list) : CExpr =
         if unsafeBuiltins.Contains name && not unsafeOn.Value then
+            if name = "Collections.Span.ofPtr" then
+                fail 0 "Span.ofPtr needs unsafe: the memory's lifetime isn't checked"
+
             fail 0 (sprintf "'%s' is unsafe: use it inside `unsafe`" name)
 
         let b = builtins[name]
         let t, _ = instantiate b.kinds b.ty
         let cargs, finalTy = checkArgs env depth t args (Some name)
+
+        let cargs =
+            if overWindows.Contains b.prim then
+                cargs
+                |> List.map (fun c ->
+                    match c.k with
+                    | CPrim(("span.ofArray" | "span.ofBuffer"), [ x ]) -> x
+                    | _ -> c)
+            else
+                cargs
         let ptys, resTy = peel b.arity t
 
         if cargs.Length >= b.arity then
@@ -2395,8 +2723,14 @@ let checkFrom
         let cargs =
             args
             |> List.mapi (fun i a ->
-                // the declared parameter type guides a record literal ({ x = 1; y = 2 } for Point)
-                let ca = if i < n then inferHint env depth s.pars[i] a else infer env depth a
+                // the declared parameter type guides a record literal ({ x = 1; y = 2 } for Point),
+                // and a callback's what it's given (a share<F> one is checked as crossing threads)
+                let ca =
+                    if i >= n then infer env depth a
+                    else
+                        match s.pars[i] with
+                        | TCon("callback", [ f ]) -> inferHint env depth f a
+                        | t -> inferHint env depth t a
 
                 if i < n then
                     let what = sprintf "argument %d of '%s'" (i + 1) f
@@ -2463,6 +2797,121 @@ let checkFrom
 
     /// Like infer, but the record literals that produce the value may use the expected type to
     /// pick their record.
+    /// A list or array expression, [ for x in xs do … yield e ]. One `for` over a list, an array
+    /// or an int range, filtered by `if`s, whose parts are pure as fusion takes it (arithmetic on
+    /// immutable locals), is the pipeline fusion makes one loop of: List.init over a range, a
+    /// filter per `if`, a map to what's yielded (no filter for an array). Any other body runs in
+    /// order: a loop consing what it yields onto a list, reversed in place at the end.
+    and listExpression env depth (isArray: bool) (body: Expr) : CExpr =
+        let rec strip e =
+            match e with
+            | At(_, a) -> strip a
+            | e -> e
+
+        // the filters (outermost first) and the yielded value under the for
+        let rec stages e =
+            match strip e with
+            | If(c, t, None) -> stages t |> Option.map (fun (fs, y) -> c :: fs, y)
+            | Yield y -> Some([], y)
+            | _ -> None
+
+        let rec fusible (locals: Set<string>) e =
+            match e with
+            | Lit _
+            | FloatLit _
+            | BoolLit _
+            | CharLit _
+            | UnitLit -> true
+            | Var x -> locals.Contains x || env.TryFind x |> Option.exists (fun l -> not l.mut)
+            | Bin(op, a, b) -> pureOps.Contains op && fusible locals a && fusible locals b
+            | Neg a
+            | Not a
+            | At(_, a) -> fusible locals a
+            | If(c, t, Some f) -> fusible locals c && fusible locals t && fusible locals f
+            | Let(PIdent(x, None), None, v, b) -> fusible locals v && fusible (locals.Add x) b
+            | _ -> false
+
+        let lam x e = Lambda([ PIdent(x, None), None ], e)
+        let cons y = Assign(Var "$acc", Call("::", [ Tuple [ y; Var "$acc" ] ]))
+
+        let rec yields e =
+            match e with
+            | At(l, a) -> At(l, yields a)
+            | Yield y -> cons y
+            | YieldAll ys -> ForIn("$y", ys, cons (Var "$y"))
+            | ForIn(x, xs, b) -> ForIn(x, xs, yields b)
+            | For(x, a, s, b, body) -> For(x, a, s, b, yields body)
+            | If(c, t, f) -> If(c, yields t, Option.map yields f)
+            | Match(s, cases) -> Match(s, cases |> List.map (fun (p, g, b) -> p, g, yields b))
+            | Let(p, t, v, b) -> Let(p, t, v, yields b)
+            | Seq(a, b) -> Seq(yields a, yields b)
+            | e -> e
+
+        let inOrder env (b: Expr) =
+            let built = Call("Collections.List.rev", [ Var "$acc" ])
+            let result = if isArray then Call("Collections.Array.ofList", [ built ]) else built
+            infer env depth (LetMut("$acc", None, Var "[]", Seq(yields b, result)))
+
+        // e with c bound to name, inferred once; in a pipeline, c put where it's used (pure, or
+        // used once), so the pipeline is one fusion sees whole under a consumer (List.sum [ … ])
+        let bound name (c: CExpr) (putIn: bool) env (k: Map<string, Local> -> bool * CExpr) =
+            let l =
+                { u = uniq name
+                  ty = c.ty
+                  mut = false
+                  depth = depth }
+
+            let piped, r = k (Map.add name l env)
+
+            let rec put (e: CExpr) =
+                match e.k with
+                | CLocal v when v = l.u -> c
+                | k -> { e with k = mapChildren put k }
+
+            piped, (if piped && putIn then put r else mk (CLet(l.u, c, r)) r.ty)
+
+        let piped env (x: string) (filters: Expr list) (y: Expr) (src: Expr) =
+            let m = if isArray then "Collections.Array." else "Collections.List."
+            let filtered = filters |> List.fold (fun xs c -> Call(m + "filter", [ lam x c; xs ])) src
+            true, infer env depth (Call(m + "map", [ lam x y; filtered ]))
+
+        let inOrder env b = false, inOrder env b
+
+        let pureStages x (filters, y) =
+            (not isArray || List.isEmpty filters) && List.forall (fusible (Set.singleton x)) (y :: filters)
+
+        match strip body with
+        | ForIn(x, xs, b) when not (x.StartsWith "$") ->
+            let cxs = infer env depth xs
+            settle cxs.ty
+
+            bound "$coll" cxs true env (fun env ->
+                match prune cxs.ty, stages b with
+                | TCon("list", _), Some st when pureStages x st && not isArray -> piped env x (fst st) (snd st) (Var "$coll")
+                | TCon("array", _), Some st when pureStages x st ->
+                    piped env x (fst st) (snd st) (if isArray then Var "$coll" else Call("Collections.Array.toList", [ Var "$coll" ]))
+                | _ -> inOrder env (ForIn(x, Var "$coll", b)))
+            |> snd
+        | For(x, lo, None, hi, b) ->
+            let clo = infer env depth lo
+            let chi = infer env depth hi
+            expect "range" clo.ty chi.ty
+
+            match prune clo.ty with
+            | TVar _ -> expect "range" tInt clo.ty
+            | _ -> ()
+
+            bound "$lo" clo (fusible Set.empty lo) env (fun env ->
+                bound "$hi" chi true env (fun env ->
+                    match prune clo.ty, stages b with
+                    | TCon("int", []), Some st when pureStages x st ->
+                        let m = if isArray then "Collections.Array." else "Collections.List."
+                        let n = Bin("+", Bin("-", Var "$hi", Var "$lo"), Lit 1L)
+                        piped env x (fst st) (snd st) (Call(m + "init", [ n; lam "$k" (Bin("+", Var "$lo", Var "$k")) ]))
+                    | _ -> inOrder env (For(x, Var "$lo", None, Var "$hi", b))))
+            |> snd
+        | _ -> inOrder env body |> snd
+
     and inferHint env depth (hint: Ty) (e: Expr) : CExpr =
         pushHint hint e
         infer env depth e
@@ -2486,6 +2935,7 @@ let checkFrom
 
         match prune hint with
         | TCon(n, []) when isDynName n && not passes -> dynHints[e] <- hint
+        | TCon("span", [ _ ]) when not passes -> spanHints[e] <- hint
         | TCon("share", [ f ]) when not passes ->
             shareHints[e] <- hint
             pushInto f e // a lambda's parameters get their types
@@ -2737,19 +3187,14 @@ let checkFrom
     /// Members become functions `Type#Name`: self first (instance members), then parameters;
     /// an optional parameter without a default is an option in the body.
     let declareMembers (tname: string) (tparams: string list) (ms: Member list) =
-        let table =
-            match members.TryGetValue tname with
-            | true, t -> t
-            | _ ->
-                let t = Dictionary<string, MemberInfo>()
-                members[tname] <- t
-                memberTypeNames.Add(tname.Substring(tname.LastIndexOf '.' + 1)) |> ignore
-                t
+        if not (members.ContainsKey tname) then
+            members[tname] <- []
+            memberTypeNames.Add(tname.Substring(tname.LastIndexOf '.' + 1)) |> ignore
 
         let items =
             ms
             |> List.map (fun m ->
-                if table.ContainsKey m.name then
+                if members[tname] |> List.exists (fst >> (=) m.name) then
                     fail m.mline (sprintf "'%s' already has a member '%s'" tname m.name)
 
                 if not m.isStatic && List.contains m.name (match types.TryGetValue tname with
@@ -2778,11 +3223,14 @@ let checkFrom
                 let allPars = selfPar @ mps
                 let allPars = if allPars.IsEmpty then [ PUnit, None ] else allPars
 
-                table[m.name] <-
-                    { gname = gname
-                      isStatic = m.isStatic
-                      isProperty = m.mpars.IsNone
-                      mpars = ps }
+                // a new list: a module extending another's type writes the type's members anew
+                members[tname] <-
+                    members[tname]
+                    @ [ m.name,
+                        { gname = gname
+                          isStatic = m.isStatic
+                          isProperty = m.mpars.IsNone
+                          mpars = ps } ]
 
                 m.mline, gname, true, allPars, m.mret, m.mbody)
 
@@ -2799,6 +3247,9 @@ let checkFrom
             | TCon("unit", []) -> ()
             | p -> checkCType what p
         | TCon("fnptr", [ f ]) -> checkFnPtr what f
+        | TCon("fixed", [ el; _ ]) when what.StartsWith "[<CLayout>] field" -> checkCType what el // C's T[N]
+        | TCon("fixed", _) ->
+            fail 0 (sprintf "%s: a fixed-size array crosses to C in a [<CLayout>] record's field; C takes an array parameter as a pointer to its first element" what)
         | t -> fail 0 (sprintf "%s: type %s cannot cross the C boundary (mark records [<CLayout>])" what (show t))
 
     /// fnptr<A -> B -> R>: a C function pointer R (*)(A, B), its parameters and result C types
@@ -2823,15 +3274,19 @@ let checkFrom
         | TCon(n, _) when (match types.TryGetValue n with
                            | true, { def = RecordDef _ } -> true
                            | _ -> false) -> false
-        | t -> needsRc types t
+        | t -> needsRc types.Dict t
 
     /// A parameter or result of an extern or an export: a C type, or a handle.
     let checkCArg (what: string) (t: Ty) =
-        if not (isHandle t) then checkCType what t
+        match prune t with
+        | TCon("span", _) -> fail 0 (sprintf "%s: a span can't come from C: it needs an owner" what)
+        | _ -> if not (isHandle t) then checkCType what t
 
     /// callback<A -> R>: C sees (R (*)(void* user, A), void* user); A and R are C types.
-    let checkCallback (what: string) (f: Ty) =
+    /// callback<share<A -> R>>: C may call it on any thread (a share<A -> R> is given).
+    let rec checkCallback (what: string) (f: Ty) =
         match prune f with
+        | TCon("share", [ g ]) -> checkCallback what g
         | TFun(a, r) ->
             checkCType what a
             checkCType what r
@@ -2997,18 +3452,6 @@ let checkFrom
 
             ok
 
-    // explicit impls anywhere in the program win over automatic derives
-    for _, d in decls do
-        match d with
-        | Impl(tr, STName(n, _), _) -> manualImpls.Add((tr, n)) |> ignore
-        | _ -> ()
-
-    // an automatic derive made before (in the modules a snapshot holds) that a later impl
-    // should have prevented: the snapshot can't be used
-    match st.autoDerived |> Seq.tryFind manualImpls.Contains with
-    | Some(tr, n) when start.IsSome -> raise (StaleSnapshot(sprintf "%s for %s" tr n))
-    | _ -> ()
-
     /// A constant expression: literals, operators, conditionals, tuples, records, constructors
     /// and number conversions over constants. Its uses are the expression itself. Arrays, lists
     /// and calls make a top-level value computed once at startup instead.
@@ -3027,12 +3470,15 @@ let checkFrom
         | Measured(a, _)
         | Typed(a, _) -> isConstant a
         | Var x ->
+            // a case without fields, [] too (a static cell; a list of elements allocates, so it's a
+            // value computed at startup)
             match resolveName x with
-            | Some q -> consts.ContainsKey q || (ctors.ContainsKey q && q <> "[]")
+            | Some q -> consts.ContainsKey q || ctors.ContainsKey q
             | None -> false
         | Bin(_, a, b) -> isConstant a && isConstant b
         | If(c, t, Some f) -> isConstant c && isConstant t && isConstant f
         | Tuple xs -> List.forall isConstant xs
+        | ArrayLit [] -> true // an empty array (HashMap.empty's buckets)
         | RecordLit fs -> fs |> List.forall (snd >> isConstant)
         | Call(f, args) ->
             let ctor =
@@ -3118,6 +3564,7 @@ let checkFrom
 
                     match t with
                     | TCon("callback", [ f ]) when isParam -> checkCallback (sprintf "extern '%s'" name) f
+                    | TCon("span", [ el ]) when isParam -> checkCType (sprintf "extern '%s'" name) el // a pointer and a length
                     | _ -> checkCArg (sprintf "extern '%s'" name) t
 
                     t
@@ -3285,6 +3732,18 @@ let checkFrom
                 else
                     // computed once at startup, in module order; it has one type, so literals settle now
                     let c = infer Map.empty 0 body
+
+                    let rec generic (t: Ty) =
+                        match prune t with
+                        | TVar r -> (kindOf r).allowed.IsNone
+                        | TCon(_, ts)
+                        | TTuple ts -> List.exists generic ts
+                        | TFun(a, b) -> generic a || generic b
+                        | _ -> false
+
+                    if generic c.ty then
+                        fail 0 (sprintf "a top-level value of type %s must be a constant to be generic; make it a function, or give it a type" (show (schemed c.ty)))
+
                     resolve c.ty |> ignore
                     let init = "$init." + q
 
@@ -3509,11 +3968,30 @@ let checkFrom
                 failed.Add(qualify n) |> ignore
 
     declareRecovering.Value <- declareOne
+    let mutable marks = { records = 0; funs = 0; exports = 0; tests = 0; valueList = 0; hovers = 0 }
+    let mutable lastFile = ""
 
-    for i, (file, modName, decls) in List.indexed modules do
+    let check (file: string) (modName: string option) (decls: (int * Decl) list) =
+        // what this module writes from here on is its result; its names and type variables are
+        // numbered from 0, so they don't depend on the modules before it
+        markState st
+
+        marks <-
+            { records = records.Count
+              funs = funs.Count
+              exports = exports.Count
+              tests = tests.Count
+              valueList = valueList.Count
+              hovers = hovers.Count }
+
+        counter.Value <- 0
+        Core.resetTypeVars ()
+        localValues.Clear()
         currentModule.Value <- modName
         opens.Value <- []
         currentFile.Value <- file
+        lastFile <- file
+        let errorsBefore = diagnostics.Count
 
         for n in modName |> Option.map withEnclosing |> Option.defaultValue [] do
             st.moduleNames.Add n |> ignore
@@ -3521,48 +3999,51 @@ let checkFrom
         for ln, d in decls do
             declareOne ln d
 
-        for _, d in decls do
-            match d with
-            | Impl(tr, STName(n, _), _) -> st.ownImpls.Add((tr, n)) |> ignore
-            | _ -> ()
+        currentModule.Value <- None
+        diagnostics.Count = errorsBefore
 
-        if diagnostics.Count = 0 then
-            st.typeVars <- Core.typeVars ()
-            snapshot i st
+    let finish () =
+        try
+            if (requireMain && tests.Count = 0) || globals.ContainsKey "main" then // a test file needs no main
+                checkMain ()
+        with CompileError(_, msg) ->
+            report
+                { file = lastFile
+                  line = 0
+                  col = 0
+                  msg = msg }
 
-    currentModule.Value <- None
-    let mainFile, _, _ = List.last modules
+        { types = types.Dict
+          externs = externs.Dict
+          funs = List.ofSeq funs
+          traitMethods = traitMethods.Dict
+          impls = impls.Dict
+          exports = List.ofSeq exports
+          values = List.ofSeq valueList
+          tests = List.ofSeq tests
+          clayouts = clayouts.Set
+          targets = st.targets.Dict
+          errors = List.ofSeq diagnostics
+          hovers = List.ofSeq hovers
+          memberNames =
+            let d = Dictionary<string, string list>()
 
-    try
-        if (requireMain && tests.Count = 0) || globals.ContainsKey "main" then // a test file needs no main
-            checkMain ()
-    with CompileError(_, msg) ->
-        report
-            { file = mainFile
-              line = 0
-              col = 0
-              msg = msg }
+            for KeyValue(t, table) in members do
+                d[t] <- List.map fst table
 
-    { types = types
-      externs = externs
-      funs = List.ofSeq funs
-      traitMethods = traitMethods
-      impls = impls
-      exports = List.ofSeq exports
-      values = List.ofSeq valueList
-      tests = List.ofSeq tests
-      clayouts = clayouts
-      targets = st.targets
-      errors = List.ofSeq diagnostics
-      hovers = List.ofSeq hovers
-      memberNames =
-        let d = Dictionary<string, string list>()
+            d }
 
-        for KeyValue(t, table) in members do
-            d[t] <- List.ofSeq table.Keys
+    let addProgram (names: string list) (impls: (string * string) list) =
+        for m in names do
+            for n in withEnclosing m do
+                moduleNames.Add n |> ignore
 
-        d }
+        for i in impls do
+            manualImpls.Add i |> ignore
 
-/// Checks a whole program.
-let check (requireMain: bool) (collect: bool) (modules: (string * string option * (int * Decl) list) list) : Program =
-    checkFrom requireMain collect None (fun _ _ -> ()) modules
+    { state = st
+      check = check
+      marks = fun () -> marks
+      hovers = hovers
+      addProgram = addProgram
+      finish = finish }

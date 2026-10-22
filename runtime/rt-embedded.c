@@ -187,6 +187,95 @@ static int u64_text(uint64_t v, char *out) {
     return n;
 }
 
+static int int_text(zs_int v, char *out) {
+    if (v >= 0) return u64_text((uint64_t)v, out);
+    out[0] = '-';
+    return 1 + u64_text((uint64_t)0 - (uint64_t)v, out + 1);
+}
+
+// ---- slices and spans
+
+static int text_of(const char *t, char *out) {
+    int k = 0;
+    while (t[k]) {
+        out[k] = t[k];
+        k++;
+    }
+    return k;
+}
+
+// a slice i..j (inclusive) of something of length n that doesn't fit in it
+_Noreturn void zs_slice_fail(zs_int i, zs_int j, zs_int n, zs_int kind) {
+    static const char *what[] = { "an array", "a Buffer", "a span", "a string" };
+    char msg[128];
+    int k = text_of("slice ", msg);
+    k += int_text(i, msg + k);
+    k += text_of("..", msg + k);
+    k += int_text(j, msg + k);
+    k += text_of(" of ", msg + k);
+    k += text_of(what[kind & 3], msg + k);
+    k += text_of(" of length ", msg + k);
+    k += int_text(n, msg + k);
+    msg[k] = 0;
+    zs_panic_c(msg);
+}
+
+// Fixed.ofArray of an array that hasn't the type's length
+_Noreturn void zs_fixed_fail(const char *type, zs_int len) {
+    char msg[160];
+    int k = text_of(type, msg);
+    k += text_of(" from an array of length ", msg + k);
+    k += int_text(len, msg + k);
+    msg[k] = 0;
+    zs_panic_c(msg);
+}
+
+static bool inside_char(zs_str *s, zs_int at) { return at > 0 && at < s->len && ((uint8_t)s->data[at] & 0xC0) == 0x80; }
+
+// s.[i..j]: a copy of bytes i to j, which mustn't cut a character
+zs_str *zs_str_slice(zs_str *s, zs_int i, zs_int j) {
+    if (i < 0 || j >= s->len || i > j + 1) zs_slice_fail(i, j, s->len, 3);
+    zs_int at = inside_char(s, i) ? i : inside_char(s, j + 1) ? j + 1 : -1;
+    if (at >= 0) {
+        char msg[64];
+        int k = text_of("byte ", msg);
+        k += int_text(at, msg + k);
+        k += text_of(" is inside a character", msg + k);
+        msg[k] = 0;
+        zs_panic_c(msg);
+    }
+    return str_of(s->data + i, j - i + 1);
+}
+
+// the length of the UTF-8 sequence at p (n bytes left) as String.decodeAt reads it, or 0 when
+// it's malformed
+static zs_int utf8_seq(const uint8_t *p, zs_int n) {
+    zs_int k = p[0] < 0x80 ? 1 : (p[0] & 0xE0) == 0xC0 ? 2 : (p[0] & 0xF0) == 0xE0 ? 3 : (p[0] & 0xF8) == 0xF0 ? 4 : 0;
+    if (k == 0 || k > n) return 0;
+    for (zs_int i = 1; i < k; i++)
+        if ((p[i] & 0xC0) != 0x80) return 0;
+    return k;
+}
+
+// String.ofBytes: a copy of the bytes, each malformed one replaced by U+FFFD (decision 28)
+zs_str *zs_str_of_bytes(const uint8_t *p, zs_int n) {
+    zs_int len = 0;
+    for (zs_int i = 0; i < n;) {
+        zs_int k = utf8_seq(p + i, n - i);
+        len += k ? k : 3;
+        i += k ? k : 1;
+    }
+    zs_str *s = str_new(len);
+    char *out = s->data;
+    for (zs_int i = 0; i < n;) {
+        zs_int k = utf8_seq(p + i, n - i);
+        memcpy(out, k ? (const char *)p + i : "\xEF\xBF\xBD", (size_t)(k ? k : 3));
+        out += k ? k : 3;
+        i += k ? k : 1;
+    }
+    return s;
+}
+
 zs_str *zs_str_of_u64(uint64_t v) {
     char buf[24];
     return str_of(buf, u64_text(v, buf));

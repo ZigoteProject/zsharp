@@ -1,0 +1,1 @@
+tests/err_generic_value.zs:3: error: a top-level value of type list<option<'a>> must be a constant to be generic; make it a function, or give it a type

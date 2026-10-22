@@ -46,8 +46,12 @@ hello has 5 letters; abs -5 = 5
 | enum values and `#define` numbers and strings | constants |
 | struct literal macros (`#define RED (Color){ 230, 41, 55, 255 }`) | record constants |
 | function pointers (`double (*area)(double, double)`, typedef'd or not) | `fnptr` types |
+| array fields (`uint8_t data[16]`, `int m[3][4]`) | `fixed<u8, 16>`, `fixed<fixed<i32, 4>, 3>` ([fixed-size arrays](05-collections.md#fixed-size-arrays)) |
+| array parameters (`const int xs[4]`) | pointers to the first element, as in C |
 
-**What's left out:** unions, arrays and `static inline` functions. Using one gives an error that says why: `C function 'first' wasn't imported: parameter 1: it uses an array`.
+**What's left out:** unions, arrays without a length, and `static inline` functions. Using one gives an error that says why: `C name 'Msg' wasn't imported: a field: it uses an array without a length`.
+
+**Spans:** an `extern` taking a `span<'a>` of a C type gets two arguments, a pointer to the first element and the length (`int count(const uint8_t *p, size_t n)`); the span's owner stays alive for the call. A span can't come from C, which has no owner to give it; `unsafe` code makes one over C memory with `Span.ofPtr p n`, whose lifetime is the programmer's to keep.
 
 **Linking:** `[<Link "raylib">]` links a library (`-lraylib`). `[<Link "shapes.c">]` compiles and links a C file next to the program.
 

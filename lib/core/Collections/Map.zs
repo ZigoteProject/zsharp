@@ -44,7 +44,7 @@ module Map =
     else mapNode l k v r
 
   /// The empty map.
-  let empty () : Map<'k, 'v> = MapLeaf
+  let empty : Map<'k, 'v> = MapLeaf
 
   /// Whether the map has no entries.
   let isEmpty (m: Map<'k, 'v>) =
@@ -120,7 +120,7 @@ module Map =
   let toList (m: Map<'k, 'v>) = List.rev (Map.fold (fun acc k v -> (k, v) :: acc) [] m)
 
   /// A map with the pairs' bindings (a later pair wins over an earlier one with the same key).
-  let ofList (pairs: list<'k * 'v>) = List.fold (fun m (k, v) -> Map.add k v m) (Map.empty ()) pairs
+  let ofList (pairs: list<'k * 'v>) = List.fold (fun m (k, v) -> Map.add k v m) Map.empty pairs
 
   /// The keys in ascending order.
   let keys (m: Map<'k, 'v>) = List.map fst (Map.toList m)
@@ -144,7 +144,7 @@ module Map =
     | MapNode (l, k, v, r, h) -> MapNode (Map.map f l, k, f k v, Map.map f r, h)
 
   /// The entries for which `f key value` is true.
-  let filter f (m: Map<'k, 'v>) = Map.fold (fun acc k v -> if f k v then Map.add k v acc else acc) (Map.empty ()) m
+  let filter f (m: Map<'k, 'v>) = Map.fold (fun acc k v -> if f k v then Map.add k v acc else acc) Map.empty m
 
 /// Maps print as `map [(1, a); (2, b)]`.
 impl Show<Map<'k, 'v>> =

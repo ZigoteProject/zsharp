@@ -67,6 +67,7 @@ type Expr =
     | Update of Expr * (string * Expr) list
     | Field of Expr * string
     | Index of Expr * Expr
+    | Slice of Expr * Expr option * Expr option // a.[i..j], a.[..j], a.[i..]
     | ArrayLit of Expr list
     | Match of Expr * (Pat * Expr option * Expr) list
     | Question of Expr // e? (only valid where TryBind can be formed)
@@ -75,6 +76,9 @@ type Expr =
     | Measured of Expr * SType // 9.58<s>
     | Typed of Expr * SType // (e: T)
     | Unsafe of Expr // unsafe e: raw pointers and C function pointers allowed inside
+    | ListComp of isArray: bool * body: Expr // [ for x in xs -> e ], [| … |]: its body yields
+    | Yield of Expr // yield e, in a list expression's body
+    | YieldAll of Expr // yield! xs: each of xs
     | At of int * Expr // source line, for error messages
 
 and Param = Pat * SType option
@@ -160,6 +164,7 @@ let mapExpr (f: Expr -> Expr) (e: Expr) : Expr =
     | Update(r, fs) -> Update(f r, fs |> List.map (fun (n, v) -> n, f v))
     | Field(r, n) -> Field(f r, n)
     | Index(a, i) -> Index(f a, f i)
+    | Slice(a, i, j) -> Slice(f a, Option.map f i, Option.map f j)
     | ArrayLit xs -> ArrayLit(List.map f xs)
     | Match(s, cases) -> Match(f s, cases |> List.map (fun (p, g, b) -> p, Option.map f g, f b))
     | Question a -> Question(f a)
@@ -168,6 +173,9 @@ let mapExpr (f: Expr -> Expr) (e: Expr) : Expr =
     | Measured(a, m) -> Measured(f a, m)
     | Typed(a, t) -> Typed(f a, t)
     | Unsafe a -> Unsafe(f a)
+    | ListComp(isArray, b) -> ListComp(isArray, f b)
+    | Yield a -> Yield(f a)
+    | YieldAll a -> YieldAll(f a)
     | At(l, a) -> At(l, f a)
 
 // ---------------------------------------------------------------- lexer
@@ -214,12 +222,15 @@ let showTok =
 let keywords =
     set
         [ "let"; "rec"; "if"; "then"; "else"; "extern"; "true"; "false"; "not"; "match"; "with"; "when"
-          "type"; "of"; "as"; "fun"; "for"; "in"; "do"; "while"; "mutable"; "member"; "static"; "trait"; "impl"; "abstract"; "derive"; "open"; "module"; "namespace"; "private"; "and"; "unsafe" ]
+          "type"; "of"; "as"; "fun"; "function"; "for"; "in"; "do"; "while"; "mutable"; "member"; "static"; "trait"; "impl"; "abstract"; "derive"; "open"; "module"; "namespace"; "private"; "and"; "unsafe" ]
 
 // longest first
 let symbols =
-    [ "&&&"; "|||"; "^^^"; "<<<"; ">>>"; "~~~"; "..."; ".."; "->"; "<-"; "|>"; "|]"; "[|"; "[<"; ">]"; "::"; ">>"; "<>"; "<="; ">="; "&&"; "||"
+    [ "&&&="; "|||="; "^^^="; "&&&"; "|||"; "^^^"; "<<<"; ">>>"; "~~~"; "..."; ".."; "->"; "<-"; "+="; "-="; "*="; "/="; "%="; "|>"; "|]"; "[|"; "[<"; ">]"; "::"; ">>"; "<>"; "<="; ">="; "&&"; "||"
       "?"; "("; ")"; "{"; "}"; "["; "]"; ","; ";"; "|"; "."; ":"; "="; "<"; ">"; "+"; "-"; "*"; "/"; "%"; "@"; "^" ]
+
+/// Compound assignment (`x += e`): the operator each applies.
+let compoundOps = dict [ "+=", "+"; "-=", "-"; "*=", "*"; "/=", "/"; "%=", "%"; "&&&=", "&&&"; "|||=", "|||"; "^^^=", "^^^" ]
 
 let private symbolSet = set symbols
 let private opChars = set "!%&*+-./<=>?@^|~$"
@@ -859,6 +870,10 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
             | KTyVar v ->
                 advance ()
                 STVar v
+            | KInt n ->
+                // fixed<u8, 16>'s length (a number is a type argument of fixed only)
+                advance ()
+                STName(string n, [])
             | KId "dyn" when (match peek2 () with
                               | KId _ -> true
                               | _ -> false) ->
@@ -1138,13 +1153,55 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                 Some(Call("$await", [ block () ]))
             | _ -> None
 
-    /// `lhs <- rhs` (statements, and single-line blocks such as `then x <- 1`)
+    /// `lhs <- rhs` (statements, and single-line blocks such as `then x <- 1`), and compound
+    /// assignment, `lhs += rhs`: lhs <- lhs + rhs with the place evaluated once, its receiver and
+    /// index bound first (then the read, the operation and the write, in that order)
     and assignment lhs =
-        if isSym "<-" then
+        match peek () with
+        | KSym "<-" ->
             advance ()
             Assign(lhs, expr ())
-        else
-            lhs
+        | KSym s when compoundOps.ContainsKey s ->
+            let oi = pos.Value
+            let ln = line ()
+            advance ()
+            let rhs = expr ()
+            let temps = ResizeArray<string * Expr>()
+
+            // a part of the place with no effects (a name, a literal) stays; any other is bound to a
+            // temporary, once
+            let bound (e: Expr) =
+                match e with
+                | Var _
+                | Lit _ -> e
+                | _ ->
+                    let t = sprintf "$place%d.%d" oi temps.Count
+                    temps.Add(t, e)
+                    Var t
+
+            // a place: a name, a field of a place (a ref's Value, a mutable record's field) or an
+            // element of one; a receiver that isn't a place (a call giving a Buffer) is bound too
+            let rec place (e: Expr) =
+                match e with
+                | Var _ -> e
+                | Field(r, f) -> Field(receiver r, f)
+                | Index(a, i) ->
+                    let a = receiver a
+                    Index(a, bound i)
+                | At(_, inner) -> place inner
+                | _ -> fail ln (sprintf "%s needs a place <- can assign: a let mutable, a ref's .Value, an element or a field" s)
+
+            and receiver (e: Expr) =
+                match e with
+                | Var _
+                | Field _
+                | Index _ -> place e
+                | _ -> bound e
+
+            let p = place lhs
+            let assign = mark oi (Assign(p, Bin(compoundOps[s], p, rhs)))
+            List.foldBack (fun (t, v) acc -> Let(PIdent(t, None), None, v, acc)) (List.ofSeq temps) assign
+        | _ -> lhs
 
     /// After a binding: the rest of the block.
     and rest ln =
@@ -1235,14 +1292,14 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                 let v = block ()
 
                 match v with
-                | Question e
-                | At(_, Question e) when ann.IsNone -> stmt(ln, TryBind(p, e, rest ln))
+                | Question e as q
+                | At(_, (Question e as q)) when ann.IsNone -> stmt(ln, copyPos q (TryBind(p, e, rest ln)))
                 | _ -> stmt(ln, Let(p, ann, v, rest ln))
         else
             match assignment (expr ()) with
-            | Question q when peek () = KNewline ->
+            | Question e as q when peek () = KNewline ->
                 advance ()
-                stmt(ln, TryBind(PWild, q, seq ()))
+                stmt(ln, copyPos q (TryBind(PWild, e, seq ())))
             | e ->
                 let e = stmt(ln, e)
 
@@ -1328,33 +1385,13 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
             advance ()
             let s = expr ()
             expect (KKw "with") "'with'"
-            let indented = peek () = KIndent
-
-            if indented then
-                advance ()
-
-            nextBar () |> ignore
-            let cases = ResizeArray()
-            let mutable go = true
-
-            while go do
-                let p = pattern ()
-
-                let guard =
-                    if peek () = KKw "when" then
-                        advance ()
-                        Some(expr ())
-                    else
-                        None
-
-                expect (KSym "->") "'->'"
-                cases.Add(p, guard, block ())
-                go <- nextBar ()
-
-            if indented then
-                expect KDedent "end of block"
-
-            Match(s, List.ofSeq cases)
+            Match(s, cases ())
+        | KKw "function" ->
+            // function | p -> … | q -> …: fun x -> match x with …, x a fresh name
+            let at = pos.Value
+            advance ()
+            let x = sprintf "$function%d" at
+            Lambda([ PIdent(x, None), None ], Match(Var x, cases ()))
         | KKw "fun" ->
             advance ()
             let ps = parameters ()
@@ -1412,12 +1449,167 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                 For(x, a, step, b, block ())
         | _ -> pipe ()
 
+    /// A match's cases, after its `with` (or after `function`): `| p when g -> e`, on one line
+    /// each or in an indented block.
+    and cases () = casesWith block
+
+    and casesWith (body: unit -> Expr) =
+        let indented = peek () = KIndent
+
+        if indented then
+            advance ()
+
+        nextBar () |> ignore
+        let cases = ResizeArray()
+        let mutable go = true
+
+        while go do
+            let p = pattern ()
+
+            let guard =
+                if peek () = KKw "when" then
+                    advance ()
+                    Some(expr ())
+                else
+                    None
+
+            expect (KSym "->") "'->'"
+            cases.Add(p, guard, body ())
+            go <- nextBar ()
+
+        if indented then
+            expect KDedent "end of block"
+
+        List.ofSeq cases
+
+    /// A list or array expression's body, after `[` or `[|`, up to its closer: `for`s, `if`s,
+    /// `let`s and `match`es whose statements `yield e` or `yield! xs` (or do something), and
+    /// `for x in xs -> e` for `for x in xs do yield e`.
+    and comprehension (isArray: bool) (close: string) =
+        let body = compSeq (fun () -> isSym close)
+        expect (KSym close) (sprintf "'%s'" close)
+        ListComp(isArray, body)
+
+    /// Statements one after another (`;`, or a line break), until stop: a `let` takes the rest.
+    and compSeq (stop: unit -> bool) =
+        if peek () = KKw "let" then
+            advance ()
+            let p = pattern ()
+            let ann = optTy ()
+            expect (KSym "=") "'='"
+            let v = block ()
+
+            if peek () = KNewline || isSym ";" || peek () = KKw "in" then
+                advance ()
+
+            Let(p, ann, v, compSeq stop)
+        else
+            let first = compStmt ()
+
+            if (peek () = KNewline || isSym ";") then
+                advance ()
+                if stop () then first else Seq(first, compSeq stop)
+            else
+                first
+
+    /// The body of a list expression's `for`, `if` or match case: an indented block, or one
+    /// statement.
+    and compBlock () =
+        if peek () = KIndent then
+            advance ()
+            let e = compSeq (fun () -> peek () = KDedent)
+            expect KDedent "end of block"
+            e
+        else
+            compStmt ()
+
+    and compStmt () : Expr =
+        let si = pos.Value
+        let ln = line ()
+        let stmt (e: Expr) = mark si (At(ln, e))
+
+        match peek () with
+        | KKw "for" ->
+            advance ()
+
+            let x, destructure =
+                match peek () with
+                | KId _ -> ident (), None
+                | _ ->
+                    let at = pos.Value
+                    let p = pattern ()
+                    sprintf "$for%d" at, Some p
+
+            expect (KKw "in") "'in'"
+            let a = pipe ()
+
+            // for x in xs -> e yields e; for x in xs do … runs a body that yields
+            let body () =
+                if isSym "->" then
+                    advance ()
+                    let yi = pos.Value
+                    let yl = line ()
+                    mark yi (At(yl, Yield(block ())))
+                else
+                    expect (KKw "do") "'do' or '->'"
+                    compBlock ()
+
+            if isSym ".." then
+                advance ()
+                let b = pipe ()
+
+                let step, b =
+                    if isSym ".." then
+                        advance ()
+                        Some b, pipe ()
+                    else
+                        None, b
+
+                if destructure.IsSome then
+                    fail ln "a range loop takes a name"
+
+                stmt (For(x, a, step, b, body ()))
+            else
+                let b = body ()
+
+                match destructure with
+                | Some p -> stmt (ForIn(x, a, Let(p, None, Var x, b)))
+                | None -> stmt (ForIn(x, a, b))
+        | KKw "if" ->
+            advance ()
+            let c = expr ()
+            expect (KKw "then") "'then'"
+            let t = compBlock ()
+
+            if peek () = KNewline && peek2 () = KKw "else" then
+                advance ()
+
+            if peek () = KKw "else" then
+                advance ()
+                stmt (If(c, t, Some(compBlock ())))
+            else
+                stmt (If(c, t, None))
+        | KKw "match" ->
+            advance ()
+            let s = expr ()
+            expect (KKw "with") "'with'"
+            stmt (Match(s, casesWith compBlock))
+        | KId "yield" ->
+            advance ()
+
+            if isSym "!" && toks[pos.Value].adj then
+                advance ()
+                stmt (YieldAll(expr ()))
+            else
+                stmt (Yield(expr ()))
+        | _ -> stmt (assignment (expr ()))
+
     // an expression without sequencing: the loosest level is ||
     and pipe () = orE ()
 
     /// The right operand of a binary operator: a lambda there extends to the end, as in
     /// `m >>= fun x -> …`.
-    and operand (next: unit -> Expr) = if peek () = KKw "fun" then expr () else next ()
+    and operand (next: unit -> Expr) = if peek () = KKw "fun" || peek () = KKw "function" then expr () else next ()
 
     and orE () =
         let l = andE ()
@@ -1571,8 +1763,9 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
             | head -> head
 
         if isSym "?" then
+            let qi = pos.Value
             advance ()
-            Question e
+            mark qi (Question e) // errors about it point at the `?`
         else
             e
 
@@ -1594,9 +1787,24 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
 
                 if isSym "[" then
                     advance ()
-                    let i = expr ()
-                    expect (KSym "]") "']'"
-                    e <- Index(e, i)
+
+                    // a.[i], or a slice: a.[i..j], a.[..j], a.[i..]
+                    if isSym ".." then
+                        advance ()
+                        let j = expr ()
+                        expect (KSym "]") "']'"
+                        e <- Slice(e, None, Some j)
+                    else
+                        let i = expr ()
+
+                        if isSym ".." then
+                            advance ()
+                            let j = if isSym "]" then None else Some(expr ())
+                            expect (KSym "]") "']'"
+                            e <- Slice(e, Some i, j)
+                        else
+                            expect (KSym "]") "']'"
+                            e <- Index(e, i)
                 else
                     e <- mark pos.Value (Field(e, ident ()))
 
@@ -1658,6 +1866,8 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         | KSym "{" -> record ()
         | KSym "~-" -> Neg(atom ())
         | KSym s when isPrefixOp s -> mark (pos.Value - 1) (Call(s, [ atom () ])) // !r, ~~x
+        | KSym "[" when peek () = KKw "for" || peek () = KId "yield" -> comprehension false "]"
+        | KSym "[|" when peek () = KKw "for" || peek () = KId "yield" -> comprehension true "|]"
         | KSym "[" -> List.foldBack cons (items "]") (Var "[]")
         | KSym "[|" -> ArrayLit(items "|]")
         | KSym "(" when peek2 () = KSym ")" && (match peek () with

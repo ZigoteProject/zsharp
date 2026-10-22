@@ -11,6 +11,10 @@
     <PublishReadyToRunComposite Condition="'$(SelfContained)' == 'true'">true</PublishReadyToRunComposite>
     <!-- a heap per core: the passes run on every core (non-concurrent: nothing to overlap with) -->
     <ServerGarbageCollection>true</ServerGarbageCollection>
+    <!-- no .tail calls: the type checker's inner functions take its ~45 tables as parameters, so
+         their tail calls went through the runtime's slow helpers, which ReadyToRun can't
+         precompile either (checking one module cold: 53 ms with them, 21 ms without) -->
+    <Tailcalls>false</Tailcalls>
     <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
   </PropertyGroup>
 

@@ -464,7 +464,7 @@ let format (source: string) : result<string, string> =
   let (toks, comments) = lexComments src
   let commentAt = Map.ofList (List.map (fun (l, c, text) -> (l, (c, String.trim text))) comments)
   // each code line: its indentation level and its tokens with their text
-  let mutable code = HashMap.empty ()
+  let mutable code = HashMap.empty
   let mutable layout = 0
   let mutable current = -1
   let mutable lineToks = []
@@ -475,7 +475,7 @@ let format (source: string) : result<string, string> =
   let mutable opened = []
   let mutable absorbed = 0
   // the lines after the first of a string that spans lines are its text: they stay as written
-  let mutable verbatim = Set.empty ()
+  let mutable verbatim = Set.empty
   for t in toks do
     for l in t.line + 1 .. t.last do
       verbatim <- Set.add l verbatim

@@ -20,7 +20,7 @@ Closes the channel: receivers get what's left, then `None`; a send panics.
 Channel.make : int -> Channel<'a>
 ```
 
-A channel holding up to `capacity` values (at least 1).
+A channel holding up to `capacity` values; with 0, a send waits for a receiver to take its value.
 
 ### `Channel.receive`
 

@@ -45,7 +45,7 @@ Maps print as `map [(1, a); (2, b)]`.
 ### `Map.empty`
 
 ```zsharp
-Map.empty : unit -> Map<'a, 'b>
+let empty : Map<'k, 'v>
 ```
 
 The empty map.

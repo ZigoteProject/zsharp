@@ -296,16 +296,60 @@ module Task =
 
   /// Runs the task `f` makes on another thread, which has an event loop of its own, so tasks
   /// use every core (a server's connections, say). `f` crosses threads, so what it captures
-  /// must be Share, as the result must. The task stays on that thread to the end: cancelling
-  /// this one doesn't stop it (its result is dropped).
+  /// must be Share, as the result must. The task stays on that thread to the end; cancelling
+  /// this one cancels it there (its `use` values are disposed on its thread).
   let spawn (f: share<unit -> Task<'a>>) : Task<'a> =
     pending (fun c k ->
       let result = Mutex.make None
+      // where the spawned task is: 0 not started, -1 cancelled before it started, -2 done (or
+      // cancelled), else the token of its loop's that cancels it there
+      let state = Mutex.make 0
+
+      let link =
+        onCancel c (fun () ->
+          Mutex.update state (fun s ->
+            match s with
+            | 0 -> -1
+            | s when s > 0 ->
+              Native.loopFulfill s
+              -2
+            | s -> s)
+          |> ignore)
+
+      // what this loop runs once the spawned task is done or cancelled
       let token = Native.loopExpect (fun () ->
+        forget c link
         match Mutex.get result with
         | Some x when not c.cancelled.Value -> resume k x
         | _ -> ())
+
       Native.loopSpawn (fun () ->
-        runIn (f ()) (newCancel ()) (fun x ->
-          Mutex.set result (Some x)
-          Native.loopFulfill token)))
+        let cc = newCancel ()
+        let finished = ref false
+
+        let finish () =
+          if not finished.Value then
+            finished.Value <- true
+            Native.loopFulfill token
+
+        // cancels it here (and is fulfilled when it's done, doing nothing then)
+        let here = Native.loopExpect (fun () ->
+          if not finished.Value then
+            cancelNow cc
+            finish ())
+
+        if Mutex.update state (fun s -> if s = 0 then here else s) = -1 then
+          Native.loopFulfill here
+        else
+          runIn (f ()) cc (fun x ->
+            Mutex.set result (Some x)
+
+            Mutex.update state (fun s ->
+              match s with
+              | s when s > 0 ->
+                Native.loopFulfill s
+                -2
+              | s -> s)
+            |> ignore
+
+            finish ())))

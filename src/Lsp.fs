@@ -71,9 +71,10 @@ let private range (l1, c1) (l2, c2) = obj [ "start", pos l1 c1; "end", pos l2 c2
 let private toPath (uri: string) = Uri(uri).LocalPath
 let private toUri (path: string) = Uri(Path.GetFullPath path).AbsoluteUri
 
-/// The last analysis of each open document.
+/// The last analysis of each open document, and the files its program is made of.
 let private results = Dictionary<string, Program>()
 let private problems = Dictionary<string, Diagnostic list>()
+let private madeOf = Dictionary<string, HashSet<string>>()
 
 let private lineText (path: string) (line: int) =
     let text = Driver.readSource path
@@ -87,6 +88,7 @@ let private analyze (path: string) =
         try
             let prog = Driver.check path false true
             results[path] <- prog
+            madeOf[path] <- HashSet<string>(prog.hovers |> Seq.map (fun h -> Path.GetFullPath h.hfile))
             prog.errors
         with
         | CompileErrorAt(file, line, col, msg) ->
@@ -129,6 +131,15 @@ let private analyze (path: string) =
                   "message", str (sprintf "%s:%d: %s" d.file d.line d.msg) ])
 
     notify "textDocument/publishDiagnostics" (obj [ "uri", str (toUri path); "diagnostics", arr (mine @ elsewhere) ])
+
+/// A document changed: it's analyzed again, and so is every other open one whose program has it
+/// (its modules that the change didn't reach come back from the cache, unchecked).
+let private changed (path: string) =
+    analyze path
+
+    for other in List.ofSeq results.Keys do
+        if other <> path && madeOf.ContainsKey other && madeOf[other].Contains path then
+            analyze other
 
 let private hoversAt (path: string) =
     match results.TryGetValue path with
@@ -436,12 +447,13 @@ let serve () : int =
                     let path = docPath ()
                     let changes = ps["contentChanges"].AsArray()
                     Driver.overlay[path] <- getStr (changes[changes.Count - 1]["text"])
-                    analyze path
-                | "textDocument/didSave" -> analyze (docPath ())
+                    changed path
+                | "textDocument/didSave" -> changed (docPath ())
                 | "textDocument/didClose" ->
                     let path = docPath ()
                     Driver.overlay.Remove path |> ignore
                     results.Remove path |> ignore
+                    madeOf.Remove path |> ignore
                     notify "textDocument/publishDiagnostics" (obj [ "uri", str (toUri path); "diagnostics", arr [] ])
                 | "textDocument/hover" ->
                     let p = ps["position"]

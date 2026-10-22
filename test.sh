@@ -60,7 +60,7 @@ if diff <(tests/task/echo.sh "${vg[@]}" 2>&1) tests/task/echo.expected >"$tmp/ec
 else echo "FAIL tests/task/echo.sh"; cat "$tmp/echo.diff"; fail=1; fi
 
 # threads under ThreadSanitizer: the pool, Atomic, Mutex, Channel and Task.spawn race on nothing
-for t in tests/parallel/basics tests/task/spawn; do
+for t in tests/parallel/basics tests/parallel/anythread tests/task/spawn tests/task/cancel; do
   if bin/zs build $t.zs -o "$tmp/tsan" --sanitize=thread 2>"$tmp/tsan.log" && actual=$(timeout 120 "$tmp/tsan" 2>"$tmp/tsan.log") \
      && [ "$actual" = "$(cat $t.out)" ] && ! grep -q ThreadSanitizer "$tmp/tsan.log"; then echo "ok   $t.zs under ThreadSanitizer"
   else echo "FAIL $t.zs under ThreadSanitizer"; head -40 "$tmp/tsan.log"; fail=1; fi
@@ -165,6 +165,11 @@ actual=$(tests/lsp/session.sh bin/zs 2>&1); expected=$(cat tests/lsp/session.out
 if [ "$actual" == "$expected" ]; then echo "ok   tests/lsp/session.sh"
 else echo "FAIL tests/lsp/session.sh"; diff <(echo "$expected") <(echo "$actual") | head -20; fail=1; fi
 
+# the language server with two documents open, one using the other: a change to one publishes
+# the other's diagnostics again (tests/lsp/modules.sh)
+if diff <(tests/lsp/modules.sh bin/zs 2>&1) tests/lsp/modules.out >"$tmp/lspm.diff"; then echo "ok   tests/lsp/modules.sh"
+else echo "FAIL tests/lsp/modules.sh"; cat "$tmp/lspm.diff"; fail=1; fi
+
 # editors may start zs without arguments: it detects LSP or MCP from the first byte
 printf '#!/bin/sh\nexec %s/bin/zs\n' "$PWD" > "$tmp/zs-bare"; chmod +x "$tmp/zs-bare"
 if [ "$(tests/lsp/session.sh "$tmp/zs-bare" 2>&1)" == "$(cat tests/lsp/session.out)" ] \
@@ -207,6 +212,22 @@ for c in $(find tests -name main.c | sort); do
   if [ "$actual" == "$expected" ]; then echo "ok   $c"
   else echo "FAIL $c"; diff <(echo "$expected") <(echo "$actual") | head -20; fail=1; fi
 done
+# a C host's threads (host only): a Share value's handle used on 16 threads at once races on
+# nothing under Helgrind, and a ref's handle released on another thread panics with its type
+if [ -z "$target" ]; then
+  ct="$tmp/ct"; mkdir -p "$ct"
+  if bin/zs build tests/cthreads/lib.zs --lib -o "$ct/lib.a" 2>"$ct/log" && clang -I"$ct" tests/cthreads/main.c "$ct/lib.a" -lm -o "$ct/exe" 2>>"$ct/log"; then
+    if valgrind --tool=helgrind -q --error-exitcode=99 "$ct/exe" >"$ct/out" 2>"$ct/hg"; then echo "ok   tests/cthreads under Helgrind"
+    else echo "FAIL tests/cthreads under Helgrind"; head -30 "$ct/hg"; fail=1; fi
+    actual=$("$ct/exe" other-thread 2>&1); code=$?
+    expected="16 threads using a list's handle: every sum right
+the counter on its own thread: 5
+panic: zs_release: a handle of ref<int> used from another thread (make its type Share, or use it on the thread that made it)"
+    if [ $code = 134 ] && [ "$actual" == "$expected" ]; then echo "ok   tests/cthreads: a handle used on another thread panics"
+    else echo "FAIL tests/cthreads: a handle used on another thread (exit $code)"; diff <(echo "$expected") <(echo "$actual"); fail=1; fi
+  else echo "FAIL tests/cthreads"; cat "$ct/log"; fail=1; fi
+fi
+
 # shared libraries (host only): a C program links the library as a .so, and a C shared library
 # links a --lib archive whole (--whole-archive, so the archive needs position-independent code)
 # with a C program calling Z# through it

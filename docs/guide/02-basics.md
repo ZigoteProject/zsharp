@@ -30,8 +30,8 @@ let main () =
 ## Top-level values
 
 A `let` without parameters at the top of a file is a value.
-- **Constants:** built from literals, operators, constructors, records, tuples and other constants. They're inlined where used, so they cost nothing. A number constant without an annotation takes the type each use needs, like a literal.
-- **Other values:** anything that allocates or calls a function, such as an array, a list or `Map.ofList …`. These are computed once when the program starts, in the order they're declared (dependencies' modules first).
+- **Constants:** built from literals, operators, constructors (`[]` too), records, tuples and other constants. They're inlined where used, so they cost nothing. A number constant without an annotation takes the type each use needs, like a literal, and one whose type has type variables is generic, as F#'s values are: `Map.empty` is an empty map of any type, at each use its own.
+- **Other values:** anything that allocates or calls a function, such as an array, a list of elements or `Map.ofList …`. These are computed once when the program starts, in the order they're declared (dependencies' modules first), so each has one type; a generic one is an error that says to make it a function.
 - **Order:** declarations are in order, as in F#, so a value can only use what's declared above it.
 
 ```zsharp
@@ -238,19 +238,20 @@ a! b!
 
 Values are immutable unless declared otherwise.
 - **`let mutable`:** a variable that `<-` can assign to.
+- **Compound assignment:** `x += e` is `x <- x + e`, and so are `-=`, `*=`, `/=`, `%=`, `&&&=`, `|||=` and `^^^=`, on anything `<-` assigns: a mutable variable, a `ref`'s `.Value`, an array element, a field of a mutable record. The place is evaluated once, so `a.[next ()] += 1` calls `next` once.
 - **Closures:** a mutable variable can't be captured by a closure. Use a `ref` cell for that: `r.Value` reads it and `r.Value <- x` writes it.
 
 ```zsharp
 let counter () =
   let count = ref 0
   fun () ->
-    count.Value <- count.Value + 1
+    count.Value += 1
     count.Value
 
 let main () =
   let mutable total = 0
   for i in 1 .. 10 do
-    total <- total + i
+    total += i
   let next = counter ()
   next () |> ignore
   println $"{total} {next ()}"

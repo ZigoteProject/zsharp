@@ -1,0 +1,2 @@
+a share callback on another thread: 42
+panic: a callback<i64 -> unit> called from another thread (declare the parameter callback<share<i64 -> unit>>, and pass a share<i64 -> unit>, for one C may call on any thread)

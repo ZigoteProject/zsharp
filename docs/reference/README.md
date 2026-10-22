@@ -12,7 +12,7 @@ The names every program has without qualification: the operator traits and their
 
 | Namespace | Modules |
 |---|---|
-| `Collections` | [List](Collections.List.md), [Array](Collections.Array.md), [Buffer](Collections.Buffer.md), [Map](Collections.Map.md), [Set](Collections.Set.md), [HashMap](Collections.HashMap.md) |
+| `Collections` | [List](Collections.List.md), [Array](Collections.Array.md), [Buffer](Collections.Buffer.md), [Span](Collections.Span.md), [Fixed](Collections.Fixed.md), [Map](Collections.Map.md), [Set](Collections.Set.md), [HashMap](Collections.HashMap.md) |
 | `Text` | [String](Text.String.md), [Char](Text.Char.md) |
 | none | [Option](Option.md), [Result](Result.md), [Math](Math.md), [Int](Int.md), [Runtime](Runtime.md), [Mmio](Mmio.md), [Ptr](Ptr.md), [Weak](Weak.md), [Arena](Arena.md), [Simd](Simd.md), [Simd.X86](Simd.X86.md), [Simd.Arm](Simd.Arm.md) |
 

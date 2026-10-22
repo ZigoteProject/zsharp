@@ -34,6 +34,25 @@ error: not a number: x
 error: negative age: -1
 ```
 
+**`?` on an `option`:** in a function that returns an `option`, `x?` is the value in a `Some`, or returns `None` right away. Which `?` it is comes from the operand; a `result` under `?` in a function returning an `option` (or the reverse) is an error that names the conversion (`Result.toOption`, `Option.toResult`).
+
+```zsharp
+let initials (first: string) (last: string) =
+  let f = List.tryHead (String.chars first)?
+  let l = List.tryHead (String.chars last)?
+  Some $"{f}.{l}."
+
+let main () =
+  println $"{initials "Ada" "Lovelace"} {initials "" "Hopper"}"
+  0
+```
+
+```text
+Some A.L. None
+```
+
+**How far `?` reaches:** `?` applies to the whole call before it, so `parseAge a?` is `(parseAge a)?`. It's allowed in `let x = e?` and as a statement of its own, and an error about it (in a function returning `unit`, say) points at the `?`.
+
 **Working with results without matching:**
 - `Result.map`, `Result.bind`, `Result.mapError` and `Result.defaultValue` transform or unwrap a result.
 - `Option.toResult` turns a `None` into an error.
