@@ -56,6 +56,7 @@ module.exports = grammar({
     [$.union_type],
     [$.let_declaration], // a newline after a body: the next declaration, or `and`
     [$.let_function],
+    [$._primary, $.computation_expression], // name { : a record argument, or a computation expression
   ],
 
   rules: {
@@ -183,7 +184,8 @@ module.exports = grammar({
     _type: $ => choice($.function_type, $.tuple_type, $._type_atom),
     function_type: $ => prec.right(seq(choice($.tuple_type, $._type_atom), '->', $._type)),
     tuple_type: $ => prec.left(seq($._type_atom, repeat1(seq('*', $._type_atom)))),
-    _type_atom: $ => choice($.type_name, $.generic_type, $.postfix_type, $.type_variable, $.variadic, seq('(', $._type, ')')),
+    _type_atom: $ => choice($.type_name, $.generic_type, $.postfix_type, $.type_variable, $.variadic, $.dyn_type, seq('(', $._type, ')')),
+    dyn_type: $ => seq('dyn', $.type_name), // dyn Trait
     variadic: $ => '...',
     type_name: $ => choice($.identifier, $.qualified_identifier),
     generic_type: $ => seq($.type_name, '<', sep1(choice($._type, $.measure), ','), '>'),
@@ -196,7 +198,12 @@ module.exports = grammar({
     _body: $ => choice($._expression, $.assignment, $.block),
     block: $ => seq($._indent, sep1($._statement, $._newline), optional($._newline), $._dedent),
 
-    _statement: $ => choice($.let_binding, $.let_function, $.let_mutable, $.assignment, $._expression),
+    _statement: $ => choice($.let_binding, $.let_function, $.let_mutable, $.use_binding, $.let_bang, $.do_bang, $.return_expression, $.assignment, $._expression),
+    use_binding: $ => seq('use', field('name', $.identifier), '=', field('value', $._body)),
+    // in a computation expression: let!, do!, return and return!
+    let_bang: $ => seq('let', token.immediate('!'), field('pattern', $._pattern), '=', field('value', $._body)),
+    do_bang: $ => seq('do', token.immediate('!'), field('value', $._body)),
+    return_expression: $ => prec.right(seq('return', optional(token.immediate('!')), $._body)),
     let_binding: $ => seq('let', field('pattern', $._pattern), optional($.type_annotation), '=', field('value', $._body)),
     let_function: $ => seq('let', optional('rec'), field('name', choice($.identifier, $.operator_name)), repeat1($._parameter), optional($.type_annotation), '=', field('body', $._body),
       repeat(seq($._newline, $.and_definition))),
@@ -209,6 +216,7 @@ module.exports = grammar({
       $.if_expression,
       $.match_expression,
       $.lambda,
+      $.unsafe_expression,
       $.for_expression,
       $.while_expression,
       $.binary_expression,
@@ -241,6 +249,9 @@ module.exports = grammar({
 
     lambda: $ => prec.right(seq('fun', repeat1($._parameter), '->', $._body)),
 
+    // unsafe e, or unsafe and an indented block
+    unsafe_expression: $ => prec.right(seq('unsafe', $._body)),
+
     for_expression: $ => seq(
       'for', field('variable', $._pattern), 'in', // a name, or a pattern over a collection's elements
       choice(
@@ -270,6 +281,7 @@ module.exports = grammar({
     application: $ => prec.left(PREC.application, seq(field('function', $._primary), repeat1(field('argument', $._primary)))),
 
     _primary: $ => choice(
+      $.computation_expression,
       $.identifier,
       $.qualified_identifier,
       $.member_access,
@@ -290,6 +302,13 @@ module.exports = grammar({
       $.array,
       $.record,
       $.record_update,
+    ),
+
+    // task { … }: a builder's name, then statements, on the line or as an indented block
+    computation_expression: $ => seq(
+      field('builder', $.identifier), '{',
+      choice(seq($._indent, sep1($._statement, $._newline), optional($._newline), $._dedent), $._statement),
+      '}',
     ),
 
     member_access: $ => prec.left(PREC.member, seq($._primary, '.', field('member', $.identifier))),
