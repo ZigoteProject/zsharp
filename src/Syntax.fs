@@ -524,6 +524,17 @@ and private lexWith (src: string) (keepComments: bool) : Token[] =
                     i <- i + 1
 
                 add (KTyVar(line.Substring(s, i - s)))
+            elif c = '`' && i + 1 < line.Length && line[i + 1] = '`' then
+                // ``name``: a name that may be a keyword, as in F# (the library defines
+                // Parallel.for as ``for``)
+                let close = line.IndexOf("``", i + 2)
+
+                if close < 0 then
+                    fail ln "unterminated ``name``"
+
+                let name = line.Substring(i + 2, close - i - 2)
+                i <- close + 2
+                add (KId name)
             elif Char.IsLetter c || c = '_' then
                 let s = i
 

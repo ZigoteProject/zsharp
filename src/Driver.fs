@@ -388,7 +388,8 @@ let private coreFiles =
       "Text/String"; "Text/Char"; "Collections/Map"; "Collections/Set"; "Collections/HashMap" ]
 
 let private stdFiles =
-    [ "Console"; "Environment"; "Threading/Task"; "IO/File"; "IO/Directory"; "IO/Path"; "Diagnostics/Process"; "Diagnostics/Stopwatch"; "Net/Tcp" ]
+    [ "Console"; "Environment"; "Threading/Atomic"; "Threading/Mutex"; "Threading/Channel"; "Threading/Task"; "Threading/Parallel"
+      "Collections/Array/Parallel"; "IO/File"; "IO/Directory"; "IO/Path"; "Diagnostics/Process"; "Diagnostics/Stopwatch"; "Net/Tcp" ]
 
 /// The library rooted at `root` for one check: (path, module name, declarations), the prelude
 /// first (its names are global), then Core, then (when hosted) Std.
@@ -644,6 +645,10 @@ let private timed (phase: string) (f: unit -> 'a) : 'a =
 /// zs test: build the [<Test>] functions with a test dispatcher in place of `main`.
 let mutable testBuild = false
 
+/// --sanitize=thread: a sanitized build checks for data races (ThreadSanitizer) instead of
+/// memory errors (AddressSanitizer and UndefinedBehaviorSanitizer).
+let mutable threadSanitizer = false
+
 /// Source files -> checked and lowered (monomorphic, closure-converted, RC-annotated) functions.
 let private lower (mainPath: string) (isLib: bool) =
     timings.Clear()
@@ -668,7 +673,7 @@ let private lower (mainPath: string) (isLib: bool) =
                 let inline' = if Codegen.debugInfo then id else Inline.uncurry fixedNames >> Inline.run
                 // ZS_NO_DECIDE=1: matches as written, to compare with decision trees
                 let decide = if isNull (Environment.GetEnvironmentVariable "ZS_NO_DECIDE") then Decide.run prog.types else id
-                let mono = timed "monomorphize" (fun () -> Mono.run prog |> Mono.fuse)
+                let mono = timed "monomorphize" (fun () -> Mono.run prog |> Mono.checkShared prog |> Mono.fuse)
                 let mono = timed "inline" (fun () -> inline' mono)
                 let mono = timed "simplify" (fun () -> if Codegen.debugInfo then mono else Simplify.run prog.types mono)
                 let mono = timed "decision trees" (fun () -> decide mono)
@@ -701,13 +706,27 @@ let private usesPrim (prims: Set<string>) (funs: Mono.MFun list) =
 /// Whether the program has weak references or arenas (Codegen.checkedHeap).
 let private checkedHeap = usesPrim (set [ "weak.new"; "arena.with" ])
 
-/// The runtime's defines: ZS_THREADS when the program runs code on Task.blocking's helper
-/// thread, so the runtime counts objects atomically.
+/// Whether the program runs code on other threads (Codegen.threaded): the thread pool, a task
+/// spawned or on Task.blocking's helper thread, or values threads share.
+let private threaded =
+    usesPrim (
+        set
+            [ "par.fork"
+              "Loop.blocking"
+              "Loop.spawn"
+              "atomic.make"
+              "mutex.make"
+              "chan.make" ]
+    )
+
+/// The runtime's defines: ZS_THREADS when the program runs code on other threads, so the
+/// runtime counts objects atomically and locks its tables.
 let mutable private rtDefines: string list = []
 
 let private setRuntime (funs: Mono.MFun list) =
     Codegen.checkedHeap <- checkedHeap funs
-    rtDefines <- if usesPrim (set [ "Loop.blocking" ]) funs then [ "-DZS_THREADS" ] else []
+    Codegen.threaded <- threaded funs
+    rtDefines <- if Codegen.threaded then [ "-DZS_THREADS" ] else []
 
 /// The program as one LLVM module (and the C header of its exports).
 let compileProgram (mainPath: string) (isLib: bool) =
@@ -952,7 +971,10 @@ let build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) (isLib: 
                 Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".ll")
 
         File.WriteAllText(ll, ir)
-        let san = if sanitize then [ "-fsanitize=address,undefined"; "-g" ] else []
+        let san =
+            if not sanitize then []
+            elif threadSanitizer then [ "-fsanitize=thread"; "-g" ]
+            else [ "-fsanitize=address,undefined"; "-g" ]
         // -g: unoptimized, so stepping follows the source
         let opt = if Codegen.debugInfo then [ "-O0"; "-g" ] else [ optLevel ]
 
@@ -1117,6 +1139,20 @@ let builtinDocs =
           "Ptr.ofCPtr", "A C pointer (`cptr`, as `import c` gives one) as a typed pointer. Unsafe."
           "Ptr.toCPtr", "The pointer as a `cptr`, to pass to a C function that takes one."
           "Ptr.cast", "The same address as a pointer to another type. Unsafe."
+          "Threading.Atomic.make", "An atomic value holding `x`."
+          "Threading.Atomic.get", "The value now."
+          "Threading.Atomic.set", "Sets the value."
+          "Threading.Atomic.exchange", "Sets the value, giving the one it replaced."
+          "Threading.Atomic.compareExchange", "Sets the value to `desired` only if it is `expected`, giving the value it held (so it succeeded when that is `expected`), as .NET's `Interlocked.CompareExchange`."
+          "Threading.Atomic.add", "Adds `n` to the value, giving the new value (an integer wraps around on overflow)."
+          "Threading.Mutex.make", "A mutex holding `x` (which is then shared between threads)."
+          "Threading.Mutex.get", "The value now (with a reference of its own, taken under the lock)."
+          "Threading.Mutex.set", "Replaces the value."
+          "Threading.Mutex.update", "Replaces the value with `f` of it, holding the lock meanwhile (so updates from several threads don't lose one another), and gives the new value. `f` mustn't use the same mutex."
+          "Threading.Channel.make", "A channel holding up to `capacity` values (at least 1)."
+          "Threading.Channel.send", "Sends `x`, waiting while the channel is full. Panics once it's closed."
+          "Threading.Channel.receive", "The next value, waiting for one: `None` once the channel is closed and empty."
+          "Threading.Channel.close", "Closes the channel: receivers get what's left, then `None`; a send panics."
           "Weak.create", "A weak reference to the object: it doesn't keep the object alive."
           "Weak.get", "`Some` object while it lives (with a reference of its own), `None` once it has gone."
           "Arena.with", "Runs the function with an arena: what it allocates comes from the arena's blocks, freed at once when the last of those objects goes (when the function returns, unless something it made lives on)."
@@ -1175,7 +1211,7 @@ let docItems (file: string) : DocItem list =
             container <- ""
             containerKind <- ""
 
-            let m = rx @"^let\s+(rec\s+)?(private\s+)?([A-Za-z_][A-Za-z0-9_.]*|\(\|[^)]*\|\)|\([!%&*+\-./<=>?@^|~$]+\))" l
+            let m = rx @"^let\s+(rec\s+)?(private\s+)?([A-Za-z_][A-Za-z0-9_.]*|``[^`]+``|\(\|[^)]*\|\)|\([!%&*+\-./<=>?@^|~$]+\))" l
             let header = rx @"^(module|namespace)\s+([A-Za-z_][A-Za-z0-9_.]*)\s*$" l
 
             if header.Success then
@@ -1185,7 +1221,7 @@ let docItems (file: string) : DocItem list =
             elif m.Success then
                 // an operator's name is the operator: (>>=) is >>=
                 let name = m.Groups[3].Value
-                let name = if name.StartsWith "(" && not (name.StartsWith "(|") then name.Trim('(', ')') else name
+                let name = if name.StartsWith "(" && not (name.StartsWith "(|") then name.Trim('(', ')') else name.Trim '`'
                 if not m.Groups[2].Success then add "function" (prefix + name) i // private: not API
             else
                 let m = rx @"^type\s+(private\s+)?([A-Za-z_][A-Za-z0-9_]*)(<[^>]*>)?\s*(with)?" l
@@ -1229,12 +1265,12 @@ let docItems (file: string) : DocItem list =
         elif container <> "" then
             let t = l.Trim()
             let m = rx @"^\|\s*([A-Z][A-Za-z0-9_]*)" t
-            let fm = rx @"^let\s+(rec\s+)?(private\s+)?([A-Za-z_][A-Za-z0-9_]*)" t
+            let fm = rx @"^let\s+(rec\s+)?(private\s+)?([A-Za-z_][A-Za-z0-9_]*|``[^`]+``)" t
 
             if containerKind = "module" then
                 // the module's own definitions, at the block's indentation (not local lets)
                 if fm.Success && not fm.Groups[2].Success && l.StartsWith "  " && not (Char.IsWhiteSpace l[2]) then
-                    add "function" (container + "." + fm.Groups[3].Value) i
+                    add "function" (container + "." + fm.Groups[3].Value.Trim '`') i
             elif m.Success && containerKind = "type" then
                 add "case" (prefix + m.Groups[1].Value) i
             else

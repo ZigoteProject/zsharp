@@ -32,6 +32,11 @@ let private printError (file: string) (line: int) (col: int) (msg: string) =
             eprintfn " %s | %s^" (String.replicate gutter.Length " ") (String.replicate (col - 1) " ")
     | _ -> ()
 
+/// --sanitize, or --sanitize=thread for data races
+let private sanitizing (args: string list) =
+    Driver.threadSanitizer <- List.contains "--sanitize=thread" args
+    List.contains "--sanitize" args || Driver.threadSanitizer
+
 /// .zs -> LLVM IR -> clang (with the runtime) -> native executable, or with isLib a static
 /// library (.a) plus its header (.h). Returns false on any error.
 /// Builds and prints any errors; true on success.
@@ -172,7 +177,7 @@ let main argv =
         | Ok m ->
             let out = Path.Combine(m.root, "build", m.name)
             Directory.CreateDirectory(Path.GetDirectoryName out) |> ignore
-            let ok = build m.main out (List.contains "--emit-llvm" rest) (List.contains "--sanitize" rest) false
+            let ok = build m.main out (List.contains "--emit-llvm" rest) (sanitizing rest) false
 
             if ok then
                 printfn "built %s" (Path.GetRelativePath(Environment.CurrentDirectory, out))
@@ -248,7 +253,7 @@ let main argv =
             | _ -> Path.GetFileNameWithoutExtension src
 
         let isLib = List.contains "--lib" rest
-        let ok = build src out (List.contains "--emit-llvm" rest) (List.contains "--sanitize" rest) isLib
+        let ok = build src out (List.contains "--emit-llvm" rest) (sanitizing rest) isLib
 
         if List.contains "--time" rest then
             for phase, ms in timings do
@@ -401,7 +406,7 @@ let main argv =
             | Some i -> rest[i + 1 ..]
             | None -> []
 
-        if build src exe false (List.contains "--sanitize" rest) false then
+        if build src exe false (sanitizing rest) false then
             let code, _ = exec exe args false
             File.Delete exe
             code
@@ -419,5 +424,5 @@ let main argv =
             Rpc.input <- new Rpc.PrefixedStream([| byte first |], stdin)
             if char first = '{' then Mcp.serve () else Lsp.serve ()
     | _ ->
-        eprintfn "usage: zs new <name>\n       zs fetch | zs update\n       zs build [<file.zs> [-o <out>] [--lib]] [-g] [-Os] [--target <triple>] [--emit-llvm] [--sanitize] [--time]\n       zs run [<file.zs> [-g] [--sanitize] --] [program arguments…]\n       zs check <file.zs>\n       zs test [<file.zs>] [name filters…]\n       zs doc <file.zs>\n       zs fmt [--check] <files…>\n       zs lsp\n       zs mcp"
+        eprintfn "usage: zs new <name>\n       zs fetch | zs update\n       zs build [<file.zs> [-o <out>] [--lib]] [-g] [-Os] [--target <triple>] [--emit-llvm] [--sanitize[=thread]] [--time]\n       zs run [<file.zs> [-g] [--sanitize[=thread]] --] [program arguments…]\n       zs check <file.zs>\n       zs test [<file.zs>] [name filters…]\n       zs doc <file.zs>\n       zs fmt [--check] <files…>\n       zs lsp\n       zs mcp"
         2

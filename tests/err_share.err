@@ -1,0 +1,6 @@
+tests/err_share.zs:7:3: error: this function crosses threads, but it captures 'r' : ref<int>, which can't be shared between threads
+tests/err_share.zs:11:3: error: this function crosses threads, but it captures 'b' : Buffer<int>, which can't be shared between threads
+tests/err_share.zs:16:3: error: this function crosses threads, but it captures 'r' (through 'add') : ref<int>, which can't be shared between threads
+tests/err_share.zs:20:3: error: this function crosses threads, but it captures 'c' : Counter, which holds ref<int>, which can't be shared between threads
+tests/err_share.zs:24:3: error: argument 2 of 'Threading.Channel.send': ref<int> can't be shared between threads (it isn't Share)
+5 errors

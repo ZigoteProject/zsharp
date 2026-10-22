@@ -1,7 +1,8 @@
 # Threading.Task
 
 Tasks: work that may wait (for input, a timer, other tasks) without blocking the program,
-run by one event loop. `task { }` writes one, and `Task.run` runs it from `main`.
+run by an event loop. `task { }` writes one, and `Task.run` runs it from `main`. Each thread
+has a loop of its own: `Task.spawn` starts a task on another thread's, to use every core.
 
 ## Types
 
@@ -187,10 +188,20 @@ Cancels the tasks started in the scope (and what they started).
 ### `Task.blocking`
 
 ```zsharp
-Task.blocking : (unit -> 'a) -> Task<'a>
+Task.blocking : share<unit -> 'a> -> Task<'a> when 'a : Share
 ```
 
 Runs `f` on a helper thread, for a C call that blocks (a database's, say) while the event
-loop goes on. Until phase 7 can check it, `f` must not share reference-counted values with
-the rest of the program while it runs: give it copies.
+loop goes on. `f` crosses threads, so what it captures must be Share, as its result must.
+
+### `Task.spawn`
+
+```zsharp
+Task.spawn : share<unit -> Task<'a>> -> Task<'a> when 'a : Share
+```
+
+Runs the task `f` makes on another thread, which has an event loop of its own, so tasks
+use every core (a server's connections, say). `f` crosses threads, so what it captures
+must be Share, as the result must. The task stays on that thread to the end: cancelling
+this one doesn't stop it (its result is dropped).
 

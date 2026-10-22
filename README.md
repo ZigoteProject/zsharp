@@ -29,7 +29,8 @@ let main () =
 | Data | records with defaults, unions, pattern matching with exhaustiveness checks, active patterns, units of measure |
 | Functions | closures, pipelines whose lambdas take their types from the call, custom operators, members with named and optional arguments |
 | Types | traits for operators, equality, ordering and printing; derived for records and unions, or written as derives in Z#; `dyn` values |
-| Concurrency | `task { }` on an event loop: timers, TCP sockets, `both`/`all`/`race`, scopes, cancellation that disposes `use` values; `option { }` and `result { }` |
+| Concurrency | `task { }` on an event loop per thread: timers, TCP sockets, `both`/`all`/`race`, scopes, cancellation that disposes `use` values, `Task.spawn` onto every core; `option { }` and `result { }` |
+| Parallelism | a work-stealing thread pool (`Parallel.both`/`for`/`reduce`, `Array.Parallel`), `Atomic`, `Mutex`, `Channel`; what crosses threads is checked at compile time, and only shared objects have atomic reference counts |
 | Values | copy-on-write arrays, persistent `Map`/`Set`, `HashMap`, checked integer overflow, weak references, arenas |
 | Performance | within 1.21× of C on the [host benchmarks](docs/reports/host.md), with C's peak memory, except `fib` at 2.0×, all overflow checks (C with the same checks takes 1.8×); [as fast as C](docs/reports/microcontrollers.md) on Cortex-M compute code |
 | Projects | `zs.toml` with path and git dependencies, `zs test`, `zs fmt`, `zs doc` |

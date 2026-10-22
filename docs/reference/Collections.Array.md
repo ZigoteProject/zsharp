@@ -120,6 +120,14 @@ Array.append : array<'a> -> array<'a> -> array<'a>
 
 A new array with the elements of `a` followed by those of `b`.
 
+### `Array.concat`
+
+```zsharp
+Array.concat : list<array<'a>> -> array<'a>
+```
+
+One array with the elements of each array in the list, in order.
+
 ### `Array.sub`
 
 ```zsharp

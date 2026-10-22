@@ -59,6 +59,13 @@ vg=(); [ $valgrind = 1 ] && vg=(--valgrind)
 if diff <(tests/task/echo.sh "${vg[@]}" 2>&1) tests/task/echo.expected >"$tmp/echo.diff"; then echo "ok   tests/task/echo.sh (an echo server, 1,000 connections)"
 else echo "FAIL tests/task/echo.sh"; cat "$tmp/echo.diff"; fail=1; fi
 
+# threads under ThreadSanitizer: the pool, Atomic, Mutex, Channel and Task.spawn race on nothing
+for t in tests/parallel/basics tests/task/spawn; do
+  if bin/zs build $t.zs -o "$tmp/tsan" --sanitize=thread 2>"$tmp/tsan.log" && actual=$(timeout 120 "$tmp/tsan" 2>"$tmp/tsan.log") \
+     && [ "$actual" = "$(cat $t.out)" ] && ! grep -q ThreadSanitizer "$tmp/tsan.log"; then echo "ok   $t.zs under ThreadSanitizer"
+  else echo "FAIL $t.zs under ThreadSanitizer"; head -40 "$tmp/tsan.log"; fail=1; fi
+done
+
 # the checked library and modules, cached between builds: the same program from the cache
 if diff <(tests/cache.sh 2>&1) tests/cache.expected >"$tmp/cache.diff"; then echo "ok   tests/cache.sh (checked library, modules and compiled modules cached)"
 else echo "FAIL tests/cache.sh"; cat "$tmp/cache.diff"; fail=1; fi

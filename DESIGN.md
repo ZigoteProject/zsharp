@@ -203,7 +203,7 @@ let report x = Console.println (describe x)    // inferred: 'a -> unit when 'a :
   - **`dyn Trait`:** for heterogeneous collections and plugin APIs, a value of any type implementing the trait. It's a heap object holding the value and a pointer to a table of its type's impl (built when the value is made, at its type), so a call is one indirect call. A value becomes a `dyn` where one is expected (a declared type, a parameter, a result), with no conversion written. A trait can be `dyn` when each of its methods takes the value first and doesn't mention its type elsewhere: `Show` can, `Ord` can't.
 - **Operators are traits:** `Add` (`+`, `zero`), `Num` (`- * / %`, negation), `Eq`, `Ord`. They have built-in impls for primitives, and user types implement them with `impl`.
 - **Built-in derives:** `Eq`, `Ord`, `Hash` and `Show` come from prelude derives (§3.1), applied automatically the first time a type needs them. An `impl` overrides them.
-- **Auto traits:** `Share` (§7) will be derived structurally by the compiler, and can't be implemented by hand **(planned, phase 7)**.
+- **Auto traits:** `Share` (§7) is derived structurally by the compiler, and can't be implemented by hand.
 
 ### 3.1 Derive
 
@@ -361,7 +361,7 @@ before it. Mutable cells can: a `ref` or `Buffer` holding a value that points ba
 | No null | `option<'a>` |
 | No uninitialised reads | Every binding has a value; arrays are created filled |
 | No out-of-bounds access | Indexing is bounds-checked; in loops the checks are proved once before the loop where possible (§9) |
-| No data races | `let mutable` can't be captured; the `Share` trait (planned, phase 7, §7) |
+| No data races | `let mutable` can't be captured; what crosses threads is `Share` (§7): immutable, or made for threads |
 | Deterministic cleanup | RC, plus `use`, which also runs when a task is cancelled |
 | No silent overflow | Integer overflow traps in every build, as in Swift. Wrapping is explicit: `Int.wrappingAdd`, `Int.wrappingSub`, `Int.wrappingMul`, or `[<Wrapping>]` on a function, whose integer `+ - *` wrap. Division by zero traps |
 
@@ -407,8 +407,8 @@ let main () =
   - Child tasks can't outlive the scope that started them: `Task.both`, `all`, `race` and `timeout` wait for theirs, and `Task.scope` for those `Task.start` started in it (a `Promise` gives each one's result).
   - Cancellation flows down: a task's cancellation has its children's under it, and a race cancels its loser.
   - Cancelling a task drops what it waits on (its continuation, so RC releases what that captured) and disposes what it bound with `use`, newest first.
-- **Event loop:** C in `runtime/rt.c` over epoll (kqueue comes with macOS, track T; io_uring later): callbacks waiting for descriptors, timers in a heap, and a queue of ready callbacks, all Z# closures the loop owns. v1 is single-threaded, and v2 makes the scheduler multi-threaded (phase 7).
-- **Blocking C calls:** `Task.blocking (fun () -> sqlite3_step db)` moves the call to a helper thread, which signals the loop through a pipe when it's done. In v1 that's the only use of threads, and the runtime counts objects atomically only in a program that uses it. Until phase 7's `Share` can check it, the function must not share reference-counted values with the rest of the program while it runs; `File.readAllTextAsync` gives it copies.
+- **Event loop:** C in `runtime/rt.c` over epoll (kqueue comes with macOS, track T; io_uring later): callbacks waiting for descriptors, timers in a heap, and a queue of ready callbacks, all Z# closures the loop owns. Each thread has its own loop, and `Task.spawn` runs a task on another thread's (§7).
+- **Blocking C calls:** `Task.blocking (fun () -> sqlite3_step db)` moves the call to a helper thread, which signals the loop through a pipe when it's done. The function is a `share<…>` (§7): what it captures can be shared between threads, and is marked shared before it goes.
 
 ### 6.1 Effect handlers (planned, phase 10, v3)
 
@@ -441,34 +441,39 @@ let sum () =
   3. Core IR keeps the type information effect rows will need.
   4. `effect` and `handle` are reserved words.
 
-## 7. Parallelism (planned, phase 7)
+## 7. Parallelism
 
-**Concurrency** (`Task`, waiting on I/O) and **parallelism** (using all cores) are separate APIs
-over one runtime thread pool.
+**Concurrency** (`Task`, waiting on I/O) and **parallelism** (using all cores) are separate APIs.
+Each is in the C runtime: a thread pool for parallel work, and an event loop per thread for
+tasks.
 
 ```fsharp
 let rows = matrix |> Array.Parallel.map (fun row -> Array.sum row)
 let (a, b) = Parallel.both (fun () -> fib 35) (fun () -> fib 36)
-Parallel.for 0 n (fun i -> out.[i] <- f i)       // disjoint writes into a unique array
+let squares = Array.Parallel.init n (fun i -> i * i)
 ```
 
-- **Thread pool:** work-stealing with Chase–Lev deques, sized to the core count, in the C runtime.
-- **`Share` auto-trait:** like Rust's `Send`, but with no lifetimes. A value may cross threads only if it's immutable or explicitly synchronised. Immutable-by-default means nearly all data qualifies.
-  - **Share:** primitives, records, tuples, unions, `string`, `list`, arrays (they're values) whose elements are `Share`, and closures that capture only `Share` values.
-  - **Not Share:** `ref` and `Buffer<'a>`. Use `Atomic<'a>`, `Mutex<'a>` or `Channel<'a>` instead.
-  - **Disjoint writes:** `Parallel.for` and `Array.Parallel.init` write to one uniquely owned array by index. Each index belongs to one task, so the writes are disjoint by construction.
+- **Thread pool:** work stealing with Chase–Lev deques (Lê et al.'s C11 version), a thread per core (`ZS_WORKERS` sets the number). Fork-join: `Parallel.*` halves its range until a part is about 1/32 of a thread's share, forking one half; a join runs the job itself if no one stole it, and other jobs while it waits.
+- **What crosses: the `Share` trait,** like Rust's `Send` but with no lifetimes. A value may cross threads only if it's immutable or made for threads. Immutable-by-default means nearly all data qualifies.
+  - **Share:** numbers, `bool`, `char`, `string`, and records, unions, tuples, lists and arrays (they're values) whose parts are Share; `share<F>` functions; `Atomic`, `Mutex` and `Channel`.
+  - **Not Share:** `ref`, `Buffer`, `weak`, `dyn` values, C pointers, and plain functions.
+  - **`share<F>`:** a function another thread may run, as Swift's `@Sendable`. A function type doesn't say what a closure captures, so a function that crosses threads has this type: `Parallel.both : share<unit -> 'a> -> share<unit -> 'b> -> 'a * 'b`. A lambda, a local function or a top-level function where one is expected is checked there: what it captures must be Share, looking through the local functions it captures. A `share<F>` is called, and passed where an `F` is expected, as any function.
+  - **Top-level values:** a top-level `ref` isn't captured but reached. After monomorphization, when every trait call has its impl, the compiler follows each `share<F>`'s calls; reaching a top-level value that isn't Share is an error. The top-level values that are Share are marked shared at startup in a program with threads.
+- **Disjoint results instead of disjoint writes:** `Array.Parallel.init` builds each part of the array on the thread that computes it, and joins the parts; nothing writes into one array from several threads. A job's result goes back to the thread that joins it without being marked: it belongs to that thread alone.
 - **Reference counts across threads** (as in Koka and Lean): RC is non-atomic by default. When a value is sent to another thread, its object graph is marked *shared* once, and only those objects use atomic RC from then on (§7.1).
-- **Library:** `Atomic`, `Mutex`, `Channel` (bounded, MPMC), `Parallel.reduce`.
-- **Testing:** ThreadSanitizer runs over the parallel tests.
+- **Library:** `Parallel.both`, `for` and `reduce`; `Array.Parallel.init` and `map`; `Atomic` (lock-free, for numbers, `bool` and `char`); `Mutex` (a futex lock, `Mutex.update` under it); `Channel` (bounded, any number of senders and receivers).
+- **Tasks on every core:** each thread has its own event loop. `Task.spawn` hands a `share<unit -> Task<'a>>` to one of a set of loop threads (a thread per core), where the task runs to the end; its result comes back through the spawning loop's inbox (a pipe the loop's epoll watches). `Task.blocking`'s helper thread uses the same inbox. A task never moves between threads: what it holds can be thread-local.
+- **Testing:** `--sanitize=thread` builds with ThreadSanitizer, which `./test.sh` runs over the parallel and spawning tests. The deques use release/acquire and sequentially consistent operations rather than fences, which ThreadSanitizer doesn't model.
 
-### 7.1 How a value crosses threads (decided; built in phase 7)
+### 7.1 How a value crosses threads
 
-Written down before the optimizer is tuned, so that phase 7 doesn't undo its work.
+Written down before the optimizer was tuned (phase 5), so that phase 7 didn't undo its work.
 
 - **The count's sign is the mark,** as in Lean 4. A count above 0 is a thread-local object, 0 is a static one (never freed), and below 0 is shared: changed only with atomic operations, and freed by whichever thread drops the last reference.
-- **The fast path is already the one phase 7 needs:** `dup` tests `count > 0`, and a drop tests `count = 1`, then `count > 1`. A static or shared object takes the other branch, which skips the count today and will call the atomic operations. Against the earlier `count ≠ 0` tests this costs nothing: the host benchmarks run the same number of instructions or fewer (the red-black tree 1.7% fewer).
-- **Where values cross:** the closures given to `Parallel.*`, `Channel.send`, a task started on the thread pool, and what goes into an `Atomic` or `Mutex`.
-- **Marking:** at a crossing, the runtime walks the value's object graph and makes each thread-local count negative. It stops at objects already shared or static, so it visits each object once: sending the same value again costs one test.
+- **The fast path is the same as without threads:** `dup` tests `count > 0`, and a drop tests `count = 1`, then `count > 1`. A static or shared object takes the other branch, where a program with threads has the atomic operations (and a program without them skips the count). So a program that never starts a thread runs the code it always did.
+- **Where values cross:** the `share<F>` functions given to `Parallel.*`, `Task.spawn` and `Task.blocking`, `Channel.send`, and what goes into a `Mutex`.
+- **Marking:** at a crossing, compiled code walks the value's object graph (a function per type) and makes each thread-local count negative. It stops at objects already shared or static, so it visits each object once: sending the same value again costs one test. A closure's description has the function that marks what it captured.
+- **Dropping a cell's fields:** Perceus's specialized drop takes the fields it keeps out of a cell that dies. With threads, a cell that isn't unique may be another thread's too: its kept fields are dup'd before its reference goes, since after it the other thread may free it.
 - **What can't cross:** `ref`, `Buffer` and closures that capture them (the `Share` trait), so a shared graph is immutable. Mutation across threads goes through `Atomic`, `Mutex` or `Channel`.
 - **Uniqueness:** a shared object's count is never 1, so reuse and copy-on-write copy it instead of writing in place. Thread-local data, which is most data, keeps every optimization in §5.2. Shared data pays for atomic counts and copies.
 - **Not chosen:**
@@ -681,7 +686,7 @@ checker, so tools can't drift from the compiler.
 | 19 | `?` operator | `let p = e?` and statement `e?`; for a block, `result { }` with `let!` | decided |
 | 20 | Code generation by users | `derive` over record and union shapes; no macros, no comptime | decided |
 | 21 | Async | one cold `Task<'a>` + `Task.start`; general computation expressions; CPS, which the effects spike before phase 6 chose (§6) | done |
-| 22 | Threads | v1 single-threaded event loop; multi-threading in v2, with non-atomic RC and a negative count marking the objects that crossed threads (§7.1) | decided |
+| 22 | Threads | v1 single-threaded event loop; in v2 a work-stealing pool and a loop per thread, with non-atomic RC and a negative count marking the objects that crossed threads (§7.1) | decided |
 | 23 | Effect handlers | designed now (§6.1), built in v3; one-shot, evidence passing | decided |
 | 24 | Float semantics | strict IEEE; `[<FastMath>]` opt-in per function | default |
 | 25 | SIMD API | portable `f32x8`-style value types + target intrinsics | default |
@@ -706,5 +711,7 @@ checker, so tools can't drift from the compiler.
 | 44 | Arenas | `Arena.with (fun () -> …)`: what the function allocates comes from the arena's blocks, freed together when the arena's last object goes. An object that lives on keeps its blocks, so arenas are memory-safe without escape analysis (§5.2) | decided |
 | 45 | Z# objects in C | an opaque `zs_handle` with its own count (`zs_retain`, `zs_release`); a returned handle is the caller's, a passed one is lent for the call (§11) | decided |
 | 46 | Computation expressions' builders | a module `W.Builder` for `w { }`; the body goes to `delay`; a missing function is an error at the form that needs it, not a trait (§4) | decided |
+| 47 | Functions that cross threads | `share<F>`, checked where a function becomes one (its captures Share, through captured local functions), and after monomorphization for the top-level values it reaches; not a closure type per lambda (as in Rust) nor an effect on every function type (§7) | decided |
+| 48 | A thread's tasks | a loop per thread; `Task.spawn` runs a task on a loop thread to the end, and its result comes back; tasks don't move between threads, so what a task holds needn't be Share (§7) | decided |
 
 "Default" means chosen by me and open to change until the phase that implements it begins.

@@ -47,7 +47,7 @@ Ok 42 Error 'x' isn't a number Error division by zero
 
 **Work that waits:** a `Task<'a>` is work that may wait, for a timer, a socket or another task, without blocking the program: while it waits, other tasks run. `task { }` writes one, and `Task.run` runs it from `main`.
 - **Cold:** making a task does nothing, and running it twice does the work twice.
-- **One thread:** tasks take turns on one event loop. Each runs until it waits.
+- **One thread:** tasks take turns on one event loop. Each runs until it waits. `Task.spawn` runs one on another thread's loop, to use every core ([chapter 14](14-parallel.md#tasks-on-every-core)).
 
 ```zsharp
 let step (name: string) (ms: int) =
@@ -102,7 +102,7 @@ the slow server closed
 gave up after 20 ms
 ```
 
-**Blocking calls:** `Task.blocking (fun () -> …)` runs a function on a helper thread, for a C call that blocks (a database's, say), while the event loop goes on. Until phase 7 can check it, the function must not share reference-counted values with the rest of the program: give it copies. `File.readAllTextAsync` and `File.writeAllTextAsync` work this way.
+**Blocking calls:** `Task.blocking (fun () -> …)` runs a function on a helper thread, for a C call that blocks (a database's, say), while the event loop goes on. The function crosses threads, so what it captures must be shareable ([chapter 14](14-parallel.md#what-can-cross-to-another-thread)), as its result must. `File.readAllTextAsync` and `File.writeAllTextAsync` work this way.
 
 ## Sockets
 

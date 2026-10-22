@@ -71,6 +71,20 @@ let filter f a = Array.ofList (List.filter f (Array.toList a))
 /// A new array with the elements of `a` followed by those of `b`.
 let append a b = Array.ofList (List.append (Array.toList a) (Array.toList b))
 
+/// One array with the elements of each array in the list, in order.
+let concat (arrays: list<array<'a>>) : array<'a> =
+  match List.filter (fun p -> Array.length p > 0) arrays with
+  | [] -> [||]
+  | first :: _ as parts ->
+    let total = List.fold (fun n p -> n + Array.length p) 0 parts
+    let mutable result = Array.create total first.[0]
+    let mutable pos = 0
+    for p in parts do
+      for j in 0 .. Array.length p - 1 do
+        result.[pos] <- p.[j]
+        pos <- pos + 1
+    result
+
 /// A new array of `len` elements starting at index `start`.
 let sub a start len = Array.init len (fun i -> a.[start + i])
 

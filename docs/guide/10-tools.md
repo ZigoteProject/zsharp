@@ -24,6 +24,7 @@
 | `--target <triple>` | cross-compile ([C interop](09-c-interop.md#cross-compiling)) |
 | `--lib` | a static library plus a C header |
 | `--sanitize` | AddressSanitizer and UndefinedBehaviorSanitizer |
+| `--sanitize=thread` | ThreadSanitizer, for data races between threads |
 | `--emit-llvm` | keep the LLVM IR (`out.ll`) |
 | `--time` | how long each compiler phase took |
 
@@ -88,7 +89,7 @@ $2 = {lo = 1, hi = 3}
 $3 = {case = Large, Small = 0, Large.0 = 14, Large.1 = 7}
 ```
 
-**Memory checking:** `--sanitize` builds with AddressSanitizer and UndefinedBehaviorSanitizer, and valgrind works on any build.
+**Memory checking:** `--sanitize` builds with AddressSanitizer and UndefinedBehaviorSanitizer, and valgrind works on any build. `--sanitize=thread` builds with ThreadSanitizer instead, which finds data races (in C code: code without `unsafe` has none).
 
 ## Editors
 

@@ -21,6 +21,7 @@ its exact output.
 11. [Microcontrollers](11-microcontrollers.md): bare-metal Cortex-M, hardware registers, fast and small code
 12. [Memory](12-memory.md): reference counting, cycles and weak references, arenas
 13. [Computation expressions and tasks](13-tasks.md): `option { }`, `result { }`, `task { }`, running tasks at once, cancellation, sockets
+14. [Parallelism](14-parallel.md): the thread pool, what can cross threads (`Share`), `Atomic`, `Mutex` and `Channel`, tasks on every core
 
 **Reference:**
 - [The library reference](../reference/README.md), generated from its doc comments by `zs doc`.

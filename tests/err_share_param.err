@@ -1,0 +1,1 @@
+tests/err_share_param.zs:3:33: error: this function crosses threads, but it captures 'f', a function that may capture what can't be shared: declare it share<unit -> int>

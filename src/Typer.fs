@@ -137,6 +137,7 @@ let private expect what expected actual =
         unify expected actual
     with
     | Mismatch -> fail 0 (sprintf "%s: expected %s, got %s" what (show expected) (show actual))
+    | NoImpl("Share", t) -> fail 0 (sprintf "%s: %s can't be shared between threads (it isn't Share)" what (show t))
     | NoImpl(tr, t) -> fail 0 (sprintf "%s: %s does not implement %s" what (show t) tr)
 
 /// Quantifies the unbound variables of a top-level function's type (linking them to TGen).
@@ -181,6 +182,9 @@ type private Builtin =
 let private builtins =
     let a = TGen 0
     let f x y = TFun(x, y)
+    let atomic, mutex, channel = TCon("Atomic", [ a ]), TCon("Mutex", [ a ]), TCon("Channel", [ a ])
+    let kAtomic = { kAny with allowed = Some(nums + set [ "bool"; "char" ]) }
+    let kShare = kTrait "Share"
 
     let b name prim kinds ty arity =
         name,
@@ -243,6 +247,27 @@ let private builtins =
           b "Weak.get" "weak.get" [ kAny ] (f (TCon("weak", [ a ])) (TCon("option", [ a ]))) 1
           b "Arena.with" "arena.with" [ kAny ] (f (f tUnit a) a) 1
           b "Runtime.mallocs" "Runtime.mallocs" [] (f tUnit tInt) 1
+          // the thread pool (runtime/rt.c), which Std's Parallel wraps: a job runs a function
+          // that crossed threads, and its result comes back to the thread that joins it
+          b "Native.parFork" "par.fork" [ kAny ] (f (TCon("share", [ f tUnit a ])) tCPtr) 1
+          b "Native.parJoin" "par.join" [ kAny ] (f tCPtr a) 1
+          b "Native.parWorkers" "par.workers" [] (f tUnit tInt) 1
+          // what threads share (Std's Threading): an Atomic holds a number, bool or char, a Mutex
+          // and a Channel any value that can be shared
+          b "Threading.Atomic.make" "atomic.make" [ kAtomic ] (f a atomic) 1
+          b "Threading.Atomic.get" "atomic.get" [ kAtomic ] (f atomic a) 1
+          b "Threading.Atomic.set" "atomic.set" [ kAtomic ] (f atomic (f a tUnit)) 2
+          b "Threading.Atomic.exchange" "atomic.exchange" [ kAtomic ] (f atomic (f a a)) 2
+          b "Threading.Atomic.compareExchange" "atomic.cas" [ kAtomic ] (f atomic (f a (f a a))) 3
+          b "Threading.Atomic.add" "atomic.add" [ kNumeric ] (f atomic (f a a)) 2
+          b "Threading.Mutex.make" "mutex.make" [ kShare ] (f a mutex) 1
+          b "Threading.Mutex.get" "mutex.get" [ kShare ] (f mutex a) 1
+          b "Threading.Mutex.set" "mutex.set" [ kShare ] (f mutex (f a tUnit)) 2
+          b "Threading.Mutex.update" "mutex.update" [ kShare ] (f mutex (f (f a a) a)) 2
+          b "Threading.Channel.make" "chan.make" [ kShare ] (f tInt channel) 1
+          b "Threading.Channel.send" "chan.send" [ kShare ] (f channel (f a tUnit)) 2
+          b "Threading.Channel.receive" "chan.receive" [ kShare ] (f channel (TCon("option", [ a ]))) 1
+          b "Threading.Channel.close" "chan.close" [ kShare ] (f channel tUnit) 1
           // the event loop and sockets (runtime/rt.c), which Std's Task and Tcp wrap
           b "Native.loopPost" "Loop.post" [] (f (f tUnit tUnit) tUnit) 1
           b "Native.loopWait" "Loop.wait" [] (f tInt (f tBool (f (f tUnit tUnit) tUnit))) 3
@@ -253,7 +278,11 @@ let private builtins =
           b "Native.loopClose" "Loop.close" [] (f tUnit tUnit) 1
           b "Native.loopEnter" "Loop.enter" [] (f tUnit tBool) 1
           b "Native.loopLeave" "Loop.leave" [] (f tUnit tUnit) 1
-          b "Native.loopBlocking" "Loop.blocking" [] (f (f tUnit tUnit) (f (f tUnit tUnit) tUnit)) 2
+          b "Native.loopBlocking" "Loop.blocking" [] (f (TCon("share", [ f tUnit tUnit ])) (f (f tUnit tUnit) tUnit)) 2
+          // tasks on other threads' loops (Task.spawn): the token says which loop gets a result
+          b "Native.loopSpawn" "Loop.spawn" [] (f (TCon("share", [ f tUnit tUnit ])) tUnit) 1
+          b "Native.loopExpect" "Loop.expect" [] (f (f tUnit tUnit) tInt) 1
+          b "Native.loopFulfill" "Loop.fulfill" [] (f tInt tUnit) 1
           b "Native.tcpListen" "Tcp.listen" [] (f tStr (f tInt tInt)) 2
           b "Native.tcpAccept" "Tcp.accept" [] (f tInt tInt) 1
           b "Native.tcpConnect" "Tcp.connect" [] (f tStr (f tInt tInt)) 2
@@ -458,6 +487,13 @@ let checkFrom
     userImpl <-
         fun tr t ->
             match prune t with
+            | t when tr = "Share" ->
+                // built in, from the type's parts (its type variables must be Share too)
+                try
+                    (shareBlocker (fun v -> unify (fresh (kTrait "Share")) v) types Set.empty t).IsNone
+                with
+                | Mismatch
+                | NoImpl _ -> false
             | TCon(n, []) when isDynName n -> n.Substring 4 = tr // dyn Trait implements its trait
             | TCon(n, args) ->
                 if not (implRequires.ContainsKey((tr, n))) then
@@ -544,6 +580,10 @@ let checkFrom
     let literalRecords = st.literalRecords
     let lambdaHints = Dictionary<Expr, Ty>(HashIdentity.Reference) // lambda -> the function type expected of it
     let dynHints = Dictionary<Expr, Ty>(HashIdentity.Reference) // expression -> the dyn Trait expected of it
+    let shareHints = Dictionary<Expr, Ty>(HashIdentity.Reference) // expression -> the share<F> expected of it
+    // a let-bound local's Core, by its unique name: what a function crossing threads captures
+    // when it captures a local function
+    let localValues = Dictionary<string, CExpr>()
     let currentModule = ref (None: string option)
     let opens = ref ([]: string list) // most recent first
     let privates = st.privates
@@ -958,7 +998,58 @@ let checkFrom
         | true, hint ->
             dynHints.Remove e |> ignore
             toDyn (inferNode env depth e) hint
-        | _ -> inferNode env depth e
+        | _ ->
+            match shareHints.TryGetValue e with
+            | true, hint ->
+                shareHints.Remove e |> ignore
+                toShare (inferNode env depth e) hint
+            | _ -> inferNode env depth e
+
+    /// A function where a share<F> is expected (it crosses threads): as it is when it's one
+    /// already (or its type isn't known yet), else checked that what it captures can be shared,
+    /// and marked (share.fn) for the check of what it calls.
+    and toShare (c: CExpr) (hint: Ty) : CExpr =
+        match prune c.ty, prune hint with
+        | TFun _, TCon("share", [ f ]) ->
+            expect "function crossing threads" f c.ty
+            checkCaptures c
+            mk (CPrim("share.fn", [ c ])) hint
+        | _ -> c
+
+    /// What a function crossing threads captures must be Share: each local it refers to, and
+    /// through a local function it refers to, what that one captures.
+    and checkCaptures (c: CExpr) =
+        let seen = HashSet<string>()
+
+        let rec go (e: CExpr) (via: string list) =
+            let bound = Set.ofList (binders e)
+
+            for x, t in refs e do
+                if not (bound.Contains x) && seen.Add x then
+                    let name = x.Substring(0, x.LastIndexOf '.')
+
+                    match prune t, localValues.TryGetValue x with
+                    | TFun _, (true, def) -> go def (name :: via)
+                    | _ ->
+                        let through =
+                            match via with
+                            | [] -> ""
+                            | fs -> sprintf " (through %s)" (fs |> List.rev |> List.map (sprintf "'%s'") |> String.concat ", ")
+
+                        try
+                            unify (fresh (kTrait "Share")) t
+                        with
+                        | NoImpl(_, part) ->
+                            let part = shareBlocker ignore types Set.empty t |> Option.defaultValue part
+                            let holds = if prune part = prune t then "" else sprintf ", which holds %s" (show part)
+
+                            match prune t with
+                            | TFun _ ->
+                                fail 0 (sprintf "this function crosses threads, but it captures '%s'%s, a function that may capture what can't be shared: declare it share<%s>" name through (show t))
+                            | _ -> fail 0 (sprintf "this function crosses threads, but it captures '%s'%s : %s%s, which can't be shared between threads" name through (show t) holds)
+                        | Mismatch -> fail 0 (sprintf "this function crosses threads, but it captures '%s'%s : %s, which can't be shared between threads" name through (show t))
+
+        go c []
 
     /// A value where a dyn Trait is expected: as it is when it's one already (or its type isn't
     /// known yet), else with its type's impl of the trait.
@@ -1095,6 +1186,7 @@ let checkFrom
             let cb = infer envB (depth + 1) body
             expect (sprintf "result of '%s'" name) rty cb.ty
             recordKey node name fty false self.u true
+            localValues[self.u] <- mk (CLam(pars |> List.map (fun (_, u, t) -> u, t), cb)) fty
             let cr = infer (env.Add(name, self)) depth rest
             mk (CLetFun(self.u, isRec, pars |> List.map (fun (_, u, t) -> u, t), cb, cr)) cr.ty
         | LetRecGroup(members, rest) ->
@@ -1140,6 +1232,7 @@ let checkFrom
                     let cb = infer envB (depth + 1) body
                     expect (sprintf "result of '%s'" name) rty cb.ty
                     recordKey node name fty false self.u true
+                    localValues[self.u] <- mk (CLam(pars |> List.map (fun (_, u, t) -> u, t), cb)) fty
                     self.u, pars |> List.map (fun (_, u, t) -> u, t), cb)
 
             let cr = infer envGroup depth rest
@@ -1153,6 +1246,7 @@ let checkFrom
             let u = uniq x
             recordKey p x cv.ty ann.IsNone u true
             ann |> Option.iter (fun a -> expect (sprintf "value of '%s'" x) (toTy None a) cv.ty)
+            localValues[u] <- cv
 
             let l =
                 { u = u
@@ -2059,6 +2153,13 @@ let checkFrom
                     peel r (k - 1) (p :: acc)
                 | _ -> None
 
+        // a share<F> passed where a plain function is expected is one (share.as keeps the
+        // value's own type inside, for the check of what crosses threads)
+        let unshare (p: Ty) (ca: CExpr) =
+            match prune p, prune ca.ty with
+            | TFun _, TCon("share", [ f ]) -> mk (CPrim("share.as", [ ca ])) f
+            | _ -> ca
+
         match (if args |> List.exists waits then peel fty args.Length [] else None) with
         | Some(ps, res) ->
             let typed = Array.zeroCreate args.Length
@@ -2066,7 +2167,7 @@ let checkFrom
 
             for i, a in (indexed |> List.filter (snd >> waits >> not)) @ (indexed |> List.filter (snd >> waits)) do
                 let p = List.item i ps
-                let ca = inferHint env depth p a
+                let ca = unshare p (inferHint env depth p a)
                 expect (what i) p ca.ty
                 typed[i] <- ca
 
@@ -2079,7 +2180,7 @@ let checkFrom
                 |> List.mapi (fun i a ->
                     let ca =
                         match prune t.Value with
-                        | TFun(p, _) -> inferHint env depth p a
+                        | TFun(p, _) -> unshare p (inferHint env depth p a)
                         | _ -> infer env depth a
 
                     match prune t.Value with
@@ -2102,6 +2203,10 @@ let checkFrom
     and apply env depth (ch: CExpr) (args: Expr list) (name: string option) : CExpr =
         match prune ch.ty with
         | TCon("fnptr", [ f ]) -> fnptrCall env depth ch f args
+        | TCon("share", [ f ]) ->
+            // called as any function (the callee keeps its type: what crosses threads is checked by it)
+            let cargs, t = checkArgs env depth f args name
+            mk (CApp(ch, cargs)) t
         | _ ->
             let cargs, t = checkArgs env depth ch.ty args name
             mk (CApp(ch, cargs)) t
@@ -2262,6 +2367,9 @@ let checkFrom
 
         match prune hint with
         | TCon(n, []) when isDynName n && not passes -> dynHints[e] <- hint
+        | TCon("share", [ f ]) when not passes ->
+            shareHints[e] <- hint
+            pushInto f e // a lambda's parameters get their types
         | _ -> pushInto hint e
 
     /// pushHint's structural part.

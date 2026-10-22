@@ -18,11 +18,11 @@ OCaml for the host benchmarks).
  alongside:            E editors, M microcontrollers, T more targets, P type providers,
                        S library, K packages
 
- done: 0–6, L and V        now: 7
+ done: 0–7, L and V        now: 8
 ```
 
 - **v1 (phases 0–6, L and V):** the complete single-threaded language. It is fast, memory-safe, has C interop, and runs async on one event loop.
-- **v2 (phases 7–9):** threads, parallelism, SIMD and the final performance work.
+- **v2 (phases 7–9):** threads and parallelism (done), SIMD and the final performance work.
 - **v3 (phase 10+):** effect handlers.
 - **Tracks:** editor tooling (E), microcontrollers (M), more targets (T), type providers (P), the library (S) and packages (K) run alongside the main line.
 
@@ -32,14 +32,19 @@ OCaml for the host benchmarks).
 - **Language:** inference (lambdas get their parameter types from the call), records with defaults, unions, exhaustive matching (record, string and character patterns), active patterns, units of measure, traits, `dyn` values, derives, members with named and optional arguments, nested modules with their own fields and traits, closures, generics, custom operators, `char`, multi-line and raw strings, raw pointers in `unsafe`, computation expressions (`option { }`, `result { }`, `task { }`).
 - **Memory and performance:** Perceus RC with borrowing and reuse, copy-on-write arrays, weak references, arenas, checked arithmetic, and an optimizer that inlines, uncurries, resolves known constructors and fuses pipelines. On the host benchmarks it's within 1.21× of C with C's peak memory, except `fib` (2.0×: overflow checks; 1.1× of C with the same checks). On compute code it's as fast as C on a Cortex-M.
 - **Library:** a prelude, Core (collections, text, options, results: every target) and Std (console, environment, files, paths, processes, timing, tasks and TCP: targets with an OS), in .NET-style namespaces.
-- **Concurrency:** `Task` on a single-threaded event loop, with structured concurrency, cancellation that disposes `use` values, timers, TCP sockets, and `Task.blocking` for C calls that block.
+- **Concurrency:** `Task` on an event loop per thread, with structured concurrency, cancellation that disposes `use` values, timers, TCP sockets, `Task.spawn` to run tasks on every core, and `Task.blocking` for C calls that block.
+- **Parallelism:** a work-stealing thread pool (`Parallel.both`, `for`, `reduce`, `Array.Parallel`), `Atomic`, `Mutex` and `Channel`; what crosses threads is checked at compile time (`Share`, `share<F>`), and only shared objects have atomic reference counts.
 - **C:** C import and export (static and shared libraries), C function pointers, Z# objects held by C as handles, and a panic hook for C hosts.
 - **Targets:** x86-64, aarch64 (cross), Cortex-M4 and M0+ (bare metal).
 - **Tooling:** projects with path and git dependencies, `zs test`/`fmt`/`doc`, gdb debug info (strings, records and unions as values), and an LSP, MCP server and Zed extension.
 
 **Known gaps** (in priority order, each with the phase or track that closes it):
-1. **Threads (phase 7):** nothing checks that `Task.blocking`'s function shares no reference-counted values with the rest of the program (`Share` will), and there's no parallelism yet.
-2. **Task speed (phase 9):** each `let!` allocates its continuation; state machines take that away.
+1. **Task speed (phase 9):** each `let!` allocates its continuation; state machines take that away.
+2. **Threads, smaller ones:**
+   - Parallel work started by a thread outside the pool (a spawned task, `Task.blocking`'s helper) runs on that thread alone; only the thread that first used the pool forks onto it.
+   - A pool job that waits on a channel holds its thread, so a channel between two jobs needs room for what one sends first.
+   - Cancelling a task doesn't stop the tasks it spawned onto other threads (their results are dropped).
+   - C code calling Z# callbacks or handles from other threads isn't checked.
 3. **C ABI (track M):** 32-bit ARM passes structs by value with the x86-64 rules.
 4. **Weak references and arenas on microcontrollers (track M):** they're hosted-only so far; the embedded runtime lacks their functions.
 5. **Debug info (track E):** lists and other boxed unions aren't shown as gdb values (plain unions are).
@@ -47,18 +52,6 @@ OCaml for the host benchmarks).
 7. **Targets (track T):** no macOS or Windows builds (and so no kqueue loop yet).
 
 ## Next
-
-### Phase 7: parallelism
-- **Scope:**
-  - **Thread pool:** work-stealing, with Chase–Lev deques.
-  - **Safety:** the `Share` auto-trait, checked at `Parallel.*` and channel boundaries.
-  - **Shared RC:** atomic RC only on objects marked shared, as DESIGN §7.1 describes.
-  - **Parallel APIs:** `Parallel.both`, `for` and `reduce`, and `Array.Parallel.map`/`init`.
-  - **Sync primitives:** `Atomic`, `Mutex`, `Channel`.
-  - **Scheduler:** the Task scheduler becomes multi-threaded.
-- **Exit tests:**
-  - Parallel mandelbrot and nbody scale to at least 0.8 × the core count (8 cores), clean under ThreadSanitizer.
-  - Sending a `ref` to another thread is rejected at compile time.
 
 ### Phase 8: SIMD
 - **Scope:**
@@ -438,3 +431,24 @@ debugging, before phase 6 builds computation expressions and `Task` on the final
 - **I/O and timing:** `Task.sleep`; `Net.Tcp`'s `listen`, `accept`, `connect`, `read`, `write` and `writeText` over non-blocking sockets (`Task.waitFor` for others); `File.readAllTextAsync` and `writeAllTextAsync` on the helper thread.
 - **Exit test:** the echo server (`examples/echo`) holding 10,000 connections, each sending a line a second and checking its echo: for the hour of `bench/echo/soak.sh`, 32,564,673 round trips with none failed, and the server's memory the same 20,936 KB at every minute from the first to the last (the machine slept for 3.5 hours after minute 47, and the connections went on after it). Under valgrind with 10,000 connections for 30 s (288,928 round trips), stopped by a client's `quit` with the connections still open: exit 0, no errors or leaks. `./test.sh` runs it with 1,000 connections (under valgrind with `--valgrind`): `tests/task/echo.sh`.
 - **Tests:** `tests/ce.zs`, `tests/err_builder.zs`, `tests/task/basics.zs` (timers, both, all, race and timeout cancelling with `use`, scope, `Task.blocking`, async files).
+
+### Phase 7: parallelism ✅
+- **Thread pool** (`runtime/rt.c`, DESIGN §7): Chase–Lev deques (Lê et al.'s C11 version with release/acquire and sequentially consistent operations instead of fences, which ThreadSanitizer doesn't model), a thread per core (`ZS_WORKERS`), work stealing, sleeping workers woken by a fork. A job is a `share<unit -> 'a>` closure and a runner in the program's IR that stores its result in the job, so `Parallel.both`'s results and `Array.Parallel`'s parts come back to the joining thread without being marked shared.
+- **What crosses threads** (decision 47): the `Share` trait, built in and structural (numbers, strings, records, unions, tuples, lists and arrays of Share; `share<F>`; `Atomic`, `Mutex`, `Channel`; not `ref`, `Buffer`, `weak`, `dyn`, C pointers or plain functions). `share<F>` is the type of a function another thread runs: a lambda, local or top-level function where one is expected is checked there (what it captures, through captured local functions), and after monomorphization the compiler follows its calls to any top-level value that isn't Share. A `share<F>` is called and passed as an `F`.
+- **Shared reference counts** (DESIGN §7.1): a program with threads has `dup` and `release` that count a shared object (negative count) atomically; the rest is unchanged. Each type has a function marking a value's objects shared (a closure's description has one for what it captured), run where a value crosses: a job's closure, `Task.spawn`'s and `Task.blocking`'s functions, `Mutex` contents, `Channel.send`, and top-level values at startup. Perceus's specialized drop dups a non-unique cell's kept fields before giving up its reference, and copy-on-write copies an array from past its count.
+- **Library:** `Parallel.both`, `for` (``` ``for`` ```: the lexer and the grammar take F#'s double-backtick names) and `reduce`; `Array.Parallel.init` and `map` (each part built on its thread, then joined); `Atomic` (numbers, `bool`, `char`: get, set, exchange, compareExchange, add), `Mutex` (a futex lock: get, set, update), `Channel` (bounded, any number of senders and receivers). `Array.concat` in Core.
+- **Tasks on every core** (decision 48): an event loop per thread; `Task.spawn` runs a task on one of a set of loop threads to the end, and its result comes back through the spawning loop's inbox (a pipe its epoll watches), which `Task.blocking`'s helper also uses now. The echo server spreads its connections over them with `--threads`. Weak references and arenas lock their tables in a program with threads; an arena is per thread.
+- **Tools:** `zs build --sanitize=thread` (ThreadSanitizer).
+- **Exit tests** (`bench/parallel/run.sh`, best of 3 runs, next to C versions with pthreads that take one row, or 16 bodies, at a time):
+
+  | Program | 1 thread | 8 | 16 | ×8 | ×16 |
+  |---|---|---|---|---|---|
+  | mandelbrot 8000×8000 | 2213 ms | 319 ms | 243 ms | 6.94 | 9.11 |
+  | mandelbrot, C | 2070 ms | 304 ms | 245 ms | 6.81 | 8.45 |
+  | nbody, 6000 bodies, 10 steps | 1553 ms | 280 ms | 306 ms | 5.55 | 5.08 |
+  | nbody, C | 1556 ms | 269 ms | 300 ms | 5.78 | 5.19 |
+
+  - **On this machine** (a laptop's 8-core Ryzen 7 PRO 8840U with SMT, whose clock drops as more cores run): mandelbrot reaches 0.87 × 8 cores; nbody 0.69 ×, as C's nbody does (0.72 ×), so the bar of 0.8 × measures the machine there: Z# scales as C does, within 4%.
+  - **ThreadSanitizer** reports nothing for both, nor for `tests/parallel/basics.zs` and `tests/task/spawn.zs`, which `./test.sh` runs under it.
+  - **A `ref` sent to another thread** is a compile error, captured directly, through a local function, in a record, sent on a channel, or reached as a top-level value (`tests/err_share.zs`, `err_share_global.zs`, `err_share_param.zs`).
+- **Tests:** `tests/parallel/basics.zs` (every API; captured and top-level values; copy-on-write of a shared array; trees built in arenas on other threads; the same output on 1, 2 and 16 workers), `tests/task/spawn.zs`, and `tests/task/echo.sh` with `--threads`. Valgrind and the aarch64 suite pass.

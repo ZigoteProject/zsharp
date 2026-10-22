@@ -34,6 +34,7 @@ let rec private concrete (inst: Ty list) t =
     | TCon(n, _) when nums.Contains n -> TCon(n, []) // units of measure are erased
     | TMeas _ -> measOne
     | TCon("Buffer", a) -> TCon("array", List.map (concrete inst) a) // same storage, shared instead of copied
+    | TCon("share", [ f ]) -> concrete inst f // a function that may cross threads is a function
     | TCon(n, a) -> TCon(n, List.map (concrete inst) a)
     | TFun(a, b) -> TFun(concrete inst a, concrete inst b)
     | TTuple ts -> TTuple(List.map (concrete inst) ts)
@@ -367,6 +368,71 @@ let run (prog: Program) : MFun list =
 // change what the program does. A consumer's function that does something else (iter's,
 // usually) still sees the elements in order; the stages must then be unable to panic, so no
 // effect of the consumer happens that a panic in a stage would have prevented.
+
+/// A function given to another thread (share.fn, from the type checker) mustn't reach a
+/// top-level value threads can't share, such as a `ref`: each thread would change it at once.
+/// Checked through what the function calls, after monomorphization so that every trait method
+/// call has its impl; then the marks go.
+let checkShared (prog: Program) (funs: MFun list) : MFun list =
+    let byName = funs |> List.map (fun f -> f.name, f) |> dict
+    // the values of let-bound locals and local functions, by unique name: a crossing function
+    // that calls a function it captured runs that one's code
+    let locals = Dictionary<string, CExpr>()
+
+    let rec collect (e: CExpr) =
+        match e.k with
+        | CLetFun(n, _, ps, b, _) -> locals[n] <- { k = CLam(ps, b); ty = e.ty }
+        | CLetRec(fs, _) ->
+            for n, ps, b in fs do
+                locals[n] <- { k = CLam(ps, b); ty = e.ty }
+        | CLet(x, v, _) -> locals[x] <- v
+        | _ -> ()
+
+        children e.k |> List.iter collect
+
+    for f in funs do
+        collect f.body
+
+    let check (file: string) (line: int) (start: CExpr) =
+        let seen = HashSet<string>()
+
+        let rec walk (path: string list) (e: CExpr) =
+            match e.k with
+            | CGlobalVal x ->
+                match shareBlocker ignore prog.types Set.empty e.ty with
+                | Some part ->
+                    let through = if path.IsEmpty then "" else sprintf " (through %s)" (path |> List.rev |> List.map (sprintf "'%s'") |> String.concat ", ")
+                    let holds = if part = e.ty then "" else sprintf ", which holds %s" (show part)
+
+                    raise (Syntax.CompileErrorAt(file, line, 0, sprintf "this function crosses threads, but it uses the top-level value '%s'%s : %s%s, which threads can't share; pass it what it needs instead" x through (show e.ty) holds))
+                | None -> ()
+            | CGlobal(f, _) -> follow path f
+            | CPrim(p, _) when p.StartsWith "fn:" -> follow path (p.Substring 3)
+            | CLocal x ->
+                match prune e.ty, locals.TryGetValue x with
+                | TFun _, (true, v) when seen.Add x -> walk path v
+                | _ -> ()
+            | _ -> ()
+
+            children e.k |> List.iter (walk path)
+
+        and follow path f =
+            match byName.TryGetValue f with
+            | true, fd when seen.Add f -> walk (fd.name.Split('<')[0] :: path) fd.body
+            | _ -> ()
+
+        walk [] start
+
+    let rec strip (file: string) (line: int) (e: CExpr) : CExpr =
+        match e.k with
+        | CLine(l, _) -> { e with k = mapChildren (strip file l) e.k }
+        | CPrim("share.fn", [ f ]) ->
+            check file line f
+            strip file line f
+        | CPrim("share.as", [ f ]) -> strip file line f
+        | k -> { e with k = mapChildren (strip file line) k }
+
+    funs |> List.map (fun f -> { f with body = strip f.file f.line f.body })
 
 type private Stage =
     | MapS of CExpr

@@ -47,7 +47,8 @@ let builtinImpls =
           "Eq", nums + set [ "string"; "bool"; "char"; "unit" ]
           "Ord", nums + set [ "string"; "char" ]
           "Show", nums + set [ "string"; "bool"; "char" ]
-          "Hash", nums + set [ "string"; "bool"; "char" ] ]
+          "Hash", nums + set [ "string"; "bool"; "char" ]
+          "Share", nums + set [ "string"; "bool"; "char"; "unit" ] ]
 
 let hasBuiltinImpl (tr: string) (n: string) =
     match builtinImpls.TryGetValue tr with
@@ -56,9 +57,26 @@ let hasBuiltinImpl (tr: string) (n: string) =
 
 /// Built-in generic type constructors and their arity.
 // array<T>: a copy-on-write value; Buffer<T>: the same storage as a shared mutable reference;
-// weak<T>: a reference that doesn't keep its target alive; FFI only: callback<F> (a closure
-// called by C), ptr<T> (a raw C pointer), fnptr<F> (a C function pointer)
-let builtinCons = dict [ "array", 1; "Buffer", 1; "ref", 1; "weak", 1; "callback", 1; "ptr", 1; "fnptr", 1 ]
+// weak<T>: a reference that doesn't keep its target alive; share<F>: a function that may cross
+// threads (what it captures is Share); Atomic<T>, Mutex<T>, Channel<T>: values threads share;
+// FFI only: callback<F> (a closure called by C), ptr<T> (a raw C pointer), fnptr<F> (a C
+// function pointer)
+let builtinCons =
+    dict
+        [ "array", 1
+          "Buffer", 1
+          "ref", 1
+          "weak", 1
+          "share", 1
+          "Atomic", 1
+          "Mutex", 1
+          "Channel", 1
+          "callback", 1
+          "ptr", 1
+          "fnptr", 1 ]
+
+/// The types whose values are references to one object each, as `ref` is.
+let isCellType (n: string) = n = "ref" || n = "Atomic" || n = "Mutex" || n = "Channel"
 
 /// `dyn Trait`: a value of any type implementing the trait, behind a pointer to it and the
 /// impl's methods. Its type is named dyn:<the trait's full name>.
@@ -69,6 +87,7 @@ let typeAliases = dict [ "c_int", "i32"; "float", "f64"; "double", "f64" ]
 let tcon n = TCon(n, [])
 let tInt, tBool, tUnit, tStr, tCStr = tcon "int", tcon "bool", tcon "unit", tcon "string", tcon "cstr"
 let tChar = tcon "char"
+let tCPtr = tcon "cptr"
 
 let mutable private nextVar = 0
 
@@ -590,8 +609,10 @@ and Export =
 /// unions being looked through, so a recursive union is found (and stays boxed).
 let rec private heapIn (types: Dictionary<string, TypeInfo>) (visiting: Set<string>) t =
     match prune t with
-    | TCon(("string" | "array" | "Buffer" | "ref" | "weak"), _)
+    | TCon(("string" | "array" | "Buffer" | "weak"), _)
     | TFun _ -> true
+    | TCon(n, _) when isCellType n -> true
+    | TCon("share", [ f ]) -> heapIn types visiting f
     | TCon(n, _) when isDynName n -> true
     | TCon(n, args) ->
         match types.TryGetValue n with
@@ -615,6 +636,34 @@ and private plainUnionIn (types: Dictionary<string, TypeInfo>) (visiting: Set<st
     | _ -> false
 
 let needsRc (types: Dictionary<string, TypeInfo>) t = heapIn types Set.empty t
+
+/// What keeps a type's values from being shared between threads (the Share trait, DESIGN §7):
+/// None when they can be. Numbers, strings and the like, share<F> functions, the values threads
+/// share (Atomic, Mutex, Channel), and records, unions, tuples and arrays of those can; ref,
+/// Buffer, weak, dyn, C pointers and other functions can't. A type variable goes to onVar (the
+/// type checker requires Share of it).
+let rec shareBlocker (onVar: Ty -> unit) (types: Dictionary<string, TypeInfo>) (visiting: Set<string>) (t: Ty) : Ty option =
+    let inner = shareBlocker onVar types
+
+    match prune t with
+    | TVar _ as v ->
+        onVar v
+        None
+    | TCon(n, []) when hasBuiltinImpl "Share" n -> None
+    | TCon(n, [ TMeas _ ]) when nums.Contains n -> None
+    | TMeas _ -> None
+    | TCon(("share" | "fnptr" | "Atomic"), _) -> None
+    | TCon(("array" | "Mutex" | "Channel"), [ el ]) -> inner visiting el
+    | TCon(n, args) as t when not (isDynName n) && not (builtinCons.ContainsKey n) ->
+        let key = showFull t
+
+        match types.TryGetValue n with
+        | _ when visiting.Contains key -> None // recursive: Share if the rest of it is
+        | true, { def = RecordDef fs } -> fs |> List.tryPick (fun (_, ft) -> inner (visiting.Add key) (substGen args ft))
+        | true, { def = UnionDef cs } -> cs |> List.tryPick (fun (_, fs) -> fs |> List.tryPick (fun ft -> inner (visiting.Add key) (substGen args ft)))
+        | _ -> Some t
+    | TTuple ts -> List.tryPick (inner visiting) ts
+    | t -> Some t
 
 let plainUnion (types: Dictionary<string, TypeInfo>) t = plainUnionIn types Set.empty t
 
@@ -650,10 +699,12 @@ let unionRep (types: Dictionary<string, TypeInfo>) (t: Ty) : UnionRep =
     // an object that can't be the static one standing for a niche's empty case: a union of
     // option's shape may be that one, so it never is a niche's payload (option<option<string>>
     // boxes its outer Some)
-    let pointer (f: Ty) =
+    let rec pointer (f: Ty) =
         match prune f with
-        | TCon(("string" | "array" | "Buffer" | "ref" | "weak"), _)
+        | TCon(("string" | "array" | "Buffer" | "weak"), _)
         | TFun _ -> true
+        | TCon(n, _) when isCellType n -> true
+        | TCon("share", [ f ]) -> pointer f
         | TCon(n, _) when isDynName n -> true
         | f ->
             match cases types f with

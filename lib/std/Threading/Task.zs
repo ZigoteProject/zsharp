@@ -1,5 +1,6 @@
 /// Tasks: work that may wait (for input, a timer, other tasks) without blocking the program,
-/// run by one event loop. `task { }` writes one, and `Task.run` runs it from `main`.
+/// run by an event loop. `task { }` writes one, and `Task.run` runs it from `main`. Each thread
+/// has a loop of its own: `Task.spawn` starts a task on another thread's, to use every core.
 namespace Threading
 
 /// A task's cancellation: whether it has been cancelled, and what to do then (stop waiting,
@@ -254,15 +255,30 @@ module Task =
   let cancel (s: Scope) = cancelNow s.children
 
   /// Runs `f` on a helper thread, for a C call that blocks (a database's, say) while the event
-  /// loop goes on. Until phase 7 can check it, `f` must not share reference-counted values with
-  /// the rest of the program while it runs: give it copies.
-  let blocking (f: unit -> 'a) : Task<'a> =
+  /// loop goes on. `f` crosses threads, so what it captures must be Share, as its result must.
+  let blocking (f: share<unit -> 'a>) : Task<'a> =
     Task (fun c k ->
-      let result = ref None
-      Native.loopBlocking (fun () -> result.Value <- Some (f ())) (fun () ->
-        match result.Value with
+      let result = Mutex.make None
+      Native.loopBlocking (fun () -> Mutex.set result (Some (f ()))) (fun () ->
+        match Mutex.get result with
         | Some x when not c.cancelled.Value -> resume k x
         | _ -> ()))
+
+  /// Runs the task `f` makes on another thread, which has an event loop of its own, so tasks
+  /// use every core (a server's connections, say). `f` crosses threads, so what it captures
+  /// must be Share, as the result must. The task stays on that thread to the end: cancelling
+  /// this one doesn't stop it (its result is dropped).
+  let spawn (f: share<unit -> Task<'a>>) : Task<'a> =
+    Task (fun c k ->
+      let result = Mutex.make None
+      let token = Native.loopExpect (fun () ->
+        match Mutex.get result with
+        | Some x when not c.cancelled.Value -> resume k x
+        | _ -> ())
+      Native.loopSpawn (fun () ->
+        runIn (f ()) (newCancel ()) (fun x ->
+          Mutex.set result (Some x)
+          Native.loopFulfill token)))
 
   /// The `task { }` builder.
   module Builder =

@@ -1,0 +1,1 @@
+tests/err_share_global.zs:8: error: this function crosses threads, but it uses the top-level value 'hits' (through 'bump') : ref<int>, which threads can't share; pass it what it needs instead

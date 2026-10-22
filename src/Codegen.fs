@@ -59,6 +59,8 @@ type private Emitter() =
     member this.Dead() = this.Label(this.Fresh "dead")
     member _.Alloca(s: string) = allocas.Append("  ").AppendLine(s) |> ignore
     member _.Body = "entry:\n" + allocas.ToString() + sb.ToString()
+    /// The instructions alone, for code that goes into another function's block.
+    member _.Code = sb.ToString()
 
 /// How a C value is passed (x86-64 System V).
 type private Abi =
@@ -86,6 +88,20 @@ declare void @zs_exit(i_W) noreturn
 declare void @llvm.memcpy.p0.p0.i_W(ptr, ptr, i_W, i1)
 declare void @zs_panic(ptr) noreturn
 declare void @zs_panic_c(ptr) noreturn
+declare void @zs_loop_spawn(ptr)
+declare i_W @zs_loop_expect(ptr)
+declare void @zs_loop_fulfill(i_W)
+declare ptr @zs_par_fork(ptr, ptr, i_W)
+declare ptr @zs_par_join(ptr)
+declare void @zs_par_free(ptr)
+declare i_W @zs_par_workers()
+declare void @zs_lock(ptr)
+declare void @zs_unlock(ptr)
+declare ptr @zs_chan_new(i_W, i_W, ptr)
+declare void @zs_chan_send(ptr, ptr)
+declare zeroext i1 @zs_chan_recv(ptr, ptr)
+declare void @zs_chan_close(ptr)
+declare void @zs_chan_free(ptr)
 declare ptr @zs_weak_new(ptr)
 declare ptr @zs_weak_target(ptr)
 declare void @zs_weak_free(ptr)
@@ -157,8 +173,9 @@ declare i_W @zs_fd_write(i_W, ptr, i_W, i_W)
 declare void @zs_fd_close(i_W)
 declare ptr @zs_error_text(i_W)
 
-; a count above 0 is a thread-local object's, 0 a static one's (never freed); below 0 will be a
-; shared object's, counted atomically (DESIGN §7.1). The fast paths test for that already
+; a count above 0 is a thread-local object's, 0 a static one's (never freed), and below 0 a
+; shared object's, -n for n references, counted atomically (DESIGN §7.1): a program with threads
+; has threadedRc's versions of these two, which count it
 define private void @zs.dup(ptr %p) alwaysinline {
 entry:
   %rc = load i_W, ptr %p
@@ -261,6 +278,63 @@ entry:
 }
 """
 
+/// zs.dup and zs.release in a program with threads, in place of the prelude's: a shared
+/// object's count (negative) changes atomically, and its last reference frees it. The count is
+/// read atomically, since another thread may be changing a shared one; a thread-local count
+/// only this thread changes.
+let private threadedDup =
+    """define private void @zs.dup(ptr %p) alwaysinline {
+entry:
+  %rc = load atomic i_W, ptr %p monotonic, align HDR1
+  %local = icmp sgt i_W %rc, 0
+  br i1 %local, label %inc, label %other
+inc:
+  %n = add i_W %rc, 1
+  store i_W %n, ptr %p
+  br label %done
+other:
+  %shared = icmp slt i_W %rc, 0
+  br i1 %shared, label %atomic, label %done
+atomic:
+  %old = atomicrmw sub ptr %p, i_W 1 monotonic
+  br label %done
+done:
+  ret void
+}"""
+
+let private threadedRelease =
+    """define private i1 @zs.release(ptr %p) alwaysinline {
+entry:
+  %rc = load atomic i_W, ptr %p monotonic, align HDR1
+  %last = icmp eq i_W %rc, 1
+  br i1 %last, label %yes, label %no
+yes:
+  ret i1 true
+no:
+  %more = icmp sgt i_W %rc, 1
+  br i1 %more, label %dec, label %other
+dec:
+  %n = sub i_W %rc, 1
+  store i_W %n, ptr %p
+  ret i1 false
+other:
+  %shared = icmp slt i_W %rc, 0
+  br i1 %shared, label %atomic, label %keep
+atomic:
+  %old = atomicrmw add ptr %p, i_W 1 acq_rel
+  %gone = icmp eq i_W %old, -1
+  ret i1 %gone
+keep:
+  ret i1 false
+}"""
+
+/// The text with a function's definition (from its first line to its closing brace) replaced.
+let private replaceDef (text: string) (def: string) =
+    let header = def.Substring(0, def.IndexOf '\n')
+    let start = text.IndexOf header
+    let stop = text.IndexOf("\n}", start) + 2
+    text.Substring(0, start) + def + text.Substring stop
+
 /// Primitives implemented by runtime functions: C name, result type, parameter types (unit
 /// parameters omitted). Arguments are borrowed by the runtime and dropped after the call,
 /// except those marked with !, whose reference the runtime keeps (the event loop's callbacks).
@@ -276,6 +350,9 @@ let private runtimePrims =
           "Loop.enter", ("zs_loop_enter", "zeroext i1", [])
           "Loop.leave", ("zs_loop_leave", "void", [])
           "Loop.blocking", ("zs_loop_blocking", "void", [ "ptr!"; "ptr!" ])
+          "Loop.spawn", ("zs_loop_spawn", "void", [ "ptr!" ])
+          "Loop.expect", ("zs_loop_expect", "i_W", [ "ptr!" ])
+          "Loop.fulfill", ("zs_loop_fulfill", "void", [ "i_W" ])
           "Tcp.listen", ("zs_tcp_listen", "i_W", [ "ptr"; "i_W" ])
           "Tcp.accept", ("zs_tcp_accept", "i_W", [ "i_W" ])
           "Tcp.connect", ("zs_tcp_connect", "i_W", [ "ptr"; "i_W" ])
@@ -332,6 +409,11 @@ let mutable target = ""
 /// runtime's checked functions (an arena's objects aren't malloc's; a dying object empties its
 /// weak cell), and a cell Perceus reuses is reported. Other programs pay for none of it.
 let mutable checkedHeap = false
+
+/// The program runs code on more than one thread (Parallel, Task.blocking): a value crossing to
+/// another thread has its objects marked shared, whose counts change atomically (DESIGN §7.1).
+/// Programs without threads have the plain counts.
+let mutable threaded = false
 
 // ponytail: a bare-metal target (cortex-m4, cortex-m0plus) passes C structs by value with the
 // x86-64 rules, which are wrong for 32-bit ARM AAPCS; scalars and pointers are right
@@ -392,6 +474,7 @@ let compile
     (funs: MFun list)
     : string * string =
     let shared = if part.IsSome then "linkonce_odr hidden" else "private" // one address in the whole program
+    let prelude = if threaded then replaceDef (replaceDef prelude threadedDup) threadedRelease else prelude
     let top = StringBuilder(prelude.Replace("@zs.none = private constant", sprintf "@zs.none = %s constant" shared))
     let helpers = StringBuilder()
     let funcs = StringBuilder()
@@ -424,7 +507,7 @@ let compile
         | TCon("f32", []) -> "float"
         | TCon("bool", []) -> "i1"
         | TCon("unit", []) -> "{}"
-        | TCon(("cstr" | "cptr" | "string" | "array" | "ref" | "weak" | "ptr" | "fnptr"), _)
+        | TCon(("cstr" | "cptr" | "string" | "array" | "ref" | "weak" | "ptr" | "fnptr" | "Atomic" | "Mutex" | "Channel"), _)
         | TFun _ -> "ptr"
         | TCon(n, _) when isDynName n -> "ptr"
         | TCon(n, args) ->
@@ -788,10 +871,104 @@ let compile
             |> List.iteri (fun i ft ->
                 if heap ft then
                     let f = em.Instr(sprintf "extractvalue %s %%v, %d" (llty t) i)
-                    if kind = "dup" then dupValue em ft f else dropValue em ft f)
+
+                    match kind with
+                    | "dup" -> dupValue em ft f
+                    | "share" -> shareValue em ft f
+                    | _ -> dropValue em ft f)
 
             em.Emit "ret void"
             helpers.Append(sprintf "define private void %s(%s %%v) {\n%s}\n\n" name (llty t) em.Body) |> ignore
+
+        name
+
+    /// Marks a value's objects shared before it crosses to another thread (DESIGN §7.1): a
+    /// thread-local count n becomes -n, which every thread then changes atomically. The walk
+    /// stops at static objects and at shared ones, whose objects are shared already.
+    and shareValue (em: Emitter) (t: Ty) (v: string) =
+        if heap t then
+            match llty t with
+            | "ptr" -> em.Emit(sprintf "call void %s(ptr %s)" (shareFn t) v)
+            | lt -> em.Emit(sprintf "call void %s(%s %s)" (structHelper "share" t) lt v)
+
+    and shareFn (t: Ty) : string =
+        let name = sprintf "@\"share.%s\"" (showFull t)
+
+        if generated.Add name then
+            let em = Emitter()
+
+            match repOf' t with
+            | Some(Niche(_, payload)) ->
+                // the payload itself, or the static @zs.none
+                em.Emit(sprintf "musttail call void %s(ptr %%p)" (shareFn payload))
+                em.Emit "ret void"
+            | _ ->
+                let rc = em.Instr "load atomic i_W, ptr %p monotonic, align HDR1"
+                em.Emit(sprintf "br i1 %s, label %%mark, label %%done" (em.Instr(sprintf "icmp sgt i_W %s, 0" rc)))
+                em.Label "mark"
+                em.Emit(sprintf "store i_W %s, ptr %%p" (em.Instr(sprintf "sub i_W 0, %s" rc)))
+
+                match prune t with
+                | TFun _ ->
+                    // what the closure captured: its description's share function
+                    let info = em.Instr(sprintf "load ptr, ptr %s" (em.Instr "getelementptr { i_W, ptr, ptr }, ptr %p, i32 0, i32 2"))
+                    let f = em.Instr(sprintf "load ptr, ptr %s" (em.Instr(sprintf "getelementptr { ptr, i32, ptr, ptr }, ptr %s, i32 0, i32 3" info)))
+                    em.Emit(sprintf "musttail call void %s(ptr %%p)" f)
+                    em.Emit "ret void"
+                | TCon("array", [ el ]) when heap el ->
+                    let len = em.Instr(sprintf "load i_W, ptr %s" (em.Instr "getelementptr { i_W, i_W }, ptr %p, i32 0, i32 1"))
+                    em.Emit "br label %loop"
+                    em.Label "loop"
+                    let i = em.Tmp()
+                    em.Emit(sprintf "%s = phi i_W [ 0, %%mark ], [ %%next, %%body ]" i)
+                    em.Emit(sprintf "br i1 %s, label %%body, label %%done" (em.Instr(sprintf "icmp slt i_W %s, %s" i len)))
+                    em.Label "body"
+                    let ep = em.Instr(sprintf "getelementptr { i_W, i_W, [0 x %s] }, ptr %%p, i32 0, i32 2, i_W %s" (llty el) i)
+                    shareValue em el (em.Instr(sprintf "load %s, ptr %s" (llty el) ep))
+                    em.Emit(sprintf "%%next = add i_W %s, 1" i)
+                    em.Emit "br label %loop"
+                | TCon(n, _) when (match types.TryGetValue n with
+                                   | true, { def = UnionDef _ } -> true
+                                   | _ -> false) ->
+                    // the case's fields; the last pointer field by a tail call, so a long list
+                    // is walked in a loop
+                    let _, cases = union t
+                    let withRefs = cases |> List.indexed |> List.filter (fun (_, (_, fs)) -> List.exists heap fs)
+
+                    if tagged t then
+                        let tag = em.Instr(sprintf "load i32, ptr %s" (em.Instr "getelementptr { i_W, i32 }, ptr %p, i32 0, i32 1"))
+                        em.Emit(sprintf "switch i32 %s, label %%done [ %s ]" tag (withRefs |> List.map (fun (i, _) -> sprintf "i32 %d, label %%case%d" i i) |> String.concat " "))
+                    else
+                        match withRefs with
+                        | (i, _) :: _ -> em.Emit(sprintf "br label %%case%d" i)
+                        | [] -> em.Emit "br label %done"
+
+                    for i, (_, fs) in withRefs do
+                        em.Label(sprintf "case%d" i)
+                        let cell = cellTy t i
+
+                        let refs =
+                            fs
+                            |> List.indexed
+                            |> List.filter (snd >> heap)
+                            |> List.map (fun (j, ft) -> ft, em.Instr(sprintf "load %s, ptr %s" (llty ft) (em.Instr(sprintf "getelementptr %s, ptr %%p, i32 0, i32 %d" cell (cellField t j)))))
+
+                        let init, (lt, lv) = List.splitAt (refs.Length - 1) refs |> fun (a, b) -> a, b.Head
+
+                        for ft, v in init do
+                            shareValue em ft v
+
+                        if llty lt = "ptr" then
+                            em.Emit(sprintf "musttail call void %s(ptr %s)" (shareFn lt) lv)
+                            em.Emit "ret void"
+                        else
+                            shareValue em lt lv
+                            em.Emit "br label %done"
+                | _ -> em.Emit "br label %done" // a string; an Atomic, a Mutex or a Channel, whose contents are shared already
+
+            em.Label "done"
+            em.Emit "ret void"
+            helpers.Append(sprintf "define private void %s(ptr %%p) {\n%s}\n\n" name em.Body) |> ignore
 
         name
 
@@ -809,7 +986,7 @@ let compile
             // inlined at every write: a count test, and the copy (out of line, cold) only if shared
             let copy = uniqueFn t true
             let em = Emitter()
-            let rc = em.Instr "load i_W, ptr %p"
+            let rc = em.Instr(if threaded then "load atomic i_W, ptr %p monotonic, align HDR1" else "load i_W, ptr %p")
             em.Emit(sprintf "br i1 %s, label %%same, label %%copy, !prof !{!\"branch_weights\", i32 2000, i32 1}" (em.Instr(sprintf "icmp eq i_W %s, 1" rc)))
             em.Label "same"
             em.Emit "ret ptr %p"
@@ -825,7 +1002,11 @@ let compile
             let es = sizeOf em (llty el)
             let bytes = em.Instr(sprintf "add i_W HDR2, %s" (em.Instr(sprintf "mul i_W %s, %s" len es)))
             let b = em.Instr(sprintf "call ptr @zs_alloc(i_W %s)" bytes)
-            em.Emit(sprintf "call void @llvm.memcpy.p0.p0.i_W(ptr %s, ptr %%p, i_W %s, i1 false)" b bytes)
+            // the length and elements: the count is the copy's own (and another thread may be
+            // changing the original's)
+            let dst = em.Instr(sprintf "getelementptr i8, ptr %s, i_W HDR1" b)
+            let src = em.Instr "getelementptr i8, ptr %p, i_W HDR1"
+            em.Emit(sprintf "call void @llvm.memcpy.p0.p0.i_W(ptr %s, ptr %s, i_W %s, i1 false)" dst src (em.Instr(sprintf "sub i_W %s, HDR1" bytes)))
             em.Emit(sprintf "store i_W 1, ptr %s" b)
 
             if heap el then
@@ -908,6 +1089,19 @@ let compile
                         let x = em.Instr(sprintf "load %s, ptr %s" (llty v) vp)
                         em.Emit "call void @zs_free(ptr %p)"
                         dropValue em v x
+                        em.Emit "ret void"
+                    | TCon("Atomic", _) ->
+                        em.Emit "call void @zs_free(ptr %p)"
+                        em.Emit "ret void"
+                    | TCon("Mutex", [ v ]) ->
+                        let vp = em.Instr(sprintf "getelementptr { i_W, i32, %s }, ptr %%p, i32 0, i32 2" (llty v))
+                        let x = em.Instr(sprintf "load %s, ptr %s" (llty v) vp)
+                        em.Emit "call void @zs_free(ptr %p)"
+                        dropValue em v x
+                        em.Emit "ret void"
+                    | TCon("Channel", _) ->
+                        // the runtime's: what's still in it goes with the drop function it was made with
+                        em.Emit "call void @zs_chan_free(ptr %p)"
                         em.Emit "ret void"
                     | _ ->
                         let _, cases = union pt
@@ -1029,8 +1223,25 @@ let compile
 
         if generated.Add name then
             let n = fnTable[f].pars.Length
-            let line = sprintf "%s = private unnamed_addr constant { ptr, i32, ptr } { ptr %s, i32 %d, ptr %s }" name (dropStub f k) (n - k) (full f k)
+            let share = if threaded then shareStub f k else "null"
+            let line = sprintf "%s = private unnamed_addr constant { ptr, i32, ptr, ptr } { ptr %s, i32 %d, ptr %s, ptr %s }" name (dropStub f k) (n - k) (full f k) share
             top.AppendLine line |> ignore
+
+        name
+
+    /// The objects a closure of f holding k parameters captured, marked shared (shareFn of a
+    /// closure has marked the closure itself).
+    and shareStub (f: string) (k: int) : string =
+        let name = sprintf "@\"closhare.%s.%d\"" f k
+
+        if generated.Add name then
+            let em = Emitter()
+
+            for t, v in loadEnv em (fnTable[f].pars |> List.map snd |> List.take k) do
+                shareValue em t v
+
+            em.Emit "ret void"
+            helpers.Append(sprintf "define private void %s(ptr %%clo) {\n%s}\n\n" name em.Body) |> ignore
 
         name
 
@@ -1097,6 +1308,38 @@ let compile
             top.AppendLine(sprintf "%s = private unnamed_addr constant { %s } { %s }" name (slots |> List.map (fun _ -> "ptr") |> String.concat ", ") (String.concat ", " slots)) |> ignore
 
         name
+
+    /// The thread pool's runner for a job whose closure gives a T (runtime/rt.c, zs_par_fork):
+    /// calls it, stores its result where the job keeps it, and gives up the closure.
+    let parRunner (rt: Ty) =
+        let name = sprintf "@\"parrun.%s\"" (showFull rt)
+
+        if generated.Add name then
+            let em = Emitter()
+            let code = em.Instr(sprintf "load ptr, ptr %s" (em.Instr "getelementptr { i_W, ptr }, ptr %clo, i32 0, i32 1"))
+            let r = em.Instr(sprintf "call %s %s(ptr %%clo, {} zeroinitializer)" (llty rt) code)
+            em.Emit(sprintf "store %s %s, ptr %%out" (llty rt) r)
+            em.Emit "call void @zs.drop.clo(ptr %clo)"
+            em.Emit "ret void"
+            helpers.Append(sprintf "define private void %s(ptr %%clo, ptr %%out) {\n%s}\n\n" name em.Body) |> ignore
+
+        name
+
+    /// A function dropping the T a channel's slot holds (what's left in one when it's freed),
+    /// or null when a T holds no reference counts.
+    let slotDrop (t: Ty) =
+        if not (heap t) then
+            "null"
+        else
+            let name = sprintf "@\"slotdrop.%s\"" (showFull t)
+
+            if generated.Add name then
+                let em = Emitter()
+                dropValue em t (em.Instr(sprintf "load %s, ptr %%slot" (llty t)))
+                em.Emit "ret void"
+                helpers.Append(sprintf "define private void %s(ptr %%slot) {\n%s}\n\n" name em.Body) |> ignore
+
+            name
 
     let staticClosure (f: string) =
         let name = sprintf "@\"cloS.%s\"" f
@@ -1879,7 +2122,16 @@ let compile
                     em.Instr(sprintf "load %s, ptr %s" (llty ft) fp)
 
                 let uniq, shared, join = em.Fresh "unique", em.Fresh "shared", em.Fresh "dropped"
-                em.Emit(sprintf "br i1 %s, label %%%s, label %%%s" (em.Instr(sprintf "call i1 @zs.release(ptr %s)" v)) uniq shared)
+
+                // with threads, a cell that isn't unique may be another thread's too: its kept
+                // fields are dup'd before its reference goes (after, that thread may free it)
+                let unique =
+                    if threaded then
+                        em.Instr(sprintf "icmp eq i_W %s, 1" (em.Instr(sprintf "load atomic i_W, ptr %s monotonic, align HDR1" v)))
+                    else
+                        em.Instr(sprintf "call i1 @zs.release(ptr %s)" v)
+
+                em.Emit(sprintf "br i1 %s, label %%%s, label %%%s" unique uniq shared)
                 em.Label uniq
 
                 // the cell is reused: the object it held has died (its weak references see that)
@@ -1902,6 +2154,9 @@ let compile
                 |> List.iteri (fun i ft ->
                     if heap ft && keep.Contains i then
                         dupValue em ft (load i ft))
+
+                if threaded then
+                    dropValue em xt v
 
                 let fromShared = em.Block
                 em.Emit(sprintf "br label %%%s" join)
@@ -2363,6 +2618,13 @@ let compile
                 let len = loadLen em lenp
                 check em (em.Instr(sprintf "icmp ult i_W %s, %s" i len)) "index out of bounds"
 
+            // how an Atomic stores its value: as it is, except a bool, which is a byte (atomic
+            // operations take whole bytes)
+            let atomicRep (t: Ty) =
+                match llty t with
+                | "i1" -> "i8", (fun v -> em.Instr(sprintf "zext i1 %s to i8" v)), (fun v -> em.Instr(sprintf "trunc i8 %s to i1" v))
+                | lt -> lt, id, id
+
             let newArray (el: Ty) (n: string) =
                 let es = sizeOf em (llty el)
                 let bytes = em.Instr(sprintf "add i_W HDR2, %s" (em.Instr(sprintf "mul i_W %s, %s" n es)))
@@ -2451,6 +2713,11 @@ let compile
             | "String.ofCStr" -> em.Instr(sprintf "call ptr @zs_str_from_c(ptr %s)" (arg 0))
             | _ when runtimePrims.ContainsKey op ->
                 let fn, ret, pts = runtimePrims[op]
+
+                // work for another thread: its objects shared first
+                if op = "Loop.blocking" || op = "Loop.spawn" then
+                    shareValue em (argTy 0) (arg 0)
+
                 let real = List.zip args vs |> List.filter (fun (a, _) -> prune a.ty <> tUnit)
                 let argv = List.zip pts real |> List.map (fun (pt, (_, v)) -> pt.TrimEnd '!' + " " + v) |> String.concat ", "
                 let call = sprintf "call %s @%s(%s)" ret fn argv
@@ -2574,6 +2841,182 @@ let compile
                 "zeroinitializer"
             | "Runtime.ticks" -> em.Instr "call i64 @zs_ticks()"
             | "Runtime.mallocs" -> em.Instr "call i_W @zs_mallocs()"
+            | "par.fork" ->
+                // a job for the thread pool: the closure's objects shared, its reference moved
+                // into the job, whose runner stores its result for par.join
+                let rt =
+                    match prune (argTy 0) with
+                    | TFun(_, r) -> r
+                    | t -> failwithf "par.fork of %s" (show t)
+
+                shareValue em (argTy 0) (arg 0)
+                em.Instr(sprintf "call ptr @zs_par_fork(ptr %s, ptr %s, i_W %s)" (arg 0) (parRunner rt) (sizeOf em (llty rt)))
+            | "par.join" ->
+                // the job's result (moved out), once it has run: here, or on the thread that stole it
+                let rp = em.Instr(sprintf "call ptr @zs_par_join(ptr %s)" (arg 0))
+                let r = em.Instr(sprintf "load %s, ptr %s" (llty ty) rp)
+                em.Emit(sprintf "call void @zs_par_free(ptr %s)" (arg 0))
+                r
+            | "par.workers" -> em.Instr "call i_W @zs_par_workers()"
+            | "atomic.make" ->
+                let st, toStore, _ = atomicRep (argTy 0)
+                let cell = sprintf "{ i_W, %s }" st
+                let r = em.Instr(sprintf "call ptr @zs_alloc(i_W %s)" (sizeOf em cell))
+                em.Emit(sprintf "store i_W 1, ptr %s" r)
+                em.Emit(sprintf "store %s %s, ptr %s" st (toStore (arg 0)) (em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 1" cell r)))
+                r
+            | "atomic.get"
+            | "atomic.set"
+            | "atomic.exchange"
+            | "atomic.cas"
+            | "atomic.add" ->
+                // sequentially consistent, on the value in the cell { count, value }
+                let vt = match prune (argTy 0) with
+                         | TCon("Atomic", [ v ]) -> v
+                         | t -> failwithf "%s of %s" op (show t)
+
+                let st, toStore, ofStore = atomicRep vt
+                let vp = em.Instr(sprintf "getelementptr { i_W, %s }, ptr %s, i32 0, i32 1" st (arg 0))
+
+                let align =
+                    match st with
+                    | "i8" -> "1"
+                    | "i16" -> "2"
+                    | "i32"
+                    | "float" -> "4"
+                    | "i_W" -> "HDR1"
+                    | _ -> "8"
+
+                let r =
+                    match op with
+                    | "atomic.get" -> ofStore (em.Instr(sprintf "load atomic %s, ptr %s seq_cst, align %s" st vp align))
+                    | "atomic.set" ->
+                        em.Emit(sprintf "store atomic %s %s, ptr %s seq_cst, align %s" st (toStore (arg 1)) vp align)
+                        "zeroinitializer"
+                    | "atomic.exchange" -> ofStore (em.Instr(sprintf "atomicrmw xchg ptr %s, %s %s seq_cst" vp st (toStore (arg 1))))
+                    | "atomic.cas" ->
+                        // compared as bits (cmpxchg takes integers): the value it held
+                        let it, toInt, ofInt =
+                            match st with
+                            | "double" -> "i64", (fun v -> em.Instr(sprintf "bitcast double %s to i64" v)), (fun v -> em.Instr(sprintf "bitcast i64 %s to double" v))
+                            | "float" -> "i32", (fun v -> em.Instr(sprintf "bitcast float %s to i32" v)), (fun v -> em.Instr(sprintf "bitcast i32 %s to float" v))
+                            | t -> t, id, id
+
+                        let pair = em.Instr(sprintf "cmpxchg ptr %s, %s %s, %s %s seq_cst seq_cst" vp it (toInt (toStore (arg 1))) it (toInt (toStore (arg 2))))
+                        ofStore (ofInt (em.Instr(sprintf "extractvalue { %s, i1 } %s, 0" it pair)))
+                    | _ ->
+                        // add: the new value (wrapping, as atomic arithmetic does)
+                        if isFloat vt then
+                            let old = em.Instr(sprintf "atomicrmw fadd ptr %s, %s %s seq_cst" vp st (arg 1))
+                            em.Instr(sprintf "fadd %s %s, %s" st old (arg 1))
+                        else
+                            let old = em.Instr(sprintf "atomicrmw add ptr %s, %s %s seq_cst" vp st (arg 1))
+                            em.Instr(sprintf "add %s %s, %s" st old (arg 1))
+
+                dropValue em (argTy 0) (arg 0)
+                r
+            | "mutex.make" ->
+                // { count, lock, value }: what it holds is always shared
+                let vt = argTy 0
+                let cell = sprintf "{ i_W, i32, %s }" (llty vt)
+                shareValue em vt (arg 0)
+                let r = em.Instr(sprintf "call ptr @zs_alloc(i_W %s)" (sizeOf em cell))
+                em.Emit(sprintf "store i_W 1, ptr %s" r)
+                em.Emit(sprintf "store i32 0, ptr %s" (em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 1" cell r)))
+                em.Emit(sprintf "store %s %s, ptr %s" (llty vt) (arg 0) (em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 2" cell r)))
+                r
+            | "mutex.get"
+            | "mutex.set"
+            | "mutex.update" ->
+                let vt = match prune (argTy 0) with
+                         | TCon("Mutex", [ v ]) -> v
+                         | t -> failwithf "%s of %s" op (show t)
+
+                let lt = llty vt
+                let cell = sprintf "{ i_W, i32, %s }" lt
+                let lp = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 1" cell (arg 0))
+                let vp = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 2" cell (arg 0))
+
+                let r =
+                    match op with
+                    | "mutex.get" ->
+                        // a reference of its own, taken under the lock: a set may drop the old value
+                        em.Emit(sprintf "call void @zs_lock(ptr %s)" lp)
+                        let v = em.Instr(sprintf "load %s, ptr %s" lt vp)
+                        dupValue em vt v
+                        em.Emit(sprintf "call void @zs_unlock(ptr %s)" lp)
+                        v
+                    | "mutex.set" ->
+                        shareValue em vt (arg 1)
+                        em.Emit(sprintf "call void @zs_lock(ptr %s)" lp)
+                        let old = em.Instr(sprintf "load %s, ptr %s" lt vp)
+                        em.Emit(sprintf "store %s %s, ptr %s" lt (arg 1) vp)
+                        em.Emit(sprintf "call void @zs_unlock(ptr %s)" lp)
+                        dropValue em vt old
+                        "zeroinitializer"
+                    | _ ->
+                        // f's result replaces the value, under the lock (f gets the mutex's reference)
+                        em.Emit(sprintf "call void @zs_lock(ptr %s)" lp)
+                        let old = em.Instr(sprintf "load %s, ptr %s" lt vp)
+                        let code = em.Instr(sprintf "load ptr, ptr %s" (em.Instr(sprintf "getelementptr { i_W, ptr }, ptr %s, i32 0, i32 1" (arg 1))))
+                        let v = em.Instr(sprintf "call %s %s(ptr %s, %s %s)" lt code (arg 1) lt old)
+                        shareValue em vt v
+                        em.Emit(sprintf "store %s %s, ptr %s" lt v vp)
+                        dupValue em vt v
+                        em.Emit(sprintf "call void @zs_unlock(ptr %s)" lp)
+                        dropValue em (argTy 1) (arg 1)
+                        v
+
+                dropValue em (argTy 0) (arg 0)
+                r
+            | "chan.make" ->
+                let vt = match prune ty with
+                         | TCon("Channel", [ v ]) -> v
+                         | t -> failwithf "chan.make of %s" (show t)
+
+                check em (em.Instr(sprintf "icmp sgt i_W %s, 0" (arg 0))) "a channel's capacity must be at least 1"
+                em.Instr(sprintf "call ptr @zs_chan_new(i_W %s, i_W %s, ptr %s)" (arg 0) (sizeOf em (llty vt)) (slotDrop vt))
+            | "chan.send" ->
+                // the value, shared, moves into the channel (the runtime copies its bytes)
+                let vt = argTy 1
+                shareValue em vt (arg 1)
+                let slot = "%" + em.Fresh "sent"
+                em.Alloca(sprintf "%s = alloca %s" slot (llty vt))
+                em.Emit(sprintf "store %s %s, ptr %s" (llty vt) (arg 1) slot)
+                em.Emit(sprintf "call void @zs_chan_send(ptr %s, ptr %s)" (arg 0) slot)
+                dropValue em (argTy 0) (arg 0)
+                "zeroinitializer"
+            | "chan.receive" ->
+                // Some value, or None once the channel is closed and empty
+                let t =
+                    match prune ty with
+                    | TCon(_, [ t ]) -> t
+                    | _ -> failwith "chan.receive"
+
+                let slot = "%" + em.Fresh "received"
+                em.Alloca(sprintf "%s = alloca %s" slot (llty t))
+                let ok = em.Instr(sprintf "call i1 @zs_chan_recv(ptr %s, ptr %s)" (arg 0) slot)
+                dropValue em (argTy 0) (arg 0)
+                let _, cases = union ty
+                let tagOf (c: string) = cases |> List.findIndex (fun (n, _) -> n = c)
+                let gotL, closedL, doneL = em.Fresh "got", em.Fresh "closed", em.Fresh "received"
+                em.Emit(sprintf "br i1 %s, label %%%s, label %%%s" ok gotL closedL)
+                em.Label gotL
+                let x = "$recv" + em.Fresh ""
+                let v = em.Instr(sprintf "load %s, ptr %s" (llty t) slot)
+                let some = gen (env.Add(x, Ssa v)) false { k = CCtor("option", tagOf "Some", [ { k = CLocal x; ty = t } ]); ty = ty }
+                let fromSome = em.Block
+                em.Emit(sprintf "br label %%%s" doneL)
+                em.Label closedL
+                let none = gen env false { k = CCtor("option", tagOf "None", []); ty = ty }
+                let fromNone = em.Block
+                em.Emit(sprintf "br label %%%s" doneL)
+                em.Label doneL
+                phi (llty ty) [ some, fromSome; none, fromNone ]
+            | "chan.close" ->
+                em.Emit(sprintf "call void @zs_chan_close(ptr %s)" (arg 0))
+                dropValue em (argTy 0) (arg 0)
+                "zeroinitializer"
             | "weak.new" ->
                 let t = argTy 0
 
@@ -2758,11 +3201,22 @@ let compile
             genFun f
 
     /// Runs the initializers in order, storing each value (main's prologue).
+    /// Runs the initializers in order, storing each value (main's prologue). With threads, a
+    /// value threads can share is marked shared: any of them may read it.
     let initValues () =
         values
         |> List.mapi (fun i (v, init) ->
             let t = llty valueTypes[v]
-            sprintf "  %%iv%d = call %s %s()\n  store %s %%iv%d, ptr %s\n" i t (sym init) t i (valueSym v))
+
+            let share =
+                if threaded && (shareBlocker ignore types Set.empty valueTypes[v]).IsNone then
+                    let em = Emitter()
+                    shareValue em valueTypes[v] (sprintf "%%iv%d" i)
+                    em.Code
+                else
+                    ""
+
+            sprintf "  %%iv%d = call %s %s()\n%s  store %s %%iv%d, ptr %s\n" i t (sym init) share t i (valueSym v))
         |> String.concat ""
 
     // the values, released in reverse order after main returns (so the leak check stays exact)
