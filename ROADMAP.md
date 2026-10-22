@@ -15,7 +15,7 @@ OCaml for the host benchmarks).
  v1, single-threaded:  0 ─ 1 ─ 2 ─ 3 ─ 4 ─ L ─ 5 optimizer I ─ V v1 completion ─ 6 CE + Task
  v2, threads:          7 parallelism ─ 8 SIMD ─ 9 optimizer II
  v3:                   10 effect handlers ─ (11 self-hosting)
- alongside:            E editors, M microcontrollers, T more targets
+ alongside:            E editors, M microcontrollers, T more targets, P type providers
 
  done: 0–5, L and V        now: 6
 ```
@@ -23,7 +23,7 @@ OCaml for the host benchmarks).
 - **v1 (phases 0–6, L and V):** the complete single-threaded language. It is fast, memory-safe, has C interop, and runs async on one event loop.
 - **v2 (phases 7–9):** threads, parallelism, SIMD and the final performance work.
 - **v3 (phase 10+):** effect handlers.
-- **Tracks:** editor tooling (E), microcontrollers (M) and more targets (T) run alongside the main line.
+- **Tracks:** editor tooling (E), microcontrollers (M), more targets (T) and type providers (P) run alongside the main line.
 
 ## Where things stand
 
@@ -148,6 +148,18 @@ Tier 3 (DESIGN §10), through `zig cc` as the Linux cross builds are.
 - **Testing:** build-only until a machine runs the suite: a build-only mode of `./test.sh --target` cross-compiles every test program.
 - **Exit test:** every test program builds for both.
 
+### Type providers (P)
+F#'s type providers, built on what `import c` already does for C headers: the compiler reads a
+data source at compile time and declares the types (and functions) for it, so code against a
+JSON API, a CSV file or a database is checked against its shape.
+- **Design first:** the syntax (F#'s `type Weather = JsonProvider<"weather.json">`, or `import`'s form) needs the design discussion decision 34 asks for, and so does where providers come from. Decision 20 rules out compile-time code in the language, so a provider is the compiler's own or an external program that writes declarations, as clang does for `import c`.
+- **Scope:**
+  - **Providers:** JSON (from a sample or a JSON Schema) and CSV (from the header and a sample), to records and unions with parse and print functions; then SQL (a schema read from a database or a `.sql` file).
+  - **Caching and editors:** as `import c`'s: the result is cached in `.zs-cache` with a copy of the source, so editors without network or database access still get the types, with hover showing where each field came from.
+- **Exit tests:**
+  - A program reads a JSON document and a CSV file through provided types, with completion and hover on their fields in Zed.
+  - A changed sample makes the code that no longer fits a compile error that names the field.
+
 ## Ordering rationale
 - **Phase L came before 5 and 6.** Builders, `Task` and optimizations should be built on the language's final shape. Top-level constants also unblocked microcontroller work.
 - **Phase 5 comes before V and 6.** CPS tasks are only cheap once inlining and reuse work, and benchmarking first keeps that claim honest.
@@ -155,7 +167,7 @@ Tier 3 (DESIGN §10), through `zig cc` as the Linux cross builds are.
 - **Phase 7 comes after 6.** The thread pool backs both `Task.blocking` and the multi-threaded scheduler.
 - **Phase 8 comes after 5 and 7.** Vectorization relies on phase 5's representation and aliasing work, and parallel SIMD kernels are the real-world case.
 - **Phase 10 comes last.** It needs Task's API stable and opaque, and Perceus; DESIGN §6.1 lists what must stay true until then.
-- **The tracks (E, M, T) run alongside.** Each phase keeps their tests passing.
+- **The tracks (E, M, T, P) run alongside.** Each phase keeps their tests passing.
 
 ## Done
 
