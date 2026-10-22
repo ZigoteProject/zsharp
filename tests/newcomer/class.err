@@ -1,0 +1,1 @@
+tests/newcomer/class.zs:2:13: error: classes aren't in Z#: a type is a record { … }, a union | … or an alias; put its functions in a module, or add members to a record with `with`

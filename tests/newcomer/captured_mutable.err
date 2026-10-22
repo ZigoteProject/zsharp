@@ -1,0 +1,1 @@
+tests/newcomer/captured_mutable.zs:4:38: error: mutable variable 'total' cannot be captured by a closure; use a ref cell (let x = ref …; x.Value <- …)

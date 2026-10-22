@@ -2,13 +2,13 @@
 
 | | |
 |---|---|
-| **Status** | Draft (phase 11 is optional: go or no-go at the third design review) |
-| **Decided at** | the third design review ([ROADMAP](../../ROADMAP.md#third-design-review)) |
-| **Builds** | phase 11 ([ROADMAP](../../ROADMAP.md#phase-11-self-hosting-optional)), after phase 10 and the tracks' *before phase 11* items |
+| **Status** | Approved in principle: go (decision 65), the rewrite before 0.1 |
+| **Decided at** | the third design review ([ROADMAP](../../ROADMAP.md#third-design-review-)): criteria 1 and 3 hold; criterion 2 (the 1,000-line program within 1.5× of F#) is phase 11's first step, and a miss is the no-go path |
+| **Builds** | phase 11 ([ROADMAP](../../ROADMAP.md#phase-11-self-hosting)), after phase 10 and the tracks' *before phase 11* items |
 | **Rests on** | decisions 20 (derive, no macros), 27 (source packages, no binary IR format), 39 ("Simple"), 47 (`share<F>`), 51 (textual IR stays) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §9](../../DESIGN.md#9-compiler) |
 | **Related** | [0007 incremental builds](0007-incremental-builds.md) (carried over), [0019 the syntax tree](0019-syntax-tree.md), [0021 warnings](0021-warnings.md) (the diagnostic record), [0009 tests as values](0009-tests-as-values.md), [0023 JSON in Core](0023-json-in-core.md), [0018 packages](0018-packages.md), [0003 spans](0003-spans-and-slices.md), [0024 the library's API](0024-library-api.md), [0002 effect handlers](0002-effect-handlers.md) |
 
-- [ ] Approved in principle
+- [x] Approved in principle
 - [ ] Discussion
 - [ ] Implementation
 
@@ -41,7 +41,7 @@ deleted, and `./dev` downloads the previous release's binary, as Go and Rust do.
 
 ### The roadmap's items
 
-Each row cites [phase 11](../../ROADMAP.md#phase-11-self-hosting-optional). Line numbers are the main checkout's and approximate; the tree is being edited.
+Each row cites [phase 11](../../ROADMAP.md#phase-11-self-hosting). Line numbers are the main checkout's and approximate; the tree is being edited.
 
 | Roadmap item | What this proposal decides |
 |---|---|

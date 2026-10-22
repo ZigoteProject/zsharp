@@ -116,6 +116,7 @@ type Diagnostic =
 |---|---|---|---|
 | `cycle` | a type whose objects can form a reference cycle through a mutable field | the type's declaration | this one, phase 12 |
 | `stale-input` | a provider's input changed and the provider can't run here, so the types shown are from its last output | the `import` line, in editors | [0001](0001-type-providers.md) |
+| `unused-value` | a non-unit value in statement position is discarded (F#'s warning 20); `ignore` says it's on purpose | the expression | the third design review |
 | `deprecated` | a use of a declaration marked `[<Deprecated "…">]` | the use | [0024](0024-library-api.md), the freeze before 0.1 |
 
 - **One in phase 12.** `cycle` is built with the severity; the other two arrive with their proposals and register a row here. Every new kind is a design discussion with its own row: a warning that fires on correct code is noise, and noise is how warnings end up ignored.

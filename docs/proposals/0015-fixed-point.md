@@ -2,13 +2,13 @@
 
 | | |
 |---|---|
-| **Status** | Draft |
-| **Decided at** | the third design review ([ROADMAP](../../ROADMAP.md#third-design-review)) |
+| **Status** | Approved in principle as a Core library (decision 66 is its one language change), after phase 11 |
+| **Decided at** | the third design review ([ROADMAP](../../ROADMAP.md#third-design-review-)): it passes decision 39 (it replaces hand-written shifts, rounding and saturation, and needs no runtime), and nothing in the language but untagged one-case unions |
 | **Builds** | track M item 10 ([ROADMAP](../../ROADMAP.md#microcontrollers-m)), after phase 11 |
 | **Rests on** | decisions 4 (overflow traps; wrapping is explicit), 25 (the SIMD API) and 53 (no type-level numbers beyond `fixed`) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §8](../../DESIGN.md#8-simd) |
 | **Related** | [0024 library API](0024-library-api.md) (`Int.saturatingAdd/Sub/Mul`), [0004 C layout](0004-c-layout.md) (why no `fix<i, f>`), [0013 bit fields](0013-bit-fields.md), [0014 placement](0014-placement.md) (coefficient tables in flash), [0012 interrupts, `[<NoAlloc>]` and intrinsics](0012-interrupts-noalloc-intrinsics.md) (filters in handlers) |
 
-- [ ] Approved in principle
+- [x] Approved in principle
 - [ ] Discussion
 - [ ] Implementation
 

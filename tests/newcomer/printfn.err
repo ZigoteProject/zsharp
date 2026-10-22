@@ -1,0 +1,1 @@
+tests/newcomer/printfn.zs:4:3: error: there's no printfn: print with println $"…{x}…" (print for no newline, Console.Error.writeLine for errors)

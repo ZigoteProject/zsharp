@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| **Status** | Approved in principle for `[<NoAlloc>]` and `--no-heap` (decision 42, "default") and for interrupt handlers (track M item 1); Draft for the rules for state shared with a handler and for the `Cpu` intrinsics (track M item 11), which get a new decision row, numbered by the coordinator |
-| **Decided at** | decision 42 and track M's plan ([ROADMAP](../../ROADMAP.md#microcontrollers-m)); the third design review for the sharing rules and `Cpu` ([ROADMAP](../../ROADMAP.md#third-design-review)) |
+| **Status** | Approved in principle: `[<NoAlloc>]` and `--no-heap` (decision 42), interrupt handlers (decision 60), the sharing rules and the `Cpu` intrinsics (decision 68); `noalloc<F>` declined |
+| **Decided at** | decision 42 and track M's plan ([ROADMAP](../../ROADMAP.md#microcontrollers-m)); the third design review ([ROADMAP](../../ROADMAP.md#third-design-review-)) for the sharing rules and `Cpu`, which also declined a fifth function kind (question 5: a call through a closure counts as allocating) |
 | **Builds** | track M: items 1 and 2 next, item 11 after phase 11, or before 0.1 if microcontrollers are its niche ([phase 12](../../ROADMAP.md#phase-12-release-01)) |
 | **Rests on** | decisions 26 (a checked opt-in instead of no hidden allocation), 42 (`[<NoAlloc>]`, `--no-heap`), 47 (`share<F>`) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §7](../../DESIGN.md#7-parallelism), [§7.1](../../DESIGN.md#71-how-a-value-crosses-threads) and [§10](../../DESIGN.md#10-targets) |
 | **Related** | [0001 type providers](0001-type-providers.md) (the SVD gives interrupt names and numbers), [0013 bit fields](0013-bit-fields.md), [0014 placement](0014-placement.md) (static storage, the heap size), [0016 async on bare metal](0016-async-bare-metal.md) (tasks woken by interrupts), [0008 threads](0008-threads.md) (the handle thread check), [0011 debug info, profiles and traces](0011-debug-info-profiles-traces.md) (the allocation analysis as hints), [0002 effect handlers](0002-effect-handlers.md) (a handler has an empty row) |
 
 - [x] Approved in principle (`[<NoAlloc>]`, `--no-heap`, interrupt handlers)
-- [ ] Discussion (the sharing rules, `Cpu`)
+- [x] Approved in principle (the sharing rules, `Cpu`)
 - [ ] Implementation
 
 ## Summary

@@ -1,0 +1,1 @@
+tests/newcomer/record_to_c.zs:3: error: extern 'vec_len': type Vec2 cannot cross the C boundary (mark records [<CLayout>])

@@ -2,13 +2,13 @@
 
 | | |
 |---|---|
-| **Status** | Draft |
-| **Decided at** | the third design review ([ROADMAP](../../ROADMAP.md#third-design-review)) |
+| **Status** | Approved in principle (decision 59), after phase 11; before 0.1 if the flagship is a microcontroller |
+| **Decided at** | the third design review ([ROADMAP](../../ROADMAP.md#third-design-review-)): the field-attribute position is part of decision 59 (question 7) |
 | **Builds** | track M item 9 ([ROADMAP](../../ROADMAP.md#microcontrollers-m)), after phase 11; the `svd` provider in [0001](0001-type-providers.md) waits for it |
 | **Rests on** | decisions 4 (overflow traps), 10 (structural equality, ordering, hashing and printing), 20 (derive, no macros or comptime) and 53 (no general type-level numbers) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §2.3](../../DESIGN.md#23-default-fields-named-and-optional-arguments) (field defaults), [§5.1](../../DESIGN.md#51-representation) (plain values, enums as bytes) and [§11](../../DESIGN.md#11-c-interop) |
 | **Related** | [0001 type providers](0001-type-providers.md) (the `svd` provider writes these records), [0004 C layout](0004-c-layout.md) (C unions; C's bit-fields stay out of `import c`), [0014 placement](0014-placement.md) (`[<Align 32>]` shares the number argument), [0012 interrupts, NoAlloc and intrinsics](0012-interrupts-noalloc-intrinsics.md) (registers written from handlers) |
 
-- [ ] Approved in principle
+- [x] Approved in principle
 - [ ] Discussion
 - [ ] Implementation
 

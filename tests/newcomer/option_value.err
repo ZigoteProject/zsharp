@@ -1,0 +1,1 @@
+tests/newcomer/option_value.zs:4:5: error: an option has no .Value: match on it (Some x -> …), or use Option.defaultValue d o, or Option.get o, which panics on None

@@ -4,7 +4,7 @@
 |---|---|
 | **Status** | Approved in principle |
 | **Decided at** | track S's plan ([ROADMAP](../../ROADMAP.md#library-s)): item 5, before phase 11 |
-| **Builds** | track S: library, item 5; [0001](0001-type-providers.md)'s `json` provider and phase 11's LSP and MCP ([ROADMAP](../../ROADMAP.md#phase-11-self-hosting-optional)) build on it |
+| **Builds** | track S: library, item 5; [0001](0001-type-providers.md)'s `json` provider and phase 11's LSP and MCP ([ROADMAP](../../ROADMAP.md#phase-11-self-hosting)) build on it |
 | **Rests on** | decisions 20 (derive), 28 (UTF-8 strings), 37 (what goes in Core) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §3.1](../../DESIGN.md#31-derive) |
 | **Related** | [0001 type providers](0001-type-providers.md) (the `json` provider writes `[<Derive(Json)>]` records), [0024 library API](0024-library-api.md), [0020 self-hosting](0020-self-hosting.md) (the compiler's LSP and MCP use it), [0009 tests as values](0009-tests-as-values.md) (`Show`-based diffs) |
 | **Replaces** | DESIGN §3.1's `Json<'a>` and `JsonValue` example, and `tests/json.zs`'s own type |

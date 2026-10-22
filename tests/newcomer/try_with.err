@@ -1,0 +1,1 @@
+tests/newcomer/try_with.zs:3:3: error: there are no exceptions to catch: a function that can fail returns a result; match on it, or use ? inside result { }

@@ -2,13 +2,13 @@
 
 | | |
 |---|---|
-| **Status** | Draft |
-| **Decided at** | the third design review ([ROADMAP](../../ROADMAP.md#third-design-review)) |
+| **Status** | Approved in principle (decision 56), after 0.1 |
+| **Decided at** | the third design review ([ROADMAP](../../ROADMAP.md#third-design-review-)): spelling as proposed; `import c` joins the protocol when phase 11's libclang work touches it |
 | **Builds** | track P ([ROADMAP](../../ROADMAP.md#type-providers-p)), after phase 11 |
 | **Rests on** | decisions 20 (no compile-time code), 27 (source packages), 34 (new syntax needs a design discussion) and 39 ("Simple") in [DESIGN §13](../../DESIGN.md#13-decisions) |
 | **Replaces** | track P's sketch, and DESIGN §3.1's "a later generalization of `import c`" |
 
-- [ ] Approved in principle
+- [x] Approved in principle
 - [ ] Discussion
 - [ ] Implementation
 

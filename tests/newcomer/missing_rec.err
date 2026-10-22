@@ -1,0 +1,1 @@
+tests/newcomer/missing_rec.zs:3:29: error: 'fact' calls itself: declare it with let rec

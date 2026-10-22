@@ -1,0 +1,1 @@
+tests/newcomer/not_bang.zs:4:6: error: '!' isn't an operator: write not x (F#'s !r is r.Value)

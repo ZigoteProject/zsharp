@@ -1,0 +1,1 @@
+tests/newcomer/question_in_unit.zs:3:28: error: ? needs the function to return a result or an option; this one returns unit: match on the value instead, or make the function return a result

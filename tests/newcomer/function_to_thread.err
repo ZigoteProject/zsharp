@@ -1,0 +1,1 @@
+tests/newcomer/function_to_thread.zs:2:30: error: this function crosses threads, but it captures 'f', a function that may capture what can't be shared: declare it share<unit -> int>

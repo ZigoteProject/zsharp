@@ -1,0 +1,1 @@
+tests/newcomer/tostring.zs:4:3: error: there's no .ToString(): interpolate the value, $"{x}", which prints it through Show

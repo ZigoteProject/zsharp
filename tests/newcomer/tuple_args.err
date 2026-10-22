@@ -1,0 +1,1 @@
+tests/newcomer/tuple_args.zs:4:15: error: argument 1 of 'add': int * int does not implement Add; if 'add' takes its 2 arguments one by one, write add a b, not add (a, b)

@@ -1,0 +1,1 @@
+tests/newcomer/sprintf.zs:2:22: error: there's no sprintf: interpolate, $"…{x}…"

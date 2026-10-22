@@ -2,13 +2,13 @@
 
 | | |
 |---|---|
-| **Status** | Draft |
-| **Decided at** | the third design review ([ROADMAP](../../ROADMAP.md#third-design-review)): anonymous records are the first candidate for its "Simple" check |
+| **Status** | Declined for anonymous records; approved in principle for top-level patterns (decision 58, phase 12) |
+| **Decided at** | the third design review ([ROADMAP](../../ROADMAP.md#third-design-review-)): anonymous records replace a one-line declaration, not code, and give a record two spellings, so they fail decision 39; top-level patterns lift a restriction and stay |
 | **Builds** | phase 12's deferred features ([ROADMAP](../../ROADMAP.md#phase-12-release-01)) |
 | **Rests on** | decisions 10 (structural equality, ordering, hashing, printing), 18 (record literal types), 39 ("Simple") in [DESIGN §13](../../DESIGN.md#13-decisions) |
 | **Related** | [0005 ergonomics](0005-ergonomics.md) |
 
-- [ ] Approved in principle
+- [x] Declined (anonymous records); approved in principle (top-level patterns)
 - [ ] Discussion
 - [ ] Implementation
 

@@ -1,0 +1,1 @@
+tests/newcomer/return_keyword.zs:3:17: error: return belongs in a computation expression (task { }, result { }); a function's last expression is its result

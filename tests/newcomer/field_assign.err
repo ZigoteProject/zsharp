@@ -1,0 +1,1 @@
+tests/newcomer/field_assign.zs:6:3: error: record fields are immutable: declare the record with `let mutable` to assign one of its fields, or use { r with field = … }

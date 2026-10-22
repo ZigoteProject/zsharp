@@ -1,0 +1,1 @@
+tests/newcomer/null.zs:3:22: error: there's no null: a missing value is None, of type option<'a>

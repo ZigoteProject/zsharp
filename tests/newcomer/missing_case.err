@@ -1,0 +1,1 @@
+tests/newcomer/missing_case.zs:8:3: error: match is not exhaustive; missing case: Dot

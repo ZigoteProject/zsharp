@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Approved in principle |
-| **Decided at** | the phase 6 gate ([the spike report](../reports/effects-spike.md)): CPS for `Task` then, effects in phase 10. The third design review settles the open questions before phase 10 starts |
+| **Decided at** | the phase 6 gate ([the spike report](../reports/effects-spike.md)): CPS for `Task` then, effects in phase 10. the third design review ([ROADMAP](../../ROADMAP.md#third-design-review-)) settled the open questions: no named handler instances until a program needs them, rows after the result type as written here, polymorphic operations allowed, interrupt handlers with empty rows, `Task` on `Async` by phase 10's measurement |
 | **Builds** | phase 10 ([ROADMAP](../../ROADMAP.md#phase-10-effect-handlers-v3)) |
 | **Rests on** | decisions 21 (one cold `Task`), 23 (effect handlers: one-shot, evidence passing), 36 (evaluation order), 47 (`share<F>`) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §6.1](../../DESIGN.md#61-effect-handlers-planned-phase-10-v3) |
 | **Related** | [0017 iteration](0017-iteration.md) (`Seq` implements it), [0008 threads](0008-threads.md) (handlers are per thread) |

@@ -1,0 +1,1 @@
+tests/newcomer/fnptr_outside_unsafe.zs:6:3: error: calling a C function pointer is unsafe: call it inside `unsafe`

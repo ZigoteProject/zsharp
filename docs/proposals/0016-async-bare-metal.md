@@ -2,13 +2,13 @@
 
 | | |
 |---|---|
-| **Status** | Draft |
-| **Decided at** | the third design review ([ROADMAP](../../ROADMAP.md#third-design-review)). Phase 12's note applies: picking microcontrollers as 0.1's niche moves this item into the "before 0.1" list ([ROADMAP](../../ROADMAP.md#phase-12-release-01)) |
+| **Status** | Approved in principle (decision 71); before 0.1 if the flagship is a microcontroller, after it otherwise |
+| **Decided at** | the third design review ([ROADMAP](../../ROADMAP.md#third-design-review-)). Phase 12's note applies: picking microcontrollers as 0.1's niche moves this item into the "before 0.1" list ([ROADMAP](../../ROADMAP.md#phase-12-release-01)) |
 | **Builds** | track M, "Later" ([ROADMAP](../../ROADMAP.md#microcontrollers-m)), after [0012](0012-interrupts-noalloc-intrinsics.md)'s handlers and `Spsc` |
 | **Rests on** | decisions 21 (one cold `Task`, a state machine), 42 (`[<NoAlloc>]`), 48 (a loop per thread; tasks don't move) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §6](../../DESIGN.md#6-concurrency-task) and [§10](../../DESIGN.md#10-targets) |
 | **Related** | [0012 interrupts, NoAlloc and intrinsics](0012-interrupts-noalloc-intrinsics.md) (handlers wake tasks; `Spsc`; `Cpu.wfi`), [0002 effect handlers](0002-effect-handlers.md) (`Task` over an `Async` effect), [0014 placement](0014-placement.md) (the heap's size), [0008 threads](0008-threads.md) (none on bare metal), [0001 type providers](0001-type-providers.md) (the SVD provider names interrupt lines), [0024 library API](0024-library-api.md) (`Task` in Core) |
 
-- [ ] Approved in principle
+- [x] Approved in principle
 - [ ] Discussion
 - [ ] Implementation
 

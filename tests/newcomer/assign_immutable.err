@@ -1,0 +1,1 @@
+tests/newcomer/assign_immutable.zs:4:3: error: 'i' is not mutable; declare it with 'let mutable'

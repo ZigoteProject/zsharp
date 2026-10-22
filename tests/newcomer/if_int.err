@@ -1,0 +1,1 @@
+tests/newcomer/if_int.zs:4:3: error: condition of 'if': expected bool, got int: a number isn't a condition; compare it, x <> 0

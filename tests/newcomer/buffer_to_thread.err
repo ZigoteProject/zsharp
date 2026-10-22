@@ -1,0 +1,1 @@
+tests/newcomer/buffer_to_thread.zs:4:3: error: this function crosses threads, but it captures 'b' : Buffer<int>, which can't be shared between threads; share state through Atomic, Mutex or Channel, or return a result per job

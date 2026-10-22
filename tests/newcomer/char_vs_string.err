@@ -1,0 +1,1 @@
+tests/newcomer/char_vs_string.zs:3:3: error: value of 'c': expected char, got string: a char literal is 'a', in single quotes

@@ -1,0 +1,1 @@
+tests/newcomer/pointer_outside_unsafe.zs:3:11: error: 'Ptr.alloc' is unsafe: use it inside `unsafe`

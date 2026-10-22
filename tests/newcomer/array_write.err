@@ -1,0 +1,1 @@
+tests/newcomer/array_write.zs:4:3: error: arrays are values: to change one, declare it with `let mutable a = …` and write `a.[i] <- x`, or use `Array.set a i x`, which returns the changed array (Buffer<'a> is the shared mutable alternative)

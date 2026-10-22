@@ -2,13 +2,13 @@
 
 | | |
 |---|---|
-| **Status** | Draft |
-| **Decided at** | the third design review ([ROADMAP](../../ROADMAP.md#third-design-review)) |
+| **Status** | Approved in principle (decision 57), before phase 11 |
+| **Decided at** | the third design review ([ROADMAP](../../ROADMAP.md#third-design-review-)): `forEach` returns `bool`, collecting is a function per type, ranges are a `Range` record, the dispatch rule is decision 57's text |
 | **Builds** | track S item 1 ([ROADMAP](../../ROADMAP.md#library-s)), before phase 11: phase 12's "kept before phase 11" list names the iteration trait |
 | **Rests on** | decisions 20 (derive, no macros), 43 (`dyn Trait`), 49 (SIMD: a module per vector type, since HM can't relate a vector type to its element type) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §3](../../DESIGN.md#3-traits) (traits take one type parameter; requirements are inferred), [§4](../../DESIGN.md#4-computation-expressions) (`B.forEach`), [§9.1](../../DESIGN.md#91-optimization-strategy) (inlining; a lambda applied in place) |
 | **Related** | [0002 effect handlers](0002-effect-handlers.md) (`Seq` implements it), [0003 spans](0003-spans-and-slices.md) (spans iterate), [0005 ergonomics](0005-ergonomics.md) (list expressions over any `Iter`), [0024 the library's API](0024-library-api.md) (its tables list the `ofIter` functions as this proposal's) |
 
-- [ ] Approved in principle
+- [x] Approved in principle
 - [ ] Discussion
 - [ ] Implementation
 

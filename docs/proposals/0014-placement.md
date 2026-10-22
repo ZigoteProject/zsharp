@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| **Status** | Approved in principle for constants in flash and the heap (track M items 3 and 7); Draft for `[<Section>]` and `[<Align>]` (item 12, after phase 11) |
-| **Decided at** | track M's plan ([ROADMAP](../../ROADMAP.md#microcontrollers-m)) for items 3 and 7; the third design review ([ROADMAP](../../ROADMAP.md#third-design-review)) for item 12 |
+| **Status** | Approved in principle: constants in flash and the heap (track M items 3 and 7); `[<Section>]` and `[<Align>]` (decision 69, after phase 11) |
+| **Decided at** | track M's plan ([ROADMAP](../../ROADMAP.md#microcontrollers-m)) for items 3 and 7; the third design review ([ROADMAP](../../ROADMAP.md#third-design-review-)) for item 12 |
 | **Builds** | track M: items 3 and 7 next, item 12 after phase 11 |
 | **Rests on** | decisions 2 (Perceus), 7 (arrays are values, `Buffer` is shared), 8 (static cells with count 0), 26 (`zig cc`) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §5.1](../../DESIGN.md#51-representation), [§5.2](../../DESIGN.md#52-perceus-reference-counting), [§10](../../DESIGN.md#10-targets) |
 | **Related** | [0013 bit fields](0013-bit-fields.md) (register records as constants), [0012 interrupts, `[<NoAlloc>]` and intrinsics](0012-interrupts-noalloc-intrinsics.md) (`--no-heap`, a `Buffer` shared with a handler), [0016 async on bare metal](0016-async-bare-metal.md) (what fits the heap), [0004 C layout](0004-c-layout.md) (`sizeof`, `alignof`, `fixed`), [0018 packages](0018-packages.md) (the `[target.<name>]` table) |
 
 - [x] Approved in principle (constants in flash, the heap)
-- [ ] Discussion (`[<Section>]`, `[<Align>]`)
+- [x] Approved in principle (`[<Section>]`, `[<Align>]`)
 - [ ] Implementation
 
 ## Summary

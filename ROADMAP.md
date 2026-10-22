@@ -19,7 +19,7 @@ Rust, Swift and OCaml for the host benchmarks).
  alongside:            E editors, D testing, profiling and debugging, M microcontrollers,
                        T more targets, P type providers, S library, K packages
 
- done: 0–9.6, L and V      now: third design review
+ done: 0–9.6, L, V and the third design review      now: phase 10
 ```
 
 - **v1 (phases 0–6, L and V):** the complete single-threaded language. It is fast, memory-safe, has C interop, and runs async on one event loop.
@@ -50,19 +50,6 @@ Rust, Swift and OCaml for the host benchmarks).
 
 ## Next
 
-### Third design review
-Before phase 10, with phases 9–9.6 built:
-- **"Simple" again:** every feature added since the second review, built or planned, is checked against the rule (it replaces code people would write by hand, and needs no runtime). One that fails is cut, from DESIGN.md and the code. The first candidates are anonymous records and fixed-point numbers.
-- **How many kinds:** references (`ref`, `Buffer`, `weak`, `span`, `ptr`) and functions (plain, `share<F>`, `callback<F>`, `fnptr`), before effect handlers add effect rows. Any two a programmer can't tell apart from their names and the errors are merged, or the guide shows when to use which.
-- **Errors a newcomer meets:** 30 programs with the mistakes F# and C programmers make first (a missing case, a captured `let mutable`, a `ref` sent to a thread, a wrong function kind, a missing impl, a `?` in a function returning `unit`, …). Each error names the problem, points at it, and says what to write instead.
-- **Scope:** phase 12's deferred features and the tracks' *after phase 11* items are sorted into before 0.1 and after it, so the work left to the first users is a list with an end.
-- **Proposals:** the drafts in [docs/proposals](docs/proposals/README.md) are approved in principle or declined, each with a row in DESIGN.md's decision table: 0001 type providers, 0006 anonymous records, 0013 bit fields, 0015 fixed-point numbers, 0016 async on bare metal, 0017 iteration, 0020 the compiler in Z#, and the draft parts of 0004, 0012 and 0014; 0002's open questions are settled here too.
-- **Phase 11, go or no-go:** decided here, with that list in hand: the compiler is rewritten in Z# before 0.1, or 0.1 ships the .NET compiler and the rewrite follows it. The tracks' *before phase 11* items stay first either way.
-
-**Exit tests:**
-- `tests/newcomer/`: the 30 programs, each with its expected error, checked by `./test.sh`.
-- DESIGN.md's decision table has a row for each feature kept or cut, with the reason.
-
 ### Phase 10: effect handlers (v3)
 **Design:** [proposal 0002](docs/proposals/0002-effect-handlers.md).
 - **Scope:**
@@ -76,9 +63,11 @@ Before phase 10, with phases 9–9.6 built:
   - A C callback that performs an effect is a compile error naming the effect (the C-callback rule).
   - If `Task` moves onto an `Async` effect, its benchmarks and the echo soak don't regress.
 
-### Phase 11: self-hosting (optional)
+### Phase 11: self-hosting
 The compiler, rewritten in Z#, compiles itself, and the second-generation build is
-byte-identical. Whether it comes before 0.1 is decided at the third design review.
+byte-identical. It comes before 0.1 (the third design review's go, decision 65). Its first step
+measures proposal 0020's second criterion, a 1,000-line Z# program of the compiler's shape against
+the same in F#; over 1.5×, 0.1 ships the .NET compiler and the rewrite follows it.
 **Design:** [proposal 0020](docs/proposals/0020-self-hosting.md).
 - **What the F# compiler uses today:** no NuGet packages, only .NET's own library. Each use needs a replacement first:
   - **Packages (track K):**
@@ -117,18 +106,23 @@ The first public release: the language works for people other than its author, i
 first. It isn't 1.0: the language and the library's names may still change in 0.x releases,
 each change listed in `CHANGELOG.md` with what to rewrite. Optimization waits for profiles of
 real programs.
-**Design** of the deferred features: [proposal 0004](docs/proposals/0004-c-layout.md) (C unions, layout facts), [0006](docs/proposals/0006-anonymous-records.md) (anonymous records, top-level patterns) and [0021](docs/proposals/0021-warnings.md) (warnings).
+**Design** of the deferred features: [proposal 0004](docs/proposals/0004-c-layout.md) (C unions, layout facts), [0006](docs/proposals/0006-anonymous-records.md) (top-level patterns) and [0021](docs/proposals/0021-warnings.md) (warnings).
 - **Scope:**
-  - **The "before 0.1" list:** what the third design review sorted there from the deferred features and the tracks' *after phase 11* items, and nothing else. At least K2 (namespaced dependencies and versions), since packages written against 0.1 must survive 0.2, and the library an F# programmer reaches for on the first day (track S).
+  - **The "before 0.1" list,** sorted by the third design review from the deferred features and the tracks' *after phase 11* items, and nothing else:
+    - **K2 (versions):** packages written against 0.1 must survive 0.2.
+    - **Track S, what an F# programmer reaches for on the first day:** the rest of `List`/`Array`/`Map`/`Set` (S2), `Math` and `Random` (S3), UTF-8 (S4).
+    - **Track D:** lldb (debugging 2), since macOS is in 0.1; doc tests (D8), so the guide can't go stale at launch.
+    - **The deferred features below,** anonymous records excepted (cut).
+    - **If the flagship is a microcontroller:** M4 (one real board), M9 (bit fields), M11 (`Cpu`) and async on bare metal (0016).
+    - Everything else marked *after phase 11* follows 0.1.
   - **A flagship project:** one real program in the niche Z# is best at, built alongside the release, so it decides what the library and the first packages need. The niche is picked at the start of the phase; microcontrollers are the strongest case (SVD registers, bit fields, `[<NoAlloc>]`, interrupt handlers). Picking them moves track M's async on bare metal into the "before 0.1" list.
   - **macOS arm64 (track T, item 1):** many programmers' machine, with the whole suite run there in CI, not only built. Windows waits until after 0.1.
   - **Installing:** a release archive per target with `zs`, the runtime and the library (one native binary after phase 11, a self-contained .NET publish without it). `zs doctor` checks for clang or zig, and libclang for `import c`, and says how to get what's missing.
-  - **Deferred here:** features that aren't needed before phase 11, moved out of earlier phases so those stay small. The third design review checks them against "Simple" with the rest; phase 12 takes into 0.1 what the flagship project and newcomers need, and the others follow 0.1.
+  - **Deferred here:** features that aren't needed before phase 11, moved out of earlier phases so those stay small. The third design review checked them against "Simple" (anonymous records were cut) and put the rest on the list above.
     - **From phase 9.5, cycle warnings:** a type that can reach itself through a `ref` or `Buffer` field, not through `weak`, is warned about where it's declared. The warning names the path (`Node.next: ref<option<Node>>`) and suggests `weak`, and `[<Cyclic>]` on the type silences it.
       - **The first warning:** the compiler has only errors so far, so this brings a warning severity to the CLI, `zs lsp` and `zs mcp`.
       - **Closures:** a function type doesn't say what it captures, so a cycle through a closure isn't caught. `ZS_LEAKCHECK=1` stays the backstop.
     - **From phase 9.6, ergonomics:**
-      - **Anonymous records:** `{| x = 1; name = "a" |}`, typed by their fields, with equality, ordering and printing like records.
       - **Patterns at the top level:** `let (a, b) = …` and other patterns, as inside functions.
       - **Z# for F# programmers:** a guide page listing the differences: `int` is the machine word, `?`, traits instead of SRTP and interfaces, no classes or exceptions, `ref` instead of capturing a `let mutable`, and the four kinds of function types (functions, `share<F>`, `callback<F>`, `fnptr`) and when each is needed.
     - **From phase 9.6, layout:**
@@ -142,7 +136,7 @@ real programs.
   - The flagship project builds from its repository with `zs build` alone, and runs on its hardware.
   - The "before 0.1" list is empty, and `CHANGELOG.md` has its first entry.
   - Each deferred feature taken into 0.1 passes its exit test:
-    - Anonymous records and top-level patterns each have a test.
+    - Top-level patterns have a test.
     - `import c` of a header with a union imports it, and a top-level `assert (sizeof<Packet> = 20)` fails to compile when a field changes.
     - A doubly linked list with `ref` back-pointers gets the warning; with `weak`, or `[<Cyclic>]`, it doesn't. The repository's own code has no warnings.
 
@@ -163,10 +157,10 @@ Tier 2 (DESIGN §10): every phase keeps `bench/mcu` working and within its ratio
   7. **Heap:** reusing blocks larger than 256 bytes, and a heap size set in `zs.toml`.
   8. **Weak references and arenas:** the embedded runtime's versions of their functions (the host's use the C library's allocator).
   9. **Bit fields:** *(after phase 11)* a `[<Bits>]` record packs its fields into one integer, each field's width given by `[<Width n>]` or taken from its type: a `bool` is one bit, and a union of cases without fields (an enum) as many as its cases need. So `mode: Mode` reads as `Mode.Fast`, not as a number. The shifts and masks are generated, `{ r with mode = Fast }` is a masked write, and a number too wide for its field panics as an overflow does. No new integer types (`u2`, `u5`) are needed.
-  10. **Fixed-point numbers:** *(after phase 11)* `q7`, `q15` and `q31`, the formats CMSIS-DSP and the chips' saturating instructions use, as library types with `Add`, `Num` and `Show`, for DSP on chips without an FPU (Cortex-M0+). A general `fix<i, f>` would need numbers as type arguments beyond `fixed`'s size, for formats no hardware has.
+  10. **Fixed-point numbers:** *(after phase 11; a Core library, approved at the third design review with decision 66 as its one language change)* `q7`, `q15` and `q31`, the formats CMSIS-DSP and the chips' saturating instructions use, as library types with `Add`, `Num` and `Show`, for DSP on chips without an FPU (Cortex-M0+). A general `fix<i, f>` would need numbers as type arguments beyond `fixed`'s size, for formats no hardware has.
   11. **Core intrinsics:** *(after phase 11)* `Cpu.wfi`, `wfe`, `dsb`, `dmb`, `isb`, `nop`, and `Cpu.critical (fun () -> …)` with interrupts masked for its body, instead of inline assembly. The rules for state shared with interrupt handlers (item 1) build on `critical` and `Atomic`.
   12. **Placement:** *(after phase 11)* `[<Section ".noinit">]` on a top-level value (memory kept across a reset, or a DMA region a linker script names) and `[<Align 32>]` on a value or a type (DMA buffers, cache lines).
-- **Later:** async on bare metal (phase 6 `Task` over interrupts, with no OS).
+- **Later:** async on bare metal (phase 6 `Task` over interrupts, with no OS; [proposal 0016](docs/proposals/0016-async-bare-metal.md), approved at the third design review, decision 71; before 0.1 if the flagship is a microcontroller).
 
 ### Editor tooling (E)
 Zed first. Everything is plain tree-sitter, LSP and MCP, so other editors and agents get the
@@ -202,7 +196,7 @@ Tier 3 (DESIGN §10), through `zig cc` as the Linux cross builds are.
 - **Exit tests:** `./test.sh` passes on macOS arm64; every test program builds for Windows.
 
 ### Type providers (P)
-*After phase 11*, the whole track. **Design:** [proposal 0001](docs/proposals/0001-type-providers.md), decided at the third design review.
+*After 0.1*, the whole track. **Design:** [proposal 0001](docs/proposals/0001-type-providers.md), approved in principle at the third design review (decision 56).
 F#'s type providers, built on what `import c` already does for C headers: the compiler reads a
 data source at compile time and declares the types (and functions) for it, so code against a
 JSON API, a CSV file or a database is checked against its shape.
@@ -298,7 +292,7 @@ DESIGN §9's layers.
   - **A package (track K):** formats and protocols with many reasonable designs, such as HTTP, regex, argument parsing, TLS and databases.
 - **Each addition:** `///` docs, its reference page, a test, and for Core, a microcontroller build.
 - **Next:**
-  1. **Iteration:** `for x in` works on lists and arrays only. A trait would make it work on `Map`, `Set`, `HashMap`, `Buffer`, `span` and user types. It iterates internally (a `forEach` that can stop early), as CE `for` already does. This needs design first. Lazy `Seq` waits for phase 10's `seq { }`.
+  1. **Iteration:** `for x in` works on lists and arrays only. A trait would make it work on `Map`, `Set`, `HashMap`, `Buffer`, `span` and user types. It iterates internally (a `forEach` that can stop early), as CE `for` already does. **Design:** [proposal 0017](docs/proposals/0017-iteration.md), approved at the third design review (decision 57). Lazy `Seq` waits for phase 10's `seq { }`.
   2. **Collections:** a mutable `HashSet`, and `Buffer`'s missing functions (push, pop, clear), which the compiler's maps and growing arrays need. *After phase 11:* the rest of F#'s `List`/`Array`/`Map`/`Set` (`groupBy`, `countBy`, `chunkBySize`, `windowed`, `pairwise`, `scan`, `foldBack`, `tryFindIndex`, `Array.binarySearch`, `Map.change`, `Set.isSubset`, …), and `Queue`, `Stack` and `PriorityQueue`.
   3. **Numbers:**
      - **Parsing:** `Float.parse` and `Int.parse` in a radix, returning an `option`; the compiler's lexer and `import c` need them.
@@ -673,3 +667,16 @@ debugging, before phase 6 builds computation expressions and `Task` on the final
   - **`+=`** on a `ref`, an array element and a mutable record's field, with an index whose expression has an effect, evaluates the place once (`tests/compound.zs`).
   - **`Array.sum`** takes an array, a Buffer and a slice of either (`tests/spans.zs`), and a string slice that would cut a character panics (`tests/slice_char.zs`).
 - **Tests:** also `tests/fixed.zs`, `tests/fixed_length.zs` and `tests/slice_range.zs`, and one for each new error.
+
+### Third design review ✅
+Before phase 10, with phases 9–9.6 built:
+- **"Simple" again:** every feature since the second review was checked against decision 39. Built: all pass (each replaced code written by hand, and none added a runtime). Planned: anonymous records are cut (they replace a one-line declaration, not code, and give a record two spellings); fixed-point numbers stay as a Core library whose one language change is decision 66; bit fields, layout facts, C unions, `[<Section>]` and `[<Align>]`, the `Cpu` intrinsics, async on bare metal and type providers pass.
+- **How many kinds:** the five references (`ref`, `Buffer`, `weak`, `span`, `ptr`) and four functions (plain, `share<F>`, `callback<F>`, `fnptr<F>`) stay, and none merge: each differs in what it holds or where it may go, and the newcomer errors name the right one. No fifth function kind: 0012's `noalloc<F>` is declined, a call through a closure counts as allocating. Phase 10's effect rows go on the function type inside each kind, so they add none. The guide's memory chapter has the table of when to use which (decision 67).
+- **Errors a newcomer meets:** `tests/newcomer/`, 34 programs with the first mistakes of F# and C programmers. About 25 messages were added or extended so each names the problem, points at it and says what to write: F#'s `printfn`, `sprintf`, `null`, `try`, `raise`, classes, `mutable` fields, `.Value`, `.ToString()`, `async`, `seq` and a function that calls itself without `rec`; C's `=`, `++`, braces, `return`, `!`, an int as a condition, an int where a float is, a tuple passed to a curried function; and what to use instead of a `ref` or `Buffer` that crosses threads.
+- **Scope:** phase 12's "before 0.1" list is written out there; everything else marked *after phase 11* follows 0.1. A non-unit value discarded in statement position (F#'s warning 20) becomes a warning kind in 0021, `unused-value`.
+- **Proposals:** approved in principle: 0001 (after 0.1), 0013, 0015 (as a library), 0016, 0017 (before phase 11), 0020, and the draft parts of 0004, 0012 (without `noalloc<F>`) and 0014. Declined: 0006's anonymous records; its top-level patterns stay. 0002's open questions: named handler instances wait for a program that needs them; rows are written after the result type, as proposed; polymorphic operations are allowed; interrupt handlers have empty rows; `Task` on `Async` is phase 10's measurement.
+- **Phase 11, go:** 0020's first criterion holds (every replacement is scheduled before phase 11, 0017 now among them), and the "before 0.1" list is short enough for the third. The second (a 1,000-line Z# program of the compiler's shape within 1.5× of F#) is phase 11's first step; a miss sends 0.1 out on the .NET compiler, with the rewrite after it.
+
+**Exit tests:**
+- `tests/newcomer/`: 34 programs, each with its expected error, checked by `./test.sh`.
+- DESIGN §13: decisions 56–71 record each feature kept or cut, with the reason.

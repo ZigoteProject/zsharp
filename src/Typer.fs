@@ -137,14 +137,31 @@ let private expect what expected actual =
         unify expected actual
     with
     | Mismatch ->
+        // what newcomers write: a literal is a kinded variable, so the names are compared as shown
         let hint =
             match prune expected, prune actual with
             | TCon("array", _), TCon("span", _) -> ": Array.ofSpan copies it"
-            | _ -> ""
+            | _ ->
+                match show expected, show actual with
+                | e, a when nums.Contains e && nums.Contains a -> sprintf ": numbers don't convert on their own; write %s x" e
+                | "string", a when nums.Contains a -> ": interpolate it, $\"{x}\""
+                | "char", "string" -> ": a char literal is 'a', in single quotes"
+                | "bool", a when nums.Contains a -> ": a number isn't a condition; compare it, x <> 0"
+                | _ -> ""
 
         fail 0 (sprintf "%s: expected %s, got %s%s" what (show expected) (show actual) hint)
     | NoImpl("Share", t) -> fail 0 (sprintf "%s: %s can't be shared between threads (it isn't Share)" what (show t))
-    | NoImpl(tr, t) -> fail 0 (sprintf "%s: %s does not implement %s" what (show t) tr)
+    | NoImpl(tr, t) ->
+        let tuple =
+            match prune t with
+            | TTuple xs when what.StartsWith "argument 1 of '" ->
+                let f = what.Substring(15).TrimEnd('\'')
+                sprintf "; if '%s' takes its %d arguments one by one, write %s a b, not %s (a, b)" f xs.Length f f
+            | TCon _ when not (List.contains tr [ "Share"; "Eq"; "Ord"; "Hash"; "Show"; "Add"; "Num" ]) ->
+                sprintf "; write impl %s<%s> = …" tr (show t)
+            | _ -> ""
+
+        fail 0 (sprintf "%s: %s does not implement %s%s" what (show t) tr tuple)
 
 /// Quantifies the unbound variables of a top-level function's type (linking them to TGen).
 let private generalize (t: Ty) : Kind list =
@@ -614,12 +631,26 @@ let unavailable = HashSet<string>()
 let private pureOps =
     set [ "+"; "-"; "*"; "/"; "%"; "="; "<>"; "<"; ">"; "<="; ">="; "&&"; "||"; "&&&"; "|||"; "^^^"; "<<<"; ">>>" ]
 
-/// The error for a name nothing defines.
+/// The top-level definition being checked, for the error on a function that calls itself without `rec`.
+let mutable private currentDef = ""
+
+/// The error for a name nothing defines; the names F# and C programmers reach for first say what Z# has instead.
 let private unknown (what: string) (x: string) =
     let inModule (m: string) = [ m; shortName m ] |> List.exists (fun p -> x.StartsWith(p + "."))
 
     match unavailable |> Seq.tryFind inModule with
     | Some m -> fail 0 (sprintf "'%s' is in %s, part of Std, which needs an operating system; this target has none" x m)
+    | None when x = "!" -> fail 0 "'!' isn't an operator: write not x (F#'s !r is r.Value)"
+    | None when x = "printfn" || x = "printf" || x = "eprintfn" ->
+        fail 0 (sprintf "there's no %s: print with println $\"…{x}…\" (print for no newline, Console.Error.writeLine for errors)" x)
+    | None when x = "sprintf" || x = "failwithf" -> fail 0 (sprintf "there's no %s: interpolate, $\"…{x}…\"" x)
+    | None when x = "raise" || x = "reraise" ->
+        fail 0 "there are no exceptions: return a result (Error e) for the caller to match on, or panic for a bug"
+    | None when x = "null" || x = "NULL" -> fail 0 "there's no null: a missing value is None, of type option<'a>"
+    | None when x = "return" ->
+        fail 0 "return belongs in a computation expression (task { }, result { }); a function's last expression is its result"
+    | None when x = "async" || x.StartsWith "Async." -> fail 0 "there's no Async: write task { }, and run it with Task.run"
+    | None when x = currentDef -> fail 0 (sprintf "'%s' calls itself: declare it with let rec" x)
     | None when x <> "" && isOpChar x[0] -> fail 0 (sprintf "unknown operator '%s'; define it with: let (%s) a b = …" x x)
     | None when x = "yield" -> fail 0 "yield belongs in [ … ], [| … |] or seq { }"
     | None -> fail 0 (sprintf "unknown %s '%s'" what x)
@@ -1062,9 +1093,12 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
 
     let recordOf (t: Ty) (field: string) =
         match prune t with
+        | _ when field = "ToString" -> fail 0 "there's no .ToString(): interpolate the value, $\"{x}\", which prints it through Show"
         | TCon(n, _) when (match types.TryGetValue n with
                            | true, { def = RecordDef _ } -> true
                            | _ -> false) -> n
+        | TCon("option", _) when field = "Value" ->
+            fail 0 "an option has no .Value: match on it (Some x -> …), or use Option.defaultValue d o, or Option.get o, which panics on None"
         | _ ->
             match fieldRecord field with
             | Some r -> r
@@ -1279,8 +1313,8 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                             match prune t with
                             | TFun _ ->
                                 fail 0 (sprintf "this function crosses threads, but it captures '%s'%s, a function that may capture what can't be shared: declare it share<%s>" name through (show t))
-                            | _ -> fail 0 (sprintf "this function crosses threads, but it captures '%s'%s : %s%s, which can't be shared between threads" name through (show t) holds)
-                        | Mismatch -> fail 0 (sprintf "this function crosses threads, but it captures '%s'%s : %s, which can't be shared between threads" name through (show t))
+                            | _ -> fail 0 (sprintf "this function crosses threads, but it captures '%s'%s : %s%s, which can't be shared between threads; share state through Atomic, Mutex or Channel, or return a result per job" name through (show t) holds)
+                        | Mismatch -> fail 0 (sprintf "this function crosses threads, but it captures '%s'%s : %s, which can't be shared between threads; share state through Atomic, Mutex or Channel, or return a result per job" name through (show t))
 
         go c []
 
@@ -1586,7 +1620,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                 match env.TryFind x with
                 | Some l when l.mut ->
                     if l.depth < depth then
-                        fail 0 (sprintf "mutable variable '%s' cannot be captured by a closure; use a ref cell" x)
+                        fail 0 (sprintf "mutable variable '%s' cannot be captured by a closure; use a ref cell (let x = ref …; x.Value <- …)" x)
 
                     let cv = inf rhs
                     expect (sprintf "value assigned to '%s'" x) l.ty cv.ty
@@ -1619,7 +1653,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                     let l = env[x]
 
                     if l.depth < depth then
-                        fail 0 (sprintf "mutable variable '%s' cannot be captured by a closure; use a ref cell" x)
+                        fail 0 (sprintf "mutable variable '%s' cannot be captured by a closure; use a ref cell (let x = ref …; x.Value <- …)" x)
 
                     let ci = inf i
                     let cv = inf rhs
@@ -1761,6 +1795,23 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                 expect "'else' branch" ct.ty ce.ty
                 mk (CIf(cc, ct, ce)) ct.ty
         | Seq(a, b) ->
+            // C's `x = 5` as a statement: a comparison whose value is dropped
+            let rec unAt (e: Expr) =
+                match e with
+                | At(_, e) -> unAt e
+                | e -> e
+
+            match unAt a with
+            | Bin("=", l, _)
+            | Call("=", [ l; _ ]) ->
+                match unAt l with
+                | Var x when (match env.TryFind x with
+                              | Some l -> l.mut
+                              | None -> false) ->
+                    fail 0 (sprintf "'=' compares; to assign to '%s' write %s <- …" x x)
+                | _ -> ()
+            | _ -> ()
+
             let ca = inf a
             let cb = inf b
             mk (CSeq(ca, cb)) cb.ty
@@ -1963,7 +2014,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                     match prune crest.ty, other with
                     | TCon("result", _), None -> fail 0 "? on an option in a function returning result<_, _>: use Option.toResult, or option { }"
                     | TCon("option", _), Some _ -> fail 0 "? on a result in a function returning option<_>: use Result.toOption, or result { }"
-                    | TCon("unit", []), _ -> fail 0 "? needs the function to return a result or an option; this one returns unit"
+                    | TCon("unit", []), _ -> fail 0 "? needs the function to return a result or an option; this one returns unit: match on the value instead, or make the function return a result"
                     | t, Some er ->
                         let ers =
                             match prune er with
@@ -2473,7 +2524,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
         | None when globalValues.ContainsKey x -> mk (CGlobalVal x) globalValues[x]
         | Some l ->
             if l.mut && l.depth < depth then
-                fail 0 (sprintf "mutable variable '%s' cannot be captured by a closure; use a ref cell" x)
+                fail 0 (sprintf "mutable variable '%s' cannot be captured by a closure; use a ref cell (let x = ref …; x.Value <- …)" x)
 
             mk (CLocal l.u) l.ty
         | None ->
@@ -2550,6 +2601,12 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                 | "forEach" -> "for"
                 | "delay" -> "its body"
                 | _ -> fn
+
+            if w = "seq" then
+                fail 0 "seq { } comes with effect handlers (phase 10): build a list [ … ] or an array [| … |]"
+
+            if w = "async" then
+                fail 0 "there's no async { }: write task { }, and run it with Task.run"
 
             fail 0 (sprintf "%s { } needs %s.%s, for %s" w builder fn form)
         else
@@ -3144,7 +3201,9 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                                 ))
                             Map.empty
 
+                    currentDef <- name
                     let cb = inferHint env 0 rty body
+                    currentDef <- ""
                     expect (sprintf "result of '%s'" name) rty cb.ty
                     cb
                 with CompileError(0, msg) ->

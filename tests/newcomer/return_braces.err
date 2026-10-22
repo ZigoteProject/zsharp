@@ -1,0 +1,1 @@
+tests/newcomer/return_braces.zs:3:25: error: braces don't make a block: a function body is its indented lines, and { } makes a record ({ x = 1; y = 2 } or { r with x = 1 })

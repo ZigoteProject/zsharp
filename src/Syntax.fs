@@ -765,6 +765,10 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         let t = toks[pos.Value]
         raise (CompileErrorPos(t.line, t.col, sprintf "expected %s, found %s" what (showTok t.tok)))
 
+    let errAt msg =
+        let t = toks[pos.Value]
+        raise (CompileErrorPos(t.line, t.col, msg))
+
     let expect t what =
         if peek () = t then advance () else err what
 
@@ -1367,6 +1371,11 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
 
     and expr () =
         match peek () with
+        | KId "try" when (match peek2 () with
+                          | KIndent
+                          | KNewline -> true
+                          | _ -> false) ->
+            errAt "there are no exceptions to catch: a function that can fail returns a result; match on it, or use ? inside result { }"
         | KKw "if" ->
             advance ()
             let c = expr ()
@@ -1642,6 +1651,12 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
             | KSym s when List.contains s ops ->
                 advance ()
                 l <- Bin(s, l, sub ())
+            | KSym(("++" | "--") as s) when (match peek2 () with
+                                             | KNewline
+                                             | KDedent
+                                             | KEof -> true
+                                             | _ -> false) ->
+                errAt (sprintf "'%s' isn't an operator: write x <- x %s 1, or x %s= 1" s (s.Substring(0, 1)) (s.Substring(0, 1)))
             | KSym s when level >= 0 && isInfixOp s && opLevel s = level ->
                 advance ()
                 l <- mark oi (Call(s, [ l; operand sub ]))
@@ -1978,7 +1993,11 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         | KId _, KSym "=" -> RecordLit(fields ())
         | _ ->
             let e = expr ()
-            expect (KKw "with") "'with'"
+
+            if peek () <> KKw "with" then
+                errAt "braces don't make a block: a function body is its indented lines, and { } makes a record ({ x = 1; y = 2 } or { r with x = 1 })"
+
+            advance ()
             Update(e, fields ())
 
     /// After a name, at `{`: whether a computation expression's body follows rather than a
@@ -2226,6 +2245,9 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
             let mutable go = true
 
             while go do
+                if peek () = KKw "mutable" then
+                    errAt "record fields can't be mutable: a record is a value; change one with { r with x = … }, bind it with let mutable, or make the field a ref<T>"
+
                 let f = ident ()
                 expect (KSym ":") "':'"
                 let t = ty ()
@@ -2476,6 +2498,10 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         | KKw "type" ->
             advance ()
             let name = ident ()
+
+            if isSym "(" then
+                errAt "classes aren't in Z#: a type is a record { … }, a union | … or an alias; put its functions in a module, or add members to a record with `with`"
+
             let tparams = ResizeArray()
 
             if isSym "<" then

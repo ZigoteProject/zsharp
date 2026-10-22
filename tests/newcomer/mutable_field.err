@@ -1,0 +1,1 @@
+tests/newcomer/mutable_field.zs:2:16: error: record fields can't be mutable: a record is a value; change one with { r with x = … }, bind it with let mutable, or make the field a ref<T>

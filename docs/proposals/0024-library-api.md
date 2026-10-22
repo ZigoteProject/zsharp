@@ -4,7 +4,7 @@
 |---|---|
 | **Status** | Approved in principle (track S items 2–4 and 6–8; the sub-items marked *after phase 11* stay so) |
 | **Decided at** | track S's plan ([ROADMAP](../../ROADMAP.md#library-s)); the names at the 1.0 freeze review |
-| **Builds** | track S: library, phase 11's "Library (track S)" list first ([ROADMAP](../../ROADMAP.md#phase-11-self-hosting-optional)) |
+| **Builds** | track S: library, phase 11's "Library (track S)" list first ([ROADMAP](../../ROADMAP.md#phase-11-self-hosting)) |
 | **Rests on** | decisions 3 (`int` is the machine word), 4 (overflow: checked by default, wrapping explicit; saturating added here), 28 (UTF-8 strings), 37 (prelude, Core and Std; .NET module names, F# function names) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §9](../../DESIGN.md#9-compiler) "The library" |
 | **Related** | [0003 spans](0003-spans-and-slices.md) (`Bytes` over spans), [0017 iteration](0017-iteration.md) (the `ofIter` functions), [0023 JSON in Core](0023-json-in-core.md), [0020 self-hosting](0020-self-hosting.md) (what the compiler needs first), [0005 ergonomics](0005-ergonomics.md) (`Map.empty` as a value), [0015 fixed point](0015-fixed-point.md) (the saturating operations at `i16`), [0021 warnings](0021-warnings.md) (`deprecated` is a warning kind), [0022 macOS and Windows](0022-targets-macos-windows.md) (`Path` on Windows), [0016 async on bare metal](0016-async-bare-metal.md) (`Task` in Core), [0012 interrupts](0012-interrupts-noalloc-intrinsics.md) (`Atomic`, `Spsc`), [0009 tests as values](0009-tests-as-values.md) and [0010 properties](0010-properties-and-fuzzing.md) (`Testing`) |
 
