@@ -13,18 +13,20 @@ Rust, Swift and OCaml for the host benchmarks).
 
 ```
  v1, single-threaded:  0 ─ 1 ─ 2 ─ 3 ─ 4 ─ L ─ 5 optimizer I ─ V v1 completion ─ 6 CE + Task
- v2, threads:          7 parallelism ─ 8 SIMD ─ 9 optimizer II
- v3:                   10 effect handlers ─ (11 self-hosting)
- alongside:            E editors, M microcontrollers, T more targets, P type providers,
-                       S library, K packages
+ v2, threads:          7 parallelism ─ 8 SIMD ─ 9 optimizer II ─ 9.5 incremental, threads
+                       ─ 9.6 ergonomics, systems ─ third design review
+ v3:                   10 effect handlers ─ (11 self-hosting) ─ 12 release 0.1
+ alongside:            E editors, D testing, profiling and debugging, M microcontrollers,
+                       T more targets, P type providers, S library, K packages
 
- done: 0–9, L and V        now: 10
+ done: 0–9, L and V        now: 9.5
 ```
 
 - **v1 (phases 0–6, L and V):** the complete single-threaded language. It is fast, memory-safe, has C interop, and runs async on one event loop.
-- **v2 (phases 7–9, done):** threads and parallelism, SIMD, and the final performance work.
+- **v2 (phases 7–9.6):** threads and parallelism, SIMD and the final performance work (all three done), incremental builds, and what F#, systems and C programmers miss first.
 - **v3 (phase 10+):** effect handlers.
-- **Tracks:** editor tooling (E), microcontrollers (M), more targets (T), type providers (P), the library (S) and packages (K) run alongside the main line.
+- **v1, v2 and v3 are stages of the language, not release numbers.** The first public release is 0.1 (phase 12); 1.0 is the release that freezes the language and the library's names.
+- **Tracks:** editor tooling (E), testing, profiling and debugging (D), microcontrollers (M), more targets (T), type providers (P), the library (S) and packages (K) run alongside the main line.
 
 ## Where things stand
 
@@ -40,18 +42,70 @@ Rust, Swift and OCaml for the host benchmarks).
 - **Tooling:** projects with path and git dependencies, `zs test`/`fmt`/`doc`, gdb debug info (strings, records and unions as values), and an LSP, MCP server and Zed extension.
 
 **Known gaps** (in priority order, each with the phase or track that closes it):
-1. **Threads, smaller ones:**
+1. **Threads, smaller ones (phase 9.5):**
    - Parallel work started by a thread outside the pool (a spawned task, `Task.blocking`'s helper) runs on that thread alone; only the thread that first used the pool forks onto it.
    - A pool job that waits on a channel holds its thread, so a channel between two jobs needs room for what one sends first.
    - Cancelling a task doesn't stop the tasks it spawned onto other threads (their results are dropped).
    - C code calling Z# callbacks or handles from other threads isn't checked.
 2. **C ABI (track M):** 32-bit ARM passes structs by value with the x86-64 rules.
 3. **Weak references and arenas on microcontrollers (track M):** they're hosted-only so far; the embedded runtime lacks their functions.
-4. **Debug info (track E):** lists and other boxed unions aren't shown as gdb values (plain unions are).
+4. **Debug info (track D):** lists and other boxed unions aren't shown as gdb values (plain unions are).
 5. **Editor (track E):** no signature help, rename or code actions; the formatter doesn't reflow long lines.
 6. **Targets (track T):** no macOS or Windows builds (and so no kqueue loop yet).
 
 ## Next
+
+### Phase 9.5: incremental builds and threads
+- **Scope:**
+  - **Incremental by module:** a rebuild, and a re-check in an editor, follows the size of the change.
+    - **Today:** the checker's state is cached in two layers (after the library, after the main file's other modules), so a change in one module re-checks every module after it, and editors check everything. Phase 9's module cache keeps each module's reference counting, LLVM IR and object, but monomorphization through lambda lifting, the analysis of borrowed parameters and the modules' keys run over the whole program in every build: 0.29 s of the 0.61 s a rebuild of a 2,600-line program of 30 modules takes.
+    - **Checking:** each module's checked result (its declarations, types, impls and Core) is cached under a hash of its source and of its dependencies' interfaces. A change to a function's body re-checks only its module; a changed signature re-checks the modules that use it.
+    - **After checking:** monomorphization and the passes after it keep their result per module, keyed by the Core they read, inlined bodies included.
+    - **One cache:** the CLI, `zs lsp`, `zs mcp` and `zs doc` share it, in memory for a running server and in `~/.cache/zs` between runs. It replaces the two snapshot layers.
+  - **Threads:**
+    - **Forking from any thread:** parallel work started outside the pool (in a spawned task, or in `Task.blocking`'s helper) forks onto the pool, not only from the thread that used it first.
+    - **Waiting jobs:** a worker that blocks on a channel tells the pool, which starts a spare thread until it wakes (Java's ForkJoinPool does this for a managed blocker), so a channel between two jobs needs no room. Running other jobs while waiting would nest them on the waiting job's stack and could deadlock on what it holds.
+    - **Cancelling across threads:** cancelling a task cancels the tasks it spawned. The cancellation goes to each one's loop through that loop's inbox, and they dispose their `use` values there.
+    - **C on other threads:** a handle or callback whose value is Share is marked shared when it's made, and works from any thread. Any other remembers its thread and panics when C uses it from another one, naming the handle's type.
+- **Exit tests:**
+  - In the 2,600-line, 30-module program, changing one function's body rebuilds in under 0.2 s and re-checks only its module (the timings say which ran); changing a signature re-checks exactly the modules that use it.
+  - A build after an edit gives the same binary as a build from an empty cache.
+  - `Parallel.for` inside a spawned task uses every worker; two pool jobs pass values through a channel of capacity zero.
+  - Cancelling a task disposes the `use` values of the tasks it spawned on other threads.
+  - A C thread releasing a non-Share handle panics with its type; a Share one works from 16 threads under Valgrind's Helgrind.
+
+### Phase 9.6: ergonomics, spans and C structs
+- **Scope:**
+  - **Ergonomics:** the traps an F# programmer falls into first, and the forms that change how code is written. Those come before phase 11, so the compiler's Z# is written in them once, not rewritten after.
+    - **Generic constants:** a top-level constant whose type has type variables is generalized, as F# does for values, so `let empty : Map<'k, 'v> = MapLeaf` is a `Map` of any type. The library's empty collections become values (`Map.empty`, `Set.empty`), and the `()` goes.
+    - **`?` on `option`:** in a function that returns an `option`, `x?` unwraps a `Some` or returns `None`, as for `result`.
+    - **Compound assignment:** `+=`, `-=`, `*=`, `/=`, `%=`, `&&&=`, `|||=` and `^^^=` on anything `<-` assigns (a `let mutable`, a `ref`'s `.Value`, an array element, a field), with the place evaluated once. `total.Value <- total.Value + i * i` becomes `total.Value += i * i`.
+    - **`function`:** `function | p -> … | q -> …` for `fun x -> match x with …`.
+    - **List and array expressions:** `[ for x in xs -> f x ]`, `[ for x in xs do if p x then yield f x ]` and the same in `[| … |]`, lowered to the pipelines fusion already handles, so no list is built in between.
+    - **Slices:** `a.[1..3]`, `a.[..n]` and `a.[i..]` on an array or a `Buffer` give a `span` (below), not a copy. An array or a `Buffer` becomes a span where one is expected, with no conversion written (as a value becomes a `dyn`), so the library's reading functions (`Array.sum`, `fold`, `exists`, …) take spans and work on all three. A string's slice is a string, as in F#, at byte offsets that must fall between characters (a panic otherwise); `String.bytes s` is its bytes as a `span<u8>`, for parsers, without a copy.
+    - **`?`'s errors:** `f x?` applies to the whole call. The guide says so, and an error about `?` points at the `?`, not at the start of the `let`.
+  - **Spans and C structs:**
+    - **`span<'a>`:** a window into an array, a string or a `Buffer`, without copying: its owner, an offset and a length. It counts as a reference to its owner, so it can't dangle, and it's read-only over arrays and strings (they're values) and writable over a `Buffer`. Parsers and IO take spans, and C receives one as a pointer and a length. A span over C memory is made only in `unsafe`.
+    - **Fixed-size arrays in records:** a field holding N elements inline, as C's `uint8_t data[16]`, so `[<CLayout>]` records match such structs and `import c` stops leaving them out. Phase 11 needs it: libclang passes `CXCursor`, which holds `const void *data[3]`, by value. The type is `fixed<u8, 16>`: a number is allowed as a type argument there and nowhere else, so the type system gains no general type-level numbers. It's a value, indexed like an array.
+- **Exit tests:**
+  - `import c` of a header with an array field imports it, and a function taking a `CXCursor` by value works.
+  - `Map.empty` and `Set.empty` work without `()` at two types in one function, and `examples/` and the guide use them so.
+  - `?` returns `None` early from a function returning `option`; a `?` error's caret is under the `?`.
+  - `function`, list and array expressions and slices each have a test, and a list expression with a filter allocates only its result.
+  - A parser over `span<u8>` reads a file's bytes without copying them; a span keeps its array alive after the array's last other reference goes.
+  - `+=` on a `ref`, an array element and a mutable field, with an index whose expression has an effect, evaluates the place once.
+  - `Array.sum` takes an array, a `Buffer` and a slice of either; a string slice that would cut a character panics.
+
+### Third design review
+Before phase 10, with phases 9–9.6 built:
+- **"Simple" again:** every feature added since the second review, built or planned, is checked against the rule (it replaces code people would write by hand, and needs no runtime). One that fails is cut, from DESIGN.md and the code. The first candidates are anonymous records and fixed-point numbers.
+- **How many kinds:** references (`ref`, `Buffer`, `weak`, `span`, `ptr`) and functions (plain, `share<F>`, `callback<F>`, `fnptr`), before effect handlers add effect rows. Any two a programmer can't tell apart from their names and the errors are merged, or the guide shows when to use which.
+- **Errors a newcomer meets:** 30 programs with the mistakes F# and C programmers make first (a missing case, a captured `let mutable`, a `ref` sent to a thread, a wrong function kind, a missing impl, a `?` in a function returning `unit`, …). Each error names the problem, points at it, and says what to write instead.
+- **Scope:** phase 12's deferred features and the tracks' *after phase 11* items are sorted into before 0.1 and after it, so the work left to the first users is a list with an end.
+
+**Exit tests:**
+- `tests/newcomer/`: the 30 programs, each with its expected error, checked by `./test.sh`.
+- DESIGN.md's decision table has a row for each feature kept or cut, with the reason.
 
 ### Phase 10: effect handlers (v3)
 - **Scope:**
@@ -62,12 +116,75 @@ Rust, Swift and OCaml for the host benchmarks).
 - **Exit tests:**
   - A generator pipeline and a typed-exception example.
   - Pure functions compile to identical IR before and after this phase.
+  - A C callback that performs an effect is a compile error naming the effect (the C-callback rule).
+  - If `Task` moves onto an `Async` effect, its benchmarks and the echo soak don't regress.
 
 ### Phase 11: self-hosting (optional)
 The compiler, rewritten in Z#, compiles itself, and the second-generation build is
 byte-identical.
+- **What the F# compiler uses today:** no NuGet packages, only .NET's own library. Each use needs a replacement first:
+  - **Packages (track K):**
+    - **`libclang`:** `import c` runs `clang -ast-dump=json`, parses JSON up to 10,000 levels deep, and reads macros with regular expressions. libclang's C API replaces all three.
+    - **`xxhash`:** cache keys use SHA-256 in one place, but don't need a cryptographic hash. xxHash is one C header, so wrapping it is less code than writing a hash.
+    - **`llvm`:** the C API, so code is built through typed calls instead of IR text. (The F# backend keeps textual IR: phase 9 measured its parsing at 3% of clang's time.)
+    - **Not needed:** `git` (stays a process), regex (two uses left after libclang), TOML (the manifest's subset is parsed by hand already).
+  - **Library (track S):**
+    - **Processes:** standard error and input, and an environment (item 7). `Process.run` captures only standard output today, and clang reports errors on standard error.
+    - **IO:** reading N bytes from standard input (LSP's `Content-Length` framing), whole-file bytes, binary reading and writing into a `Buffer<u8>` (snapshots), `Path.getFullPath` and `getRelativePath`, `File.exists`, `move` and modification times (the cache's LRU), `Directory.exists`, temporary files.
+    - **Numbers and text:** parsing `f64` and integers in a radix (item 3), format specifiers with widths (item 4; the compiler has about 970 `sprintf` calls), JSON (item 5; LSP and MCP), `DateTime.utcNow` (item 6).
+    - **Collections:** a mutable `HashSet` (item 2). About 220 `Dictionary`/`HashSet` and 80 `ResizeArray` uses map to `HashMap`, `HashSet` and `Buffer`.
+  - **Language:**
+    - **Exceptions:** about 120 `raise`/`failwith` and 85 `try`, over 7 exception types: compile errors, unification backtracking (`Mismatch`) and stale snapshots. They aren't carried over: errors become diagnostics (below), and backtracking a local `result`.
+    - **Identity hashing:** 25 maps keyed by object identity (`HashIdentity.Reference`): source positions, and memoizing on Core nodes. Positions move into the nodes and memo tables key on node ids (below), so Z# needs no physical equality.
+    - **Thread-local state:** 8 `ThreadLocal` counters and buffers in the parallel passes. They become a context each pass is given, so no new feature.
+  - **Speed:** a compiler is trees and maps, the workload phase 9's one-word header and build-speed work are for.
+- **A redesign, not a port:** the rewrite fixes what the F# compiler grew into, where it's simpler that way, rather than copying it.
+  - **Diagnostics are values:** each phase returns its result and its diagnostics. The parser recovers into error nodes and the checker into an error type that unifies with anything, so a file shows all its errors, not the first per declaration. Panics are left for compiler bugs.
+  - **Positions in the tree:** each node carries its span (file, offset, length), instead of the global `Syntax.positions` table keyed by node identity.
+  - **One lossless syntax tree:** the parser builds a concrete tree with comments and whitespace (track E's F2), and the AST is a typed view of it. `zs fmt`, rename and code actions work on it, and `zs fmt`'s token-based pass goes.
+  - **No global state:** the 20 or so module-level `mutable`s and tables (target, CPU, optimization level, sanitizer, debug info, the LSP's results, `Driver.overlay`) become an options record and a compiler session, passed explicitly. The CLI, LSP, MCP and tests can then run several compilations in one process, in parallel. The hooks that work around F#'s file order (`Inline.kept`, `Typer.userImpl`) become parameters.
+  - **Incremental by module:** phase 9.5's design carries over, with the session holding the in-memory cache.
+  - **Serialization by derive:** `Snapshot.fs` writes 1,200 lines by hand, and a new case is a failing test until it gets its place. A `Binary` derive (DESIGN §3.1) generates it from the types instead, so it can't fall behind, and the compiler is the derive's first big user.
+  - **Checking and lowering apart:** `Typer` infers types and lowers to Core in one 3,600-line pass. Inference produces a typed tree, and lowering is a pass of its own, which the LSP doesn't need to run.
+  - **IR checks between passes:** in test builds, each pass's output is checked: types match, every owned variable is consumed once on every path (Perceus's invariant), no type variables after monomorphization. A pass's bug fails where it's made, not as a crash in the binary.
+- **Bootstrap:** the F# compiler stays the stage-0 compiler until the Z# one passes `./test.sh` and builds itself byte-identically. After that the F# one is deleted, and a compiler is built by the previous release's binary, as Go and Rust are; `./dev` downloads it. Building from no binary at all goes through that release's chain, which is documented, not kept working.
+
+### Phase 12: release 0.1
+The first public release: the language works for people other than its author, in one niche
+first. It isn't 1.0: the language and the library's names may still change in 0.x releases,
+each change listed in `CHANGELOG.md` with what to rewrite. Optimization waits for profiles of
+real programs.
+- **Scope:**
+  - **The "before 0.1" list:** what the third design review sorted there from the deferred features and the tracks' *after phase 11* items, and nothing else. At least K2 (namespaced dependencies and versions), since packages written against 0.1 must survive 0.2, and the library an F# programmer reaches for on the first day (track S).
+  - **A flagship project:** one real program in the niche Z# is best at, built alongside the release, so it decides what the library and the first packages need. The niche is picked at the start of the phase; microcontrollers are the strongest case (SVD registers, bit fields, `[<NoAlloc>]`, interrupt handlers). Picking them moves track M's async on bare metal into the "before 0.1" list.
+  - **macOS arm64 (track T, item 1):** many programmers' machine, with the whole suite run there in CI, not only built. Windows waits until after 0.1.
+  - **Installing:** a release archive per target with `zs`, the runtime and the library (one native binary after phase 11, a self-contained .NET publish without it). `zs doctor` checks for clang or zig, and libclang for `import c`, and says how to get what's missing.
+  - **Deferred here:** features that aren't needed before phase 11, moved out of earlier phases so those stay small. The third design review checks them against "Simple" with the rest; phase 12 takes into 0.1 what the flagship project and newcomers need, and the others follow 0.1.
+    - **From phase 9.5, cycle warnings:** a type that can reach itself through a `ref` or `Buffer` field, not through `weak`, is warned about where it's declared. The warning names the path (`Node.next: ref<option<Node>>`) and suggests `weak`, and `[<Cyclic>]` on the type silences it.
+      - **The first warning:** the compiler has only errors so far, so this brings a warning severity to the CLI, `zs lsp` and `zs mcp`.
+      - **Closures:** a function type doesn't say what it captures, so a cycle through a closure isn't caught. `ZS_LEAKCHECK=1` stays the backstop.
+    - **From phase 9.6, ergonomics:**
+      - **Anonymous records:** `{| x = 1; name = "a" |}`, typed by their fields, with equality, ordering and printing like records.
+      - **Patterns at the top level:** `let (a, b) = …` and other patterns, as inside functions.
+      - **Z# for F# programmers:** a guide page listing the differences: `int` is the machine word, `?`, traits instead of SRTP and interfaces, no classes or exceptions, `ref` instead of capturing a `let mutable`, and the four kinds of function types (functions, `share<F>`, `callback<F>`, `fnptr`) and when each is needed.
+    - **From phase 9.6, layout:**
+      - **Layout facts:** `sizeof<T>`, `alignof<T>` and `offsetof<T> "field"` as constants. A top-level `assert` on constants is checked at compile time, so a record's layout is checked against C's with the `assert` the language already has, not a new `static assert`.
+      - **C unions:** `import c` brings them in as `[<CLayout>]` unions, read only in `unsafe`.
+    - **Kept before phase 11:** compound assignment, `function`, list expressions, slices and `span`, tests as values, assertions, inline expect tests, the iteration trait, and rename and code actions. They change how code and tests are written, or break an API, so they're cheaper before the compiler is rewritten in Z# and before 0.1 has users.
+    - **From the tracks:** the items marked *after phase 11* in E, D, M, S and K, and tracks P and T whole.
+  - **Launch:** the guide, the "Z# for F# programmers" page, the flagship project as the example, and a post for each of the strongest results (Perceus on a Cortex-M, atomic counts only on shared objects, SIMD next to C).
+- **Exit tests:**
+  - On clean Fedora, Ubuntu and macOS machines, a newcomer gets from the release archive to a running hello world in five minutes, following only the guide.
+  - The flagship project builds from its repository with `zs build` alone, and runs on its hardware.
+  - The "before 0.1" list is empty, and `CHANGELOG.md` has its first entry.
+  - Each deferred feature taken into 0.1 passes its exit test:
+    - Anonymous records and top-level patterns each have a test.
+    - `import c` of a header with a union imports it, and a top-level `assert (sizeof<Packet> = 20)` fails to compile when a field changes.
+    - A doubly linked list with `ref` back-pointers gets the warning; with `weak`, or `[<Cyclic>]`, it doesn't. The repository's own code has no warnings.
 
 ## Tracks
+Before phase 11, a track does what the self-hosted compiler needs, what closes a known gap, and what would cost more later: a change to how code or tests are written, or to an API.
+Items marked *after phase 11* wait for phase 12, which picks what 0.1 needs from them.
 
 ### Microcontrollers (M)
 Tier 2 (DESIGN §10): every phase keeps `bench/mcu` working and within its ratios.
@@ -79,11 +196,15 @@ Tier 2 (DESIGN §10): every phase keeps `bench/mcu` working and within its ratio
      - **Interrupt handlers** are `NoAlloc` implicitly, since the allocator isn't reentrant.
      - **`--no-heap`:** the whole program is checked, and the image has no heap.
   3. **Constants in flash:** constant arrays placed in flash, instead of startup values copied to RAM.
-  4. **More boards:** linker scripts for STM32F4 and RP2040, flashing through `probe-rs` or OpenOCD, and RTT output as an alternative to semihosting.
-  5. **RISC-V:** ESP32-C3, under QEMU first.
+  4. **More boards:** *(after phase 11)* linker scripts for STM32F4 and RP2040, flashing through `probe-rs` or OpenOCD, and RTT output as an alternative to semihosting.
+  5. **RISC-V:** *(after phase 11)* ESP32-C3, under QEMU first.
   6. **32-bit ARM C ABI:** AAPCS for structs by value.
   7. **Heap:** reusing blocks larger than 256 bytes, and a heap size set in `zs.toml`.
   8. **Weak references and arenas:** the embedded runtime's versions of their functions (the host's use the C library's allocator).
+  9. **Bit fields:** *(after phase 11)* a `[<Bits>]` record packs its fields into one integer, each field's width given by `[<Width n>]` or taken from its type: a `bool` is one bit, and a union of cases without fields (an enum) as many as its cases need. So `mode: Mode` reads as `Mode.Fast`, not as a number. The shifts and masks are generated, `{ r with mode = Fast }` is a masked write, and a number too wide for its field panics as an overflow does. No new integer types (`u2`, `u5`) are needed.
+  10. **Fixed-point numbers:** *(after phase 11)* `q7`, `q15` and `q31`, the formats CMSIS-DSP and the chips' saturating instructions use, as library types with `Add`, `Num` and `Show`, for DSP on chips without an FPU (Cortex-M0+). A general `fix<i, f>` would need numbers as type arguments beyond `fixed`'s size, for formats no hardware has.
+  11. **Core intrinsics:** *(after phase 11)* `Cpu.wfi`, `wfe`, `dsb`, `dmb`, `isb`, `nop`, and `Cpu.critical (fun () -> …)` with interrupts masked for its body, instead of inline assembly. The rules for state shared with interrupt handlers (item 1) build on `critical` and `Atomic`.
+  12. **Placement:** *(after phase 11)* `[<Section ".noinit">]` on a top-level value (memory kept across a reset, or a DMA region a linker script names) and `[<Align 32>]` on a value or a type (DMA buffers, cache lines).
 - **Later:** async on bare metal (phase 6 `Task` over interrupts, with no OS).
 
 ### Editor tooling (E)
@@ -99,33 +220,106 @@ same support through a thin extension each.
 - **Documentation:** `///` doc comments and `zs doc`.
 
 **Next:**
+- **F2 first:** a lossless syntax tree, so `zs fmt` can reflow lines to 100 columns; `zs fmt --stdin`; range formatting. Rename, code actions, track D's inline expect tests and phase 11's parser all build on it.
 - **E2b, rest:** signature help, rename, code actions (add missing match cases, add an annotation).
-- **F2:** a lossless syntax tree, so `zs fmt` can reflow lines to 100 columns; `zs fmt --stdin`; range formatting.
-- **E3, rest:** `definition` and `explain` tools.
-- **Debug info, rest:** lists and other boxed unions as gdb values.
+- **E3, rest:** *(after phase 11)* `definition` and `explain` tools.
 - **Exit tests:**
   - A 2,000-line file re-checks within 100 ms in Zed.
+  - `zs fmt` reflows a 150-column line and keeps its comments.
+  - Renaming a record field updates every module that uses it.
   - Given a file with a type error, Zed's agent fixes it using only the MCP tools.
 
 ### More targets (T)
+*After phase 11*: macOS in phase 12, Windows after 0.1.
 Tier 3 (DESIGN §10), through `zig cc` as the Linux cross builds are.
 - **Next:**
   1. **macOS arm64:** Mach-O output and Apple's arm64 calling convention. Phase 6's event loop uses kqueue there.
   2. **Windows x64:** PE output, the Microsoft x64 calling convention, and a port of `rt.c` off POSIX.
-- **Testing:** build-only until a machine runs the suite: a build-only mode of `./test.sh --target` cross-compiles every test program.
-- **Exit test:** every test program builds for both.
+- **Testing:** macOS runs the whole suite in CI on arm64 runners (phase 12 needs it). Windows is build-only until a machine runs the suite: a build-only mode of `./test.sh --target` cross-compiles every test program.
+- **Exit tests:** `./test.sh` passes on macOS arm64; every test program builds for Windows.
 
 ### Type providers (P)
+*After phase 11*, the whole track.
 F#'s type providers, built on what `import c` already does for C headers: the compiler reads a
 data source at compile time and declares the types (and functions) for it, so code against a
 JSON API, a CSV file or a database is checked against its shape.
 - **Design first:** the syntax (F#'s `type Weather = JsonProvider<"weather.json">`, or `import`'s form) needs the design discussion decision 34 asks for, and so does where providers come from. Decision 20 rules out compile-time code in the language, so a provider is the compiler's own or an external program that writes declarations, as clang does for `import c`.
 - **Scope:**
   - **Providers:** JSON (from a sample or a JSON Schema) and CSV (from the header and a sample), to records and unions with parse and print functions; then SQL (a schema read from a database or a `.sql` file).
+  - **SVD:** a microcontroller's SVD file (the vendor's description of its peripherals) to a module per peripheral, with each register a typed value at its address, its fields track M's bit fields, and only the access the file allows (`Gpioa.odr.set 5`, `Rcc.ahb1enr.modify (fun r -> { r with gpioaen = true })`), as Rust's svd2rust does. A wrong field or a write to a read-only register is a compile error instead of a wrong constant in `Mmio.write32`.
   - **Caching and editors:** as `import c`'s: the result is cached in `.zs-cache` with a copy of the source, so editors without network or database access still get the types, with hover showing where each field came from.
 - **Exit tests:**
   - A program reads a JSON document and a CSV file through provided types, with completion and hover on their fields in Zed.
   - A changed sample makes the code that no longer fits a compile error that names the field.
+  - `examples/mcu/nucleo-f401.zs`, rewritten on the STM32F401's SVD, has no `Mmio` call and compiles to the same register accesses.
+
+### Testing, profiling and debugging (D)
+What a programmer runs when the code is wrong or slow. Wrap before writing, as packages do:
+gdb, lldb, rr, perf, samply, llvm-cov and libFuzzer already exist, and Z# gives them what they
+need to show Z# code, instead of a tool of its own.
+
+**Today:** `[<Test>]` functions run by `zs test`, each in its own process; `assert` with its file
+and line; `--sanitize` (address, undefined, thread); `ZS_LEAKCHECK=1`; `zs build --time`; and
+`-g` at `-O0` for gdb, showing numbers, strings, tuples, records and plain unions.
+
+**Testing, next:** Expecto's model, which F# programmers already know: tests are values, not
+attributed functions, so they compose with ordinary code.
+1. **Tests as values:** `test "parses" (fun () -> …)` is a `Test`, and `testList "parser" [ … ]` groups them. A top-level value marked `[<Tests>]` is found by `zs test`, statically, with no reflection.
+   - **Generated tests:** cases are data, so `cases |> List.map (fun (input, expected) -> test input (fun () -> …))` is a parameterized test with no special support.
+   - **Kinds:** `testTask` awaits a `Task` on the event loop, `testProperty` runs a property (item 5), and a test returning a `result` fails on an `Error`.
+   - **Focus and pending:** `ftest`/`ftestList` run only the focused tests while debugging, `ptest` skips one and says so, and `zs test --fail-on-focused` (for CI) fails a run that has any focus left.
+   - **Order:** tests run in parallel by default; `testSequenced` runs a list one at a time, for tests that share a file or a port.
+   - **Isolation stays:** each test still runs in its own process, picked by its path (`parser/parses`), so a panic fails only it. That's what Expecto can't do in .NET.
+   - **`[<Test>]` goes:** five files use it today, and one way to write a test is simpler than two.
+2. **Assertions that explain:** a failed `assert` on a comparison (`assert (parse s = Ok expected)`) prints both sides through `Show`, and for records, unions and collections the first place they differ, as power asserts do. The compiler knows the expression, so there's no `Expect.equal` family to learn, and no message strings to keep in sync; an operand without `Show` is shown by its source text.
+3. **Running:** `zs test parser/` runs the tests whose path starts with it, with a timeout per test (a hang fails the test and names it). `--summary` lists every test with its time, slowest first.
+4. **Stress:** *(after phase 11)* `zs test --stress 10m` runs the tests at random, on every core, over and over for that long, as Expecto's `--stress` does. With `ZS_LEAKCHECK=1` and `--sanitize=thread` it finds what a single run hides: a leak that grows, a race, a deadlock.
+5. **Properties:** *(after phase 11)* `testProperty "name" (fun (x: int) (xs: list<int>) -> …)` runs a property on generated values, and a failure is shrunk to a smallest case. Its settings are a record with defaults, `testPropertyWith { runs = 1000 } "name" …` (DESIGN §2's field defaults), not an attribute.
+   - **One source of randomness:** a generator reads its choices from a stream of bytes, and shrinking shrinks the stream (Hypothesis's design). So every generator shrinks, mapped and filtered ones included, keeping their invariants, with no shrinking code anywhere. FsCheck's shrinking goes by type and loses them: a generator of even numbers can shrink to an odd one.
+   - **Generators:** `Gen.int`, `range`, `elements`, `frequency`, `sized`, `map`, `filter`, `list`, `oneOf` and a `gen { }` builder. An `Arbitrary` trait gives each type its default generator, derived for records and unions (DESIGN §3.1) and written by hand where an invariant needs it.
+   - **Properties:** `Prop.assume cond` discards a case (FsCheck's `==>`), `Prop.label` names what failed, and `Prop.classify` reports how the cases were distributed, so a generator that only makes trivial cases shows.
+   - **Replay:** a failure's byte stream is saved in `.zs-cache/failures` and replayed first on the next run, exactly, not just from a seed.
+   - **Stateful:** `Prop.model` checks an API against a model: commands are a union with a derived `Arbitrary`, each is applied to both, and the results must agree; a failure shrinks to the shortest command sequence. `HashMap`, `Channel` and the runtime's pool are its first users.
+   - **Types:** a property's parameters have concrete types, since generics are monomorphized; a generic one is a compile error that says to annotate them (FsCheck substitutes `obj`, which Z# has no equivalent of).
+6. **Fuzzing, the same properties:** *(after phase 11)* `zs fuzz name` runs a property under libFuzzer, which supplies the byte stream the generators read, guided by coverage instead of random. So a fuzz target is any property, typed (a `Packet`, a `list<Command>`), with no separate attribute; a property over `span<u8>` takes the raw bytes. Builds use the address and undefined-behavior sanitizers, a panic is a failure, and a crash's stream is shrunk by the property shrinker, saved, and replayed by `zs test`.
+7. **Expect tests, inline:** `expect value """…"""` compares a value's `Show` with the string literal next to it, and `zs test --update` rewrites the literal in the source, through track E's lossless syntax tree (F2), as OCaml's ppx_expect and Rust's insta do. The expectation sits next to the code that makes it, instead of in a file to find.
+8. **Doc tests:** *(after phase 11)* the examples in `///` comments compile and run under `zs test`, their output checked as inline expectations, so the docs can't go stale.
+9. **Benchmarks:** *(after phase 11)* `bench "insert" (fun () -> …)` is a value too, run by `zs bench`: warm-up, then enough runs for a median and a confidence interval. A run compares with the last saved one and reports only changes beyond the noise. `testFaster "reuse beats copy" fast slow` is a test that passes when one is faster with statistical confidence (Expecto's `isFasterThan`), so a performance claim can't silently regress.
+10. **Coverage:** *(after phase 11)* `zs test --coverage` instruments with LLVM's source-based coverage (counters and a region map the compiler emits for Z#'s source), so `llvm-cov` reports lines and branches, match cases included.
+11. **Microcontrollers:** *(after phase 11)* `zs test --target cortex-m4` runs the tests under QEMU, and with `--probe` on a board through probe-rs, with results over semihosting or RTT.
+
+**Profiling, next:**
+1. **Where it allocates, before running:** *(after phase 11)* `zs lsp` marks, as inlay hints that can be turned on, the lines that allocate, copy an array on write, or count atomically, and the calls that reuse a cell in place. It's what the compiler already decided, so performance can be read like types. `[<NoAlloc>]` (track M) is the same analysis made an error.
+2. **Sampling:** `zs build --profile` keeps frame pointers and debug lines at `-O2`, and symbols carry Z# names (`Map.add<string, int>`, `Parser.expr`), so perf, samply and the Firefox Profiler show Z# code. `zs profile -- args` runs the program under samply (perf without it) and opens the result.
+3. **Counts:** `ZS_STATS=1` prints at exit what Perceus's choices cost: allocations and frees by size class, peak memory, reuse hits, copy-on-write copies, and atomic counts on shared objects.
+4. **Traces:** *(after phase 11)* `ZS_TRACE=file` writes one trace in Perfetto's format, with what's asked for: sampled allocations with their call stacks and types (the runtime's pool hides them from heaptrack and massif, so it reports them itself), and tasks and threads (time running, waiting and idle per thread, each task's spans between awaits). One format and one viewer, instead of a tool per question.
+5. **Microcontrollers:** *(after phase 11)* sampling the program counter through the probe (SWO, via probe-rs), which needs no change to the code, and `Runtime.ticks` around a block for exact cycles.
+
+**Debugging, next:**
+1. **Every value, from DWARF:** unions are described with DWARF's variant parts (as Rust's are) and cells as pointers to their layout, so gdb and lldb show lists, boxed unions, records, `ref`, `weak`, `span` and arrays with no scripts. Pretty-printers that ship with `zs` and load automatically cover only what DWARF can't say: `Map`, `Set` and `HashMap` as their entries rather than their trees, and closures as their function and captures.
+2. **lldb:** *(after phase 11)* the same as gdb, since lldb is the debugger on macOS (phase 12).
+3. **Optimized builds:** `-g` at `-O1` and `-O2`, with lines and locals where LLVM keeps them, so a release build's crash can be debugged.
+4. **Editors:** *(after phase 11)* debugging from Zed through the Debug Adapter Protocol, using gdb's and lldb's own adapters with a launch configuration `zs` writes, not an adapter of its own.
+5. **Panics:** a panic's backtrace shows Z# names and source lines on every target with an OS. `ZS_ABORT=1` already makes a panic a real `abort()`, so a debugger or a core dump catches it; no other switch is needed.
+6. **Tasks:** *(after phase 11)* a gdb and lldb command lists the tasks waiting on a thread's event loop, with what each waits on (a timer, a socket, a child task).
+7. **Recording:** *(after phase 11)* rr records a run and replays it backwards; a test checks it works on Z# binaries.
+8. **Microcontrollers:** *(after phase 11)* gdb on the board through probe-rs or OpenOCD, and under QEMU's gdb stub, with the same DWARF and pretty-printers.
+
+**Exit tests:**
+- A failed `assert (a = b)` on two records prints both and the field that differs.
+- A `[<Tests>]` list built with `List.map` over cases runs each case as its own test; an `ftest` runs alone, and `--fail-on-focused` fails the run.
+- `zs test` runs a `testTask`, a test that hangs (failed by its timeout), and an inline expect test that `--update` rewrites in place.
+- *After phase 11:* a doc test runs under `zs test`.
+- *After phase 11:* `zs test --stress 1m` with `ZS_LEAKCHECK=1` finds a planted leak that one run doesn't show.
+- *After phase 11:* `zs bench` reports a planted 20% slowdown and nothing for an unchanged build; `testFaster` passes for reuse over copying an array.
+- *After phase 11:* a property with a filtered generator of even numbers finds a planted bug and shrinks it to the smallest even case; its replay file reproduces it; a stateful test against a model finds a planted `HashMap` bug and shrinks the commands.
+- *After phase 11:* `zs fuzz` on a typed parser property finds a planted out-of-bounds read within a minute.
+- *After phase 11:* `llvm-cov` reports a match case the tests never reach.
+- *After phase 11:* `zs lsp`'s hints mark the allocations in `examples/complex.zs`, and none in a function `[<NoAlloc>]` accepts.
+- A samply profile of the binary-trees benchmark shows Z# function names, and `ZS_STATS=1` reports its reuse hits.
+- *After phase 11:* a `ZS_TRACE` of the echo server opens in Perfetto with its tasks.
+- gdb shows a `list<Map<string, int>>` and a closure's captures as values, in an `-O2 -g` build too (lldb after phase 11).
+- *After phase 11:* Zed stops at a breakpoint in a Z# program and shows its locals.
 
 ### Library (S)
 The prelude, Core and Std grow toward what an F# programmer reaches for on the first day, in
@@ -137,52 +331,56 @@ DESIGN §9's layers.
   - **A package (track K):** formats and protocols with many reasonable designs, such as HTTP, regex, argument parsing, TLS and databases.
 - **Each addition:** `///` docs, its reference page, a test, and for Core, a microcontroller build.
 - **Next:**
-  1. **Iteration:** `for x in` works on lists and arrays only. A trait would make it work on `Map`, `Set`, `HashMap`, `Buffer` and user types. It iterates internally (a `forEach` that can stop early), as CE `for` already does. This needs design first. Lazy `Seq` waits for phase 10's `seq { }`.
-  2. **Collections:** the rest of F#'s `List`/`Array`/`Map`/`Set`: `groupBy`, `countBy`, `chunkBySize`, `windowed`, `pairwise`, `scan`, `foldBack`, `tryFindIndex`, `Array.binarySearch`, `Map.change`, `Set.isSubset`, …. Also `Buffer`'s missing functions (push, pop, clear), and `Queue`, `Stack`, `PriorityQueue` and `HashSet`.
+  1. **Iteration:** `for x in` works on lists and arrays only. A trait would make it work on `Map`, `Set`, `HashMap`, `Buffer`, `span` and user types. It iterates internally (a `forEach` that can stop early), as CE `for` already does. This needs design first. Lazy `Seq` waits for phase 10's `seq { }`.
+  2. **Collections:** a mutable `HashSet`, and `Buffer`'s missing functions (push, pop, clear), which the compiler's maps and growing arrays need. *After phase 11:* the rest of F#'s `List`/`Array`/`Map`/`Set` (`groupBy`, `countBy`, `chunkBySize`, `windowed`, `pairwise`, `scan`, `foldBack`, `tryFindIndex`, `Array.binarySearch`, `Map.change`, `Set.isSubset`, …), and `Queue`, `Stack` and `PriorityQueue`.
   3. **Numbers:**
-     - **`Math`:** it has only `abs` and `sqrt` so far. The rest of libm comes as LLVM intrinsics (`floor`, `ceil`, `round`, `pow`, `exp`, `log`, trigonometry), plus `clamp`, `pi` and `e`.
-     - **Integers:** `Int.checkedAdd` (returning an `option`), saturating arithmetic, and the bit operations (`popCount`, `leadingZeros`, `rotateLeft`) that microcontroller code needs.
-     - **`Random`:** a seeded PCG in Core, and `Random.shared`, seeded from the OS, in Std.
+     - **Parsing:** `Float.parse` and `Int.parse` in a radix, returning an `option`; the compiler's lexer and `import c` need them.
+     - **`Math`:** *(after phase 11)* it has only `abs` and `sqrt` so far. The rest of libm comes as LLVM intrinsics (`floor`, `ceil`, `round`, `pow`, `exp`, `log`, trigonometry), plus `clamp`, `pi` and `e`.
+     - **Integers:** *(after phase 11)* `Int.checkedAdd` (returning an `option`), saturating arithmetic, and the bit operations (`popCount`, `leadingZeros`, `rotateLeft`) that microcontroller code needs.
+     - **`Random`:** *(after phase 11)* a seeded PCG in Core, and `Random.shared`, seeded from the OS, in Std.
+     - **Bytes:** *(after phase 11)* `Bytes.readU16BE`, `readU32LE`, `writeI64BE`, … over a `span<u8>` (phase 9.6) at an offset, for binary formats and protocols, compiled to one load and a byte swap where the order differs.
   4. **Text:**
      - **Functions:** `padLeft`/`padRight`, `trimStart`/`trimEnd` and `splitLines`.
-     - **Formatting:** format specifiers in interpolation (`$"{x:F2}"`, `{n:X8}`).
-     - **UTF-8:** `Text.Utf8` converts between bytes and strings, with validation.
+     - **Formatting:** format specifiers and widths in interpolation, in .NET's syntax (`$"{x:F2}"`, `{n:X8}`, `{name,-20}`).
+     - **UTF-8:** *(after phase 11)* `Text.Utf8` converts between bytes and strings, with validation.
      - **`StringBuilder`:** only if measuring shows that reuse doesn't already make `s <- s + x` in a loop linear.
   5. **JSON in Core:** a `Json` union with parse and print, plus `ToJson`/`FromJson` derives (the example in DESIGN §3.1). Track P's provider and the packages build on it.
-  6. **Time:** `Duration` as an integer of nanoseconds, using units of measure. `DateTime` is UTC, with `utcNow` and ISO 8601 parsing and printing. Time zones are a package.
+  6. **Time:** `DateTime.utcNow`, which the compiler's cache needs. *After phase 11:* `Duration` as an integer of nanoseconds, using units of measure, and ISO 8601 parsing and printing. Time zones are a package.
   7. **IO:**
      - **Streams:** `File.openRead` and `openWrite` give readers and writers (`readLine`, `readBytes`, `write`), closed by `use`.
      - **Files and directories:** `readAllBytes`, `File.exists`, `Directory.exists`, recursive listing, copy, move and temporary files.
      - **Processes:** `Process.start` with pipes, an exit code and an environment, awaitable from a task.
-  8. **Net:** UDP, and name lookup through `Task.blocking getaddrinfo`. TLS and HTTP are packages.
-  9. **Tests:** `Assert.equal` prints both values through `Show` and points at the first difference.
+  8. **Net:** *(after phase 11)* UDP, and name lookup through `Task.blocking getaddrinfo`. TLS and HTTP are packages.
 - **Freeze at 1.0:** a review checks every name against .NET and F#. After it, renaming something takes a `[<Deprecated "use X">]` warning for one release.
 - **Exit tests:**
-  - Ten Advent of Code puzzles written with only the prelude, Core and Std, with no helper that F#'s library already has.
-  - In `examples/`: grep, a JSON pretty-printer and `tail -f`, each under 100 lines.
+  - *After phase 11:* ten Advent of Code puzzles written with only the prelude, Core and Std, with no helper that F#'s library already has.
+  - *After phase 11:* in `examples/`, grep, a JSON pretty-printer and `tail -f`, each under 100 lines.
   - Every Core module builds for Cortex-M0+.
 
 ### Packages (K)
 **Today:** path and git dependencies, `zs.lock` pinning commits, `zs fetch` and `zs update`,
 and modules found transitively. Packages stay source (decision 27).
+- **Wrap before writing:** a community big enough to write and maintain large libraries in Z# isn't coming soon, so a package first wraps a proven C library (or a C++ one through its C API), and Z# code is the typed, idiomatic layer on top. A package is written in Z# from scratch only when no fitting library exists, or the wrapper would be bigger than the code.
+  - **C++:** `import c` reads C headers only, so a C++ library without a C API gets a thin `extern "C"` shim, compiled by `zig c++` from the package's `[c]` section (item 4).
+  - **Choosing a library:** permissive license, a C API, and builds with `zig cc` for every target with an OS, macOS included; one that also builds for Cortex-M is preferred (mbedTLS over OpenSSL).
 - **Next:**
   1. **Namespaced dependencies:** a dependency's modules sit under the name it has in `zs.toml` (`Json.Parser`), so two packages that both have a `Util` module don't collide. This comes first, before there are packages to break.
-  2. **Versions:** `json = { git = "…", version = "1.2" }` picks among `v1.x.y` tags.
+  2. **Versions:** *(after phase 11)* `json = { git = "…", version = "1.2" }` picks among `v1.x.y` tags.
      - **Minimal version selection,** as in Go: each package gets the highest of the minimum versions asked for it. A build is reproducible without a solver.
      - **Major versions are separate packages** (`json` and `json/v2`), so one program can use both.
-  3. **Internal modules:** modules under a package's `internal/` directory are visible only inside it (Go's rule, with no new keyword).
+  3. **Internal modules:** *(after phase 11)* modules under a package's `internal/` directory are visible only inside it (Go's rule, with no new keyword).
   4. **C dependencies:** a `[c]` section (`link`, `pkg-config`, and C sources compiled with `zig cc`) means a package that wraps sqlite or raylib needs no flags from the projects that use it.
-  5. **Targets:** a package that uses Std can't be a dependency of a microcontroller build. The error comes when the build starts and names the package, not some module deep inside it.
-  6. **Integrity:** `zs.lock` keeps a hash of each checkout's contents and checks it. `zs vendor` copies the dependencies into the repository, and `--offline` fails instead of fetching.
-  7. **Commands:** `zs add json@1.2`, `zs remove` and `zs tree`.
-  8. **Workspaces:** `[workspace] members = […]`, with one lock file and one cache.
+  5. **Targets:** *(after phase 11)* a package that uses Std can't be a dependency of a microcontroller build. The error comes when the build starts and names the package, not some module deep inside it.
+  6. **Integrity:** *(after phase 11)* `zs.lock` keeps a hash of each checkout's contents and checks it. `zs vendor` copies the dependencies into the repository, and `--offline` fails instead of fetching.
+  7. **Commands:** *(after phase 11)* `zs add json@1.2`, `zs remove` and `zs tree`.
+  8. **Workspaces:** *(after phase 11)* `[workspace] members = […]`, with one lock file and one cache.
 - **Later: an index, not a registry.** Git URLs work without anyone running a service. When names are worth having, an index can be a git repository that maps each name to a URL and a hash, so that `json = "1.2"` works. `zs publish` opens a pull request against it.
-- **First-party packages** (`zsharp/…`, kept building by the compiler's CI): `http` (client and server, on `Net.Tcp` and `Task`), `regex`, `cli` (argument parsing derived from a record), `tls` and `sqlite` (over C libraries), and `raylib`.
+- **First-party packages** (`zsharp/…`, kept building by the compiler's CI): before phase 11, `libclang`, `llvm` and `xxhash`, which the compiler itself uses. *After phase 11:* `http` (client and server on `Net.Tcp` and `Task`, parsing with llhttp), `regex` (over PCRE2), `tls` (over mbedTLS), `sqlite`, `raylib`, and `cli` (argument parsing derived from a record, the one written in Z#).
 - **Exit tests:**
-  - A diamond (A needs C ≥ 1.1, B needs C ≥ 1.3) resolves to C 1.3 on every machine, and `json` and `json/v2` build in one program.
-  - A project uses `zsharp/sqlite` after nothing more than `zs add`.
-  - A microcontroller project that depends on a Std package fails with an error naming that package.
-  - `examples/echo`, rebuilt on `zsharp/http`, serves HTTP.
+  - *After phase 11:* a diamond (A needs C ≥ 1.1, B needs C ≥ 1.3) resolves to C 1.3 on every machine, and `json` and `json/v2` build in one program.
+  - *After phase 11:* a project uses `zsharp/sqlite` after nothing more than `zs add`.
+  - *After phase 11:* a microcontroller project that depends on a Std package fails with an error naming that package.
+  - *After phase 11:* `examples/echo`, rebuilt on `zsharp/http`, serves HTTP.
 
 ## Ordering rationale
 - **Phase L came before 5 and 6.** Builders, `Task` and optimizations should be built on the language's final shape. Top-level constants also unblocked microcontroller work.
@@ -190,8 +388,11 @@ and modules found transitively. Packages stay source (decision 27).
 - **Phase V came before 6,** for phase L's reason: `dyn Trait`, `weak` and `unsafe` are part of the language CEs and `Task` build on.
 - **Phase 7 comes after 6.** The thread pool backs both `Task.blocking` and the multi-threaded scheduler.
 - **Phase 8 comes after 5 and 7.** Vectorization relies on phase 5's representation and aliasing work, and parallel SIMD kernels are the real-world case.
-- **Phase 10 comes last.** It needs Task's API stable and opaque, and Perceus; DESIGN §6.1 lists what must stay true until then.
-- **The tracks (E, M, T, P, S, K) run alongside.** Each phase keeps their tests passing.
+- **Phases 9.5 and 9.6 split infrastructure from language.** Incremental builds, threads and cycle warnings come first, so the language features that follow are tested on fast builds.
+- **The third design review comes before phase 10.** Effect handlers add effect rows to every function type, the biggest change to the language left, so what the language already has is settled and pruned first.
+- **Phase 10 comes last** of the language phases. It needs Task's API stable and opaque, and Perceus; DESIGN §6.1 lists what must stay true until then.
+- **Phase 12 comes after 11** (or after 10 if 11 is skipped): a release is worth making once the language is settled, and self-hosting has shaken out the bugs a large program finds.
+- **The tracks (E, D, M, T, P, S, K) run alongside.** Each phase keeps their tests passing.
 - **K1 (namespaced dependencies) comes before anything else in S or K:** it's the only change that would break packages people have already written. The first-party packages come after K2, so they can have versions.
 
 ## Done

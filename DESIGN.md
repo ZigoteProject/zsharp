@@ -98,7 +98,7 @@ let sumTo n =                            // imperative code is fine; mutation st
   - Supports nesting, literals (numbers, characters, strings, bools), tuples, records (`{ x = 0; y = y }`, fields left out match anything), union cases (positional or by field name), lists, guards, `as` and or-patterns that bind variables.
   - Patterns work in `match`, `let`, function parameters (`let norm { x = x; y = y } = …`), lambdas and `for` loops.
   - A match that misses a case is an **error** naming an example of the missing value (`missing case: { kind = C }`). So is a case that can never match.
-- **Errors:** `result` with a postfix `?` that returns the error early (`let x = parse s?`, or `parse s?` as a statement). `result { }` does the same for a block, with `let!` (§4).
+- **Errors:** `result` with a postfix `?` that returns the error early (`let x = parse s?`, or `parse s?` as a statement). `?` applies to the whole call before it. `result { }` does the same for a block, with `let!` (§4). `?` on an `option` in a function that returns one **(planned, phase 9.6)**.
 - **Panics:** for bugs, not errors a caller handles. These all panic: an out-of-bounds index, division by zero, integer overflow, a failed `assert`, an explicit `panic`.
   - A panic prints a message (and a backtrace where the C library supports it), then stops the program at once: no unwinding, no cleanup, exit status 134, no core dump. `ZS_ABORT=1` makes it a real `abort()` for a debugger.
   - Panics can't be caught. So there are no landing pads, and nothing unwinds through C frames.
@@ -350,6 +350,7 @@ before it. Mutable cells can: a `ref` or `Buffer` holding a value that points ba
   - **How:** the weak references to an object share a cell { count, object }, found from the object through a table. An object dying empties its cell: when it's freed, and when Perceus reuses its cell for another object, which the reuse reports.
   - **Who pays:** only a program with weak references (or arenas) allocates and frees through the runtime's checked functions; the others' code is what it was.
 - **Finding them:** `ZS_LEAKCHECK=1` reports the objects still allocated at exit, so a test suite run with it (as `./test.sh` runs the compiler's) catches a cycle the tests make.
+- **Warning about them (planned, phase 12):** a type that can reach itself through a `ref` or `Buffer` field, not through `weak`, gets a warning naming the path, which `[<Cyclic>]` on the type silences. A cycle through a closure isn't caught, since a function type doesn't say what it captures.
 
 **Escape hatches:** `Arena.with (fun () -> …)` for bulk allocation that's freed at once, and raw
 `ptr<'a>` inside `unsafe` expressions (§11).
@@ -531,6 +532,7 @@ There are three levels, from free to manual.
 - **Generics across libraries:** libraries are **source**, as in Go and Zig.
   - **How they're used:** a dependency's modules are type-checked with the program and monomorphized at the program's types.
   - **Speed:** a build caches the type checker's state after the library, and after the main file's other modules, in the user's cache directory (`~/.cache/zs/checked`), keyed by a hash of the compiler and of those modules' sources. A build whose library and other modules haven't changed starts from there and checks only the main file; one whose main file's modules changed starts from the library. Editors and `zs doc` check everything, since they need every hover.
+  - **Incremental by module (planned, phase 9.5):** each module's checked result is cached under a hash of its source and its dependencies' interfaces, and the passes after checking keep theirs per module. The CLI and the editors share the cache, so a change re-checks and rebuilds only what it reaches.
   - **No IR format:** there's no binary format to version. Closed-source code ships as an `[<Export>]` C library.
 - **The library** (`lib/`) is Z#, in three layers:
   - **Prelude** (`lib/prelude.zs`): the global names: the operator traits and their derives, `option`, `result`, `id`, `fst`, `min`, ….
@@ -654,10 +656,12 @@ checker, so tools can't drift from the compiler.
     - `zs fetch` checks them out and `zs update` moves them to the newest commit of their `rev`. The language server never fetches.
   - **Modules:** found next to the importing file, then in each dependency, transitively.
   - **Commands:** `zs new`, `zs build` (to `build/<name>`), `zs run`, `zs check`, `zs test`. Builds take `-g`, `-Os`, `--target`, `--lib`, `--emit-llvm`, `--sanitize` and `--time`.
-- **Tests:** `[<Test>]` marks a `unit -> unit` function. `zs test` runs each test in its own process, so a failure or panic fails only that test. A failed `assert` names its file and line.
+- **Tests:** `[<Test>]` marks a `unit -> unit` function. `zs test` runs each test in its own process, so a failure or panic fails only that test. A failed `assert` names its file and line. **(planned, track D):** tests as values (`test`, `testList`, focus, `testSequenced`) in place of `[<Test>]`, as in Expecto, with a process per test kept; `--stress` runs; benchmarks as values; asserts that print both sides, inline expect tests, properties whose generators read a byte stream (shrinking it, as Hypothesis does, and fuzzed by libFuzzer through the same stream), doc tests, and coverage through llvm-cov.
 - **Debugging:** `zs build -g` builds at `-O0` with DWARF.
   - gdb breaks on Z# functions and lines, steps, and shows backtraces.
   - Locals and arguments are visible when they are numbers, bools, chars, strings (shown as their text), or tuples, records and plain unions of those (a union as its case and fields).
+  - **(planned, track D):** every value through DWARF (unions as variant parts), with pretty-printers only for `Map`, `Set`, `HashMap` and closures, for gdb and lldb, `-g` with optimizations, debugging from editors through gdb's and lldb's DAP adapters, and a command listing waiting tasks.
+- **Profiling (planned, track D):** the editor marks where code allocates, copies or counts atomically; Z# names in perf and samply profiles (`zs profile`); `ZS_STATS=1` for what reference counting costs; and one Perfetto trace for allocation sites, tasks and threads (`ZS_TRACE`).
 - **Documentation:** `///` comments above a declaration document it.
   - **Where they show:** hover, completion, the MCP `docs` tool, and `zs doc <file>`, which writes Markdown.
   - **The library:** fully documented, with one reference page per module in `docs/reference` (built-in functions included), which `./test.sh` keeps current.
