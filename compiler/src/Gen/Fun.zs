@@ -1182,9 +1182,16 @@ let rec gen (fx: F) (env: Map<string, Binding>) (tail: bool) (e: CExpr) : string
       // a call to itself is left to LLVM to make a loop (which can then be inlined into callers);
       // other tail calls, and all at -O0, must be tail calls (constant stack), except of a result
       // wider than two registers: x86-64 returns it in memory, where it can't make a musttail
-      // call (LLVM still makes a loop of a call to itself, at -O2)
+      // call (LLVM still makes a loop of a call to itself, at -O2). In an optimized build, a call
+      // to a function of another LLVM module is a plain tail call (a sibling call all the same):
+      // ThinLTO imports the callee and inlines it at a musttail call into a module LLVM's
+      // verifier then rejects (LLVM 23)
       let inRegisters = not (String.startsWith "{" rt) || (List.length (String.split "," rt) <= 2 && not (String.contains "{" (String.sub rt 1 (String.length rt - 1))) && not (String.contains "[" rt))
-      let kind = if (fname = fx.f.name && g.opts.optimized && not g.opts.debugInfo) || not inRegisters then "tail" else "musttail"
+      let elsewhere =
+        match g.part with
+        | Some p -> g.opts.optimized && not (Set.contains fname p.defines)
+        | None -> false
+      let kind = if (fname = fx.f.name && g.opts.optimized && not g.opts.debugInfo) || not inRegisters || elsewhere then "tail" else "musttail"
       let r = instr em $"{kind} call {rt} {sym g fname}({argv})"
       emit em $"ret {rt} {r}"
       dead em
