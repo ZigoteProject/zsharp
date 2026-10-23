@@ -73,3 +73,14 @@ module HashMap =
   /// A hash map with the pairs' bindings.
   let ofList (pairs: list<'k * 'v>) =
     List.fold (fun m (k, v) -> HashMap.add k v m) HashMap.empty pairs
+
+/// A hash map's entries in bucket order, which is unspecified: a program that needs an order sorts
+/// them (`List.sort (HashMap.toList m)`).
+impl Iter<HashMap<'k, 'v>, 'k * 'v> =
+  let forEach (m: HashMap<'k, 'v>) f =
+    let mutable i = 0
+    let mutable ok = true
+    while ok && i < Array.length m.buckets do
+      ok <- Iter.forEach m.buckets.[i] f
+      i <- i + 1
+    ok

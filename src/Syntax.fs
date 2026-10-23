@@ -116,7 +116,8 @@ type Decl =
     | TypeExt of name: string * tparams: string list * Member list // type string with member ...
     /// type Duration = i64<ns>: another name for a type, the same type wherever it's written
     | TypeAlias of name: string * tparams: string list * target: SType
-    | Trait of name: string * tparam: string * methods: (string * SType) list
+    /// trait Iter<'c, 'a> = …: the first parameter dispatches; the others are the impl's (0017)
+    | Trait of name: string * tparams: string list * methods: (string * SType) list
     /// effect E<'a> = abstract op : T -> R …: operations a handler gives meaning to
     | Effect of name: string * tparams: string list * ops: (string * SType) list
     | Derive of name: string * defs: (int * string * Param list * SType option * Expr) list
@@ -127,7 +128,8 @@ type Decl =
     | Open of string // open Module
     | ModuleHeader of string // module Name (first line of a file)
     | NestedModule of name: string * decls: (int * Decl) list // module Name = followed by indented declarations
-    | Impl of traitName: string * head: SType * defs: (int * string * Param list * SType option * Expr) list
+    /// impl Iter<list<'a>, 'a> = …: the head, then the trait's other parameters
+    | Impl of traitName: string * head: SType * others: SType list * defs: (int * string * Param list * SType option * Expr) list
     | ImportC of header: string // import c "raylib.h", replaced by the header's declarations
     | Const of name: string * value: Expr // a C constant (enum value, #define): its uses are the literal
     | Value of name: string * ann: SType option * value: Expr // let name = expr at the top level
@@ -3236,17 +3238,23 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
 
                 ln, TypeDecl(name, List.ofSeq tparams, body, inner @ members ())
         | KKw "trait" ->
-            // trait Show<'a> = abstract show : 'a -> string ...
+            // trait Show<'a> = abstract show : 'a -> string ...; trait Iter<'c, 'a> = …
             advance ()
             let name = ident ()
             expect (KSym "<") "'<'"
 
-            let tp =
+            let tv () =
                 match peek () with
                 | KTyVar v ->
                     advance ()
                     v
                 | _ -> err "type parameter"
+
+            let tps = ResizeArray [ tv () ]
+
+            while isSym "," do
+                advance ()
+                tps.Add(tv ())
 
             closeAngle ()
             expect (KSym "=") "'='"
@@ -3263,7 +3271,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                     advance ()
 
             expect KDedent "end of trait"
-            ln, Trait(name, tp, List.ofSeq methods)
+            ln, Trait(name, List.ofSeq tps, List.ofSeq methods)
         | KKw "effect" ->
             // effect Yield<'a> = abstract yield : 'a -> unit …
             advance ()
@@ -3313,11 +3321,17 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
 
             ln, Effect(name, List.ofSeq tparams, List.ofSeq ops)
         | KKw "impl" ->
-            // impl Show<Point> = let show p = ...
+            // impl Show<Point> = let show p = ...; impl Iter<list<'a>, 'a> = …
             advance ()
             let tr = ident ()
             expect (KSym "<") "'<'"
             let head = ty ()
+            let others = ResizeArray()
+
+            while isSym "," do
+                advance ()
+                others.Add(ty ())
+
             closeAngle ()
             expect (KSym "=") "'='"
             expect KIndent "indented 'let' definitions"
@@ -3336,7 +3350,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                     advance ()
 
             expect KDedent "end of impl"
-            ln, Impl(tr, head, List.ofSeq defs)
+            ln, Impl(tr, head, List.ofSeq others, List.ofSeq defs)
         | KId "import" ->
             // import c "header.h"
             advance ()

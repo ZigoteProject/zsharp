@@ -37,6 +37,16 @@ member xs.IsEmpty
 
 Whether the list has no elements.
 
+## Derives and impls
+
+### `impl Iter<list<'a>, 'a>`
+
+```zsharp
+impl Iter<list<'a>, 'a>
+```
+
+A list's elements, front to back.
+
 ## Functions
 
 ### `List.rev`
@@ -326,4 +336,13 @@ List.sortBy : ('a -> 'b) -> list<'a> -> list<'a> when 'b : Ord
 ```
 
 The list sorted by the key `f x`. Stable.
+
+### `List.ofIter`
+
+```zsharp
+List.ofIter : 'a -> list<'b> when 'a : Iter<'b>
+```
+
+The elements of a collection, in its order: an array, a string's characters, a map's
+entries, …
 

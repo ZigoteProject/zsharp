@@ -2,15 +2,15 @@
 
 | | |
 |---|---|
-| **Status** | Approved in principle (decision 57), before phase 11 |
+| **Status** | Approved (decision 57) and built, steps 1 to 4: list expressions over any `Iter` (0005) and the versioning pass's `while` shape are what's left |
 | **Decided at** | the third design review ([ROADMAP](../../ROADMAP.md#third-design-review-)): `forEach` returns `bool`, collecting is a function per type, ranges are a `Range` record, the dispatch rule is decision 57's text |
 | **Builds** | track S item 1 ([ROADMAP](../../ROADMAP.md#library-s)), before phase 11: phase 12's "kept before phase 11" list names the iteration trait |
 | **Rests on** | decisions 20 (derive, no macros), 43 (`dyn Trait`), 49 (SIMD: a module per vector type, since HM can't relate a vector type to its element type) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §3](../../DESIGN.md#3-traits) (traits take one type parameter; requirements are inferred), [§4](../../DESIGN.md#4-computation-expressions) (`B.forEach`), [§9.1](../../DESIGN.md#91-optimization-strategy) (inlining; a lambda applied in place) |
 | **Related** | [0002 effect handlers](0002-effect-handlers.md) (`Seq` implements it), [0003 spans](0003-spans-and-slices.md) (spans iterate), [0005 ergonomics](0005-ergonomics.md) (list expressions over any `Iter`), [0024 the library's API](0024-library-api.md) (its tables list the `ofIter` functions as this proposal's) |
 
 - [x] Approved in principle
-- [ ] Discussion
-- [ ] Implementation
+- [x] Discussion
+- [x] Implementation: traits with several parameters (`Typer.methodType`, kinds' `params`, `implOthers`), `for` over `Iter.forEach`, the inliner's rule, Lift's cell fallback, the library's impls (`tests/iter/basics.zs`, `maps.zs`, `loops.sh`, `err_*.zs`)
 
 ## Summary
 
@@ -498,5 +498,6 @@ stages are `Seq`'s, and phase 10 brings them.
 
 ## History
 
+- **2026-10-23:** built before `compiler/`, with 0025's ambient rows for `forEach`'s body. The exit test compares `main`'s instructions with `Map.iter`'s (sorted, locals' names aside), since one `dup` lands a line apart and the two programs keep different helper copies; an impl must be declared before the code that loops over its type, as other explicit impls are.
 - **2026-10-22:** drafted from track S item 1 ("needs design first"), DESIGN §3's one-parameter
   traits, the `ForIn` lowering in `Typer.fs`, and the agreements with 0002, 0003 and 0005.

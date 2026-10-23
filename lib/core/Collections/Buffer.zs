@@ -19,3 +19,13 @@ let clear (b: Buffer<'a>) = Buffer.truncate 0 b
 /// The `n` elements from index `i`, as a Buffer sharing this one's storage: a write to either
 /// is seen through both. `b.[i .. i + n - 1]`.
 let slice (b: Buffer<'a>) i n = b.[i .. i + n - 1]
+
+/// A Buffer's elements, by index; its length is read each round, so the body may push to it.
+impl Iter<Buffer<'a>, 'a> =
+  let forEach (b: Buffer<'a>) f =
+    let mutable i = 0
+    let mutable ok = true
+    while ok && i < Buffer.length b do
+      ok <- f b.[i]
+      i <- i + 1
+    ok

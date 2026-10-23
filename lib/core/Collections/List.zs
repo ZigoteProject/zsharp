@@ -252,3 +252,27 @@ type list<'a> with
   member xs.Tail = List.tail xs
   /// Whether the list has no elements.
   member xs.IsEmpty = List.isEmpty xs
+
+/// The elements of a collection, in its order: an array, a string's characters, a map's
+/// entries, …
+let ofIter (c: 'c) : list<'a> =
+  let acc = ref []
+  Iter.forEach c (fun x ->
+    acc.Value <- x :: acc.Value
+    true)
+  |> ignore
+  rev acc.Value
+
+/// A list's elements, front to back.
+impl Iter<list<'a>, 'a> =
+  let forEach xs f =
+    let mutable cur = xs
+    let mutable more = true
+    let mutable ok = true
+    while ok && more do
+      match cur with
+      | x :: rest ->
+        cur <- rest
+        ok <- f x
+      | [] -> more <- false
+    ok

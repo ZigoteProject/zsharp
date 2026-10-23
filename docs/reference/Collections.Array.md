@@ -14,6 +14,16 @@ member a.Length
 
 The number of elements.
 
+## Derives and impls
+
+### `impl Iter<array<'a>, 'a>`
+
+```zsharp
+impl Iter<array<'a>, 'a>
+```
+
+An array's elements, by index.
+
 ## Functions
 
 ### `Array.init`
@@ -151,6 +161,15 @@ Array.sortWith : ('a -> 'a -> 'b) -> span<'a> -> array<'a> when 'b : Ord
 ```
 
 A new array sorted with `f` (like `compare`). Stable.
+
+### `Array.ofIter`
+
+```zsharp
+Array.ofIter : 'a -> array<'b> when 'a : Iter<'b>
+```
+
+The elements of a collection in an array, in its order: a list, a set, a string's
+characters, …
 
 ### `Array.copy`
 

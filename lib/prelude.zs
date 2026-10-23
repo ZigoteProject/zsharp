@@ -61,6 +61,13 @@ trait Dispose<'a> =
   /// Releases what the value holds.
   abstract dispose : 'a -> unit
 
+/// What `for x in c do` walks (0017): a collection `'c` of elements `'a`. The collection's type
+/// picks the impl, and the impl says what its elements are (`impl Iter<Map<'k, 'v>, 'k * 'v>`).
+/// The module `Iter` has the functions over it.
+trait Iter<'c, 'a> =
+  /// Calls `f` on each element in order until it returns false; whether it ran to the end.
+  abstract forEach : 'c -> ('a -> bool) -> bool
+
 /// What `match Shape.kind with` distinguishes inside a `derive`.
 type ShapeKind =
   /// The type being derived for is a record.

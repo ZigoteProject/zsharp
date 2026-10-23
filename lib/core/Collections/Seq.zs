@@ -207,3 +207,10 @@ module Seq =
 
   /// Pairs of each element with its index, from 0.
   let indexed s = mapi (fun i x -> (i, x)) s
+
+/// A sequence's elements, as it yields them; the generator stops when `f` does.
+impl Iter<Seq<'a>, 'a> =
+  let forEach s f =
+    handle Seq.yieldAll s with
+    | Yield.yield x, k -> if f x then k () else false
+    | return () -> true

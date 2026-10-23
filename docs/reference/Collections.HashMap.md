@@ -13,6 +13,17 @@ type HashMap<'k, 'v>
 A hash map (keys with `Hash` and `Eq`). It is a value like an array: `HashMap.add` gives
 the changed map, updated in place when nothing else refers to the old one.
 
+## Derives and impls
+
+### `impl Iter<HashMap<'k, 'v>, 'k * 'v>`
+
+```zsharp
+impl Iter<HashMap<'k, 'v>, 'k * 'v>
+```
+
+A hash map's entries in bucket order, which is unspecified: a program that needs an order sorts
+them (`List.sort (HashMap.toList m)`).
+
 ## Functions
 
 ### `HashMap.empty`

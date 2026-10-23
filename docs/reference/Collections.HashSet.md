@@ -13,6 +13,17 @@ type HashSet<'a>
 A hash set (elements with `Hash` and `Eq`). It is a value like an array: `HashSet.add` gives
 the changed set, updated in place when nothing else refers to the old one.
 
+## Derives and impls
+
+### `impl Iter<HashSet<'a>, 'a>`
+
+```zsharp
+impl Iter<HashSet<'a>, 'a>
+```
+
+A hash set's elements in bucket order, which is unspecified: a program that needs an order sorts
+them (`List.sort (HashMap.toList m)`).
+
 ## Functions
 
 ### `HashSet.empty`

@@ -17,6 +17,16 @@ type Seq<'a>
 
 A lazy sequence of `'a`: what `seq { }` makes. Its function yields the elements.
 
+## Derives and impls
+
+### `impl Iter<Seq<'a>, 'a>`
+
+```zsharp
+impl Iter<Seq<'a>, 'a>
+```
+
+A sequence's elements, as it yields them; the generator stops when `f` does.
+
 ## Functions
 
 ### `Seq.yieldAll`

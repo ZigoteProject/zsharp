@@ -1,0 +1,1 @@
+tests/iter/err_other.zs:4: error: impl Iter: 'b isn't a type variable of Box; the other parameters are made of the head's ('a), such as 'a * int or list<'a>

@@ -175,6 +175,24 @@ abstract dispose : 'a -> unit
 
 Releases what the value holds.
 
+### `Iter`
+
+```zsharp
+trait Iter<'c, 'a>
+```
+
+What `for x in c do` walks (0017): a collection `'c` of elements `'a`. The collection's type
+picks the impl, and the impl says what its elements are (`impl Iter<Map<'k, 'v>, 'k * 'v>`).
+The module `Iter` has the functions over it.
+
+#### `Iter.forEach`
+
+```zsharp
+abstract forEach : 'c -> ('a -> bool) -> bool
+```
+
+Calls `f` on each element in order until it returns false; whether it ran to the end.
+
 ## Effects
 
 ### `Yield`

@@ -164,13 +164,44 @@ let runWith (external: string -> int option) (wrapped: bool) (funs: MFun list) :
               file = fst source.Value
               line = snd source.Value }
 
+    // a mutable variable a lambda refers to becomes a cell for its whole scope, which the
+    // closure holds: a for loop's body over an impl whose forEach wasn't inlined (a recursive
+    // one), the one lambda that may assign its function's variables (0017)
+    let rec mentions (x: string) (e: CExpr) =
+        match e.k with
+        | CLocal y
+        | CAssign(y, _)
+        | CArraySet(y, _, _) when y = x -> true
+        | k -> children k |> List.exists (mentions x)
+
+    let rec lambdaMentions (x: string) (e: CExpr) =
+        match e.k with
+        | CLam(_, b) -> mentions x b
+        | k -> children k |> List.exists (lambdaMentions x)
+
+    let rec cells (e: CExpr) : CExpr =
+        match e.k with
+        | CLetMut(x, v, body) when lambdaMentions x body ->
+            let v = cells v
+            let cell = TCon("ref", [ v.ty ])
+
+            let rec through (e: CExpr) =
+                match e.k with
+                | CLocal y when y = x -> mk (CPrim("ref.get", [ mk (CLocal x) cell ])) e.ty
+                | CAssign(y, w) when y = x -> mk (CPrim("ref.set", [ mk (CLocal x) cell; through w ])) e.ty
+                | CArraySet(y, _, _) when y = x -> failwith "Lift: an array element assigned through a loop's cell"
+                | k -> mk (mapChildren through k) e.ty
+
+            mk (CLet(x, mk (CPrim("ref", [ v ])) cell, through (cells body))) e.ty
+        | k -> mk (mapChildren cells k) e.ty
+
     // each function on its own, on every core; its lifted lambdas come before it, as they're made
     let one (f: MFun) =
         source.Value <- (f.file, f.line) // lifted lambdas are debugged as part of their function
         count.Value.Value <- 0
         let mine = ResizeArray<MFun>()
         out.Value <- mine
-        mine.Add { f with body = conv Map.empty f.name f.body }
+        mine.Add { f with body = conv Map.empty f.name (cells f.body) }
         List.ofSeq mine
 
     try

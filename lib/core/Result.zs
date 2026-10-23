@@ -65,11 +65,18 @@ module Builder =
     dispose x
     r
 
-  /// `for x in xs do`: the body for each element, until one gives an `Error`.
-  let rec forEach xs f =
-    match xs with
-    | [] -> Ok ()
-    | x :: rest ->
+  /// `for x in xs do`: the body for each element of any collection, until one gives an `Error`.
+  let forEach (xs: 'c) (f: 'a -> result<unit, 'e>) : result<unit, 'e> =
+    let failed = ref None
+
+    Iter.forEach xs (fun x ->
       match f x with
-      | Ok () -> forEach rest f
-      | Error e -> Error e
+      | Ok () -> true
+      | Error e ->
+        failed.Value <- Some e
+        false)
+    |> ignore
+
+    match failed.Value with
+    | Some e -> Error e
+    | None -> Ok ()

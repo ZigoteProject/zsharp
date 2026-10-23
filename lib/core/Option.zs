@@ -83,17 +83,25 @@ module Builder =
     dispose x
     r
 
-  /// `for x in xs do`: the body for each element, until one gives `None`.
-  let rec forEach xs f =
-    match xs with
-    | [] -> Some ()
-    | x :: rest ->
-      match f x with
-      | Some () -> forEach rest f
-      | None -> None
+  /// `for x in xs do`: the body for each element of any collection, until one gives `None`.
+  let forEach (xs: 'c) (f: 'a -> option<unit>) : option<unit> =
+    let ran =
+      Iter.forEach xs (fun x ->
+        match f x with
+        | Some () -> true
+        | None -> false)
+
+    if ran then Some () else None
 
 type option<'a> with
   /// Whether the option holds a value.
   member o.IsSome = Option.isSome o
   /// Whether the option is `None`.
   member o.IsNone = Option.isNone o
+
+/// An option's one element, or none.
+impl Iter<option<'a>, 'a> =
+  let forEach o f =
+    match o with
+    | Some x -> f x
+    | None -> true

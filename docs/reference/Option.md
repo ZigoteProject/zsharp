@@ -21,6 +21,16 @@ member o.IsNone
 
 Whether the option is `None`.
 
+## Derives and impls
+
+### `impl Iter<option<'a>, 'a>`
+
+```zsharp
+impl Iter<option<'a>, 'a>
+```
+
+An option's one element, or none.
+
 ## Functions
 
 ### `Option.map`
@@ -146,8 +156,8 @@ Option.Builder.using : 'a -> ('a -> 'b) -> 'b when 'a : Dispose
 ### `Option.Builder.forEach`
 
 ```zsharp
-Option.Builder.forEach : list<'a> -> ('a -> option<unit>) -> option<unit>
+Option.Builder.forEach : 'a -> ('b -> option<unit>) -> option<unit> when 'a : Iter<'b>
 ```
 
-`for x in xs do`: the body for each element, until one gives `None`.
+`for x in xs do`: the body for each element of any collection, until one gives `None`.
 

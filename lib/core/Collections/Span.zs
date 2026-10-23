@@ -14,3 +14,14 @@ let slice (s: span<'a>) i n = s.[i .. i + n - 1]
 type span<'a> with
   /// The number of elements.
   member s.Length = Span.length s
+
+/// A span's elements, by index.
+impl Iter<span<'a>, 'a> =
+  let forEach (s: span<'a>) f =
+    let n = Span.length s
+    let mutable i = 0
+    let mutable ok = true
+    while ok && i < n do
+      ok <- f s.[i]
+      i <- i + 1
+    ok

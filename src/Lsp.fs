@@ -451,7 +451,7 @@ let private symbols (path: string) : JsonNode =
         | TypeAlias(name, _, _) -> [ sym name 26 ln [] ] // 26: type parameter, the nearest to an alias
         | Trait(name, _, _) -> [ sym name 11 ln [] ]
         | Effect(name, _, ops) -> [ sym name 11 ln (ops |> List.map (fun (op, _) -> sym op 12 ln [])) ]
-        | Impl(tr, STName(t, _), _) -> [ sym (sprintf "impl %s<%s>" tr t) 5 ln [] ]
+        | Impl(tr, STName(t, _), _, _) -> [ sym (sprintf "impl %s<%s>" tr t) 5 ln [] ]
         | Derive(name, _)
         | DeriveGroup(name, _) -> [ sym ("derive " + name) 12 ln [] ]
         | Attrs(_, d)

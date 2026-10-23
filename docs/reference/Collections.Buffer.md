@@ -8,6 +8,16 @@ past it. Its other functions are built into the compiler: `create`, `length`, `o
 `ofSpan`, `toArray`, `push`, `removeLast` (the last element, taken; a panic when there's
 none), `truncate` (the first `n` elements kept) and `blit` (`n` elements of a span copied in).
 
+## Derives and impls
+
+### `impl Iter<Buffer<'a>, 'a>`
+
+```zsharp
+impl Iter<Buffer<'a>, 'a>
+```
+
+A Buffer's elements, by index; its length is read each round, so the body may push to it.
+
 ## Functions
 
 ### `Buffer.empty`

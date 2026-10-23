@@ -22,6 +22,14 @@ impl Show<Set<'a>>
 
 Sets print as `set [1; 2; 3]`.
 
+### `impl Iter<Set<'a>, 'a>`
+
+```zsharp
+impl Iter<Set<'a>, 'a>
+```
+
+A set's elements in ascending order (its map's keys).
+
 ## Functions
 
 ### `Set.empty`
@@ -79,6 +87,14 @@ Set.toList : Set<'a> -> list<'a>
 ```
 
 The elements in ascending order.
+
+### `Set.ofIter`
+
+```zsharp
+Set.ofIter : 'a -> Set<'b> when 'a : Iter<'b>, 'b : Ord
+```
+
+A set of a collection's elements: a list, an array, a string's characters, …
 
 ### `Set.ofList`
 

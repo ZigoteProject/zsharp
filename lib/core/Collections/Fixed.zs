@@ -62,3 +62,13 @@ impl Show<fixed<'a, 'n>> =
     for i in 0 .. Fixed.length x - 1 do
       s <- s + (if i > 0 then "; " else "") + show x.[i]
     s + "|]"
+
+/// A fixed-size array's elements, by index.
+impl Iter<fixed<'a, 'n>, 'a> =
+  let forEach (x: fixed<'a, 'n>) f =
+    let mutable i = 0
+    let mutable ok = true
+    while ok && i < Fixed.length x do
+      ok <- f x.[i]
+      i <- i + 1
+    ok

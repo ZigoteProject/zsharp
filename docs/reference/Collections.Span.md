@@ -16,6 +16,16 @@ member s.Length
 
 The number of elements.
 
+## Derives and impls
+
+### `impl Iter<span<'a>, 'a>`
+
+```zsharp
+impl Iter<span<'a>, 'a>
+```
+
+A span's elements, by index.
+
 ## Functions
 
 ### `Span.isEmpty`

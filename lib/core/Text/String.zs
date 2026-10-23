@@ -168,3 +168,14 @@ type string with
   member s.ToLower() = String.toLower s
   /// The string with every `old` replaced by `by`.
   member s.Replace(old: string, by: string) = String.replace s old by
+
+/// A string's characters (code points), decoding its UTF-8; its bytes are `String.bytes s`.
+impl Iter<string, char> =
+  let forEach (s: string) f =
+    let mutable pos = 0
+    let mutable ok = true
+    while ok && pos < String.length s do
+      let (c, next) = decodeAt s pos
+      pos <- next
+      ok <- f c
+    ok

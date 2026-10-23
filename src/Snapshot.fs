@@ -122,6 +122,7 @@ and private cell (c: W) (r: TV ref) =
 and private kind (c: W) (k: Kind) =
     opt c (fun c s -> seq' c str s) k.allowed
     seq' c str k.traits
+    list' c (fun c (tr: string, ps: Ty list) -> str c tr; list' c ty ps) (Map.toList k.params)
 
 let private tyBinding (c: W) (x: string, t: Ty) =
     str c x
@@ -632,7 +633,7 @@ let writeModule (st: State) (marks: Marks) (hovers: Hover seq) (position: obj ->
             entries c str (fun c ns -> list' c optStr ns) (written st.ctorFieldNames)
             entries c str members' (written st.members)
             strSeq c st.memberTypeNames.Added
-            entries c str (fun c (m: TraitMethod) -> str c m.owner; str c m.name; ty c m.ty; bool' c m.isConst) (written st.traitMethods)
+            entries c str (fun c (m: TraitMethod) -> str c m.owner; str c m.name; ty c m.ty; int' c m.nparams; bool' c m.isConst) (written st.traitMethods)
             entries c str str (written st.traitAliases)
             strSeq c st.traitNames.Added
 
@@ -643,6 +644,7 @@ let writeModule (st: State) (marks: Marks) (hovers: Hover seq) (position: obj ->
             entries c str (fun c (e, i) -> str c e; int' c i) (written st.effectOps)
             entries c pair (fun c t -> entries c str str [ for KeyValue(m, f) in t -> m, f ]) (written st.impls)
             entries c pair (fun c reqs -> list' c (fun c s -> strSeq c s) reqs) (written st.implRequires)
+            entries c pair (fun c os -> list' c ty os) (written st.implOthers)
             entries c str (fun c defs -> list' c deriveDef defs) (written st.derives)
             entries c str (fun c ms -> list' c str ms) (written st.deriveGroups)
             entries c str (fun c (n, t) -> int' c n; ty c t) (written st.aliases)
@@ -680,6 +682,7 @@ let writeModule (st: State) (marks: Marks) (hovers: Hover seq) (position: obj ->
         bytesOf position (fun c ->
             entries c pair (fun c t -> entries c str str [ for KeyValue(m, f) in t -> m, f ]) (written st.impls |> List.filter (fst >> others))
             entries c pair (fun c reqs -> list' c (fun c s -> strSeq c s) reqs) (written st.implRequires |> List.filter (fst >> others))
+            entries c pair (fun c os -> list' c ty os) (written st.implOthers |> List.filter (fst >> others))
             list' c pair (st.autoDerived.Added |> Seq.filter others |> List.ofSeq)
             entries c str members' (written st.members |> List.filter (fun (t, _) -> not (ownTypes.Contains t))))
 
@@ -794,7 +797,8 @@ and private rcell (c: R) : TV ref =
 
 and private rkind (c: R) : Kind =
     let allowed = ropt c (fun c -> Set.ofList (rlist c rstr))
-    { allowed = allowed; traits = Set.ofList (rlist c rstr) }
+    let traits = Set.ofList (rlist c rstr)
+    { allowed = allowed; traits = traits; params = Map.ofList (rlist c (fun c -> let tr = rstr c in tr, rlist c rty)) }
 
 let private rtyBinding (c: R) =
     let x = rstr c
@@ -1205,10 +1209,12 @@ let readModule (iface: byte[]) (st: State) (place: obj -> int * int * int -> uni
             let o = rstr c
             let n = rstr c
             let t = rty c
+            let np = rint c
 
             { owner = o
               name = n
               ty = t
+              nparams = np
               isConst = rbool c })
 
         put st.traitAliases rstr rstr
@@ -1236,6 +1242,7 @@ let readModule (iface: byte[]) (st: State) (place: obj -> int * int * int -> uni
             d)
 
         put st.implRequires rpair (fun c -> rlist c (fun c -> Set.ofList (rlist c rstr)))
+        put st.implOthers rpair (fun c -> rlist c rty)
         put st.derives rstr (fun c -> rlist c rderiveDef)
         put st.deriveGroups rstr (fun c -> rlist c rstr)
         put st.aliases rstr (fun c -> let n = rint c in n, rty c)

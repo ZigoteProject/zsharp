@@ -1,0 +1,1 @@
+tests/iter/err_noimpl.zs:5:14: error: argument 1 of 'Iter.length': Point does not implement Iter; list, array, Buffer, span, string, option, Map, Set, HashMap, Seq and Range do, and impl Iter<Point, <element>> = let forEach c f = … adds yours

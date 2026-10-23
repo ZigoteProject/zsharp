@@ -189,6 +189,24 @@ Some 36 Some 37 3 false
 [1; 2; 3] true [1; 2; 3; 9]
 ```
 
+**In a loop:** `for (k, v) in m` goes over a map's entries in ascending key order, and `for x in s` over a set's elements.
+
+**Any collection:** the `Iter` module's functions take any collection a `for` can walk: `Iter.fold`, `iter`, `exists`, `forall`, `tryFind`, `length` and `toList`; and `List.ofIter`, `Array.ofIter`, `Set.ofIter` and `Map.ofIter` collect one.
+
+```zsharp
+let main () =
+  let ages = Map.ofList [ ("ada", 36); ("alan", 41) ]
+  let mutable total = 0
+  for (name, age) in ages do
+    total <- total + age
+  println $"{total} {Iter.exists (fun (_, a) -> a > 40) ages} {Set.toList (Set.ofIter "banana")}"
+  0
+```
+
+```text
+77 true [a; b; n]
+```
+
 ## HashMap
 
 **What it is:** a hash table. Keys need `Hash` and `Eq`, which the same types have.

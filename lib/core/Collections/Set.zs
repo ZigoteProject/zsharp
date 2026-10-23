@@ -29,6 +29,13 @@ module Set =
   /// The elements in ascending order.
   let toList (s: Set<'a>) = Map.keys s.items
 
+  /// A set of a collection's elements: a list, an array, a string's characters, …
+  let ofIter (xs: 'c) : Set<'a> =
+    let mutable s = Set.empty
+    for x in xs do
+      s <- Set.add x s
+    s
+
   /// A set of the list's elements.
   let ofList (xs: list<'a>) = List.fold (fun s x -> Set.add x s) Set.empty xs
 
@@ -46,3 +53,7 @@ module Set =
 /// Sets print as `set [1; 2; 3]`.
 impl Show<Set<'a>> =
   let show s = "set " + show (Set.toList s)
+
+/// A set's elements in ascending order (its map's keys).
+impl Iter<Set<'a>, 'a> =
+  let forEach (s: Set<'a>) f = Iter.forEach s.items (fun (x, _) -> f x)

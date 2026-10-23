@@ -32,6 +32,15 @@ A node: left subtree, key, value, right subtree, height.
 
 ## Derives and impls
 
+### `impl Iter<Map<'k, 'v>, 'k * 'v>`
+
+```zsharp
+impl Iter<Map<'k, 'v>, 'k * 'v>
+```
+
+A map's entries in ascending key order, walked in a loop with the path to the current node in
+a list (not a recursion), so a `for` over a map is one loop with its body in place.
+
 ### `impl Show<Map<'k, 'v>>`
 
 ```zsharp
@@ -121,6 +130,15 @@ Map.toList : Map<'a, 'b> -> list<'a * 'b>
 ```
 
 The entries as (key, value) pairs in ascending key order.
+
+### `Map.ofIter`
+
+```zsharp
+Map.ofIter : 'a -> Map<'b, 'c> when 'a : Iter<'b * 'c>, 'b : Ord
+```
+
+A map of the pairs a collection has (a later pair wins over an earlier one with the same
+key): a list, an array, another map, …
 
 ### `Map.ofList`
 

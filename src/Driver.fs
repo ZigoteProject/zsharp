@@ -534,7 +534,7 @@ let libraryDir = runtimeFile "lib"
 /// target has it; Std is for targets that have one.
 let private coreFiles =
     [ "Option"; "Result"; "Math"; "Int"; "Float"; "Runtime"; "Mmio"; "Ptr"; "Weak"; "Arena"; "Simd"; "Simd/X86"; "Simd/Arm"; "Collections/List"; "Collections/Span"; "Collections/Array"; "Collections/Buffer"; "Collections/Fixed"
-      "Text/String"; "Text/Char"; "Collections/Map"; "Collections/Set"; "Collections/HashMap"; "Collections/HashSet"; "Throw"; "Collections/Seq"; "Text/Json"; "Time/DateTime" ]
+      "Text/String"; "Text/Char"; "Collections/Map"; "Collections/Set"; "Collections/HashMap"; "Collections/HashSet"; "Iter"; "Throw"; "Collections/Seq"; "Text/Json"; "Time/DateTime" ]
 
 let private stdFiles =
     [ "IO/Stream"; "Console"; "Environment"; "Threading/Atomic"; "Threading/Mutex"; "Threading/Channel"; "Threading/Task"; "Threading/Parallel"
@@ -636,7 +636,7 @@ let private summaryOf (toks: Token[]) (decls: (int * Decl) list) : Summary =
         | _ -> None
       uses = [ for _, d in decls do match d with Open m -> yield m | _ -> () ] @ qualified toks |> List.distinct
       opens = [ for _, d in decls do match d with Open m -> yield m | _ -> () ]
-      impls = [ for _, d in decls do match d with Impl(tr, STName(n, _), _) -> yield tr, n | _ -> () ]
+      impls = [ for _, d in decls do match d with Impl(tr, STName(n, _), _, _) -> yield tr, n | _ -> () ]
       importsC = decls |> List.exists (fun (_, d) -> match d with ImportC _ | Attrs(_, ImportC _) -> true | _ -> false) }
 
 /// A source file: its text, its summary (from the cache when the text is unchanged), and its

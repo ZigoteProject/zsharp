@@ -104,8 +104,8 @@ Result.Builder.using : 'a -> ('a -> 'b) -> 'b when 'a : Dispose
 ### `Result.Builder.forEach`
 
 ```zsharp
-Result.Builder.forEach : list<'a> -> ('a -> result<unit, 'b>) -> result<unit, 'b>
+Result.Builder.forEach : 'a -> ('b -> result<unit, 'c>) -> result<unit, 'c> when 'a : Iter<'b>
 ```
 
-`for x in xs do`: the body for each element, until one gives an `Error`.
+`for x in xs do`: the body for each element of any collection, until one gives an `Error`.
 

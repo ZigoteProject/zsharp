@@ -80,3 +80,14 @@ module HashSet =
   /// The elements of `a` that `b` doesn't have.
   let difference (a: HashSet<'a>) (b: HashSet<'a>) =
     HashSet.ofList (List.filter (fun x -> not (HashSet.contains x b)) (HashSet.toList a))
+
+/// A hash set's elements in bucket order, which is unspecified: a program that needs an order sorts
+/// them (`List.sort (HashMap.toList m)`).
+impl Iter<HashSet<'a>, 'a> =
+  let forEach (m: HashSet<'a>) f =
+    let mutable i = 0
+    let mutable ok = true
+    while ok && i < Array.length m.buckets do
+      ok <- Iter.forEach m.buckets.[i] f
+      i <- i + 1
+    ok

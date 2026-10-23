@@ -237,7 +237,8 @@ a! b!
 
 **Loops:**
 - `for i in a .. b` counts up to `b` inclusive, and `a .. step .. b` uses a step, which can be negative.
-- `for x in xs` goes over a list or an array.
+- `for x in xs` goes over any collection: a list, an array, a Buffer, a string's characters, an option, a `Map`'s entries (`for (k, v) in m`), a `Set`, a `HashMap` or a `Seq`, and a type of your own with an `Iter` impl ([traits](06-traits.md#traits-with-several-parameters)). Each compiles to one loop with the body in place, and the body may assign the function's mutable variables.
+- There's no `break`: to stop at the first match use `Iter.exists`, `Iter.tryFind` or `List.tryFind`.
 
 ## Mutation
 

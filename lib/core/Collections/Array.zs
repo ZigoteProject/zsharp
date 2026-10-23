@@ -106,3 +106,18 @@ let sortWith f (a: span<'a>) = Array.ofList (List.sortWith f (Array.toList a))
 type array<'a> with
   /// The number of elements.
   member a.Length = Array.length a
+
+/// The elements of a collection in an array, in its order: a list, a set, a string's
+/// characters, …
+let ofIter (c: 'c) : array<'a> = Array.ofList (List.ofIter c)
+
+/// An array's elements, by index.
+impl Iter<array<'a>, 'a> =
+  let forEach (a: array<'a>) f =
+    let n = Array.length a
+    let mutable i = 0
+    let mutable ok = true
+    while ok && i < n do
+      ok <- f a.[i]
+      i <- i + 1
+    ok

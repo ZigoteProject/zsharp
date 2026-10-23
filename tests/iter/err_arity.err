@@ -1,0 +1,1 @@
+tests/iter/err_arity.zs:4: error: Iter takes 2 type parameters, and this impl gives 1

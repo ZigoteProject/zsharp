@@ -129,9 +129,13 @@ let runWith (mayInline: string -> string -> bool) (funs: MFun list) : MFun list 
         | CLetRec _ -> true
         | k -> children k |> List.exists localFunctions
 
+    // an Iter impl's forEach is inlined whatever its size (0017): a for loop over the type is
+    // then one loop, its body applied in place by Simplify
+    let forEach (name: string) = name.StartsWith "Iter<" && name.Contains ">#forEach"
+
     let candidates =
         funs
-        |> List.filter (fun f -> f.name <> "main" && not (kept f.name) && size f.body <= 60 && not (localFunctions f.body))
+        |> List.filter (fun f -> f.name <> "main" && not (kept f.name) && (size f.body <= 60 || forEach f.name) && not (localFunctions f.body))
         |> List.map (fun f -> f.name, calls f.body |> List.distinct)
         |> dict
 

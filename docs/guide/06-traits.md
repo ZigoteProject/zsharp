@@ -104,6 +104,42 @@ the number 4 / the number 4
 yes, then no, then nothing
 ```
 
+## Traits with several parameters
+
+**The first parameter picks the impl; the impl fixes the others.** `trait Iter<'c, 'a>`, the prelude's trait behind `for`, has the collection's type first and its elements' second: `impl Iter<Map<'k, 'v>, 'k * 'v>` says a map's elements are pairs. One impl per type, and its other parameters are made of the type's own variables, so the collection's type settles the element type wherever it's known.
+
+**Your own collection:** an `Iter` impl is a `forEach` that calls `f` on each element in order until it returns `false`, and says whether it got to the end. Then `for` and the `Iter` functions work on the type, and a function looping over a parameter works on any collection (`total : 'c -> int when 'c : Iter<int>`).
+
+```zsharp
+type Tree<'a> =
+  | Leaf
+  | Node of Tree<'a> * 'a * Tree<'a>
+
+impl Iter<Tree<'a>, 'a> =
+  let forEach t f =
+    match t with
+    | Leaf -> true
+    | Node (l, x, r) -> forEach l f && f x && forEach r f
+
+let total xs =
+  let mutable n = 0
+  for x in xs do
+    n <- n + x
+  n
+
+let main () =
+  let t = Node (Node (Leaf, 1, Leaf), 2, Node (Leaf, 3, Leaf))
+  println $"{total t} {total [ 4; 5 ]} {Iter.toList t}"
+  0
+```
+
+```text
+6 9 [1; 2; 3]
+```
+
+- **What it costs:** a `forEach` that calls `f` at one place in a loop is inlined, and the body of a `for` lands in that loop: no closure, nothing allocated per element. A recursive one, like the tree's, works too; the body is then a function called per element, as with `List.iter`.
+- **No `dyn`:** a trait with several parameters can't be a `dyn` value.
+
 ## dyn: values of different types together
 
 **A trait as a type:** `dyn Shape` is a value of any type that implements `Shape`, so values of different types can go in one list, or be returned from different branches.

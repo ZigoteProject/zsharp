@@ -18,9 +18,15 @@ let private kindOf (r: TV ref) =
 /// impl's own requirements onto the type's arguments.
 let mutable private userImpl: string -> Ty -> bool = fun _ _ -> false
 
+/// The trait's other parameters as the impl for a type determines them (Iter on list<int>:
+/// [int]), when the type's head has an impl of a trait with several (0017).
+let mutable private implParams: string -> Ty -> Ty list option = fun _ _ -> None
+
 /// Both constraints at once. Literal kinds keep only the types that also have the traits.
 let private meet (a: Kind) (b: Kind) : Kind =
     let traits = Set.union a.traits b.traits
+    // a trait's other parameters, which unify unifies first where both kinds have them
+    let pars = Map.fold (fun (m: Map<string, Ty list>) k v -> if m.ContainsKey k then m else m.Add(k, v)) a.params b.params
 
     let allowed =
         match a.allowed, b.allowed with
@@ -41,8 +47,8 @@ let private meet (a: Kind) (b: Kind) : Kind =
             let tr = traits |> Seq.find (fun tr -> s |> Set.forall (fun n -> not (has tr n)))
             raise (NoImpl(tr, tcon (if s.Contains "int" then "int" elif s.Contains "f64" then "f64" else Seq.head s)))
         else
-            { allowed = Some ok; traits = traits }
-    | None -> { allowed = None; traits = traits }
+            { allowed = Some ok; traits = traits; params = pars }
+    | None -> { allowed = None; traits = traits; params = pars }
 
 let rec private occurs r t =
     match prune t with
@@ -108,6 +114,12 @@ let rec private unify a b =
     match prune a, prune b with
     | TVar r1, TVar r2 when obj.ReferenceEquals(r1, r2) -> ()
     | TVar r1, TVar r2 ->
+        // 'c : Iter<int> and 'c : Iter<'a>: one type's elements have one type
+        for KeyValue(tr, ps) in (kindOf r1).params do
+            match (kindOf r2).params.TryFind tr with
+            | Some qs -> List.iter2 unify ps qs
+            | None -> ()
+
         let k = meet (kindOf r1) (kindOf r2)
 
         match r2.Value with
@@ -115,12 +127,25 @@ let rec private unify a b =
         | Link _ -> ()
 
         r1.Value <- Link(TVar r2)
+
+        // a literal's type the trait leaves one choice for ("abc" : Iter<'a>: a string, not a
+        // cstr) is that type now, so the impl gives the trait's other parameters
+        match k.allowed with
+        | Some s when s.Count = 1 && not k.params.IsEmpty -> unify (TVar r2) (tcon (Seq.head s))
+        | _ -> ()
     | TVar r, t
     | t, TVar r ->
         if occurs r t || not (satisfies (kindOf r) t) then
             raise Mismatch
 
+        let pars = (kindOf r).params
         r.Value <- Link t
+
+        // the impl for t's head determines the trait's other parameters
+        for KeyValue(tr, ps) in pars do
+            match implParams tr t with
+            | Some os -> List.iter2 unify ps os
+            | None -> ()
     | TCon(a, xs), TCon(b, ys) when a = b && nums.Contains a -> unifyMeas (measOf xs) (measOf ys)
     | TMeas _, _
     | _, TMeas _ -> unifyMeas a b
@@ -235,6 +260,8 @@ let private expect what expected actual =
             | TTuple xs when what.StartsWith "argument 1 of '" ->
                 let f = what.Substring(15).TrimEnd('\'')
                 sprintf "; if '%s' takes its %d arguments one by one, write %s a b, not %s (a, b)" f xs.Length f f
+            | TCon _ when tr = "Iter" ->
+                sprintf "; list, array, Buffer, span, string, option, Map, Set, HashMap, Seq and Range do, and impl Iter<%s, <element>> = let forEach c f = … adds yours" (show t)
             | TCon _ when not (List.contains tr [ "Share"; "Eq"; "Ord"; "Hash"; "Show"; "Add"; "Num" ]) ->
                 sprintf "; write impl %s<%s> = …" tr (show t)
             | _ -> ""
@@ -289,7 +316,11 @@ let private generalize (t: Ty) : Kind list =
         match prune t with
         | TVar r ->
             match r.Value with
-            | Unbound(_, k) when not (found.Exists(fun (r2, _) -> obj.ReferenceEquals(r, r2))) -> found.Add(r, k)
+            | Unbound(_, k) when not (found.Exists(fun (r2, _) -> obj.ReferenceEquals(r, r2))) ->
+                found.Add(r, k)
+                // what a trait's other parameters mention is the scheme's too ('c : Iter<'a>)
+                for ps in k.params.Values do
+                    List.iter go ps
             | _ -> ()
         | TCon(_, ts)
         | TTuple ts -> List.iter go ts
@@ -304,7 +335,7 @@ let private generalize (t: Ty) : Kind list =
     let types, rows = found |> List.ofSeq |> List.partition (fun (_, k) -> not (isRowKind k))
     let ordered = types @ rows
     ordered |> List.iteri (fun i (r, _) -> r.Value <- Link(TGen i))
-    ordered |> List.map snd
+    ordered |> List.map (fun (_, k) -> { k with params = k.params |> Map.map (fun _ ps -> List.map resolve ps) })
 
 /// A function type taking ps, without effects.
 let private funTy (ps: Ty list) (ret: Ty) = List.foldBack tfun ps ret
@@ -660,6 +691,7 @@ type State =
       effectOps: Table<string, string * int> // "Yield.yield" -> the effect, the operation's index
       impls: Table<string * string, Dictionary<string, string>> // (trait, type) -> method -> function
       implRequires: Table<string * string, Set<string> list> // traits each type argument needs
+      implOthers: Table<string * string, Ty list> // a trait's other parameters, over the head's variables (0017)
       derives: Table<string, (int * string * Param list * SType option * Expr) list> // by full name, as traits
       deriveGroups: Table<string, string list> // derive Json = ToJson, FromJson: by full name, the members'
       aliases: Table<string, int * Ty> // type Duration = i64<ns>: by full name, its parameters' count and what it names (TGen i the i-th)
@@ -707,6 +739,7 @@ let private freshState () =
       effectOps = Table()
       impls = Table()
       implRequires = Table()
+      implOthers = Table()
       derives = Table()
       deriveGroups = Table()
       aliases = Table()
@@ -758,6 +791,7 @@ let markState (st: State) =
     st.effectOps.Mark()
     st.impls.Mark()
     st.implRequires.Mark()
+    st.implOthers.Mark()
     st.derives.Mark()
     st.deriveGroups.Mark()
     st.aliases.Mark()
@@ -860,6 +894,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
     let traitNames = st.traitNames
     let impls = st.impls
     let implRequires = st.implRequires
+    let implOthers = st.implOthers
     let derives = st.derives
     let deriveModules = st.deriveModules
     let activePatterns = st.activePatterns
@@ -868,6 +903,15 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
     let manualImpls = HashSet<string * string>(manualImpls)
     let optOut = st.optOut
     let mutable autoDerive: string -> string -> bool = fun _ _ -> false // set once derives can run
+
+    implParams <-
+        fun tr t ->
+            match prune t with
+            | TCon(n, args) ->
+                match implOthers.TryGetValue((tr, n)) with
+                | true, os -> Some(List.map (substGen args) os)
+                | _ -> None
+            | _ -> None
 
     userImpl <-
         fun tr t ->
@@ -1212,6 +1256,9 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
     /// first and doesn't mention its type anywhere else (so a call can pass the value it has).
     let dynOf (tr: string) =
         for m in traitMethods.Values do
+            if m.owner = tr && m.nparams > 1 then
+                fail 0 (sprintf "dyn %s isn't possible: a trait with several type parameters has no dyn" (shortName tr))
+
             if m.owner = tr then
                 let ok =
                     match m.ty with
@@ -1395,17 +1442,17 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
 
         if takesFunction st then fn true st else toTy (Some tps) st
 
-    /// Whether a trait method's type has an ambient row (methodType).
-    let hasAmbient (t: Ty) =
+    /// Whether a trait method's type has an ambient row (methodType): TGen after its parameters.
+    let hasAmbient (tm: TraitMethod) =
         let rec go (t: Ty) =
             match t with
-            | TGen 1 -> true
+            | TGen i when i = tm.nparams -> true
             | TFun(a, b, r) -> go a || go b || go (snd (rowParts r))
             | TCon(_, ts)
             | TTuple ts -> List.exists go ts
             | _ -> false
 
-        go t
+        go tm.ty
 
     let annot ann =
         match ann with
@@ -1439,7 +1486,17 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
         | None -> c
 
     let instantiate (kinds: Kind list) (t: Ty) =
-        let vars = kinds |> List.map fresh
+        let vars = kinds |> List.map (fun k -> fresh { k with params = Map.empty })
+
+        // a kind's trait parameters may name the scheme's other variables ('c : Iter<'a>)
+        for v, k in List.zip vars kinds do
+            match v with
+            | TVar r when not k.params.IsEmpty ->
+                match r.Value with
+                | Unbound(id, k0) -> r.Value <- Unbound(id, { k0 with params = k.params |> Map.map (fun _ ps -> List.map (substGen vars) ps) })
+                | Link _ -> ()
+            | _ -> ()
+
         substGen vars t, vars
 
     /// A user type applied to fresh type arguments.
@@ -2453,8 +2510,19 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
         | Yield _
         | YieldAll _ -> fail 0 "yield belongs in [ … ], [| … |] or seq { }"
         | ForIn(x, xs, body) ->
+            // for x in c do body: Iter.forEach c (fun x -> body; true) (0017), c evaluated once,
+            // before the loop. The lambda is the compiler's: its body is typed at the function's
+            // depth, so it may assign the function's mutables (the impl's forEach is inlined and
+            // the lambda applied in place; Lift gives an assigned variable a cell otherwise)
             let cxs = inf xs
-            settle cxs.ty
+            let fe = inf (Var "Iter.forEach")
+
+            let collTy, elTy, row =
+                match prune fe.ty with
+                | TFun(c, TFun(TFun(a, _, _), _, r), _) -> c, a, r
+                | t -> failwith (sprintf "Iter.forEach : %s" (show t))
+
+            expect "for needs a collection" collTy cxs.ty
 
             let coll =
                 { u = uniq "$coll"
@@ -2462,65 +2530,23 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                   mut = false
                   depth = depth }
 
-            let env' = env.Add("$coll", coll)
+            let xu = uniq x
 
-            let loop =
-                match prune cxs.ty with
-                | TCon(("array" | "Buffer" | "span" | "fixed") as c, _) ->
-                    let len =
-                        match c with
-                        | "array" -> "Collections.Array.length"
-                        | "Buffer" -> "Collections.Buffer.length"
-                        | "fixed" -> "Collections.Fixed.length"
-                        | _ -> "Collections.Span.length"
+            let envB =
+                env
+                    .Add("$coll", coll)
+                    .Add(x,
+                         { u = xu
+                           ty = elTy
+                           mut = false
+                           depth = depth })
 
-                    For("$i", Lit 0L, None, Bin("-", Call(len, [ Var "$coll" ]), Lit 1L), Let(PIdent(x, None), None, Index(Var "$coll", Var "$i"), body))
-                | TCon("list", _) ->
-                    // a while loop over a cursor, so the body may assign outer mutable variables
-                    LetMut(
-                        "$cur",
-                        None,
-                        Var "$coll",
-                        LetMut(
-                            "$go",
-                            None,
-                            BoolLit true,
-                            While(
-                                Var "$go",
-                                Match(
-                                    Var "$cur",
-                                    [ PIdent("::", Some(PTuple [ PIdent(x, None); PIdent("$rest", None) ])),
-                                      None,
-                                      Seq(Assign(Var "$cur", Var "$rest"), body)
-                                      PIdent("[]", None), None, Assign(Var "$go", BoolLit false) ]
-                                )
-                            )
-                        )
-                    )
-                | TCon("string", []) ->
-                    // the characters of a string, decoding its UTF-8 as it goes
-                    LetMut(
-                        "$pos",
-                        None,
-                        Lit 0L,
-                        While(
-                            Bin("<", Var "$pos", Call("Text.String.length", [ Var "$coll" ])),
-                            Let(
-                                PTuple [ PIdent("$ch", None); PIdent("$next", None) ],
-                                None,
-                                Call("Text.String.decodeAt", [ Var "$coll"; Var "$pos" ]),
-                                Seq(Assign(Var "$pos", Var "$next"), Let(PIdent(x, None), None, Var "$ch", body))
-                            )
-                        )
-                    )
-                | TCon("Collections.Seq", _) ->
-                    // a sequence: its elements handled one at a time, the body resuming it
-                    Handle(Call("Collections.Seq.yieldAll", [ Var "$coll" ]), [ "Yield.yield", [ PIdent(x, None) ], "$k", Seq(body, App(Var "$k", [ UnitLit ])) ], None)
-                | t -> fail 0 (sprintf "'for ... in' needs a list, an array, a Buffer, a span, a string or a Seq, not %s" (show t))
-
-            let cl = infer env' depth loop
-            expect "body of 'for'" tUnit cl.ty
-            mk (CLet(coll.u, cxs, cl)) tUnit
+            let cb = withRow row (fun () -> infer envB depth body)
+            expect "the body of 'for'" tUnit cb.ty
+            let lam = mk (CLam([ xu, elTy ], mk (CSeq(cb, mk (CBool true) tBool)) tBool)) (TFun(elTy, tBool, row))
+            useRow row
+            let call = mk (CApp(fe, [ mk (CLocal coll.u) cxs.ty; lam ])) tBool
+            mk (CLet(coll.u, cxs, mk (CSeq(call, mk CUnit tUnit)) tUnit)) tUnit
         | TryBind(p, e, rest) ->
             // match e with Ok p -> rest | Error err -> Error err, or, on an option, match e with
             // Some p -> rest | None -> None: the rest of the block (the function's result, or the
@@ -2943,12 +2969,21 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
     /// A trait method, instantiated; its type parameter must implement the trait.
     and traitMethod (x: string) : CExpr =
         let tm = traitMethods[traitAliases[x]]
-        let t, inst = instantiate (kTrait tm.owner :: (if hasAmbient tm.ty then [ kRow ] else [])) tm.ty
+        let n = tm.nparams
+
+        // the head needs the trait, with its other parameters (Iter<'a>), which the impl for the
+        // head's type determines; then the method's ambient row
+        let head =
+            if n = 1 then kTrait tm.owner
+            else { kTrait tm.owner with params = Map.ofList [ tm.owner, List.init (n - 1) (fun i -> TGen(i + 1)) ] }
+
+        let kinds = head :: List.init (n - 1) (fun _ -> kAny) @ (if hasAmbient tm then [ kRow ] else [])
+        let t, inst = instantiate kinds tm.ty
         let qname = tm.owner + "." + tm.name
 
         // through dyn, the ambient row is empty: checked once the value's type is known
-        if hasAmbient tm.ty then
-            dynCalls.Add(inst[0], inst[1], tm.owner, tm.name, currentLine.Value)
+        if hasAmbient tm then
+            dynCalls.Add(inst[0], inst[n], tm.owner, tm.name, currentLine.Value)
 
         if tm.isConst then
             mk (CApp(mk (CGlobal(qname, Some inst)) (tfun tUnit t), [ mk CUnit tUnit ])) t
@@ -4131,7 +4166,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
 
     /// Registers an impl and type-checks its methods. The impl is registered before its
     /// bodies so they may use it recursively; its requirements on type arguments are inferred.
-    let declareImpl (tr: string) (head: SType) (defs: (int * string * Param list * SType option * Expr) list) =
+    let declareImpl (tr: string) (head: SType) (others: SType list) (defs: (int * string * Param list * SType option * Expr) list) =
         let tr = resolveWith traitNames.Contains tr |> Option.defaultValue tr
 
         let methods =
@@ -4139,6 +4174,8 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
 
         if methods.IsEmpty then
             fail 0 (sprintf "unknown trait '%s'" tr)
+
+        let arity = (traitMethods.Values |> Seq.find (fun m -> m.owner = tr)).nparams
 
         let hn, hargs =
             match head with
@@ -4166,6 +4203,27 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
         if impls.ContainsKey((tr, hn)) then
             fail 0 (sprintf "%s<%s> is already implemented" tr hn)
 
+        if others.Length <> arity - 1 then
+            fail 0 (sprintf "%s takes %d type parameters, and this impl gives %d" (shortName tr) arity (others.Length + 1))
+
+        // the other parameters are made of the head's variables: the head's type determines them
+        let rec varsOf (st: SType) =
+            match st with
+            | STVar v -> [ v ]
+            | STName(_, args)
+            | STTuple args -> List.collect varsOf args
+            | STFun(a, b) -> varsOf a @ varsOf b
+            | _ -> []
+
+        implOthers[(tr, hn)] <-
+            others
+            |> List.map (fun o ->
+                match varsOf o |> List.tryFind (fun v -> not (List.contains v hvars)) with
+                | Some v ->
+                    let theirs = if hvars.IsEmpty then "it has none" else hvars |> List.map ((+) "'") |> String.concat ", "
+                    fail 0 (sprintf "impl %s: '%s isn't a type variable of %s; the other parameters are made of the head's (%s), such as 'a * int or list<'a>" (shortName tr) v (shortName hn) theirs)
+                | None -> toTy (Some hvars) o)
+
         let given = defs |> List.map (fun (_, n, _, _, _) -> n)
 
         for m in methods do
@@ -4190,7 +4248,8 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                 let ps = if ps.IsEmpty then [ PUnit, None ] else ps
 
                 let expected () =
-                    let t = substGen [ toTy None head; fresh kRow ] tm.ty
+                    let h = toTy None head
+                    let t = substGen (h :: List.map (toTy None) others @ [ fresh kRow ]) tm.ty
                     if tm.isConst then tfun tUnit t else t
 
                 dl, fname, true, ps, ret, body, Some expected)
@@ -4267,7 +4326,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
 
         try
             try
-                declareImpl tr head defs
+                declareImpl tr head [] defs
             with
             | CompileError(l, msg) -> fail l (sprintf "%s: %s" context msg)
             | CompileErrorPos(l, c, msg) -> raise (CompileErrorPos(l, c, sprintf "%s: %s" context msg))
@@ -4479,7 +4538,13 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                 let needs =
                     g.kinds
                     |> List.indexed
-                    |> List.collect (fun (i, k) -> k.traits |> Set.toList |> List.map (fun tr -> sprintf "%s : %s" (show (TGen i)) tr))
+                    |> List.collect (fun (i, k) ->
+                        k.traits
+                        |> Set.toList
+                        |> List.map (fun tr ->
+                            match k.params.TryFind tr with
+                            | Some ps -> sprintf "%s : %s<%s>" (show (TGen i)) tr (ps |> List.map show |> String.concat ", ")
+                            | None -> sprintf "%s : %s" (show (TGen i)) tr))
 
                 if not needs.IsEmpty && hovers.Count > 0 && hovers[hovers.Count - 1].name = name then
                     hovers[hovers.Count - 1] <- { hovers[hovers.Count - 1] with constraints = String.concat ", " needs }
@@ -4543,14 +4608,14 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                     // hover and definition: the operation as it's performed
                     let label = TCon(name, List.init tps.Length TGen)
                     recordKey (fst ops[i]) o.name (funTyRow o.pars o.ret (rowExt label rowEmpty)) false q true
-            | Trait(name, tp, methods) ->
+            | Trait(name, tps, methods) ->
                 let name = qualify name
 
                 if not (traitNames.Add name) then
                     fail 0 (sprintf "trait '%s' is already defined" name)
 
                 for m, st in methods do
-                    let t = methodType [ tp ] st
+                    let t = methodType tps st
 
                     let isConst =
                         match t with
@@ -4563,6 +4628,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                         { owner = name
                           name = m
                           ty = t
+                          nparams = tps.Length
                           isConst = isConst }
 
                     traitAliases[qname] <- qname
@@ -4574,7 +4640,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
 
                 if name = "Show" then
                     traitAliases["string"] <- "Show.show"
-            | Impl(tr, head, defs) -> declareImpl tr head defs
+            | Impl(tr, head, others, defs) -> declareImpl tr head others defs
             | Derive(name, defs) ->
                 derives[qualify name] <- defs
                 deriveModules[qualify name] <- currentModule.Value

@@ -10,6 +10,28 @@ type Map<'k, 'v> =
   /// A node: left subtree, key, value, right subtree, height.
   | MapNode of Map<'k, 'v> * 'k * 'v * Map<'k, 'v> * int
 
+/// A map's entries in ascending key order, walked in a loop with the path to the current node in
+/// a list (not a recursion), so a `for` over a map is one loop with its body in place.
+impl Iter<Map<'k, 'v>, 'k * 'v> =
+  let forEach m f =
+    let mutable path = []
+    let mutable cur = m
+    let mutable ok = true
+    let mutable more = true
+    while ok && more do
+      match cur with
+      | MapNode (l, _, _, _, _) ->
+        path <- cur :: path
+        cur <- l
+      | MapLeaf ->
+        match path with
+        | MapNode (_, k, v, r, _) :: rest ->
+          path <- rest
+          cur <- r
+          ok <- f (k, v)
+        | _ -> more <- false
+    ok
+
 /// Functions on `Map`.
 module Map =
   let private mapHeight m =
@@ -116,28 +138,48 @@ module Map =
     | MapNode (l, k, v, r, _) -> Map.fold f (f (Map.fold f state l) k v) r
 
   /// The number of entries. O(n).
-  let count (m: Map<'k, 'v>) = Map.fold (fun n _ _ -> n + 1) 0 m
+  let count (m: Map<'k, 'v>) =
+    let mutable n = 0
+    for _ in m do
+      n <- n + 1
+    n
 
   /// The entries as (key, value) pairs in ascending key order.
-  let toList (m: Map<'k, 'v>) = List.rev (Map.fold (fun acc k v -> (k, v) :: acc) [] m)
+  let toList (m: Map<'k, 'v>) =
+    let mutable acc = []
+    for kv in m do
+      acc <- kv :: acc
+    List.rev acc
+
+  /// A map of the pairs a collection has (a later pair wins over an earlier one with the same
+  /// key): a list, an array, another map, …
+  let ofIter (pairs: 'c) : Map<'k, 'v> =
+    let mutable m = MapLeaf
+    for (k, v) in pairs do
+      m <- Map.add k v m
+    m
 
   /// A map with the pairs' bindings (a later pair wins over an earlier one with the same key).
   let ofList (pairs: list<'k * 'v>) = List.fold (fun m (k, v) -> Map.add k v m) Map.empty pairs
 
   /// The keys in ascending order.
-  let keys (m: Map<'k, 'v>) = List.map fst (Map.toList m)
+  let keys (m: Map<'k, 'v>) =
+    let mutable acc = []
+    for (k, _) in m do
+      acc <- k :: acc
+    List.rev acc
 
   /// The values in ascending key order.
-  let values (m: Map<'k, 'v>) = List.map snd (Map.toList m)
+  let values (m: Map<'k, 'v>) =
+    let mutable acc = []
+    for (_, v) in m do
+      acc <- v :: acc
+    List.rev acc
 
   /// Calls `f key value` on every entry in ascending key order.
-  let rec iter f (m: Map<'k, 'v>) =
-    match m with
-    | MapLeaf -> ()
-    | MapNode (l, k, v, r, _) ->
-      Map.iter f l
+  let iter f (m: Map<'k, 'v>) =
+    for (k, v) in m do
       f k v
-      Map.iter f r
 
   /// The map with `f key value` as every value.
   let rec map f (m: Map<'k, 'v>) =

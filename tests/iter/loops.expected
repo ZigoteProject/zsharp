@@ -1,0 +1,4 @@
+for over a Map: Map.iter's loop
+sumArray: one loop, nothing allocated
+sumList: one loop, nothing allocated
+count<int>: one loop, nothing allocated

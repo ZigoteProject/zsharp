@@ -39,6 +39,14 @@ impl Show<fixed<'a, 'n>>
 
 As F# prints an array: `[|1; 2; 3|]`.
 
+### `impl Iter<fixed<'a, 'n>, 'a>`
+
+```zsharp
+impl Iter<fixed<'a, 'n>, 'a>
+```
+
+A fixed-size array's elements, by index.
+
 ## Functions
 
 ### `Fixed.init`

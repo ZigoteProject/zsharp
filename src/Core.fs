@@ -9,9 +9,11 @@ open System.Collections.Generic
 /// implements every trait in `traits`.
 type Kind =
     { allowed: Set<string> option
-      traits: Set<string> }
+      traits: Set<string>
+      /// a trait's other parameters (Iter<int>'s int), which the impl for the type determines (0017)
+      params: Map<string, Ty list> }
 
-type Ty =
+and Ty =
     | TCon of string * Ty list // int, f64, string, list<_>, user types; args can later carry units of measure
     /// A function: parameter, result, and the effects calling it performs (its row, DESIGN §6.1).
     | TFun of Ty * Ty * Ty
@@ -98,13 +100,13 @@ let featuresInclude (have: string list) (need: string) =
 let simdModule (n: string) = string (System.Char.ToUpper n[0]) + n.Substring 1
 
 let prims = nums + simdNames + set [ "bool"; "char"; "string"; "cstr"; "cptr"; "unit" ] // cptr: any other C pointer, opaque
-let kAny = { allowed = None; traits = Set.empty }
-let private allow s = { allowed = Some s; traits = Set.empty }
+let kAny = { allowed = None; traits = Set.empty; params = Map.empty }
+let private allow s = { allowed = Some s; traits = Set.empty; params = Map.empty }
 let kInt, kFloat, kNumeric = allow ints, allow floats, allow nums
 let kConvertible = allow (nums.Add "char") // what the conversion functions (int, u8, …) take
 let kIntOrChar = allow (ints.Add "char") // what `char` converts from
 let kStrLit = allow (set [ "string"; "cstr" ])
-let kTrait (t: string) = { allowed = None; traits = set [ t ] }
+let kTrait (t: string) = { allowed = None; traits = set [ t ]; params = Map.empty }
 
 /// Built-in impls of the prelude's operator traits for primitive types.
 let builtinImpls =
@@ -170,7 +172,7 @@ let typeAliases = dict [ "c_int", "i32"; "float", "f64"; "double", "f64" ]
 /// a row twice: the first is the innermost handler's.
 let rowEmpty = TCon("$total", [])
 let rowExt (label: Ty) (rest: Ty) = TCon("$ext", [ label; rest ])
-let kRow = { allowed = Some(set [ "$total" ]); traits = Set.empty }
+let kRow = { allowed = Some(set [ "$total" ]); traits = Set.empty; params = Map.empty }
 let isRowKind (k: Kind) = k.allowed = kRow.allowed
 let mkRow (labels: Ty list) (tail: Ty) = List.foldBack rowExt labels tail
 
@@ -942,7 +944,8 @@ type EffectInfo = { npars: int; ops: EffectOp list }
 type TraitMethod =
     { owner: string
       name: string
-      ty: Ty // TGen 0 is the trait's type parameter
+      ty: Ty // TGen 0 is the trait's first type parameter, the others follow (0017)
+      nparams: int // the trait's type parameters; TGen nparams is the method's ambient row (0025)
       isConst: bool } // `abstract zero : 'a`: implemented as unit -> 'a
 
 /// Whether a diagnostic stops the build (0021).

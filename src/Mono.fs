@@ -145,11 +145,17 @@ let runFrom (prog: Program) (def: string -> FunDef) (roots: string list) (extern
     let count = ref 0
 
     /// The impl function (instantiated) for trait method `trait.m` at concrete type t.
+    // the name an impl is kept under for a type, lowered already (concrete) or not: a span is a
+    // window, a Buffer a cell over one
+    let implHead (t: Ty) =
+        match prune t with
+        | TCon(n, _) when n = windowType -> "span"
+        | TCon("ref", [ TCon(n, _) ]) when n = bufferType -> "Buffer"
+        | TCon(n, _) -> n
+        | t -> showFull t
+
     let implFn (tr: string) (m: string) (t: Ty) (methodTy: Ty) : CExpr =
-        let tn =
-            match prune t with
-            | TCon(n, _) -> n
-            | t -> showFull t
+        let tn = implHead t
 
         match prog.impls.TryGetValue((tr, tn)) with
         | true, table ->
@@ -228,7 +234,7 @@ let runFrom (prog: Program) (def: string -> FunDef) (roots: string list) (extern
             | TTuple _ -> true
             | _ -> false
 
-        if not (isPrim t || isTuple || isDyn t) || prog.impls.ContainsKey((tm.owner, showFull t)) then
+        if not (isPrim t || isTuple || isDyn t) || prog.impls.ContainsKey((tm.owner, showFull t)) || prog.impls.ContainsKey((tm.owner, implHead t)) then
             let f = implFn tm.owner tm.name t headTy
             if args.IsEmpty then f else mk (CApp(f, args)) resTy
         elif args.Length = arity then

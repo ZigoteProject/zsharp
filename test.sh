@@ -113,6 +113,11 @@ if [ "$proj" = "$expected" ]; then echo "ok   projects (zs.toml, path dependency
 else echo "FAIL projects"; diff <(echo "$proj") <(echo "$expected"); fail=1; fi
 rm -rf tests/project/wc/build tests/project/two/build
 
+# what for over Iter costs (0017): a for over a Map is Map.iter's loop; loops over an array, a
+# list and a string allocate nothing
+if [ "$(tests/iter/loops.sh bin/zs 2>&1)" == "$(cat tests/iter/loops.expected)" ]; then echo "ok   tests/iter/loops.sh"
+else echo "FAIL tests/iter/loops.sh"; diff <(tests/iter/loops.sh bin/zs 2>&1) tests/iter/loops.expected; fail=1; fi
+
 # the first-party packages: their own tests, with their C through [c] (0018 item 4)
 pk=$( (cd packages/xxhash && "$zs" test | tail -1; cd ../libclang && "$zs" test | tail -1) 2>&1 )
 if [ "$pk" = "1 passed, 0 failed

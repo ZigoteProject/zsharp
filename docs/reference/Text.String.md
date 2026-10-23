@@ -93,6 +93,16 @@ member s.Replace(old: string, by: string)
 
 The string with every `old` replaced by `by`.
 
+## Derives and impls
+
+### `impl Iter<string, char>`
+
+```zsharp
+impl Iter<string, char>
+```
+
+A string's characters (code points), decoding its UTF-8; its bytes are `String.bytes s`.
+
 ## Functions
 
 ### `String.isEmpty`
