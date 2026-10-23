@@ -62,8 +62,9 @@ let make (o: Options.Options) (testBuild: bool) : Built =
 
 /// zs build: make, and its report; 0 when it made the output.
 let build (o0: Options.Options) (testBuild: bool) : int =
-  // ZS_TIME=1 is --time for every build
-  let o = if Option.isSome (Environment.getVariable "ZS_TIME") then { o0 with time = true } else o0
+  // ZS_TIME=1 is --time for every build, ZS_CHECK_IR=1 --check-ir (./test.sh sets it)
+  let o1 = if Option.isSome (Environment.getVariable "ZS_TIME") then { o0 with time = true } else o0
+  let o = if Option.isSome (Environment.getVariable "ZS_CHECK_IR") then { o1 with checkIr = true } else o1
   let total = Diagnostics.Stopwatch.startNew ()
   let b = make o testBuild
   let code = if Check.report b.sources b.diagnostics o.strict && b.made then 0 else 1

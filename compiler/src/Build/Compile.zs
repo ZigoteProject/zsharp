@@ -28,6 +28,16 @@ let private stage (name: string) (funs: list<MFun>) : list<MFun> =
   dumpAt name funs
   funs
 
+/// After a pass: with --check-ir (ZS_CHECK_IR=1), the IR checked (Core.Check), a failure stopping
+/// the build there as an internal error naming the pass and the function.
+let checkedAfter (on: bool) (pass: string) (funs: list<MFun>) : list<MFun> / Stops =
+  if on then
+    match Core.Check.core pass true funs with
+    | Some what -> Stops.stop { file = ""; line = 0; message = "internal error (--check-ir): " + what }
+    | None -> funs
+  else
+    funs
+
 /// A phase's milliseconds as zs build --time shows them.
 let timeLine (name: string) (ms: float) : string = String.padRight 20 name + " " + String.padLeft 8 $"{ms:F1}" + " ms"
 
@@ -50,7 +60,7 @@ let rec private waits (e: Core.Ir.CExpr) : bool =
 /// A checked program's functions monomorphic, closure-converted and reference counted, with the
 /// types the passes added (effects' frames); Error where a pass can't go on. A debug build keeps
 /// every function whole (no inlining), so breakpoints on them hit.
-let lower (prog0: Program) (debugInfo: bool) (time: bool) : result<Map<string, TypeInfo> * list<MFun>, PassError> =
+let lower (prog0: Program) (debugInfo: bool) (time: bool) (checkIr: bool) : result<Map<string, TypeInfo> * list<MFun>, PassError> =
   let prog = Opt.Mono.lowered prog0
   // functions called from outside keep their signatures (main, the tests, C exports)
   let fixedNames = Set.ofList ("main" :: List.append prog.tests (List.map (fun (e: Core.Ir.Export) -> e.fname) prog.exports))
@@ -58,21 +68,23 @@ let lower (prog0: Program) (debugInfo: bool) (time: bool) : result<Map<string, T
   // callers may not have
   let kept (n: string) = Map.containsKey (Core.Ir.baseFunName n) prog.targets
   let passes () : result<Map<string, TypeInfo> * list<MFun>, PassError> / Stops =
-    let mono = stage "mono" (timed time "monomorphize" (fun () -> Opt.Mono.fuse (Opt.Mono.checkShared prog (Opt.Mono.run prog))))
-    let inlined = stage "inline" (timed time "inline" (fun () -> if debugInfo then mono else Opt.Inline.run kept (Opt.Inline.uncurry fixedNames mono)))
+    let check (pass: string) (funs: list<MFun>) = checkedAfter checkIr pass funs
+    let mono = check "monomorphize" (stage "mono" (timed time "monomorphize" (fun () -> Opt.Mono.fuse (Opt.Mono.checkShared prog (Opt.Mono.run prog)))))
+    let inlined = check "inline" (stage "inline" (timed time "inline" (fun () -> if debugInfo then mono else Opt.Inline.run kept (Opt.Inline.uncurry fixedNames mono))))
     // ZS_NO_SIMPLIFY=1: no simplification, to compare with the F# compiler's passes
     let simple = Option.isSome (Environment.getVariable "ZS_NO_SIMPLIFY") || debugInfo
-    let simplified = stage "simplify" (timed time "simplify" (fun () -> if simple then inlined else Opt.Simplify.run prog.types inlined))
-    let (types, lowered) = timed time "effects" (fun () -> Opt.Evidence.run prog.types prog.effects simplified)
+    let simplified = check "simplify" (stage "simplify" (timed time "simplify" (fun () -> if simple then inlined else Opt.Simplify.run prog.types inlined)))
+    let (types, lowered0) = timed time "effects" (fun () -> Opt.Evidence.run prog.types prog.effects simplified)
+    let lowered = check "effects" lowered0
     // ZS_NO_DECIDE=1: matches as written, to compare with decision trees
     let decide = Option.isNone (Environment.getVariable "ZS_NO_DECIDE")
-    let decided = stage "decide" (timed time "decision trees" (fun () -> if decide then Opt.Decide.run types (stage "effects" lowered) else stage "effects" lowered))
-    let lifted = stage "lift" (timed time "lift closures" (fun () -> Opt.Lift.run decided))
+    let decided = check "decision trees" (stage "decide" (timed time "decision trees" (fun () -> if decide then Opt.Decide.run types (stage "effects" lowered) else stage "effects" lowered)))
+    let lifted = check "lift closures" (stage "lift" (timed time "lift closures" (fun () -> Opt.Lift.run decided)))
     // a task's state machine owns its parameters: they live in its coroutine frame past the call
     // that starts it
     let machines = Set.ofList (List.map (fun (f: MFun) -> f.name) (List.filter (fun (f: MFun) -> waits f.body) lifted))
     let entries = Set.union fixedNames machines
-    let counted = stage "rc" (timed time "reference counting" (fun () -> Opt.Rc.lower types (Opt.Rc.borrowing types entries lifted) lifted))
+    let counted = check "reference counting" (stage "rc" (timed time "reference counting" (fun () -> Opt.Rc.lower types (Opt.Rc.borrowing types entries lifted) lifted)))
     Ok(types, counted)
   handle passes () with
   | Stops.stop e, _ -> Error e
@@ -189,7 +201,7 @@ let generate (o: Options.Options) (prog0: Program) (testBuild: bool) : result<Pr
   match (if o.isLib then prog.values else []) with
   | (value, _) :: _ -> Error(InPass { file = ""; line = 0; message = $"top-level value '{value}' is computed at startup, which a library doesn't have; make it a constant or a function" })
   | [] ->
-    match lower prog o.debugInfo o.time with
+    match lower prog o.debugInfo o.time o.checkIr with
     | Error e -> Error(InPass e)
     | Ok(types, funs) ->
       // a library's handles may be used on any thread of its C host

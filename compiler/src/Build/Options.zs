@@ -44,6 +44,8 @@ type Options =
     time: bool
     /// built by the build server (--time says so)
     served: bool
+    /// --check-ir: the IR checked after each pass (Core.Check), as ./test.sh does
+    checkIr: bool
     /// the arguments after the file (zs run's, for the program)
     rest: list<string> }
 
@@ -68,6 +70,7 @@ let defaults : Options =
     profileUse = None
     time = false
     served = false
+    checkIr = false
     rest = [] }
 
 /// The options a command's arguments ask for, and the arguments that aren't flags (in order);
@@ -94,6 +97,7 @@ let parse (args: list<string>) : result<Options * list<string>, string> =
     | "--profile-generate" :: more -> go { o with profileGenerate = true; release = true } others more
     | "--profile-use" :: file :: more -> go { o with profileUse = Some file; release = true } others more
     | "--time" :: more -> go { o with time = true } others more
+    | "--check-ir" :: more -> go { o with checkIr = true } others more
     | a :: more ->
       if Set.contains a levels then go { o with opt = Some a } others more
       else if String.startsWith "--cpu=" a then go { o with cpu = Some(String.sub a 6 (String.length a - 6)) } others more

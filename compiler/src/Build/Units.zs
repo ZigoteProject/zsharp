@@ -166,23 +166,25 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
       match Map.tryFind g abiFun.Value with
       | Some a -> a.reach
       | None -> None
+    let check (pass: string) (funs: list<MFun>) = Compile.checkedAfter o.checkIr pass funs
     let monomorphic = timedInto timedLines "monomorphize" (fun () -> Opt.Mono.runFrom prog defOf roots external)
     let (reach, _) = Opt.Mono.reaching prog monomorphic reachOf
-    let mono0 = timedInto timedLines "monomorphize" (fun () -> Opt.Mono.fuse (Opt.Mono.checkSharedWith prog reachOf monomorphic))
+    let mono0 = check "monomorphize" (timedInto timedLines "monomorphize" (fun () -> Opt.Mono.fuse (Opt.Mono.checkSharedWith prog reachOf monomorphic)))
     let mayInline (caller: string) (g: string) =
       match unitOf g with
       | None -> true
       | u -> unitOf caller = u
-    let mono1 = if o.debugInfo then mono0 else timedInto timedLines "inline" (fun () -> Opt.Inline.runWith kept mayInline (Opt.Inline.uncurry fixedNames mono0))
-    let mono2 = timedInto timedLines "simplify" (fun () -> if simple then mono1 else Opt.Simplify.run types.Value mono1)
-    let (lowered, mono3) = timedInto timedLines "effects" (fun () -> Opt.Evidence.run types.Value prog.effects mono2)
+    let mono1 = check "inline" (if o.debugInfo then mono0 else timedInto timedLines "inline" (fun () -> Opt.Inline.runWith kept mayInline (Opt.Inline.uncurry fixedNames mono0)))
+    let mono2 = check "simplify" (timedInto timedLines "simplify" (fun () -> if simple then mono1 else Opt.Simplify.run types.Value mono1))
+    let (lowered, mono3a) = timedInto timedLines "effects" (fun () -> Opt.Evidence.run types.Value prog.effects mono2)
+    let mono3 = check "effects" mono3a
     types.Value <- lowered
-    let mono4 = timedInto timedLines "decision trees" (fun () -> if decide then Opt.Decide.run types.Value mono3 else mono3)
+    let mono4 = check "decision trees" (timedInto timedLines "decision trees" (fun () -> if decide then Opt.Decide.run types.Value mono3 else mono3))
     let arityOf (g: string) : option<int> =
       match Map.tryFind g abiFun.Value with
       | Some a -> Some(List.length a.apars)
       | None -> None
-    let lifted = timedInto timedLines "lift closures" (fun () -> Opt.Lift.runWith arityOf true mono4)
+    let lifted = check "lift closures" (timedInto timedLines "lift closures" (fun () -> Opt.Lift.runWith arityOf true mono4))
     // a task's state machine owns its parameters: they live in its coroutine frame past the call
     // that starts it
     let machines = Set.ofList (List.map (fun (f: MFun) -> f.name) (List.filter (fun (f: MFun) -> waits f.body) lifted))
@@ -274,7 +276,7 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
       // reference counting with the parameters each callee borrows, this module's own and the
       // others'
       let all = List.fold (fun acc g -> Map.add g (Set.ofList (Map.find g abiFun.Value).borrowed) acc) borrowed (Set.toList externals.Value)
-      let counted = timedInto timedLines "reference counting" (fun () -> Opt.Rc.lower types.Value all m.mfuns)
+      let counted = check "reference counting" (timedInto timedLines "reference counting" (fun () -> Opt.Rc.lower types.Value all m.mfuns))
       Compile.dumpAt "rc" counted
       made.Value <- Map.add u.file { mfuns = counted; calls = List.map (fun g -> Map.find g abiFun.Value) (Set.toList externals.Value) } made.Value
   // a module's code is current when what it was made from is: its checked result's key and the
