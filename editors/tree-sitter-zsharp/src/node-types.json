@@ -650,6 +650,10 @@
           "named": true
         },
         {
+          "type": "negative_pattern",
+          "named": true
+        },
+        {
           "type": "number",
           "named": true
         },
@@ -1658,6 +1662,10 @@
           "named": true
         },
         {
+          "type": "negative_pattern",
+          "named": true
+        },
+        {
           "type": "number",
           "named": true
         },
@@ -1737,6 +1745,10 @@
         },
         {
           "type": "named_fields_pattern",
+          "named": true
+        },
+        {
+          "type": "negative_pattern",
           "named": true
         },
         {
@@ -1978,6 +1990,16 @@
     "type": "derive_declaration",
     "named": true,
     "fields": {
+      "member": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
       "name": {
         "multiple": false,
         "required": true,
@@ -1991,7 +2013,7 @@
     },
     "children": {
       "multiple": true,
-      "required": true,
+      "required": false,
       "types": [
         {
           "type": "definition",
@@ -2579,6 +2601,10 @@
           "named": true
         },
         {
+          "type": "negative_pattern",
+          "named": true
+        },
+        {
           "type": "number",
           "named": true
         },
@@ -2963,6 +2989,10 @@
           },
           {
             "type": "named_fields_pattern",
+            "named": true
+          },
+          {
+            "type": "negative_pattern",
             "named": true
           },
           {
@@ -3631,6 +3661,10 @@
             "named": true
           },
           {
+            "type": "negative_pattern",
+            "named": true
+          },
+          {
             "type": "number",
             "named": true
           },
@@ -3705,6 +3739,10 @@
         },
         {
           "type": "named_fields_pattern",
+          "named": true
+        },
+        {
+          "type": "negative_pattern",
           "named": true
         },
         {
@@ -4801,6 +4839,10 @@
             "named": true
           },
           {
+            "type": "negative_pattern",
+            "named": true
+          },
+          {
             "type": "number",
             "named": true
           },
@@ -5028,6 +5070,10 @@
           },
           {
             "type": "named_fields_pattern",
+            "named": true
+          },
+          {
+            "type": "negative_pattern",
             "named": true
           },
           {
@@ -6026,6 +6072,10 @@
           "named": true
         },
         {
+          "type": "negative_pattern",
+          "named": true
+        },
+        {
           "type": "number",
           "named": true
         },
@@ -6556,6 +6606,10 @@
           },
           {
             "type": "named_fields_pattern",
+            "named": true
+          },
+          {
+            "type": "negative_pattern",
             "named": true
           },
           {
@@ -7213,6 +7267,10 @@
           "named": true
         },
         {
+          "type": "negative_pattern",
+          "named": true
+        },
+        {
           "type": "number",
           "named": true
         },
@@ -7269,6 +7327,21 @@
           }
         ]
       }
+    }
+  },
+  {
+    "type": "negative_pattern",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "number",
+          "named": true
+        }
+      ]
     }
   },
   {
@@ -7399,6 +7472,10 @@
         },
         {
           "type": "named_fields_pattern",
+          "named": true
+        },
+        {
+          "type": "negative_pattern",
           "named": true
         },
         {
@@ -7625,6 +7702,10 @@
         },
         {
           "type": "named_fields_pattern",
+          "named": true
+        },
+        {
+          "type": "negative_pattern",
           "named": true
         },
         {
@@ -8508,6 +8589,10 @@
             "named": true
           },
           {
+            "type": "negative_pattern",
+            "named": true
+          },
+          {
             "type": "number",
             "named": true
           },
@@ -8992,6 +9077,10 @@
         },
         {
           "type": "named_fields_pattern",
+          "named": true
+        },
+        {
+          "type": "negative_pattern",
           "named": true
         },
         {

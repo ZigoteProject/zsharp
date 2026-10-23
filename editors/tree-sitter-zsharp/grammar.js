@@ -184,7 +184,8 @@ module.exports = grammar({
     ),
 
     impl_declaration: $ => seq('impl', field('trait', $.identifier), '<', $._type, '>', '=', $._definitions),
-    derive_declaration: $ => seq('derive', field('name', $.identifier), '=', $._definitions),
+    // derive Show = let show … ; or a group, derive Json = ToJson, FromJson
+    derive_declaration: $ => seq('derive', field('name', $.identifier), '=', choice($._definitions, sep1(field('member', $.identifier), ','))),
     _definitions: $ => seq($._indent, sep1($.definition, $._newline), $._dedent),
     definition: $ => seq('let', field('name', $.identifier), repeat($._parameter), optional($.type_annotation), '=', field('body', $._body)),
 
@@ -402,6 +403,7 @@ module.exports = grammar({
       $.qualified_identifier,
       $.wildcard,
       $.number,
+      $.negative_pattern,
       $.char,
       $.string,
       $.boolean,
@@ -412,6 +414,7 @@ module.exports = grammar({
       $.record_pattern,
     ),
     parenthesized_pattern: $ => seq('(', $._pattern, ')'),
+    negative_pattern: $ => seq('-', $.number), // | -1 -> …
     list_pattern: $ => seq('[', sep($._pattern, ';'), ']'),
     named_fields_pattern: $ => seq('(', sep1(seq($.identifier, '=', $._pattern), choice(',', ';')), ')'),
     record_pattern: $ => seq('{', sep1($.field_pattern, choice(';', $._newline)), optional(choice(';', $._newline)), '}'),
