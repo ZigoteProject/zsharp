@@ -56,6 +56,7 @@ module.exports = grammar({
     [$.as_pattern, $.tuple_pattern],
     [$._primary, $.field_value],
     [$.union_type],
+    [$.union_case, $.type_name], // type T = A: an alias or a union of one case
     [$.let_declaration], // a newline after a body: the next declaration, or `and`
     [$.let_function],
     [$._primary, $.computation_expression], // name { : a record argument, or a computation expression
@@ -126,6 +127,9 @@ module.exports = grammar({
       optional(seq('=', choice(
         // type T = { … }  (members below, or after `with`)
         seq($._type_body, optional($._trailing_members)),
+        // type Duration = i64<ns>: an alias (a bare name is one too, as in F#; read as a union of
+        // one case here, which highlights the same)
+        field('alias', $.type_alias),
         // type T =  then the body indented, members after it at the same indentation
         seq(
           $._indent, $._type_body,
@@ -138,6 +142,7 @@ module.exports = grammar({
       ))),
     ),
     type_parameters: $ => seq('<', sep1($.type_variable, ','), '>'),
+    type_alias: $ => prec.dynamic(-1, $._type),
     _type_body: $ => choice($.record_type, $.union_type),
 
     record_type: $ => seq('{', sep1($.field_declaration, choice(';', $._newline)), optional(choice(';', $._newline)), '}'),
@@ -436,7 +441,15 @@ module.exports = grammar({
       token(seq('"""', repeat(choice(/[^"]/, /"[^"]/, /""[^"]/)), '"""')),
     ),
     interpolated_string: $ => seq('$"', repeat(choice($.interpolated_content, $.escape_sequence, $.interpolation)), '"'),
-    interpolation: $ => seq('{', $._expression, '}'),
+    // {x}, {x,10} (padded to 10 characters, -10 on the right), {x:F2} (a .NET format), {x,8:F1}
+    interpolation: $ => seq(
+      '{', $._expression,
+      optional(seq(',', field('width', $.format_width))),
+      optional(seq(':', field('format', $.format_specifier))),
+      '}',
+    ),
+    format_width: $ => /-?[0-9]+/,
+    format_specifier: $ => token.immediate(/[A-Za-z][0-9]{0,2}/),
     string_content: $ => token.immediate(prec(1, /[^"\\]+/)),
     interpolated_content: $ => token.immediate(prec(1, /[^"\\{}]+/)),
     escape_sequence: $ => token.immediate(choice(/\\[nrt0\\"']/, /\\u\{[0-9a-fA-F]+\}/, '{{', '}}')),

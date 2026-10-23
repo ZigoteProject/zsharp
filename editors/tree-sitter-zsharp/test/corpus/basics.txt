@@ -70,3 +70,47 @@ let sum () =
         (handle_rule
           pattern: (unit)
           body: (number))))))
+
+==================
+type aliases and a record
+==================
+
+type Names = list<string>
+
+type Pair<'a> = 'a * 'a
+
+type Point = { x: int; y: int }
+
+---
+
+(source_file
+  (type_declaration
+    name: (identifier)
+    alias: (type_alias (generic_type (type_name (identifier)) (type_name (identifier)))))
+  (type_declaration
+    name: (identifier)
+    (type_parameters (type_variable))
+    alias: (type_alias (tuple_type (type_variable) (type_variable))))
+  (type_declaration
+    name: (identifier)
+    (record_type
+      (field_declaration name: (identifier) (type_name (identifier)))
+      (field_declaration name: (identifier) (type_name (identifier))))))
+
+==================
+format holes
+==================
+
+let s = $"{name,-10} {ratio:F2} {n,8:N0}"
+
+---
+
+(source_file
+  (let_declaration
+    name: (identifier)
+    body: (interpolated_string
+      (interpolation (identifier) width: (format_width))
+      (interpolated_content)
+      (interpolation (identifier) format: (format_specifier))
+      (interpolated_content)
+      (interpolation (identifier) width: (format_width) format: (format_specifier)))))

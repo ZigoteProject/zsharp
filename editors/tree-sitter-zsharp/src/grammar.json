@@ -882,6 +882,14 @@
                       ]
                     },
                     {
+                      "type": "FIELD",
+                      "name": "alias",
+                      "content": {
+                        "type": "SYMBOL",
+                        "name": "type_alias"
+                      }
+                    },
+                    {
                       "type": "SEQ",
                       "members": [
                         {
@@ -1025,6 +1033,14 @@
           "value": ">"
         }
       ]
+    },
+    "type_alias": {
+      "type": "PREC_DYNAMIC",
+      "value": -1,
+      "content": {
+        "type": "SYMBOL",
+        "name": "_type"
+      }
     },
     "_type_body": {
       "type": "CHOICE",
@@ -5673,10 +5689,71 @@
           "name": "_expression"
         },
         {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "STRING",
+                  "value": ","
+                },
+                {
+                  "type": "FIELD",
+                  "name": "width",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "format_width"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "STRING",
+                  "value": ":"
+                },
+                {
+                  "type": "FIELD",
+                  "name": "format",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "format_specifier"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        },
+        {
           "type": "STRING",
           "value": "}"
         }
       ]
+    },
+    "format_width": {
+      "type": "PATTERN",
+      "value": "-?[0-9]+"
+    },
+    "format_specifier": {
+      "type": "IMMEDIATE_TOKEN",
+      "content": {
+        "type": "PATTERN",
+        "value": "[A-Za-z][0-9]{0,2}"
+      }
     },
     "string_content": {
       "type": "IMMEDIATE_TOKEN",
@@ -5819,6 +5896,10 @@
     ],
     [
       "union_type"
+    ],
+    [
+      "union_case",
+      "type_name"
     ],
     [
       "let_declaration"
