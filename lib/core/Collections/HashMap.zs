@@ -74,6 +74,15 @@ module HashMap =
   let ofList (pairs: list<'k * 'v>) =
     List.fold (fun m (k, v) -> HashMap.add k v m) HashMap.empty pairs
 
+/// By their entries: the same keys with equal values, whatever order they were added in.
+impl Eq<HashMap<'k, 'v>> =
+  let equal (a: HashMap<'k, 'v>) (b: HashMap<'k, 'v>) =
+    a.size = b.size && List.forall (fun (k, v) -> HashMap.tryFind k b = Some v) (HashMap.toList a)
+
+/// Consistent with `Eq`: the entries' hashes added, in no order.
+impl Hash<HashMap<'k, 'v>> =
+  let hash (m: HashMap<'k, 'v>) = List.fold (fun acc e -> Int.wrappingAdd acc (hash e)) m.size (HashMap.toList m)
+
 /// A hash map's entries in bucket order, which is unspecified: a program that needs an order sorts
 /// them (`List.sort (HashMap.toList m)`).
 impl Iter<HashMap<'k, 'v>, 'k * 'v> =

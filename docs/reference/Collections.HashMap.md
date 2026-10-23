@@ -15,6 +15,22 @@ the changed map, updated in place when nothing else refers to the old one.
 
 ## Derives and impls
 
+### `impl Eq<HashMap<'k, 'v>>`
+
+```zsharp
+impl Eq<HashMap<'k, 'v>>
+```
+
+By their entries: the same keys with equal values, whatever order they were added in.
+
+### `impl Hash<HashMap<'k, 'v>>`
+
+```zsharp
+impl Hash<HashMap<'k, 'v>>
+```
+
+Consistent with `Eq`: the entries' hashes added, in no order.
+
 ### `impl Iter<HashMap<'k, 'v>, 'k * 'v>`
 
 ```zsharp

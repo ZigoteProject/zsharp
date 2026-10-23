@@ -14,6 +14,30 @@ A persistent sorted set (a `Map` to unit underneath).
 
 ## Derives and impls
 
+### `impl Eq<Set<'a>>`
+
+```zsharp
+impl Eq<Set<'a>>
+```
+
+By their elements: two sets with the same elements are equal whatever order they were added in.
+
+### `impl Ord<Set<'a>>`
+
+```zsharp
+impl Ord<Set<'a>>
+```
+
+By their elements in ascending order.
+
+### `impl Hash<Set<'a>>`
+
+```zsharp
+impl Hash<Set<'a>>
+```
+
+Consistent with `Eq`.
+
 ### `impl Show<Set<'a>>`
 
 ```zsharp

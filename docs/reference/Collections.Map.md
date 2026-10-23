@@ -41,6 +41,31 @@ impl Iter<Map<'k, 'v>, 'k * 'v>
 A map's entries in ascending key order, walked in a loop with the path to the current node in
 a list (not a recursion), so a `for` over a map is one loop with its body in place.
 
+### `impl Eq<Map<'k, 'v>>`
+
+```zsharp
+impl Eq<Map<'k, 'v>>
+```
+
+By their entries in key order: two maps with the same entries are equal whatever order they
+were added in (the tree's shape isn't compared).
+
+### `impl Ord<Map<'k, 'v>>`
+
+```zsharp
+impl Ord<Map<'k, 'v>>
+```
+
+By their entries in key order.
+
+### `impl Hash<Map<'k, 'v>>`
+
+```zsharp
+impl Hash<Map<'k, 'v>>
+```
+
+Consistent with `Eq`.
+
 ### `impl Show<Map<'k, 'v>>`
 
 ```zsharp

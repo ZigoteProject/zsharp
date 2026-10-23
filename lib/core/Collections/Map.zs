@@ -191,6 +191,19 @@ module Map =
   let filter f (m: Map<'k, 'v>) =
     Map.fold (fun acc k v -> if f k v then Map.add k v acc else acc) Map.empty m
 
+/// By their entries in key order: two maps with the same entries are equal whatever order they
+/// were added in (the tree's shape isn't compared).
+impl Eq<Map<'k, 'v>> =
+  let equal (a: Map<'k, 'v>) (b: Map<'k, 'v>) = Map.count a = Map.count b && Map.toList a = Map.toList b
+
+/// By their entries in key order.
+impl Ord<Map<'k, 'v>> =
+  let compare (a: Map<'k, 'v>) (b: Map<'k, 'v>) = compare (Map.toList a) (Map.toList b)
+
+/// Consistent with `Eq`.
+impl Hash<Map<'k, 'v>> =
+  let hash (m: Map<'k, 'v>) = hash (Map.toList m)
+
 /// Maps print as `map [(1, a); (2, b)]`.
 impl Show<Map<'k, 'v>> =
   let show m = "map " + show (Map.toList m)

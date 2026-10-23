@@ -50,6 +50,18 @@ module Set =
   let difference (a: Set<'a>) (b: Set<'a>) =
     Set.ofList (List.filter (fun x -> not (Set.contains x b)) (Set.toList a))
 
+/// By their elements: two sets with the same elements are equal whatever order they were added in.
+impl Eq<Set<'a>> =
+  let equal (a: Set<'a>) (b: Set<'a>) = Set.toList a = Set.toList b
+
+/// By their elements in ascending order.
+impl Ord<Set<'a>> =
+  let compare (a: Set<'a>) (b: Set<'a>) = compare (Set.toList a) (Set.toList b)
+
+/// Consistent with `Eq`.
+impl Hash<Set<'a>> =
+  let hash (s: Set<'a>) = hash (Set.toList s)
+
 /// Sets print as `set [1; 2; 3]`.
 impl Show<Set<'a>> =
   let show s = "set " + show (Set.toList s)

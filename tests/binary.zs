@@ -14,6 +14,14 @@ type Tree =
   | Leaf
   | Node of Tree * int * Tree
 
+// types that hold each other derive together
+[<Derive(Binary)>]
+type Expr =
+  | Num of int
+  | Block of list<Stmt>
+
+and Stmt = { label: string; body: Expr }
+
 let same (x: 'a) : bool =
   match Binary.ofBytes (Binary.toBytes x) with
   | Ok y -> y = x
@@ -34,4 +42,8 @@ let main () =
   let long: result<int, string> = Binary.ofBytes [| u8 0; u8 0 |]
   let wrong: result<Shape, string> = Binary.ofBytes (Binary.toBytes "Square")
   println $"{short} {long} {wrong}"
+  let program =
+    Block [ { label = "a"; body = Num 1 }
+      { label = "b"; body = Block [ { label = "c"; body = Num -2 } ] } ]
+  println $"{same program} {same { label = "top"; body = program }}"
   0

@@ -4290,7 +4290,9 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
 
     /// Registers an impl and type-checks its methods. The impl is registered before its
     /// bodies so they may use it recursively; its requirements on type arguments are inferred.
-    let declareImpl (tr: string) (head: SType) (others: SType list) (defs: (int * string * Param list * SType option * Expr) list) =
+    /// An impl registered, its methods' bodies not checked yet (startImpl), so impls declared
+    /// together may use one another (a derive over types that hold each other).
+    let startImpl (tr: string) (head: SType) (others: SType list) (defs: (int * string * Param list * SType option * Expr) list) =
         let tr = resolveWith traitNames.Contains tr |> Option.defaultValue tr
 
         let methods =
@@ -4380,6 +4382,10 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
 
                 dl, fname, true, ps, ret, body, Some expected)
 
+        tr, hn, hvars, items
+
+    /// An impl's methods checked, and what it needs from each type argument.
+    let finishImpl (tr: string, hn: string, hvars: string list, items) =
         let results = defineGroupWith false items
 
         // what the impl needs from each type argument: the union over its methods
@@ -4417,12 +4423,15 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                          | _ -> List.map (fun _ -> None) fts))
             )
 
-    /// Implements trait `tr` for type `tname` by expanding `derive tr`.
-    let deriveImpl (context: string) (tr: string) (tname: string) =
+    let declareImpl (tr: string) (head: SType) (others: SType list) defs = finishImpl (startImpl tr head others defs)
+
+    /// Implements trait `tr` for the types `tnames` (declared together, so they may hold each
+    /// other) by expanding `derive tr` for each: every impl is registered before any body is
+    /// checked. An error says which type's (context).
+    let deriveImpls (context: string -> string) (tr: string) (tnames: string list) =
         if not (derives.ContainsKey tr) then
             fail 0 (sprintf "no derive named '%s'" tr)
 
-        let head = STName(tname, List.init types[tname].npars (fun i -> STVar(sprintf "t%d" i)))
         // hygiene: a trait method named in a derive (show, compare, hash…) means the trait's,
         // as the derive's module sees it, even where the program defines a function of the
         // same name
@@ -4444,23 +4453,37 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
             | Call(x, args) when (methodOf x).IsSome -> Call((methodOf x).Value, List.map hygienic args)
             | _ -> mapExpr hygienic e
 
-        let defs =
-            Derive.expand tr tname head (shapeOf tname) derives[tr]
-            |> List.map (fun (l, n, ps, r, body) -> l, n, ps, r, hygienic body)
-
         let saved = Dictionary<string, Ty>(tyvars) // may run in the middle of another function
 
-        try
+        let inContext (tname: string) (f: unit -> 'r) =
             try
-                declareImpl tr head [] defs
+                f ()
             with
-            | CompileError(l, msg) -> fail l (sprintf "%s: %s" context msg)
-            | CompileErrorPos(l, c, msg) -> raise (CompileErrorPos(l, c, sprintf "%s: %s" context msg))
+            | CompileError(l, msg) -> fail l (sprintf "%s: %s" (context tname) msg)
+            | CompileErrorPos(l, c, msg) -> raise (CompileErrorPos(l, c, sprintf "%s: %s" (context tname) msg))
+
+        try
+            let started =
+                tnames
+                |> List.map (fun tname ->
+                    let head = STName(tname, List.init types[tname].npars (fun i -> STVar(sprintf "t%d" i)))
+
+                    let defs =
+                        Derive.expand tr tname head (shapeOf tname) derives[tr]
+                        |> List.map (fun (l, n, ps, r, body) -> l, n, ps, r, hygienic body)
+
+                    tname, inContext tname (fun () -> startImpl tr head [] defs))
+
+            for tname, s in started do
+                inContext tname (fun () -> finishImpl s)
         finally
             tyvars.Clear()
 
             for kv in saved do
                 tyvars[kv.Key] <- kv.Value
+
+    /// Implements trait `tr` for type `tname` by expanding `derive tr`.
+    let deriveImpl (context: string) (tr: string) (tname: string) = deriveImpls (fun _ -> context) tr [ tname ]
 
     // Eq, Ord, Hash and Show come from the prelude's derives, the first time they're needed
     autoDerive <-
@@ -5140,6 +5163,36 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                             optOut.Add(("Eq", name)) |> ignore
                             optOut.Add(("Hash", name)) |> ignore
                         | "NoComparison" -> optOut.Add(("Ord", name)) |> ignore
+                        | _ -> fail 0 (sprintf "unknown attribute '%s'" a)
+                | TypeGroup items ->
+                    // type A = … and B = …: each derive for every type of the group at once
+                    let names =
+                        items
+                        |> List.choose (fun (_, d) ->
+                            match d with
+                            | TypeDecl(n, _, _, _)
+                            | Private(TypeDecl(n, _, _, _)) -> Some(qualify n)
+                            | _ -> None)
+
+                    for a, args in attrs do
+                        match a with
+                        | "Derive" ->
+                            let rec expand (tr: string) =
+                                let tr = resolveWith (fun q -> derives.ContainsKey q || st.deriveGroups.ContainsKey q) tr |> Option.defaultValue tr
+
+                                match st.deriveGroups.TryGetValue tr with
+                                | true, members -> List.collect expand members
+                                | _ -> [ tr ]
+
+                            for tr in List.collect expand args do
+                                deriveImpls (sprintf "Derive(%s) on %s" tr) tr names
+                        | "NoEquality" ->
+                            for name in names do
+                                optOut.Add(("Eq", name)) |> ignore
+                                optOut.Add(("Hash", name)) |> ignore
+                        | "NoComparison" ->
+                            for name in names do
+                                optOut.Add(("Ord", name)) |> ignore
                         | _ -> fail 0 (sprintf "unknown attribute '%s'" a)
                 | _ -> fail 0 "attributes are only supported on type declarations yet"
             | TypeAlias(name, tps, target) ->

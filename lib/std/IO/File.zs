@@ -59,12 +59,35 @@ let openAppend (path: string) : result<Writer, string> =
   let fd = Native.fileOpen path 2
   ioResult (Writer.ofFd fd)
 
-/// The whole file's bytes.
+/// The whole file's bytes, as they are (not read as text).
 let readAllBytes (path: string) : result<array<u8>, string> =
-  readAllText path |> Result.map (fun text -> Buffer.toArray (String.bytes text))
+  match openRead path with
+  | Error e -> Error e
+  | Ok r ->
+    use reader = r
+    let all = Buffer.empty
+    let chunk = Buffer.create 65536 (u8 0)
+    let rec go () =
+      match Reader.readBytes reader chunk with
+      | Ok 0 -> Ok(Buffer.toArray all)
+      | Ok n ->
+        for i in 0 .. n - 1 do
+          Buffer.push chunk.[i] all
+        go ()
+      | Error e -> Error e
+    go ()
 
-/// Replaces the file's contents with the bytes (creating it if needed).
-let writeAllBytes (path: string) (bytes: span<u8>) = writeAllText path (String.ofBytes bytes)
+/// Replaces the file's contents with the bytes, as they are (creating it if needed).
+let writeAllBytes (path: string) (bytes: span<u8>) : result<unit, string> =
+  match openWrite path with
+  | Error e -> Error e
+  | Ok w ->
+    use writer = w
+    match Writer.write writer bytes with
+    | Ok () -> Writer.flush writer
+    | Error e -> Error e
+
+/// The whole file's bytes.
 
 /// Copies the file to `target`, replacing what's there.
 let copy (path: string) (target: string) =

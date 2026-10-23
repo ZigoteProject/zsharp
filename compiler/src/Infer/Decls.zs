@@ -258,7 +258,11 @@ let rec private checkCallback (cx: Cx) (what: string) (f: Ty) : unit / Fails =
 
 /// Registers an impl and type-checks its methods. The impl is registered before its bodies so they
 /// may use it recursively; its requirements on type arguments are inferred.
-let private declareImpl (cx: Cx) (tr0: string) (head: SType) (others: list<SType>) (defs: list<Definition>) =
+/// An impl registered, its methods' bodies not checked yet: impls declared together (a derive
+/// over types that hold each other) may use one another. What finishImpl checks.
+type private Started = { strait: string; shead: string; hvars: list<string>; items: list<Item> }
+
+let private startImpl (cx: Cx) (tr0: string) (head: SType) (others: list<SType>) (defs: list<Definition>) : Started =
   let v = cx.v
   let tr = Option.defaultValue tr0 (resolveWith cx (fun q -> Set.contains q cx.traitNames.Value) tr0)
   let owned = List.filter (fun (tm: TraitMethod) -> tm.owner = tr) (List.map snd (Map.toList cx.traitMethods.Value))
@@ -324,7 +328,15 @@ let private declareImpl (cx: Cx) (tr0: string) (head: SType) (others: list<SType
       if tm.isConst then tfun tUnit t else t
     let ps = if List.isEmpty d.dpars then [ unitParam ] else d.dpars
     { itemAt = d.defAt; iname = fname d.dname; isRec = true; ips = ps; iret = d.dret; ibody = d.dbody; expected = Some expected }
-  let results = defineGroupWith cx false (List.map methodItem defs)
+  { strait = tr; shead = hn; hvars = hvars; items = List.map methodItem defs }
+
+// an impl's methods checked, and what it needs from each type argument
+let private finishImpl (cx: Cx) (st: Started) =
+  let v = cx.v
+  let tr = st.strait
+  let hn = st.shead
+  let hvars = st.hvars
+  let results = defineGroupWith cx false st.items
   // what the impl needs from each type argument: the union over its methods
   let needs (x: string) =
     let fromResult (r: Global * Map<string, Ty>) =
@@ -337,6 +349,8 @@ let private declareImpl (cx: Cx) (tr0: string) (head: SType) (others: list<SType
       | None -> []
     Set.ofList (List.collect fromResult results)
   cx.implRequires.Value <- Map.add (tr, hn) (List.map needs hvars) cx.implRequires.Value
+
+let private declareImpl (cx: Cx) (tr0: string) (head: SType) (others: list<SType>) (defs: list<Definition>) = finishImpl cx (startImpl cx tr0 head others defs)
 
 // a type's shape, as a derive sees it
 let private shapeOf (cx: Cx) (tname: string) : Derive.ShapeInfo =
@@ -356,13 +370,17 @@ let private shapeOf (cx: Cx) (tname: string) : Derive.ShapeInfo =
       List.mapi (fun j (n: option<string>) -> Option.defaultValue $"item{j + 1}" n) given
     Derive.UnionShape(List.map (fun (c, fts) -> (c, names c fts)) cs)
 
-/// Implements trait `tr` for type `tname` by expanding `derive tr`; an error in it says so first
-/// (context: "Derive(Json) on Callback").
-let private deriveImpl (cx: Cx) (context: string) (tr: string) (tname: string) =
+// runs f, a failure in it said to be in the context first
+let private explained (context: string) (f: unit -> 'r / <Fails | 'e>) : 'r / <Fails | 'e> =
+  handle f () with
+  | Fails.fail x, _ -> Fails.fail { x with message = context + ": " + x.message }
+
+/// Implements trait `tr` for the types `tnames` (declared together, so they may hold each other)
+/// by expanding `derive tr` for each: every impl is registered before any body is checked. An
+/// error in one says so first (context of the type: "Derive(Json) on Callback").
+let private deriveImpls (cx: Cx) (context: string -> string) (tr: string) (tnames: list<string>) =
   if not (Map.containsKey tr cx.derives.Value) then
     fail $"no derive named '{tr}'"
-  let npars = (Map.find tname cx.types.Value).npars
-  let head = STName(tname, List.init npars (fun i -> STVar $"t{i}"))
   // hygiene: a trait method named in a derive (show, compare, hash…) means the trait's, as the
   // derive's module sees it, even where the program defines a function of the same name
   // ponytail: a local in a derive body named like a trait method would be rewritten too
@@ -389,13 +407,21 @@ let private deriveImpl (cx: Cx) (context: string) (tr: string) (tname: string) =
       | Some m -> { e with e = Call(m, List.map hygienic args) }
       | None -> mapExpr hygienic e
     | _ -> mapExpr hygienic e
-  let defs = List.map (fun (d: Definition) -> { d with dbody = hygienic d.dbody }) (Derive.expand tname head (shapeOf cx tname) (Map.find tr cx.derives.Value))
   // may run in the middle of another function
   let saved = cx.tyvars.Value
-  let run () = declareImpl cx tr head [] defs
-  handle run () with
-  | Fails.fail x, _ -> Fails.fail { x with message = context + ": " + x.message }
+  let start (tname: string) : Started =
+    let npars = (Map.find tname cx.types.Value).npars
+    let head = STName(tname, List.init npars (fun i -> STVar $"t{i}"))
+    let defs = List.map (fun (d: Definition) -> { d with dbody = hygienic d.dbody }) (Derive.expand tname head (shapeOf cx tname) (Map.find tr cx.derives.Value))
+    explained (context tname) (fun () -> startImpl cx tr head [] defs)
+  let started = List.map (fun (n: string) -> (n, start n)) tnames
+  for (tname, st) in started do
+    explained (context tname) (fun () -> finishImpl cx st)
   cx.tyvars.Value <- saved
+
+/// Implements trait `tr` for type `tname` by expanding `derive tr`; an error in it says so first
+/// (context: "Derive(Json) on Callback").
+let private deriveImpl (cx: Cx) (context: string) (tr: string) (tname: string) = deriveImpls cx (fun _ -> context) tr [ tname ]
 
 /// Eq, Ord, Hash and Show come from the prelude's derives, the first time they're needed: a type's
 /// automatic impl, unless it has its own or opts out.
@@ -1058,6 +1084,31 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
             deriveImpl cx $"Derive({tr}) on {name}" tr name
         | "NoEquality" -> cx.optOut.Value <- Set.add ("Hash", name) (Set.add ("Eq", name) cx.optOut.Value)
         | "NoComparison" -> cx.optOut.Value <- Set.add ("Ord", name) cx.optOut.Value
+        | _ -> fail $"unknown attribute '{a}'"
+    | TypeGroup items ->
+      // type A = … and B = …: each derive for every type of the group at once
+      let nameOf (it: Decl) =
+        match it.d with
+        | TypeDecl(n, _, _, _) -> Some(qualify cx n)
+        | Private { d = TypeDecl(n, _, _, _) } -> Some(qualify cx n)
+        | _ -> None
+      let names = List.choose nameOf items
+      for (a, args) in attrs do
+        match a with
+        | "Derive" ->
+          let rec expand (tr0: string) : list<string> =
+            let tr = Option.defaultValue tr0 (resolveWith cx (fun q -> Map.containsKey q cx.derives.Value || Map.containsKey q cx.deriveGroups.Value) tr0)
+            match Map.tryFind tr cx.deriveGroups.Value with
+            | Some members -> List.collect expand members
+            | None -> [ tr ]
+          for tr in List.collect expand args do
+            deriveImpls cx (fun n -> $"Derive({tr}) on {n}") tr names
+        | "NoEquality" ->
+          for name in names do
+            cx.optOut.Value <- Set.add ("Hash", name) (Set.add ("Eq", name) cx.optOut.Value)
+        | "NoComparison" ->
+          for name in names do
+            cx.optOut.Value <- Set.add ("Ord", name) cx.optOut.Value
         | _ -> fail $"unknown attribute '{a}'"
     | _ -> fail "attributes are only supported on type declarations yet"
   | TypeAlias(name0, tps, target) ->

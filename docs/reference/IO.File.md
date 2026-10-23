@@ -99,7 +99,7 @@ The file opened to write at its end (or created); `use` flushes and closes it.
 File.readAllBytes : string -> result<array<u8>, string>
 ```
 
-The whole file's bytes.
+The whole file's bytes, as they are (not read as text).
 
 ### `File.writeAllBytes`
 
@@ -107,7 +107,7 @@ The whole file's bytes.
 File.writeAllBytes : string -> span<u8> -> result<unit, string>
 ```
 
-Replaces the file's contents with the bytes (creating it if needed).
+Replaces the file's contents with the bytes, as they are (creating it if needed).
 
 ### `File.copy`
 
