@@ -218,11 +218,10 @@ a trait for any record or union by walking its fields. The built-in `Eq`, `Ord`,
 `Show` are written this way.
 
 ```fsharp
-trait Json<'a> =
-  abstract toJson   : 'a -> JsonValue
-  abstract fromJson : JsonValue -> result<'a, string>
+trait ToJson<'a> =
+  abstract toJson : 'a -> Json
 
-derive Json =                                   // implements Json<'self> for a record or union
+derive ToJson =                                 // implements ToJson<'self> for a record or union
   let toJson (x: 'self) =
     match Shape.of x with
     | Record r ->
@@ -231,30 +230,24 @@ derive Json =                                   // implements Json<'self> for a 
         fields <- (f.name, toJson f.value) :: fields
       JObject (List.rev fields)
     | Union c ->
-      let mutable args = []
-      for f in c.fields do
-        args <- toJson f.value :: args
-      JObject [ ("case", JString c.name); ("fields", JArray (List.rev args)) ]
+      if c.count = 0 then JString c.name
+      else
+        let mutable args = []
+        for f in c.fields do
+          args <- toJson f.value :: args
+        JObject [ ("case", JString c.name); ("fields", JArray (List.rev args)) ]
 
-  let fromJson (j: JsonValue) : result<'self, string> =
-    match Shape.kind with
-    | RecordKind -> Shape.build (fun f -> Json.field f.name j |> Result.bind fromJson)
-    | UnionKind ->
-      let name = (Json.field "case" j |> Result.bind Json.string)?
-      let args = (Json.field "fields" j |> Result.bind Json.array)?
-      match Shape.buildCase name (fun f -> Json.at f.index args |> Result.bind fromJson) with
-      | Some built -> built
-      | None -> Error $"unknown case {name}"
+derive Json = ToJson, FromJson                  // a group: applying it applies both
 
 [<Derive(Json)>]
-type User = { name: string; age: int; email: option<string> }
+type User = { name: string; age: int = 18; email: option<string> = None }
 ```
 
-The full example is `tests/json.zs`.
+The full example is Core's `Text.Json` (`lib/core/Text/Json.zs`, [proposal 0023](docs/proposals/0023-json-in-core.md)): its `FromJson` derive reads each field by its key, takes a field's default for an absent key, and says where a document didn't fit (`at users[3].email: expected a string, got 42`).
 
 - **What a derive sees:**
   - `Shape.of x` is `Record r` or `Union c`. `r.fields` lists every field, and `c.name`/`c.fields` describe the active case.
-  - Each field has `name`, `index` and a `value` of the field's own type.
+  - Each field has `name`, `index` and a `value` of the field's own type; a record's field also has `default`, `Some` of its default or `None`.
   - `c.index` and `c.count` give the case's position and its number of fields.
 - **Two values at once:** `match Shape.pair a b with Same c -> … | Different (i, j) -> …`. With `Same`, each field has `f.left` and `f.right`; `Different` carries the two case indexes.
 - **Building values:** `Shape.kind` tells a derive whether it builds a record or a union.

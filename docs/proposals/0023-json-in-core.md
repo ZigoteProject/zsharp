@@ -11,7 +11,7 @@
 
 - [x] Approved in principle
 - [ ] Discussion
-- [ ] Implementation
+- [x] Implementation (steps 1–3; tuples' impls and the Cortex-M0+ build of every Core module wait)
 
 ## Summary
 

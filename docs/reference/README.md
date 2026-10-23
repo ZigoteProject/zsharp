@@ -13,7 +13,7 @@ The names every program has without qualification: the operator traits and their
 | Namespace | Modules |
 |---|---|
 | `Collections` | [List](Collections.List.md), [Array](Collections.Array.md), [Buffer](Collections.Buffer.md), [Span](Collections.Span.md), [Fixed](Collections.Fixed.md), [Map](Collections.Map.md), [Set](Collections.Set.md), [HashMap](Collections.HashMap.md), [Seq](Collections.Seq.md) |
-| `Text` | [String](Text.String.md), [Char](Text.Char.md) |
+| `Text` | [String](Text.String.md), [Char](Text.Char.md), [Json](Text.Json.md) |
 | none | [Option](Option.md), [Result](Result.md), [Throw](Throw.md), [Math](Math.md), [Int](Int.md), [Runtime](Runtime.md), [Mmio](Mmio.md), [Ptr](Ptr.md), [Weak](Weak.md), [Arena](Arena.md), [Simd](Simd.md), [Simd.X86](Simd.X86.md), [Simd.Arm](Simd.Arm.md) |
 
 ## Std: targets with an operating system

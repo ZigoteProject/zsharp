@@ -180,4 +180,4 @@ let main () =
 [name; age; admin] [Banned]
 ```
 
-`tests/json.zs` in the repository has a fuller example: a JSON encoder and decoder written as a derive.
+Core's `Text.Json` (`lib/core/Text/Json.zs`) has a fuller example: `[<Derive(Json)>]`, a JSON encoder and decoder written as two derives and a group of them.

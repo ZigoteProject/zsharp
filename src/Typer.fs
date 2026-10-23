@@ -637,6 +637,7 @@ type State =
       impls: Table<string * string, Dictionary<string, string>> // (trait, type) -> method -> function
       implRequires: Table<string * string, Set<string> list> // traits each type argument needs
       derives: Table<string, (int * string * Param list * SType option * Expr) list> // by full name, as traits
+      deriveGroups: Table<string, string list> // derive Json = ToJson, FromJson: by full name, the members'
       deriveModules: Table<string, string option> // derive -> the module declaring it
       // active pattern case -> (function, total?, number of parameters before the value)
       activePatterns: Table<string, string * bool * int>
@@ -681,6 +682,7 @@ let private freshState () =
       impls = Table()
       implRequires = Table()
       derives = Table()
+      deriveGroups = Table()
       deriveModules = Table()
       activePatterns = Table()
       apCtors = Bag()
@@ -730,6 +732,7 @@ let markState (st: State) =
     st.impls.Mark()
     st.implRequires.Mark()
     st.derives.Mark()
+    st.deriveGroups.Mark()
     st.deriveModules.Mark()
     st.activePatterns.Mark()
     st.apCtors.Mark()
@@ -4063,7 +4066,13 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
 
     let shapeOf (tname: string) : Derive.ShapeInfo =
         match types[tname].def with
-        | RecordDef fs -> Derive.RecordShape(List.map fst fs)
+        | RecordDef fs ->
+            let defaults =
+                match recordDefaults.TryGetValue tname with
+                | true, ds when ds.Length = fs.Length -> ds
+                | _ -> List.map (fun _ -> None) fs
+
+            Derive.RecordShape(List.zip (List.map fst fs) defaults)
         | UnionDef cs ->
             Derive.UnionShape(
                 cs
@@ -4410,6 +4419,15 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
             | Derive(name, defs) ->
                 derives[qualify name] <- defs
                 deriveModules[qualify name] <- currentModule.Value
+            | DeriveGroup(name, members) ->
+                let full =
+                    members
+                    |> List.map (fun m ->
+                        match resolveWith (fun q -> derives.ContainsKey q || st.deriveGroups.ContainsKey q) m with
+                        | Some q -> q
+                        | None -> fail 0 (sprintf "no derive named '%s'" m))
+
+                st.deriveGroups[qualify name] <- full
             | Private inner ->
                 declare ln inner
 
@@ -4681,8 +4699,15 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                     for a, args in attrs do
                         match a with
                         | "Derive" ->
-                            for tr in args do
-                                let tr = resolveWith derives.ContainsKey tr |> Option.defaultValue tr
+                            // a group's members, in order (a group may name a group)
+                            let rec expand (tr: string) =
+                                let tr = resolveWith (fun q -> derives.ContainsKey q || st.deriveGroups.ContainsKey q) tr |> Option.defaultValue tr
+
+                                match st.deriveGroups.TryGetValue tr with
+                                | true, members -> List.collect expand members
+                                | _ -> [ tr ]
+
+                            for tr in List.collect expand args do
                                 deriveImpl (sprintf "Derive(%s) on %s" tr name) tr name
                         | "NoEquality" ->
                             optOut.Add(("Eq", name)) |> ignore

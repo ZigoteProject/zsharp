@@ -2761,8 +2761,12 @@ let compile
 
                 if tail && proto fd = selfProto then
                     // a call to itself is left to LLVM to make a loop (which can then be inlined into
-                    // callers); other tail calls, and all at -O0, must be tail calls (constant stack)
-                    let kind = if f = selfName && optimized && not debugInfo then "tail" else "musttail"
+                    // callers); other tail calls, and all at -O0, must be tail calls (constant stack),
+                    // except of a result wider than two registers: x86-64 returns it in memory,
+                    // where it can't make a musttail call (LLVM still makes a loop of a call to
+                    // itself, at -O2)
+                    let inRegisters = not (rt.StartsWith "{") || (rt.Split(',').Length <= 2 && not (rt.Substring(1).Contains "{") && not (rt.Contains "["))
+                    let kind = if (f = selfName && optimized && not debugInfo) || not inRegisters then "tail" else "musttail"
                     let r = em.Instr(sprintf "%s call %s %s(%s)" kind rt (sym f) argv)
                     em.Emit(sprintf "ret %s %s" rt r)
                     em.Dead()

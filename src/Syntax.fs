@@ -118,6 +118,8 @@ type Decl =
     /// effect E<'a> = abstract op : T -> R …: operations a handler gives meaning to
     | Effect of name: string * tparams: string list * ops: (string * SType) list
     | Derive of name: string * defs: (int * string * Param list * SType option * Expr) list
+    /// derive Json = ToJson, FromJson: applying it applies each
+    | DeriveGroup of name: string * members: string list
     | Attrs of (string * string list) list * Decl // [<Derive(Json); NoEquality>]
     | Private of Decl // let private f / type private T
     | Open of string // open Module
@@ -2486,7 +2488,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                     | CompileError(_, msg)
                     | CompileErrorPos(_, _, msg) -> fail ln msg
 
-                Call("string", [ e ])
+                Call("Show.show", [ e ]) // Show's, whatever `string` names where the hole is
             else
                 StrLit s)
         |> List.fold
@@ -3064,6 +3066,20 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                 ln, NestedModule(name, List.ofSeq decls)
             else
                 ln, ModuleHeader name
+        | KKw "derive" when (match toks[min (pos.Value + 3) (toks.Length - 1)].tok with
+                             | KId _ -> true
+                             | _ -> false) ->
+            // derive Json = ToJson, FromJson: a name for several derives
+            advance ()
+            let name = ident ()
+            expect (KSym "=") "'='"
+            let members = ResizeArray [ ident () ]
+
+            while isSym "," do
+                advance ()
+                members.Add(ident ())
+
+            ln, DeriveGroup(name, List.ofSeq members)
         | KKw "derive" ->
             // derive Json = let toJson (x: 'self) = ...
             advance ()

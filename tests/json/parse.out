@@ -1,0 +1,31 @@
+{"a":1,"b":[true,false,null],"c":{"d":-2500}}
+[0,0,9223372036854775807,-9223372036854775808,9.223372036854776e+18,1,0.1]
+"tab\there, a \"quote\", é and 😀"
+"é and 😀 as written"
+[]
+{}
+error 1:9: expected a key (a string)
+error 1:6: expected ',' or ']' after a value
+error 1:6: expected ':' after a key
+error 1:2: a number has no leading zeros
+error 1:3: expected a digit after '.'
+error 1:2: expected a digit
+error 1:2: an unknown escape (the escapes are \" \\ \/ \b \f \n \r \t \uXXXX)
+error 1:2: a lone surrogate (\uD800 to \uDBFF needs a \uDC00 to \uDFFF after it)
+error 2:3: expected the end after the document
+error 1:1: expected a value
+error 1:1: expected a value, found the end
+error 1:1001: nesting deeper than 1000 levels
+1,001 levels under a limit of 2,000
+{"name":"ada \"the\" first\n","tags":[1,2,true],"none":{}}
+{
+  "name": "ada \"the\" first\n",
+  "tags": [
+    1,
+    2,
+    true
+  ],
+  "none": {}
+}
+[null,null]
+{"name":"ada \"the\" first\n","tags":[1,2,true],"none":{}}

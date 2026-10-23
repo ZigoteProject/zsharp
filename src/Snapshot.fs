@@ -644,6 +644,7 @@ let writeModule (st: State) (marks: Marks) (hovers: Hover seq) (position: obj ->
             entries c pair (fun c t -> entries c str str [ for KeyValue(m, f) in t -> m, f ]) (written st.impls)
             entries c pair (fun c reqs -> list' c (fun c s -> strSeq c s) reqs) (written st.implRequires)
             entries c str (fun c defs -> list' c deriveDef defs) (written st.derives)
+            entries c str (fun c ms -> list' c str ms) (written st.deriveGroups)
             entries c str optStr (written st.deriveModules)
             entries c str (fun c (f, total, n) -> str c f; bool' c total; int' c n) (written st.activePatterns)
             strSeq c st.apCtors.Added
@@ -1234,6 +1235,7 @@ let readModule (iface: byte[]) (st: State) (place: obj -> int * int * int -> uni
 
         put st.implRequires rpair (fun c -> rlist c (fun c -> Set.ofList (rlist c rstr)))
         put st.derives rstr (fun c -> rlist c rderiveDef)
+        put st.deriveGroups rstr (fun c -> rlist c rstr)
         put st.deriveModules rstr optStr
 
         put st.activePatterns rstr (fun c ->

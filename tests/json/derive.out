@@ -1,0 +1,20 @@
+{"name":"ada","age":36,"email":null,"first-name":"Ada"}
+2 users, aged 18 and 7
+at users[1].email: expected a string, got 42
+at users[0]: missing key name
+at users: expected an array, got 7
+1:6: expected ',' or ']' after a value
+"Dot"
+{"case":"Rect","fields":[2,3.5]}
+"Dot"
+{"case":"Circle","fields":[2]}
+unknown case Triangle
+at fields[1]: index 1 is past the end (1 element)
+at case: expected a string, got 1
+Error expected an integer that fits u8, got 300 Error expected an integer that fits i32, got 3000000000 Ok 7 Error expected an integer, got 7.5 Ok é
+{"a":1,"b":2}
+true
+Error at b: expected an integer, got "two"
+Ok 2
+Error at [2]: expected a number, got "3"
+1.8446744073709552e+19

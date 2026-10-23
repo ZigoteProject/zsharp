@@ -4,7 +4,8 @@
 ///   match Shape.pair a b with Same c -> .. | Different (i, j) -> ..   both values at once
 ///   match Shape.kind with RecordKind -> .. | UnionKind -> ..   picked statically
 ///   for f in c.fields do body   one copy of body per field (each typed at that field's type)
-///   f.name f.index f.value f.left f.right  c.name c.index c.count   field and case facts
+///   f.name f.index f.value f.left f.right f.default  c.name c.index c.count   field and case facts
+///     (f.default: Some of a record field's default, None for a field without one)
 ///   Shape.build (fun f -> e)   a record from per-field results (stops at the first Error)
 ///   Shape.buildCase name (fun f -> e)   the named union case from per-field results, or None
 module Derive
@@ -12,7 +13,7 @@ module Derive
 open Syntax
 
 type ShapeInfo =
-    | RecordShape of string list // field names
+    | RecordShape of (string * Expr option) list // field names, and their defaults
     | UnionShape of (string * string list) list // case names and their field names
 
 type private FieldInfo =
@@ -20,7 +21,8 @@ type private FieldInfo =
       index: int
       value: Expr option
       left: Expr option
-      right: Expr option }
+      right: Expr option
+      fdefault: Expr option }
 
 type private CaseInfo =
     { cname: string
@@ -72,7 +74,8 @@ let expand (deriveName: string) (tname: string) (head: SType) (shape: ShapeInfo)
           index = index
           value = value
           left = left
-          right = right }
+          right = right
+          fdefault = None }
 
     /// The case index of a union value.
     let tagOf (x: Expr) cases =
@@ -114,7 +117,7 @@ let expand (deriveName: string) (tname: string) (head: SType) (shape: ShapeInfo)
                     let ci =
                         { cname = tname
                           cindex = 0
-                          fields = fields |> List.mapi (fun i f -> field f i (Some(Field(x, f))) None None) }
+                          fields = fields |> List.mapi (fun i (f, _) -> field f i (Some(Field(x, f))) None None) }
 
                     ex (env.Add(v, Case ci)) b
                 | None -> failD "the derive has no `Record` case"
@@ -146,7 +149,7 @@ let expand (deriveName: string) (tname: string) (head: SType) (shape: ShapeInfo)
                 let ci =
                     { cname = tname
                       cindex = 0
-                      fields = fields |> List.mapi (fun i f -> field f i None (Some(Field(a, f))) (Some(Field(b, f)))) }
+                      fields = fields |> List.mapi (fun i (f, _) -> field f i None (Some(Field(a, f))) (Some(Field(b, f)))) }
 
                 ex (env.Add(fst same, Case ci)) (snd same)
             | UnionShape cases' ->
@@ -202,6 +205,10 @@ let expand (deriveName: string) (tname: string) (head: SType) (shape: ShapeInfo)
             | Case ci, "count" -> Lit(int64 ci.fields.Length)
             | FieldB fi, "name" -> StrLit fi.name
             | FieldB fi, "index" -> Lit(int64 fi.index)
+            | FieldB fi, "default" ->
+                match fi.fdefault with
+                | Some d -> Call("Some", [ d ])
+                | None -> Var "None"
             | FieldB fi, ("value" | "left" | "right") ->
                 let pick =
                     match prop with
@@ -217,11 +224,11 @@ let expand (deriveName: string) (tname: string) (head: SType) (shape: ShapeInfo)
             match shape with
             | RecordShape fields ->
                 let vars = fields |> List.map (fun _ -> fresh "b")
-                let inner = Call("Ok", [ RecordLit(List.zip fields (vars |> List.map Var)) ])
+                let inner = Call("Ok", [ RecordLit(List.zip (List.map fst fields) (vars |> List.map Var)) ])
 
                 List.foldBack
-                    (fun (i, fname, var) acc ->
-                        let fi = field fname i None None None
+                    (fun (i, (fname, def), var) acc ->
+                        let fi = { field fname i None None None with fdefault = def }
                         bindOk (DeriveCtx(sprintf "field %s" fname, ex (env.Add(f, FieldB fi)) body)) var acc)
                     (List.zip3 [ 0 .. fields.Length - 1 ] fields vars)
                     inner
