@@ -40,7 +40,20 @@ let split (sep: string) (s: string) =
 let join (sep: string) (xs: list<string>) =
   match xs with
   | [] -> ""
-  | x :: rest -> List.fold (fun acc s -> acc + sep + s) x rest
+  | [ x ] -> x
+  | x :: rest ->
+    // each string copied once, into a buffer of the whole length
+    let n =
+      List.fold (fun total s -> total + String.length sep + String.length s) (String.length x) rest
+    let b = Buffer.create n (u8 0)
+    Buffer.blit (String.bytes x) 0 b 0 (String.length x)
+    let mutable at = String.length x
+    for s in rest do
+      Buffer.blit (String.bytes sep) 0 b at (String.length sep)
+      at <- at + String.length sep
+      Buffer.blit (String.bytes s) 0 b at (String.length s)
+      at <- at + String.length s
+    String.ofBytes b
 
 /// The strings joined with nothing between them.
 let concat (xs: list<string>) = String.join "" xs

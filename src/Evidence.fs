@@ -798,8 +798,8 @@ let run (types: Dictionary<string, TypeInfo>) (effects: Dictionary<string, Effec
 
             if k = "_" then stop e else go e
 
-        /// Mutable variables declared outside a handle and used inside it (its body runs in a
-        /// function of its own, its clauses in closures) as ref cells.
+        /// Mutable variables declared outside a handle or a lambda and used inside it (its body
+        /// runs in a function of its own, its clauses in closures) as ref cells.
         and boxUnderHandles (body: CExpr) : CExpr =
             let mutables = HashSet<string>()
             let boxed = HashSet<string>()
@@ -807,11 +807,14 @@ let run (types: Dictionary<string, TypeInfo>) (effects: Dictionary<string, Effec
             let rec scan (e: CExpr) =
                 match e.k with
                 | CLetMut(x, _, _) -> mutables.Add x |> ignore
-                | CHandle _ ->
+                // a handle's body and a lambda's run as functions of their own: the mutable
+                // variables they use are cells (a loop that yields passes the others' values
+                // from round to round, which a closure's writes wouldn't reach)
+                | CHandle _
+                | CLam _ ->
                     for x in freeVars e do
                         if mutables.Contains x then
                             boxed.Add x |> ignore
-                | CLam _ -> ()
                 | _ -> ()
 
                 match e.k with
@@ -837,7 +840,6 @@ let run (types: Dictionary<string, TypeInfo>) (effects: Dictionary<string, Effec
                         let cell = mk (CLocal x) (TCon("ref", [ at ]))
                         let changed = mk (CPrim("array.update",[ mk (CPrim("ref.get", [ cell ])) at; go i; go v ])) at
                         mk (CPrim("ref.set", [ cell; changed ])) tUnit
-                    | CLam _ -> e
                     | k -> { e with k = mapChildren go k }
 
                 go body

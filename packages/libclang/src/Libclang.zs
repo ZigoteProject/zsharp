@@ -1,15 +1,16 @@
-// libclang's C API (clang-c/Index.h and the headers it includes): its names as libclang has
-// them, and the few functions below that make it suit Z#.
-import c "clang-c/CXErrorCode.h"
-import c "clang-c/CXString.h"
-import c "clang-c/CXFile.h"
-import c "clang-c/CXSourceLocation.h"
-import c "clang-c/CXDiagnostic.h"
-import c "clang-c/Index.h"
+// libclang's C API (c/clang.h: the part of clang-c/Index.h this package uses), its names as
+// libclang has them, and the functions below that make it suit Z#. libclang is opened at the first
+// call into it, so a program using this package starts where it isn't installed.
+import c "clang.h"
 
+extern zs_clang_load : unit -> i32
 extern zs_clang_visit_children : CXCursor -> callback<ptr<CXCursor> -> i32> -> u32
 extern zs_clang_text : CXString -> cstr
 extern zs_clang_parse : cptr -> cstr -> span<u8> -> i32 -> u32 -> cptr
+
+/// Whether libclang is here, opened from $ZS_LIBCLANG, else beside the first clang on PATH, else
+/// from the system's libraries. A libclang function called where it isn't stops the program.
+let available () : bool = zs_clang_load () <> 0
 
 /// A CXString's text, copied (empty for a null one); the CXString is disposed.
 let text (s: CXString) : string =
@@ -31,6 +32,64 @@ let parse (index: cptr) (file: string) (args: list<string>) (options: u32) : opt
   let tu = zs_clang_parse index file (String.bytes joined) (i32 (List.length args)) options
   let p: ptr<u8> = unsafe Ptr.ofCPtr tu
   if Ptr.isNull p then None else Some tu
+
+/// The cursor's children, in order.
+let children (c: CXCursor) : list<CXCursor> =
+  let found = ref []
+  visitChildren c (fun x ->
+    found.Value <- x :: found.Value
+    CXChildVisit_Continue)
+  List.rev found.Value
+
+/// Where a location is expanded: its file (empty for a built-in), line and byte offset.
+let place (l: CXSourceLocation) : string * int * int =
+  let file: ptr<cptr> = unsafe Ptr.alloc 1
+  let nums: ptr<u32> = unsafe Ptr.alloc 3
+  clang_getExpansionLocation l (Ptr.toCPtr file) (Ptr.toCPtr nums) (Ptr.toCPtr (unsafe Ptr.add nums 1)) (Ptr.toCPtr (unsafe Ptr.add nums 2))
+  let f = unsafe Ptr.read file
+  let named: ptr<u8> = unsafe Ptr.ofCPtr f
+  let name = if Ptr.isNull named then "" else text (clang_getFileName f)
+  let line = int (unsafe Ptr.read nums)
+  let offset = int (unsafe Ptr.read (unsafe Ptr.add nums 2))
+  unsafe Ptr.free file
+  unsafe Ptr.free nums
+  (name, line, offset)
+
+/// The tokens a cursor spans, in order: each one's spelling and the byte offsets where it starts
+/// and ends in its file.
+let tokens (tu: cptr) (c: CXCursor) : list<string * int * int> =
+  let out: ptr<cptr> = unsafe Ptr.alloc 1
+  let count: ptr<u32> = unsafe Ptr.alloc 1
+  clang_tokenize tu (clang_getCursorExtent c) (Ptr.toCPtr out) (Ptr.toCPtr count)
+  let first: ptr<CXToken> = unsafe Ptr.ofCPtr (unsafe Ptr.read out)
+  let offset (l: CXSourceLocation) =
+    let (_, _, o) = place l
+    o
+  let one (i: int) =
+    let t = unsafe Ptr.read (unsafe Ptr.add first i)
+    let r = clang_getTokenExtent tu t
+    (text (clang_getTokenSpelling tu t),
+      offset (clang_getRangeStart r),
+      offset (clang_getRangeEnd r))
+  let n = int (unsafe Ptr.read count)
+  let ts = List.init n one
+  clang_disposeTokens tu (unsafe Ptr.read out) (u32 n)
+  unsafe Ptr.free out
+  unsafe Ptr.free count
+  ts
+
+/// A translation unit's errors (fatal ones too), as clang prints them: `file:line:col: error: …`.
+let errors (tu: cptr) : list<string> =
+  let one (i: int) =
+    let d = clang_getDiagnostic tu (u32 i)
+    let shown =
+      if clang_getDiagnosticSeverity d >= CXDiagnostic_Error then
+        Some(text (clang_formatDiagnostic d (u32 (CXDiagnostic_DisplaySourceLocation ||| CXDiagnostic_DisplayColumn))))
+      else
+        None
+    clang_disposeDiagnostic d
+    shown
+  List.choose one (List.init (int (clang_getNumDiagnostics tu)) (fun i -> i))
 
 /// The cursors of the declarations in a file, by the spelling of each, in order (what a header
 /// declares, without what it includes).

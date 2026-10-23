@@ -4666,7 +4666,8 @@ let compile
         | true, [ "target"; features ] -> genFunAs f f.name features
         | _ -> genFunAs f f.name ""
 
-    for KeyValue(name, s) in externs do
+    // in name order (so the Z# compiler, which keeps them in a map, writes the same text)
+    for KeyValue(name, s) in externs |> Seq.sortBy (fun kv -> kv.Key) do
         let ret, sret = cRet s.ret
         let sretP = if sret then [ sprintf "ptr sret(%s)" (llty s.ret) ] else []
         let ps = sretP @ cParamList s.pars sret @ (if s.variadic then [ "..." ] else [])
@@ -4847,13 +4848,32 @@ let compile
             + "typedef struct zs_handle_ *zs_handle;\nvoid zs_retain(zs_handle h);\nvoid zs_release(zs_handle h);\n\n"
         )
 
-    for KeyValue(n, info) in types do
-        match info.def with
-        | RecordDef fs when clayouts.Contains n ->
-            let name = n.Replace('.', '_')
-            let fields = fs |> List.map (fun (f, ft) -> sprintf "    %s;" (cDecl ft f)) |> String.concat "\n"
-            header.Append(sprintf "typedef struct %s {\n%s\n} %s;\n\n" name fields name) |> ignore
-        | _ -> ()
+    // each struct after the ones its fields hold, so C knows them where it's used (by name
+    // otherwise, as the Z# compiler writes them)
+    let written = HashSet<string>()
+
+    let rec writeStruct (n: string) =
+        if clayouts.Contains n && written.Add n then
+            match types.TryGetValue n with
+            | true, { def = RecordDef fs } ->
+                let rec held (t: Ty) =
+                    match prune t with
+                    | TCon(m, args) ->
+                        writeStruct m
+                        List.iter held args
+                    | TTuple ts -> List.iter held ts
+                    | _ -> ()
+
+                for _, ft in fs do
+                    held ft
+
+                let name = n.Replace('.', '_')
+                let fields = fs |> List.map (fun (f, ft) -> sprintf "    %s;" (cDecl ft f)) |> String.concat "\n"
+                header.Append(sprintf "typedef struct %s {\n%s\n} %s;\n\n" name fields name) |> ignore
+            | _ -> ()
+
+    for n in clayouts |> Seq.sort do
+        writeStruct n
 
     for e in exports do
         let ps = e.pars |> List.mapi (fun i t -> cDecl t (sprintf "p%d" i))

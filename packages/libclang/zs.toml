@@ -1,9 +1,9 @@
-# libclang's C API for Z# (the compiler's import c, 0020), from the system's libclang through
-# pkg-config (the dev container's is LLVM 23's, in /opt/llvm)
+# libclang's C API for Z# (the compiler's import c, 0020): the system's libclang, opened when first
+# used (the dev container's is LLVM 23's, in /opt/llvm, beside its clang)
 [package]
 name = "libclang"
 main = "src/Libclang.zs"
 
 [c]
 sources = ["c/shim.c"]
-pkg-config = ["libclang"]
+include = ["c"]
