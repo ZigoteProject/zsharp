@@ -1554,7 +1554,7 @@ let compile
     let thunk (f: Ty) (shared: bool) : string =
         let a, r =
             match prune f with
-            | TFun(a, r) -> a, r
+            | TFun(a, r, _) -> a, r
             | _ -> failwith "callback type"
 
         let name = sprintf "@\"cb%s.%s\"" (if shared then ".shared" else "") (showFull f)
@@ -2339,6 +2339,8 @@ let compile
 
         let rec gen (env: Map<string, Binding>) (tail: bool) (e: CExpr) : string =
             match e.k with
+            | CPerform _
+            | CHandle _ -> failwith "Codegen: an effect's node after Evidence"
             | CLine(ln, e) ->
                 let saved, savedLine = em.Dbg, line
 
@@ -3421,6 +3423,61 @@ let compile
             | "ignore" ->
                 dropValue em (argTy 0) (arg 0)
                 "zeroinitializer"
+            | _ when op.StartsWith "eff." ->
+                // effect handlers (Evidence): the yield state, zs_yield { state (0: not yielding,
+                // 1: the continuation wanted, 2: to a clause that never resumes), the marker of the
+                // handler yielded to, the clause, the continuation so far }, and the last marker
+                // made. One per thread on an OS. Defined by the programs that have effects (each
+                // module that uses them, merged by the linker), so the others and the runtime are
+                // as they were.
+                if generated.Add "zs_yield" then
+                    let tls = if target.Contains "-none-" then "" else "thread_local "
+                    helpers.Append(sprintf "@zs_yield = linkonce_odr hidden %sglobal { i_W, i_W, ptr, ptr } zeroinitializer\n" tls) |> ignore
+                    helpers.Append(sprintf "@zs_yield_marker = linkonce_odr hidden %sglobal i_W 0\n" tls) |> ignore
+
+                let field (i: int) = em.Instr(sprintf "getelementptr { i_W, i_W, ptr, ptr }, ptr @zs_yield, i32 0, i32 %d" i)
+
+                match op with
+                | "eff.state" -> em.Instr(sprintf "load i_W, ptr %s" (field 0))
+                | "eff.marker" -> em.Instr(sprintf "load i_W, ptr %s" (field 1))
+                | "eff.newMarker" ->
+                    let m = em.Instr(sprintf "add i_W %s, 1" (em.Instr "load i_W, ptr @zs_yield_marker"))
+                    em.Emit(sprintf "store i_W %s, ptr @zs_yield_marker" m)
+                    m
+                | "eff.start"
+                | "eff.startFinal" ->
+                    // a yield to the handler with the marker: its clause, and the continuation so
+                    // far (none when the clause never resumes)
+                    em.Emit(sprintf "store i_W %s, ptr %s" (arg 0) (field 1))
+                    em.Emit(sprintf "store ptr %s, ptr %s" (arg 1) (field 2))
+                    em.Emit(sprintf "store ptr %s, ptr %s" (if op = "eff.start" then arg 2 else "null") (field 3))
+                    em.Emit(sprintf "store i_W %d, ptr %s" (if op = "eff.start" then 1 else 2) (field 0))
+                    "zeroinitializer"
+                | "eff.takeClause" ->
+                    // the handler takes the clause: the yield is over
+                    let c = em.Instr(sprintf "load ptr, ptr %s" (field 2))
+                    em.Emit(sprintf "store ptr null, ptr %s" (field 2))
+                    em.Emit(sprintf "store i_W 0, ptr %s" (field 0))
+                    c
+                | "eff.takeCont" ->
+                    let c = em.Instr(sprintf "load ptr, ptr %s" (field 3))
+                    em.Emit(sprintf "store ptr null, ptr %s" (field 3))
+                    c
+                | "eff.setCont" ->
+                    em.Emit(sprintf "store ptr %s, ptr %s" (arg 0) (field 3))
+                    "zeroinitializer"
+                | "eff.box" ->
+                    // the value a resumption gives, in a slot its continuation's first function reads
+                    let slot = "%" + em.Fresh "resumed"
+                    em.Alloca(sprintf "%s = alloca %s" slot (llty (argTy 0)))
+                    em.Emit(sprintf "store %s %s, ptr %s" (llty (argTy 0)) (arg 0) slot)
+                    slot
+                | "eff.unbox" -> em.Instr(sprintf "load %s, ptr %s" (llty ty) (arg 0))
+                | "eff.null" -> "null"
+                | "eff.asClosure" -> arg 0
+                | "eff.forget" // a yielding call's result: nothing, so not dropped
+                | "eff.dummy" -> "zeroinitializer" // a yielding function's result: never read
+                | _ -> failwithf "unknown primitive %s" op
             | "panic" ->
                 em.Emit(sprintf "call void @zs_panic(ptr %s)" (arg 0))
                 em.Emit "unreachable"
@@ -3670,7 +3727,7 @@ let compile
                 // into the job, whose runner stores its result for par.join
                 let rt =
                     match prune (argTy 0) with
-                    | TFun(_, r) -> r
+                    | TFun(_, r, _) -> r
                     | t -> failwithf "par.fork of %s" (show t)
 
                 shareValue em (argTy 0) (arg 0)
@@ -3977,7 +4034,7 @@ let compile
                 // a C function pointer called with C's conventions, as an extern is
                 let rec split t =
                     match prune t with
-                    | TFun(a, r) ->
+                    | TFun(a, r, _) ->
                         let ps, res = split r
                         a :: ps, res
                     | r -> [], r
@@ -4311,7 +4368,7 @@ let compile
     and cFnPtr (f: Ty) (name: string) =
         let rec split t =
             match prune t with
-            | TFun(a, r) ->
+            | TFun(a, r, _) ->
                 let ps, res = split r
                 a :: ps, res
             | r -> [], r

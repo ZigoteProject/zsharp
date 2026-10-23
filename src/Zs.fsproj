@@ -29,6 +29,7 @@
     <Compile Include="Mono.fs" />
     <Compile Include="Inline.fs" />
     <Compile Include="Simplify.fs" />
+    <Compile Include="Evidence.fs" />
     <Compile Include="Decide.fs" />
     <Compile Include="Lift.fs" />
     <Compile Include="Rc.fs" />

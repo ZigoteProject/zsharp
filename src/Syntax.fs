@@ -22,6 +22,9 @@ type SType =
     | STTuple of SType list
     | STFun of SType * SType
     | STMeasure of (string * bool * int) list // unit or measure variable (isVar), exponent: m/s^2
+    /// A function's result with its effects: `T / E`, `T / <E, F | 'e>` (labels, the row
+    /// variable it ends in). The result of a function type, or a function's annotated result.
+    | STRow of SType * SType list * string option
 
 type Pat =
     | PWild
@@ -79,6 +82,9 @@ type Expr =
     | ListComp of isArray: bool * body: Expr // [ for x in xs -> e ], [| … |]: its body yields
     | Yield of Expr // yield e, in a list expression's body
     | YieldAll of Expr // yield! xs: each of xs
+    /// handle e with | E.op p…, k -> b | return p -> b: the operations' clauses (the operation's
+    /// qualified name, its arguments' patterns, the resumption's name) and the return clause
+    | Handle of Expr * (string * Pat list * string * Expr) list * (Pat * Expr) option
     | At of int * Expr // source line, for error messages
 
 and Param = Pat * SType option
@@ -109,6 +115,8 @@ type Decl =
     | TypeDecl of name: string * tparams: string list * TypeBody * Member list
     | TypeExt of name: string * tparams: string list * Member list // type string with member ...
     | Trait of name: string * tparam: string * methods: (string * SType) list
+    /// effect E<'a> = abstract op : T -> R …: operations a handler gives meaning to
+    | Effect of name: string * tparams: string list * ops: (string * SType) list
     | Derive of name: string * defs: (int * string * Param list * SType option * Expr) list
     | Attrs of (string * string list) list * Decl // [<Derive(Json); NoEquality>]
     | Private of Decl // let private f / type private T
@@ -176,6 +184,7 @@ let mapExpr (f: Expr -> Expr) (e: Expr) : Expr =
     | ListComp(isArray, b) -> ListComp(isArray, f b)
     | Yield a -> Yield(f a)
     | YieldAll a -> YieldAll(f a)
+    | Handle(b, cls, r) -> Handle(f b, cls |> List.map (fun (op, ps, k, c) -> op, ps, k, f c), r |> Option.map (fun (p, c) -> p, f c))
     | At(l, a) -> At(l, f a)
 
 // ---------------------------------------------------------------- lexer
@@ -222,7 +231,8 @@ let showTok =
 let keywords =
     set
         [ "let"; "rec"; "if"; "then"; "else"; "extern"; "true"; "false"; "not"; "match"; "with"; "when"
-          "type"; "of"; "as"; "fun"; "function"; "for"; "in"; "do"; "while"; "mutable"; "member"; "static"; "trait"; "impl"; "abstract"; "derive"; "open"; "module"; "namespace"; "private"; "and"; "unsafe" ]
+          "type"; "of"; "as"; "fun"; "function"; "for"; "in"; "do"; "while"; "mutable"; "member"; "static"; "trait"; "impl"; "abstract"; "derive"; "open"; "module"; "namespace"; "private"; "and"; "unsafe"
+          "effect"; "handle" ]
 
 // longest first
 let symbols =
@@ -742,6 +752,8 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
     // inside a task { }'s body: blocks take let!, do!, return and return! (the body is code in
     // direct style, compiled into a state machine)
     let inTask = ref 0
+    // inside seq { } (and not in a list expression in it): yield is the sequence's
+    let inSeq = ref 0
     let peek () = toks[pos.Value].tok
     let peek2 () = toks[min (pos.Value + 1) (toks.Length - 1)].tok
     let line () = toks[pos.Value].line
@@ -936,6 +948,45 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         if isSym "->" then
             advance ()
             STFun(t, ty ())
+        elif isSym "/" then
+            // the effects after a function's result: / E, / 'e, / <E, F | 'e>, / <>
+            advance ()
+
+            let label () =
+                match tyAtom () with
+                | STName _ as l -> l
+                | _ -> err "an effect"
+
+            match peek () with
+            | KSym "<>" ->
+                advance ()
+                STRow(t, [], None)
+            | KTyVar v ->
+                advance ()
+                STRow(t, [], Some v)
+            | KSym "<" ->
+                advance ()
+                let labels = ResizeArray [ label () ]
+
+                while isSym "," do
+                    advance ()
+                    labels.Add(label ())
+
+                let tail =
+                    if isSym "|" then
+                        advance ()
+
+                        match peek () with
+                        | KTyVar v ->
+                            advance ()
+                            Some v
+                        | _ -> err "a row variable ('e)"
+                    else
+                        None
+
+                closeAngle ()
+                STRow(t, List.ofSeq labels, tail)
+            | _ -> STRow(t, [ label () ], None)
         else
             t
 
@@ -1149,8 +1200,10 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         else
             match peek () with
             | KId "return" ->
+                // return! t: the task t's result, which at the end of the body is t handed this
+                // task's waiter ($awaitLast)
                 advance ()
-                if bang () then Some(Call("$await", [ block () ])) else Some(block ())
+                if bang () then Some(Call("$awaitLast", [ block () ])) else Some(block ())
             | KKw "do" when peek2 () = KSym "!" ->
                 advance ()
                 advance ()
@@ -1371,11 +1424,21 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
 
     and expr () =
         match peek () with
+        | KId "yield" when inSeq.Value > 0 ->
+            // in a seq { }: yield e performs Yield.yield e; yield! s yields s's elements
+            let ln = line ()
+            advance ()
+
+            if isSym "!" && toks[pos.Value].adj then
+                advance ()
+                At(ln, Call("$yieldAll", [ expr () ]))
+            else
+                At(ln, Call("$yield", [ expr () ]))
         | KId "try" when (match peek2 () with
                           | KIndent
                           | KNewline -> true
                           | _ -> false) ->
-            errAt "there are no exceptions to catch: a function that can fail returns a result; match on it, or use ? inside result { }"
+            errAt "there's no try … with: a function that can fail returns a result (match on it, or use ? inside result { }), or throws a Throw effect, which Throw.catch turns into a result"
         | KKw "if" ->
             advance ()
             let c = expr ()
@@ -1395,6 +1458,26 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
             let s = expr ()
             expect (KKw "with") "'with'"
             Match(s, cases ())
+        | KKw "handle" ->
+            // handle e with | E.op p…, k -> … | return p -> …: e's operations of E given meaning
+            advance ()
+
+            let body =
+                if peek () = KIndent then
+                    advance ()
+                    let e = seq ()
+                    expect KDedent "end of block"
+
+                    if peek () = KNewline then
+                        advance ()
+
+                    e
+                else
+                    expr ()
+
+            expect (KKw "with") "'with'"
+            let ops, ret = handleCases ()
+            Handle(body, ops, ret)
         | KKw "function" ->
             // function | p -> … | q -> …: fun x -> match x with …, x a fresh name
             let at = pos.Value
@@ -1462,6 +1545,49 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
     /// each or in an indented block.
     and cases () = casesWith block
 
+    /// A handle's clauses: `| E.op p…, k -> body` for an operation (its arguments' patterns, then
+    /// the resumption's name, `_` when it's never resumed), `| return p -> body` for the result.
+    and handleCases () =
+        let indented = peek () = KIndent
+
+        if indented then
+            advance ()
+
+        let ops = ResizeArray()
+        let mutable ret = None
+
+        while nextBar () do
+            match peek () with
+            | KId "return" ->
+                advance ()
+                let p = pattern ()
+                expect (KSym "->") "'->'"
+
+                if ret.IsSome then
+                    errAt "a handle has one return clause"
+
+                ret <- Some(p, block ())
+            | KId _ ->
+                let op = mark pos.Value (ident ()) // its position: a reference to the operation
+                let args = ResizeArray()
+
+                while not (isSym ",") do
+                    if not (startsPatAtom (peek ())) then
+                        err "the operation's argument pattern, then ', k ->' (the resumption)"
+
+                    args.Add(patAtom ())
+
+                advance ()
+                let k = ident ()
+                expect (KSym "->") "'->'"
+                ops.Add(op, List.ofSeq args, k, block ())
+            | _ -> err "an operation (Effect.op p…, k -> …) or return p -> …"
+
+        if indented then
+            expect KDedent "end of block"
+
+        List.ofSeq ops, ret
+
     and casesWith (body: unit -> Expr) =
         let indented = peek () = KIndent
 
@@ -1495,7 +1621,16 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
     /// `let`s and `match`es whose statements `yield e` or `yield! xs` (or do something), and
     /// `for x in xs -> e` for `for x in xs do yield e`.
     and comprehension (isArray: bool) (close: string) =
-        let body = compSeq (fun () -> isSym close)
+        // its yields are its own, also inside a seq { }
+        let outerSeq = inSeq.Value
+        inSeq.Value <- 0
+
+        let body =
+            try
+                compSeq (fun () -> isSym close)
+            finally
+                inSeq.Value <- outerSeq
+
         expect (KSym close) (sprintf "'%s'" close)
         ListComp(isArray, body)
 
@@ -2007,7 +2142,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         && (match toks[min (pos.Value + 1) (toks.Length - 1)].tok with
             | KIndent
             | KKw("let" | "do" | "for" | "if" | "match" | "while")
-            | KId("return" | "use") -> true
+            | KId("return" | "use" | "yield") -> true
             | _ -> false)
 
     /// `w { … }`, a computation expression (DESIGN §4): its statements become calls of the
@@ -2019,7 +2154,29 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         let builder = string (Char.ToUpper w[0]) + w.Substring 1 + ".Builder."
         advance () // {
 
-        if w = "task" then
+        if w = "seq" then
+            // a sequence: its body in direct style, run when the sequence is consumed; a yield
+            // anywhere in it (in a lambda too) is the Yield effect's, yield! another's elements
+            let outerTask = inTask.Value
+            inSeq.Value <- inSeq.Value + 1
+            inTask.Value <- 0
+
+            let body =
+                try
+                    if peek () = KIndent then
+                        advance ()
+                        let e = seq ()
+                        expect KDedent "end of block"
+                        e
+                    else
+                        block ()
+                finally
+                    inSeq.Value <- inSeq.Value - 1
+                    inTask.Value <- outerTask
+
+            expect (KSym "}") "'}'"
+            At(ln, Call("$seq", [ Lambda([ PUnit, None ], body) ]))
+        elif w = "task" then
             // a task: its body in direct style, with let!, do! and return!, which the compiler
             // makes a state machine of ($task, $await)
             inTask.Value <- inTask.Value + 1
@@ -2569,6 +2726,54 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
 
             expect KDedent "end of trait"
             ln, Trait(name, tp, List.ofSeq methods)
+        | KKw "effect" ->
+            // effect Yield<'a> = abstract yield : 'a -> unit …
+            advance ()
+            let name = ident ()
+            let tparams = ResizeArray()
+
+            if isSym "<" then
+                advance ()
+
+                let tv () =
+                    match peek () with
+                    | KTyVar v ->
+                        advance ()
+                        v
+                    | _ -> err "type parameter"
+
+                tparams.Add(tv ())
+
+                while isSym "," do
+                    advance ()
+                    tparams.Add(tv ())
+
+                closeAngle ()
+
+            expect (KSym "=") "'='"
+            let indented = peek () = KIndent
+
+            if indented then
+                advance ()
+
+            let ops = ResizeArray()
+
+            while peek () = KKw "abstract" do
+                advance ()
+                let m = mark pos.Value (ident ()) // its position: the operation's definition
+                expect (KSym ":") "':'"
+                ops.Add(m, ty ())
+
+                if indented && peek () = KNewline then
+                    advance ()
+
+            if ops.Count = 0 then
+                err "'abstract' operations (abstract op : T -> R)"
+
+            if indented then
+                expect KDedent "end of effect"
+
+            ln, Effect(name, List.ofSeq tparams, List.ofSeq ops)
         | KKw "impl" ->
             // impl Show<Point> = let show p = ...
             advance ()

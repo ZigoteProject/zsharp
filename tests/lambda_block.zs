@@ -31,7 +31,7 @@ let item c =
     | x :: rest when x = c -> Some (x, rest)
     | _ -> None)
 
-type Handler = { name: string; handle: int -> string }
+type Handler = { name: string; classify: int -> string }
 
 let main () =
   let doubled =
@@ -46,10 +46,10 @@ let main () =
   println $"{total}"
   let h =
     { name = "sign"
-      handle = fun n ->
+      classify = fun n ->
         if n < 0 then "negative"
         else "non-negative" }
-  println $"{h.name}: {h.handle -3} {h.handle 4}"
+  println $"{h.name}: {h.classify -3} {h.classify 4}"
   let parser = item 'a' .>>. (item 'b' <|> item 'c')
   println $"{run parser "ab"} {run parser "ac"} {run parser "ad"}"
   let fs =

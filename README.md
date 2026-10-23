@@ -29,6 +29,7 @@ let main () =
 | Data | records with defaults, unions, pattern matching with exhaustiveness checks, active patterns, units of measure |
 | Functions | closures, pipelines whose lambdas take their types from the call, custom operators, members with named and optional arguments |
 | Types | traits for operators, equality, ordering and printing; derived for records and unions, or written as derives in Z#; `dyn` values |
+| Effects | effect handlers with inferred, row-polymorphic effect types (`int / Throw<string>`): generators (`seq { }`, `Seq`), typed exceptions (`Throw`), handlers of a program's own; pure code compiles as if they didn't exist |
 | Concurrency | `task { }` on an event loop per thread, compiled to state machines (a wait allocates nothing): timers, TCP sockets, `both`/`all`/`race`, scopes, cancellation that disposes `use` values, `Task.spawn` onto every core; `option { }` and `result { }` |
 | Parallelism | a work-stealing thread pool (`Parallel.both`/`for`/`reduce`, `Array.Parallel`), `Atomic`, `Mutex`, `Channel`; what crosses threads is checked at compile time, and only shared objects have atomic reference counts |
 | SIMD | portable vectors (`f32x8`, `u8x16`, … with masks and shuffles), `[<FastMath>]`, `--cpu`, `[<Target>]`, `[<Multiversion>]`, x86-64 and aarch64 intrinsics; within 10% of C with intrinsics |

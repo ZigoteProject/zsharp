@@ -1,0 +1,1 @@
+tests/effects/err_task.zs:3:5: error: this performs Yield<int>, but a task's body (it runs from the event loop, where no handler is) can't: handle it inside (handle … with)

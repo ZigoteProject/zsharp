@@ -1,0 +1,1 @@
+tests/effects/err_thread.zs:2:3: error: a function run on another thread must have no effects: this one performs Throw<string>; handle it inside

@@ -119,7 +119,7 @@ $3 = {case = Large, Small = 0, Large.0 = 14, Large.1 = 7}
 
 **What it gives:**
 - tree-sitter highlighting and outline;
-- the `zs lsp` language server: errors as you type, hover with types and docs, go to definition, references, completion, inlay type hints, document symbols and formatting;
+- the `zs lsp` language server: errors as you type, hover with types (effects included) and docs, go to definition, references, completion, inlay hints (types, and a function's inferred effects before its `=`), document symbols and formatting;
 - the `zs mcp` context server, so Zed's agent can check, build and run code and look up documentation.
 
 The extension finds `zs` on your `PATH`. Or set the path in Zed's settings:

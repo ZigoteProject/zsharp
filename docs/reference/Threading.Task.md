@@ -230,3 +230,13 @@ use every core (a server's connections, say). `f` crosses threads, so what it ca
 must be Share, as the result must. The task stays on that thread to the end; cancelling
 this one cancels it there (its `use` values are disposed on its thread).
 
+### `Task.handOff`
+
+```zsharp
+Task.handOff : Task<'a> -> Cancel -> ('a -> unit) -> unit
+```
+
+`return! t` at the end of a task's body: `t` runs with the task's cancellation, and its
+result goes to what waits for the task, which is done. So a task that loops by `return!`
+keeps one state machine, not one per round.
+

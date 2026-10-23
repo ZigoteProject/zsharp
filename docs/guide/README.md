@@ -23,6 +23,7 @@ its exact output.
 13. [Computation expressions and tasks](13-tasks.md): `option { }`, `result { }`, `task { }`, running tasks at once, cancellation, sockets
 14. [Parallelism](14-parallel.md): the thread pool, what can cross threads (`Share`), `Atomic`, `Mutex` and `Channel`, tasks on every core
 15. [SIMD](15-simd.md): vectors, masks and shuffles, `[<FastMath>]`, CPU targets and multiversioning, intrinsics
+16. [Effects](16-effects.md): generators (`seq { }`), typed exceptions (`Throw`), effects and handlers, effect types
 
 **Reference:**
 - [The library reference](../reference/README.md), generated from its doc comments by `zs doc`.

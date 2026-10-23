@@ -142,6 +142,13 @@ if [ "$actual" = "tests/mcu/std.zs:2:15: error: 'File.readAllText' is in IO.File
   echo "ok   tests/mcu/std.zs (no Std on a microcontroller)"
 else echo "FAIL tests/mcu/std.zs"; echo "$actual"; fail=1; fi
 
+# effects on a microcontroller (no thread-local storage there: the yield state is a global),
+# under qemu
+if command -v qemu-system-arm >/dev/null && bin/zs build tests/mcu/effects.zs --target cortex-m0plus -o "$tmp/effects.elf" 2>"$tmp/effects.log" \
+   && [ "$(timeout 60 qemu-system-arm -M microbit -nographic -semihosting-config enable=on,target=native -kernel "$tmp/effects.elf" 2>&1 | grep -v '^#zs')" = "$(cat tests/mcu/effects.expected)" ]; then
+  echo "ok   tests/mcu/effects.zs (effect handlers on a Cortex-M0+, under qemu)"
+else echo "FAIL tests/mcu/effects.zs"; cat "$tmp/effects.log"; fail=1; fi
+
 # the library checks on its own (an editor opening one of its files must not see everything
 # defined twice)
 if bin/zs check lib/core/Collections/List.zs >"$tmp/lib.log" 2>&1; then echo "ok   zs check lib (the library on its own)"
@@ -170,6 +177,10 @@ else echo "FAIL tests/lsp/session.sh"; diff <(echo "$expected") <(echo "$actual"
 # the other's diagnostics again (tests/lsp/modules.sh)
 if diff <(tests/lsp/modules.sh bin/zs 2>&1) tests/lsp/modules.out >"$tmp/lspm.diff"; then echo "ok   tests/lsp/modules.sh"
 else echo "FAIL tests/lsp/modules.sh"; cat "$tmp/lspm.diff"; fail=1; fi
+# the language server on effects: rows in hover, the effects inlay hint, an operation's
+# definition and references (tests/lsp/effects.sh)
+if diff <(tests/lsp/effects.sh bin/zs 2>&1) tests/lsp/effects.expected >"$tmp/lspe.diff"; then echo "ok   tests/lsp/effects.sh"
+else echo "FAIL tests/lsp/effects.sh"; cat "$tmp/lspe.diff"; fail=1; fi
 # the build server: the binary an in-process build makes, errors and exit codes back
 if diff <(tests/server.sh 2>&1) tests/server.expected >"$tmp/server.diff"; then echo "ok   tests/server.sh (the build server)"
 else echo "FAIL tests/server.sh"; cat "$tmp/server.diff"; fail=1; fi

@@ -89,10 +89,11 @@ let rec private ty (c: W) (t: Ty) =
             tag c 0
             str c n
             list' c ty args
-        | TFun(a, b) ->
+        | TFun(a, b, r) ->
             tag c 1
             ty c a
             ty c b
+            ty c r
         | TTuple ts ->
             tag c 2
             list' c ty ts
@@ -145,6 +146,11 @@ let rec private stype (c: W) (t: SType) =
     | STMeasure ms ->
         tag c 4
         list' c (fun c (u, isVar, e) -> str c u; bool' c isVar; int' c e) ms
+    | STRow(t, labels, tail) ->
+        tag c 5
+        stype c t
+        list' c stype labels
+        opt c str tail
 
 let rec private pat (c: W) (p: Pat) =
     shared c p true (fun () ->
@@ -352,7 +358,12 @@ let rec private expr (c: W) (e: Expr) =
             tag c 40
             expr c a
             opt c expr i
-            opt c expr j)
+            opt c expr j
+        | Handle(b, ops, ret) ->
+            tag c 41
+            expr c b
+            list' c (fun c (op, ps, k, e) -> str c op; list' c pat ps; str c k; expr c e) ops
+            opt c (fun c (p, e) -> pat c p; expr c e) ret)
 
 and private param (c: W) (p: Pat, t: SType option) =
     pat c p
@@ -521,6 +532,18 @@ let rec private cexpr (c: W) (e: CExpr) =
             tag c 29
             int' c l
             cexpr c a
+        | CPerform(l, op, args) ->
+            tag c 30
+            ty c l
+            int' c op
+            list' c cexpr args
+        | CHandle(l, b, cls, (r, rt), rb) ->
+            tag c 31
+            ty c l
+            cexpr c b
+            list' c (fun c (op, ps, k, e) -> int' c op; list' c tyBinding ps; tyBinding c k; cexpr c e) cls
+            tyBinding c (r, rt)
+            cexpr c rb
         | k -> raise (Unwritable(sprintf "%A" k))) // only the passes after checking make the others
 
 let private typeDef (c: W) (d: TypeDef) =
@@ -610,6 +633,12 @@ let writeModule (st: State) (marks: Marks) (hovers: Hover seq) (position: obj ->
             entries c str (fun c (m: TraitMethod) -> str c m.owner; str c m.name; ty c m.ty; bool' c m.isConst) (written st.traitMethods)
             entries c str str (written st.traitAliases)
             strSeq c st.traitNames.Added
+
+            entries c str (fun c (e: EffectInfo) ->
+                int' c e.npars
+                list' c (fun c (o: EffectOp) -> str c o.name; list' c ty o.pars; ty c o.ret; int' c o.own) e.ops) (written st.effects)
+
+            entries c str (fun c (e, i) -> str c e; int' c i) (written st.effectOps)
             entries c pair (fun c t -> entries c str str [ for KeyValue(m, f) in t -> m, f ]) (written st.impls)
             entries c pair (fun c reqs -> list' c (fun c s -> strSeq c s) reqs) (written st.implRequires)
             entries c str (fun c defs -> list' c deriveDef defs) (written st.derives)
@@ -658,8 +687,10 @@ let writeModule (st: State) (marks: Marks) (hovers: Hover seq) (position: obj ->
                     str c f.name
                     list' c tyBinding f.pars
                     ty c f.ret
+                    ty c f.row
                     cexpr c f.body
                     int' c f.ngen
+                    int' c f.rows
                     str c f.file
                     int' c f.line)
                 (slice st.funs marks.funs))
@@ -738,7 +769,8 @@ let rec private rty (c: R) : Ty =
             TCon(n, rlist c rty)
         | 1 ->
             let a = rty c
-            TFun(a, rty c)
+            let b = rty c
+            TFun(a, b, rty c)
         | 2 -> TTuple(rlist c rty)
         | 3 -> TVar(rcell c)
         | 4 -> TGen(rint c)
@@ -772,13 +804,17 @@ let rec private rstype (c: R) : SType =
     | 3 ->
         let a = rstype c
         STFun(a, rstype c)
-    | _ ->
+    | 4 ->
         STMeasure(
             rlist c (fun c ->
                 let u = rstr c
                 let isVar = rbool c
                 u, isVar, rint c)
         )
+    | _ ->
+        let t = rstype c
+        let labels = rlist c rstype
+        STRow(t, labels, ropt c rstr)
 
 let rec private rpat (c: R) : Pat =
     rshared c true (fun () ->
@@ -917,6 +953,17 @@ let rec private rexpr (c: R) : Expr =
             let a = rexpr c
             let i = ropt c rexpr
             Slice(a, i, ropt c rexpr)
+        | 41 ->
+            let b = rexpr c
+
+            let ops =
+                rlist c (fun c ->
+                    let op = rstr c
+                    let ps = rlist c rpat
+                    let k = rstr c
+                    op, ps, k, rexpr c)
+
+            Handle(b, ops, ropt c (fun c -> (let p = rpat c in p, rexpr c)))
         | _ ->
             let l = rint c
             At(l, rexpr c))
@@ -1047,9 +1094,26 @@ let rec private rcexpr (c: R) : CExpr =
                 let s = rcexpr c
                 let b = rcexpr c
                 CFor(x, a, s, b, rcexpr c)
-            | _ ->
+            | 29 ->
                 let l = rint c
                 CLine(l, rcexpr c)
+            | 30 ->
+                let l = rty c
+                let op = rint c
+                CPerform(l, op, rlist c rcexpr)
+            | _ ->
+                let l = rty c
+                let b = rcexpr c
+
+                let cls =
+                    rlist c (fun c ->
+                        let op = rint c
+                        let ps = rlist c rtyBinding
+                        let k = rtyBinding c
+                        op, ps, k, rcexpr c)
+
+                let r = rtyBinding c
+                CHandle(l, b, cls, r, rcexpr c)
 
         { k = k; ty = t })
 
@@ -1144,6 +1208,19 @@ let readModule (iface: byte[]) (st: State) (place: obj -> int * int * int -> uni
         put st.traitAliases rstr rstr
         add st.traitNames rstr
 
+        put st.effects rstr (fun c ->
+            let n = rint c
+
+            { npars = n
+              ops =
+                rlist c (fun c ->
+                    let name = rstr c
+                    let ps = rlist c rty
+                    let ret = rty c
+                    ({ name = name; pars = ps; ret = ret; own = rint c }: EffectOp)) })
+
+        put st.effectOps rstr (fun c -> (let e = rstr c in e, rint c))
+
         put st.impls rpair (fun c ->
             let d = Dictionary<string, string>()
 
@@ -1176,7 +1253,7 @@ let readModule (iface: byte[]) (st: State) (place: obj -> int * int * int -> uni
                   arity = a
                   defining = rbool c }) do
             st.globals[name] <- g
-            names.Add(name, g.kinds.Length)
+            names.Add(name, g.kinds |> List.filter (isRowKind >> not) |> List.length) // generic in its types
 
         put st.externs rstr (fun c ->
             let ps = rlist c rty
@@ -1225,15 +1302,19 @@ let readFuns (funs: byte[]) : FunDef list =
             let n = rstr c
             let ps = rlist c rtyBinding
             let ret = rty c
+            let row = rty c
             let body = rcexpr c
             let ngen = rint c
+            let rows = rint c
             let file = rstr c
 
             ({ name = n
                pars = ps
                ret = ret
+               row = row
                body = body
                ngen = ngen
+               rows = rows
                file = file
                line = rint c }
             : FunDef)))

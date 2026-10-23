@@ -13,7 +13,8 @@ type Kind =
 
 type Ty =
     | TCon of string * Ty list // int, f64, string, list<_>, user types; args can later carry units of measure
-    | TFun of Ty * Ty
+    /// A function: parameter, result, and the effects calling it performs (its row, DESIGN §6.1).
+    | TFun of Ty * Ty * Ty
     | TTuple of Ty list
     | TVar of TV ref
     | TGen of int // quantified variable of a type scheme or type definition
@@ -161,6 +162,18 @@ let isDynName (n: string) = n.StartsWith "dyn:"
 
 let typeAliases = dict [ "c_int", "i32"; "float", "f64"; "double", "f64" ]
 
+// ---------------------------------------------------------------- effect rows
+
+/// Effect rows (Leijen's scoped labels): what calling a function performs. A row is empty, an
+/// effect (a label: the effect's type, Yield<int>) in front of another row, or a variable (a
+/// TVar of kind kRow, TGen once generalized). Labels keep their order, and an effect may be in
+/// a row twice: the first is the innermost handler's.
+let rowEmpty = TCon("$total", [])
+let rowExt (label: Ty) (rest: Ty) = TCon("$ext", [ label; rest ])
+let kRow = { allowed = Some(set [ "$total" ]); traits = Set.empty }
+let isRowKind (k: Kind) = k.allowed = kRow.allowed
+let mkRow (labels: Ty list) (tail: Ty) = List.foldBack rowExt labels tail
+
 let tcon n = TCon(n, [])
 let tInt, tBool, tUnit, tStr, tCStr = tcon "int", tcon "bool", tcon "unit", tcon "string", tcon "cstr"
 let tChar = tcon "char"
@@ -183,6 +196,30 @@ let rec prune t =
         | Link t -> prune t
         | Unbound _ -> t
     | _ -> t
+
+/// A row's labels, in order, and its tail: the empty row, or a variable.
+let rec rowParts (r: Ty) : Ty list * Ty =
+    match prune r with
+    | TCon("$ext", [ l; rest ]) ->
+        let ls, t = rowParts rest
+        l :: ls, t
+    | t -> [], t
+
+/// An effect label's name: Yield for Yield<int>.
+let labelName (l: Ty) =
+    match prune l with
+    | TCon(n, _) -> n
+    | _ -> ""
+
+let isRowEmpty (r: Ty) =
+    match rowParts r with
+    | [], t -> (match prune t with
+                | TCon("$total", []) -> true
+                | _ -> false)
+    | _ -> false
+
+/// A function type with no effects.
+let tfun (a: Ty) (b: Ty) = TFun(a, b, rowEmpty)
 
 let private defaultOf (k: Kind) =
     let fits n =
@@ -262,12 +299,102 @@ let shortName (q: string) =
     | Some ns -> q.Substring(ns.Length + 1)
     | None -> q
 
+/// The type variables of a type, each as often as it occurs.
+let rec private varsIn (t: Ty) : Ty list =
+    match prune t with
+    | TVar _
+    | TGen _ as v -> [ v ]
+    | TCon(_, ts)
+    | TTuple ts -> List.collect varsIn ts
+    | TFun(a, b, r) -> varsIn a @ varsIn b @ varsIn r
+    | TMeas(_, vs) -> vs |> List.collect (fst >> varsIn)
+
+let private sameVar (a: Ty) (b: Ty) =
+    match prune a, prune b with
+    | TVar x, TVar y -> obj.ReferenceEquals(x, y)
+    | TGen i, TGen j -> i = j
+    | _ -> false
+
 /// A type as text. With full, names keep their namespaces (for symbol names and lookup keys,
 /// which must tell a program's own Map from Collections.Map); without, they read as written.
+/// A function's effects follow its result (`int -> unit / Yield<int>`); one without any shows
+/// none, and so does a row variable nothing else in the type mentions (it stands for any
+/// effects, and reads as the function's own).
 let rec showWith (full: bool) t =
-    let show = showWith full
+    // what naming and hiding row variables needs, found once one is shown
+    let vars = lazy (varsIn t)
+    let rowVars = ResizeArray<Ty>()
 
-    match prune t with
+    let rec findRows (t: Ty) =
+        match prune t with
+        | TFun(a, b, r) ->
+            findRows a
+            findRows b
+
+            match prune (snd (rowParts r)) with
+            | TVar _
+            | TGen _ as v when not (rowVars.Exists(fun w -> sameVar v w)) -> rowVars.Add v
+            | _ -> ()
+
+            fst (rowParts r) |> List.iter findRows
+        | TCon(_, ts)
+        | TTuple ts -> List.iter findRows ts
+        | _ -> ()
+
+    let found = lazy (findRows t)
+
+    let rowVarName (v: Ty) =
+        found.Force()
+
+        match rowVars.FindIndex(fun w -> sameVar v w) with
+        | 0 -> "'e"
+        | i -> sprintf "'e%d" (i + 1)
+
+    let lone (v: Ty) = not full && (vars.Force() |> List.filter (sameVar v) |> List.length) = 1
+
+    let rec rowText (r: Ty) =
+        let ls, tail = rowParts r
+        let labels = ls |> List.map show
+
+        let tailText =
+            match prune tail with
+            | TCon("$total", []) -> None
+            | v when lone v -> None
+            | v -> Some(rowVarName v)
+
+        match labels, tailText with
+        | [], None -> ""
+        | [ l ], None -> l
+        | [], Some v -> v
+        | ls, None -> "<" + String.concat ", " ls + ">"
+        | ls, Some v -> "<" + String.concat ", " ls + " | " + v + ">"
+
+    and show (t: Ty) =
+        match prune t with
+        | TFun(a, b, r) ->
+            let effects = rowText r
+            let param =
+                match prune a with
+                | TFun _ -> "(" + show a + ")"
+                | _ -> show a
+
+            let result =
+                match prune b with
+                | TFun _ when effects <> "" -> "(" + show b + ")"
+                | _ -> show b
+
+            param + " -> " + result + (if effects = "" then "" else " / " + effects)
+        | TCon(("$ext" | "$total"), _) as r -> "<" + rowText r + ">"
+        | TVar r when isRowKind (match r.Value with
+                                 | Unbound(_, k) -> k
+                                 | _ -> kAny) -> rowVarName t
+        | t -> showOne full show t
+
+    show t
+
+/// One type constructor's text, its parts through show.
+and private showOne (full: bool) (show: Ty -> string) (t: Ty) =
+    match t with
     | TMeas _ as m ->
         let us, vs = normMeas m
 
@@ -290,10 +417,7 @@ let rec showWith (full: bool) t =
     | TCon(n, args) ->
         let n = if full then n else shortName n
         if args.IsEmpty then n else n + "<" + (args |> List.map show |> String.concat ", ") + ">"
-    | TFun(a, b) ->
-        match prune a with
-        | TFun _ -> "(" + show a + ") -> " + show b
-        | _ -> show a + " -> " + show b
+    | TFun _ -> show t
     | TTuple ts ->
         ts
         |> List.map (fun t ->
@@ -325,7 +449,7 @@ let rec resolve t =
             d
         | Link t -> resolve t
     | TCon(n, args) -> TCon(n, List.map resolve args)
-    | TFun(a, b) -> TFun(resolve a, resolve b)
+    | TFun(a, b, r) -> TFun(resolve a, resolve b, resolveRow r)
     | TTuple ts -> TTuple(List.map resolve ts)
     | TGen _ as t -> t
     | TMeas(us, vs) ->
@@ -337,13 +461,28 @@ let rec resolve t =
 
         TMeas(normMeas (TMeas(us, vs)))
 
+/// A row resolved: an unconstrained tail is the empty row, and the labels are in canonical
+/// order (by effect, the innermost first among one effect's: a stable sort), so equal rows are
+/// equal types.
+and resolveRow (r: Ty) =
+    let ls, tail = rowParts r
+
+    let tail =
+        match prune tail with
+        | TVar v ->
+            v.Value <- Link rowEmpty
+            rowEmpty
+        | t -> t
+
+    mkRow (ls |> List.map resolve |> List.sortBy labelName) tail
+
 /// Replaces TGen i with args[i].
 let rec substGen (args: Ty list) t =
     match prune t with
     | TGen i -> List.item i args
     | TMeas(us, vs) -> TMeas(normMeas (TMeas(us, vs |> List.map (fun (v, e) -> substGen args v, e))))
     | TCon(n, a) -> TCon(n, List.map (substGen args) a)
-    | TFun(a, b) -> TFun(substGen args a, substGen args b)
+    | TFun(a, b, r) -> TFun(substGen args a, substGen args b, substGen args r)
     | TTuple ts -> TTuple(List.map (substGen args) ts)
     | t -> t
 
@@ -406,6 +545,13 @@ and CKind =
     | CWhile of CExpr * CExpr
     | CFor of string * CExpr * CExpr * CExpr * CExpr // var, from, step, to, body
     | CLine of int * CExpr
+    /// An effect's operation (its label, Yield<int>; its index), performed with the arguments:
+    /// what the innermost handler of the effect gives (DESIGN §6.1). Until Evidence.
+    | CPerform of label: Ty * op: int * CExpr list
+    /// handle body with clauses: for each operation (its index), its parameters, the
+    /// resumption's name and type, and the clause's body; then the return clause, its variable
+    /// bound to the body's result. Until Evidence.
+    | CHandle of label: Ty * body: CExpr * clauses: (int * (string * Ty) list * (string * Ty) * CExpr) list * ret: (string * Ty) * retBody: CExpr
     // after closure conversion
     | CCallDirect of string * CExpr list
     | CMkClosure of string * CExpr list // function, values for its first parameters
@@ -459,6 +605,10 @@ let mapChildren (f: CExpr -> CExpr) (k: CKind) : CKind =
     | CWhile(c, b) -> CWhile(f c, f b)
     | CFor(x, a, s, b, body) -> CFor(x, f a, f s, f b, f body)
     | CLine(l, e) -> CLine(l, f e)
+    | CPerform(l, op, args) -> CPerform(l, op, List.map f args)
+    | CHandle(l, b, cls, r, rb) ->
+        let b' = f b // the body runs first
+        CHandle(l, b', cls |> List.map (fun (op, ps, k, c) -> op, ps, k, f c), r, f rb)
     | CCallDirect(n, args) -> CCallDirect(n, List.map f args)
     | CMkClosure(n, args) -> CMkClosure(n, List.map f args)
     | CApplyClo(c, args) -> CApplyClo(f c, List.map f args)
@@ -520,7 +670,24 @@ let ownBinders (k: CKind) : string list =
     | CLetMut(x, _, _)
     | CFor(x, _, _, _, _) -> [ x ]
     | CMatch(_, cases) -> cases |> List.collect (fun (p, _, _) -> patVars p |> List.map fst)
+    | CHandle(_, _, cls, (r, _), _) -> r :: (cls |> List.collect (fun (_, ps, (k, _), _) -> k :: List.map fst ps))
     | _ -> []
+
+/// The type of each local an expression refers to (a local function's at its uses: the
+/// definition has its parameters' types only), by unique name.
+let localTypesIn (e: CExpr) : Dictionary<string, Ty> =
+    let d = Dictionary<string, Ty>()
+
+    let rec walk (e: CExpr) =
+        match e.k with
+        | CLocal x -> d[x] <- e.ty
+        | _ -> ()
+
+        for c in children e.k do
+            walk c
+
+    walk e
+    d
 
 /// Names bound inside an expression (binders), excluding the expression's free variables.
 let rec binders (e: CExpr) : string list =
@@ -587,6 +754,18 @@ let rec showCore (ind: int) (e: CExpr) : string =
     | CExtern(f, xs) -> line ("extern " + f + "(" + args xs + ")")
     | CNot a -> line ("not " + flat a)
     | CNeg a -> line ("-" + flat a)
+    | CPerform(l, op, xs) -> line (sprintf "perform %s#%d(%s)" (show l) op (args xs))
+    | CHandle(l, b, cls, (r, _), rb) ->
+        line ("handle " + show l)
+        + "\n"
+        + sub b
+        + (cls
+           |> List.map (fun (op, ps, (k, _), c) -> "\n" + line (sprintf "| #%d(%s), %s ->" op (ps |> List.map fst |> String.concat ", ") k) + "\n" + sub c)
+           |> String.concat "")
+        + "\n"
+        + line ("| return " + r + " ->")
+        + "\n"
+        + sub rb
     | k -> line (sprintf "<%s>" ((sprintf "%A" k).Split(' ', '\n')[0]))
 
 /// The variables a node references itself (not through its children).
@@ -628,8 +807,13 @@ type FunDef =
     { name: string
       pars: (string * Ty) list
       ret: Ty
+      /// What the body performs: the row of the last parameter's arrow (the others have none).
+      row: Ty
       body: CExpr
       ngen: int // number of quantified variables (TGen 0..ngen-1)
+      /// How many of them are effect rows: the last ones. Instantiated with empty rows, the
+      /// function is its pure instance, under its own name (so its module owns it).
+      rows: int
       file: string // where it is defined (debug info)
       line: int }
 
@@ -637,6 +821,17 @@ type ExternSig =
     { pars: Ty list
       ret: Ty
       variadic: bool }
+
+/// An effect's operation: its parameter types and result, over the effect's type parameters
+/// (TGen 0 … n-1) and its own (TGen n …, which appear in the result only: throw : 'e -> 'a).
+type EffectOp =
+    { name: string
+      pars: Ty list
+      ret: Ty
+      own: int }
+
+/// An effect (DESIGN §6.1): its number of type parameters and its operations, in order.
+type EffectInfo = { npars: int; ops: EffectOp list }
 
 type TraitMethod =
     { owner: string
@@ -649,6 +844,7 @@ type Program =
       externs: Dictionary<string, ExternSig>
       funs: FunDef list
       traitMethods: Dictionary<string, TraitMethod> // "Show.show" -> method
+      effects: Dictionary<string, EffectInfo> // by full name
       impls: Dictionary<string * string, Dictionary<string, string>> // (trait, type) -> method -> function
       exports: Export list
       values: (string * string) list // top-level values computed at startup, in order: name, init function

@@ -416,7 +416,7 @@ let private run (argv: string[]) =
                             | "function" when signatures.ContainsKey d.key -> signatures[d.key]
                             | _ -> d.title
 
-                        let heading = if List.contains d.kind [ "case"; "method"; "member" ] then "####" else "###"
+                        let heading = if List.contains d.kind [ "case"; "method"; "member"; "operation" ] then "####" else "###"
                         printfn "%s `%s`\n\n```zsharp\n%s\n```\n" heading (Core.shortName d.key) shown
 
                         match d.doc with
@@ -428,6 +428,7 @@ let private run (argv: string[]) =
             header |> Option.bind (fun h -> h.doc) |> Option.iter (printfn "%s\n")
 
             section "Traits" [ "trait"; "method" ]
+            section "Effects" [ "effect"; "operation" ]
             section "Types" [ "type"; "case"; "member" ]
             section "Derives and impls" [ "derive"; "impl" ]
             section "Functions" [ "function" ]

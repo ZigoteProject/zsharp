@@ -14,7 +14,7 @@ type private LocalFun =
 let rec private resultAfter n t =
     match n, prune t with
     | 0, t -> t
-    | n, TFun(_, r) -> resultAfter (n - 1) r
+    | n, TFun(_, r, _) -> resultAfter (n - 1) r
     | _ -> failwith "resultAfter: not a function type"
 
 /// external: the arity of a function another module has the code of. wrapped: a closure of a
@@ -63,7 +63,7 @@ let runWith (external: string -> int option) (wrapped: bool) (funs: MFun list) :
         else
             count.Value.Value <- count.Value.Value + 1
             let w = sprintf "%s$call%d" owner count.Value.Value
-            let rec split n t = if n = 0 then [], t else (match prune t with TFun(a, r) -> (let ps, res = split (n - 1) r in a :: ps, res) | _ -> failwith "closureOf")
+            let rec split n t = if n = 0 then [], t else (match prune t with TFun(a, r, _) -> (let ps, res = split (n - 1) r in a :: ps, res) | _ -> failwith "closureOf")
             let ptys, res = split (arity g) fty
             let ps = ptys |> List.mapi (fun i t -> sprintf "$w%d" i, t)
             let body = mk (CCallDirect(g, ps |> List.map (fun (x, t) -> mk (CLocal x) t))) res
@@ -72,6 +72,7 @@ let runWith (external: string -> int option) (wrapped: bool) (funs: MFun list) :
                 { name = w
                   pars = ps
                   ret = res
+                  row = rowEmpty
                   body = body
                   file = fst source.Value
                   line = snd source.Value }
@@ -158,6 +159,7 @@ let runWith (external: string -> int option) (wrapped: bool) (funs: MFun list) :
             { name = lname
               pars = caps @ ps
               ret = body.ty
+              row = rowEmpty
               body = body
               file = fst source.Value
               line = snd source.Value }

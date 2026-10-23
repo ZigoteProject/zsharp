@@ -444,6 +444,8 @@ let lower (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (borr
             let re k = mk k e.ty
 
             match e.k with
+            | CPerform _
+            | CHandle _ -> failwith "Rc: an effect's node after Evidence"
             | CLocal x ->
                 if owned.Contains x then e
                 elif heap e.ty then mk (CDup(x, e.ty, e)) e.ty

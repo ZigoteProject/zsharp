@@ -9,18 +9,21 @@ type MFun =
     { name: string
       pars: (string * Ty) list
       ret: Ty
+      /// What the body performs (the row of the last parameter's arrow); empty after Evidence.
+      row: Ty
       body: CExpr
       file: string
       line: int }
 
-/// Units of measure are erased, so measure arguments don't distinguish instances.
+/// Units of measure are erased, so measure arguments don't distinguish instances, and an empty
+/// row (a function's effects: none) isn't shown, so a pure instance has the name it always had.
 let mangle (name: string) (inst: Ty list) =
     let shown =
         inst
         |> List.filter (fun t ->
             match prune t with
             | TMeas _ -> false
-            | _ -> true)
+            | t -> not (isRowEmpty t))
 
     if shown.IsEmpty then
         name
@@ -35,10 +38,23 @@ let rec private concrete (inst: Ty list) t =
     | TMeas _ -> measOne
     | TCon(("Buffer" | "span"), a) -> TCon(windowType, List.map (concrete inst) a) // a window: Core's windowType
     | TCon("share", [ f ]) -> concrete inst f // a function that may cross threads is a function
+    | TCon(("$ext" | "$total"), _) as r -> concreteRow inst r
+    | TCon(n, []) when n.StartsWith "$sk" -> tUnit // an operation's own type in its clause: no value has it
     | TCon(n, a) -> TCon(n, List.map (concrete inst) a)
-    | TFun(a, b) -> TFun(concrete inst a, concrete inst b)
+    | TFun(a, b, r) -> TFun(concrete inst a, concrete inst b, concreteRow inst r)
     | TTuple ts -> TTuple(List.map (concrete inst) ts)
     | TVar _ as t -> resolve t
+
+/// A concrete row: closed, its labels in canonical order (as resolveRow).
+and private concreteRow (inst: Ty list) (r: Ty) =
+    let ls, tail = rowParts r
+
+    let more =
+        match prune tail with
+        | TGen i -> fst (rowParts (List.item i inst))
+        | _ -> []
+
+    mkRow (List.map (concrete inst) ls @ more |> List.sortBy labelName) rowEmpty
 
 /// Binds TGen variables of a generic type so that it equals a concrete one.
 let rec private matchTy (binds: Ty option[]) (pattern: Ty) (concrete: Ty) =
@@ -46,9 +62,10 @@ let rec private matchTy (binds: Ty option[]) (pattern: Ty) (concrete: Ty) =
     | TGen i, c -> binds[i] <- Some c
     | TCon(_, ps), TCon(_, cs)
     | TTuple ps, TTuple cs when ps.Length = cs.Length -> List.iter2 (matchTy binds) ps cs
-    | TFun(a, b), TFun(c, d) ->
+    | TFun(a, b, r), TFun(c, d, s) ->
         matchTy binds a c
         matchTy binds b d
+        matchTy binds r s
     | _ -> ()
 
 let private opTrait =
@@ -87,7 +104,11 @@ let runFrom (prog: Program) (def: string -> FunDef) (roots: string list) (extern
     let request name inst =
         let m = mangle name inst
 
-        if seen.Add m && not (inst.IsEmpty && external name) then
+        // an instance another module has the code of: a non-generic function's, or the pure
+        // instance (its rows empty) of one generic only in its effects
+        let own = inst |> List.forall (fun t -> isRowEmpty t || (match prune t with TMeas _ -> true | _ -> false))
+
+        if seen.Add m && not (own && external name) then
             queue.Enqueue(name, inst)
 
         m
@@ -107,7 +128,7 @@ let runFrom (prog: Program) (def: string -> FunDef) (roots: string list) (extern
             let fname = table[m]
             let fd = def fname
             let binds = Array.create fd.ngen None
-            matchTy binds (List.foldBack (fun (_, p) acc -> TFun(p, acc)) fd.pars fd.ret) methodTy
+            matchTy binds (List.foldBack (fun (_, p) acc -> tfun p acc) fd.pars fd.ret) methodTy
             let inst = binds |> Array.map (Option.defaultValue tInt) |> List.ofArray
             mk (CGlobal(request fname inst, Some [])) methodTy
         | _ -> Syntax.fail 0 (sprintf "%s does not implement %s" (show t) tr)
@@ -161,7 +182,7 @@ let runFrom (prog: Program) (def: string -> FunDef) (roots: string list) (extern
         let arity =
             let rec go t =
                 match prune t with
-                | TFun(_, r) -> 1 + go r
+                | TFun(_, r, _) -> 1 + go r
                 | _ -> 0
 
             go headTy
@@ -188,7 +209,7 @@ let runFrom (prog: Program) (def: string -> FunDef) (roots: string list) (extern
             let rec peel n t =
                 match n, prune t with
                 | 0, r -> [], r
-                | n, TFun(p, r) ->
+                | n, TFun(p, r, _) ->
                     let ps, res = peel (n - 1) r
                     p :: ps, res
                 | _ -> failwith "dispatch: not a function"
@@ -266,7 +287,7 @@ let runFrom (prog: Program) (def: string -> FunDef) (roots: string list) (extern
 
             let rec split ty =
                 match prune ty with
-                | TFun(a, r) ->
+                | TFun(a, r, _) ->
                     let ps, res = split r
                     a :: ps, res
                 | r -> [], r
@@ -287,6 +308,7 @@ let runFrom (prog: Program) (def: string -> FunDef) (roots: string list) (extern
                 { name = name
                   pars = ("$self", dynTy) :: others
                   ret = res
+                  row = rowEmpty
                   body = body
                   file = file
                   line = 1 }
@@ -307,8 +329,9 @@ let runFrom (prog: Program) (def: string -> FunDef) (roots: string list) (extern
         | ">=" -> mk (CBin(op, call, mk (CInt 0L) tInt)) tBool
         | _ -> call
 
+    // a root generic only in its effects is its pure instance
     for r in roots do
-        request r [] |> ignore
+        request r (List.replicate (def r).ngen rowEmpty) |> ignore
 
     while queue.Count > 0 do
         let name, inst = queue.Dequeue()
@@ -327,6 +350,8 @@ let runFrom (prog: Program) (def: string -> FunDef) (roots: string list) (extern
             | CApp({ k = CGlobal(q, Some gi) } as h, args) when prog.traitMethods.ContainsKey q ->
                 dispatch q (List.map ct gi) (ct h.ty) (List.map ex args) (ct e.ty)
             | CGlobal(q, Some gi) when prog.traitMethods.ContainsKey q -> dispatch q (List.map ct gi) (ct e.ty) [] (ct e.ty)
+            // a global function opened to a row (Typer.opened) that came out its own: as it is
+            | CPrim("eff.open", [ g ]) when ct g.ty = ct e.ty -> ex g
             | CBin(op, a, b) when not (isPrim (ct a.ty)) -> operator (op.Replace("wrap", "").Replace("fast", "")) (ex a) (ex b) (ct e.ty)
             | CBin(op, a, b) when op.StartsWith "fast" && not (isFloaty (ct a.ty)) ->
                 ex { e with k = CBin(op.Substring 4, a, b) } // [<FastMath>]'s mark is for floats
@@ -342,6 +367,10 @@ let runFrom (prog: Program) (def: string -> FunDef) (roots: string list) (extern
                     | CLetFun(n, r, ps, b, rest) -> CLetFun(n, r, ps |> List.map (fun (x, t) -> x, ct t), ex b, ex rest)
                     | CLetRec(fs, rest) -> CLetRec(fs |> List.map (fun (n, ps, b) -> n, ps |> List.map (fun (x, t) -> x, ct t), ex b), ex rest)
                     | CMatch(s, cases) -> CMatch(ex s, cases |> List.map (fun (p, g, b) -> mapPatTypes ct p, Option.map ex g, ex b))
+                    | CPerform(l, op, args) -> CPerform(ct l, op, List.map ex args)
+                    | CHandle(l, b, cls, (r, rt), rb) ->
+                        let cls' = cls |> List.map (fun (op, ps, (k, kt), c) -> op, ps |> List.map (fun (x, t) -> x, ct t), (k, ct kt), ex c)
+                        CHandle(ct l, ex b, cls', (r, ct rt), ex rb)
                     | k -> mapChildren ex k
 
                 { k = k; ty = ct e.ty }
@@ -350,6 +379,7 @@ let runFrom (prog: Program) (def: string -> FunDef) (roots: string list) (extern
             { name = mangle name inst
               pars = f.pars |> List.map (fun (x, t) -> x, ct t)
               ret = ct f.ret
+              row = ct f.row
               body = ex f.body
               file = f.file
               line = f.line }
@@ -520,9 +550,16 @@ let fuse (funs: MFun list) : MFun list =
         | -1 -> g
         | i -> g.Substring(0, i)
 
+    // a function with effects is called as it is: its stages would run inside a loop with none
+    let rec pureFor n (t: Ty) =
+        n = 0
+        || (match prune t with
+            | TFun(_, r, row) -> isRowEmpty row && pureFor (n - 1) r
+            | _ -> false)
+
     let call (e: CExpr) =
         match e.k with
-        | CApp({ k = CGlobal(g, _) }, args) -> Some(baseName g, args)
+        | CApp({ k = CGlobal(g, _) } as h, args) when pureFor args.Length h.ty -> Some(baseName g, args)
         | _ -> None
 
     let isInt (t: Ty) =
@@ -646,7 +683,7 @@ let fuse (funs: MFun list) : MFun list =
             let accRef = mk (CLocal acc) accTy
             let x = fresh "x"
             let el = elemOf xs.ty
-            let again (a: CExpr) = mk (CApp(mk (CLocal go) (TFun(accTy, TFun(xs.ty, accTy))), [ a; mk (CLocal rest) xs.ty ])) accTy
+            let again (a: CExpr) = mk (CApp(mk (CLocal go) (tfun accTy (tfun xs.ty accTy)), [ a; mk (CLocal rest) xs.ty ])) accTy
 
             let body =
                 mk
@@ -659,7 +696,7 @@ let fuse (funs: MFun list) : MFun list =
                     ))
                     accTy
 
-            mk (CLetRec([ go, [ acc, accTy; cur, xs.ty ], body ], mk (CApp(mk (CLocal go) (TFun(accTy, TFun(xs.ty, accTy))), [ start; xs ])) accTy)) accTy
+            mk (CLetRec([ go, [ acc, accTy; cur, xs.ty ], body ], mk (CApp(mk (CLocal go) (tfun accTy (tfun xs.ty accTy)), [ start; xs ])) accTy)) accTy
         | Init _
         | OfArray _ ->
             let acc, nv, i = fresh "acc", fresh "n", fresh "i"
@@ -702,7 +739,7 @@ let fuse (funs: MFun list) : MFun list =
             // reversed as it's built, then reversed again: both in place when the cells are unique
             let reversed = foldOver src stages nil (fun acc y -> cons y acc)
             let rv, out, cur, y, rest = fresh "rev", fresh "out", fresh "ys", fresh "y", fresh "rest"
-            let rvTy = TFun(resTy, TFun(resTy, resTy))
+            let rvTy = tfun resTy (tfun resTy resTy)
             let again = mk (CApp(mk (CLocal rv) rvTy, [ cons (mk (CLocal y) el) (mk (CLocal out) resTy); mk (CLocal rest) resTy ])) resTy
 
             let body =

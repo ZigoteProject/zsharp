@@ -1,0 +1,1 @@
+tests/effects/err_clause.zs:3:5: error: clause Yield.yield gives string, the return clause int

@@ -49,7 +49,7 @@ let rec private occurs r t =
     | TVar r2 -> obj.ReferenceEquals(r, r2)
     | TCon(_, ts)
     | TTuple ts -> List.exists (occurs r) ts
-    | TFun(a, b) -> occurs r a || occurs r b
+    | TFun(a, b, row) -> occurs r a || occurs r b || occurs r row
     | TMeas(_, vs) -> vs |> List.exists (fst >> occurs r)
     | TGen _ -> false
 
@@ -125,12 +125,88 @@ let rec private unify a b =
     | TMeas _, _
     | _, TMeas _ -> unifyMeas a b
     | TCon(a, xs), TCon(b, ys) when a = b && xs.Length = ys.Length -> List.iter2 unify xs ys
-    | TFun(a1, b1), TFun(a2, b2) ->
+    | TFun(a1, b1, r1), TFun(a2, b2, r2) ->
         unify a1 a2
         unify b1 b2
+        unifyRow r1 r2
     | TTuple xs, TTuple ys when xs.Length = ys.Length -> List.iter2 unify xs ys
     | TGen i, TGen j when i = j -> ()
     | _ -> raise Mismatch
+
+/// Unifies two effect rows (Leijen's scoped labels): each label of one meets the first label
+/// of the other with its effect's name (their type arguments unify), and each row's tail
+/// takes what's left of the other's. A closed row (no variable) can't take more.
+and private unifyRow (r1: Ty) (r2: Ty) =
+    match prune r1, prune r2 with
+    | TVar a, TVar b when obj.ReferenceEquals(a, b) -> ()
+    | TCon("$total", []), TCon("$total", []) -> ()
+    // a bare variable takes the other row whole (pure code's rows are mostly these)
+    | TVar v, t
+    | t, TVar v ->
+        if occurs v t then
+            raise Mismatch
+
+        v.Value <- Link t
+    | _ -> unifyLabels r1 r2
+
+and private unifyLabels (r1: Ty) (r2: Ty) =
+    let ls1, _ = rowParts r1
+    let ls2, _ = rowParts r2
+    let rest1 = ResizeArray<Ty>()
+    let mutable rest2 = ls2
+
+    for l in ls1 do
+        match rest2 |> List.tryFindIndex (fun m -> labelName m = labelName l) with
+        | Some i ->
+            match prune l, prune rest2[i] with
+            | TCon(_, xs), TCon(_, ys) when xs.Length = ys.Length -> List.iter2 unify xs ys
+            | _ -> raise Mismatch
+
+            rest2 <- List.removeAt i rest2
+        | None -> rest1.Add l
+
+    let rest1 = List.ofSeq rest1
+    // the tails after the labels' arguments unified, which may have linked them
+    let t1 = prune (snd (rowParts r1))
+    let t2 = prune (snd (rowParts r2))
+
+    let link (v: TV ref) (row: Ty) =
+        if occurs v row then
+            raise Mismatch
+
+        v.Value <- Link row
+
+    match t1, t2 with
+    | TVar v1, TVar v2 when obj.ReferenceEquals(v1, v2) -> if not (rest1.IsEmpty && rest2.IsEmpty) then raise Mismatch
+    | TVar v1, TVar v2 ->
+        let tail = fresh kRow
+        link v1 (mkRow rest2 tail)
+        link v2 (mkRow rest1 tail)
+    | TVar v1, _ when rest1.IsEmpty -> link v1 (mkRow rest2 t2)
+    | _, TVar v2 when rest2.IsEmpty -> link v2 (mkRow rest1 t1)
+    | TCon("$total", []), TCon("$total", [])
+    | TGen _, TGen _ when t1 = t2 && rest1.IsEmpty && rest2.IsEmpty -> ()
+    | _ -> raise Mismatch
+
+/// The effects a function type performs where the other one, of the same shape, can't: the
+/// labels of its rows that the other's closed rows lack ([] when the shapes differ or none).
+let rec private extraEffects (expected: Ty) (actual: Ty) : Ty list =
+    match prune expected, prune actual with
+    | TFun(a1, b1, r1), TFun(a2, b2, r2) ->
+        let here =
+            match rowParts r1 with
+            | ls, t when (match prune t with
+                          | TCon("$total", []) -> true
+                          | _ -> false) ->
+                fst (rowParts r2) |> List.filter (fun l -> not (ls |> List.exists (fun m -> labelName m = labelName l)))
+            | _ -> []
+
+        here @ extraEffects a1 a2 @ extraEffects b1 b2
+    | TCon(n, xs), TCon(m, ys) when n = m && xs.Length = ys.Length -> List.collect id (List.map2 extraEffects xs ys)
+    | TTuple xs, TTuple ys when xs.Length = ys.Length -> List.collect id (List.map2 extraEffects xs ys)
+    | _ -> []
+
+let private showEffects (ls: Ty list) = ls |> List.map show |> List.distinct |> String.concat ", "
 
 let private expect what expected actual =
     try
@@ -141,6 +217,8 @@ let private expect what expected actual =
         let hint =
             match prune expected, prune actual with
             | TCon("array", _), TCon("span", _) -> ": Array.ofSpan copies it"
+            | e, a when not (extraEffects e a).IsEmpty ->
+                sprintf ": this function performs %s, and one without it is expected here" (showEffects (extraEffects e a))
             | _ ->
                 match show expected, show actual with
                 | e, a when nums.Contains e && nums.Contains a -> sprintf ": numbers don't convert on their own; write %s x" e
@@ -163,8 +241,48 @@ let private expect what expected actual =
 
         fail 0 (sprintf "%s: %s does not implement %s%s" what (show t) tr tuple)
 
-/// Quantifies the unbound variables of a top-level function's type (linking them to TGen).
+/// The function types along a type's results: its own and, when it returns a function, that
+/// one's, and so on (where a row may be closed or opened without changing what's accepted).
+let rec private spine (t: Ty) : Ty list =
+    match prune t with
+    | TFun(_, b, _) as f -> f :: spine b
+    | _ -> []
+
+/// The rule a function must keep where none of its effects can be handled (given to C, run on
+/// another thread): expected has none, actual is the function; an error says what it performs.
+let private expectNoEffects (rule: Printf.StringFormat<string -> string>) (what: string) (expected: Ty) (actual: Ty) =
+    match extraEffects expected actual with
+    | [] -> expect what expected actual
+    | ls -> fail 0 (sprintf rule (showEffects ls))
+
+/// Quantifies the unbound variables of a top-level function's type (linking them to TGen):
+/// type variables first, then rows, so 'a, 'b name the types and 'e the effects. First a row
+/// variable that only ends one of the rows along the result spine is closed (it stands for no
+/// effects there: `unit -> unit / Yield<int>`, not `/ <Yield<int> | 'e>`); a reference opens it
+/// again (Koka's close and open).
 let private generalize (t: Ty) : Kind list =
+    let rec count (v: TV ref) (t: Ty) =
+        match prune t with
+        | TVar r -> if obj.ReferenceEquals(r, v) then 1 else 0
+        | TCon(_, ts)
+        | TTuple ts -> List.sumBy (count v) ts
+        | TFun(a, b, row) -> count v a + count v b + count v row
+        | TMeas(_, vs) -> vs |> List.sumBy (fst >> count v)
+        | TGen _ -> 0
+
+    let spines =
+        match prune t with
+        | TTuple ts -> List.collect spine ts // a group of functions calling each other
+        | _ -> spine t
+
+    for f in spines do
+        match f with
+        | TFun(_, _, row) ->
+            match prune (snd (rowParts row)) with
+            | TVar v when count v t = 1 -> v.Value <- Link rowEmpty
+            | _ -> ()
+        | _ -> ()
+
     let found = ResizeArray<TV ref * Kind>()
 
     let rec go t =
@@ -175,23 +293,34 @@ let private generalize (t: Ty) : Kind list =
             | _ -> ()
         | TCon(_, ts)
         | TTuple ts -> List.iter go ts
-        | TFun(a, b) ->
+        | TFun(a, b, row) ->
             go a
             go b
+            go row
         | TMeas(_, vs) -> vs |> List.iter (fst >> go)
         | TGen _ -> ()
 
     go t
-    found |> Seq.iteri (fun i (r, _) -> r.Value <- Link(TGen i))
-    found |> Seq.map snd |> List.ofSeq
+    let types, rows = found |> List.ofSeq |> List.partition (fun (_, k) -> not (isRowKind k))
+    let ordered = types @ rows
+    ordered |> List.iteri (fun i (r, _) -> r.Value <- Link(TGen i))
+    ordered |> List.map snd
 
-let private funTy (ps: Ty list) (ret: Ty) = List.foldBack (fun p acc -> TFun(p, acc)) ps ret
+/// A function type taking ps, without effects.
+let private funTy (ps: Ty list) (ret: Ty) = List.foldBack tfun ps ret
+
+/// A function type taking ps whose body performs row: the last arrow has it, the others none
+/// (giving a function some of its arguments does nothing).
+let private funTyRow (ps: Ty list) (ret: Ty) (row: Ty) =
+    match List.rev ps with
+    | [] -> ret
+    | last :: before -> List.fold (fun acc p -> tfun p acc) (TFun(last, ret, row)) before
 
 /// Splits a function type into its first n parameter types and the rest.
 let rec private peel n t =
     match n, prune t with
     | 0, t -> [], t
-    | n, TFun(a, b) ->
+    | n, TFun(a, b, _) ->
         let ps, r = peel (n - 1) b
         a :: ps, r
     | _ -> failwith "peel: not a function type"
@@ -205,7 +334,7 @@ type private Builtin =
 /// The functions on SIMD vectors and masks (DESIGN §8), a module per type (F32x4.splat,
 /// Mask8.any), built into the compiler: b makes each one's entry.
 let private simdBuiltins (b: string -> string -> Kind list -> Ty -> int -> string * Builtin) =
-    let f x y = TFun(x, y)
+    let f x y = tfun x y
 
     [ for n, e, k in vectorTypes do
           let v, et, m = tcon n, tcon e, simdModule n
@@ -252,7 +381,7 @@ let private simdBuiltins (b: string -> string -> Kind list -> Ty -> int -> strin
 
 let private builtins =
     let a = TGen 0
-    let f x y = TFun(x, y)
+    let f x y = tfun x y
     let atomic, mutex, channel = TCon("Atomic", [ a ]), TCon("Mutex", [ a ]), TCon("Channel", [ a ])
     let kAtomic = { kAny with allowed = Some(nums + set [ "bool"; "char" ]) }
     let kShare = kTrait "Share"
@@ -503,6 +632,8 @@ type State =
       traitMethods: Table<string, TraitMethod> // "Show.show" -> method
       traitAliases: Table<string, string> // "show" -> "Show.show"; "M.describe" -> "M.Describe.describe"
       traitNames: Bag<string> // by full name: Show, or M.Describe declared in module M
+      effects: Table<string, EffectInfo> // by full name
+      effectOps: Table<string, string * int> // "Yield.yield" -> the effect, the operation's index
       impls: Table<string * string, Dictionary<string, string>> // (trait, type) -> method -> function
       implRequires: Table<string * string, Set<string> list> // traits each type argument needs
       derives: Table<string, (int * string * Param list * SType option * Expr) list> // by full name, as traits
@@ -545,6 +676,8 @@ let private freshState () =
       traitMethods = Table()
       traitAliases = Table()
       traitNames = Bag()
+      effects = Table()
+      effectOps = Table()
       impls = Table()
       implRequires = Table()
       derives = Table()
@@ -592,6 +725,8 @@ let markState (st: State) =
     st.traitMethods.Mark()
     st.traitAliases.Mark()
     st.traitNames.Mark()
+    st.effects.Mark()
+    st.effectOps.Mark()
     st.impls.Mark()
     st.implRequires.Mark()
     st.derives.Mark()
@@ -645,7 +780,7 @@ let private unknown (what: string) (x: string) =
         fail 0 (sprintf "there's no %s: print with println $\"…{x}…\" (print for no newline, Console.Error.writeLine for errors)" x)
     | None when x = "sprintf" || x = "failwithf" -> fail 0 (sprintf "there's no %s: interpolate, $\"…{x}…\"" x)
     | None when x = "raise" || x = "reraise" ->
-        fail 0 "there are no exceptions: return a result (Error e) for the caller to match on, or panic for a bug"
+        fail 0 "there's no raise: return a result (Error e) for the caller to match on, throw a typed exception (Throw.throw e, caught by Throw.catch), or panic for a bug"
     | None when x = "null" || x = "NULL" -> fail 0 "there's no null: a missing value is None, of type option<'a>"
     | None when x = "return" ->
         fail 0 "return belongs in a computation expression (task { }, result { }); a function's last expression is its result"
@@ -686,6 +821,8 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
     let members = st.members
     let memberTypeNames = st.memberTypeNames
     let traitMethods = st.traitMethods
+    let effects = st.effects
+    let effectOps = st.effectOps
     let traitAliases = st.traitAliases
     let traitNames = st.traitNames
     let impls = st.impls
@@ -739,6 +876,69 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
     let hovers = ResizeArray<Hover>()
     let currentFile = ref ""
     let currentLine = ref 0 // of the expression being inferred (assert messages)
+    // the effects of the function being checked: what its body performs joins this row (an
+    // initializer's or a task's is closed: nothing may be performed there), and what it is, for
+    // an error naming it ("" for a function's inferred row)
+    let ctxRow = ref rowEmpty
+    let ctxWhat = ref "code outside a function"
+
+    /// Checks a body with its own row: a function's, a lambda's, a handled expression's.
+    let withRowAs (row: Ty) (what: string) (f: unit -> 'r) : 'r =
+        let outer, outerWhat = ctxRow.Value, ctxWhat.Value
+        ctxRow.Value <- row
+        ctxWhat.Value <- what
+
+        try
+            f ()
+        finally
+            ctxRow.Value <- outer
+            ctxWhat.Value <- outerWhat
+
+    let withRow (row: Ty) (f: unit -> 'r) : 'r = withRowAs row "" f
+
+    /// A row's effects as text: Yield<int>, Log.
+    let effectsText (row: Ty) = fst (rowParts row) |> List.map show |> String.concat ", "
+
+    /// A call performs what the function's row has: it joins the row of the body the call is in
+    /// (a closed row opened first: calling a function that performs less is fine).
+    let useRow (row: Ty) =
+        let ls, tail = rowParts row
+
+        // each of the callee's effects met by the first one of its name here
+        let within (here: Ty list) =
+            let mutable left = here
+
+            for l in ls do
+                match left |> List.tryFindIndex (fun h -> labelName h = labelName l) with
+                | Some i ->
+                    match prune l, prune left[i] with
+                    | TCon(_, xs), TCon(_, ys) when xs.Length = ys.Length -> List.iter2 unify xs ys
+                    | _ -> raise Mismatch
+
+                    left <- List.removeAt i left
+                | None -> raise Mismatch
+
+        try
+            match prune tail with
+            | TCon("$total", []) when ls.IsEmpty -> ()
+            | TCon("$total", []) -> unifyRow (mkRow ls (fresh kRow)) ctxRow.Value
+            | TVar a ->
+                let here, hereTail = rowParts ctxRow.Value
+
+                match prune hereTail with
+                // the callee's row ends in this row's own variable (a function calling itself under
+                // a handle of an effect it performs): it's included when its effects are here
+                | TVar b when obj.ReferenceEquals(a, b) -> within here
+                | _ -> unifyRow row ctxRow.Value
+            | _ -> unifyRow row ctxRow.Value
+        with Mismatch ->
+            let here = fst (rowParts ctxRow.Value)
+            // the same effect, handled here with other type arguments
+            match ls |> List.tryPick (fun l -> here |> List.tryFind (fun h -> labelName h = labelName l) |> Option.map (fun h -> l, h)) with
+            | Some(l, h) -> fail 0 (sprintf "this performs %s, but the innermost handler here is for %s" (show l) (show h))
+            | None when ls.IsEmpty -> fail 0 "this call's effects can't be handled here: write the effects of the function it calls (/ E)"
+            | None when ctxWhat.Value = "" -> fail 0 (sprintf "this performs %s, which the function it's in can't (its type says what it performs)" (effectsText row))
+            | None -> fail 0 (sprintf "this performs %s, but %s can't: handle it inside (handle … with)" (effectsText row) ctxWhat.Value)
 
     /// Remembers the type at a node's source position, and what the name refers to.
     let recordKey (node: obj) (name: string) (t: Ty) (inlay: bool) (key: string) (isDef: bool) =
@@ -775,7 +975,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                 TGen(vars.FindIndex(fun v -> obj.ReferenceEquals(v, r)))
             | TCon(n, ts) -> TCon(n, List.map named ts)
             | TTuple ts -> TTuple(List.map named ts)
-            | TFun(a, b) -> TFun(named a, named b)
+            | TFun(a, b, r) -> TFun(named a, named b, named r)
             | t -> t
 
         named t
@@ -839,6 +1039,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
     let wrapping = ref false // checking a [<Wrapping>] function: its integer + - * wrap
     let fastMath = ref false // checking a [<FastMath>] function: its float + - * / may be reassociated
     let unsafeOn = ref false // inside `unsafe`
+    let exporting = ref false // checking an [<Export>] function: C calls it, so nothing in its type performs
     let nestedModules = st.nestedModules
 
     /// The name a declaration gets in the current module.
@@ -922,13 +1123,13 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
             if m.owner = tr then
                 let ok =
                     match m.ty with
-                    | TFun(TGen 0, rest) ->
+                    | TFun(TGen 0, rest, _) ->
                         let rec mentions t =
                             match t with
                             | TGen 0 -> true
                             | TCon(_, ts)
                             | TTuple ts -> List.exists mentions ts
-                            | TFun(a, b) -> mentions a || mentions b
+                            | TFun(a, b, _) -> mentions a || mentions b
                             | _ -> false
 
                         not (mentions rest)
@@ -940,7 +1141,11 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
         TCon("dyn:" + tr, [])
 
     /// tparams: Some names inside a type definition (they become TGen), None in a function.
-    let rec toTy (tparams: string list option) st =
+    /// A function type's effects: in a function's annotations, inferred (a row variable); in a
+    /// type definition, and in what crosses to C or another thread (pureArrows), none.
+    let rec toTyWith (pureArrows: bool) (tparams: string list option) st =
+        let toTy = toTyWith pureArrows
+
         match st with
         | STVar v ->
             match tparams with
@@ -997,9 +1202,15 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
 
             match n, args with
             | n, [ m ] when nums.Contains n -> numWith n (toTy tparams m)
+            | ("callback" | "fnptr" | "share"), _ -> TCon(n, List.map (toTyWith true tparams) args)
             | _ -> TCon(n, List.map (toTy tparams) args)
         | STTuple ts -> TTuple(List.map (toTy tparams) ts)
-        | STFun(a, b) -> TFun(toTy tparams a, toTy tparams b)
+        | STFun(a, STRow(b, labels, tail)) -> TFun(toTy tparams a, toTy tparams b, rowOf tparams labels tail)
+        // a -> b -> c: giving a function its first arguments performs nothing; the last arrow
+        // has its effects
+        | STFun(a, (STFun _ as b)) -> TFun(toTy tparams a, toTy tparams b, rowEmpty)
+        | STFun(a, b) -> TFun(toTy tparams a, toTy tparams b, (if pureArrows || tparams.IsSome then rowEmpty else fresh kRow))
+        | STRow _ -> fail 0 "effects follow a function type's result (int -> unit / Log) or a function's (let f x : int / Log = …)"
         | STMeasure terms ->
             let units, vars = terms |> List.partition (fun (_, isVar, _) -> not isVar)
 
@@ -1016,10 +1227,75 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                 )
             )
 
+    and toTy (tparams: string list option) st = toTyWith false tparams st
+
+    /// A written row: its effects (Log, Yield<int>), then the row variable it ends in, if any.
+    and rowOf (tparams: string list option) (labels: SType list) (tail: string option) =
+        let label (l: SType) =
+            match l with
+            | STName(n, args) ->
+                match resolveWith effects.ContainsKey n with
+                | Some full ->
+                    let info = effects[full]
+
+                    if info.npars <> args.Length then
+                        fail 0 (sprintf "effect '%s' expects %d type argument(s)" n info.npars)
+
+                    TCon(full, List.map (toTy tparams) args)
+                | None when types.ContainsKey n || prims.Contains n -> fail 0 (sprintf "'%s' is a type, not an effect: effects follow a function's result (int -> unit / Log)" n)
+                | None -> fail 0 (sprintf "unknown effect '%s'" n)
+            | _ -> fail 0 "effects are named after a function's result: / Log, / <Log, Yield<int>>"
+
+        let tailTy =
+            match tail, tparams with
+            | None, _ -> rowEmpty
+            | Some v, Some _ -> fail 0 (sprintf "a type's functions can't end their effects in a variable ('%s) yet: write the effects they perform" v)
+            | Some v, None ->
+                match tyvars.TryGetValue v with
+                | true, t ->
+                    try
+                        unify (fresh kRow) t
+                    with Mismatch ->
+                        fail 0 (sprintf "'%s is a type here, so it can't stand for effects" v)
+
+                    t
+                | _ ->
+                    let t = fresh kRow
+                    tyvars[v] <- t
+                    t
+
+        mkRow (List.map label labels) tailTy
+
     let annot ann =
         match ann with
         | Some st -> toTy None st
         | None -> fresh kAny
+
+    /// A function's annotated result, and its effects when they're written (`: int / Log`).
+    let annotRet (ret: SType option) =
+        match ret with
+        | Some(STRow(t, labels, tail)) -> toTy None t, Some(rowOf None labels tail)
+        | _ -> annot ret, None
+
+    /// A global function used as a value: its own row (the arity-th arrow's) opened when closed
+    /// (`/ <E | 'e>` for `/ E`), so it goes where a function performing more is expected. The
+    /// coercion is marked (eff.open): Mono drops it where the rows came out equal, and Evidence
+    /// adapts the function to the larger row where they didn't.
+    let opened (arity: int) (c: CExpr) =
+        let rec go n t =
+            match prune t with
+            | TFun(a, b, row) when n = 1 ->
+                let ls, tail = rowParts row
+
+                match prune tail with
+                | TCon("$total", []) -> Some(TFun(a, b, mkRow ls (fresh kRow)))
+                | _ -> None
+            | TFun(a, b, row) when n > 1 -> go (n - 1) b |> Option.map (fun b' -> TFun(a, b', row))
+            | _ -> None
+
+        match (if arity > 0 then go arity c.ty else None) with
+        | Some t -> { k = CPrim("eff.open", [ c ]); ty = t }
+        | None -> c
 
     let instantiate (kinds: Kind list) (t: Ty) =
         let vars = kinds |> List.map fresh
@@ -1278,7 +1554,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
     and toShare (c: CExpr) (hint: Ty) : CExpr =
         match prune c.ty, prune hint with
         | TFun _, TCon("share", [ f ]) ->
-            expect "function crossing threads" f c.ty
+            expectNoEffects "a function run on another thread must have no effects: this one performs %s; handle it inside" "function crossing threads" f c.ty
             checkCaptures c
             mk (CPrim("share.fn", [ c ])) hint
         | _ -> c
@@ -1376,7 +1652,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
             // (an LLVM coroutine), so a wait allocates nothing
             let a = fresh kAny
             let cancelTy = tcon "Threading.Cancel"
-            let kTy = TFun(a, tUnit)
+            let kTy = tfun a tUnit
             let cl =
                 { u = uniq "$cancel"
                   ty = cancelTy
@@ -1384,18 +1660,69 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                   depth = depth + 1 }
 
             let ku, ru = uniq "$k", uniq "$result"
-            let cb = infer (env.Add("$cancel", cl)) (depth + 1) body
+            // the work runs from the event loop, where no handler is: it performs nothing
+            let cb = withRowAs rowEmpty "a task's body (it runs from the event loop, where no handler is)" (fun () -> infer (env.Add("$cancel", cl)) (depth + 1) body)
             expect "the task's result" a cb.ty
             let complete = value env depth "Threading.Task.complete"
-            expect "the task's result" (TFun(kTy, TFun(a, tUnit))) complete.ty
-            // the result first, then what waits for it (which waits held meanwhile)
-            let finish = mk (CLet(ru, cb, mk (CApp(complete, [ mk (CLocal ku) kTy; mk (CLocal ru) a ])) tUnit)) tUnit
-            let work = mk (CLam([ cl.u, cancelTy; ku, kTy ], finish)) (TFun(cancelTy, TFun(kTy, tUnit)))
+            expect "the task's result" (tfun kTy (tfun a tUnit)) complete.ty
+            let kE = mk (CLocal ku) kTy
+            let cancelE = mk (CLocal cl.u) cancelTy
+
+            // a return! that isn't last (in a use's scope): a wait as any other
+            let rec plainWaits (e: CExpr) =
+                match e.k with
+                | CPrim("task.last", [ wait; _ ]) -> plainWaits wait
+                | k -> { e with k = mapChildren plainWaits k }
+
+            // what waits for the task gets the body's value: each value the body may end with,
+            // given to it; a return! at the end, its task handed this task's cancellation and
+            // waiter, so a task looping through return! keeps one state machine, not one per round
+            let rec finish (e: CExpr) : CExpr =
+                let unit' k = mk k tUnit
+
+                match e.k with
+                | CLine(l, b) -> unit' (CLine(l, finish b))
+                | CLet(x, v, b) -> unit' (CLet(x, plainWaits v, finish b))
+                | CLetMut(x, v, b) -> unit' (CLetMut(x, plainWaits v, finish b))
+                | CSeq(a, b) -> unit' (CSeq(plainWaits a, finish b))
+                | CIf(c, t, f) -> unit' (CIf(plainWaits c, finish t, finish f))
+                | CMatch(s, cases) -> unit' (CMatch(plainWaits s, cases |> List.map (fun (p, g, b) -> p, Option.map plainWaits g, finish b)))
+                | CLetFun(n, r, ps, b, rest) -> unit' (CLetFun(n, r, ps, plainWaits b, finish rest))
+                | CLetRec(fs, rest) -> unit' (CLetRec(fs |> List.map (fun (n, ps, b) -> n, ps, plainWaits b), finish rest))
+                | CPrim("task.last", [ _; t ]) ->
+                    let handOff = value env depth "Threading.Task.handOff"
+                    expect "the task return! gives" (tfun t.ty (tfun cancelTy (tfun kTy tUnit))) handOff.ty
+                    unit' (CApp(handOff, [ t; cancelE; kE ]))
+                | _ -> unit' (CApp(complete, [ kE; plainWaits e ]))
+
+            // whether a return! ends the body (on some path): if not, it ends as it always has
+            let rec last (e: CExpr) =
+                match e.k with
+                | CLine(_, b)
+                | CLet(_, _, b)
+                | CLetMut(_, _, b)
+                | CSeq(_, b)
+                | CLetFun(_, _, _, _, b)
+                | CLetRec(_, b) -> last b
+                | CIf(_, t, f) -> last t || last f
+                | CMatch(_, cases) -> cases |> List.exists (fun (_, _, b) -> last b)
+                | CPrim("task.last", _) -> true
+                | _ -> false
+
+            let body =
+                if last cb then
+                    finish cb
+                else
+                    // the result first, then what waits for it (which waits held meanwhile)
+                    mk (CLet(ru, plainWaits cb, mk (CApp(complete, [ kE; mk (CLocal ru) a ])) tUnit)) tUnit
+
+            let work = mk (CLam([ cl.u, cancelTy; ku, kTy ], body)) (tfun cancelTy (tfun kTy tUnit))
             let _, noneTag = ctors["None"]
             mk (CTuple [ mk (CCtor("option", noneTag, [])) (TCon("option", [ a ])); work ]) (TCon("Threading.Task", [ a ]))
-        | Call("$await", [ e ]) ->
+        | Call(("$await" | "$awaitLast") as form, [ e ]) ->
             // let!, do!, return! in a task: the task's ready result, or a wait (task.suspend) for
-            // its work's (none if the task is cancelled already: task.abandon)
+            // its work's (none if the task is cancelled already: task.abandon); a return!'s
+            // marked (task.last), so at the end of the body its task gets this one's waiter
             match env.TryFind "$cancel" with
             | Some cl when cl.depth = depth ->
                 let ce = infer env depth e
@@ -1408,7 +1735,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                 let _, noneTag = ctors["None"]
                 let cancelled = fieldsOf "Threading.Cancel" |> List.findIndex (fst >> (=) "cancelled")
                 let flag = mk (CPrim("ref.get", [ mk (CField(cE, cancelled)) (TCon("ref", [ tBool ])) ])) tBool
-                let workTy = TFun(cl.ty, TFun(TFun(t, tUnit), tUnit))
+                let workTy = tfun cl.ty (tfun (tfun t tUnit) tUnit)
                 let wait = mk (CPrim("task.suspend", [ mk (CField(tvE, 1)) workTy; cE ])) t
                 let notReady = mk (CIf(flag, mk (CPrim("task.abandon", [])) t, wait)) t
 
@@ -1419,9 +1746,32 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                           CPCtor("option", noneTag, []), None, notReady ]
                     )
 
-                mk (CLet(tv, ce, mk ready t)) t
+                let wait = if form = "$awaitLast" then mk (CPrim("task.last", [ mk ready t; tvE ])) t else mk ready t
+                mk (CLet(tv, ce, wait)) t
             | Some _ -> fail 0 "let!, do! and return! wait in the task's own body, not in a function inside it"
             | None -> fail 0 "let!, do! and return! are for a task { }"
+        | Call("$seq", [ lam ]) ->
+            // seq { }: a Seq of the body, a function performing Yield of the elements
+            let a = fresh kAny
+            let bodyTy = TFun(tUnit, tUnit, rowExt (TCon("Yield", [ a ])) rowEmpty)
+            let cl = inferHint env depth bodyTy lam
+
+            try
+                unify bodyTy cl.ty
+            with Mismatch | NoImpl _ ->
+                match prune cl.ty with
+                | TFun(_, r, row) when prune r = tUnit ->
+                    let others = fst (rowParts row) |> List.filter (fun l -> labelName l <> "Yield")
+                    fail 0 (sprintf "a seq { } only yields: this one performs %s too; handle it inside" (others |> List.map show |> String.concat ", "))
+                | TFun(_, r, _) -> fail 0 (sprintf "a seq { }'s body yields its elements and gives unit, not %s" (show r))
+                | _ -> fail 0 "a seq { } needs a body"
+
+            match ctors.TryGetValue "Collections.Seq" with
+            | true, (u, tag) -> mk (CCtor(u, tag, [ cl ])) (TCon(u, [ a ]))
+            | _ -> fail 0 "seq { } needs the library's Seq"
+        | Call("$yield", [ e ]) -> perform env depth "Yield.yield" [ e ]
+        | Call("$yieldAll", [ e ]) -> call env depth "Collections.Seq.yieldAll" [ e ]
+        | Handle(body, ops, ret) -> handleExpr env depth body ops ret
         | Call("assert", [ c ]) when not (env.ContainsKey "assert") ->
             // the location goes into the message: "assertion failed at file:line"
             let cc = infer env depth c
@@ -1434,9 +1784,10 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
             let headTy =
                 match r.k with
                 | CApp(h, _) -> h.ty
+                | CPerform(l, _, args) -> funTyRow (args |> List.map (fun a -> a.ty)) r.ty (rowExt l rowEmpty)
                 | CExtern(name, _) when externs.ContainsKey name -> // a C function: its declared type
                     let x = externs[name]
-                    List.foldBack (fun a acc -> TFun(a, acc)) (if x.pars.IsEmpty then [ tUnit ] else x.pars) x.ret
+                    List.foldBack tfun (if x.pars.IsEmpty then [ tUnit ] else x.pars) x.ret
                 | _ -> r.ty
 
             recordKey node f headTy false (keyOf env f) false
@@ -1465,7 +1816,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
 
                 let rec give (t: Ty) (pars: (string * string * Ty) list) (ps: (string * SType option) list) =
                     match prune t, pars, ps with
-                    | TFun(p, r), (_, _, pt) :: pars', (_, ann) :: ps' ->
+                    | TFun(p, r, _), (_, _, pt) :: pars', (_, ann) :: ps' ->
                         if ann.IsNone then unify pt p
                         give r pars' ps'
                     | _ -> ()
@@ -1486,15 +1837,17 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                         ))
                     env
 
-            let cb = infer envB (depth + 1) body
+            let row = fresh kRow
+            let cb = withRow row (fun () -> infer envB (depth + 1) body)
             let ptys = pars |> List.map (fun (_, _, t) -> t)
-            mk (CLam(pars |> List.map (fun (_, u, t) -> u, t), cb)) (funTy ptys cb.ty)
+            mk (CLam(pars |> List.map (fun (_, u, t) -> u, t), cb)) (funTyRow ptys cb.ty row)
         | LetFun(name, isRec, ps0, ret, body, rest) ->
             let ps, body = lowerParams ps0 body
             let pars = ps |> List.map (fun (x, ann) -> x, uniq x, annot ann)
             recordParams ps0 pars
-            let rty = annot ret
-            let fty = funTy (pars |> List.map (fun (_, _, t) -> t)) rty
+            let rty, declared = annotRet ret
+            let row = declared |> Option.defaultWith (fun () -> fresh kRow)
+            let fty = funTyRow (pars |> List.map (fun (_, _, t) -> t)) rty row
 
             let self =
                 { u = uniq name
@@ -1515,7 +1868,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                         ))
                     (if isRec then env.Add(name, self) else env)
 
-            let cb = infer envB (depth + 1) body
+            let cb = withRow row (fun () -> infer envB (depth + 1) body)
             expect (sprintf "result of '%s'" name) rty cb.ty
             recordKey node name fty false self.u true
             localValues[self.u] <- mk (CLam(pars |> List.map (fun (_, u, t) -> u, t), cb)) fty
@@ -1531,8 +1884,9 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                         let ps, body = lowerParams ps0 body
                         let pars = ps |> List.map (fun (x, ann) -> x, uniq x, annot ann)
                         recordParams ps0 pars
-                        let rty = annot ret
-                        let fty = funTy (pars |> List.map (fun (_, _, t) -> t)) rty
+                        let rty, declared = annotRet ret
+                        let row = declared |> Option.defaultWith (fun () -> fresh kRow)
+                        let fty = funTyRow (pars |> List.map (fun (_, _, t) -> t)) rty row
 
                         let self =
                             { u = uniq name
@@ -1540,14 +1894,14 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                               mut = false
                               depth = depth }
 
-                        m, name, pars, rty, fty, self, body
+                        m, name, pars, rty, fty, self, body, row
                     | _ -> failwith "LetRecGroup member")
 
-            let envGroup = prepared |> List.fold (fun (m: Map<_, _>) (_, name, _, _, _, self, _) -> m.Add(name, self)) env
+            let envGroup = prepared |> List.fold (fun (m: Map<_, _>) (_, name, _, _, _, self, _, _) -> m.Add(name, self)) env
 
             let defs =
                 prepared
-                |> List.map (fun (node, name, pars, rty, fty, self, body) ->
+                |> List.map (fun (node, name, pars, rty, fty, self, body, row) ->
                     let envB =
                         pars
                         |> List.fold
@@ -1561,7 +1915,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                                 ))
                             envGroup
 
-                    let cb = infer envB (depth + 1) body
+                    let cb = withRow row (fun () -> infer envB (depth + 1) body)
                     expect (sprintf "result of '%s'" name) rty cb.ty
                     recordKey node name fty false self.u true
                     localValues[self.u] <- mk (CLam(pars |> List.map (fun (_, u, t) -> u, t), cb)) fty
@@ -1957,7 +2311,10 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                             )
                         )
                     )
-                | t -> fail 0 (sprintf "'for ... in' needs a list, an array, a Buffer, a span or a string, not %s" (show t))
+                | TCon("Collections.Seq", _) ->
+                    // a sequence: its elements handled one at a time, the body resuming it
+                    Handle(Call("Collections.Seq.yieldAll", [ Var "$coll" ]), [ "Yield.yield", [ PIdent(x, None) ], "$k", Seq(body, App(Var "$k", [ UnitLit ])) ], None)
+                | t -> fail 0 (sprintf "'for ... in' needs a list, an array, a Buffer, a span, a string or a Seq, not %s" (show t))
 
             let cl = infer env' depth loop
             expect "body of 'for'" tUnit cl.ty
@@ -2388,7 +2745,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
         let qname = tm.owner + "." + tm.name
 
         if tm.isConst then
-            mk (CApp(mk (CGlobal(qname, Some inst)) (TFun(tUnit, t)), [ mk CUnit tUnit ])) t
+            mk (CApp(mk (CGlobal(qname, Some inst)) (tfun tUnit t), [ mk CUnit tUnit ])) t
         else
             mk (CGlobal(qname, Some inst)) t
 
@@ -2492,7 +2849,8 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
         resolveWith
             (fun q ->
                 globals.ContainsKey q || ctors.ContainsKey q || traitAliases.ContainsKey q || builtins.ContainsKey q
-                || externs.ContainsKey q || consts.ContainsKey q || globalValues.ContainsKey q || (staticMember q).IsSome)
+                || externs.ContainsKey q || consts.ContainsKey q || globalValues.ContainsKey q || effectOps.ContainsKey q
+                || (staticMember q).IsSome)
             x
 
     and value env depth x : CExpr =
@@ -2539,7 +2897,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
             | true, g when g.defining -> mk (CGlobal(x, None)) g.ty
             | true, g ->
                 let t, inst = instantiate g.kinds g.ty
-                mk (CGlobal(x, Some inst)) t
+                opened g.arity (mk (CGlobal(x, Some inst)) t)
             | _ ->
                 if ctors.ContainsKey x then
                     let u, tag = ctors[x]
@@ -2552,10 +2910,12 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                         mk (CCtor(u, tag, [ mk CUnit tUnit ])) uty
                     | [ ft ] ->
                         let p = uniq "$v"
-                        mk (CLam([ p, ft ], mk (CCtor(u, tag, [ mk (CLocal p) ft ])) uty)) (TFun(ft, uty))
+                        mk (CLam([ p, ft ], mk (CCtor(u, tag, [ mk (CLocal p) ft ])) uty)) (TFun(ft, uty, fresh kRow))
                     | _ -> fail 0 (sprintf "constructor '%s' takes several fields; apply it as %s (a, b)" x x)
                 elif traitAliases.ContainsKey x then
                     traitMethod x
+                elif effectOps.ContainsKey x then
+                    perform env depth x []
                 elif builtins.ContainsKey x then
                     builtinCall env depth x []
                 elif externs.ContainsKey x then
@@ -2585,6 +2945,8 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
             builtinCall env depth f args
         elif externs.ContainsKey f then
             externCall env depth f args
+        elif effectOps.ContainsKey f then
+            perform env depth f args
         elif f.Contains ".Builder." then
             // a computation expression's form, and its builder lacks the function for it
             let i = f.LastIndexOf '.'
@@ -2601,9 +2963,6 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                 | "forEach" -> "for"
                 | "delay" -> "its body"
                 | _ -> fn
-
-            if w = "seq" then
-                fail 0 "seq { } comes with effect handlers (phase 10): build a list [ … ] or an array [| … |]"
 
             if w = "async" then
                 fail 0 "there's no async { }: write task { }, and run it with Task.run"
@@ -2637,10 +2996,14 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                 Some(List.rev acc, t)
             else
                 match prune t with
-                | TFun(p, r) -> peel r (k - 1) (p :: acc)
+                | TFun(p, r, row) ->
+                    useRow row
+                    peel r (k - 1) (p :: acc)
                 | TVar _ as v ->
-                    let p, r = fresh kAny, fresh kAny
-                    expect "function" v (TFun(p, r))
+                    // a function not known yet: only the last arrow a call takes performs
+                    let p, r, row = fresh kAny, fresh kAny, (if k = 1 then fresh kRow else rowEmpty)
+                    expect "function" v (TFun(p, r, row))
+                    useRow row
                     peel r (k - 1) (p :: acc)
                 | _ -> None
 
@@ -2671,16 +3034,19 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                 |> List.mapi (fun i a ->
                     let ca =
                         match prune t.Value with
-                        | TFun(p, _) -> unshare p (inferHint env depth p a)
+                        | TFun(p, _, _) -> unshare p (inferHint env depth p a)
                         | _ -> infer env depth a
 
                     match prune t.Value with
-                    | TFun(p, r) ->
+                    | TFun(p, r, row) ->
                         expect (what i) p ca.ty
+                        useRow row
                         t.Value <- r
                     | TVar _ ->
-                        let r = fresh kAny
-                        expect "function" t.Value (TFun(ca.ty, r))
+                        // a function not known yet: only the last arrow a call takes performs
+                        let r, row = fresh kAny, (if i = args.Length - 1 then fresh kRow else rowEmpty)
+                        expect "function" t.Value (TFun(ca.ty, r, row))
+                        useRow row
                         t.Value <- r
                     | ty ->
                         match name with
@@ -2692,6 +3058,12 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
             cargs, t.Value
 
     and apply env depth (ch: CExpr) (args: Expr list) (name: string option) : CExpr =
+        // a function called is called as it is (its row is met at each arrow the call takes)
+        let ch =
+            match ch.k with
+            | CPrim("eff.open", [ g ]) -> g
+            | _ -> ch
+
         match prune ch.ty with
         | TCon("fnptr", [ f ]) -> fnptrCall env depth ch f args
         | TCon("share", [ f ]) ->
@@ -2710,7 +3082,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
 
         let rec split t =
             match prune t with
-            | TFun(a, r) ->
+            | TFun(a, r, _) ->
                 let ps, res = split r
                 a :: ps, res
             | r -> [], r
@@ -2794,7 +3166,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                     // a string is passed to C as a pointer to its bytes; a closure as callback + user data
                     match s.pars[i] with
                     | t when t = tCStr -> expect what (fresh kStrLit) ca.ty
-                    | TCon("callback", [ f ]) -> expect what f ca.ty
+                    | TCon("callback", [ f ]) -> expectNoEffects "a function given to C must have no effects: this one performs %s (the C-callback rule)" what f ca.ty
                     | t -> expect what t ca.ty
 
                 ca)
@@ -2859,6 +3231,169 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
     /// immutable locals), is the pipeline fusion makes one loop of: List.init over a range, a
     /// filter per `if`, a map to what's yielded (no filter for an array). Any other body runs in
     /// order: a loop consing what it yields onto a list, reversed in place at the end.
+    /// E.op args: the operation performed, which puts E in the row of the function it's in; a
+    /// function performing it when given fewer arguments.
+    and perform env depth (q: string) (args: Expr list) : CExpr =
+        let eff, i = effectOps[q]
+        let info = effects[eff]
+        let op = info.ops[i]
+        let targs = List.init info.npars (fun _ -> fresh kAny)
+        let inst = targs @ List.init op.own (fun _ -> fresh kAny)
+        let ptys = op.pars |> List.map (substGen inst)
+        let ret = substGen inst op.ret
+        let label = TCon(eff, targs)
+
+        if args.Length >= ptys.Length then
+            let now, later = List.splitAt ptys.Length args
+            let cargs, _ = checkArgs env depth (funTyRow ptys ret (rowExt label rowEmpty)) now (Some q)
+            let p = mk (CPerform(label, i, cargs)) ret
+            if later.IsEmpty then p else apply env depth p later None
+        else
+            // the operation as a value: a lambda performing it (with the arguments given first)
+            let given = args |> List.mapi (fun j a -> (let c = inferHint env depth ptys[j] a in expect (sprintf "argument %d of '%s'" (j + 1) q) ptys[j] c.ty; uniq "$a", c))
+            let ps = ptys |> List.skip given.Length |> List.map (fun t -> uniq "$b", t)
+            let all = (given |> List.map (fun (u, c) -> mk (CLocal u) c.ty)) @ (ps |> List.map (fun (u, t) -> mk (CLocal u) t))
+            let lam = mk (CLam(ps, mk (CPerform(label, i, all)) ret)) (funTyRow (List.map snd ps) ret (rowExt label (fresh kRow)))
+            List.foldBack (fun (u, c) acc -> mk (CLet(u, c, acc)) acc.ty) given lam
+
+    /// handle body with clauses: the body performs the effect (in front of what the handle's
+    /// own body may), each clause gives an operation's meaning, its resumption a function from
+    /// the operation's result to the handle's; the return clause maps the body's result (as it is
+    /// when left out). The clauses perform in the handle's own row.
+    and handleExpr env depth (body: Expr) (ops: (string * Pat list * string * Expr) list) (ret: (Pat * Expr) option) : CExpr =
+        if ops.IsEmpty then
+            fail 0 "a handle has a clause for each operation of its effect: | Effect.op x, k -> …"
+
+        let opOf (q: string) =
+            match resolveWith effectOps.ContainsKey q with
+            | Some full -> full
+            | None ->
+                // the effect known, not the operation: name the ones it has
+                let dot = q.LastIndexOf '.'
+
+                match (if dot > 0 then resolveWith effects.ContainsKey (q.Substring(0, dot)) else None) with
+                | Some e ->
+                    let names = effects[e].ops |> List.map (fun o -> o.name)
+                    fail 0 (sprintf "effect %s has no operation '%s' (%s)" (shortName e) (q.Substring(dot + 1)) (String.concat ", " names))
+                | None -> fail 0 (sprintf "unknown operation '%s': a clause names an effect's operation, Effect.op" q)
+
+        let clauses =
+            ops
+            |> List.map (fun (q, ps, k, b) ->
+                let full = opOf q
+                let e, i = effectOps[full]
+                let o = effects[e].ops[i]
+                let label = TCon(e, List.init effects[e].npars TGen)
+                // a reference to the operation, for hover and references
+                recordKey q (shortName full) (funTyRow o.pars o.ret (rowExt label rowEmpty)) false full false
+                full, ps, k, b)
+
+        let eff = fst effectOps[(let q, _, _, _ = clauses.Head in q)]
+
+        for q, _, _, _ in clauses do
+            if fst effectOps[q] <> eff then
+                fail 0 (sprintf "a handle is for one effect: %s's clause needs a handle of its own (around this one, or inside it)" (shortName q))
+
+        let info = effects[eff]
+
+        match clauses |> List.countBy (fun (q, _, _, _) -> q) |> List.tryFind (fun (_, n) -> n > 1) with
+        | Some(q, _) -> fail 0 (sprintf "operation %s has two clauses" (shortName q))
+        | None -> ()
+
+        let covered = clauses |> List.map (fun (q, _, _, _) -> snd effectOps[q]) |> Set.ofList
+
+        for i, o in List.indexed info.ops do
+            if not (covered.Contains i) then
+                fail 0 (sprintf "this handle of %s has no clause for %s" (shortName eff) (shortName eff + "." + o.name))
+
+        let targs = List.init info.npars (fun _ -> fresh kAny)
+        let label = TCon(eff, targs)
+        let outer = ctxRow.Value
+        let cb = withRowAs (rowExt label outer) ctxWhat.Value (fun () -> infer env depth body)
+        let ans = fresh kAny
+
+        let bindPattern (p: Pat) (t: Ty) =
+            let names = Dictionary<string, string>()
+            let cp = pat names p t
+            let vars = patVars cp
+
+            let env' =
+                names
+                |> Seq.fold
+                    (fun (m: Map<_, _>) kv ->
+                        m.Add(
+                            kv.Key,
+                            { u = kv.Value
+                              ty = vars |> List.find (fst >> (=) kv.Value) |> snd
+                              mut = false
+                              depth = depth }
+                        ))
+                    env
+
+            cp, env'
+
+        let rv = uniq "$handled"
+
+        let retBody =
+            match ret with
+            | Some(p, rb) ->
+                let cp, env' = bindPattern p cb.ty
+                Match.check unionCases apCtors.Contains [ cp, false ]
+                let crb = infer env' depth rb
+                expect "the return clause" ans crb.ty
+                mk (CMatch(mk (CLocal rv) cb.ty, [ cp, None, crb ])) ans
+            | None ->
+                expect "the handled expression" ans cb.ty
+                mk (CLocal rv) cb.ty
+
+        let what = match ret with Some _ -> "the return clause" | None -> "the handled expression"
+
+        let cclauses =
+            clauses
+            |> List.map (fun (q, ps, k, b) ->
+                let i = snd effectOps[q]
+                let op = info.ops[i]
+                // the operation's own type variables stand for any type: a clause can't choose one
+                let own = List.init op.own (fun _ -> TCon(uniq "$sk", []))
+                let inst = targs @ own
+                let ptys = op.pars |> List.map (substGen inst)
+                let rty = substGen inst op.ret
+
+                if ps.Length <> ptys.Length then
+                    fail 0 (sprintf "operation %s takes %d argument(s), this clause has %d" (shortName q) ptys.Length ps.Length)
+
+                let named, body = lowerParams (ps |> List.map (fun p -> p, None)) b
+                let pars = List.map2 (fun (x, _) t -> x, uniq x, t) named ptys
+                recordParams (ps |> List.map (fun p -> p, None)) pars
+                let kty = TFun(rty, ans, outer)
+                let ku = uniq k
+
+                let envC =
+                    pars
+                    |> List.fold (fun (m: Map<_, _>) (x, u, t) -> m.Add(x, { u = u; ty = t; mut = false; depth = depth })) env
+                    |> fun m -> if k = "_" then m else m.Add(k, { u = ku; ty = kty; mut = false; depth = depth })
+
+                let cbody = infer envC depth body
+
+                try
+                    unify ans cbody.ty
+                with Mismatch | NoImpl _ ->
+                    fail 0 (sprintf "clause %s gives %s, %s %s" (shortName q) (show cbody.ty) what (show ans))
+
+                i, pars |> List.map (fun (_, u, t) -> u, t), (ku, kty), cbody)
+
+        let rec skolem (t: Ty) =
+            match prune t with
+            | TCon(n, ts) -> n.StartsWith "$sk" || List.exists skolem ts
+            | TTuple ts -> List.exists skolem ts
+            | TFun(a, b, r) -> skolem a || skolem b || skolem r
+            | _ -> false
+
+        if skolem ans then
+            fail 0 "a handle's result can't have an operation's own type (it stands for any type, chosen where the operation is performed)"
+
+        mk (CHandle(label, cb, cclauses, (rv, cb.ty), retBody)) ans
+
     and listExpression env depth (isArray: bool) (body: Expr) : CExpr =
         let rec strip e =
             match e with
@@ -3159,8 +3694,38 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                     let ps, body = lowerParams ps0 body
                     let pars = ps |> List.map (fun (x, ann) -> x, uniq x, annot ann)
                     recordParams ps0 pars
-                    let rty = annot ret
-                    let fty = funTy (pars |> List.map (fun (_, _, t) -> t)) rty
+                    let rty, declared = annotRet ret
+                    // the body's effects (a function without parameters performs none)
+                    let row = if pars.IsEmpty then rowEmpty else declared |> Option.defaultWith (fun () -> fresh kRow)
+
+                    let what =
+                        match declared, expected with
+                        | _ when exporting.Value -> sprintf "'%s', which C calls (the C-callback rule)," name
+                        | _, Some _ -> sprintf "'%s', a trait's method," name
+                        | Some r, _ when isRowEmpty r -> sprintf "'%s', declared to perform nothing," name
+                        | Some r, _ -> sprintf "'%s', declared to perform %s," name (effectsText r)
+                        | None, _ when pars.IsEmpty -> sprintf "'%s', which takes no parameters," name
+                        | None, _ -> ""
+
+                    let fty = funTyRow (pars |> List.map (fun (_, _, t) -> t)) rty row
+
+                    // an export's functions, and those it takes and gives, have no effects (the
+                    // C-callback rule): its rows are closed before its body is checked
+                    if exporting.Value then
+                        let rec close (t: Ty) =
+                            match prune t with
+                            | TFun(a, b, r) ->
+                                close a
+                                close b
+
+                                match prune (snd (rowParts r)) with
+                                | TVar v -> v.Value <- Link rowEmpty
+                                | _ -> ()
+                            | TCon(_, ts)
+                            | TTuple ts -> List.iter close ts
+                            | _ -> ()
+
+                        close fty
 
                     match expected with
                     | Some f -> expect (sprintf "'%s' does not match the trait's signature" name) (f ()) fty
@@ -3175,13 +3740,13 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                     if isRec then
                         globals[name] <- g
 
-                    ln, name, pars, rty, fty, g, body, Dictionary<string, Ty>(tyvars)
+                    ln, name, pars, rty, fty, g, body, Dictionary<string, Ty>(tyvars), (row, what)
                 with CompileError(0, msg) ->
                     fail ln msg)
 
         let bodies =
             prepared
-            |> List.map (fun (ln, name, pars, rty, _, _, body, tvs) ->
+            |> List.map (fun (ln, name, pars, rty, _, _, body, tvs, (row, what)) ->
                 try
                     tyvars.Clear()
 
@@ -3202,7 +3767,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                             Map.empty
 
                     currentDef <- name
-                    let cb = inferHint env 0 rty body
+                    let cb = withRowAs row what (fun () -> inferHint env 0 rty body)
                     currentDef <- ""
                     expect (sprintf "result of '%s'" name) rty cb.ty
                     cb
@@ -3211,11 +3776,11 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
 
         let jointKinds =
             if joint then
-                Some(generalize (TTuple(prepared |> List.map (fun (_, _, _, _, fty, _, _, _) -> fty))))
+                Some(generalize (TTuple(prepared |> List.map (fun (_, _, _, _, fty, _, _, _, _) -> fty))))
             else
                 None
 
-        [ for (ln, name, pars, rty, fty, g, _, tvs), cb in List.zip prepared bodies do
+        [ for (ln, name, pars, rty, fty, g, _, tvs, (row, _)), cb in List.zip prepared bodies do
               if name = "main" then
                   resolve fty |> ignore
 
@@ -3230,8 +3795,10 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                   { name = name
                     pars = pars |> List.map (fun (_, u, t) -> u, t)
                     ret = rty
+                    row = row
                     body = cb
                     ngen = g.kinds.Length
+                    rows = g.kinds |> List.filter isRowKind |> List.length
                     file = currentFile.Value
                     line = ln }
 
@@ -3315,7 +3882,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
     /// (unit -> R takes none).
     and checkFnPtr (what: string) (f: Ty) =
         match prune f with
-        | TFun(a, r) ->
+        | TFun(a, r, _) ->
             checkCType what a
 
             match prune r with
@@ -3346,7 +3913,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
     let rec checkCallback (what: string) (f: Ty) =
         match prune f with
         | TCon("share", [ g ]) -> checkCallback what g
-        | TFun(a, r) ->
+        | TFun(a, r, _) ->
             checkCType what a
             checkCType what r
         | t -> fail 0 (sprintf "%s: callback<%s> needs a function type such as callback<int -> unit>" what (show t))
@@ -3413,7 +3980,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
 
                 let expected () =
                     let t = substGen [ toTy None head ] tm.ty
-                    if tm.isConst then TFun(tUnit, t) else t
+                    if tm.isConst then tfun tUnit t else t
 
                 dl, fname, true, ps, ret, body, Some expected)
 
@@ -3687,6 +4254,66 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
 
                 if not needs.IsEmpty && hovers.Count > 0 && hovers[hovers.Count - 1].name = name then
                     hovers[hovers.Count - 1] <- { hovers[hovers.Count - 1] with constraints = String.concat ", " needs }
+            | Effect(name, tps, ops) ->
+                // effect E<'a> = abstract op : T -> R: performed as E.op, given meaning by a handle
+                let name = qualify name
+
+                if effects.ContainsKey name then
+                    fail 0 (sprintf "effect '%s' is already defined" name)
+
+                let rec varsOf (st: SType) =
+                    match st with
+                    | STVar v -> [ v ]
+                    | STName(_, args)
+                    | STTuple args -> List.collect varsOf args
+                    | STFun(a, b) -> varsOf a @ varsOf b
+                    | STRow(t, ls, tail) -> varsOf t @ List.collect varsOf ls @ Option.toList tail
+                    | STMeasure _ -> []
+
+                let infos =
+                    ops
+                    |> List.map (fun (op, st) ->
+                        // the operation's own type variables (throw's 'a) after the effect's
+                        let own = varsOf st |> List.distinct |> List.filter (fun v -> not (List.contains v tps))
+                        let t = toTy (Some(tps @ own)) st
+
+                        let rec split (t: Ty) =
+                            match t with
+                            | TFun(a, r, _) ->
+                                let ps, res = split r
+                                a :: ps, res
+                            | r -> [], r
+
+                        let pars, ret = split t
+
+                        if pars.IsEmpty then
+                            fail 0 (sprintf "operation '%s' must be a function type: abstract %s : unit -> %s for one that takes nothing" op op (show t))
+
+                        let rec mentionsOwn (t: Ty) =
+                            match t with
+                            | TGen i -> i >= tps.Length
+                            | TCon(_, ts)
+                            | TTuple ts -> List.exists mentionsOwn ts
+                            | TFun(a, b, r) -> mentionsOwn a || mentionsOwn b || mentionsOwn r
+                            | _ -> false
+
+                        if List.exists mentionsOwn pars then
+                            fail 0 (sprintf "operation '%s' has a type variable of its own in a parameter; an operation's own variables are for its result only (abstract throw : 'e -> 'a), the others are the effect's (effect %s<%s>)" op name (String.concat ", " (tps |> List.map (fun v -> "'" + v))))
+
+                        ({ name = op; pars = pars; ret = ret; own = own.Length }: EffectOp))
+
+                match infos |> List.countBy (fun o -> o.name) |> List.tryFind (fun (_, n) -> n > 1) with
+                | Some(op, _) -> fail 0 (sprintf "effect '%s' declares '%s' twice" name op)
+                | None -> ()
+
+                effects[name] <- { npars = tps.Length; ops = infos }
+
+                for i, o in List.indexed infos do
+                    let q = name + "." + o.name
+                    effectOps[q] <- (name, i)
+                    // hover and definition: the operation as it's performed
+                    let label = TCon(name, List.init tps.Length TGen)
+                    recordKey (fst ops[i]) o.name (funTyRow o.pars o.ret (rowExt label rowEmpty)) false q true
             | Trait(name, tp, methods) ->
                 let name = qualify name
 
@@ -3790,14 +4417,14 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                     recordKey d name c.ty false q true
                 else
                     // computed once at startup, in module order; it has one type, so literals settle now
-                    let c = infer Map.empty 0 body
+                    let c = withRowAs rowEmpty "a top-level value's initializer (it runs at startup, where no handler is)" (fun () -> infer Map.empty 0 body)
 
                     let rec generic (t: Ty) =
                         match prune t with
                         | TVar r -> (kindOf r).allowed.IsNone
                         | TCon(_, ts)
                         | TTuple ts -> List.exists generic ts
-                        | TFun(a, b) -> generic a || generic b
+                        | TFun(a, b, _) -> generic a || generic b
                         | _ -> false
 
                     if generic c.ty then
@@ -3810,8 +4437,10 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                         { name = init
                           pars = []
                           ret = c.ty
+                          row = rowEmpty
                           body = c
                           ngen = 0
+                          rows = 0
                           file = currentFile.Value
                           line = ln }
 
@@ -3851,12 +4480,32 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                     opens.Value <- outerOpens
             | Attrs([ "Measure", [] ], TypeDecl(name, [], UnionTy [], [])) -> measures.Add name |> ignore
             | Attrs([ "Export", cname ], (Fun(name, _, _, _, _) as f)) ->
-                declare ln f
+                exporting.Value <- true
+
+                try
+                    declare ln f
+                finally
+                    exporting.Value <- false
+
                 let q = qualify name
                 let g = globals[q]
 
                 if not g.kinds.IsEmpty then
                     fail 0 (sprintf "exported function '%s' must not be generic; add type annotations" name)
+
+                // C calls it, and no handler is in C (the C-callback rule)
+                match g.arity, prune g.ty with
+                | n, t when n > 0 ->
+                    let rec rowOfArrow k t =
+                        match prune t with
+                        | TFun(_, r, row) -> if k = 1 then row else rowOfArrow (k - 1) r
+                        | _ -> rowEmpty
+
+                    let row = rowOfArrow n t
+
+                    if not (isRowEmpty row) then
+                        fail 0 (sprintf "a function given to C must have no effects: '%s' performs %s (the C-callback rule)" name (effectsText row))
+                | _ -> ()
 
                 let cname =
                     match cname with
@@ -3916,9 +4565,14 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                 let q = qualify name
 
                 try
-                    unify (TFun(tUnit, tUnit)) globals[q].ty
+                    unify (TFun(tUnit, tUnit, fresh kRow)) globals[q].ty
                 with Mismatch ->
                     fail 0 (sprintf "test '%s' must be a function of type unit -> unit, such as: let %s () = assert (...)" name name)
+
+                match prune globals[q].ty with
+                | TFun(_, _, row) when not (isRowEmpty row) ->
+                    fail 0 (sprintf "test '%s' performs %s and nothing handles it: handle it inside the test" name (effectsText row))
+                | _ -> ()
 
                 tests.Add q
             | Attrs([ "CLayout", [] ], (TypeDecl(name, tps, RecordTy fields, _) as d)) ->
@@ -3974,10 +4628,17 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
         match globals.TryGetValue "main" with
         | true, g ->
             match g.arity, prune g.ty with
-            | 1, TFun(p, r) when prune p = tUnit ->
+            | 1, TFun(p, r, row) when prune p = tUnit ->
                 match resolve r with
                 | TCon(("int" | "i32" | "unit"), []) -> ()
                 | t -> fail 0 (sprintf "'main' must return int, c_int or unit, not %s" (show t))
+
+                // nothing handles what main performs
+                match fst (rowParts row) with
+                | [] -> ()
+                | ls ->
+                    let consume = if ls |> List.exists (fun l -> labelName l = "Yield") then ", or consume the Seq" else ""
+                    fail 0 (sprintf "main performs %s and nothing handles it: wrap the call in handle … with%s" (ls |> List.map show |> String.concat ", ") consume)
             | _ -> fail 0 "'main' must take one unit parameter: let main () = ..."
         | _ -> fail 0 "no 'main' function"
 
@@ -4028,7 +4689,6 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
 
     declareRecovering.Value <- declareOne
     let mutable marks = { records = 0; funs = 0; exports = 0; tests = 0; valueList = 0; hovers = 0 }
-    let mutable lastFile = ""
 
     let check (file: string) (modName: string option) (decls: (int * Decl) list) =
         // what this module writes from here on is its result; its names and type variables are
@@ -4049,7 +4709,6 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
         currentModule.Value <- modName
         opens.Value <- []
         currentFile.Value <- file
-        lastFile <- file
         let errorsBefore = diagnostics.Count
 
         for n in modName |> Option.map withEnclosing |> Option.defaultValue [] do
@@ -4066,9 +4725,13 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
             if (requireMain && tests.Count = 0) || globals.ContainsKey "main" then // a test file needs no main
                 checkMain ()
         with CompileError(_, msg) ->
+            // at main when it was checked here; else no place yet (the driver gives main's, when
+            // the main module came from the cache)
+            let at = funs |> Seq.tryFind (fun f -> f.name = "main")
+
             report
-                { file = lastFile
-                  line = 0
+                { file = at |> Option.map (fun f -> f.file) |> Option.defaultValue ""
+                  line = at |> Option.map (fun f -> f.line) |> Option.defaultValue 0
                   col = 0
                   msg = msg }
 
@@ -4076,6 +4739,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
           externs = externs.Dict
           funs = List.ofSeq funs
           traitMethods = traitMethods.Dict
+          effects = st.effects.Dict
           impls = impls.Dict
           exports = List.ofSeq exports
           values = List.ofSeq valueList

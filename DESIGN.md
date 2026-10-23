@@ -393,9 +393,10 @@ with raw pointers (§11).
 > completes at once allocates nothing (CPS: 5 allocations), and one that suspends 2 (CPS: 7). But
 > knowing which calls may yield takes effect rows on every function type, polymorphic through
 > generic code such as `List.iter`, which is phase 10's work; without them, every closure call
-> would pay, or `await` outside a task would compile. So the CPS design below stands, phase 9's
-> state machines take the allocations away, and phase 10 may move `Task` onto an `Async`
-> effect. The `Task` API in this section is what users see either way.
+> would pay, or `await` outside a task would compile. So the CPS design below stood, and phase
+> 9's state machines took the allocations away. Phase 10 built effect rows and measured `Task`
+> on an `Async` effect against them: seven allocations per wait that suspends, against none, so
+> `Task` stays a state machine (decision 72). The `Task` API in this section is what users see.
 
 There is **one type, `Task<'a>`, and it is cold.** A task is a value that describes work.
 Defining it does nothing, and running it twice runs the work twice. `Task.start` gives a hot
@@ -417,7 +418,8 @@ let main () =
 - **Implementation:** a library (`lib/std/Threading/Task.zs`) and a compiled form for `task { }`. A task is its result when it has one at once (`Task.ret`), else its work, given its cancellation and a continuation.
   - **`task { }` is a state machine** (phase 9): its work is an LLVM coroutine, whose frame is allocated once, when the work starts, behind a closure header (the face). A wait on a task whose result is ready goes on at once. Otherwise it passes the face as that task's continuation, with the face's code set for the result's type (it stores the result and resumes the coroutine), and suspends. So a wait allocates nothing: a task waiting 200,000 times allocates what one waiting 10 times does (`tests/task/awaits.zs`).
   - **Cancellation:** a task cancelled while it waits is let go by what it waits on, which drops its continuation, the face; a wait that finds its task cancelled already suspends for good. Either way the face's last reference going destroys the coroutine at that wait, dropping what the task held there (reference counting records it at each wait), and the cancellation disposes its `use` values.
-  - A loop that waits repeatedly settles into steady memory. The echo server holds 10,000 connections in 21 MB, flat for the hour of a soak test (`bench/echo/soak.sh`: 32.6 million round trips, none failed).
+  - **`return!` last** in the body gives its task what waits for this one (`Task.handOff`), and this task's state machine is done: a task that loops by `return!` (the echo server's `echo`) keeps one state machine, not one per round. In a `use`'s scope, `return!` is a wait as `let!` is, so the value is disposed after.
+  - A loop that waits repeatedly settles into steady memory. The echo server holds 10,000 connections in 26 MB, flat for the hour of a soak test (`bench/echo/soak.sh`: 33.1 million round trips, none failed).
   - **The stack:** a continuation called inside another (an await that completes at once) is counted, and the 64th goes through the event loop instead, so a run of them doesn't grow the stack.
 - **Structured concurrency:**
   - Child tasks can't outlive the scope that started them: `Task.both`, `all`, `race` and `timeout` wait for theirs, and `Task.scope` for those `Task.start` started in it (a `Promise` gives each one's result).
@@ -426,11 +428,11 @@ let main () =
 - **Event loop:** C in `runtime/rt.c` over epoll (kqueue comes with macOS, track T; io_uring later): callbacks waiting for descriptors, timers in a heap, and a queue of ready callbacks, all Z# closures the loop owns. Each thread has its own loop, and `Task.spawn` runs a task on another thread's (§7).
 - **Blocking C calls:** `Task.blocking (fun () -> sqlite3_step db)` moves the call to a helper thread, which signals the loop through a pipe when it's done. The function is a `share<…>` (§7): what it captures can be shared between threads, and is marked shared before it goes.
 
-### 6.1 Effect handlers (planned, phase 10, v3)
+### 6.1 Effect handlers (phase 10, v3)
 
-These are designed now, so v1 and v2 choices don't rule them out. With effect handlers, one
-feature expresses generators, async, exceptions, backtracking and dependency injection, with no
-function colouring.
+With effect handlers, one feature expresses generators, exceptions, dependency injection and
+handlers of a program's own, with no function colouring ([the guide](docs/guide/16-effects.md),
+[proposal 0002](docs/proposals/0002-effect-handlers.md)).
 
 ```fsharp
 effect Yield<'a> =
@@ -442,20 +444,26 @@ let numbers () =                         // inferred: unit -> unit / Yield<int>
 let sum () =
   let mutable total = 0
   handle numbers () with
-  | Yield.yield x, k -> total <- total + x; k ()   // k: the resumption, called at most once
+  | Yield.yield x, k ->                  // k: the resumption, called at most once
+    total <- total + x
+    k ()
   | return () -> total
 ```
 
-- **Effect types:** Koka-style effect rows (`a -> b / E`), inferred and row-polymorphic. A function with no effects shows nothing extra in its type.
-- **One-shot resumptions only:** `k` runs at most once. That keeps RC sound and allows reuse. Multi-shot continuations would be a later, opt-in kind.
-- **Implementation:** generalized evidence passing with yield-bubbling (Xie & Leijen, ICFP 2021), as in Koka, which also uses Perceus. It compiles to plain code with no stack switching or copying, and only functions with effects pay any cost.
-- **C interop rule:** an `extern` is effect-free. A closure passed to C must have an empty effect row, checked at compile time, so no continuation is captured across a C frame.
-- **Relation to Task:** `Task` keeps its API and `task { }` syntax, and may later be reimplemented over an `Async` effect. Builders stay for monads that aren't effects (parsers, `result`).
-- **Constraints that hold until then:**
-  1. The runtime and FFI don't assume one contiguous native stack.
-  2. `Task` stays opaque.
-  3. Core IR keeps the type information effect rows will need.
-  4. `effect` and `handle` are reserved words.
+- **Effect types:** Koka-style rows of effects after a function's result (`a -> b / E`, `/ <E, F | 'e>`, `/ <>`), with scoped labels (an effect may be in a row twice: the innermost handler's first). Inferred and row-polymorphic: `List.iter : ('a -> unit / 'e) -> list<'a> -> unit / 'e` comes out of `iter`'s body. A function with no effects shows nothing extra in its type.
+  - **The last arrow:** a function's effects are on the arrow of its last parameter; giving it its first arguments performs nothing (`a -> b -> c / E`), in inferred types and annotations alike.
+  - **Written:** a function's annotation may leave its effects out (they're inferred) or write them after its result (`: int / Throw<string>`). In a type definition, a trait's method or an effect's operation, a function type without a row has none.
+  - **Generalized:** a row variable that only ends a top-level function's own row is closed (`/ Yield<int>`, not `/ <Yield<int> | 'e>`), and a reference to the function opens it again, so the function goes where one performing more is expected.
+- **Where none can be handled** (an empty row, checked where the function is made into one, with an error naming the effect): `main`, a top-level value's initializer, a `task { }` body, an `[<Export>]` or a `callback<F>` (the C-callback rule: no continuation is captured across a C frame), a `share<F>` and a trait's method.
+- **One-shot resumptions only:** `k` runs at most once (a second call panics). That keeps RC sound and allows reuse. Multi-shot continuations would be a later, opt-in kind.
+- **Implementation:** evidence passing with yield bubbling (Xie & Leijen, ICFP 2021), as in Koka, after monomorphization, inlining and simplification (the Evidence pass, §9). It compiles to plain code with no stack switching or copying, and only functions with effects pay any cost; a pure function compiles to the IR it had before effects existed.
+  - **Evidence:** a function whose row isn't empty takes a frame per effect of it after its last parameter (a handler's marker and a closure per operation); a call passes the caller's frames for the callee's row.
+  - **Instances:** monomorphization instantiates rows as it does types. A function generic only in its effects (`let apply (f: int -> int) x = f x`) is, with empty rows, its module's own function under its own name; an instance with effects is made by the module that uses it, as a generic function's instances are (§9).
+  - **Clauses by path:** a path of a clause that resumes last (`k v`), or stops without `k`, runs where the operation is performed: a call, nothing captured (`Seq.map`, `fold`, state, a `Throw` handler). A path that does anything else with `k` yields: each function on the way to the handler makes the rest of itself a closure (one allocation per function waiting), and the handler runs the clause with their composition as `k`. A path that stops wants no continuation, and none is made.
+  - **Loops:** a loop with calls that may yield runs its rounds from a driver (a `while` loop calling a function per round), so no stack grows with the rounds at any optimization level.
+  - **The yield state:** a thread-local (`zs_yield`, a global on bare metal) that a program with effects defines itself, so the runtime, and every program without effects, is as it was: their binaries are byte-identical.
+- **Generators:** `seq { }` is a `Seq<'a>`, a function yielding the elements; `Seq` functions are handlers of `Yield`, and `for x in s` is a handle whose clause is the body. A pipeline allocates nothing per element; it doesn't yet fuse into one loop as list pipelines do (a stage costs an indirect call per element: the ROADMAP's follow-up).
+- **Relation to Task:** `Task` keeps its API and `task { }`, which stays a state machine (§6): phase 10 measured an `Async` effect at seven allocations per wait that suspends, where `task { }` allocates none (decision 72, [the report](docs/reports/effects.md)). Builders stay for monads that aren't effects (parsers, `result`).
 
 ## 7. Parallelism
 
@@ -527,6 +535,7 @@ There are three levels, from free to manual.
      ─► Monomorphize (trait dispatch, units erased) ─► fusion             Mono
      ─► Uncurrying, inlining of small functions                           Inline
      ─► Known constructors, case of case, lambdas applied in place        Simplify
+     ─► Effects: evidence passing, yield bubbling (pure code untouched)   Evidence
      ─► Decision trees for matches, with join points                      Decide
      ─► Closure conversion, lambda lifting                                Lift
      ─► Perceus: ownership, borrowing, moves, reuse, drop specialization  Rc
@@ -719,7 +728,7 @@ checker, so tools can't drift from the compiler.
 | 20 | Code generation by users | `derive` over record and union shapes; no macros, no comptime | decided |
 | 21 | Async | one cold `Task<'a>` + `Task.start`; general computation expressions; CPS, which the effects spike before phase 6 chose (§6) | done |
 | 22 | Threads | v1 single-threaded event loop; in v2 a work-stealing pool and a loop per thread, with non-atomic RC and a negative count marking the objects that crossed threads (§7.1) | decided |
-| 23 | Effect handlers | designed now (§6.1), built in v3; one-shot, evidence passing | decided |
+| 23 | Effect handlers | built in phase 10 (§6.1): rows after the result on a function's last arrow, inferred and row-polymorphic; one-shot resumptions; evidence passing with yield bubbling after monomorphization, a clause's paths that resume last or stop run where the operation is performed; empty rows where no handler can be (main, tasks, C, other threads) | done |
 | 24 | Float semantics | strict IEEE; `[<FastMath>]` opt-in per function (§8) | decided |
 | 25 | SIMD API | portable `f32x8`-style value types + target intrinsics (§8) | decided |
 | 26 | From Zig | cross-compilation through `zig cc`; a checked opt-in instead of no-hidden-allocation (`[<NoAlloc>]`, #42). Not adopted: explicit allocators, comptime | decided |
@@ -768,6 +777,7 @@ checker, so tools can't drift from the compiler.
 | 69 | Placement | `[<Section ".name">]` on a top-level value and `[<Align n>]` on a value or a type; `.noinit` is never filled, on any target; values only; a struct clang reports over-aligned imports with `[<Align>]` ([proposal 0014](docs/proposals/0014-placement.md)) | decided |
 | 70 | C unions and layout facts | a `[<CLayout>]` union has no tag, is built by case and read by case name in `unsafe`, with no zeroed form until a C API needs one; `sizeof<T>`, `alignof<T>` and `offsetof<T> "f"` are constants and a top-level `assert` on constants is checked at compile time (`sizeof<'a>` in expressions only); C bit-fields stay out ([proposal 0004](docs/proposals/0004-c-layout.md)) | decided |
 | 71 | Async on bare metal | the same `Task` on a Cortex-M: an event loop in the embedded runtime (a ready queue, SysTick timers, waiters per interrupt line, `wfi` when idle), `Task` in Core, `Task.spawn` and `blocking` errors there; cooperative, one priority ([proposal 0016](docs/proposals/0016-async-bare-metal.md)) | decided |
+| 72 | `Task` and effects | `Task` stays on phase 9's state machines, not an `Async` effect: measured in phase 10 (`bench/effects/async.zs`), an effect allocates seven objects per wait that suspends (the waiting functions captured, the resumption) where `task { }` allocates none; waits stay in a task's own body (§6.1) | decided |
 
 "Default" means chosen by me and open to change until the phase that implements it begins.
 "Proposed" means a draft in [docs/proposals](docs/proposals/README.md), decided at the design

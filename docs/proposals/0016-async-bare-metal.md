@@ -367,7 +367,8 @@ loop is linked only into programs that use it.
   capacity and no masking. Kept as the fallback in *Unresolved questions*; the agreement with
   0012 is the `Spsc`.
 - **`Task` on an `Async` effect** ([0002](0002-effect-handlers.md)): phase 10's measurement
-  decides; the loop here serves either, since `await`'s handler would post to the same queue.
+  decided against it (decision 72: an effect allocates per wait that suspends); the loop here
+  would serve either, since `await`'s handler would post to the same queue.
 
 ## Compatibility
 
@@ -470,8 +471,8 @@ None: `Task.sleep` takes integer milliseconds, lines are numbers, and `clock` is
    producer. The alternative is a pending bitmask with an atomic OR per line and no queue,
    which also removes the capacity question; chosen if 0012's `Atomic` on the M0+ (interrupts
    masked anyway, no `ldrex`) measures the same.
-4. **`Task` on an `Async` effect** ([0002](0002-effect-handlers.md)): phase 10's measurement
-   on the host decides; this loop serves both, and this document assumes the coroutine form.
+4. **`Task` on an `Async` effect** ([0002](0002-effect-handlers.md)): decided by phase 10's
+   measurement on the host: the coroutine form stays (decision 72), as this document assumes.
 5. **One waiter per line and per `Signal`:** a panic here; the alternative is a list of
    waiters, woken together, which costs a list cell per waiter and decides nothing a `Promise`
    can't.

@@ -135,4 +135,4 @@ let rec accepting (l: TcpListener) (s: Scope) : Task<unit> =
   }
 ```
 
-It holds 10,000 connections in 21 MB, and its memory stays flat under traffic: the same 20,936 KB at every minute of an hour-long soak test (`bench/echo/soak.sh`), through 32.6 million round trips.
+`return!` last in a task gives the task it names what waits for this one, so `echo` and `accepting` loop with one state machine, not one per round (in a `use`'s scope, `return!` waits, so `c` is closed after `echo`). It holds 10,000 connections in 26 MB, and its memory stays flat under traffic: the same 26,428 KB at every minute of an hour-long soak test (`bench/echo/soak.sh`), through 33.1 million round trips.

@@ -1,0 +1,1 @@
+tests/effects/err_seq.zs:2: error: a seq { } only yields: this one performs Throw<string> too; handle it inside

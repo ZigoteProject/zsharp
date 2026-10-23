@@ -44,7 +44,7 @@ As F# prints an array: `[|1; 2; 3|]`.
 ### `Fixed.init`
 
 ```zsharp
-Fixed.init : (int -> 'a) -> fixed<'a, 'b>
+Fixed.init : (int -> 'a / 'e) -> fixed<'a, 'b> / 'e
 ```
 
 A fixed-size array with `f i` at index `i` (its length from the type expected of it).
@@ -60,7 +60,7 @@ The elements in an array of their own.
 ### `Fixed.iter`
 
 ```zsharp
-Fixed.iter : ('a -> unit) -> fixed<'a, 'b> -> unit
+Fixed.iter : ('a -> unit / 'e) -> fixed<'a, 'b> -> unit / 'e
 ```
 
 Calls `f` on every element, in order.
@@ -68,7 +68,7 @@ Calls `f` on every element, in order.
 ### `Fixed.map`
 
 ```zsharp
-Fixed.map : ('a -> 'b) -> fixed<'a, 'c> -> fixed<'b, 'c>
+Fixed.map : ('a -> 'b / 'e) -> fixed<'a, 'c> -> fixed<'b, 'c> / 'e
 ```
 
 A fixed-size array with `f` applied to every element.
@@ -76,7 +76,7 @@ A fixed-size array with `f` applied to every element.
 ### `Fixed.fold`
 
 ```zsharp
-Fixed.fold : ('a -> 'b -> 'a) -> 'a -> fixed<'b, 'c> -> 'a
+Fixed.fold : ('a -> 'b -> 'a / 'e) -> 'a -> fixed<'b, 'c> -> 'a / 'e
 ```
 
 Combines the elements from the left, like `Array.fold`.

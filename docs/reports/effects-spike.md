@@ -50,3 +50,7 @@ the whole of the type problem:
 - **Phase 10:** effect handlers, with rows; the measurement says `Task` over an `Async` effect
   would then allocate only for real waits, so phase 10 may reimplement `Task` that way, as
   §6.1 allows. Nothing in phase 6's API stands in the way: `Task` stays opaque.
+
+**Phase 10's measurement** ([the report](effects.md)): built, `Task` over an `Async` effect
+allocates 7 objects per wait that suspends, where phase 9's state machines allocate none, so
+`Task` stays a state machine (decision 72).

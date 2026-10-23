@@ -82,7 +82,7 @@ Everything after the first element. Panics on an empty list.
 ### `List.map`
 
 ```zsharp
-List.map : ('a -> 'b) -> list<'a> -> list<'b>
+List.map : ('a -> 'b / 'e) -> list<'a> -> list<'b> / 'e
 ```
 
 Applies `f` to every element: `List.map f [a; b] = [f a; f b]`.
@@ -90,7 +90,7 @@ Applies `f` to every element: `List.map f [a; b] = [f a; f b]`.
 ### `List.filter`
 
 ```zsharp
-List.filter : ('a -> bool) -> list<'a> -> list<'a>
+List.filter : ('a -> bool / 'e) -> list<'a> -> list<'a> / 'e
 ```
 
 The elements for which `f` returns true, in order.
@@ -98,7 +98,7 @@ The elements for which `f` returns true, in order.
 ### `List.fold`
 
 ```zsharp
-List.fold : ('a -> 'b -> 'a) -> 'a -> list<'b> -> 'a
+List.fold : ('a -> 'b -> 'a / 'e) -> 'a -> list<'b> -> 'a / 'e
 ```
 
 Combines the elements from the left: `List.fold f s [a; b] = f (f s a) b`.
@@ -106,7 +106,7 @@ Combines the elements from the left: `List.fold f s [a; b] = f (f s a) b`.
 ### `List.iter`
 
 ```zsharp
-List.iter : ('a -> 'b) -> list<'a> -> unit
+List.iter : ('a -> 'b / 'e) -> list<'a> -> unit / 'e
 ```
 
 Calls `f` on every element, in order.
@@ -122,7 +122,7 @@ The elements of `xs` followed by those of `ys` (also written `xs @ ys`).
 ### `List.exists`
 
 ```zsharp
-List.exists : ('a -> bool) -> list<'a> -> bool
+List.exists : ('a -> bool / 'e) -> list<'a> -> bool / 'e
 ```
 
 Whether `f` is true for some element. Stops at the first.
@@ -130,7 +130,7 @@ Whether `f` is true for some element. Stops at the first.
 ### `List.forall`
 
 ```zsharp
-List.forall : ('a -> bool) -> list<'a> -> bool
+List.forall : ('a -> bool / 'e) -> list<'a> -> bool / 'e
 ```
 
 Whether `f` is true for every element. Stops at the first false.
@@ -146,7 +146,7 @@ Whether the list contains `x` (compared with `=`).
 ### `List.tryFind`
 
 ```zsharp
-List.tryFind : ('a -> bool) -> list<'a> -> option<'a>
+List.tryFind : ('a -> bool / 'e) -> list<'a> -> option<'a> / 'e
 ```
 
 The first element for which `f` is true, or `None`.
@@ -162,7 +162,7 @@ The sum of the elements (`Add.zero` for an empty list).
 ### `List.init`
 
 ```zsharp
-List.init : 'a -> ('a -> 'b) -> list<'b> when 'a : Num, 'a : Ord
+List.init : 'a -> ('a -> 'b / 'e) -> list<'b> / 'e when 'a : Num, 'a : Ord
 ```
 
 A list of `n` elements: `[f 0; f 1; …; f (n - 1)]`.
@@ -170,7 +170,7 @@ A list of `n` elements: `[f 0; f 1; …; f (n - 1)]`.
 ### `List.mapi`
 
 ```zsharp
-List.mapi : ('a -> 'b -> 'c) -> list<'b> -> list<'c> when 'a : Add
+List.mapi : ('a -> 'b -> 'c / 'e) -> list<'b> -> list<'c> / 'e when 'a : Add
 ```
 
 Like `List.map`, with each element's index: `f i x`.
@@ -186,7 +186,7 @@ Each element paired with its index: `[(0, a); (1, b)]`.
 ### `List.choose`
 
 ```zsharp
-List.choose : ('a -> option<'b>) -> list<'a> -> list<'b>
+List.choose : ('a -> option<'b> / 'e) -> list<'a> -> list<'b> / 'e
 ```
 
 Applies `f` to every element and keeps the values of the `Some` results.
@@ -194,7 +194,7 @@ Applies `f` to every element and keeps the values of the `Some` results.
 ### `List.collect`
 
 ```zsharp
-List.collect : ('a -> list<'b>) -> list<'a> -> list<'b>
+List.collect : ('a -> list<'b> / 'e) -> list<'a> -> list<'b> / 'e
 ```
 
 Applies `f` to every element and concatenates the resulting lists.
@@ -258,7 +258,7 @@ The list without its first `n` elements.
 ### `List.reduce`
 
 ```zsharp
-List.reduce : ('a -> 'a -> 'a) -> list<'a> -> 'a
+List.reduce : ('a -> 'a -> 'a / 'e) -> list<'a> -> 'a / 'e
 ```
 
 Combines the elements from the left, starting with the first. Panics on an empty list.
@@ -266,7 +266,7 @@ Combines the elements from the left, starting with the first. Panics on an empty
 ### `List.partition`
 
 ```zsharp
-List.partition : ('a -> bool) -> list<'a> -> list<'a> * list<'a>
+List.partition : ('a -> bool / 'e) -> list<'a> -> list<'a> * list<'a> / 'e
 ```
 
 The elements for which `f` is true, and the others, both in order.
@@ -290,7 +290,7 @@ The smallest element. Panics on an empty list.
 ### `List.sumBy`
 
 ```zsharp
-List.sumBy : ('a -> 'b) -> list<'a> -> 'b when 'b : Add
+List.sumBy : ('a -> 'b / 'e) -> list<'a> -> 'b / 'e when 'b : Add
 ```
 
 The sum of `f x` over the elements.
@@ -306,7 +306,7 @@ The list without repeated elements, keeping first occurrences.
 ### `List.sortWith`
 
 ```zsharp
-List.sortWith : ('a -> 'a -> 'b) -> list<'a> -> list<'a> when 'b : Ord
+List.sortWith : ('a -> 'a -> 'b / 'e) -> list<'a> -> list<'a> / 'e when 'b : Ord
 ```
 
 The list sorted with `cmp` (negative, zero or positive, like `compare`). Stable.
@@ -322,7 +322,7 @@ The list sorted in ascending order. Stable.
 ### `List.sortBy`
 
 ```zsharp
-List.sortBy : ('a -> 'b) -> list<'a> -> list<'a> when 'b : Ord
+List.sortBy : ('a -> 'b / 'e) -> list<'a> -> list<'a> / 'e when 'b : Ord
 ```
 
 The list sorted by the key `f x`. Stable.

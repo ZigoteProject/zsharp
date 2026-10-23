@@ -411,7 +411,7 @@ let libraryDir = runtimeFile "lib"
 /// target has it; Std is for targets that have one.
 let private coreFiles =
     [ "Option"; "Result"; "Math"; "Int"; "Runtime"; "Mmio"; "Ptr"; "Weak"; "Arena"; "Simd"; "Simd/X86"; "Simd/Arm"; "Collections/List"; "Collections/Span"; "Collections/Array"; "Collections/Buffer"; "Collections/Fixed"
-      "Text/String"; "Text/Char"; "Collections/Map"; "Collections/Set"; "Collections/HashMap" ]
+      "Text/String"; "Text/Char"; "Collections/Map"; "Collections/Set"; "Collections/HashMap"; "Throw"; "Collections/Seq" ]
 
 let private stdFiles =
     [ "Console"; "Environment"; "Threading/Atomic"; "Threading/Mutex"; "Threading/Channel"; "Threading/Task"; "Threading/Parallel"
@@ -910,7 +910,7 @@ let private checkModules (requireMain: bool) (collect: bool) (withHovers: bool) 
                 { file = m.path
                   key = key
                   library = t.library
-                  names = mine |> List.map (fun f -> f.name, f.ngen)
+                  names = mine |> List.map (fun f -> f.name, f.ngen - f.rows) // generic in its types
                   funs = lazy mine
                   sees = t.sees }
 
@@ -920,7 +920,27 @@ let private checkModules (requireMain: bool) (collect: bool) (withHovers: bool) 
     let names = fresh |> Seq.filter (fun t -> not t.library) |> Seq.map (fun t -> Path.GetFileName t.m.path) |> List.ofSeq
     timings.Add("restore", restoring.Elapsed.TotalMilliseconds)
     timings.Add(sprintf "check (%d of %d; program: %s)" fresh.Count modules.Length (if names.IsEmpty then "none" else String.concat " " names), checking.Elapsed.TotalMilliseconds)
-    let prog = s.finish ()
+    // an error about the whole program (what main performs) the checker had no place for, as when
+    // the main module came from the cache: at main, in the main file
+    let atMain () =
+        match units |> Seq.tryLast with
+        | Some u -> u.file, (u.funs.Value |> List.tryFind (fun f -> f.name = "main") |> Option.map (fun f -> f.line) |> Option.defaultValue 0)
+        | None -> "", 0
+
+    let prog =
+        try
+            s.finish ()
+        with CompileErrorAt("", l, c, msg) ->
+            let file, line = atMain ()
+            raise (CompileErrorAt(file, (if l = 0 then line else l), c, msg))
+
+    let prog =
+        if prog.errors |> List.exists (fun e -> e.file = "") then
+            let file, line = atMain ()
+            { prog with errors = prog.errors |> List.map (fun e -> if e.file = "" then { e with file = file; line = (if e.line = 0 then line else e.line) } else e) }
+        else
+            prog
+
     { prog with hovers = if withHovers then hovers |> Seq.collect (fun h -> h.Value) |> List.ofSeq else [] }, units.ToArray()
 
 /// Parses and type-checks the main file's program, the library first; with collect, every
@@ -1024,6 +1044,7 @@ let private lift (mainPath: string) (isLib: bool) =
                 let mono = timed "monomorphize" (fun () -> Mono.run prog |> Mono.checkShared prog |> Mono.fuse)
                 let mono = timed "inline" (fun () -> inline' mono)
                 let mono = timed "simplify" (fun () -> if Codegen.debugInfo then mono else Simplify.run prog.types mono)
+                let mono = timed "effects" (fun () -> Evidence.run prog.types prog.effects mono)
                 let mono = timed "decision trees" (fun () -> decide mono)
                 let lifted = timed "lift closures" (fun () -> Lift.run mono)
                 // a task's state machine owns its parameters: they live in its coroutine frame
@@ -1121,7 +1142,7 @@ let private wideVectors (funs: Mono.MFun list) =
              | _ -> false)
             || List.exists wide args
         | Core.TTuple ts -> List.exists wide ts
-        | Core.TFun(a, b) -> wide a || wide b
+        | Core.TFun(a, b, _) -> wide a || wide b
         | _ -> false
 
     let rec inExpr (e: Core.CExpr) = wide e.ty || Core.children e.k |> List.exists inExpr
@@ -1301,6 +1322,7 @@ let private compileUnits (mainPath: string) (cachedObject: string -> string opti
                 else timed "inline" (fun () -> mono |> Inline.uncurry fixedNames |> Inline.runWith mayInline)
 
             let mono = timed "simplify" (fun () -> if Codegen.debugInfo then mono else Simplify.run prog.types mono)
+            let mono = timed "effects" (fun () -> Evidence.run prog.types prog.effects mono)
             let mono = timed "decision trees" (fun () -> if decide then Decide.run prog.types mono else mono)
 
             let arityOf (g: string) = match abiFun.TryGetValue g with | true, a -> Some a.pars.Length | _ -> None
@@ -1554,6 +1576,7 @@ let private compileUnits (mainPath: string) (cachedObject: string -> string opti
                         { name = a.name
                           pars = a.pars |> List.mapi (fun i t -> sprintf "a%d" i, t)
                           ret = a.ret
+                          row = Core.rowEmpty
                           body = { k = Core.CUnit; ty = Core.tUnit }
                           file = ""
                           line = 0 }
@@ -2102,7 +2125,7 @@ let builtinDocs =
 
 /// A documented item of a source file, found by reading its declarations.
 type DocItem =
-    { kind: string // module or namespace (a file's header), function, type, case, trait, method, derive, impl, member
+    { kind: string // module or namespace (a file's header), function, type, case, trait, method, effect, operation, derive, impl, member
       key: string // what hovers refer to: List.map, option, Some, Show.show, show, string#Length
       title: string // the declaration as written, without its body
       line: int
@@ -2173,12 +2196,12 @@ let docItems (file: string) : DocItem list =
                         containerKind <- "type"
                         add "type" container i
                 else
-                    let m = rx @"^trait\s+([A-Za-z_][A-Za-z0-9_]*)" l
+                    let m = rx @"^(trait|effect)\s+([A-Za-z_][A-Za-z0-9_]*)" l
 
                     if m.Success then
-                        container <- prefix + m.Groups[1].Value
-                        containerKind <- "trait"
-                        add "trait" container i
+                        container <- prefix + m.Groups[2].Value
+                        containerKind <- m.Groups[1].Value
+                        add m.Groups[1].Value container i
                     else
                         let m = rx @"^derive\s+([A-Za-z_][A-Za-z0-9_]*)" l
 
@@ -2212,6 +2235,8 @@ let docItems (file: string) : DocItem list =
 
                 if m.Success && containerKind = "trait" then
                     add "method" (container + "." + m.Groups[1].Value) i
+                elif m.Success && containerKind = "effect" then
+                    add "operation" (container + "." + m.Groups[1].Value) i
                 else
                     let m = rx @"^(static\s+)?member\s+(?:[A-Za-z_][A-Za-z0-9_]*\.)?([A-Za-z_][A-Za-z0-9_]*)" t
                     if m.Success then add "member" (container + "#" + m.Groups[2].Value) i

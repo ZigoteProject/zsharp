@@ -1,7 +1,7 @@
 # 7. Errors
 
 Z# separates two kinds of failure:
-- **Expected failures:** a missing file, bad input. These are values, `result<'a, 'e>`, that the caller has to handle.
+- **Expected failures:** a missing file, bad input. These are values, `result<'a, 'e>`, that the caller has to handle. Inside a module, a function may instead throw a typed exception, the `Throw` effect, which its type shows and `Throw.catch` turns back into a `result` ([chapter 16](16-effects.md#typed-exceptions-throw)).
 - **Bugs:** an index out of bounds, an overflow, a failed assertion. These are **panics**, which stop the program at once.
 
 ## result and `?`

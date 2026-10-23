@@ -1,0 +1,1 @@
+tests/effects/err_operation.zs:2:3: error: effect Yield has no operation 'yeild' (yield)

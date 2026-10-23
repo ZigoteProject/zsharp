@@ -1,0 +1,1 @@
+tests/effects/err_callback.zs:4:3: error: a function given to C must have no effects: this one performs Yield<i32> (the C-callback rule)

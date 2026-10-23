@@ -1,0 +1,1 @@
+tests/effects/err_unhandled.zs:4: error: main performs Yield<int> and nothing handles it: wrap the call in handle … with, or consume the Seq

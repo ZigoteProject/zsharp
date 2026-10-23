@@ -19,7 +19,7 @@ The number of elements.
 ### `Array.init`
 
 ```zsharp
-Array.init : int -> (int -> 'a) -> array<'a>
+Array.init : int -> (int -> 'a / 'e) -> array<'a> / 'e
 ```
 
 An array of `n` elements: `[| f 0; …; f (n - 1) |]`.
@@ -27,7 +27,7 @@ An array of `n` elements: `[| f 0; …; f (n - 1) |]`.
 ### `Array.map`
 
 ```zsharp
-Array.map : ('a -> 'b) -> span<'a> -> array<'b>
+Array.map : ('a -> 'b / 'e) -> span<'a> -> array<'b> / 'e
 ```
 
 A new array with `f` applied to every element.
@@ -35,7 +35,7 @@ A new array with `f` applied to every element.
 ### `Array.iter`
 
 ```zsharp
-Array.iter : ('a -> unit) -> span<'a> -> unit
+Array.iter : ('a -> unit / 'e) -> span<'a> -> unit / 'e
 ```
 
 Calls `f` on every element, in order.
@@ -43,7 +43,7 @@ Calls `f` on every element, in order.
 ### `Array.fold`
 
 ```zsharp
-Array.fold : ('a -> 'b -> 'a) -> 'a -> span<'b> -> 'a
+Array.fold : ('a -> 'b -> 'a / 'e) -> 'a -> span<'b> -> 'a / 'e
 ```
 
 Combines the elements from the left, like `List.fold`.
@@ -75,7 +75,7 @@ A list with the array's elements, in order.
 ### `Array.mapi`
 
 ```zsharp
-Array.mapi : (int -> 'a -> 'b) -> span<'a> -> array<'b>
+Array.mapi : (int -> 'a -> 'b / 'e) -> span<'a> -> array<'b> / 'e
 ```
 
 Like `Array.map`, with each element's index: `f i x`.
@@ -83,7 +83,7 @@ Like `Array.map`, with each element's index: `f i x`.
 ### `Array.exists`
 
 ```zsharp
-Array.exists : ('a -> bool) -> span<'a> -> bool
+Array.exists : ('a -> bool / 'e) -> span<'a> -> bool / 'e
 ```
 
 Whether `f` is true for some element.
@@ -99,7 +99,7 @@ Whether the array contains `x` (compared with `=`).
 ### `Array.filter`
 
 ```zsharp
-Array.filter : ('a -> bool) -> span<'a> -> array<'a>
+Array.filter : ('a -> bool / 'e) -> span<'a> -> array<'a> / 'e
 ```
 
 A new array with the elements for which `f` is true.
@@ -147,7 +147,7 @@ A new array sorted in ascending order. Stable.
 ### `Array.sortWith`
 
 ```zsharp
-Array.sortWith : ('a -> 'a -> 'b) -> span<'a> -> array<'a> when 'b : Ord
+Array.sortWith : ('a -> 'a -> 'b / 'e) -> span<'a> -> array<'a> / 'e when 'b : Ord
 ```
 
 A new array sorted with `f` (like `compare`). Stable.

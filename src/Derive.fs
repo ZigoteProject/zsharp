@@ -49,6 +49,7 @@ let expand (deriveName: string) (tname: string) (head: SType) (shape: ShapeInfo)
         | STName(n, args) -> STName(n, List.map substTy args)
         | STTuple ts -> STTuple(List.map substTy ts)
         | STFun(a, b) -> STFun(substTy a, substTy b)
+        | STRow(t, ls, tail) -> STRow(substTy t, List.map substTy ls, tail)
         | STVar _
         | STMeasure _ -> st
 

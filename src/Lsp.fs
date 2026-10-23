@@ -356,15 +356,44 @@ let private completion (path: string) (line: int) (ch: int) : JsonNode =
     | _ -> arr (keywords |> List.map (fun k -> item k 14 "keyword"))
 
 let private inlayHints (path: string) (fromLine: int) (toLine: int) : JsonNode =
-    hoversAt path
-    |> List.filter (fun h -> h.inlay && h.hline - 1 >= fromLine && h.hline - 1 <= toLine && not (h.name.StartsWith "_"))
-    |> List.distinctBy (fun h -> h.hline, h.hcol)
-    |> List.map (fun h ->
-        obj
-            [ "position", pos (h.hline - 1) (h.hcol - 1 + h.name.Length)
-              "label", str (": " + show h.hty)
-              "kind", num 1 ])
-    |> arr
+    let hovers = hoversAt path |> List.filter (fun h -> h.hline - 1 >= fromLine && h.hline - 1 <= toLine)
+
+    let types =
+        hovers
+        |> List.filter (fun h -> h.inlay && not (h.name.StartsWith "_"))
+        |> List.distinctBy (fun h -> h.hline, h.hcol)
+        |> List.map (fun h ->
+            obj
+                [ "position", pos (h.hline - 1) (h.hcol - 1 + h.name.Length)
+                  "label", str (": " + show h.hty)
+                  "kind", num 1 ])
+
+    // a function's effects, when it has some its declaration doesn't write: before its `=`, so an
+    // effect that leaked into it shows (/ Yield<int>)
+    let effects =
+        hovers
+        |> List.filter (fun h -> h.decl)
+        |> List.choose (fun h ->
+            let rec own (t: Ty) =
+                match prune t with
+                | TFun(_, r, row) -> if isRowEmpty row then own r else Some row
+                | _ -> None
+
+            let line = lineText path h.hline
+            let eq = if h.hcol - 1 < line.Length then line.IndexOf(" =", h.hcol - 1) else -1
+
+            match own h.hty with
+            | Some row when eq > 0 && not (line.Substring(0, eq).Contains " / ") ->
+                let ls = fst (rowParts row) |> List.map show
+                let text = match ls with
+                           | [ l ] -> l
+                           | ls -> "<" + String.concat ", " ls + ">"
+
+                if ls.IsEmpty then None
+                else Some(obj [ "position", pos (h.hline - 1) eq; "label", str (" / " + text); "kind", num 1 ])
+            | _ -> None)
+
+    arr (types @ effects)
 
 /// Top-level declarations, with union cases and members as children.
 let private symbols (path: string) : JsonNode =
@@ -398,6 +427,7 @@ let private symbols (path: string) : JsonNode =
             | _ -> [ sym name 23 ln memberSyms ]
         | TypeExt(name, _, ms) -> [ sym (name + " (extension)") 5 ln (ms |> List.map (fun m -> sym m.name 6 m.mline [])) ]
         | Trait(name, _, _) -> [ sym name 11 ln [] ]
+        | Effect(name, _, ops) -> [ sym name 11 ln (ops |> List.map (fun (op, _) -> sym op 12 ln [])) ]
         | Impl(tr, STName(t, _), _) -> [ sym (sprintf "impl %s<%s>" tr t) 5 ln [] ]
         | Derive(name, _) -> [ sym ("derive " + name) 12 ln [] ]
         | Attrs(_, d)

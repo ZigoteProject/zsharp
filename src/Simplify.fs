@@ -82,6 +82,8 @@ let private rename (m: Map<string, string>) (fresh': bool) (e: CExpr) : CExpr =
                 | CMatch(s, cases) -> CMatch(go s, cases |> List.map (fun (p, g, b) -> renamePat rn p, Option.map go g, go b))
                 | CJoin(j, ps, b, r) -> CJoin(rn j, pars ps, go b, go r)
                 | CJump(j, args) -> CJump(rn j, List.map go args)
+                | CHandle(l, b, cls, (r, rt), rb) ->
+                    CHandle(l, go b, cls |> List.map (fun (op, ps, (k, kt), c) -> op, pars ps, (rn k, kt), go c), (rn r, rt), go rb)
                 | k -> mapChildren go k
 
             { e with k = k }

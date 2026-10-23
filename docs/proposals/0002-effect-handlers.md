@@ -2,15 +2,15 @@
 
 | | |
 |---|---|
-| **Status** | Approved in principle |
+| **Status** | Implemented (phase 10) |
 | **Decided at** | the phase 6 gate ([the spike report](../reports/effects-spike.md)): CPS for `Task` then, effects in phase 10. the third design review ([ROADMAP](../../ROADMAP.md#third-design-review-)) settled the open questions: no named handler instances until a program needs them, rows after the result type as written here, polymorphic operations allowed, interrupt handlers with empty rows, `Task` on `Async` by phase 10's measurement |
 | **Builds** | phase 10 ([ROADMAP](../../ROADMAP.md#phase-10-effect-handlers-v3)) |
 | **Rests on** | decisions 21 (one cold `Task`), 23 (effect handlers: one-shot, evidence passing), 36 (evaluation order), 47 (`share<F>`) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §6.1](../../DESIGN.md#61-effect-handlers-planned-phase-10-v3) |
 | **Related** | [0017 iteration](0017-iteration.md) (`Seq` implements it), [0008 threads](0008-threads.md) (handlers are per thread) |
 
 - [x] Approved in principle
-- [ ] Discussion
-- [ ] Implementation
+- [x] Discussion
+- [x] Implementation
 
 ## Summary
 
@@ -202,3 +202,12 @@ None.
 ## History
 
 - **2026-10-22:** drafted from DESIGN §6.1, the phase 6 spike and Koka's design.
+- **2026-10-23:** built in phase 10 ([ROADMAP](../../ROADMAP.md#phase-10-effect-handlers-)). What changed on the way:
+  - **A function's effects are on its last arrow**, in inferred types and annotations: giving a function its first arguments performs nothing (`'a -> 'b -> 'c / 'e`).
+  - **Clauses by path, not by clause:** each path of a clause that resumes last, or stops without `k`, runs where the operation is performed; only the paths that keep `k` or use its result yield. So `Seq.take`'s clause (resume, or stop at the n-th) captures nothing, an exception's handler unwinds without capturing, and an `Async` handler resumes a ready task in place.
+  - **Loops** with calls that may yield run from a driver (a `while` loop calling a function per round), so no stack grows with their rounds, at `-O0` too.
+  - **Clauses may assign the mutable variables** of the function the handle is in (as in the summary's example); those variables become ref cells there.
+  - **An export's whole type is effect-free**, and `for x in s` over a `Seq` is a handle whose clause is the body.
+  - **`Task` stays on phase 9's state machines**, by the measurement (decision 72): an `Async` effect allocates 7 objects per wait that suspends, `task { }` none.
+  - **Not yet:** a generator pipeline isn't one loop (track S's item 9), and an operation's own type variable may appear in its result only (`await : Task<'a> -> 'a` would need a clause per instance).
+  - **Syntax:** Z# has no `a; b` on one line, so the examples' clauses are written over lines.

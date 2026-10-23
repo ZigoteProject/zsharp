@@ -353,3 +353,8 @@ module Task =
             |> ignore
 
             finish ())))
+
+  /// `return! t` at the end of a task's body: `t` runs with the task's cancellation, and its
+  /// result goes to what waits for the task, which is done. So a task that loops by `return!`
+  /// keeps one state machine, not one per round.
+  let handOff (t: Task<'a>) (c: Cancel) (k: 'a -> unit) = runIn t c k

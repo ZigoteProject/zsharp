@@ -46,6 +46,8 @@ let private copy (fresh: string -> string) (m: Map<string, string>) (e: CExpr) :
                 | CAssign(x, v) -> CAssign(rn x, go v)
                 | CArraySet(x, i, v) -> CArraySet(rn x, go i, go v)
                 | CMatch(s, cases) -> CMatch(go s, cases |> List.map (fun (p, g, b) -> renamePat rn p, Option.map go g, go b))
+                | CHandle(l, b, cls, (r, rt), rb) ->
+                    CHandle(l, go b, cls |> List.map (fun (op, ps, (k, kt), c) -> op, pars ps, (rn k, kt), go c), (rn r, rt), go rb)
                 | k -> mapChildren go k
 
             { e with k = k }
@@ -56,39 +58,53 @@ let private copy (fresh: string -> string) (m: Map<string, string>) (e: CExpr) :
 /// `let add x = fun y -> x + y` has two parameters and `add 1 2` is one call (the closure it
 /// returned only held x: nothing runs at another time). A lambda returning a lambda merges
 /// the same way. Functions called from outside (main, tests, C exports) keep their signatures.
+/// A function with effects keeps its own parameters: its call is where it performs them.
 let uncurry (fixedNames: Set<string>) (funs: MFun list) : MFun list =
     let rec lambda (e: CExpr) =
         match e.k with
-        | CLam(ps, b) -> Some(ps, b)
+        | CLam(ps, b) -> Some(ps, b, e.ty)
         | CLine(_, inner) -> lambda inner
         | _ -> None
 
-    let rec merge (ps: (string * Ty) list, body: CExpr) =
+    // the row of a function type's n-th arrow
+    let rec rowAt n (t: Ty) =
+        match prune t with
+        | TFun(_, r, row) -> if n <= 1 then row else rowAt (n - 1) r
+        | _ -> rowEmpty
+
+    // the parameters and body after merging, and the row of the body
+    let rec merge (ps: (string * Ty) list, body: CExpr, row: Ty) =
         match lambda body with
-        | Some(more, b) -> merge (ps @ more, b)
-        | None -> ps, body
+        | Some(more, b, t) when isRowEmpty row -> merge (ps @ more, b, rowAt more.Length t)
+        | _ -> ps, body, row
 
-    let rec go (e: CExpr) : CExpr =
-        let k =
-            match mapChildren go e.k with
-            | CLam(ps, b) -> CLam(merge (ps, b))
-            | CLetFun(n, r, ps, b, rest) ->
-                let ps, b = merge (ps, b)
-                CLetFun(n, r, ps, b, rest)
-            | CLetRec(fs, rest) -> CLetRec(fs |> List.map (fun (n, ps, b) -> (let ps, b = merge (ps, b) in n, ps, b)), rest)
-            | k -> k
+    let go (f: MFun) =
+        let localTypes = lazy (localTypesIn f.body)
+        let rowOf (n: string) (arity: int) = match localTypes.Force().TryGetValue n with | true, t -> rowAt arity t | _ -> rowEmpty
 
-        { e with k = k }
+        let rec go (e: CExpr) : CExpr =
+            let k =
+                match mapChildren go e.k with
+                | CLam(ps, b) -> (let ps, b, _ = merge (ps, b, rowAt ps.Length e.ty) in CLam(ps, b))
+                | CLetFun(n, r, ps, b, rest) ->
+                    let ps, b, _ = merge (ps, b, rowOf n ps.Length)
+                    CLetFun(n, r, ps, b, rest)
+                | CLetRec(fs, rest) -> CLetRec(fs |> List.map (fun (n, ps, b) -> (let ps, b, _ = merge (ps, b, rowOf n ps.Length) in n, ps, b)), rest)
+                | k -> k
+
+            { e with k = k }
+
+        go f.body
 
     funs
     |> List.map (fun f ->
-        let body = go f.body
+        let body = go f
 
         if f.pars.IsEmpty || fixedNames.Contains f.name then
             { f with body = body }
         else
-            let ps, b = merge (f.pars, body)
-            { f with pars = ps; ret = b.ty; body = b })
+            let ps, b, row = merge (f.pars, body, f.row)
+            { f with pars = ps; ret = b.ty; row = row; body = b })
 
 /// Functions never inlined into others: [<Target>] and [<Multiversion>] ones, whose code is for
 /// CPU features their callers may not have (the driver sets it).

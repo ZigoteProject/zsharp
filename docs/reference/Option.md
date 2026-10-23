@@ -26,7 +26,7 @@ Whether the option is `None`.
 ### `Option.map`
 
 ```zsharp
-Option.map : ('a -> 'b) -> option<'a> -> option<'b>
+Option.map : ('a -> 'b / 'e) -> option<'a> -> option<'b> / 'e
 ```
 
 Applies `f` to the value of `Some`; `None` stays `None`.
@@ -34,7 +34,7 @@ Applies `f` to the value of `Some`; `None` stays `None`.
 ### `Option.bind`
 
 ```zsharp
-Option.bind : ('a -> option<'b>) -> option<'a> -> option<'b>
+Option.bind : ('a -> option<'b> / 'e) -> option<'a> -> option<'b> / 'e
 ```
 
 Applies `f`, which itself returns an option, to the value of `Some`.
@@ -90,7 +90,7 @@ The option itself if it is `Some`, otherwise `other`.
 ### `Option.iter`
 
 ```zsharp
-Option.iter : ('a -> unit) -> option<'a> -> unit
+Option.iter : ('a -> unit / 'e) -> option<'a> -> unit / 'e
 ```
 
 Calls `f` on the value of `Some`; does nothing for `None`.
@@ -106,7 +106,7 @@ Option.toResult : 'a -> option<'b> -> result<'b, 'a>
 ### `Option.Builder.bind`
 
 ```zsharp
-Option.Builder.bind : option<'a> -> ('a -> option<'b>) -> option<'b>
+Option.Builder.bind : option<'a> -> ('a -> option<'b> / 'e) -> option<'b> / 'e
 ```
 
 `let!`: the rest with the value of `Some`, or `None`.
@@ -130,7 +130,7 @@ An `if` without `else`, or a body that ends in a statement: `Some ()`.
 ### `Option.Builder.delay`
 
 ```zsharp
-Option.Builder.delay : (unit -> 'a) -> 'a
+Option.Builder.delay : (unit -> 'a / 'e) -> 'a / 'e
 ```
 
 The body, run now.
@@ -138,7 +138,7 @@ The body, run now.
 ### `Option.Builder.using`
 
 ```zsharp
-Option.Builder.using : 'a -> ('a -> 'b) -> 'b when 'a : Dispose
+Option.Builder.using : 'a -> ('a -> 'b / 'e) -> 'b / 'e when 'a : Dispose
 ```
 
 `use x = e`: the rest with `x`, which is disposed after it.
@@ -146,7 +146,7 @@ Option.Builder.using : 'a -> ('a -> 'b) -> 'b when 'a : Dispose
 ### `Option.Builder.forEach`
 
 ```zsharp
-Option.Builder.forEach : list<'a> -> ('a -> option<unit>) -> option<unit>
+Option.Builder.forEach : list<'a> -> ('a -> option<unit> / 'e) -> option<unit> / 'e
 ```
 
 `for x in xs do`: the body for each element, until one gives `None`.

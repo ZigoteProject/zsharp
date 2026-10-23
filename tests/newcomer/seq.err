@@ -1,1 +1,0 @@
-tests/newcomer/seq.zs:3: error: seq { } comes with effect handlers (phase 10): build a list [ … ] or an array [| … |]

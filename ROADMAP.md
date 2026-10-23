@@ -19,21 +19,21 @@ Rust, Swift and OCaml for the host benchmarks).
  alongside:            E editors, D testing, profiling and debugging, M microcontrollers,
                        T more targets, P type providers, S library, K packages
 
- done: 0–9.6, L, V and the third design review      now: phase 10
+ done: 0–10, L, V and the third design review      now: phase 11
 ```
 
 - **v1 (phases 0–6, L and V):** the complete single-threaded language. It is fast, memory-safe, has C interop, and runs async on one event loop.
 - **v2 (phases 7–9.6, done):** threads and parallelism, SIMD and the final performance work, incremental builds, and what F#, systems and C programmers miss first.
-- **v3 (phase 10+):** effect handlers.
+- **v3 (phase 10, done; 11+):** effect handlers, then the compiler in Z#. The F# compiler as phase 10 left it is tagged `v0.5`: the last compiler written in F#, kept as phase 11's stage 0 (a tag of the repository, not the public release 0.1 below).
 - **v1, v2 and v3 are stages of the language, not release numbers.** The first public release is 0.1 (phase 12); 1.0 is the release that freezes the language and the library's names.
 - **Tracks:** editor tooling (E), testing, profiling and debugging (D), microcontrollers (M), more targets (T), type providers (P), the library (S) and packages (K) run alongside the main line.
 
 ## Where things stand
 
 **Works today:**
-- **Language:** inference (lambdas get their parameter types from the call), records with defaults, unions, exhaustive matching (record, string and character patterns), active patterns, units of measure, traits, `dyn` values, derives, members with named and optional arguments, nested modules with their own fields and traits, closures, generics, custom operators, `char`, multi-line and raw strings, raw pointers in `unsafe`, computation expressions (`option { }`, `result { }`, `task { }`), list and array expressions, `function`, compound assignment (`+=`), `?` on results and options, and generic constants (`Map.empty`).
+- **Language:** inference (lambdas get their parameter types from the call), records with defaults, unions, exhaustive matching (record, string and character patterns), active patterns, units of measure, traits, `dyn` values, derives, members with named and optional arguments, nested modules with their own fields and traits, closures, generics, custom operators, `char`, multi-line and raw strings, raw pointers in `unsafe`, computation expressions (`option { }`, `result { }`, `task { }`), list and array expressions, `function`, compound assignment (`+=`), `?` on results and options, generic constants (`Map.empty`), and effect handlers with inferred, row-polymorphic effect types: generators (`seq { }`), typed exceptions (`Throw`) and handlers of a program's own.
 - **Memory and performance:** Perceus RC with borrowing and reuse, copy-on-write arrays, spans and slices (windows without copies), weak references, arenas, checked arithmetic, a pool allocator under a one-word header, an optimizer that inlines, uncurries, resolves known constructors and fuses pipelines, ThinLTO and PGO. On the host benchmarks it's at C's speed or better, with at most C's peak memory, except `fib` (1.76×: overflow checks, which cost C with `-ftrapv` the same). On compute code it's as fast as C on a Cortex-M.
-- **Library:** a prelude, Core (collections, text, options, results: every target) and Std (console, environment, files, paths, processes, timing, tasks and TCP: targets with an OS), in .NET-style namespaces.
+- **Library:** a prelude, Core (collections, lazy sequences, text, options, results, typed exceptions: every target) and Std (console, environment, files, paths, processes, timing, tasks and TCP: targets with an OS), in .NET-style namespaces.
 - **Concurrency:** `Task` on an event loop per thread, compiled to state machines (a wait allocates nothing), with structured concurrency, cancellation that disposes `use` values (on other threads too, for spawned tasks), timers, TCP sockets, `Task.spawn` to run tasks on every core, and `Task.blocking` for C calls that block.
 - **Parallelism:** a work-stealing thread pool (`Parallel.both`, `for`, `reduce`, `Array.Parallel`) any thread forks onto, with spare workers for jobs waiting in a channel or a mutex; `Atomic`, `Mutex` and `Channel` (capacity 0 is a rendezvous); what crosses threads is checked at compile time (`Share`, `share<F>`), and only shared objects have atomic reference counts.
 - **SIMD:** portable vectors of every number type at 128, 256 and 512 bits (`f32x8`, `u8x16`, …) with masks and shuffles, `[<FastMath>]`, `--cpu`, `[<Target>]` and `[<Multiversion>]`, and x86-64 and aarch64 intrinsics; within 10% of C with intrinsics on both.
@@ -47,21 +47,11 @@ Rust, Swift and OCaml for the host benchmarks).
 3. **Debug info (track D):** lists and other boxed unions aren't shown as gdb values (plain unions are).
 4. **Editor (track E):** no signature help, rename or code actions; the formatter doesn't reflow long lines.
 5. **Targets (track T):** no macOS or Windows builds (and so no kqueue loop yet).
+6. **`use` under effects (track S):** a throw, or a clause that doesn't resume, passes over a `use` without disposing what it bound (it's freed). Item 10 of track S disposes it.
+7. **Generators (track S):** a pipeline of `Seq` functions allocates nothing per element but isn't one loop yet, as a list pipeline is: each stage is an indirect call per element (4.8× a fused list pipeline's time). Item 9 of track S fuses it.
+8. **Cancelling spawned tasks (track S):** a spawned task that's cancelled disposes its `use` values on its own thread, but `Task.run` doesn't wait for that, so it can return first, and the program exit with them still allocated. Under valgrind, `tests/task/cancel.zs` and `echo.sh --threads` lose that race now and then (as they did before phase 10). Item 11 of track S waits for them.
 
 ## Next
-
-### Phase 10: effect handlers (v3)
-**Design:** [proposal 0002](docs/proposals/0002-effect-handlers.md).
-- **Scope:**
-  - `effect` and `handle`, with inferred row-polymorphic effect types.
-  - One-shot resumptions compiled by evidence passing.
-  - The C-callback rule.
-  - Generators (`seq { }`) and typed exceptions.
-- **Exit tests:**
-  - A generator pipeline and a typed-exception example.
-  - Pure functions compile to identical IR before and after this phase.
-  - A C callback that performs an effect is a compile error naming the effect (the C-callback rule).
-  - If `Task` moves onto an `Async` effect, its benchmarks and the echo soak don't regress.
 
 ### Phase 11: self-hosting
 The compiler, rewritten in Z#, compiles itself, and the second-generation build is
@@ -99,7 +89,7 @@ the same in F#; over 1.5×, 0.1 ships the .NET compiler and the rewrite follows 
   - **Serialization by derive:** `Snapshot.fs` writes 1,200 lines by hand, and a new case is a failing test until it gets its place. A `Binary` derive (DESIGN §3.1) generates it from the types instead, so it can't fall behind, and the compiler is the derive's first big user.
   - **Checking and lowering apart:** `Typer` infers types and lowers to Core in one 3,600-line pass. Inference produces a typed tree, and lowering is a pass of its own, which the LSP doesn't need to run.
   - **IR checks between passes:** in test builds, each pass's output is checked: types match, every owned variable is consumed once on every path (Perceus's invariant), no type variables after monomorphization. A pass's bug fails where it's made, not as a crash in the binary.
-- **Bootstrap:** the F# compiler stays the stage-0 compiler until the Z# one passes `./test.sh` and builds itself byte-identically. After that the F# one is deleted, and a compiler is built by the previous release's binary, as Go and Rust are; `./dev` downloads it. Building from no binary at all goes through that release's chain, which is documented, not kept working.
+- **Bootstrap:** the F# compiler (tagged `v0.5` at the end of phase 10) stays the stage-0 compiler until the Z# one passes `./test.sh` and builds itself byte-identically. After that the F# one is deleted, and a compiler is built by the previous release's binary, as Go and Rust are; `./dev` downloads it. Building from no binary at all goes through that release's chain, which is documented, not kept working.
 
 ### Phase 12: release 0.1
 The first public release: the language works for people other than its author, in one niche
@@ -292,7 +282,7 @@ DESIGN §9's layers.
   - **A package (track K):** formats and protocols with many reasonable designs, such as HTTP, regex, argument parsing, TLS and databases.
 - **Each addition:** `///` docs, its reference page, a test, and for Core, a microcontroller build.
 - **Next:**
-  1. **Iteration:** `for x in` works on lists and arrays only. A trait would make it work on `Map`, `Set`, `HashMap`, `Buffer`, `span` and user types. It iterates internally (a `forEach` that can stop early), as CE `for` already does. **Design:** [proposal 0017](docs/proposals/0017-iteration.md), approved at the third design review (decision 57). Lazy `Seq` waits for phase 10's `seq { }`.
+  1. **Iteration:** `for x in` works on lists, arrays, spans, strings and `Seq` (phase 10: a handle whose clause is the body). A trait would make it work on `Map`, `Set`, `HashMap` and user types. It iterates internally (a `forEach` that can stop early), as CE `for` already does. **Design:** [proposal 0017](docs/proposals/0017-iteration.md), approved at the third design review (decision 57); `Seq`'s impl handles `Yield`.
   2. **Collections:** a mutable `HashSet`, and `Buffer`'s missing functions (push, pop, clear), which the compiler's maps and growing arrays need. *After phase 11:* the rest of F#'s `List`/`Array`/`Map`/`Set` (`groupBy`, `countBy`, `chunkBySize`, `windowed`, `pairwise`, `scan`, `foldBack`, `tryFindIndex`, `Array.binarySearch`, `Map.change`, `Set.isSubset`, …), and `Queue`, `Stack` and `PriorityQueue`.
   3. **Numbers:**
      - **Parsing:** `Float.parse` and `Int.parse` in a radix, returning an `option`; the compiler's lexer and `import c` need them.
@@ -312,6 +302,9 @@ DESIGN §9's layers.
      - **Files and directories:** `readAllBytes`, `File.exists`, `Directory.exists`, recursive listing, copy, move and temporary files.
      - **Processes:** `Process.start` with pipes, an exit code and an environment, awaitable from a task.
   8. **Net:** *(after phase 11)* UDP, and name lookup through `Task.blocking getaddrinfo`. TLS and HTTP are packages.
+  9. **Generators as one loop:** *(after phase 11)* a `Seq` pipeline compiled as a fused list pipeline is. Simplify floats `let`s and resolves the match on a `Seq` built in the same function, so a stage's handle encloses the generator's code, and Evidence calls a clause that resumes last right where the handle it's in is known (its frame is the one just made) instead of through the frame. Pure code stays as it is (phase 10's exit test).
+  10. **`use` under effects:** a stop (a throw, a generator a consumer stopped) runs the disposals of the `use`s it passes over, newest first, as a task's cancellation does: Evidence gives a function that has a `use` open at a call that may yield a stop branch that disposes, instead of only returning.
+  11. **Spawned tasks' cancellation, waited for:** `Task.run` closes its loop once each spawned task it cancelled has said it's done (its token, `zs_loop_fulfill`), so their `use` values are disposed before it returns, as `tests/task/cancel.zs` says. A runtime change: the loop waits for its tokens still out.
 - **Freeze at 1.0:** a review checks every name against .NET and F#. After it, renaming something takes a `[<Deprecated "use X">]` warning for one release.
 - **Exit tests:**
   - *After phase 11:* ten Advent of Code puzzles written with only the prelude, Core and Std, with no helper that F#'s library already has.
@@ -681,3 +674,20 @@ Before phase 10, with phases 9–9.6 built:
 **Exit tests:**
 - `tests/newcomer/`: 34 programs, each with its expected error, checked by `./test.sh`.
 - DESIGN §13: decisions 56–71 record each feature kept or cut, with the reason.
+
+### Phase 10: effect handlers ✅
+**Design:** [proposal 0002](docs/proposals/0002-effect-handlers.md); the guide's [chapter 16](docs/guide/16-effects.md); the measurements in [the report](docs/reports/effects.md).
+- **Effect types:** `effect` declarations and `handle … with`, with rows of effects after a function's result (`a -> b / E`, `/ <E, F | 'e>`, `/ <>`), Leijen's scoped labels. Inferred and row-polymorphic: the library's higher-order functions (`List.iter : ('a -> unit / 'e) -> list<'a> -> unit / 'e`) carry their arguments' effects with no signature rewritten. A function's effects are on its last parameter's arrow; a row ending a top-level function's own is closed when it's generalized and opened where it's referenced. Hover shows rows, and an inlay hint a function's inferred effects before its `=`.
+- **Empty rows where no handler can be**, each an error naming the effect: `main`, a top-level value's initializer, a `task { }` body, an `[<Export>]` and a `callback<F>` (the C-callback rule), a `share<F>` and a trait's method.
+- **Compilation** (the Evidence pass, after Simplify): evidence passing with yield bubbling. A function with effects takes a frame per effect; a clause's path that resumes last, or stops without the resumption, runs where the operation is performed; any other path yields, each function on the way making the rest of itself a closure. A loop with calls that may yield runs its rounds from a driver, so no stack grows with them at `-O0` either. The yield state is a thread-local (`zs_yield`; a global on bare metal) that a program with effects defines itself, so the runtime is unchanged. Resumptions are one-shot (a second call panics).
+- **The library:** the prelude's `Yield` and `Throw` effects; `Throw.catch`, `recover`, `ofResult` and `ofOption`; `seq { }` (`yield` anywhere in it, `yield!`) and the `Seq` module (`map`, `filter`, `take`, `skip`, `takeWhile`, `collect`, `append`, `unfold`, `fold`, `sum`, `toList`, `exists`, `tryFind`, …); `for x in s` over a `Seq`.
+- **The `Task` measurement** (`bench/effects/async.zs`): `Task` over an `Async` effect allocates 7 objects per wait that suspends (the frames waiting, the resumption) and takes 61 ms for a million rounds of a ready wait and a suspending one; `task { }` allocates none per wait and takes 24 ms. So `Task` stays on phase 9's state machines (decision 72), and the echo soak and `tests/task/awaits.zs` are as they were.
+- **Generators** (`bench/effects/seq.zs`): a million elements through `filter`, `map` and `sum` allocate 11 objects in all (none per element) in 2.96 ms; the same over a list, fused into one loop, 0.62 ms. Fusing generator pipelines is track S's item 9.
+- **The benchmarks** (host, SIMD, parallel, microcontrollers) measure the same binaries as before: a program without effects compiles to the binary the compiler made before the phase. Compile time: checking a module 2–9% longer, a rebuild 1–4% ([the report](docs/reports/effects.md)).
+- **Found by the release's soak:** since phase 9's state machines, a `return!` that ends a task waited for the task it names, so each round kept a state machine: the echo server, whose connections loop by `return!` (as `Tcp`'s own loops do), grew 170 MB a minute. `return!` last now gives that task what waits for this one (`Task.handOff`, DESIGN §6), as phase 6's builder did: a million rounds peak at 2 MB, not 252. `tests/task/awaits.zs` checks 20,000 rounds of 8 KB state machines in steady memory (165 MB before). The soak: 33.1 million round trips in the hour, none failed, and the server's memory the same 26,428 KB at every minute.
+- **Editors:** the grammar has `effect`, `handle` and rows (its generated parser grew from 8.4 to 9.2 MB), and the Zed extension pins it. Hover on an operation shows its type and goes to its declaration; a clause's operation is a reference to it.
+- **Exit tests:**
+  - **A generator pipeline and a typed-exception example:** `tests/effects/generators.zs` (`evens 100 |> Seq.map … |> Seq.take 3 |> Seq.toList` is `[4; 16; 36]`; infinite sequences, `yield!`, a recursive generator, a million elements) and `tests/effects/exceptions.zs` (a throw from inside loops and local functions, caught into a `result`), with `tests/effects/handlers.zs` (state, collecting, nested handlers, resumptions kept for later, a clause performing an outer effect, ten million rounds through a handler), `modules.zs` (effects across modules), `corners.zs` (an effect in a member, in a record field's type, through a partial application, a handle at every level of a recursion) and `oneshot.zs`. All pass under valgrind, in `-g` builds and on aarch64; `tests/mcu/effects.zs` runs on a Cortex-M0+.
+  - **Pure functions compile to identical IR:** all 106 programs without effects (the tests', the benchmarks and the examples) compile to byte-identical LLVM IR, debug binaries and release binaries before the phase and after it (one test renames a record field named `handle`, now reserved), but for the four that end a task with `return!` (the `return!` fix above): the echo server and client, `tests/task/cancel.zs` and `awaits.zs`.
+  - **The C-callback rule:** a function given to C that performs an effect is an error naming it (`tests/effects/err_callback.zs`), as is one run on another thread (`err_thread.zs`), and `main`'s unhandled effect (`err_unhandled.zs`); also errors for a clause's type, an unknown operation, a declared row, a `seq { }` performing more, and a task's body.
+  - **`Task` on `Async`:** measured, and not moved (above), so its benchmarks are unchanged, and so is the echo soak but for the `return!` fix.

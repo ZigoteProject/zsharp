@@ -130,6 +130,21 @@ type result<'a, 'e> =
   /// Failure, with its error.
   | Error of 'e
 
+/// The elements of a sequence, one at a time: what `yield` in a `seq { }` performs, and what
+/// a `Seq`'s consumer handles (DESIGN §6.1).
+effect Yield<'a> =
+  /// Gives the element `x` to the consumer, which resumes the sequence for the next one (or
+  /// doesn't, when it needs no more).
+  abstract yield : 'a -> unit
+
+/// Typed exceptions: a function that may fail says so in its type (`int / Throw<string>`), and
+/// `Throw.catch` turns the failure back into a `result` where it's handled. A boundary between
+/// modules returns `result` instead, as it always has.
+effect Throw<'e> =
+  /// Stops what was running with the error `e`: nothing after it runs, and the handler's clause
+  /// gives the result.
+  abstract throw : 'e -> 'a
+
 /// Returns its argument unchanged.
 let id x = x
 

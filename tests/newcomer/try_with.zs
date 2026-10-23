@@ -1,4 +1,4 @@
-// F#: try/with; Z# has no exceptions, so errors are results to match on
+// F#: try/with; Z#'s errors are results to match on, or Throw effects caught into results
 let main () =
   try
     String.parseInt "x"
