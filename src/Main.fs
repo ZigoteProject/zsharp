@@ -814,6 +814,22 @@ let private run (argv: string[]) =
         | CompileErrorPos(l, c, m) ->
             printError f l c m
             1
+    | [ "check-time"; src ] ->
+        // zs check-time file: the milliseconds checking the program takes, the library with it
+        // (the best of ten runs after one for the JIT; run with ZS_NO_CACHE=1), against
+        // compiler/'s checker (0020's criterion 2, its second half)
+        let run () = Driver.checkProgram false src true true |> ignore
+        run ()
+
+        let best =
+            [ for _ in 1..10 ->
+                  let w = Stopwatch.StartNew()
+                  run ()
+                  w.Elapsed.TotalMilliseconds ]
+            |> List.min
+
+        printfn "%s: %.1f ms" src best
+        0
     | "parse-time" :: files ->
         // zs parse-time files…: the milliseconds lexing and parsing them takes (the best of ten
         // runs after one for the JIT), against compiler/'s parser (0020's criterion 2)

@@ -350,8 +350,8 @@ let lower (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (borr
                 // a jump to a join point that builds a cell alike passes the token on, unless
                 // the jump passes another token already
                 let free' =
-                    match (List.last args).k with
-                    | CPrim("token.null", _) -> true
+                    match List.tryLast args with
+                    | Some { k = CPrim("token.null", _) } -> true
                     | _ -> false
 
                 match joinTok.TryGetValue j with
@@ -934,8 +934,15 @@ let lower (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (borr
         { f with body = rc owned lent (moves f.body) }
 
     // each function on its own, on every core
+    // a compiler bug names the function it's in
+    let named (f: MFun) =
+        try
+            rcFun f
+        with e when not (e :? Syntax.CompileError) ->
+            failwithf "Rc, in %s: %s" f.name (e.ToString())
+
     try
-        funs |> Array.ofList |> Array.Parallel.map rcFun |> List.ofArray
+        funs |> Array.ofList |> Array.Parallel.map named |> List.ofArray
     with :? System.AggregateException as e ->
         raise e.InnerExceptions[0]
 

@@ -217,6 +217,7 @@ let run (types: Dictionary<string, TypeInfo>) (effects: Dictionary<string, Effec
     // ---- lowering one function
 
     let lowerFun (f: MFun) : MFun =
+        let fname = f.name
         counter.Value.Value <- 0
         let localTypes = localTypesIn f.body
 
@@ -467,7 +468,7 @@ let run (types: Dictionary<string, TypeInfo>) (effects: Dictionary<string, Effec
                             mk (CIf(c', t', f')) t'.ty)))
                 | CMatch(s, cases) ->
                     if cases |> List.exists (fun (_, g, _) -> g |> Option.exists (yields ctx)) then
-                        Syntax.fail 0 "a when guard can't perform an effect: match first, then perform in the case"
+                        Syntax.fail 0 (sprintf "a when guard can't perform an effect: match first, then perform in the case (in %s)" (Core.baseFunName fname))
 
                     lower ctx s (Then(fun ctx s' ->
                         withJoin ctx k (evTy e.ty) (fun ctx k ->

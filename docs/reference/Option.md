@@ -73,6 +73,14 @@ Option.isNone : option<'a> -> bool
 
 Whether the option is `None`.
 
+### `Option.exists`
+
+```zsharp
+Option.exists : ('a -> bool) -> option<'a> -> bool
+```
+
+Whether the option holds a value for which `f` is true.
+
 ### `Option.get`
 
 ```zsharp

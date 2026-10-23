@@ -1885,8 +1885,8 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
             // a generic constant (Map.empty) shows its scheme, as F# does: an instance of its
             // own, not the one this use settles
             let shown =
-                match env.TryFind x, resolveName x with
-                | None, Some q when consts.ContainsKey q ->
+                match (if env.ContainsKey x then None else resolveName x) with
+                | Some q when consts.ContainsKey q ->
                     let own = value' Map.empty depth q
 
                     match schemed own.ty with
@@ -3211,8 +3211,9 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
             x
 
     and value env depth x : CExpr =
-        match env.TryFind x, resolveName x with
-        | None, Some q when q <> x -> value' env depth q
+        // a local shadows the names of modules (it's not resolved: a private one would fail)
+        match (if env.ContainsKey x then None else resolveName x) with
+        | Some q when q <> x -> value' env depth q
         | _ -> value' env depth x
 
     and value' env depth x : CExpr =
@@ -3284,8 +3285,8 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                     | None -> unknown "name" x
 
     and call env depth f args : CExpr =
-        match env.TryFind f, resolveName f with
-        | None, Some q when q <> f -> call' env depth q args
+        match (if env.ContainsKey f then None else resolveName f) with
+        | Some q when q <> f -> call' env depth q args
         | _ -> call' env depth f args
 
     and call' env depth f args : CExpr =
@@ -4514,9 +4515,34 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
             (ctor || conversion f || freshBuffer) && List.forall isConstant args
         | _ -> false
 
+    /// A written type with its names resolved where it is written (a constant's annotation).
+    let rec qualifyType (st: SType) =
+        match st with
+        | STName("dyn", [ STName(tr, []) ]) -> STName("dyn", [ STName(resolveWith traitNames.Contains tr |> Option.defaultValue tr, []) ])
+        | STName(n, args) ->
+            let n =
+                match resolveWith aliases.ContainsKey n with
+                | Some q when not (types.ContainsKey q) -> q
+                | _ ->
+                    let c =
+                        match typeAliases.TryGetValue n with
+                        | true, c -> c
+                        | _ -> n
+
+                    resolveWith (fun q -> prims.Contains q || builtinCons.ContainsKey q || types.ContainsKey q) c
+                    |> Option.defaultValue n
+
+            STName(n, List.map qualifyType args)
+        | STTuple ts -> STTuple(List.map qualifyType ts)
+        | STFun(a, b) -> STFun(qualifyType a, qualifyType b)
+        | STRow(t, ls, tail) -> STRow(qualifyType t, List.map qualifyType ls, tail)
+        | STVar _
+        | STMeasure _ -> st
+
     /// The expression with every name resolved where it is written (for inlining elsewhere).
     let rec qualifyNames (e: Expr) =
         match e with
+        | Typed(a, t) -> Typed(qualifyNames a, qualifyType t)
         | Var x ->
             match resolveName x with
             | Some q -> Var q

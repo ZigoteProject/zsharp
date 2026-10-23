@@ -1076,6 +1076,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         | KSym ">" -> advance ()
         | KSym ">>" -> split ">"
         | KSym ">>>" -> split ">>" // list<list<list<int>>>
+        | KSym s when s.Length > 3 && Seq.forall ((=) '>') s -> split (s.Substring 1) // deeper still
         | _ -> err "'>'"
 
     /// A unit of measure: m, m/s^2, kg m/s^2, 'u, 1 (inside <...> after a numeric type).
@@ -2418,7 +2419,13 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                     finish ()
                 else
                     startAt at "Field"
-                    e <- mark pos.Value (Field(e, ident ()))
+                    let ti = pos.Value
+
+                    // after a dot, a name that reads as qualified (x.Value.index: Value.index is
+                    // one token, as it starts with a capital) is one field after another
+                    for f in (ident ()).Split '.' do
+                        e <- mark ti (Field(e, f))
+
                     finish ()
 
         e

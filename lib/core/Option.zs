@@ -29,6 +29,12 @@ let isSome o =
 /// Whether the option is `None`.
 let isNone o = not (Option.isSome o)
 
+/// Whether the option holds a value for which `f` is true.
+let exists f o =
+  match o with
+  | Some x -> f x
+  | None -> false
+
 /// The value of `Some`. Panics on `None`; prefer a match or `Option.defaultValue`.
 let get o =
   match o with

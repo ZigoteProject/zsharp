@@ -454,12 +454,22 @@ let private isNumericName (p: P) (i: int) : bool =
   | "c_int" -> true
   | _ -> false
 
-// one `>` closing a type argument list, from a `>>` or a `>>>` too
+// whether token i is an operator of `>`s only, four or more (closing nested type arguments)
+let private isGtRun (p: P) (i: int) : bool =
+  let t = p.toks.[i]
+  let mutable all = t.kind = Op && t.length > 3
+  for j in t.offset .. t.offset + t.length - 1 do
+    if String.byte p.s j <> u8 62 then
+      all <- false
+  all
+
+// one `>` closing a type argument list, from a `>>`, a `>>>` or a longer run too
 let private closeAngle (p: P) =
   match peek p with
   | Gt -> advance p
   | Compose -> split p Gt
   | ShiftRight -> split p Compose
+  | Op when isGtRun p p.pos.Value -> split p (if p.toks.[p.pos.Value].length = 4 then ShiftRight else Op)
   | _ ->
     err p "'>'"
     missing p Gt
@@ -1953,7 +1963,10 @@ and private atom (p: P) : Ast.Expr =
       else
         startAt p at Tree.Field
         let fi = p.pos.Value
-        e <- ex (Ast.Field(e, name p)) fi
+        // after a dot, a name that reads as qualified (x.Value.index: Value.index is one token, as
+        // it starts with a capital) is one field after another
+        for f in String.split "." (name p) do
+          e <- ex (Ast.Field(e, f)) fi
         finish p
     else
       go <- false

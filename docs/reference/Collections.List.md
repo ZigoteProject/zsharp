@@ -169,6 +169,39 @@ List.tryFind : ('a -> bool) -> list<'a> -> option<'a>
 
 The first element for which `f` is true, or `None`.
 
+### `List.tryFindIndex`
+
+```zsharp
+List.tryFindIndex : ('a -> bool) -> list<'a> -> option<'b> when 'b : Add
+```
+
+The index of the first element for which `f` is true, or `None`.
+
+### `List.findIndex`
+
+```zsharp
+List.findIndex : ('a -> bool) -> list<'a> -> 'b when 'b : Add
+```
+
+The index of the first element for which `f` is true. Panics if there is none; see
+`List.tryFindIndex`.
+
+### `List.find`
+
+```zsharp
+List.find : ('a -> bool) -> list<'a> -> 'a
+```
+
+The first element for which `f` is true. Panics if there is none; see `List.tryFind`.
+
+### `List.tryPick`
+
+```zsharp
+List.tryPick : ('a -> option<'b>) -> list<'a> -> option<'b>
+```
+
+The first `Some` result of `f` on the elements, in order, or `None`.
+
 ### `List.sum`
 
 ```zsharp
@@ -185,6 +218,14 @@ List.init : 'a -> ('a -> 'b) -> list<'b> when 'a : Num, 'a : Ord
 
 A list of `n` elements: `[f 0; f 1; …; f (n - 1)]`.
 
+### `List.replicate`
+
+```zsharp
+List.replicate : 'a -> 'b -> list<'b> when 'a : Num, 'a : Ord
+```
+
+A list of `n` copies of `x`.
+
 ### `List.mapi`
 
 ```zsharp
@@ -192,6 +233,14 @@ List.mapi : ('a -> 'b -> 'c) -> list<'b> -> list<'c> when 'a : Add
 ```
 
 Like `List.map`, with each element's index: `f i x`.
+
+### `List.iteri`
+
+```zsharp
+List.iteri : ('a -> 'b -> unit) -> list<'b> -> unit when 'a : Add
+```
+
+Applies `f` to each element with its index, in order: `f i x`.
 
 ### `List.indexed`
 
@@ -233,6 +282,22 @@ List.zip : list<'a> -> list<'b> -> list<'a * 'b>
 
 Pairs up the elements of two lists; stops at the end of the shorter one.
 
+### `List.map2`
+
+```zsharp
+List.map2 : ('a -> 'b -> 'c) -> list<'a> -> list<'b> -> list<'c>
+```
+
+Applies `f` to the elements of two lists pairwise. Panics if their lengths differ.
+
+### `List.iter2`
+
+```zsharp
+List.iter2 : ('a -> 'b -> unit) -> list<'a> -> list<'b> -> unit
+```
+
+Applies `f` to the elements of two lists pairwise, in order. Panics if their lengths differ.
+
 ### `List.unzip`
 
 ```zsharp
@@ -257,6 +322,14 @@ List.last : list<'a> -> 'a
 
 The last element. Panics on an empty list.
 
+### `List.tryLast`
+
+```zsharp
+List.tryLast : list<'a> -> option<'a>
+```
+
+The last element, or `None` for an empty list.
+
 ### `List.item`
 
 ```zsharp
@@ -265,6 +338,22 @@ List.item : 'a -> list<'b> -> 'b when 'a : Eq, 'a : Num
 
 The element at index `n` (from 0). Panics if the list is too short. O(n).
 
+### `List.tryItem`
+
+```zsharp
+List.tryItem : 'a -> list<'b> -> option<'b> when 'a : Eq, 'a : Num, 'a : Ord
+```
+
+The element at index `n` (from 0), or `None` if the list is too short.
+
+### `List.removeAt`
+
+```zsharp
+List.removeAt : 'a -> list<'b> -> list<'b> when 'a : Eq, 'a : Num
+```
+
+The list without the element at index `n` (from 0). Panics if the list is too short.
+
 ### `List.take`
 
 ```zsharp
@@ -272,6 +361,14 @@ List.take : 'a -> list<'b> -> list<'b> when 'a : Num, 'a : Ord
 ```
 
 The first `n` elements (fewer if the list is shorter).
+
+### `List.takeWhile`
+
+```zsharp
+List.takeWhile : ('a -> bool) -> list<'a> -> list<'a>
+```
+
+The elements before the first one for which `f` is false.
 
 ### `List.skip`
 
