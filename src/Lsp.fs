@@ -436,6 +436,7 @@ let private symbols (path: string) : JsonNode =
             | UnionTy cases when not cases.IsEmpty -> [ sym name 10 ln ((cases |> List.map (fun (c, _) -> sym c 22 ln [])) @ memberSyms) ]
             | _ -> [ sym name 23 ln memberSyms ]
         | TypeExt(name, _, ms) -> [ sym (name + " (extension)") 5 ln (ms |> List.map (fun m -> sym m.name 6 m.mline [])) ]
+        | TypeAlias(name, _, _) -> [ sym name 26 ln [] ] // 26: type parameter, the nearest to an alias
         | Trait(name, _, _) -> [ sym name 11 ln [] ]
         | Effect(name, _, ops) -> [ sym name 11 ln (ops |> List.map (fun (op, _) -> sym op 12 ln [])) ]
         | Impl(tr, STName(t, _), _) -> [ sym (sprintf "impl %s<%s>" tr t) 5 ln [] ]

@@ -138,6 +138,7 @@ true true
 **What a string is:** an immutable sequence of UTF-8 bytes. `+` joins two strings.
 
 **Interpolation:** `$"..."` evaluates the expressions in braces and inserts their text. Any value with a `Show` impl can go in a hole: numbers, strings, records, unions, lists and options all have one.
+- **Formats and widths,** as in .NET: `{ratio:F2}` (fixed, two decimals), `{n:N0}` (with commas), `{flags:X8}` (hex), `{id:D5}`, `{x:E2}`, `{bits:B8}`; `{name,10}` pads on the left to 10 characters and `{name,-10}` on the right, and `{x,8:F1}` does both. A specifier a number doesn't have is a compile error. A tuple in a hole is written `{(a, b)}`.
 
 **Escapes:** `\n`, `\r`, `\t`, `\0`, `\"`, `\'`, `\\`, and `\u{e9}` for any Unicode character by its hex code.
 - **Over several lines:** a string can span lines, and the line breaks are part of it.
@@ -155,6 +156,7 @@ let main () =
   println $"[{t}] {t.ToUpper()} {t.Contains("World")} {t.Replace("l", "L")}"
   println $"{String.split ", " t} {String.join "-" [ "a"; "b"; "c" ]}"
   println $"{String.parseInt "42"} {String.parseInt "4x2"} {string 3.5}"
+  println $"[{name,-6}] [{3.14159:F2}] [{255:X4}] [{1234567:N0}]"
   0
 ```
 
@@ -165,7 +167,10 @@ tab:	| quote: " | sum: 3
 [Hello, World] HELLO, WORLD true HeLLo, WorLd
 [Hello; World] a-b-c
 Some 42 None 3.5
+[Ada   ] [3.14] [00FF] [1,234,567]
 ```
+
+- **Parsing numbers:** `Int.parse "42"` and `Float.parse "2.5"` give an `option`; the result's type decides the width (`let b: option<u8> = Int.parse s` is `None` above 255), and `Int.parseRadix 16 "ff"` reads another base.
 
 - **Converting to text:** `string x` gives any showable value's text.
 - **Characters:** `char` is one Unicode character (a code point), written `'a'`, `'\n'` or `'\u{e9}'`.

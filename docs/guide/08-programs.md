@@ -163,8 +163,13 @@ src/main.zs .zs notes.md
 ```
 
 **More of Std:**
-- **Directories:** `Directory.list`, `Directory.create` and `Directory.exists`.
-- **Paths:** `Path.combine`, `getFileName`, `getDirectoryName`, `getExtension` and the others work on the text alone; they don't touch the file system.
+- **Readers and writers:** `File.openRead path` gives a `Reader` (`Reader.readLine`, `readBytes`, `readExactly`, `readToEnd`) and `File.openWrite` a `Writer` (`Writer.write`, `writeText`, `flush`); `use` closes one. `Console.openStandardInput ()` and `openStandardOutput ()` give the standard streams as bytes.
+- **Files:** `File.readAllBytes`, `copy`, `move`, `size`, `modifiedAt` (a `DateTime`), and `File.createTemp prefix` for a temporary file.
+- **Directories:** `Directory.list`, `create`, `exists`, `delete`, `listRecursive`, `deleteRecursive`, `createTemp` and `temp ()`.
+- **Paths:** `Path.combine`, `getFileName`, `getDirectoryName`, `getExtension` and the others work on the text alone; `getFullPath` and `getRelativePath` also read the working directory (`Environment.currentDirectory ()`).
+- **Processes with pipes:** `Process.start { program = "clang"; args = [ "-c"; "a.c" ]; stderr = Piped }` gives a `Process` whose piped streams are a `Reader` or a `Writer`, and `Process.wait p` its exit code as a `Task<int>`.
+- **Time:** `DateTime.utcNow ()` is the current moment; `string` prints a `DateTime` in ISO 8601.
+- **Unix sockets:** `Unix.listen path`, `Unix.accept` and `Unix.connect path` are `Tcp`'s calls over a path, for processes on one machine.
 - **The console:** `Console.readLine ()` and `Console.readLines ()` read standard input, and `Console.Error.writeLine` writes to standard error.
 - **Exit codes:** `Environment.exit code` ends the program at once with that code. Returning a number from `main` sets the exit code too.
 - **Processes:** `Process.run` starts the program directly, without a shell, so arguments are passed exactly as given.

@@ -11,3 +11,6 @@ let programName () = Native.arg 0
 /// The environment variable `name`, or `None` when it isn't set.
 let getVariable (name: string) =
   if Native.hasVariable name then Some (Native.getVariable name) else None
+
+/// The working directory, as an absolute path.
+let currentDirectory () = Native.currentDirectory ()

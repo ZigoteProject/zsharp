@@ -10,7 +10,7 @@
 
 - [x] Approved in principle
 - [ ] Discussion
-- [ ] Implementation
+- [ ] Implementation (phase 11's list done; the rest after phase 11)
 
 ## Summary
 

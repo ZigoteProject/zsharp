@@ -109,6 +109,35 @@ let main () =
 [1; 2; 5; 8]
 ```
 
+## Type aliases
+
+`type Name = <a type>` gives a type another name, as F#'s abbreviations do: it's the same type
+wherever it's written, so values pass between the two names freely. An alias can take type
+parameters.
+
+```zsharp
+type Names = list<string>
+
+type Pair<'a> = 'a * 'a
+
+type Handler = int -> int
+
+let swap (p: Pair<int>) : Pair<int> = (snd p, fst p)
+
+let main () =
+  let names: Names = [ "a"; "b" ]
+  let twice: Handler = fun x -> x * 2
+  println $"{List.length names} {swap (1, 2)} {twice 21}"
+  0
+```
+
+```text
+2 (2, 1) 42
+```
+
+- **On its line:** the type after `=` is the alias. A record is `{ … }` and a union's cases have `|` or `of`, so a union of one case without fields is written `type T = | A`.
+- **With units of measure,** an alias names a quantity: `type Duration = i64<ns>` (the library's), and a literal with a unit takes its number type from where it goes, so `let d: Duration = 5<ns>` is an `i64<ns>`.
+
 ## Option and result
 
 There is no null. A value that may be missing is an `option`, `Some x` or `None`, and the

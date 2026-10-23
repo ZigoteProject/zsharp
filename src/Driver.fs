@@ -410,12 +410,12 @@ let libraryDir = runtimeFile "lib"
 /// (core/Collections/List.zs is Collections.List). Core needs no operating system, so every
 /// target has it; Std is for targets that have one.
 let private coreFiles =
-    [ "Option"; "Result"; "Math"; "Int"; "Runtime"; "Mmio"; "Ptr"; "Weak"; "Arena"; "Simd"; "Simd/X86"; "Simd/Arm"; "Collections/List"; "Collections/Span"; "Collections/Array"; "Collections/Buffer"; "Collections/Fixed"
-      "Text/String"; "Text/Char"; "Collections/Map"; "Collections/Set"; "Collections/HashMap"; "Throw"; "Collections/Seq"; "Text/Json" ]
+    [ "Option"; "Result"; "Math"; "Int"; "Float"; "Runtime"; "Mmio"; "Ptr"; "Weak"; "Arena"; "Simd"; "Simd/X86"; "Simd/Arm"; "Collections/List"; "Collections/Span"; "Collections/Array"; "Collections/Buffer"; "Collections/Fixed"
+      "Text/String"; "Text/Char"; "Collections/Map"; "Collections/Set"; "Collections/HashMap"; "Collections/HashSet"; "Throw"; "Collections/Seq"; "Text/Json"; "Time/DateTime" ]
 
 let private stdFiles =
-    [ "Console"; "Environment"; "Threading/Atomic"; "Threading/Mutex"; "Threading/Channel"; "Threading/Task"; "Threading/Parallel"
-      "Collections/Array/Parallel"; "IO/File"; "IO/Directory"; "IO/Path"; "Diagnostics/Process"; "Diagnostics/Stopwatch"; "Net/Tcp" ]
+    [ "IO/Stream"; "Console"; "Environment"; "Threading/Atomic"; "Threading/Mutex"; "Threading/Channel"; "Threading/Task"; "Threading/Parallel"
+      "Collections/Array/Parallel"; "IO/File"; "IO/Directory"; "IO/Path"; "Diagnostics/Process"; "Diagnostics/Stopwatch"; "Net/Tcp"; "Net/Unix"; "Time/Clock" ]
 
 /// The library a file belongs to (the installed one, or lib/ in a checkout of zs): the lib/
 /// directory above it that has prelude.zs and core/.
@@ -1035,6 +1035,8 @@ let private lift (mainPath: string) (isLib: bool) =
     match prog.diagnostics |> List.filter Core.isError with
     | _ :: _ as errors -> Error errors
     | [] ->
+        let prog = Mono.lowered prog
+
         let funs =
             try
                 // a -g build keeps every function whole, so breakpoints on them hit
@@ -1236,6 +1238,7 @@ let private compileUnits (mainPath: string) (cachedObject: string -> string opti
     match prog.diagnostics |> List.filter Core.isError with
     | _ :: _ as errors -> Error errors
     | [] ->
+        let prog = Mono.lowered prog
         Codegen.targets <- prog.targets
         Codegen.optimized <- optLevel () <> "-O0"
         Codegen.cpu <- cpu

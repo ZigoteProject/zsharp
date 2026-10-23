@@ -124,6 +124,24 @@ abstract show : 'a -> string
 
 The value as text.
 
+### `Format`
+
+```zsharp
+trait Format<'a>
+```
+
+Text for a value under a format specifier: what `$"{x:F2}"` calls. Built in for numbers, with
+.NET's standard specifiers: `F2` (fixed, two decimals), `E3`, `G`, `N0` (with commas), `D5`,
+`X8` and `x`, `B8` (`D`, `X` and `B` for integers, `E` and `G` for floats).
+
+#### `Format.format`
+
+```zsharp
+abstract format : 'a -> string -> string
+```
+
+The value as text, shaped by `spec` (`"F2"`, `"X8"`).
+
 ### `Hash`
 
 ```zsharp

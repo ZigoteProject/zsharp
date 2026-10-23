@@ -87,6 +87,11 @@ declare void @zs_set_args(i32, ptr)
 declare i_W @zs_test_index()
 declare void @zs_exit(i_W) noreturn
 declare void @llvm.memcpy.p0.p0.i_W(ptr, ptr, i_W, i1)
+declare void @llvm.memmove.p0.p0.i_W(ptr, ptr, i_W, i1)
+declare zeroext i1 @zs_parse_int(ptr, i64, i1 zeroext, i64, ptr)
+declare zeroext i1 @zs_parse_float(ptr, ptr)
+declare ptr @zs_format_int(i64, i64, i1 zeroext, ptr)
+declare ptr @zs_format_float(double, ptr)
 declare void @zs_panic(ptr) noreturn
 declare void @zs_panic_c(ptr) noreturn
 declare ptr @zs_str_of_lanes(ptr, i_W, i_W)
@@ -156,6 +161,24 @@ declare double @llvm.sqrt.f64(double)
 declare float @llvm.sqrt.f32(float)
 declare ptr @zs_read_line()
 declare i_W @zs_argc()
+declare i64 @zs_clock_realtime()
+declare i_W @zs_file_open(ptr, i_W)
+declare i64 @zs_file_mtime(ptr)
+declare i64 @zs_file_size(ptr)
+declare void @zs_file_touch(ptr)
+declare void @zs_file_copy(ptr, ptr)
+declare void @zs_file_move(ptr, ptr)
+declare ptr @zs_temp_file(ptr)
+declare ptr @zs_temp_dir(ptr)
+declare void @zs_dir_delete(ptr)
+declare zeroext i1 @zs_is_symlink(ptr)
+declare ptr @zs_current_dir()
+declare i_W @zs_process_start(ptr, ptr, ptr, i1 zeroext, ptr, i_W, i_W, i_W)
+declare i_W @zs_process_pipe(i_W)
+declare i_W @zs_process_wait(i_W)
+declare i_W @zs_process_kill(i_W)
+declare i_W @zs_unix_listen(ptr)
+declare i_W @zs_unix_connect(ptr)
 declare ptr @zs_arg(i_W)
 declare zeroext i1 @zs_env_has(ptr)
 declare ptr @zs_env_get(ptr)
@@ -402,6 +425,24 @@ let private runtimePrims =
           "Console.eof", ("zs_eof", "zeroext i1", [])
           "eprintln", ("zs_eprintln", "void", [ "ptr" ])
           "Env.argc", ("zs_argc", "i_W", [])
+          "Clock.realtime", ("zs_clock_realtime", "i64", [])
+          "File.open", ("zs_file_open", "i_W", [ "ptr"; "i_W" ])
+          "File.mtime", ("zs_file_mtime", "i64", [ "ptr" ])
+          "File.size", ("zs_file_size", "i64", [ "ptr" ])
+          "File.touch", ("zs_file_touch", "void", [ "ptr" ])
+          "File.copy", ("zs_file_copy", "void", [ "ptr"; "ptr" ])
+          "File.move", ("zs_file_move", "void", [ "ptr"; "ptr" ])
+          "File.temp", ("zs_temp_file", "ptr", [ "ptr" ])
+          "Dir.temp", ("zs_temp_dir", "ptr", [ "ptr" ])
+          "Dir.delete", ("zs_dir_delete", "void", [ "ptr" ])
+          "File.isSymlink", ("zs_is_symlink", "zeroext i1", [ "ptr" ])
+          "Env.cwd", ("zs_current_dir", "ptr", [  ])
+          "Process.start", ("zs_process_start", "i_W", [ "ptr"; "ptr"; "ptr"; "i1 zeroext"; "ptr"; "i_W"; "i_W"; "i_W" ])
+          "Process.pipe", ("zs_process_pipe", "i_W", [ "i_W" ])
+          "Process.wait", ("zs_process_wait", "i_W", [ "i_W" ])
+          "Process.kill", ("zs_process_kill", "i_W", [ "i_W" ])
+          "Unix.listen", ("zs_unix_listen", "i_W", [ "ptr" ])
+          "Unix.connect", ("zs_unix_connect", "i_W", [ "ptr" ])
           "Env.arg", ("zs_arg", "ptr", [ "i_W" ])
           "Env.has", ("zs_env_has", "zeroext i1", [ "ptr" ])
           "Env.get", ("zs_env_get", "ptr", [ "ptr" ])
@@ -587,6 +628,12 @@ let compile
     let isWin (t: Ty) =
         match prune t with
         | TCon(n, _) -> n = windowType
+        | _ -> false
+
+    /// A Buffer after monomorphization: a ref to Core's bufferType record.
+    let isBuf (t: Ty) =
+        match prune t with
+        | TCon("ref", [ TCon(n, [ _ ]) ]) -> n = bufferType
         | _ -> false
 
     let isFloat t = floats.Contains(tyName t)
@@ -1160,6 +1207,223 @@ let compile
 
     /// @"unique.array<T>"(a): `a` when it holds the only reference, else a copy of it (with
     /// `a`'s reference given up). Copy-on-write for arrays.
+    /// A Buffer's functions that change its length, per element type (Core.bufferDef): push,
+    /// removeLast, truncate, and blit (a memmove that keeps the counts right). The storage's own
+    /// length counts its slots holding a value: a slot past the Buffer's length may still hold
+    /// one (left by removeLast while the storage was shared), dropped when it's written again or
+    /// when the storage is freed.
+    and bufferFn (kind: string) (el: Ty) : string =
+        let name = sprintf "@\"zs.buffer.%s.%s\"" kind (showFull el)
+
+        if generated.Add name then
+            let em = Emitter()
+            let elt = llty el
+            let at = sprintf "{ i_W, i_W, [0 x %s] }" elt
+            let field k = em.Instr(sprintf "getelementptr { i_W, { ptr, ptr, i_W, i_W } }, ptr %%c, i32 0, i32 1, i32 %d" k)
+            let load t p = em.Instr(sprintf "load %s, ptr %s" t p)
+            let lenOf (a: string) = em.Instr(sprintf "getelementptr { i_W, i_W }, ptr %s, i32 0, i32 1" a)
+            let startOf (a: string) = em.Instr(sprintf "getelementptr %s, ptr %s, i32 0, i32 2, i_W 0" at a)
+            let slot (data: string) (i: string) = em.Instr(sprintf "getelementptr %s, ptr %s, i_W %s" elt data i)
+            let arr = TCon("array", [ el ])
+
+            // whether the Buffer's storage is its alone and it windows it from the start: then
+            // its values move, else they're copied
+            let alone (owner: string) (data: string) =
+                let rc = em.Instr(if threaded then sprintf "load atomic i32, ptr %s monotonic, align 4" owner else sprintf "load i32, ptr %s" owner)
+                let one = em.Instr(sprintf "icmp eq i32 %s, 1" rc)
+                em.Instr(sprintf "and i1 %s, %s" one (em.Instr(sprintf "icmp eq ptr %s, %s" (startOf owner) data)))
+
+            // drops the values in slots from to until - 1 (a loop; nothing for plain values)
+            let dropSlots (data: string) (from: string) (until: string) (tag: string) =
+                if heap el then
+                    let i = "%" + em.Fresh "di"
+                    em.Alloca(sprintf "%s = alloca i_W" i)
+                    em.Emit(sprintf "store i_W %s, ptr %s" from i)
+                    em.Emit(sprintf "br label %%%s.cond" tag)
+                    em.Label(tag + ".cond")
+                    let k = load "i_W" i
+                    em.Emit(sprintf "br i1 %s, label %%%s.body, label %%%s.end" (em.Instr(sprintf "icmp slt i_W %s, %s" k until)) tag tag)
+                    em.Label(tag + ".body")
+                    dropValue em el (load elt (slot data k))
+                    em.Emit(sprintf "store i_W %s, ptr %s" (em.Instr(sprintf "add i_W %s, 1" k)) i)
+                    em.Emit(sprintf "br label %%%s.cond" tag)
+                    em.Label(tag + ".end")
+
+            match kind with
+            | "push" ->
+                let lenp, capp = field 2, field 3
+                let len, cap = load "i_W" lenp, load "i_W" capp
+                em.Emit(sprintf "br i1 %s, label %%grow, label %%put" (em.Instr(sprintf "icmp eq i_W %s, %s" len cap)))
+                // no room: storage twice as large (4 at least), the values moved or copied into it
+                em.Label "grow"
+                let twice = em.Instr(sprintf "shl i_W %s, 1" cap)
+                let ncap = em.Instr(sprintf "select i1 %s, i_W 4, i_W %s" (em.Instr(sprintf "icmp ult i_W %s, 4" twice)) twice)
+                let bytes = em.Instr(sprintf "add i_W HDR2, %s" (em.Instr(sprintf "mul i_W %s, %s" ncap (sizeOf em elt))))
+                let fresh = em.Instr(sprintf "call ptr @zs_alloc(i_W %s)" bytes)
+                em.Emit(sprintf "store i32 1, ptr %s" fresh)
+                em.Emit(sprintf "store i_W %s, ptr %s" len (lenOf fresh))
+                let ownerp, datap = field 0, field 1
+                let old, data = load "ptr" ownerp, load "ptr" datap
+                let into = startOf fresh
+                em.Emit(sprintf "call void @llvm.memcpy.p0.p0.i_W(ptr %s, ptr %s, i_W %s, i1 false)" into data (em.Instr(sprintf "mul i_W %s, %s" len (sizeOf em elt))))
+
+                if heap el then
+                    em.Emit(sprintf "br i1 %s, label %%move, label %%copy" (alone old data))
+                    // the old storage gives its values up: its length 0, so freeing it drops none
+                    em.Label "move"
+                    em.Emit(sprintf "store i_W 0, ptr %s" (lenOf old))
+                    em.Emit "br label %release"
+                    em.Label "copy"
+                    let i = "%" + em.Fresh "ci"
+                    em.Alloca(sprintf "%s = alloca i_W" i)
+                    em.Emit(sprintf "store i_W 0, ptr %s" i)
+                    em.Emit "br label %copy.cond"
+                    em.Label "copy.cond"
+                    let k = load "i_W" i
+                    em.Emit(sprintf "br i1 %s, label %%copy.body, label %%release" (em.Instr(sprintf "icmp slt i_W %s, %s" k len)))
+                    em.Label "copy.body"
+                    dupValue em el (load elt (slot into k))
+                    em.Emit(sprintf "store i_W %s, ptr %s" (em.Instr(sprintf "add i_W %s, 1" k)) i)
+                    em.Emit "br label %copy.cond"
+                    em.Label "release"
+                else
+                    em.Emit "br label %release"
+                    em.Label "release"
+
+                dropValue em arr old
+                em.Emit(sprintf "store ptr %s, ptr %s" fresh ownerp)
+                em.Emit(sprintf "store ptr %s, ptr %s" into datap)
+                em.Emit(sprintf "store i_W %s, ptr %s" ncap capp)
+                em.Emit "br label %put"
+                // room: the value in the next slot (a value left there dropped first)
+                em.Label "put"
+                let owner, data = load "ptr" (field 0), load "ptr" (field 1)
+                let hwp = lenOf owner
+                let hw = load "i_W" hwp
+                let sp = slot data len
+
+                if heap el then
+                    em.Emit(sprintf "br i1 %s, label %%stale, label %%store" (em.Instr(sprintf "icmp ult i_W %s, %s" len hw)))
+                    em.Label "stale"
+                    dropValue em el (load elt sp)
+                    em.Emit "br label %store"
+                    em.Label "store"
+
+                em.Emit(sprintf "store %s %%v, ptr %s" elt sp)
+                let next = em.Instr(sprintf "add i_W %s, 1" len)
+                em.Emit(sprintf "store i_W %s, ptr %s" next lenp)
+                em.Emit(sprintf "store i_W %s, ptr %s" (em.Instr(sprintf "select i1 %s, i_W %s, i_W %s" (em.Instr(sprintf "icmp ult i_W %s, %s" hw next)) next hw)) hwp)
+                em.Emit "ret void"
+                helpers.Append(sprintf "define private void %s(ptr %%c, %s %%v) {\n%s}\n\n" name elt em.Body) |> ignore
+            | "removeLast" ->
+                let lenp = field 2
+                let len = load "i_W" lenp
+                em.Emit(sprintf "br i1 %s, label %%empty, label %%take" (em.Instr(sprintf "icmp eq i_W %s, 0" len)))
+                em.Label "empty"
+                panicWith em "Buffer.removeLast of an empty Buffer"
+                em.Label "take"
+                let n = em.Instr(sprintf "sub i_W %s, 1" len)
+                em.Emit(sprintf "store i_W %s, ptr %s" n lenp)
+                let owner, data = load "ptr" (field 0), load "ptr" (field 1)
+                let v = load elt (slot data n)
+                let atStart = em.Instr(sprintf "icmp eq ptr %s, %s" (startOf owner) data)
+
+                if heap el then
+                    em.Emit(sprintf "br i1 %s, label %%move, label %%keep" (alone owner data))
+                    // the value leaves the storage, and so do the values left past it
+                    em.Label "move"
+                    let hwp = lenOf owner
+                    dropSlots data len (load "i_W" hwp) "past"
+                    em.Emit(sprintf "store i_W %s, ptr %s" n hwp)
+                    em.Emit "br label %done"
+                    // shared: the slot keeps its reference, the result has one of its own
+                    em.Label "keep"
+                    dupValue em el v
+                    em.Emit "br label %done"
+                    em.Label "done"
+
+                // a Buffer not at its storage's start keeps no room (pushing on it copies)
+                let capp = field 3
+                em.Emit(sprintf "store i_W %s, ptr %s" (em.Instr(sprintf "select i1 %s, i_W %s, i_W %s" atStart (load "i_W" capp) n)) capp)
+                em.Emit(sprintf "ret %s %s" elt v)
+                helpers.Append(sprintf "define private %s %s(ptr %%c) {\n%s}\n\n" elt name em.Body) |> ignore
+            | "truncate" ->
+                let lenp = field 2
+                let len = load "i_W" lenp
+                em.Emit(sprintf "br i1 %s, label %%bad, label %%check" (em.Instr "icmp slt i_W %n, 0"))
+                em.Label "bad"
+                panicWith em "Buffer.truncate to a negative length"
+                em.Label "check"
+                em.Emit(sprintf "br i1 %s, label %%cut, label %%same" (em.Instr(sprintf "icmp slt i_W %%n, %s" len)))
+                em.Label "same"
+                em.Emit "ret void"
+                em.Label "cut"
+                em.Emit(sprintf "store i_W %%n, ptr %s" lenp)
+                let owner, data = load "ptr" (field 0), load "ptr" (field 1)
+                let atStart = em.Instr(sprintf "icmp eq ptr %s, %s" (startOf owner) data)
+
+                if heap el then
+                    em.Emit(sprintf "br i1 %s, label %%drop, label %%done" (alone owner data))
+                    em.Label "drop"
+                    let hwp = lenOf owner
+                    dropSlots data "%n" (load "i_W" hwp) "past"
+                    em.Emit(sprintf "store i_W %%n, ptr %s" hwp)
+                    em.Emit "br label %done"
+                    em.Label "done"
+
+                let capp = field 3
+                em.Emit(sprintf "store i_W %s, ptr %s" (em.Instr(sprintf "select i1 %s, i_W %s, i_W %%n" atStart (load "i_W" capp))) capp)
+                em.Emit "ret void"
+                helpers.Append(sprintf "define private void %s(ptr %%c, i_W %%n) {\n%s}\n\n" name em.Body) |> ignore
+            | _ ->
+                // blit: n elements from src[i] to dst[j], both in range
+                let inRange (len: string) (at: string) =
+                    let ok1 = em.Instr(sprintf "icmp sle i_W 0, %s" at)
+                    let ok2 = em.Instr(sprintf "icmp sle i_W 0, %%n")
+                    let ok3 = em.Instr(sprintf "icmp sle i_W %s, %s" (em.Instr(sprintf "add i_W %s, %%n" at)) len)
+                    em.Instr(sprintf "and i1 %s, %s" (em.Instr(sprintf "and i1 %s, %s" ok1 ok2)) ok3)
+
+                let ok = em.Instr(sprintf "and i1 %s, %s" (inRange "%sl" "%i") (inRange "%dl" "%j"))
+                em.Emit(sprintf "br i1 %s, label %%go, label %%bad" ok)
+                em.Label "bad"
+                panicWith em "Buffer.blit out of range"
+                em.Label "go"
+                let src, dst = slot "%sd" "%i", slot "%dd" "%j"
+
+                if heap el then
+                    // each value: a reference taken for its new slot, the slot's old one dropped
+                    // (through a copy of the values, so overlapping windows work as memmove)
+                    let bytes = em.Instr(sprintf "mul i_W %%n, %s" (sizeOf em elt))
+                    // (after the allocation's header word, which zs_free checks)
+                    let block = em.Instr(sprintf "call ptr @zs_alloc(i_W %s)" (em.Instr(sprintf "add i_W %s, HDR1" bytes)))
+                    let tmp = em.Instr(sprintf "getelementptr i8, ptr %s, i_W HDR1" block)
+                    em.Emit(sprintf "call void @llvm.memcpy.p0.p0.i_W(ptr %s, ptr %s, i_W %s, i1 false)" tmp src bytes)
+                    let i = "%" + em.Fresh "bi"
+                    em.Alloca(sprintf "%s = alloca i_W" i)
+                    em.Emit(sprintf "store i_W 0, ptr %s" i)
+                    em.Emit "br label %each.cond"
+                    em.Label "each.cond"
+                    let k = load "i_W" i
+                    em.Emit(sprintf "br i1 %s, label %%each.body, label %%each.end" (em.Instr(sprintf "icmp slt i_W %s, %%n" k)))
+                    em.Label "each.body"
+                    let v = load elt (slot tmp k)
+                    dupValue em el v
+                    let dp = slot dst k
+                    let old = load elt dp
+                    em.Emit(sprintf "store %s %s, ptr %s" elt v dp)
+                    dropValue em el old
+                    em.Emit(sprintf "store i_W %s, ptr %s" (em.Instr(sprintf "add i_W %s, 1" k)) i)
+                    em.Emit "br label %each.cond"
+                    em.Label "each.end"
+                    em.Emit(sprintf "call void @zs_free(ptr %s)" block)
+                else
+                    em.Emit(sprintf "call void @llvm.memmove.p0.p0.i_W(ptr %s, ptr %s, i_W %s, i1 false)" dst src (em.Instr(sprintf "mul i_W %%n, %s" (sizeOf em elt))))
+
+                em.Emit "ret void"
+                helpers.Append(sprintf "define private void %s(ptr %%sd, i_W %%sl, i_W %%i, ptr %%dd, i_W %%dl, i_W %%j, i_W %%n) {\n%s}\n\n" name em.Body) |> ignore
+
+        name
+
     and uniqueFn (t: Ty) (always: bool) : string =
         let el =
             match prune t with
@@ -3052,6 +3316,30 @@ let compile
 
             let part (t: Ty) (v: string) (k: int) = em.Instr(sprintf "extractvalue %s %s, %d" (llty t) v k)
 
+            // a Buffer: a cell { header, { owner, data, length, capacity } }
+            let bufEl (t: Ty) =
+                match prune t with
+                | TCon("ref", [ TCon(_, [ el ]) ]) -> el
+                | t -> failwithf "Buffer of %s" (show t)
+
+            let bufField (t: Ty) (c: string) (k: int) =
+                em.Instr(sprintf "getelementptr { i_W, { ptr, ptr, i_W, i_W } }, ptr %s, i32 0, i32 1, i32 %d" c k)
+
+            let bufGet (t: Ty) (c: string) (k: int) = em.Instr(sprintf "load %s, ptr %s" (if k < 2 then "ptr" else "i_W") (bufField t c k))
+
+            // a new Buffer's cell: owner, data, length, capacity (the owner's reference moves in)
+            let newBuffer (t: Ty) (owner: string) (data: string) (n: string) (cap: string) =
+                let c = em.Instr(sprintf "call ptr @zs_alloc(i_W %s)" (sizeOf em "{ i_W, { ptr, ptr, i_W, i_W } }"))
+                em.Emit(sprintf "store i32 1, ptr %s" c)
+                em.Emit(sprintf "store ptr %s, ptr %s" owner (bufField t c 0))
+                em.Emit(sprintf "store ptr %s, ptr %s" data (bufField t c 1))
+                em.Emit(sprintf "store i_W %s, ptr %s" n (bufField t c 2))
+                em.Emit(sprintf "store i_W %s, ptr %s" cap (bufField t c 3))
+                c
+
+            // what a span or a Buffer windows: its data and length
+            let dataLen (t: Ty) (v: string) = if isBuf t then bufGet t v 1, bufGet t v 2 else part t v 1, part t v 2
+
             let window (t: Ty) (owner: string) (data: string) (n: string) =
                 let lt = llty t
                 let w0 = em.Instr(sprintf "insertvalue %s poison, ptr %s, 0" lt owner)
@@ -3111,10 +3399,10 @@ let compile
 
                 match op with
                 | "vec.splat" -> splat em k et (arg 0)
-                | "vec.load" when isWin (argTy 0) ->
+                | "vec.load" when isWin (argTy 0) || isBuf (argTy 0) ->
                     // from a span (or a Buffer): the k elements from index i of its data
                     let t = argTy 0
-                    let data, len = part t (arg 0) 1, part t (arg 0) 2
+                    let data, len = dataLen t (arg 0)
 
                     if not unchecked then
                         let ok1 = em.Instr(sprintf "icmp ult i_W %s, %s" (arg 1) len)
@@ -3327,7 +3615,7 @@ let compile
                     | t -> failwithf "fixed.ofArray of %s" (show t)
 
                 let t = argTy 0
-                let data, len = if isWin t then part t (arg 0) 1, part t (arg 0) 2 else arrData el (arg 0), arrLen (arg 0)
+                let data, len = if isWin t || isBuf t then dataLen t (arg 0) else arrData el (arg 0), arrLen (arg 0)
                 let good, bad = em.Fresh "fixedlen", em.Fresh "badlen"
                 em.Emit(sprintf "br i1 %s, label %%%s, label %%%s" (em.Instr(sprintf "icmp eq i_W %s, %s" len n)) good bad)
                 em.Label bad
@@ -3363,6 +3651,60 @@ let compile
 
                 dropValue em el (arg 0) // each element took its own reference
                 em.Instr(sprintf "load %s, ptr %s" (llty ty) slot)
+            | "Array.length" when isBuf (argTy 0) ->
+                let n = bufGet (argTy 0) (arg 0) 2
+                if not borrowed0 then dropValue em (argTy 0) (arg 0)
+                n
+            | "array.get" when isBuf (argTy 0) ->
+                let t = argTy 0
+                let el = bufEl t
+                let data, len = dataLen t (arg 0)
+
+                if not unchecked then
+                    check em (em.Instr(sprintf "icmp ult i_W %s, %s" (arg 1) len)) "index out of bounds"
+
+                let ep = em.Instr(sprintf "getelementptr inbounds %s, ptr %s, i_W %s" (llty el) data (arg 1))
+                let v = em.Instr(sprintf "load %s, ptr %s" (llty el) ep)
+                dupValue em el v
+                if not borrowed0 then dropValue em t (arg 0)
+                v
+            | "array.set" when isBuf (argTy 0) ->
+                // a Buffer's element, written in place: every reference to the Buffer sees it
+                let t = argTy 0
+                let el = bufEl t
+                let data, len = dataLen t (arg 0)
+                check em (em.Instr(sprintf "icmp ult i_W %s, %s" (arg 1) len)) "index out of bounds"
+                let ep = em.Instr(sprintf "getelementptr inbounds %s, ptr %s, i_W %s" (llty el) data (arg 1))
+                let old = em.Instr(sprintf "load %s, ptr %s" (llty el) ep)
+                em.Emit(sprintf "store %s %s, ptr %s" (llty el) (arg 2) ep)
+                dropValue em el old
+                dropValue em t (arg 0)
+                "zeroinitializer"
+            | "buffer.push" ->
+                // push x b: room made when there's none (Core.bufferDef says how)
+                let t = argTy 1
+                em.Emit(sprintf "call void %s(ptr %s, %s %s)" (bufferFn "push" (bufEl t)) (arg 1) (llty (argTy 0)) (arg 0))
+                dropValue em t (arg 1)
+                "zeroinitializer"
+            | "buffer.removeLast" ->
+                let t = argTy 0
+                let v = em.Instr(sprintf "call %s %s(ptr %s)" (llty ty) (bufferFn "removeLast" (bufEl t)) (arg 0))
+                if not borrowed0 then dropValue em t (arg 0)
+                v
+            | "buffer.truncate" ->
+                let t = argTy 1
+                em.Emit(sprintf "call void %s(ptr %s, i_W %s)" (bufferFn "truncate" (bufEl t)) (arg 1) (arg 0))
+                dropValue em t (arg 1)
+                "zeroinitializer"
+            | "buffer.blit" ->
+                // blit src i dst j n: n elements of a span copied into a Buffer, as memmove would
+                let st, dt = argTy 0, argTy 2
+                let sd, sl = dataLen st (arg 0)
+                let dd, dl = dataLen dt (arg 2)
+                em.Emit(sprintf "call void %s(ptr %s, i_W %s, i_W %s, ptr %s, i_W %s, i_W %s, i_W %s)" (bufferFn "blit" (bufEl dt)) sd sl (arg 1) dd dl (arg 3) (arg 4))
+                if not borrowed0 then dropValue em st (arg 0)
+                dropValue em dt (arg 2)
+                "zeroinitializer"
             | "Array.length" when isWin (argTy 0) ->
                 let n = part (argTy 0) (arg 0) 2
                 if not borrowed0 then dropValue em (argTy 0) (arg 0)
@@ -3393,7 +3735,15 @@ let compile
             | "span.ofArray" ->
                 // the array's reference moves into the span
                 window ty (arg 0) (arrData (winEl ty) (arg 0)) (arrLen (arg 0))
-            | "span.ofBuffer" -> arg 0 // the same window, read-only
+            | "span.ofBuffer" ->
+                // a window over what the Buffer holds now, with a reference to its storage
+                let t = argTy 0
+                let owner = bufGet t (arg 0) 0
+                dupValue em (TCon("array", [ bufEl t ])) owner
+                let data, len = dataLen t (arg 0)
+                let w = window ty owner data len
+                if not borrowed0 then dropValue em t (arg 0)
+                w
             | "span.ofString" ->
                 let n = loadLen em (em.Instr(sprintf "getelementptr i8, ptr %s, i_W HDR1" (arg 0)))
                 window ty (arg 0) (em.Instr(sprintf "getelementptr i8, ptr %s, i_W HDR2" (arg 0))) n
@@ -3405,11 +3755,21 @@ let compile
                 // elements arg 1 to arg 2 (inclusive) of an array or a window: the owner moves into
                 // the slice; out of range, a panic naming the range (arg 3: what is sliced)
                 let t = argTy 0
-                let el = winEl ty
+                let el = if isBuf ty then bufEl ty else winEl ty
 
                 let owner, data, n =
-                    if isWin t then part t (arg 0) 0, part t (arg 0) 1, part t (arg 0) 2
-                    else arg 0, arrData el (arg 0), arrLen (arg 0)
+                    if isWin t then
+                        part t (arg 0) 0, part t (arg 0) 1, part t (arg 0) 2
+                    elif isBuf t then
+                        // a Buffer's slice is a Buffer of its own over the same storage (with no
+                        // room, so pushing on it copies first): it takes a reference to the storage
+                        let owner = bufGet t (arg 0) 0
+                        dupValue em (TCon("array", [ el ])) owner
+                        let data, n = dataLen t (arg 0)
+                        dropValue em t (arg 0)
+                        owner, data, n
+                    else
+                        arg 0, arrData el (arg 0), arrLen (arg 0)
 
                 let i, j = arg 1, arg 2
                 let j1 = em.Instr(sprintf "add i_W %s, 1" j)
@@ -3423,7 +3783,8 @@ let compile
                 em.Emit "unreachable"
                 em.Label good
                 let start = em.Instr(sprintf "getelementptr inbounds %s, ptr %s, i_W %s" (llty el) data i)
-                window ty owner start (em.Instr(sprintf "sub i_W %s, %s" j1 i))
+                let len = em.Instr(sprintf "sub i_W %s, %s" j1 i)
+                if isBuf ty then newBuffer ty owner start len len else window ty owner start len
             | "ignore" ->
                 dropValue em (argTy 0) (arg 0)
                 "zeroinitializer"
@@ -3575,7 +3936,9 @@ let compile
 
                 let pass (pt: string) (a: CExpr, v: string) =
                     match pt with
-                    | "bytes" when isWin a.ty -> sprintf "ptr %s, i_W %s" (part a.ty v 1) (part a.ty v 2)
+                    | "bytes" when isWin a.ty || isBuf a.ty ->
+                        let data, len = dataLen a.ty v
+                        sprintf "ptr %s, i_W %s" data len
                     | "bytes" ->
                         let n = loadLen em (em.Instr(sprintf "getelementptr i8, ptr %s, i_W HDR1" v))
                         sprintf "ptr %s, i_W %s" (em.Instr(sprintf "getelementptr i8, ptr %s, i_W HDR2" v)) n
@@ -3649,7 +4012,7 @@ let compile
                 em.Emit(sprintf "br label %%%s" lc)
                 em.Label lend
                 dropValue em el (arg 1) // each slot took its own reference
-                if isWin ty then window ty a (arrData el a) n else a // Buffer.create: a window over all of it
+                if isBuf ty then newBuffer ty a (arrData el a) n n else a // Buffer.create: a Buffer over all of it
             | "array.lit" ->
                 let el =
                     match prune ty with
@@ -3683,21 +4046,23 @@ let compile
                 dropValue em el old
                 u
             | "array.copy" ->
-                match isWin (argTy 0), isWin ty with
+                match isWin (argTy 0) || isBuf (argTy 0), isBuf ty with
                 | false, false -> em.Instr(sprintf "call ptr %s(ptr %s)" (uniqueFn (argTy 0) true) (arg 0))
                 | false, true ->
-                    // Buffer.ofArray: a copy, and a window over all of it
+                    // Buffer.ofArray: a copy, and a Buffer over all of it
                     let c = em.Instr(sprintf "call ptr %s(ptr %s)" (uniqueFn (argTy 0) true) (arg 0))
-                    window ty c (arrData (winEl ty) c) (arrLen c)
+                    let n = arrLen c
+                    newBuffer ty c (arrData (bufEl ty) c) n n
                 | true, _ ->
-                    // a window's elements in an array of their own (a Buffer over it, for Buffer.ofSpan)
+                    // a window's (or a Buffer's) elements in an array of their own (a Buffer over
+                    // it, for Buffer.ofSpan)
                     let t = argTy 0
-                    let el = winEl t
-                    let n = part t (arg 0) 2
+                    let el = if isBuf t then bufEl t else winEl t
+                    let data, n = dataLen t (arg 0)
                     let a = newArray el n
                     let dst = arrData el a
                     let bytes = em.Instr(sprintf "mul i_W %s, %s" n (sizeOf em (llty el)))
-                    em.Emit(sprintf "call void @llvm.memcpy.p0.p0.i_W(ptr %s, ptr %s, i_W %s, i1 false)" dst (part t (arg 0) 1) bytes)
+                    em.Emit(sprintf "call void @llvm.memcpy.p0.p0.i_W(ptr %s, ptr %s, i_W %s, i1 false)" dst data bytes)
 
                     if heap el then
                         forEach n (fun i ->
@@ -3705,7 +4070,7 @@ let compile
                             dupValue em el (em.Instr(sprintf "load %s, ptr %s" (llty el) ep)))
 
                     if not borrowed0 then dropValue em t (arg 0)
-                    if isWin ty then window ty a dst n else a
+                    if isBuf ty then newBuffer ty a dst n n else a
             | "wrap+"
             | "wrap-"
             | "wrap*" ->
@@ -4063,6 +4428,52 @@ let compile
                 dropValue em el old
                 dropValue em (argTy 0) (arg 0)
                 "zeroinitializer"
+            | "format" ->
+                // Format.format of a number: the runtime's, at the number's width
+                let t = argTy 0
+                let lt = llty t
+
+                let r =
+                    if isFloat t then
+                        let x = if lt = "float" then em.Instr(sprintf "fpext float %s to double" (arg 0)) else arg 0
+                        em.Instr(sprintf "call ptr @zs_format_float(double %s, ptr %s)" x (arg 1))
+                    else
+                        let bits = int (lt.Substring 1)
+                        let v = if bits < 64 then em.Instr(sprintf "%s %s %s to i64" (if isUnsigned t then "zext" else "sext") lt (arg 0)) else arg 0
+                        em.Instr(sprintf "call ptr @zs_format_int(i64 %s, i64 %d, i1 zeroext %b, ptr %s)" v bits (isUnsigned t) (arg 1))
+
+                dropValue em (argTy 1) (arg 1)
+                r
+            | "int.parse" ->
+                // Int.parseRadix's: whether the text is a number of the type, and the number
+                let el =
+                    match prune ty with
+                    | TTuple [ _; el ] -> el
+                    | t -> failwithf "int.parse of %s" (show t)
+
+                let lt = llty el
+                let bits = int (lt.Substring 1)
+                let slot = "%" + em.Fresh "parsed"
+                em.Alloca(sprintf "%s = alloca i64" slot)
+                let ok = em.Instr(sprintf "call zeroext i1 @zs_parse_int(ptr %s, i64 %s, i1 zeroext %b, i64 %d, ptr %s)" (arg 1) (if llty (argTy 0) = "i64" then arg 0 else em.Instr(sprintf "sext %s %s to i64" (llty (argTy 0)) (arg 0))) (isUnsigned el) bits slot)
+                let v = em.Instr(sprintf "load i64, ptr %s" slot)
+                let v = if bits < 64 then em.Instr(sprintf "trunc i64 %s to %s" v lt) else v
+                dropValue em (argTy 1) (arg 1)
+                em.Instr(sprintf "insertvalue %s %s, %s %s, 1" (llty ty) (em.Instr(sprintf "insertvalue %s poison, i1 %s, 0" (llty ty) ok)) lt v)
+            | "float.parse" ->
+                // Float.parse's: whether the text is a number, and the number
+                let el =
+                    match prune ty with
+                    | TTuple [ _; el ] -> el
+                    | t -> failwithf "float.parse of %s" (show t)
+
+                let slot = "%" + em.Fresh "parsed"
+                em.Alloca(sprintf "%s = alloca double" slot)
+                let ok = em.Instr(sprintf "call zeroext i1 @zs_parse_float(ptr %s, ptr %s)" (arg 0) slot)
+                let v = em.Instr(sprintf "load double, ptr %s" slot)
+                let v = if llty el = "float" then em.Instr(sprintf "fptrunc double %s to float" v) else v
+                dropValue em (argTy 0) (arg 0)
+                em.Instr(sprintf "insertvalue %s %s, %s %s, 1" (llty ty) (em.Instr(sprintf "insertvalue %s poison, i1 %s, 0" (llty ty) ok)) (llty el) v)
             | "conv" ->
                 let src, dst = argTy 0, ty
                 let ls, ld = llty src, llty dst

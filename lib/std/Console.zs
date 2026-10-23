@@ -24,3 +24,10 @@ let readLines () =
 module Error =
   /// Writes the string and a newline to standard error.
   let writeLine (s: string) = eprintln s
+
+/// Standard input as a `Reader`, for bytes and framing (an LSP's `Content-Length` messages).
+/// `Console.readLine` reads the same stream through C's buffer; a program uses one or the other.
+let openStandardInput () : Reader = Reader.ofFd 0
+
+/// Standard output as a `Writer` (flushed by `Writer.flush`, and by `use`).
+let openStandardOutput () : Writer = Writer.ofFd 1

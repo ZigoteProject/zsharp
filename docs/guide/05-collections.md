@@ -99,6 +99,21 @@ let main () =
 7 8
 ```
 
+**Growing:** `Buffer.push x b` adds an element at the end and `Buffer.pop b` takes the last one (an `option`), each in constant time (the storage doubles when it's full); `Buffer.truncate n b` keeps the first `n`, `Buffer.clear b` none, and `Buffer.empty` is a new empty Buffer at each use. A slice of a Buffer (`b.[1..3]`) shares its storage until either grows past it.
+
+```zsharp
+let main () =
+  let names = Buffer.empty
+  for n in [ "ada"; "bob"; "cy" ] do
+    Buffer.push n names
+  println $"{Buffer.length names} {Buffer.pop names} {Buffer.length names}"
+  0
+```
+
+```text
+3 Some cy 2
+```
+
 ## Spans and slices
 
 A span, `span<'a>`, is a window into an array, a string's bytes or a Buffer, without a copy.

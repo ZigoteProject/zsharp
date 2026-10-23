@@ -1,9 +1,25 @@
 # IO.Path
 
 File paths as text, with `/` between the parts: joining them and taking them apart. Nothing
-here touches the file system.
+here touches the file system (`getFullPath` reads the working directory).
 
 ## Functions
+
+### `Path.separator`
+
+```zsharp
+let separator
+```
+
+The character between a path's parts.
+
+### `Path.isAbsolute`
+
+```zsharp
+Path.isAbsolute : string -> bool
+```
+
+Whether the path starts at the root (`/`).
 
 ### `Path.combine`
 
@@ -54,4 +70,22 @@ Path.changeExtension : string -> string -> string
 ```
 
 The path with its extension replaced by `ext` (`".md"` or `"md"`); `""` removes it.
+
+### `Path.getFullPath`
+
+```zsharp
+Path.getFullPath : string -> string
+```
+
+The path made absolute against the working directory, with `.`, `..` and repeated `/`
+worked out on the text (symbolic links aren't followed), as .NET's `Path.GetFullPath`.
+
+### `Path.getRelativePath`
+
+```zsharp
+Path.getRelativePath : string -> string -> string
+```
+
+The path of `path` from the directory `from`: `getRelativePath "/a/b" "/a/c/d"` is
+`"../c/d"`, and `"."` for the same place.
 

@@ -181,7 +181,7 @@ String.repeat : 'a -> string -> string
 String.parseInt : string -> option<int>
 ```
 
-The integer written in `s` (optional sign, decimal digits), or `None`.
+The integer written in `s` (optional sign, decimal digits), or `None`: `Int.parse` at `int`.
 
 ### `String.parseFloat`
 
@@ -189,7 +189,7 @@ The integer written in `s` (optional sign, decimal digits), or `None`.
 String.parseFloat : string -> option<f64>
 ```
 
-The floating-point number written in `s`, or `None`.
+The floating-point number written in `s`, or `None`: `Float.parse` at `f64`.
 
 ### `String.decodeAt`
 
@@ -231,6 +231,63 @@ String.ofChars : list<char> -> string
 ```
 
 A string of the characters, in order.
+
+### `String.padLeftWith`
+
+```zsharp
+String.padLeftWith : int -> char -> string -> string
+```
+
+`s` with `c` before it, to `width` characters (`String.charCount`); never cut.
+
+### `String.padRightWith`
+
+```zsharp
+String.padRightWith : int -> char -> string -> string
+```
+
+`s` with `c` after it, to `width` characters; never cut.
+
+### `String.padLeft`
+
+```zsharp
+String.padLeft : int -> string -> string
+```
+
+`s` with spaces before it, to `width` characters: `String.padLeft 5 "ab"` is `"   ab"`.
+
+### `String.padRight`
+
+```zsharp
+String.padRight : int -> string -> string
+```
+
+`s` with spaces after it, to `width` characters.
+
+### `String.trimStart`
+
+```zsharp
+String.trimStart : string -> string
+```
+
+`s` without its leading spaces, tabs and line breaks.
+
+### `String.trimEnd`
+
+```zsharp
+String.trimEnd : string -> string
+```
+
+`s` without its trailing spaces, tabs and line breaks.
+
+### `String.splitLines`
+
+```zsharp
+String.splitLines : string -> list<string>
+```
+
+The lines of `s`, split at `\n` and `\r\n`, with no empty last line: as `File.readAllLines`
+splits a file.
 
 ### `String.byte`
 

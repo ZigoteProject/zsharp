@@ -1,10 +1,38 @@
 # Collections.Buffer
 
 Buffers: an array's storage as a shared, mutable reference, so a write is seen through every
-reference (an `array` is a value instead). A slice of a Buffer (`b.[i..j]`) is a Buffer
-too, a window sharing its storage. Its other functions are built into the compiler.
+reference (an `array` is a value instead), and one that grows: `Buffer.push` adds an element
+at the end (in amortized constant time, the storage doubling when full), `Buffer.pop` takes
+one. A slice of a Buffer (`b.[i..j]`) is a Buffer too, sharing the storage until either grows
+past it. Its other functions are built into the compiler: `create`, `length`, `ofArray`,
+`ofSpan`, `toArray`, `push`, `removeLast` (the last element, taken; a panic when there's
+none), `truncate` (the first `n` elements kept) and `blit` (`n` elements of a span copied in).
 
 ## Functions
+
+### `Buffer.empty`
+
+```zsharp
+let empty : Buffer<'a>
+```
+
+An empty Buffer, a new one at each use: `let names = Buffer.empty` then `Buffer.push n names`.
+
+### `Buffer.pop`
+
+```zsharp
+Buffer.pop : Buffer<'a> -> option<'a>
+```
+
+The last element, taken out of the Buffer, or `None` when it's empty.
+
+### `Buffer.clear`
+
+```zsharp
+Buffer.clear : Buffer<'a> -> unit
+```
+
+Removes every element.
 
 ### `Buffer.slice`
 

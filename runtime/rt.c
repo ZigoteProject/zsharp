@@ -167,6 +167,13 @@ void zs_ptr_free(void *p) { free(p); }
 
 #include <time.h>
 /// Runtime.ticks (): a monotonic clock in nanoseconds (on a Cortex-M: SysTick counts).
+// the real-time clock, in nanoseconds since 1970-01-01T00:00:00Z (DateTime.utcNow)
+int64_t zs_clock_realtime(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_REALTIME, &t);
+    return (int64_t)t.tv_sec * 1000000000 + t.tv_nsec;
+}
+
 int64_t zs_ticks(void) {
     struct timespec t;
     clock_gettime(CLOCK_MONOTONIC, &t);
@@ -821,6 +828,171 @@ bool zs_str_is_float(zs_str *s) {
 
 double zs_str_to_float(zs_str *s) { return strtod(s->data, NULL); }
 
+// ---- format specifiers ($"{x:F2}", 0024): .NET's standard numeric formats, invariant
+
+// a specifier's letter and its digits (-1 when it has none)
+static void spec_of(zs_str *spec, char *letter, int *digits) {
+    *letter = spec->len > 0 ? spec->data[0] : 'G';
+    *digits = -1;
+    if (spec->len > 1) {
+        *digits = 0;
+        for (zs_int i = 1; i < spec->len && i < 3; i++) *digits = *digits * 10 + (spec->data[i] - '0');
+    }
+}
+
+// the digits of a decimal text's integer part with a comma every three (N)
+static int group(const char *in, char *out) {
+    int k = 0, start = in[0] == '-' ? 1 : 0;
+    const char *point = strchr(in, '.');
+    int whole = (int)(point ? point - in : (long)strlen(in)) - start;
+    if (start) out[k++] = '-';
+    for (int i = 0; i < whole; i++) {
+        if (i > 0 && (whole - i) % 3 == 0) out[k++] = ',';
+        out[k++] = in[start + i];
+    }
+    if (point) { strcpy(out + k, point); k += (int)strlen(point); }
+    out[k] = 0;
+    return k;
+}
+
+// x with d decimals, a tie rounded away from zero (as .NET's F does); glibc's %f rounds the
+// exact value, ties to even, so a tie is found in the exact expansion and rounded here
+static int fixed(double x, int d, char *out, size_t cap) {
+    char exact[1500]; // on the stack: any thread formats
+    snprintf(exact, sizeof exact, "%.*f", 1100, x); // every digit of a double's expansion
+    char *point = strchr(exact, '.');
+    bool tie = point && point[d + 1] == '5';
+    for (int i = d + 2; tie && point[i]; i++) tie = point[i] == '0';
+    if (!tie) return snprintf(out, cap, "%.*f", d, x);
+    // the expansion cut after d decimals, then one more in its last digit
+    int n = (int)(point - exact) + (d > 0 ? d + 1 : 0);
+    exact[n] = 0;
+    for (int i = n - 1; i >= 0; i--) {
+        if (exact[i] == '.' || exact[i] == '-') continue;
+        if (exact[i] < '9') { exact[i]++; return snprintf(out, cap, "%s", exact); }
+        exact[i] = '0';
+    }
+    // all nines: one more digit in front
+    bool neg = exact[0] == '-';
+    return snprintf(out, cap, "%s1%s", neg ? "-" : "", exact + (neg ? 1 : 0));
+}
+
+zs_str *zs_format_float(double x, zs_str *spec) {
+    char buf[1600], grouped[2200];
+    char letter;
+    int d, n;
+    spec_of(spec, &letter, &d);
+    switch (letter) {
+    case 'F': n = fixed(x, d < 0 ? 2 : d, buf, sizeof buf); break;
+    case 'N': fixed(x, d < 0 ? 2 : d, buf, sizeof buf); n = group(buf, grouped); return str_of(grouped, n);
+    case 'E': {
+        // 1.23E+003: the exponent with its sign and at least three digits
+        n = snprintf(buf, sizeof buf, "%.*E", d < 0 ? 6 : d, x);
+        char *e = strchr(buf, 'E');
+        if (e) {
+            int exp = atoi(e + 1);
+            n = (int)(e - buf) + snprintf(e, sizeof buf - (size_t)(e - buf), "E%c%03d", exp < 0 ? '-' : '+', exp < 0 ? -exp : exp);
+        }
+        break;
+    }
+    default: // G
+        if (d <= 0) return zs_str_of_f64(x);
+        n = snprintf(buf, sizeof buf, "%.*G", d, x);
+    }
+    return str_of(buf, n);
+}
+
+// v at a width of bits bits (unsigned: its bits as they are), under a specifier
+zs_str *zs_format_int(int64_t v, int64_t bits, bool isUnsigned, zs_str *spec) {
+    char buf[200], grouped[300];
+    char letter;
+    int d, n;
+    spec_of(spec, &letter, &d);
+    uint64_t mask = bits >= 64 ? ~(uint64_t)0 : ((uint64_t)1 << bits) - 1;
+    uint64_t u = (uint64_t)v & mask; // two's complement at the type's width
+    switch (letter) {
+    case 'X':
+    case 'x':
+        n = snprintf(buf, sizeof buf, letter == 'X' ? "%0*llX" : "%0*llx", d < 0 ? 1 : d, (unsigned long long)u);
+        break;
+    case 'B':
+    case 'b': {
+        // the bits from the highest set one, zero-padded to d
+        int k = 0;
+        for (int i = 63; i >= 0; i--)
+            if (k > 0 || ((u >> i) & 1) || i == 0) buf[k++] = (char)('0' + ((u >> i) & 1));
+        int pad = d > k ? d - k : 0;
+        memmove(buf + pad, buf, (size_t)k);
+        memset(buf, '0', (size_t)pad);
+        n = k + pad;
+        break;
+    }
+    case 'F':
+    case 'N': {
+        char whole[40];
+        if (isUnsigned) snprintf(whole, sizeof whole, "%llu", (unsigned long long)u);
+        else snprintf(whole, sizeof whole, "%lld", (long long)v);
+        int decimals = d < 0 ? 2 : d;
+        n = snprintf(buf, sizeof buf, decimals > 0 ? "%s.%0*d" : "%s", whole, decimals, 0);
+        if (letter == 'N') { n = group(buf, grouped); return str_of(grouped, n); }
+        break;
+    }
+    default: // D
+        if (isUnsigned) n = snprintf(buf, sizeof buf, "%0*llu", d < 0 ? 1 : d, (unsigned long long)u);
+        else if (v < 0) n = snprintf(buf, sizeof buf, "-%0*llu", d < 0 ? 1 : d, (unsigned long long)-(uint64_t)v);
+        else n = snprintf(buf, sizeof buf, "%0*lld", d < 0 ? 1 : d, (long long)v);
+    }
+    return str_of(buf, n);
+}
+
+// ---- Int.parse and Float.parse (0024)
+
+// the integer s writes in radix 2 to 36 (an optional sign, then its digits, letters in either
+// case, and nothing else), at a type of bits bits; false for anything else or a value out of
+// the type's range. *out holds the value's bits (a u64 above i64's range too).
+bool zs_parse_int(zs_str *s, int64_t radix, bool isUnsigned, int64_t bits, int64_t *out) {
+    zs_int i = 0, n = s->len;
+    bool neg = false;
+    if (n > 0 && (s->data[0] == '-' || s->data[0] == '+')) { neg = s->data[0] == '-'; i = 1; }
+    if (i == n || radix < 2 || radix > 36) return false;
+    uint64_t acc = 0;
+    for (; i < n; i++) {
+        char c = s->data[i];
+        int d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'z' ? c - 'a' + 10 : c >= 'A' && c <= 'Z' ? c - 'A' + 10 : 99;
+        if (d >= radix) return false;
+        if (acc > (UINT64_MAX - (uint64_t)d) / (uint64_t)radix) return false;
+        acc = acc * (uint64_t)radix + (uint64_t)d;
+    }
+    if (isUnsigned) {
+        uint64_t max = bits >= 64 ? UINT64_MAX : ((uint64_t)1 << bits) - 1;
+        if ((neg && acc != 0) || acc > max) return false;
+        *out = (int64_t)acc;
+    } else {
+        uint64_t limit = (uint64_t)1 << (bits - 1); // the magnitude of the lowest value
+        if (acc > (neg ? limit : limit - 1)) return false;
+        *out = neg ? (int64_t)(0 - acc) : (int64_t)acc;
+    }
+    return true;
+}
+
+// the number s writes: a sign, digits, a point, an exponent; inf and nan; nothing else (no
+// spaces, no hexadecimal, no 1,5)
+bool zs_parse_float(zs_str *s, double *out) {
+    char buf[400];
+    if (s->len == 0 || s->len >= (zs_int)sizeof buf) return false;
+    for (zs_int i = 0; i < s->len; i++) {
+        char c = s->data[i];
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == 'x' || c == 'X' || c == 0) return false;
+    }
+    memcpy(buf, s->data, (size_t)s->len);
+    buf[s->len] = 0;
+    char *end;
+    double v = strtod(buf, &end);
+    if (end != buf + s->len) return false;
+    *out = v;
+    return true;
+}
+
 // ---- console
 
 static bool at_eof;
@@ -988,6 +1160,135 @@ zs_str *zs_dir_list(zs_str *path) {
     return s;
 }
 
+// ---- files and directories (0024)
+
+#include <fcntl.h>
+
+// path opened to read (0), to write from nothing (1) or to append (2): its fd, or -1 with the
+// error for Native.ioError
+zs_int zs_file_open(zs_str *path, zs_int mode) {
+    clear_error();
+    int flags = mode == 0 ? O_RDONLY : mode == 1 ? O_WRONLY | O_CREAT | O_TRUNC : O_WRONLY | O_CREAT | O_APPEND;
+    int fd = open(path->data, flags | O_CLOEXEC, 0666);
+    if (fd < 0) set_error("cannot open", path);
+    return fd;
+}
+
+// the modification time in nanoseconds since 1970, and the size in bytes (-1 on an error)
+int64_t zs_file_mtime(zs_str *path) {
+    clear_error();
+    struct stat st;
+    if (stat(path->data, &st) != 0) {
+        set_error("cannot read", path);
+        return 0;
+    }
+    return (int64_t)st.st_mtim.tv_sec * 1000000000 + st.st_mtim.tv_nsec;
+}
+
+int64_t zs_file_size(zs_str *path) {
+    clear_error();
+    struct stat st;
+    if (stat(path->data, &st) != 0) {
+        set_error("cannot read", path);
+        return 0;
+    }
+    return (int64_t)st.st_size;
+}
+
+// the file's modification time set to now (a cache's "used lately")
+void zs_file_touch(zs_str *path) {
+    clear_error();
+    if (utimensat(AT_FDCWD, path->data, NULL, 0) != 0) set_error("cannot touch", path);
+}
+
+static bool copy_file(zs_str *from, zs_str *to) {
+    int in = open(from->data, O_RDONLY | O_CLOEXEC);
+    if (in < 0) {
+        set_error("cannot open", from);
+        return false;
+    }
+    int out = open(to->data, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666);
+    if (out < 0) {
+        set_error("cannot create", to);
+        close(in);
+        return false;
+    }
+    char buf[65536];
+    ssize_t n;
+    bool ok = true;
+    while (ok && (n = read(in, buf, sizeof buf)) > 0)
+        for (ssize_t done = 0; ok && done < n;) {
+            ssize_t w = write(out, buf + done, (size_t)(n - done));
+            if (w < 0) ok = false; else done += w;
+        }
+    if (n < 0 || !ok) set_error("cannot copy to", to);
+    close(in);
+    if (close(out) != 0 && ok) { set_error("cannot copy to", to); ok = false; }
+    return ok && n >= 0;
+}
+
+void zs_file_copy(zs_str *from, zs_str *to) {
+    clear_error();
+    copy_file(from, to);
+}
+
+// a rename, or across file systems a copy and a delete
+void zs_file_move(zs_str *from, zs_str *to) {
+    clear_error();
+    if (rename(from->data, to->data) == 0) return;
+    if (errno != EXDEV) {
+        set_error("cannot move", from);
+        return;
+    }
+    if (copy_file(from, to) && remove(from->data) != 0) set_error("cannot delete", from);
+}
+
+// a new empty file (mode 0600) or directory in the temporary directory ($TMPDIR, else /tmp),
+// named prefix and six characters: its path
+static void temp_path(zs_str *prefix, char *path, size_t size) {
+    const char *tmp = getenv("TMPDIR");
+    snprintf(path, size, "%s/%sXXXXXX", tmp && *tmp ? tmp : "/tmp", prefix->data);
+}
+
+zs_str *zs_temp_file(zs_str *prefix) {
+    clear_error();
+    char path[4096];
+    temp_path(prefix, path, sizeof path);
+    int fd = mkstemp(path);
+    if (fd < 0) {
+        set_error("cannot create a temporary file", prefix);
+        return str_of("", 0);
+    }
+    close(fd);
+    return zs_str_from_c(path);
+}
+
+zs_str *zs_temp_dir(zs_str *prefix) {
+    clear_error();
+    char path[4096];
+    temp_path(prefix, path, sizeof path);
+    if (mkdtemp(path) == NULL) {
+        set_error("cannot create a temporary directory", prefix);
+        return str_of("", 0);
+    }
+    return zs_str_from_c(path);
+}
+
+void zs_dir_delete(zs_str *path) {
+    clear_error();
+    if (rmdir(path->data) != 0) set_error("cannot delete", path);
+}
+
+bool zs_is_symlink(zs_str *path) {
+    struct stat st;
+    return lstat(path->data, &st) == 0 && S_ISLNK(st.st_mode);
+}
+
+zs_str *zs_current_dir(void) {
+    char buf[4096];
+    return zs_str_from_c(getcwd(buf, sizeof buf) ? buf : ".");
+}
+
 // Runs prog with NUL-separated args (no shell), stdout captured, stderr passed through.
 static _Thread_local int64_t process_code;
 
@@ -1069,6 +1370,85 @@ zs_str *zs_process_run(zs_str *prog, zs_str *args) {
     free(buf);
     return s;
 }
+
+// ---- Process.start (0024): posix_spawn with each stream inherited, piped or /dev/null
+
+// the NUL-separated strings of s as an argv-style array (with first in front, NULL after)
+static char **split_nul(zs_str *s, char *first) {
+    int64_t count = s->len ? 1 : 0;
+    for (int64_t i = 0; i < s->len; i++) count += s->data[i] == 0;
+    char **v = malloc(sizeof(char *) * (size_t)(count + 2));
+    int64_t k = 0;
+    if (first) v[k++] = first;
+    if (s->len) {
+        v[k++] = s->data;
+        for (int64_t i = 0; i < s->len - 1; i++)
+            if (s->data[i] == 0) v[k++] = s->data + i + 1;
+    }
+    v[k] = NULL;
+    return v;
+}
+
+// starts prog with args (NUL-separated); env: NUL-separated NAME=value pairs, used when hasEnv;
+// dir: its working directory ("" for this one's); modes per stream (0 inherit, 1 piped, 2
+// /dev/null). The pid, or -errno; zs_process_pipe(k) gives this end of stream k's pipe (-1
+// when it isn't piped).
+static _Thread_local zs_int started[4]; // the last start's pid and pipes, for Native.processPipe
+
+zs_int zs_process_pipe(zs_int k) { return k >= 0 && k < 3 ? started[k + 1] : -1; }
+
+zs_int zs_process_start(zs_str *prog, zs_str *args, zs_str *env, bool hasEnv, zs_str *dir, zs_int in, zs_int outm, zs_int errm) {
+    zs_int *out = started;
+    char exe[4096];
+    if (!find_program(prog->data, exe, sizeof exe)) return -ENOENT;
+    zs_int modes[3] = {in, outm, errm};
+    int pipes[3][2] = {{-1, -1}, {-1, -1}, {-1, -1}};
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    int rc = 0;
+    for (int k = 0; k < 3 && rc == 0; k++) {
+        if (modes[k] == 1) {
+            if (pipe2(pipes[k], O_CLOEXEC) != 0) { rc = errno; break; }
+            // the child's end becomes its stream; the pipes are close-on-exec otherwise
+            posix_spawn_file_actions_adddup2(&fa, pipes[k][k == 0 ? 0 : 1], k);
+        } else if (modes[k] == 2) {
+            posix_spawn_file_actions_addopen(&fa, k, "/dev/null", k == 0 ? O_RDONLY : O_WRONLY, 0);
+        }
+    }
+    if (rc == 0 && dir->len > 0) rc = posix_spawn_file_actions_addchdir_np(&fa, dir->data);
+    pid_t pid = 0;
+    if (rc == 0) {
+        char **argv = split_nul(args, prog->data);
+        char **envp = hasEnv ? split_nul(env, NULL) : environ;
+        fflush(stdout);
+        rc = posix_spawn(&pid, exe, &fa, NULL, argv, envp);
+        free(argv);
+        if (hasEnv) free(envp);
+    }
+    posix_spawn_file_actions_destroy(&fa);
+    for (int k = 0; k < 3; k++) {
+        int mine = k == 0 ? 1 : 0, theirs = k == 0 ? 0 : 1;
+        if (pipes[k][theirs] >= 0) close(pipes[k][theirs]);
+        out[k + 1] = -1;
+        if (pipes[k][mine] >= 0) {
+            if (rc == 0) out[k + 1] = pipes[k][mine];
+            else close(pipes[k][mine]);
+        }
+    }
+    if (rc != 0) return -(zs_int)rc;
+    out[0] = pid;
+    return pid;
+}
+
+// waits for the process: its exit code, or 128 plus the signal that ended it
+zs_int zs_process_wait(zs_int pid) {
+    int status = 0;
+    while (waitpid((pid_t)pid, &status, 0) < 0)
+        if (errno != EINTR) return -1;
+    return WIFEXITED(status) ? WEXITSTATUS(status) : WIFSIGNALED(status) ? 128 + WTERMSIG(status) : -1;
+}
+
+zs_int zs_process_kill(zs_int pid) { return kill((pid_t)pid, SIGKILL) == 0 ? 0 : -(zs_int)errno; }
 
 // a test build's argument: which test to run
 zs_int zs_test_index(void) { return g_argc > 1 ? strtoll(g_argv[1], NULL, 10) : -1; }
@@ -1716,6 +2096,47 @@ zs_int zs_tcp_connect(zs_str *host, zs_int port) {
     int one = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
     freeaddrinfo(res);
+    return fd;
+}
+
+#include <sys/un.h>
+
+// a Unix socket's address: the path, which must fit sun_path
+static int unix_address(zs_str *path, struct sockaddr_un *a) {
+    zs_int n = path->len;
+    if (n == 0 || n >= (zs_int)sizeof a->sun_path) { errno = ENAMETOOLONG; return -1; }
+    memset(a, 0, sizeof *a);
+    a->sun_family = AF_UNIX;
+    memcpy(a->sun_path, path->data, (size_t)n);
+    return 0;
+}
+
+// a socket listening at the path (a file left from an earlier run is removed first)
+zs_int zs_unix_listen(zs_str *path) {
+    struct sockaddr_un a;
+    if (unix_address(path, &a) != 0) return failed();
+    unlink(a.sun_path);
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    if (fd < 0 || bind(fd, (struct sockaddr *)&a, sizeof a) != 0 || listen(fd, 4096) != 0) {
+        int e = errno;
+        if (fd >= 0) close(fd);
+        errno = e;
+        return failed();
+    }
+    return fd;
+}
+
+// a connection to the socket at the path being made, as zs_tcp_connect's
+zs_int zs_unix_connect(zs_str *path) {
+    struct sockaddr_un a;
+    if (unix_address(path, &a) != 0) return failed();
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    if (fd < 0 || (connect(fd, (struct sockaddr *)&a, sizeof a) != 0 && errno != EINPROGRESS && errno != EAGAIN)) {
+        int e = errno;
+        if (fd >= 0) close(fd);
+        errno = e;
+        return failed();
+    }
     return fd;
 }
 

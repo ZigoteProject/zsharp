@@ -29,6 +29,14 @@ Environment.getVariable : string -> option<string>
 
 The environment variable `name`, or `None` when it isn't set.
 
+### `Environment.currentDirectory`
+
+```zsharp
+Environment.currentDirectory : unit -> string
+```
+
+The working directory, as an absolute path.
+
 ### `Environment.exit`
 
 ```zsharp

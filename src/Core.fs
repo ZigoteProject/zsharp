@@ -116,6 +116,7 @@ let builtinImpls =
           "Eq", nums + simdNames + set [ "string"; "bool"; "char"; "unit" ]
           "Ord", nums + set [ "string"; "char" ]
           "Show", nums + simdNames + set [ "string"; "bool"; "char" ]
+          "Format", nums
           "Hash", nums + set [ "string"; "bool"; "char" ]
           "Share", nums + simdNames + set [ "string"; "bool"; "char"; "unit" ] ]
 
@@ -124,10 +125,9 @@ let hasBuiltinImpl (tr: string) (n: string) =
     | true, s -> s.Contains n
     | _ -> false
 
-/// What a Buffer<T> and a span<T> are after monomorphization: a window into an array's
-/// storage (or a string's bytes, or C memory for a span from Span.ofPtr), as a value of three
-/// words. The owner keeps the storage alive; data points at the first element. A Buffer's
-/// window may be written (in place: a Buffer is shared), a span's only read.
+/// What a span<T> is after monomorphization: a window into an array's storage (or a string's
+/// bytes, or C memory for a span from Span.ofPtr, or a Buffer's), as a value of three words.
+/// The owner keeps the storage alive; data points at the first element; it's only read.
 let windowType = "$window"
 
 /// Built-in generic type constructors and their arity.
@@ -291,7 +291,7 @@ let measDiv (a: Ty) (b: Ty) = TMeas(normMeas (TMeas([], [ a, 1; b, -1 ])))
 
 /// The library's namespaces, open in every module at the lowest precedence: `List.map` is
 /// Collections.List.map and `File.exists` IO.File.exists, unless the program defines its own.
-let autoOpens = [ "Collections"; "Text"; "IO"; "Diagnostics"; "Threading"; "Net" ]
+let autoOpens = [ "Collections"; "Text"; "IO"; "Diagnostics"; "Threading"; "Net"; "Time" ]
 
 /// A name as programs write it: without an auto-opened namespace (Collections.Map -> Map).
 let shortName (q: string) =
@@ -496,6 +496,21 @@ type TypeInfo = { npars: int; def: TypeDef }
 let windowDef =
     { npars = 1
       def = RecordDef [ "$owner", TCon("array", [ TGen 0 ]); "$data", TCon("ptr", [ TGen 0 ]); "$length", TCon("int", []) ] }
+
+/// What a Buffer<T> is after monomorphization: a ref to a window with room, so that every
+/// reference to the Buffer sees it grow. The owner's own length is how many of its elements hold
+/// a value (a slice of a Buffer is a cell of its own over the same storage, with no room, so
+/// pushing on it copies first).
+let bufferType = "$buffer"
+
+let bufferDef =
+    { npars = 1
+      def =
+        RecordDef
+            [ "$owner", TCon("array", [ TGen 0 ])
+              "$data", TCon("ptr", [ TGen 0 ])
+              "$length", TCon("int", [])
+              "$capacity", TCon("int", []) ] }
 
 // ---------------------------------------------------------------- core IR
 

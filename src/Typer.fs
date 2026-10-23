@@ -411,6 +411,26 @@ let private builtins =
           b "Text.String.toLower" "String.toLower" [] (f tStr tStr) 1
           b "Text.String.replace" "String.replace" [] (f tStr (f tStr (f tStr tStr))) 3
           b "Text.String.isFloat" "String.isFloat" [] (f tStr tBool) 1
+          b "Native.parseInt" "int.parse" [ kInt ] (f tInt (f tStr (TTuple [ tBool; a ]))) 2
+          b "Native.parseFloat" "float.parse" [ kFloat ] (f tStr (TTuple [ tBool; a ])) 1
+          b "Native.clockRealtime" "Clock.realtime" [] (f tUnit (tcon "i64")) 1
+          b "Native.fileOpen" "File.open" [] (f tStr (f tInt tInt)) 2
+          b "Native.fileModified" "File.mtime" [] (f tStr (tcon "i64")) 1
+          b "Native.fileSize" "File.size" [] (f tStr (tcon "i64")) 1
+          b "Native.fileTouch" "File.touch" [] (f tStr tUnit) 1
+          b "Native.fileCopy" "File.copy" [] (f tStr (f tStr tUnit)) 2
+          b "Native.fileMove" "File.move" [] (f tStr (f tStr tUnit)) 2
+          b "Native.tempFile" "File.temp" [] (f tStr tStr) 1
+          b "Native.tempDirectory" "Dir.temp" [] (f tStr tStr) 1
+          b "Native.deleteDirectory" "Dir.delete" [] (f tStr tUnit) 1
+          b "Native.isSymlink" "File.isSymlink" [] (f tStr tBool) 1
+          b "Native.currentDirectory" "Env.cwd" [] (f tUnit tStr) 1
+          b "Native.processStart" "Process.start" [] (f tStr (f tStr (f tStr (f tBool (f tStr (f tInt (f tInt (f tInt tInt)))))))) 8
+          b "Native.processPipe" "Process.pipe" [] (f tInt tInt) 1
+          b "Native.processWait" "Process.wait" [] (f tInt tInt) 1
+          b "Native.processKill" "Process.kill" [] (f tInt tInt) 1
+          b "Native.unixListen" "Unix.listen" [] (f tStr tInt) 1
+          b "Native.unixConnect" "Unix.connect" [] (f tStr tInt) 1
           b "Text.String.toFloat" "String.toFloat" [] (f tStr (tcon "f64")) 1
           b "Native.readLine" "Console.readLineRaw" [] (f tUnit tStr) 1
           b "Native.eof" "Console.eof" [] (f tUnit tBool) 1
@@ -420,6 +440,10 @@ let private builtins =
           b "Collections.Array.set" "array.update" [ kAny ] (f (TCon("array", [ a ])) (f tInt (f a (TCon("array", [ a ]))))) 3
           b "Collections.Buffer.create" "Array.create" [ kAny ] (f tInt (f a (TCon("Buffer", [ a ])))) 2
           b "Collections.Buffer.length" "Array.length" [ kAny ] (f (TCon("Buffer", [ a ])) tInt) 1
+          b "Collections.Buffer.push" "buffer.push" [ kAny ] (f a (f (TCon("Buffer", [ a ])) tUnit)) 2
+          b "Collections.Buffer.removeLast" "buffer.removeLast" [ kAny ] (f (TCon("Buffer", [ a ])) a) 1
+          b "Collections.Buffer.truncate" "buffer.truncate" [ kAny ] (f tInt (f (TCon("Buffer", [ a ])) tUnit)) 2
+          b "Collections.Buffer.blit" "buffer.blit" [ kAny ] (f (TCon("span", [ a ])) (f tInt (f (TCon("Buffer", [ a ])) (f tInt (f tInt tUnit))))) 5
           b "Collections.Array.copy" "array.copy" [ kAny ] (f (TCon("array", [ a ])) (TCon("array", [ a ]))) 1
           b "Collections.Buffer.ofArray" "array.copy" [ kAny ] (f (TCon("array", [ a ])) (TCon("Buffer", [ a ]))) 1
           b "Collections.Buffer.toArray" "array.copy" [ kAny ] (f (TCon("span", [ a ])) (TCon("array", [ a ]))) 1
@@ -638,6 +662,7 @@ type State =
       implRequires: Table<string * string, Set<string> list> // traits each type argument needs
       derives: Table<string, (int * string * Param list * SType option * Expr) list> // by full name, as traits
       deriveGroups: Table<string, string list> // derive Json = ToJson, FromJson: by full name, the members'
+      aliases: Table<string, int * Ty> // type Duration = i64<ns>: by full name, its parameters' count and what it names (TGen i the i-th)
       deriveModules: Table<string, string option> // derive -> the module declaring it
       // active pattern case -> (function, total?, number of parameters before the value)
       activePatterns: Table<string, string * bool * int>
@@ -666,7 +691,8 @@ type State =
 let private freshState () =
     { types =
         let t = Table()
-        t[windowType] <- windowDef // what Buffer and span are after monomorphization
+        t[windowType] <- windowDef // what a span is after monomorphization
+        t[bufferType] <- bufferDef // and a Buffer, in a ref
         t
       ctors = Table()
       records = ResizeArray()
@@ -683,6 +709,7 @@ let private freshState () =
       implRequires = Table()
       derives = Table()
       deriveGroups = Table()
+      aliases = Table()
       deriveModules = Table()
       activePatterns = Table()
       apCtors = Bag()
@@ -733,6 +760,7 @@ let markState (st: State) =
     st.implRequires.Mark()
     st.derives.Mark()
     st.deriveGroups.Mark()
+    st.aliases.Mark()
     st.deriveModules.Mark()
     st.activePatterns.Mark()
     st.apCtors.Mark()
@@ -1055,6 +1083,8 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
     let globalValues = st.globalValues
     let valueList = st.valueList
     let recordHints = Dictionary<Expr, Ty>(HashIdentity.Reference) // record literal -> expected type
+    let measuredHints = Dictionary<Expr, Ty>(HashIdentity.Reference) // 5<ns> -> the number type expected of it
+    let aliases = st.aliases
     let literalRecords = st.literalRecords
     let lambdaHints = Dictionary<Expr, Ty>(HashIdentity.Reference) // lambda -> the function type expected of it
     let dynHints = Dictionary<Expr, Ty>(HashIdentity.Reference) // expression -> the dyn Trait expected of it
@@ -1222,6 +1252,15 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
 
             TCon("fixed", [ toTy tparams el; n ])
         | STName(d, []) when d <> "" && System.Char.IsDigit d[0] -> fail 0 "only fixed takes a number as a type argument"
+        | STName(n, args) when (resolveWith aliases.ContainsKey n |> Option.exists (types.ContainsKey >> not)) ->
+            // an alias: what it names, at these arguments
+            let q = (resolveWith aliases.ContainsKey n).Value
+            let npars, target = aliases[q]
+
+            if npars <> args.Length then
+                fail 0 (sprintf "type '%s' expects %d type argument(s)" n npars)
+
+            substGen (List.map (toTy tparams) args) target
         | STName(n, args) ->
             let n =
                 match typeAliases.TryGetValue n with
@@ -1813,6 +1852,33 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
             match ctors.TryGetValue "Collections.Seq" with
             | true, (u, tag) -> mk (CCtor(u, tag, [ cl ])) (TCon(u, [ a ]))
             | _ -> fail 0 "seq { } needs the library's Seq"
+        | Call("$format", [ e; StrLit spec ]) ->
+            // {e:spec}: Format.format e "spec", and a number's specifier checked (0024): F and N
+            // for every number, D, X and B for integers, E and G for floats
+            let x = uniq "$hole"
+            let c = inf (Let(PIdent(x, None), None, e, Call("Format.format", [ Var x; StrLit spec ])))
+
+            let kind =
+                match c.k with
+                | CLet(_, v, _) ->
+                    match prune v.ty with
+                    | TCon(n, _) when ints.Contains n -> "an integer"
+                    | TCon(n, _) when floats.Contains n -> "a float"
+                    | TVar r when (kindOf r).allowed |> Option.exists (fun a -> a.Contains "int") -> "an integer"
+                    | TVar r when (kindOf r).allowed |> Option.exists (fun a -> a.Contains "f64") -> "a float"
+                    | _ -> ""
+                | _ -> ""
+
+            let letters =
+                match kind with
+                | "an integer" -> "FNDXxBb"
+                | "a float" -> "FNEG"
+                | _ -> ""
+
+            if letters <> "" && not (letters.Contains spec[0]) then
+                fail 0 (sprintf "'%c' isn't a format specifier for %s: it takes %s" spec[0] kind (letters |> Seq.map string |> String.concat ", "))
+
+            c
         | Call("$yield", [ e ]) -> perform env depth "Yield.yield" [ e ]
         | Call("$yieldAll", [ e ]) -> call env depth "Collections.Seq.yieldAll" [ e ]
         | Handle(body, ops, ret) -> handleExpr env depth body ops ret
@@ -2157,6 +2223,18 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
             c
         | Measured(e, m) ->
             let ce = inf e
+
+            // a number with a unit is the number type expected of it (5<ns> as an i64<ns>)
+            match measuredHints.TryGetValue node with
+            | true, t ->
+                measuredHints.Remove node |> ignore
+
+                try
+                    unify ce.ty t
+                with Mismatch ->
+                    ()
+            | _ -> ()
+
             settle ce.ty
 
             match prune ce.ty with
@@ -2164,13 +2242,15 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
             | t -> fail 0 (sprintf "only numbers have units, not %s" (show t))
         | Bin(("*" | "/") as op, a, b) ->
             let ca = inf a
-            let cb = inf b
+            let cb = inferHint env depth ca.ty b // a literal with a unit on the right: the left's number type
 
             if measuredOperands ca cb then
                 measuredBin op ca cb
             else
                 arith op ca cb
-        | Bin(op, a, b) -> arith op (inf a) (inf b)
+        | Bin(op, a, b) ->
+            let ca = inf a
+            arith op ca (inferHint env depth ca.ty b)
         | Neg a ->
             let ca = inf a
             expect "operand of '-'" (fresh (kTrait "Num")) ca.ty
@@ -3601,10 +3681,15 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
     and pushInto (hint: Ty) (e: Expr) =
         match e with
         | At(_, a)
-        | Unsafe a -> pushHint hint a
+        | Unsafe a
+        | Neg a -> pushHint hint a
         | Lambda _ ->
             match prune hint with
             | TFun _ -> lambdaHints[e] <- hint
+            | _ -> ()
+        | Measured _ ->
+            match prune hint with
+            | TCon(n, _) when nums.Contains n -> measuredHints[e] <- TCon(n, [])
             | _ -> ()
         | RecordLit _ ->
             // only a record type helps (a generic 'a from a constructor mustn't replace it)
@@ -4182,7 +4267,10 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                 | Some q -> ctors.ContainsKey q && q <> "::"
                 | None -> false
 
-            (ctor || conversion f) && List.forall isConstant args
+            // a Buffer of constants: a constant's uses are its expression, so each use is a new
+            // Buffer (Buffer.empty)
+            let freshBuffer = resolveName f = Some "Collections.Buffer.ofArray"
+            (ctor || conversion f || freshBuffer) && List.forall isConstant args
         | _ -> false
 
     /// The expression with every name resolved where it is written (for inlining elsewhere).
@@ -4715,6 +4803,13 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                         | "NoComparison" -> optOut.Add(("Ord", name)) |> ignore
                         | _ -> fail 0 (sprintf "unknown attribute '%s'" a)
                 | _ -> fail 0 "attributes are only supported on type declarations yet"
+            | TypeAlias(name, tps, target) ->
+                let q = qualify name
+
+                if types.ContainsKey q || aliases.ContainsKey q then
+                    fail 0 (sprintf "type '%s' is already defined" name)
+
+                aliases[q] <- (tps.Length, toTy (Some tps) target)
             | TypeExt(name, tps, ms) ->
                 let name =
                     match typeAliases.TryGetValue name with
@@ -4762,7 +4857,8 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
             match d with
             | Value(n, _, _)
             | Fun(n, _, _, _, _)
-            | TypeDecl(n, _, _, _) -> [ n ]
+            | TypeDecl(n, _, _, _)
+            | TypeAlias(n, _, _) -> [ n ]
             | FunGroup items -> items |> List.collect (snd >> go)
             | Attrs(_, d)
             | Private d -> go d

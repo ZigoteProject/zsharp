@@ -114,6 +114,8 @@ type Decl =
     | FunGroup of (int * Decl) list // let rec f … and g …: Fun declarations (maybe Private) that may call each other
     | TypeDecl of name: string * tparams: string list * TypeBody * Member list
     | TypeExt of name: string * tparams: string list * Member list // type string with member ...
+    /// type Duration = i64<ns>: another name for a type, the same type wherever it's written
+    | TypeAlias of name: string * tparams: string list * target: SType
     | Trait of name: string * tparam: string * methods: (string * SType) list
     /// effect E<'a> = abstract op : T -> R …: operations a handler gives meaning to
     | Effect of name: string * tparams: string list * ops: (string * SType) list
@@ -2467,14 +2469,75 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                 wrap "Paren" first
 
     // $"a {x} b"  ==>  "a " + string x + " b"
+    // a hole {e}, {e,width}, {e:spec} or {e,width:spec} (0024): where its expression ends, at a
+    // ',' or a ':' outside brackets and literals (`::` is cons)
+    and holeEnd (s: string) =
+        let mutable depth = 0
+        let mutable i = 0
+        let mutable cut = -1
+
+        while cut < 0 && i < s.Length do
+            match s[i] with
+            | '('
+            | '['
+            | '{' ->
+                depth <- depth + 1
+                i <- i + 1
+            | ')'
+            | ']'
+            | '}' ->
+                depth <- depth - 1
+                i <- i + 1
+            | '"'
+            | '\'' when s[i] = '"' || (i + 2 < s.Length && (s[i + 1] = '\\' || s[i + 2] = '\'')) ->
+                // a string or a character literal, its escapes skipped
+                let q = s[i]
+                i <- i + 1
+
+                while i < s.Length && s[i] <> q do
+                    if s[i] = '\\' then
+                        i <- i + 1
+
+                    i <- i + 1
+
+                i <- i + 1
+            | ','
+            | ':' when depth = 0 && not (s[i] = ':' && ((i + 1 < s.Length && s[i + 1] = ':') || (i > 0 && s[i - 1] = ':'))) -> cut <- i
+            | _ -> i <- i + 1
+
+        cut
+
     and interpolate ln parts =
         parts
         |> List.filter (fun (isExpr, s, _) -> isExpr || s <> "")
         |> List.map (fun (isExpr, s, col) ->
             if isExpr then
+                let cut = holeEnd s
+                let text, rest = if cut < 0 then s, "" else s.Substring(0, cut), s.Substring cut
+
+                let width, spec =
+                    if rest = "" then None, None
+                    elif rest[0] = ':' then None, Some(rest.Substring 1)
+                    else
+                        match rest.IndexOf ':' with
+                        | -1 -> Some(rest.Substring 1), None
+                        | k -> Some(rest.Substring(1, k - 1)), Some(rest.Substring(k + 1))
+
+                let width =
+                    width
+                    |> Option.map (fun w ->
+                        match Int32.TryParse(w.Trim()) with
+                        | true, n -> n
+                        | _ -> fail ln (sprintf "a hole's width is a number: {x,10}, or {x,-10} to pad on the right, not ',%s' (a tuple in a hole is written {(a, b)})" w))
+
+                match spec with
+                | Some sp when not (sp.Length >= 1 && sp.Length <= 3 && Char.IsLetter sp[0] && Seq.forall Char.IsDigit (sp.Substring 1)) ->
+                    fail ln (sprintf "a format specifier is a letter and at most two digits, as {x:F2} or {n:X8}, not ':%s'" sp)
+                | _ -> ()
+
                 // the hole's tokens, moved to where they are in the file, so they get positions too
                 let holeToks =
-                    lex s
+                    lex text
                     |> Array.map (fun t ->
                         if t.col > 0 then
                             { t with line = ln; col = t.col + col - 1 }
@@ -2488,7 +2551,16 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                     | CompileError(_, msg)
                     | CompileErrorPos(_, _, msg) -> fail ln msg
 
-                Call("Show.show", [ e ]) // Show's, whatever `string` names where the hole is
+                // Show's and Format's, whatever `string` names where the hole is
+                let shown =
+                    match spec with
+                    | Some sp -> Call("$format", [ e; StrLit sp ])
+                    | None -> Call("Show.show", [ e ])
+
+                match width with
+                | Some w when w < 0 -> Call("Text.String.padRight", [ Lit(int64 -w); shown ])
+                | Some w -> Call("Text.String.padLeft", [ Lit(int64 w); shown ])
+                | None -> shown
             else
                 StrLit s)
         |> List.fold
@@ -3134,10 +3206,21 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
 
                 closeAngle ()
 
+            // type Name = <a type> on its line: an alias, as in F# (a record is { … }, and a union's
+            // cases have `|` or `of`: a union of one case without fields is written `| A`)
+            let aliasAhead () =
+                match toks[min (pos.Value + 1) (toks.Length - 1)].tok, toks[min (pos.Value + 2) (toks.Length - 1)].tok with
+                | (KSym("{" | "|") | KIndent | KNewline | KEof | KKw("member" | "static")), _ -> false
+                | KId _, (KKw "of" | KSym "|") -> false
+                | _ -> true
+
             if peek () = KKw "with" then
                 ln, TypeExt(name, List.ofSeq tparams, members ())
             elif peek () = KNewline || peek () = KEof then
                 ln, TypeDecl(name, [], UnionTy [], []) // [<Measure>] type m
+            elif isSym "=" && aliasAhead () then
+                advance ()
+                ln, TypeAlias(name, List.ofSeq tparams, ty ())
             else
                 expect (KSym "=") "'='"
                 let indented = peek () = KIndent

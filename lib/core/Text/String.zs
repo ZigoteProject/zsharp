@@ -52,26 +52,11 @@ let repeat n (s: string) =
     r <- r + s
   r
 
-/// The integer written in `s` (optional sign, decimal digits), or `None`.
-let parseInt (s: string) : option<int> =
-  let n = String.length s
-  if n = 0 then None
-  else
-    let first = String.byte s 0
-    let neg = first = u8 45
-    let start = if neg || first = u8 43 then 1 else 0
-    if start = n then None
-    else
-      let mutable acc = 0
-      let mutable ok = true
-      for i in start .. n - 1 do
-        let b = int (String.byte s i)
-        if b < 48 || b > 57 then ok <- false else acc <- acc * 10 + (b - 48)
-      if ok then Some (if neg then -acc else acc) else None
+/// The integer written in `s` (optional sign, decimal digits), or `None`: `Int.parse` at `int`.
+let parseInt (s: string) : option<int> = Int.parse s
 
-/// The floating-point number written in `s`, or `None`.
-let parseFloat (s: string) : option<f64> =
-  if String.isFloat s then Some (String.toFloat s) else None
+/// The floating-point number written in `s`, or `None`: `Float.parse` at `f64`.
+let parseFloat (s: string) : option<f64> = Float.parse s
 
 /// The character that starts at byte `i` of `s`, and the byte index after it (UTF-8 decoding;
 /// a malformed sequence gives U+FFFD and moves one byte). `for c in s` uses it.
@@ -115,6 +100,50 @@ let ofChar (c: char) = string c
 
 /// A string of the characters, in order.
 let ofChars (cs: list<char>) = String.concat (List.map String.ofChar cs)
+
+/// `s` with `c` before it, to `width` characters (`String.charCount`); never cut.
+let padLeftWith (width: int) (c: char) (s: string) =
+  let n = String.charCount s
+  if n >= width then s else String.repeat (width - n) (string c) + s
+
+/// `s` with `c` after it, to `width` characters; never cut.
+let padRightWith (width: int) (c: char) (s: string) =
+  let n = String.charCount s
+  if n >= width then s else s + String.repeat (width - n) (string c)
+
+/// `s` with spaces before it, to `width` characters: `String.padLeft 5 "ab"` is `"   ab"`.
+let padLeft (width: int) (s: string) = String.padLeftWith width ' ' s
+
+/// `s` with spaces after it, to `width` characters.
+let padRight (width: int) (s: string) = String.padRightWith width ' ' s
+
+// a space, tab or line break
+let private isSpace (b: u8) = b = u8 32 || b = u8 9 || b = u8 10 || b = u8 13
+
+/// `s` without its leading spaces, tabs and line breaks.
+let trimStart (s: string) =
+  let n = String.length s
+  let mutable i = 0
+  while i < n && isSpace (String.byte s i) do
+    i <- i + 1
+  String.sub s i (n - i)
+
+/// `s` without its trailing spaces, tabs and line breaks.
+let trimEnd (s: string) =
+  let mutable n = String.length s
+  while n > 0 && isSpace (String.byte s (n - 1)) do
+    n <- n - 1
+  String.sub s 0 n
+
+/// The lines of `s`, split at `\n` and `\r\n`, with no empty last line: as `File.readAllLines`
+/// splits a file.
+let splitLines (s: string) =
+  let lines =
+    String.split "\n" s
+    |> List.map (fun l -> if String.endsWith "\r" l then String.sub l 0 (String.length l - 1) else l)
+  match List.rev lines with
+  | "" :: rest -> List.rev rest
+  | _ -> lines
 
 type string with
   /// The length in bytes (UTF-8).

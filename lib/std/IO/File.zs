@@ -43,3 +43,57 @@ let writeAllTextAsync (path: string) (text: string) : Task<result<unit, string>>
 let delete (path: string) =
   Native.deleteFile path
   ioResult ()
+
+/// The file opened to read, through a buffer; `use` closes it.
+let openRead (path: string) : result<Reader, string> =
+  let fd = Native.fileOpen path 0
+  ioResult (Reader.ofFd fd)
+
+/// The file opened to write, emptied first (or created); `use` flushes and closes it.
+let openWrite (path: string) : result<Writer, string> =
+  let fd = Native.fileOpen path 1
+  ioResult (Writer.ofFd fd)
+
+/// The file opened to write at its end (or created); `use` flushes and closes it.
+let openAppend (path: string) : result<Writer, string> =
+  let fd = Native.fileOpen path 2
+  ioResult (Writer.ofFd fd)
+
+/// The whole file's bytes.
+let readAllBytes (path: string) : result<array<u8>, string> =
+  readAllText path |> Result.map (fun text -> Buffer.toArray (String.bytes text))
+
+/// Replaces the file's contents with the bytes (creating it if needed).
+let writeAllBytes (path: string) (bytes: span<u8>) = writeAllText path (String.ofBytes bytes)
+
+/// Copies the file to `target`, replacing what's there.
+let copy (path: string) (target: string) =
+  Native.fileCopy path target
+  ioResult ()
+
+/// Moves the file to `target`, replacing what's there: a rename, or a copy and a delete from
+/// another file system.
+let move (path: string) (target: string) =
+  Native.fileMove path target
+  ioResult ()
+
+/// When the file was last changed.
+let modifiedAt (path: string) : result<DateTime, string> =
+  let nanos = Native.fileModified path
+  ioResult ({ sinceEpoch = nanos * 1<ns> }: DateTime)
+
+/// The file's size in bytes.
+let size (path: string) : result<i64, string> =
+  let n = Native.fileSize path
+  ioResult n
+
+/// Marks the file changed now (its modification time), as `touch` does.
+let touch (path: string) =
+  Native.fileTouch path
+  ioResult ()
+
+/// A new empty file in the temporary directory (`$TMPDIR`, else `/tmp`), named `prefix` and six
+/// characters, readable by its owner only: its path.
+let createTemp (prefix: string) : result<string, string> =
+  let path = Native.tempFile prefix
+  ioResult path

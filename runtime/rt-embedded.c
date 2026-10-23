@@ -328,6 +328,145 @@ zs_str *zs_str_of_f64(double v) {
 
 zs_str *zs_str_of_f32(float v) { return zs_str_of_f64((double)v); }
 
+// ---- format specifiers (0024): integers as the host's; floats by zs_str_of_f64's rules
+
+static void spec_of(zs_str *spec, char *letter, int *digits) {
+    *letter = spec->len > 0 ? spec->data[0] : 'G';
+    *digits = -1;
+    if (spec->len > 1) {
+        *digits = 0;
+        for (zs_int i = 1; i < spec->len && i < 3; i++) *digits = *digits * 10 + (spec->data[i] - '0');
+    }
+}
+
+// the integer part of a decimal text with a comma every three digits
+static int group_digits(const char *in, int n, char *out) {
+    int k = 0, start = in[0] == '-' ? 1 : 0, whole = start;
+    while (whole < n && in[whole] != '.') whole++;
+    if (start) out[k++] = '-';
+    for (int i = start; i < whole; i++) {
+        if (i > start && (whole - i) % 3 == 0) out[k++] = ',';
+        out[k++] = in[i];
+    }
+    for (int i = whole; i < n; i++) out[k++] = in[i];
+    return k;
+}
+
+zs_str *zs_format_int(int64_t v, int64_t bits, bool isUnsigned, zs_str *spec) {
+    char buf[120], grouped[160];
+    char letter;
+    int d, n = 0;
+    spec_of(spec, &letter, &d);
+    uint64_t mask = bits >= 64 ? ~(uint64_t)0 : ((uint64_t)1 << bits) - 1;
+    uint64_t u = (uint64_t)v & mask;
+    if (letter == 'X' || letter == 'x' || letter == 'B' || letter == 'b') {
+        int base = letter == 'B' || letter == 'b' ? 2 : 16;
+        const char *digits = letter == 'x' ? "0123456789abcdef" : "0123456789ABCDEF";
+        char tmp[65];
+        int k = 0;
+        do { tmp[k++] = digits[u % (uint64_t)base]; u /= (uint64_t)base; } while (u);
+        for (int i = k; i < d; i++) buf[n++] = '0';
+        while (k) buf[n++] = tmp[--k];
+        return str_of(buf, n);
+    }
+    bool neg = !isUnsigned && v < 0;
+    uint64_t mag = isUnsigned ? u : neg ? (uint64_t)(-(v + 1)) + 1 : (uint64_t)v;
+    if (neg) buf[n++] = '-';
+    char tmp[24];
+    int k = u64_text(mag, tmp);
+    if (letter != 'F' && letter != 'N') for (int i = k; i < d; i++) buf[n++] = '0';
+    for (int i = 0; i < k; i++) buf[n++] = tmp[i];
+    if (letter == 'F' || letter == 'N') {
+        int decimals = d < 0 ? 2 : d;
+        if (decimals > 0) buf[n++] = '.';
+        for (int i = 0; i < decimals; i++) buf[n++] = '0';
+        if (letter == 'N') return str_of(grouped, group_digits(buf, n, grouped));
+    }
+    return str_of(buf, n);
+}
+
+// ponytail: F and N round half away from zero in double arithmetic, E and G give
+// zs_str_of_f64's text; a device's output is checked by eye, not against .NET
+zs_str *zs_format_float(double x, zs_str *spec) {
+    char letter;
+    int d;
+    spec_of(spec, &letter, &d);
+    if ((letter != 'F' && letter != 'N') || x != x || x > 1e15 || x < -1e15) return zs_str_of_f64(x);
+    char buf[80], grouped[120];
+    int n = 0, decimals = d < 0 ? 2 : d > 15 ? 15 : d;
+    bool neg = x < 0;
+    if (neg) x = -x;
+    double scale = 1;
+    for (int i = 0; i < decimals; i++) scale *= 10;
+    uint64_t all = (uint64_t)(x * scale + 0.5);
+    uint64_t whole = all / (uint64_t)scale, frac = all % (uint64_t)scale;
+    if (neg && all) buf[n++] = '-';
+    n += u64_text(whole, buf + n);
+    if (decimals > 0) {
+        buf[n++] = '.';
+        char tmp[24];
+        int k = u64_text(frac, tmp);
+        for (int i = k; i < decimals; i++) buf[n++] = '0';
+        for (int i = 0; i < k; i++) buf[n++] = tmp[i];
+    }
+    return letter == 'N' ? str_of(grouped, group_digits(buf, n, grouped)) : str_of(buf, n);
+}
+
+// ---- Int.parse and Float.parse (0024), as the host's
+
+bool zs_parse_int(zs_str *s, int64_t radix, bool isUnsigned, int64_t bits, int64_t *out) {
+    zs_int i = 0, n = s->len;
+    bool neg = false;
+    if (n > 0 && (s->data[0] == '-' || s->data[0] == '+')) { neg = s->data[0] == '-'; i = 1; }
+    if (i == n || radix < 2 || radix > 36) return false;
+    uint64_t acc = 0;
+    for (; i < n; i++) {
+        char c = s->data[i];
+        int d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'z' ? c - 'a' + 10 : c >= 'A' && c <= 'Z' ? c - 'A' + 10 : 99;
+        if (d >= radix) return false;
+        if (acc > (UINT64_MAX - (uint64_t)d) / (uint64_t)radix) return false;
+        acc = acc * (uint64_t)radix + (uint64_t)d;
+    }
+    if (isUnsigned) {
+        uint64_t max = bits >= 64 ? UINT64_MAX : ((uint64_t)1 << bits) - 1;
+        if ((neg && acc != 0) || acc > max) return false;
+        *out = (int64_t)acc;
+    } else {
+        uint64_t limit = (uint64_t)1 << (bits - 1);
+        if (acc > (neg ? limit : limit - 1)) return false;
+        *out = neg ? (int64_t)(0 - acc) : (int64_t)acc;
+    }
+    return true;
+}
+
+// ponytail: digits, a fraction and an exponent in double arithmetic, so the last digit can be
+// off by one rounding (the host's strtod is exact); enough to read a setting on a device
+bool zs_parse_float(zs_str *s, double *out) {
+    zs_int i = 0, n = s->len;
+    bool neg = false;
+    if (n > 0 && (s->data[0] == '-' || s->data[0] == '+')) { neg = s->data[0] == '-'; i = 1; }
+    double v = 0;
+    int digits = 0;
+    for (; i < n && s->data[i] >= '0' && s->data[i] <= '9'; i++, digits++) v = v * 10 + (s->data[i] - '0');
+    if (i < n && s->data[i] == '.') {
+        double scale = 0.1;
+        for (i++; i < n && s->data[i] >= '0' && s->data[i] <= '9'; i++, digits++, scale /= 10) v += (s->data[i] - '0') * scale;
+    }
+    if (digits == 0) return false;
+    if (i < n && (s->data[i] == 'e' || s->data[i] == 'E')) {
+        i++;
+        bool eneg = false;
+        if (i < n && (s->data[i] == '-' || s->data[i] == '+')) { eneg = s->data[i] == '-'; i++; }
+        int e = 0, ed = 0;
+        for (; i < n && s->data[i] >= '0' && s->data[i] <= '9'; i++, ed++) e = e * 10 + (s->data[i] - '0');
+        if (ed == 0) return false;
+        for (int k = 0; k < e && k < 400; k++) v = eneg ? v / 10 : v * 10;
+    }
+    if (i != n) return false;
+    *out = neg ? -v : v;
+    return true;
+}
+
 zs_str *zs_str_of_bool(bool v) { return v ? str_of("true", 4) : str_of("false", 5); }
 
 // a char's text: its UTF-8 encoding (a value that isn't a Unicode scalar becomes U+FFFD)

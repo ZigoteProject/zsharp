@@ -36,7 +36,8 @@ let rec private concrete (inst: Ty list) t =
     | TGen i -> List.item i inst
     | TCon(n, _) when nums.Contains n -> TCon(n, []) // units of measure are erased
     | TMeas _ -> measOne
-    | TCon(("Buffer" | "span"), a) -> TCon(windowType, List.map (concrete inst) a) // a window: Core's windowType
+    | TCon("span", a) -> TCon(windowType, List.map (concrete inst) a) // a window: Core's windowType
+    | TCon("Buffer", a) -> TCon("ref", [ TCon(bufferType, List.map (concrete inst) a) ]) // a window that grows
     | TCon("share", [ f ]) -> concrete inst f // a function that may cross threads is a function
     | TCon(("$ext" | "$total"), _) as r -> concreteRow inst r
     | TCon(n, []) when n.StartsWith "$sk" -> tUnit // an operation's own type in its clause: no value has it
@@ -96,6 +97,33 @@ let private isPrim (t: Ty) =
 /// Copies of each function reached from roots, at each instantiation reached: a generic
 /// function once per type arguments, the others once. def: a function's checked definition;
 /// external: a non-generic function another module has the code of, which isn't copied.
+/// The program with its types' fields as monomorphization gives every other type: units of
+/// measure erased, a Buffer as its cell, a span as its window. The passes after it read a
+/// field's type from the table. A copy: the checker's table stays as the checker made it.
+let lowered (prog: Program) : Program =
+    let rec lower (t: Ty) =
+        match prune t with
+        | TCon(n, _) when nums.Contains n -> TCon(n, [])
+        | TMeas _ -> measOne
+        | TCon("Buffer", a) -> TCon("ref", [ TCon(bufferType, List.map lower a) ])
+        | TCon("span", a) -> TCon(windowType, List.map lower a)
+        | TCon(n, a) -> TCon(n, List.map lower a)
+        | TFun(a, b, r) -> TFun(lower a, lower b, r)
+        | TTuple ts -> TTuple(List.map lower ts)
+        | t -> t
+
+    let types = Dictionary<string, TypeInfo>()
+
+    for KeyValue(n, info) in prog.types do
+        types[n] <-
+            { info with
+                def =
+                    match info.def with
+                    | RecordDef fs -> RecordDef(fs |> List.map (fun (f, t) -> f, lower t))
+                    | UnionDef cs -> UnionDef(cs |> List.map (fun (c, ts) -> c, List.map lower ts)) }
+
+    { prog with types = types }
+
 let runFrom (prog: Program) (def: string -> FunDef) (roots: string list) (external: string -> bool) : MFun list =
     let seen = HashSet<string>()
     let queue = Queue<string * Ty list>()
@@ -153,6 +181,7 @@ let runFrom (prog: Program) (def: string -> FunDef) (roots: string list) (extern
             | "Eq.equal", _ -> CBin("=", a 0, a 1)
             | "Ord.compare", _ -> CPrim("compare", args)
             | "Show.show", _ -> CPrim("string", args)
+            | "Format.format", _ -> CPrim("format", args)
             | "Hash.hash", _ -> CPrim("hash", args)
             | _ -> Syntax.fail 0 (sprintf "%s has no built-in %s" (show t) q)
 
@@ -622,7 +651,8 @@ let fuse (funs: MFun list) : MFun list =
     let elemOf (t: Ty) =
         match prune t with
         | TCon(("list" | "array"), [ el ]) -> el
-        | TCon(n, [ el ]) when n = windowType -> el // a span or a Buffer: read as an array is
+        | TCon(n, [ el ]) when n = windowType -> el // a span: read as an array is
+        | TCon("ref", [ TCon(n, [ el ]) ]) when n = bufferType -> el // a Buffer
         | t -> failwithf "fusion: %s has no elements" (show t)
 
     /// The pipeline under a consumer of a list (or an array): its stages, in order, and its source.

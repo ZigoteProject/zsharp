@@ -43,6 +43,13 @@ trait Show<'a> =
   /// The value as text.
   abstract show : 'a -> string
 
+/// Text for a value under a format specifier: what `$"{x:F2}"` calls. Built in for numbers, with
+/// .NET's standard specifiers: `F2` (fixed, two decimals), `E3`, `G`, `N0` (with commas), `D5`,
+/// `X8` and `x`, `B8` (`D`, `X` and `B` for integers, `E` and `G` for floats).
+trait Format<'a> =
+  /// The value as text, shaped by `spec` (`"F2"`, `"X8"`).
+  abstract format : 'a -> string -> string
+
 /// A hash code, consistent with `Eq`: equal values hash the same.
 trait Hash<'a> =
   /// The value's hash code.
