@@ -100,6 +100,24 @@ let syntax (command: string) (path: string) : int =
       printDiagnostic src d
     if Array.length diags = 0 then 0 else 1
 
+// zs tree --check files…: each file's tree is lossless (tests/cst/roundtrip.sh); a file that
+// doesn't parse only fails when its tree loses text
+let treeCheck (paths: list<string>) : int =
+  let mutable status = 0
+  for path in paths do
+    match File.readAllText path with
+    | Error e ->
+      eprintln e
+      status <- 1
+    | Ok text ->
+      let src = Source.make 0 path (String.replace text "\r\n" "\n")
+      let (toks, _) = Report.collect (fun () -> Lexer.lex src)
+      let ((tree, _), _) = Report.collect (fun () -> Parser.parse src toks)
+      if not (Tree.lossless tree) then
+        eprintln $"{path}: the tree's text differs from the file"
+        status <- 1
+  status
+
 // the milliseconds lexing and parsing files takes, the best of ten runs: against the F#
 // compiler's `zs parse-time` (0020's criterion 2)
 let parseTime (paths: list<string>) : int =
@@ -127,7 +145,7 @@ let parseTime (paths: list<string>) : int =
 // the milliseconds checking a program takes, the library with it, the best of ten runs: against
 // the F# compiler's `zs check-time` (0020's criterion 2, its second half)
 let checkTime (path: string) : int =
-  let run () = Build.Check.program path true true |> ignore
+  let run () = Build.Check.program path true true false true |> ignore
   run ()
   let mutable best = u64 0
   for i in 1 .. 10 do
@@ -139,17 +157,26 @@ let checkTime (path: string) : int =
   println $"{path}: {float (int best) / 1000000.0:F1} ms"
   0
 
-let main () =
-  match Environment.args () with
+// a command other than the build server's
+let command (args: list<string>) : int =
+  match args with
   | [ "tokens"; path ] -> syntax "tokens" path
+  | "tree" :: "--check" :: paths -> treeCheck paths
   | [ "tree"; path ] -> syntax "tree" path
   | "parse-time" :: paths -> parseTime paths
   | [ "check-time"; path ] -> checkTime path
   | "fmt" :: args -> fmt args
+  | [ "doc"; path ] -> Build.Doc.doc path
+  // editors may add flags such as --stdio
+  | "lsp" :: _ -> Lsp.Server.serve (Console.openStandardInput ()) None
+  | "mcp" :: _ -> Lsp.Mcp.serve (Console.openStandardInput ()) None
   | [ "check"; path ] -> Build.Check.run path false
   | [ "check"; "--strict"; path ] -> Build.Check.run path true
-  | [ "build"; "--strict"; path ] -> Build.Check.build path true
-  | [ "build"; path ] -> Build.Check.build path false
+  | "run" :: args -> Commands.run args
+  | "test" :: args -> Commands.test args
+  | [ "new"; name ] -> if Build.Project.newProject name then 0 else 1
+  | [ "fetch" ] -> Commands.fetch false
+  | [ "update" ] -> Commands.fetch true
   | [ "check-syntax"; path ] -> check path
   | [ "ast"; path ] ->
     match File.readAllText path with
@@ -166,3 +193,32 @@ let main () =
       Render.print (fun _ -> src) diags
       if Array.length diags = 0 then 0 else 1
   | _ -> usage ()
+
+extern isatty : i32 -> i32
+
+// started by an editor with no arguments: an LSP message starts with a Content-Length header, an
+// MCP message with '{'
+let detect () : int =
+  let input = Console.openStandardInput ()
+  match IO.Reader.readLine input with
+  | Ok(Some line) -> if String.startsWith "{" line then Lsp.Mcp.serve input (Some line) else Lsp.Server.serve input (Some line)
+  | _ -> 2
+
+// one command's work: as zs runs it, or as the build server does for a request (served)
+let rec run (served: bool) (args: list<string>) : int =
+  match args with
+  | [] when isatty 0 = 0 -> detect ()
+  | [ "server"; "stop" ] ->
+    Server.viaServer [ "stop" ] |> ignore
+    0
+  | [ "server"; path ] -> Server.serve path (run true)
+  | "build" :: rest ->
+    if served || Option.isSome (Environment.getVariable "ZS_NO_SERVER") then
+      Commands.build served rest
+    else
+      match Server.viaServer args with
+      | Some code -> code
+      | None -> Commands.build false rest
+  | _ -> command args
+
+let main () = run false (Environment.args ())

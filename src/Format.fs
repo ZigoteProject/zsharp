@@ -511,7 +511,7 @@ let formatRange (src: string) (first: int) (last: int) : (int * int * string) op
                 let lo, hi = List.head ks, List.last ks
                 let lines = formatted.Split '\n'
                 let text = String.concat "\n" lines[after[lo].line - 1 .. after[hi].last - 1]
-                let old = String.concat "\n" (src.Split '\n')[a - 1 .. b - 1]
+                let old = String.concat "\n" ((src.Split '\n')[a - 1 .. b - 1])
                 if text = old then None else Some(a, b, text)
     with
     | CompileError _

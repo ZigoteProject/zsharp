@@ -12,5 +12,5 @@
 {"jsonrpc":"2.0","id":13,"result":[{"label":"Length","kind":2,"detail":"list"},{"label":"Head","kind":2,"detail":"list"},{"label":"Tail","kind":2,"detail":"list"},{"label":"IsEmpty","kind":2,"detail":"list"}]}
 {"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"URI","diagnostics":[{"range":{"start":{"line":4,"character":14},"end":{"line":4,"character":24}},"severity":1,"source":"zs","message":"argument 2 of \u0027add\u0027: expected int, got bool"}]}}
 {"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"URI","diagnostics":[{"range":{"start":{"line":8,"character":2},"end":{"line":8,"character":3}},"severity":2,"source":"zs","message":"this statement\u0027s value (int) is discarded: use it, or pipe it to ignore","code":"unused-value","relatedInformation":[]}]}}
-{"jsonrpc":"2.0","id":16,"result":[{"range":{"start":{"line":5,"character":0},"end":{"line":5,"character":26}},"newText":"  let names = [ \u0022a\u0022; \u0022b\u0022 ]"}]}
+{"jsonrpc":"2.0","id":16,"result":[{"range":{"start":{"line":5,"character":0},"end":{"line":5,"character":23}},"newText":"  let names = [ \u0022a\u0022; \u0022b\u0022 ]"}]}
 {"jsonrpc":"2.0","id":6,"result":null}

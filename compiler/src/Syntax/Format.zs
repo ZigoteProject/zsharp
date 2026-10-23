@@ -583,3 +583,70 @@ let format (file: int) (path: string) (text: string) : result<string, string> / 
     Error ""
   else
     formatParsed src.text toks tree
+
+/// The declarations and statements lines first to last (from 1) touch, formatted: their first and
+/// last line and their text, or None when they are formatted already or the text doesn't parse
+/// (the editor's range formatting).
+let formatRange (text0: string) (first: int) (last: int) : option<int * int * string> / Report =
+  let text = String.replace text0 "\r\n" "\n"
+  let (formatted, _) = collect (fun () -> format 0 "" text)
+  match formatted with
+  | Error _ -> None
+  | Ok out ->
+    let src = Source.make 0 "" text
+    let (toks, _) = collect (fun () -> Lexer.lex src)
+    let ((tree, _), _) = collect (fun () -> Parser.parse src toks)
+    let lineOf (s: Source.Source) (offset: int) = Source.lineOf s offset + 1
+    // a token's first line and its last (a string can span lines)
+    let lines (s: Source.Source) (t: Token) = (lineOf s t.offset, lineOf s (t.offset + max 0 (t.length - 1)))
+    // the statements and declarations: the children of the file and of blocks
+    let spans = Buffer.empty
+    let rec walk (n: int) =
+      for i in 0 .. tree.counts.[n] - 1 do
+        let c = Tree.child tree n i
+        if c >= 0 then
+          let k = Tree.name tree.kinds.[n]
+          if k = "File" || k = "Block" then
+            let written = Buffer.empty
+            let rec gather (m: int) =
+              for j in 0 .. tree.counts.[m] - 1 do
+                let d = Tree.child tree m j
+                if d < 0 then
+                  let t = tree.tokens.[-1 - d]
+                  if t.length > 0 then
+                    Buffer.push t written
+                else
+                  gather d
+            gather c
+            if Buffer.length written > 0 then
+              Buffer.push (fst (lines src written.[0]), snd (lines src written.[Buffer.length written - 1])) spans
+          walk c
+    walk (Tree.root tree)
+    // the smallest statement covering each end of the range
+    let cover (line: int) =
+      let around = List.filter (fun (a, b) -> a <= line && line <= b) (Array.toList (Buffer.toArray spans))
+      match List.sortBy (fun (a, b) -> b - a) around with
+      | s :: _ -> s
+      | [] -> (line, line)
+    let (fa, fb) = cover first
+    let (la, lb) = cover last
+    let a = min fa la
+    let b = max fb lb
+    // the same tokens in the formatted text: the written ones but `;`, counted from the start
+    let written (s: Source.Source) =
+      let (ts, _) = collect (fun () -> Lexer.lex s)
+      Array.filter (fun (t: Token) -> t.length > 0 && t.kind <> Semi) ts
+    let outSrc = Source.make 0 "" out
+    let before = written src
+    let after = written outSrc
+    let inRange = List.filter (fun k -> fst (lines src before.[k]) >= a && snd (lines src before.[k]) <= b) (List.init (Array.length before) (fun k -> k))
+    match inRange with
+    | [] -> None
+    | lo :: _ ->
+      let hi = List.last inRange
+      let outLines = Array.ofList (String.split "\n" out)
+      let srcLines = Array.ofList (String.split "\n" text)
+      let piece (ls: array<string>) (x: int) (y: int) = String.join "\n" (List.map (fun i -> ls.[i]) (List.init (y - x + 1) (fun i -> x - 1 + i)))
+      let newText = piece outLines (fst (lines outSrc after.[lo])) (snd (lines outSrc after.[hi]))
+      let old = piece srcLines a b
+      if newText = old then None else Some(a, b, newText)

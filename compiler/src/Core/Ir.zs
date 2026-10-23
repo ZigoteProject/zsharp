@@ -17,8 +17,9 @@ type CPat =
   | CPOr of CPat * CPat
   | CPAs of CPat * string * Ty
 
-/// An expression and its type.
-type CExpr = { k: CKind; ty: Ty }
+/// An expression and its type, and its number in the tree when a pass has numbered it (number):
+/// 0 for a node made since (mk), which a pass keying tables by node tells apart that way.
+type CExpr = { k: CKind; ty: Ty; id: int }
 
 and CKind =
   | CInt of i64
@@ -89,7 +90,7 @@ and CKind =
   /// a jump to a join point, in a tail position of its rest
   | CJump of string * list<CExpr>
 
-let mk (k: CKind) (ty: Ty) : CExpr = { k = k; ty = ty }
+let mk (k: CKind) (ty: Ty) : CExpr = { k = k; ty = ty; id = 0 }
 
 /// A node rebuilt with f applied to each of its direct child expressions, in evaluation order.
 let mapChildren (f: CExpr -> CExpr) (k: CKind) : CKind =
@@ -231,6 +232,32 @@ let rec refs (e: CExpr) : list<string * Ty> = List.append (ownRefs e) (List.conc
 let freeVars (e: CExpr) : Set<string> =
   Set.difference (Set.ofList (List.map fst (refs e))) (Set.ofList (binders e))
 
+/// The tree with every node numbered from 1 (the order doesn't matter), for a pass that keys
+/// tables by node.
+let number (e: CExpr) : CExpr =
+  let count = ref 0
+  let rec go (x: CExpr) : CExpr =
+    count.Value <- count.Value + 1
+    let n = count.Value
+    { x with k = mapChildren go x.k; id = n }
+  go e
+
+/// freeVars, remembered for the numbered nodes (bottom-up: a node's set from its children's and
+/// its own references, less what it binds), for a pass that asks about the same nodes again and
+/// again; a node made since is computed from its children.
+let cachedFreeVars () : CExpr -> Set<string> =
+  let cache = ref Map.empty
+  let rec fv (e: CExpr) : Set<string> =
+    match (if e.id > 0 then Map.tryFind e.id cache.Value else None) with
+    | Some s -> s
+    | None ->
+      let below = List.fold (fun (acc: Set<string>) c -> Set.union acc (fv c)) Set.empty (children e.k)
+      let s = Set.difference (Set.union below (Set.ofList (List.map fst (ownRefs e)))) (Set.ofList (ownBinders e.k))
+      if e.id > 0 then
+        cache.Value <- Map.add e.id s cache.Value
+      s
+  fv
+
 /// A top-level function in Core.
 type FunDef =
   { name: string
@@ -300,7 +327,7 @@ let rec mapTypes (f: Ty -> Ty / 'e) (e: CExpr) : CExpr / 'e =
     | CDropFields(x, t, tag, keep, tok, b) -> CDropFields(x, f t, tag, keep, tok, go b)
     | CJoin(j, ps, b, r) -> CJoin(j, pars ps, go b, go r)
     | other -> mapChildren go other
-  { k = k; ty = f e.ty }
+  { k = k; ty = f e.ty; id = 0 }
 
 /// The type of each local an expression refers to (a local function's at its uses: the definition
 /// has its parameters' types only), by unique name.

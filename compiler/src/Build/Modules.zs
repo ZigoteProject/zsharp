@@ -21,7 +21,11 @@ type Loaded =
     /// the paths of the modules it uses
     uses: list<string>
     /// its syntax errors
-    errors: array<Diagnostic> }
+    errors: array<Diagnostic>
+    /// the C names its imports left out, with why
+    skippedC: list<string * string>
+    /// what the editor shows for the C names it imports
+    cInfos: list<string * CImport.CInfo> }
 
 /// The library's files after the prelude, in dependency order; a file's module is its path
 /// (core/Collections/List.zs is Collections.List). Core needs no operating system, so every
@@ -41,6 +45,18 @@ let libraryDir () : string =
     let dir = Path.getDirectoryName (Environment.programName ())
     let beside = Path.combine dir "lib"
     if File.exists (Path.combine beside "prelude.zs") then beside else Path.combine (Path.combine (Path.combine dir "..") "..") "lib"
+
+/// The library a file is part of: the lib directory above it that holds prelude.zs and core/. An
+/// editor opening one of its files checks that library on its own, not as a program that would
+/// define everything a second time.
+let libraryRootOf (file: string) : option<string> =
+  let rec up (dir: string) =
+    if Path.getFileName dir = "lib" && File.exists (Path.combine dir "prelude.zs") && Directory.exists (Path.combine dir "core") then
+      Some dir
+    else
+      let parent = Path.getDirectoryName dir
+      if parent = "" || parent = dir then None else up parent
+  up (Path.getDirectoryName (Path.getFullPath file))
 
 // a file lexed and parsed: its source, tree, declarations and syntax errors
 let private parse (index: int) (path: string) (text: string) : Source.Source * Tree.Tree * list<Ast.Decl> * array<Diagnostic> =
@@ -79,9 +95,15 @@ let private headerOf (decls: list<Ast.Decl>) : option<string> =
   | { d = Ast.ModuleHeader h } :: _ -> Some h
   | _ -> None
 
+/// A file's text: the editor's when it has the file open (`texts`, by full path), else the disk's.
+let readSource (texts: Map<string, string>) (path: string) : result<string, string> =
+  match Map.tryFind (Path.getFullPath path) texts with
+  | Some t -> Ok t
+  | None -> File.readAllText path
+
 /// A file read and parsed, as a module (its index in the build); Error when it can't be read.
-let load (index: int) (path: string) (modName: option<string>) : result<Loaded, string> =
-  match File.readAllText path with
+let load (texts: Map<string, string>) (index: int) (path: string) (modName: option<string>) : result<Loaded, string> =
+  match readSource texts path with
   | Error e -> Error e
   | Ok text ->
     let (src, tree, decls, errors) = parse index path text
@@ -93,91 +115,234 @@ let load (index: int) (path: string) (modName: option<string>) : result<Loaded, 
         decls = decls
         impls = implsOf decls
         uses = []
-        errors = errors }
+        errors = errors
+        skippedC = []
+        cInfos = [] }
     Ok m
 
 /// The library rooted at `root`, the prelude first (its names are global), then Core, then (when
 /// hosted) Std; each file's module named by its header.
-let library (root: string) (hosted: bool) : result<list<Loaded>, string> =
+let library (texts: Map<string, string>) (root: string) (hosted: bool) : result<list<Loaded>, string> =
   let files = List.concat [ [ "prelude.zs" ]; List.map (fun f -> "core/" + f + ".zs") coreFiles; (if hosted then List.map (fun f -> "std/" + f + ".zs") stdFiles else []) ]
   let loaded = Buffer.empty
   let failure = ref None
   for f in files do
     if Option.isNone failure.Value then
-      match load (Buffer.length loaded) (Path.combine root f) None with
+      match load texts (Buffer.length loaded) (Path.combine root f) None with
       | Ok m -> Buffer.push { m with modName = headerOf m.decls } loaded
       | Error e -> failure.Value <- Some e
   match failure.Value with
   | Some e -> Error e
   | None -> Ok(Array.toList (Buffer.toArray loaded))
 
-/// The main file and the modules it uses, dependencies first (files from index `first` on); an
-/// import cycle is an error at the file that closes it (no place: the file's), with its source.
-let program (first: int) (mainPath: string) : result<list<Loaded>, Diagnostic * option<Source.Source>> =
+/// What a program's packages give the link (their [c] sections): C flags for the C sources among
+/// them, and the sources, libraries and files.
+type Linked = { cflags: list<string>; links: list<string> }
+
+let private lowerFirst (s: string) : string =
+  let b = String.byte s 0
+  (if isUpper b then String.ofByte (b + u8 32) else String.ofByte b) + String.sub s 1 (String.length s - 1)
+
+/// A project's problem as a diagnostic, with the source it's in (the file's index in the build).
+let problem (index: int) (p: Project.Problem) : Diagnostic * option<Source.Source> =
+  match File.readAllText p.file with
+  | Ok text ->
+    let display = Path.getRelativePath (Environment.currentDirectory ()) p.file
+    let src = Source.make index display text
+    let offset = if p.line > 0 && p.line <= Array.length src.lines then src.lines.[p.line - 1] else -1
+    (error { file = index; offset = offset; length = -1 } p.message, Some src)
+  | Error _ -> (error { file = -1; offset = -1; length = -1 } (p.file + ": " + p.message), None)
+
+/// The main file and the modules it uses, dependencies first (files from index `first` on), and
+/// what its packages give the link. A module is a file of its package named by its path under
+/// the package's root (`Ast.Expr` is Ast/Expr.zs or Ast/expr.zs), and a dependency's modules are
+/// behind its name (0018 K1): `Json` is the json package's main file, `Json.Parser` its
+/// Parser.zs. A file names the package's modules as the checker resolves names, in the modules
+/// enclosing its own, in the modules it opens, then globally; only its package's files see its
+/// dependencies. An import cycle is an error at the file that closes it. hosted: pkg-config runs
+/// (a build for this machine).
+let program (texts: Map<string, string>) (first: int) (mainPath: string) (hosted: bool) : result<list<Loaded> * Linked, Diagnostic * option<Source.Source>> =
   let order = Buffer.empty
   let count = ref first
   // a module: whether it's fully loaded
   let finished = ref Map.empty
   let failure = ref None
   let mainFull = Path.getFullPath mainPath
-  let root = Path.getDirectoryName mainFull
   let display (p: string) = Path.getRelativePath (Environment.currentDirectory ()) p
-  // the file of the module A.B under the root, not the main file
-  let fileOf (m: string) : option<string> =
-    let parts = String.split "." m
-    let dir = List.fold Path.combine root (List.take (List.length parts - 1) parts)
+  let cflags = Buffer.empty
+  let links = Buffer.empty
+  let used = ref Set.empty
+  let fail (d: Diagnostic * option<Source.Source>) =
+    if Option.isNone failure.Value then
+      failure.Value <- Some d
+  let failProblem (p: Project.Problem) =
+    count.Value <- count.Value + 1
+    fail (problem (count.Value - 1) p)
+  // the file of the module at `path` (A.B) under a package's root, not its main (a dependency's
+  // main is its name alone; the program's isn't a module)
+  let fileIn (pkg: Project.Package) (path: string) : option<string> =
+    let parts = String.split "." path
+    let dir = List.fold Path.combine pkg.root (List.take (List.length parts - 1) parts)
     let last = List.last parts
-    let b = String.byte last 0
-    let lowered = (if isUpper b then String.ofByte (b + u8 32) else String.ofByte b) + String.sub last 1 (String.length last - 1)
-    List.tryFind (fun (f: string) -> f <> mainFull && File.exists f) [ Path.combine dir (last + ".zs"); Path.combine dir (lowered + ".zs") ]
+    List.tryFind (fun (f: string) -> f <> pkg.main && File.exists f) [ Path.combine dir (last + ".zs"); Path.combine dir (lowerFirst last + ".zs") ]
+  // the module with the full name m, as a file of pkg or of one of its dependencies
+  let find (pkg: Project.Package) (m: string) : option<string * string * Project.Package> =
+    let within (p: Project.Package) (prefix: option<string>) : option<string * string * Project.Package> =
+      match prefix with
+      | Some k ->
+        if m = k then
+          Some(m, p.main, p)
+        else if String.startsWith (k + ".") m then
+          Option.map (fun f -> (m, f, p)) (fileIn p (String.sub m (String.length k + 1) (String.length m - String.length k - 1)))
+        else
+          None
+      | None -> Option.map (fun f -> (m, f, p)) (fileIn p m)
+    match within pkg pkg.prefix with
+    | Some r -> Some r
+    | None -> List.tryPick (fun (pd: Project.PackageDep) -> match pd with | Project.PackageDep(k, d) -> within d (Some k)) pkg.deps
   // the modules a file's uses name: for A.B, the module A.B wherever it resolves (or A, when
   // nothing does): in the modules enclosing the file's, the modules it opens, then globally
-  let usedBy (modName: option<string>) (opens: list<string>) (uses: list<string>) : list<string * string> =
+  let usedBy (pkg: Project.Package) (modName: option<string>) (opens: list<string>) (uses: list<string>) : list<string * string * Project.Package> =
     let enclosing =
       match modName with
       | Some n -> List.rev (Infer.Cx.withEnclosing n)
       | None -> []
     let near (p: string) = List.append (List.map (fun e -> e + "." + p) enclosing) [ p ]
     let opened = List.collect near opens
-    let rec named (m: string) : list<string * string> =
+    let rec named (m: string) : list<string * string * Project.Package> =
       let candidates = List.append (near m) (List.map (fun o -> o + "." + m) opened)
-      match List.choose (fun c -> Option.map (fun f -> (c, f)) (fileOf c)) candidates with
+      match List.choose (find pkg) candidates with
       | [] when String.contains "." m -> named (Option.get (Infer.Cx.beforeLastDot m))
       | found -> found
     List.collect named uses
-  let rec visit (path: string) (modName0: option<string>) (stack: list<string>) =
+  // pkg-config's --cflags or --libs for a name in a package's [c], as arguments
+  let pkgConfig (m: Project.Manifest) (what: string) (name: string) : list<string> =
+    match Tools.runSplit "pkg-config" [ what; name ] with
+    | Ok r ->
+      if r.code = 0 then
+        List.filter (fun a -> a <> "") (String.split " " (String.replace (String.replace r.out "\t" " ") "\n" " "))
+      else
+        failProblem { file = Path.combine m.root "zs.toml"; line = 0; message = $"package {m.name}: pkg-config knows no '{name}'; install the library's development files, or give include and link in [c]" }
+        []
+    | Error _ ->
+      failProblem { file = Path.combine m.root "zs.toml"; line = 0; message = $"package {m.name}: pkg-config isn't installed; install it, or give include and link in [c]" }
+      []
+  // a package's [c] once a file of it is loaded: its sources, libraries and C flags are the
+  // build's; its include directories and pkg-config's flags are its `import c`s'
+  let cOf (pkg: Project.Package) : list<string> =
+    match pkg.manifest with
+    | None -> []
+    | Some m ->
+      let pc (what: string) = if hosted then List.collect (pkgConfig m what) m.c.pkgConfig else []
+      let flags = List.append (List.map (fun i -> "-I" + i) m.c.includes) (pc "--cflags")
+      if not (Set.contains m.root used.Value) then
+        used.Value <- Set.add m.root used.Value
+        for f in flags do
+          if not (List.contains f (Array.toList (Buffer.toArray cflags))) then
+            Buffer.push f cflags
+        for l in List.concat [ m.c.sources; m.c.link; pc "--libs" ] do
+          if not (List.contains l (Array.toList (Buffer.toArray links))) then
+            Buffer.push l links
+      flags
+  // import c: each replaced by the header's declarations, saved in the project's
+  // .zs-cache/cimport (or one next to the file); a [<Link>] on one is the build's
+  let imports (m: Loaded) (path: string) (flags: list<string>) : result<Loaded, Diagnostic> =
+    let dir = Path.getDirectoryName (Path.getFullPath path)
+    let root =
+      match Project.findProject dir with
+      | Some(Ok pm) -> pm.root
+      | _ -> dir
+    let cacheDir = Path.combine (Path.combine root ".zs-cache") "cimport"
+    let lineOf (d: Ast.Decl) : Span =
+      let offset = if d.dat >= 0 && d.dat < Array.length m.tree.tokens then m.tree.tokens.[d.dat].offset else 0
+      { file = m.source.file; offset = offset; length = -1 }
+    let problem = ref None
+    let report (d: Ast.Decl) (msg: string) =
+      if Option.isNone problem.Value then
+        problem.Value <- Some(error (lineOf d) msg)
+    let skipped = Buffer.empty
+    let infos = Buffer.empty
+    let imported (header: string) (d: Ast.Decl) : list<Ast.Decl> =
+      match CImport.importHeader header dir flags cacheDir d.dat with
+      | Ok r ->
+        for x in r.skipped do
+          Buffer.push x skipped
+        for x in r.infos do
+          Buffer.push x infos
+        List.map (fun (shape: Ast.DeclShape) -> Ast.decl shape d.dat) r.decls
+      | Error msg ->
+        report d msg
+        []
+    let expand (d: Ast.Decl) : list<Ast.Decl> =
+      match d.d with
+      | Ast.ImportC header -> imported header d
+      | Ast.Attrs(attrs, inner) ->
+        match inner.d with
+        | Ast.ImportC header ->
+          for (a, args) in attrs do
+            if a <> "Link" || List.isEmpty args then
+              report inner $"unknown attribute '{a}' on import c (use [<Link \"lib\">])"
+            for l in args do
+              let item = if List.contains (Path.getExtension l) [ ".c"; ".o"; ".a"; ".so" ] then Path.combine dir l else l
+              if not (List.contains item (Array.toList (Buffer.toArray links))) then
+                Buffer.push item links
+          imported header inner
+        | _ -> [ d ]
+      | _ -> [ d ]
+    let decls = List.collect expand m.decls
+    match problem.Value with
+    | Some p -> Error p
+    | None -> Ok { m with decls = decls; skippedC = Array.toList (Buffer.toArray skipped); cInfos = Array.toList (Buffer.toArray infos) }
+  let rec visit (path: string) (pkg: Project.Package) (modName0: option<string>) (stack: list<string>) =
     if Option.isNone failure.Value then
       count.Value <- count.Value + 1
-      match load (count.Value - 1) (display path) modName0 with
-      | Error e -> failure.Value <- Some(error { file = -1; offset = -1; length = -1 } e, None)
-      | Ok m ->
-        // a file's header names it when it's the main file's or no other name is given
-        let modName =
-          match (headerOf m.decls, modName0) with
-          | (Some h, Some _) -> Some h
-          | _ -> modName0
-        let opens = List.choose (fun (d: Ast.Decl) -> match d.d with | Ast.Open o -> Some o | _ -> None) m.decls
-        let all = usedBy modName opens (usesOf m.source m.tree m.decls)
-        let fresh = List.filter (fun (n, f) -> Some n <> modName && f <> path && f <> mainFull) all
-        let deps = List.fold (fun (acc: list<string * string>) (n, f) -> if List.exists (fun (k, _) -> k = n) acc then acc else List.append acc [ (n, f) ]) [] fresh
-        for (n, f) in deps do
-          if Option.isNone failure.Value then
-            match Map.tryFind n finished.Value with
-            | Some true -> ()
-            | Some false ->
-              let cycle = String.join " -> " (List.rev (n :: stack))
-              failure.Value <- Some(error { file = m.source.file; offset = -1; length = -1 } $"import cycle: {cycle}", Some m.source)
-            | None ->
-              finished.Value <- Map.add n false finished.Value
-              visit f (Some n) (n :: stack)
-              finished.Value <- Map.add n true finished.Value
-        let used = List.map (fun (_, f) -> display f) deps
-        Buffer.push { m with modName = modName; uses = used } order
-  visit mainFull None [ Path.getFileNameWithoutExtension mainPath ]
-  match failure.Value with
-  | Some f -> Error f
-  | None ->
-    let loaded = Array.toList (Buffer.toArray order)
-    // the main file keeps the path the user gave
-    let last = List.last loaded
-    Ok(List.append (List.take (List.length loaded - 1) loaded) [ { last with path = mainPath; source = { last.source with path = mainPath } } ])
+      match load texts (count.Value - 1) (display path) modName0 with
+      | Error e -> fail (error { file = -1; offset = -1; length = -1 } e, None)
+      | Ok loaded ->
+        // the package's [c] is the build's; its include directories and pkg-config's flags are
+        // its import c's
+        match imports loaded path (cOf pkg) with
+        | Error d -> fail (d, Some loaded.source)
+        | Ok m ->
+          // a dependency's file is named by its place in the package; a header may only agree
+          let header = headerOf m.decls
+          let named =
+            match (header, modName0, pkg.prefix) with
+            | (Some h, Some mn, Some k) ->
+              if h <> mn && mn <> k + "." + h then Error $"this file is the module {mn}, named by its place in its package; its header says {h}: remove it" else Ok modName0
+            | (Some h, Some _, None) -> Ok(Some h)
+            | _ -> Ok modName0
+          match named with
+          | Error msg -> fail (error { file = m.source.file; offset = 0; length = -1 } msg, Some m.source)
+          | Ok modName ->
+            let opens = List.choose (fun (d: Ast.Decl) -> match d.d with | Ast.Open o -> Some o | _ -> None) m.decls
+            let all = usedBy pkg modName opens (usesOf m.source m.tree m.decls)
+            let fresh = List.filter (fun (n, f, _) -> Some n <> modName && f <> path && f <> mainFull) all
+            let deps = List.fold (fun (acc: list<string * string * Project.Package>) (n, f, p) -> if List.exists (fun (k, _, _) -> k = n) acc then acc else List.append acc [ (n, f, p) ]) [] fresh
+            for (n, f, p) in deps do
+              if Option.isNone failure.Value then
+                match Map.tryFind n finished.Value with
+                | Some true -> ()
+                | Some false ->
+                  let cycle = String.join " -> " (List.rev (n :: stack))
+                  fail (error { file = m.source.file; offset = -1; length = -1 } $"import cycle: {cycle}", Some m.source)
+                | None ->
+                  finished.Value <- Map.add n false finished.Value
+                  visit f p (Some n) (n :: stack)
+                  finished.Value <- Map.add n true finished.Value
+            let usedFiles = List.map (fun (_, f, _) -> display f) deps
+            Buffer.push { m with modName = modName; uses = usedFiles } order
+  match Project.packageOf mainPath with
+  | Error p ->
+    failProblem p
+    Error(Option.get failure.Value)
+  | Ok pkg ->
+    visit mainFull pkg None [ Path.getFileNameWithoutExtension mainPath ]
+    match failure.Value with
+    | Some f -> Error f
+    | None ->
+      let loaded = Array.toList (Buffer.toArray order)
+      // the main file keeps the path the user gave
+      let last = List.last loaded
+      let mods = List.append (List.take (List.length loaded - 1) loaded) [ { last with path = mainPath; source = { last.source with path = mainPath } } ]
+      Ok(mods, { cflags = Array.toList (Buffer.toArray cflags); links = Array.toList (Buffer.toArray links) })

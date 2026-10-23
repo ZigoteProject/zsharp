@@ -301,6 +301,9 @@ let lower (types: Map<string, TypeInfo>) (borrowedParams: Map<string, Set<int>>)
       | None -> Set.empty
     let lent = Set.ofList (List.map (fun (_, (x, _)) -> x) (List.filter (fun (i, _) -> Set.contains i mine) (List.indexed f0.pars)))
     let f = { f0 with body = elideAliases (fun x -> Set.contains x lent) (rematch (printPieces f0.body)) }
+    // the free variables of the nodes rc meets, numbered below, remembered (each node's is asked
+    // for again and again)
+    let freeVars = cachedFreeVars ()
     // every variable's type, by unique name
     let vtypes = ref Map.empty
     let setType (x: string) (t: Ty) = vtypes.Value <- Map.add x t vtypes.Value
@@ -820,6 +823,6 @@ let lower (types: Map<string, TypeInfo>) (borrowedParams: Map<string, Set<int>>)
             | _ -> h
           build h2 (List.map (fun c -> moves (List.fold (fun c2 x -> markAssign x c2) c ok)) conts)
     let owned = Set.difference (Set.ofList (List.filter heapVar (List.map fst f.pars))) lent
-    { f with body = rc owned lent (moves f.body) }
+    { f with body = rc owned lent (number (moves f.body)) }
   // ponytail: one function at a time; on every core when the passes run in parallel (step 6)
   List.map rcFun funs

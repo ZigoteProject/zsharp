@@ -792,7 +792,7 @@ let private lowerAll (types0: Map<string, TypeInfo>) (effects: Map<string, Effec
                 control e
             | _ -> control e
       if k = "_" then stopWith e else go e
-    /// Mutable variables declared outside a handle and used inside it (its body runs in a function
+    /// Mutable variables declared outside a handle or a lambda and used inside it (its body runs in
     /// of its own, its clauses in closures) as ref cells.
     and boxUnderHandles (body: CExpr) : CExpr =
       let mutables = ref Set.empty
@@ -800,7 +800,11 @@ let private lowerAll (types0: Map<string, TypeInfo>) (effects: Map<string, Effec
       let rec scan (e: CExpr) =
         match e.k with
         | CLetMut(x, _, _) -> mutables.Value <- Set.add x mutables.Value
-        | CHandle _ ->
+        // a handle's body and a lambda's run as functions of their own: the mutable variables
+        // they use are cells (a loop that yields passes the others' values from round to round,
+        // which a closure's writes wouldn't reach)
+        | CHandle _
+        | CLam _ ->
           for x in Set.toList (freeVars e) do
             if Set.contains x mutables.Value then
               boxed.Value <- Set.add x boxed.Value
@@ -827,7 +831,6 @@ let private lowerAll (types0: Map<string, TypeInfo>) (effects: Map<string, Effec
             let cell = mk (CLocal x) (TCon("ref", [ at ]))
             let changed = mk (CPrim("array.update", [ mk (CPrim("ref.get", [ cell ])) at; go i; go w ])) at
             mk (CPrim("ref.set", [ cell; changed ])) tUnit
-          | CLam _ -> e
           | k -> { e with k = mapChildren go k }
         go body
     // the function itself

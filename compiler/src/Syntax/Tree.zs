@@ -157,3 +157,20 @@ let print (src: string) (t: Tree) : unit =
       else
         go (indent + "  ") c
   go "" (root t)
+
+/// Whether the tree is lossless: it holds every token the lexer made, once each and in order, so
+/// its text (each token's with the source's between them) is the file's.
+let lossless (t: Tree) : bool =
+  let next = ref 0
+  let ok = ref true
+  let rec go (n: int) =
+    for i in 0 .. t.counts.[n] - 1 do
+      let c = child t n i
+      if c < 0 then
+        let k = -1 - c
+        if k < t.lexed then
+          if k = next.Value then next.Value <- k + 1 else ok.Value <- false
+      else
+        go c
+  go (root t)
+  ok.Value && next.Value = t.lexed

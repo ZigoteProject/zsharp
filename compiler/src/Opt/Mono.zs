@@ -386,7 +386,7 @@ let runFrom (prog: Program) (def: string -> FunDef) (roots: list<string>) (exter
             let b2 = ex b
             CHandle(l2, b2, cls2, (r, ct rt), ex rb)
           | other -> mapChildren ex other
-        { k = k; ty = ct e.ty }
+        { k = k; ty = ct e.ty; id = 0 }
     let instance : MFun = { name = mangle v name inst; pars = pars f.pars; ret = ct f.ret; row = ct f.row; body = ex f.body; file = f.file; line = f.line }
     Buffer.push instance out
   Array.toList (Buffer.toArray out)
@@ -416,10 +416,10 @@ let reaching (prog: Program) (funs: list<MFun>) (external: string -> option<stri
       let d = ref Map.empty
       let rec collect (e: CExpr) =
         match e.k with
-        | CLetFun(n, _, ps, b, _) -> d.Value <- Map.add n { k = CLam(ps, b); ty = e.ty } d.Value
+        | CLetFun(n, _, ps, b, _) -> d.Value <- Map.add n { k = CLam(ps, b); ty = e.ty; id = 0 } d.Value
         | CLetRec(fs, _) ->
           for (n, ps, b) in fs do
-            d.Value <- Map.add n { k = CLam(ps, b); ty = e.ty } d.Value
+            d.Value <- Map.add n { k = CLam(ps, b); ty = e.ty; id = 0 } d.Value
         | CLet(x, w, _) -> d.Value <- Map.add x w d.Value
         | _ -> ()
         List.iter collect (children e.k)

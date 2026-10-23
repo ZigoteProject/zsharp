@@ -1,0 +1,109 @@
+/// What a build is asked for: zs build's flags (the F# compiler's Main and Driver settings).
+
+/// A bare-metal microcontroller target (zs build --target cortex-m4): how clang and zig cc are
+/// told about the chip, the QEMU board whose memory map the program is linked for, and the heap
+/// size. The program uses runtime/rt-embedded.c instead of the OS runtime.
+type Mcu = { triple: string; cflags: list<string>; zigTarget: string; zigCpu: string; board: string; heap: int }
+
+/// The chips --target knows by name.
+let mcus : list<string * Mcu> =
+  [ ("cortex-m4", { triple = "thumbv7em-none-eabihf"; cflags = [ "-mcpu=cortex-m4"; "-mfpu=fpv4-sp-d16"; "-mfloat-abi=hard" ]; zigTarget = "thumb-freestanding-eabihf"; zigCpu = "cortex_m4+vfp4d16sp"; board = "mps2-an386"; heap = 64 * 1024 })
+    ("cortex-m0plus", { triple = "thumbv6m-none-eabi"; cflags = [ "-mcpu=cortex-m0plus"; "-mfloat-abi=soft" ]; zigTarget = "thumb-freestanding-eabi"; zigCpu = "cortex_m0plus"; board = "microbit"; heap = 8 * 1024 }) ]
+
+/// A build's options.
+type Options =
+  { /// the main file ("" for the project's)
+    main: string
+    /// what's made: the main file's name without .zs unless -o names it
+    out: string
+    /// the optimization level asked for (-O0 … -O3, -Os), if one was
+    opt: option<string>
+    /// --release: optimized (-O2 unless a level is asked for); profiles are for release builds
+    release: bool
+    /// -g: DWARF debug info, unoptimized
+    debugInfo: bool
+    /// --emit-llvm: the IR kept next to the output (out.ll)
+    emitLlvm: bool
+    /// --target: the triple ("" for the host); a chip's name sets mcu, and the chip's triple here
+    target: string
+    /// the microcontroller --target names, if it names one
+    mcu: option<Mcu>
+    /// --cpu: the processor
+    cpu: option<string>
+    /// --lib: a static library (or a .so), with a C header
+    isLib: bool
+    /// --strict: warnings fail the build
+    strict: bool
+    /// --sanitize (address and undefined behaviour), --sanitize=thread (data races)
+    sanitize: bool
+    threadSanitizer: bool
+    /// --profile-generate: a program that writes a profile; --profile-use <file>: built with one
+    profileGenerate: bool
+    profileUse: option<string>
+    /// --time: each phase's milliseconds
+    time: bool
+    /// built by the build server (--time says so)
+    served: bool
+    /// the arguments after the file (zs run's, for the program)
+    rest: list<string> }
+
+let private levels : Set<string> = Set.ofList [ "-O0"; "-O1"; "-O2"; "-O3"; "-Os" ]
+
+/// The options of no flags.
+let defaults : Options =
+  { main = ""
+    out = ""
+    opt = None
+    release = false
+    debugInfo = false
+    emitLlvm = false
+    target = ""
+    mcu = None
+    cpu = None
+    isLib = false
+    strict = false
+    sanitize = false
+    threadSanitizer = false
+    profileGenerate = false
+    profileUse = None
+    time = false
+    served = false
+    rest = [] }
+
+/// The options a command's arguments ask for, and the arguments that aren't flags (in order);
+/// Error names a flag that lacks its value.
+let parse (args: list<string>) : result<Options * list<string>, string> =
+  let rec go (o: Options) (others: list<string>) (rest: list<string>) : result<Options * list<string>, string> =
+    match rest with
+    | [] -> Ok(o, List.rev others)
+    // what follows is the program's (zs run)
+    | "--" :: more -> Ok({ o with rest = more }, List.rev others)
+    | "-o" :: out :: more -> go { o with out = out } others more
+    | "--release" :: more -> go { o with release = true } others more
+    | "-g" :: more -> go { o with debugInfo = true } others more
+    | "--emit-llvm" :: more -> go { o with emitLlvm = true } others more
+    | "--target" :: t :: more ->
+      match List.tryFind (fun (n, _) -> n = t) mcus with
+      | Some(_, m) -> go { o with target = m.triple; mcu = Some m } others more
+      | None -> go { o with target = t } others more
+    | "--cpu" :: c :: more -> go { o with cpu = Some c } others more
+    | "--lib" :: more -> go { o with isLib = true } others more
+    | "--strict" :: more -> go { o with strict = true } others more
+    | "--sanitize" :: more -> go { o with sanitize = true } others more
+    | "--sanitize=thread" :: more -> go { o with sanitize = true; threadSanitizer = true } others more
+    | "--profile-generate" :: more -> go { o with profileGenerate = true; release = true } others more
+    | "--profile-use" :: file :: more -> go { o with profileUse = Some file; release = true } others more
+    | "--time" :: more -> go { o with time = true } others more
+    | a :: more ->
+      if Set.contains a levels then go { o with opt = Some a } others more
+      else if String.startsWith "--cpu=" a then go { o with cpu = Some(String.sub a 6 (String.length a - 6)) } others more
+      else if List.contains a [ "-o"; "--target"; "--cpu"; "--profile-use" ] then Error $"zs: {a} needs a value"
+      else go o (a :: others) more
+  go defaults [] args
+
+/// The optimization level for clang: what was asked, else -O2 for a release build or a chip and
+/// -O0 for a debug build.
+let optLevel (o: Options) : string =
+  match o.opt with
+  | Some l -> l
+  | None -> if o.release || Option.isSome o.mcu then "-O2" else "-O0"
