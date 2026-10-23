@@ -6,5 +6,5 @@ let rec fib n =
   else fib (n - 1) + fib (n - 2)
 
 let main () =
-  printf "fib 30 = %ld\n" (fib 30)
+  printf "fib 30 = %ld\n" (fib 30) |> ignore
   0

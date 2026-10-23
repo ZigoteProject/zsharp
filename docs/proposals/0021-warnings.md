@@ -11,7 +11,7 @@
 
 - [x] Approved in principle
 - [ ] Discussion
-- [ ] Implementation
+- [ ] Implementation (step 1 and the `unused-value` kind, before phase 11; `cycle` in phase 12)
 
 ## Summary
 

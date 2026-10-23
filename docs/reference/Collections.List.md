@@ -106,7 +106,7 @@ Combines the elements from the left: `List.fold f s [a; b] = f (f s a) b`.
 ### `List.iter`
 
 ```zsharp
-List.iter : ('a -> 'b / 'e) -> list<'a> -> unit / 'e
+List.iter : ('a -> unit / 'e) -> list<'a> -> unit / 'e
 ```
 
 Calls `f` on every element, in order.

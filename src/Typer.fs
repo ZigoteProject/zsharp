@@ -801,6 +801,8 @@ type Session =
       check: string -> string option -> (int * Decl) list -> bool
       marks: unit -> Marks
       hovers: ResizeArray<Hover>
+      /// errors and warnings so far, in order; a module from the cache adds its warnings
+      diagnostics: ResizeArray<Diagnostic>
       /// After the library: the program's file modules and explicit impls (as at the start).
       addProgram: string list -> (string * string) list -> unit
       /// The program so far, with `main` checked (when required, or there is one) and every
@@ -875,6 +877,45 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
     let diagnostics = ResizeArray<Diagnostic>()
     let hovers = ResizeArray<Hover>()
     let currentFile = ref ""
+    // the warning kinds the declaration being checked silences ([<NoWarn "…">])
+    let silenced = ref Set.empty<string>
+
+    /// A warning of a kind at a place, unless the declaration silences the kind (0021).
+    let warn (kind: string) (line: int) (col: int) (msg: string) =
+        if not (silenced.Value.Contains kind) then
+            diagnostics.Add
+                { severity = Severity.Warning
+                  name = kind
+                  file = currentFile.Value
+                  line = line
+                  col = col
+                  msg = msg
+                  notes = [] }
+
+    // the values statements drop in the declaration being checked, with their places: warned
+    // about at its end, when their types are settled (unused-value)
+    let discarded = ResizeArray<Ty * int * int>()
+
+    let warnDiscarded () =
+        for t, l, c in discarded do
+            let shown =
+                match prune t with
+                | TCon("unit", [])
+                | TGen _ -> None
+                | TVar r ->
+                    // a literal's type not settled: int if it can be, else its float
+                    match (kindOf r).allowed with
+                    | None -> None
+                    | Some ts when ts.Contains "int" -> Some "int"
+                    | Some ts when ts.Contains "f64" -> Some "f64"
+                    | Some _ -> Some "a number"
+                | t -> Some(show t)
+
+            match shown with
+            | Some t -> warn "unused-value" l c (sprintf "this statement's value (%s) is discarded: use it, or pipe it to ignore" t)
+            | None -> ()
+
+        discarded.Clear()
     let currentLine = ref 0 // of the expression being inferred (assert messages)
     // the effects of the function being checked: what its body performs joins this row (an
     // initializer's or a task's is closed: nothing may be performed there), and what it is, for
@@ -2167,6 +2208,26 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
             | _ -> ()
 
             let ca = inf a
+
+            // a statement is unit: a type still open here becomes unit (a panic's, a callback's
+            // in List.iter, as F#'s rule), and any other is a dropped value: unused-value (0021),
+            // warned about at the end of the declaration, when its type is settled
+            match prune ca.ty with
+            | TVar r when (kindOf r).allowed.IsNone && (kindOf r).traits.IsEmpty ->
+                try
+                    unify ca.ty tUnit
+                with Mismatch ->
+                    ()
+            | _ -> ()
+
+            if not (silenced.Value.Contains "unused-value") then
+                let l, c =
+                    match positions.TryGetValue a with
+                    | true, (l, c, _) -> l, c
+                    | _ -> currentLine.Value, 0
+
+                discarded.Add(ca.ty, l, c)
+
             let cb = inf b
             mk (CSeq(ca, cb)) cb.ty
         | Tuple xs ->
@@ -4478,6 +4539,26 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                 finally
                     currentModule.Value <- outer
                     opens.Value <- outerOpens
+            | Attrs(attrs, inner) when attrs |> List.exists (fst >> (=) "NoWarn") ->
+                // [<NoWarn "unused-value">]: the declaration's warnings of those kinds aren't
+                // reported (0021)
+                let kinds = attrs |> List.filter (fst >> (=) "NoWarn") |> List.collect snd
+
+                if kinds.IsEmpty then
+                    fail 0 "[<NoWarn>] takes the warning's name: [<NoWarn \"unused-value\">]"
+
+                for k in kinds do
+                    if not (List.contains k warningKinds) then
+                        fail 0 (sprintf "unknown warning '%s' (the kinds are %s)" k (String.concat ", " warningKinds))
+
+                let rest = attrs |> List.filter (fst >> (<>) "NoWarn")
+                let outer = silenced.Value
+                silenced.Value <- Set.union outer (set kinds)
+
+                try
+                    declare ln (if rest.IsEmpty then inner else Attrs(rest, inner))
+                finally
+                    silenced.Value <- outer
             | Attrs([ "Measure", [] ], TypeDecl(name, [], UnionTy [], [])) -> measures.Add name |> ignore
             | Attrs([ "Export", cname ], (Fun(name, _, _, _, _) as f)) ->
                 exporting.Value <- true
@@ -4665,22 +4746,21 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
         go d
 
     let declareOne (ln: int) (d: Decl) =
-        let diag l c msg =
-            { file = currentFile.Value
-              line = l
-              col = c
-              msg = msg }
+        let diag l c msg = errorAt currentFile.Value l c msg
 
         try
             declare ln d
+            warnDiscarded ()
         with
         | CompileError(l, msg) ->
+            discarded.Clear()
             report (diag (if l = 0 then ln else l) 0 msg)
 
             for n in declaredNames d do
                 failed.Add n |> ignore
                 failed.Add(qualify n) |> ignore
         | CompileErrorPos(l, c, msg) ->
+            discarded.Clear()
             report (diag l c msg)
 
             for n in declaredNames d do
@@ -4709,7 +4789,8 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
         currentModule.Value <- modName
         opens.Value <- []
         currentFile.Value <- file
-        let errorsBefore = diagnostics.Count
+        let errors () = diagnostics |> Seq.filter isError |> Seq.length
+        let errorsBefore = errors ()
 
         for n in modName |> Option.map withEnclosing |> Option.defaultValue [] do
             st.moduleNames.Add n |> ignore
@@ -4718,7 +4799,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
             declareOne ln d
 
         currentModule.Value <- None
-        diagnostics.Count = errorsBefore
+        errors () = errorsBefore
 
     let finish () =
         try
@@ -4729,11 +4810,13 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
             // the main module came from the cache)
             let at = funs |> Seq.tryFind (fun f -> f.name = "main")
 
-            report
-                { file = at |> Option.map (fun f -> f.file) |> Option.defaultValue ""
-                  line = at |> Option.map (fun f -> f.line) |> Option.defaultValue 0
-                  col = 0
-                  msg = msg }
+            report (
+                errorAt
+                    (at |> Option.map (fun f -> f.file) |> Option.defaultValue "")
+                    (at |> Option.map (fun f -> f.line) |> Option.defaultValue 0)
+                    0
+                    msg
+            )
 
         { types = types.Dict
           externs = externs.Dict
@@ -4746,7 +4829,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
           tests = List.ofSeq tests
           clayouts = clayouts.Set
           targets = st.targets.Dict
-          errors = List.ofSeq diagnostics
+          diagnostics = List.ofSeq diagnostics
           hovers = List.ofSeq hovers
           memberNames =
             let d = Dictionary<string, string list>()
@@ -4767,6 +4850,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
     { state = st
       check = check
       marks = fun () -> marks
+      diagnostics = diagnostics
       hovers = hovers
       addProgram = addProgram
       finish = finish }

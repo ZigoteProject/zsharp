@@ -16,10 +16,10 @@ let main () =
   let b = sign (0 - 5)
   report "square 7" a
   report "sign -5" b
-  printf "abs(-3) = %d\n" (abs (-3))
+  printf "abs(-3) = %d\n" (abs (-3)) |> ignore
   if a > 40 && not (b = 0) then
     report "and/not" 1
-  printf "%d %d\n" true (10 % 3 = 2)
+  printf "%d %d\n" true (10 % 3 = 2) |> ignore
   let msg =
     if a = 49 then "nested \"ok\""
     else "bad"

@@ -8,11 +8,12 @@ open Syntax
 
 open Driver
 
-/// file:line:col: error: msg, then the line with a caret under the column.
-let private printError (file: string) (line: int) (col: int) (msg: string) =
-    if line > 0 && col > 0 then eprintfn "%s:%d:%d: error: %s" file line col msg
-    elif line > 0 then eprintfn "%s:%d: error: %s" file line msg
-    else eprintfn "%s: error: %s" file msg
+/// file:line:col: <word>: msg (error, warning or note), then the line with a caret under the
+/// column.
+let private printAt (word: string) (file: string) (line: int) (col: int) (msg: string) =
+    if line > 0 && col > 0 then eprintfn "%s:%d:%d: %s: %s" file line col word msg
+    elif line > 0 then eprintfn "%s:%d: %s: %s" file line word msg
+    else eprintfn "%s: %s: %s" file word msg
 
     let text =
         try
@@ -32,6 +33,44 @@ let private printError (file: string) (line: int) (col: int) (msg: string) =
             eprintfn " %s | %s^" (String.replicate gutter.Length " ") (String.replicate (col - 1) " ")
     | _ -> ()
 
+let private printError (file: string) (line: int) (col: int) (msg: string) = printAt "error" file line col msg
+
+/// An error, or a warning with its kind after the message (what [<NoWarn>] takes), then its notes.
+let private printDiagnostic (d: Core.Diagnostic) =
+    match d.severity with
+    | Core.Severity.Error -> printError d.file d.line d.col d.msg
+    | Core.Severity.Warning -> printAt "warning" d.file d.line d.col (sprintf "%s [%s]" d.msg d.name)
+
+    for n in d.notes do
+        printAt "note" n.nfile n.nline n.ncol n.ntext
+
+/// --strict (0021): warnings fail the command, for CI and ./test.sh.
+let mutable private strict = false
+
+/// Prints a command's diagnostics and, when there's more than one, how many of each; false when
+/// they fail it (an error, or a warning under --strict).
+let private report (ds: Core.Diagnostic list) =
+    for d in ds do
+        printDiagnostic d
+
+    let errors = ds |> List.filter Core.isError |> List.length
+    let warnings = ds.Length - errors
+    let count n (what: string) = if n = 1 then "1 " + what else sprintf "%d %ss" n what
+
+    let counted =
+        match errors, warnings with
+        | 0, 0 -> ""
+        | e, 0 -> if e > 1 then count e "error" else ""
+        | 0, w -> if w > 1 then count w "warning" else ""
+        | e, w -> count e "error" + ", " + count w "warning"
+
+    if strict && warnings > 0 && errors = 0 then
+        eprintfn "%s, %s under --strict" (count warnings "warning") (if warnings = 1 then "an error" else "errors")
+    elif counted <> "" then
+        eprintfn "%s" counted
+
+    errors = 0 && not (strict && warnings > 0)
+
 /// --sanitize, or --sanitize=thread for data races
 let private sanitizing (args: string list) =
     Driver.threadSanitizer <- List.contains "--sanitize=thread" args
@@ -39,18 +78,11 @@ let private sanitizing (args: string list) =
 
 /// .zs -> LLVM IR -> clang (with the runtime) -> native executable, or with isLib a static
 /// library (.a) plus its header (.h). Returns false on any error.
-/// Builds and prints any errors; true on success.
+/// Builds and prints its warnings or errors; true on success.
 let private build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) (isLib: bool) =
     match Driver.build src out emitLlvm sanitize isLib with
-    | Ok() -> true
-    | Error errors ->
-        for e in errors do
-            printError e.file e.line e.col e.msg
-
-        if errors.Length > 1 then
-            eprintfn "%d errors" errors.Length
-
-        false
+    | Ok warnings -> report warnings
+    | Error errors -> report errors && false
 
 /// The project around the current directory, or an error message.
 let private project () =
@@ -172,6 +204,8 @@ let private run (argv: string[]) =
 
     // --release: optimized, with ThinLTO; profiles are for release builds
     Driver.release <- Array.contains "--release" argv || Array.contains "--profile-generate" argv || Array.contains "--profile-use" argv
+    strict <- Array.contains "--strict" argv
+    let argv = argv |> Array.filter ((<>) "--strict")
 
     let argv = argv |> Array.filter (fun a -> not (List.contains a [ "-Os"; "-O0"; "-O1"; "-O2"; "-O3"; "--release" ]))
 
@@ -315,11 +349,7 @@ let private run (argv: string[]) =
         // type-check only: every error, nothing built
         try
             let prog = Driver.checkProgram false src true true
-
-            for e in prog.errors do
-                printError e.file e.line e.col e.msg
-
-            if prog.errors.IsEmpty then 0 else 1
+            if report prog.diagnostics then 0 else 1
         with CompileErrorAt(file, line, col, msg) ->
             printError file line col msg
             1

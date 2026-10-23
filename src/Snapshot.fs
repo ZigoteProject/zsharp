@@ -613,7 +613,9 @@ type Parts =
     { iface: byte[]
       global': byte[]
       funs: byte[]
-      hovers: byte[] }
+      hovers: byte[]
+      /// its warnings: a module with errors isn't kept, and one restored reports them again
+      warnings: byte[] }
 
 /// Writes the module's result; position: a syntax node's source position.
 let writeModule (st: State) (marks: Marks) (hovers: Hover seq) (position: obj -> (int * int * int) option) : Parts =
@@ -716,7 +718,8 @@ let writeModule (st: State) (marks: Marks) (hovers: Hover seq) (position: obj ->
     { iface = iface
       global' = global'
       funs = funs
-      hovers = hovers }
+      hovers = hovers
+      warnings = [||] }
 
 // ---------------------------------------------------------------- reading
 
@@ -1345,6 +1348,42 @@ let readHovers (hovers: byte[]) : Hover list =
               key = key
               isDef = isDef
               inlay = rbool c }))
+
+/// A module's warnings, as its warnings part.
+let writeWarnings (ds: Diagnostic list) : byte[] =
+    bytesOf (fun _ -> None) (fun c ->
+        list' c (fun c (d: Diagnostic) ->
+            str c d.name
+            str c d.file
+            int' c d.line
+            int' c d.col
+            str c d.msg
+            list' c (fun c (n: Note) -> str c n.nfile; int' c n.nline; int' c n.ncol; str c n.ntext) d.notes) ds)
+
+let readWarnings (bytes: byte[]) : Diagnostic list =
+    if bytes.Length = 0 then
+        []
+    else
+        reader bytes (fun _ _ -> ()) (fun c ->
+            rlist c (fun c ->
+                let name = rstr c
+                let file = rstr c
+                let line = rint c
+                let col = rint c
+                let msg = rstr c
+
+                { severity = Severity.Warning
+                  name = name
+                  file = file
+                  line = line
+                  col = col
+                  msg = msg
+                  notes =
+                    rlist c (fun c ->
+                        let f = rstr c
+                        let l = rint c
+                        let k = rint c
+                        { nfile = f; nline = l; ncol = k; ntext = rstr c }) }))
 
 // ---------------------------------------------------------------- a module's code
 

@@ -748,6 +748,7 @@ let private loadChecked (key: string) : CheckedModule option =
                 let ifaceBytes = part ()
                 let funs = part ()
                 let hovers = part ()
+                let warnings = part ()
                 if r.ReadString() <> key then failwith "a broken file"
                 File.SetLastWriteTimeUtc(file, DateTime.UtcNow) // recently used: kept longest
 
@@ -759,7 +760,8 @@ let private loadChecked (key: string) : CheckedModule option =
                         { iface = ifaceBytes
                           global' = [||]
                           funs = funs
-                          hovers = hovers } }
+                          hovers = hovers
+                          warnings = warnings } }
 
                 remember m
                 Some m
@@ -782,7 +784,7 @@ let private saveChecked (m: CheckedModule) =
             w.Write m.iface
             w.Write m.global'
 
-            for part in [ m.parts.iface; m.parts.funs; m.parts.hovers ] do
+            for part in [ m.parts.iface; m.parts.funs; m.parts.hovers; m.parts.warnings ] do
                 w.Write part.Length
                 w.Write part
 
@@ -873,16 +875,21 @@ let private checkModules (requireMain: bool) (collect: bool) (withHovers: bool) 
                   sees = t.sees }
 
             hovers.Add(lazy (Snapshot.readHovers c.parts.hovers))
+            s.diagnostics.AddRange(Snapshot.readWarnings c.parts.warnings)
         | None ->
             fresh.Add t
             checking.Start()
+            let before = s.diagnostics.Count
             let clean = s.check m.path m.modName m.decls.Value
             ok <- ok && clean
             let marks = s.marks ()
+            let warnings = [ for k in before .. s.diagnostics.Count - 1 do if not (Core.isError s.diagnostics[k]) then s.diagnostics[k] ]
 
             let c =
                 try
-                    let parts = Snapshot.writeModule s.state marks (Seq.skip marks.hovers s.hovers) position
+                    let parts =
+                        { Snapshot.writeModule s.state marks (Seq.skip marks.hovers s.hovers) position with
+                            warnings = Snapshot.writeWarnings warnings }
 
                     { key = key
                       iface = hashBytes parts.iface
@@ -896,7 +903,7 @@ let private checkModules (requireMain: bool) (collect: bool) (withHovers: bool) 
                     { key = key
                       iface = never
                       global' = never
-                      parts = { iface = [||]; global' = [||]; funs = [||]; hovers = [||] } }
+                      parts = { iface = [||]; global' = [||]; funs = [||]; hovers = [||]; warnings = [||] } }
 
             if use' && ok then
                 saveChecked c
@@ -935,9 +942,9 @@ let private checkModules (requireMain: bool) (collect: bool) (withHovers: bool) 
             raise (CompileErrorAt(file, (if l = 0 then line else l), c, msg))
 
     let prog =
-        if prog.errors |> List.exists (fun e -> e.file = "") then
+        if prog.diagnostics |> List.exists (fun e -> e.file = "") then
             let file, line = atMain ()
-            { prog with errors = prog.errors |> List.map (fun e -> if e.file = "" then { e with file = file; line = (if e.line = 0 then line else e.line) } else e) }
+            { prog with diagnostics = prog.diagnostics |> List.map (fun e -> if e.file = "" then { e with file = file; line = (if e.line = 0 then line else e.line) } else e) }
         else
             prog
 
@@ -1025,8 +1032,8 @@ let private lift (mainPath: string) (isLib: bool) =
         raise (CompileErrorAt(mainPath, 0, 0, sprintf "top-level value '%s' is computed at startup, which a library doesn't have; make it a constant or a function" v))
     | _ -> ()
 
-    match prog.errors with
-    | first :: _ -> Error prog.errors
+    match prog.diagnostics |> List.filter Core.isError with
+    | _ :: _ as errors -> Error errors
     | [] ->
         let funs =
             try
@@ -1159,12 +1166,14 @@ let private setRuntime (prog: Core.Program) (isLib: bool) (funs: Mono.MFun list)
         (if Codegen.threaded then [ "-DZS_THREADS" ] else [])
         @ (if isNull (Environment.GetEnvironmentVariable "ZS_NO_POOL") then [] else [ "-DZS_NO_POOL" ])
 
-/// The program as one LLVM module (and the C header of its exports).
+let private warningsOf (prog: Core.Program) = prog.diagnostics |> List.filter (Core.isError >> not)
+
+/// The program as one LLVM module (and the C header of its exports), and its warnings.
 let compileProgram (mainPath: string) (isLib: bool) =
     lower mainPath isLib
     |> Result.map (fun (prog, funs) ->
         setRuntime prog isLib funs
-        timed "LLVM IR" (fun () -> Codegen.compile prog.types prog.externs prog.exports prog.tests prog.values prog.clayouts None funs))
+        timed "LLVM IR" (fun () -> Codegen.compile prog.types prog.externs prog.exports prog.tests prog.values prog.clayouts None funs), warningsOf prog)
 
 // ---- a module's code, cached between builds: each source file of the program is an LLVM
 // module of its own functions (its non-generic ones, which the others call), with a copy of
@@ -1224,8 +1233,8 @@ let private compileUnits (mainPath: string) (cachedObject: string -> string opti
     timings.Clear()
     let prog, units = timed "parse + check (all)" (fun () -> checkUnits false mainPath true true)
 
-    match prog.errors with
-    | _ :: _ -> Error prog.errors
+    match prog.diagnostics |> List.filter Core.isError with
+    | _ :: _ as errors -> Error errors
     | [] ->
         Codegen.targets <- prog.targets
         Codegen.optimized <- optLevel () <> "-O0"
@@ -1619,7 +1628,7 @@ let private compileUnits (mainPath: string) (cachedObject: string -> string opti
                     // the error itself, with its own stack (a compiler bug's names where it happened)
                     System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw e.InnerExceptions[0]
                     failwith "unreachable")
-            |> Ok
+            |> fun modules -> Ok(modules, warningsOf prog)
         with CompileError(l, m) ->
             raise (CompileErrorAt(mainPath, l, 0, m))
 
@@ -1799,12 +1808,9 @@ let private linkParts (modules: Module list) (out: string) : string option =
 
 /// .zs -> LLVM IR -> clang (with the runtime) -> native executable, or with isLib a static
 /// library (.a) plus its header (.h).
-let build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) (isLib: bool) : Result<unit, Core.Diagnostic list> =
-    let toolError (msg: string) : Core.Diagnostic list =
-        [ { file = src
-            line = 0
-            col = 0
-            msg = msg } ]
+/// The build's warnings, or its errors.
+let build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) (isLib: bool) : Result<Core.Diagnostic list, Core.Diagnostic list> =
+    let toolError (msg: string) : Core.Diagnostic list = [ Core.errorAt src 0 0 msg ]
 
     let catching (f: unit -> Result<'a, Core.Diagnostic list>) =
         try
@@ -1813,18 +1819,8 @@ let build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) (isLib: 
 
             f ()
         with
-        | CompileErrorAt(file, line, col, msg) ->
-            Error
-                [ { file = file
-                    line = line
-                    col = col
-                    msg = msg } ]
-        | CompileError(line, msg) ->
-            Error
-                [ { file = src
-                    line = line
-                    col = 0
-                    msg = msg } ]
+        | CompileErrorAt(file, line, col, msg) -> Error [ Core.errorAt file line col msg ]
+        | CompileError(line, msg) -> Error [ Core.errorAt src line 0 msg ]
 
     // a native executable for the host: a module per source file, compiled in parallel and
     // from the cache when unchanged (the other builds are one module, as they always were)
@@ -1832,15 +1828,15 @@ let build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) (isLib: 
 
     if split then
         catching (fun () -> compileUnits src cachedModule)
-        |> Result.bind (fun parts ->
+        |> Result.bind (fun (parts, warnings) ->
             match linkParts parts out with
-            | None -> Ok()
+            | None -> Ok warnings
             | Some msg -> Error(toolError msg))
     else
 
     match catching (fun () -> compileProgram src isLib) with
     | Error e -> Error e
-    | Ok(ir, header) ->
+    | Ok((ir, header), warnings) ->
         let ll =
             if emitLlvm then
                 Path.ChangeExtension(out, ".ll")
@@ -1947,7 +1943,7 @@ let build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) (isLib: 
             File.Delete ll
 
         match failure with
-        | None -> Ok()
+        | None -> Ok warnings
         | Some msg -> Error(toolError msg)
 
 /// The `///` comment lines right above a definition (attribute lines in between are skipped),

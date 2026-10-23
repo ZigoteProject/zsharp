@@ -149,7 +149,7 @@ The values in ascending key order.
 ### `Map.iter`
 
 ```zsharp
-Map.iter : ('a -> 'b -> 'c / 'e) -> Map<'a, 'b> -> unit / 'e
+Map.iter : ('a -> 'b -> unit / 'e) -> Map<'a, 'b> -> unit / 'e
 ```
 
 Calls `f key value` on every entry in ascending key order.

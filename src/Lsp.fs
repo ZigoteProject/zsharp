@@ -89,18 +89,10 @@ let private analyze (path: string) =
             let prog = Driver.check path false true
             results[path] <- prog
             madeOf[path] <- HashSet<string>(prog.hovers |> Seq.map (fun h -> Path.GetFullPath h.hfile))
-            prog.errors
+            prog.diagnostics
         with
-        | CompileErrorAt(file, line, col, msg) ->
-            [ { file = file
-                line = line
-                col = col
-                msg = msg } ]
-        | ex ->
-            [ { file = path
-                line = 1
-                col = 0
-                msg = "internal compiler error: " + ex.Message } ]
+        | CompileErrorAt(file, line, col, msg) -> [ errorAt file line col msg ]
+        | ex -> [ errorAt path 1 0 ("internal compiler error: " + ex.Message) ]
 
     problems[path] <- diags
 
@@ -113,16 +105,34 @@ let private analyze (path: string) =
             let indent = text.Length - text.TrimStart().Length
             let start = if d.col > 0 then d.col - 1 else indent
 
-            obj
-                [ "range", range (line - 1, start) (line - 1, max (start + 1) text.Length)
-                  "severity", num 1
-                  "source", str "zs"
-                  "message", str d.msg ])
+            // a warning: severity 2, its kind as the code, its notes as related places (0021)
+            let warning =
+                if isError d then
+                    []
+                else
+                    [ "code", str d.name
+                      "relatedInformation",
+                      arr (
+                          d.notes
+                          |> List.map (fun n ->
+                              obj
+                                  [ "location", obj [ "uri", str (toUri n.nfile); "range", range (n.nline - 1, max 0 (n.ncol - 1)) (n.nline - 1, max 1 n.ncol) ]
+                                    "message", str n.ntext ])
+                      ) ]
 
-    // an error in an imported module shows on the first line of this file
+            obj (
+                [ "range", range (line - 1, start) (line - 1, max (start + 1) text.Length)
+                  "severity", num (if isError d then 1 else 2)
+                  "source", str "zs"
+                  "message", str d.msg ]
+                @ warning
+            ))
+
+    // an error in an imported module shows on the first line of this file (a warning there
+    // stays in its own file)
     let elsewhere =
         diags
-        |> List.filter (fun d -> Path.GetFullPath d.file <> path)
+        |> List.filter (fun d -> Path.GetFullPath d.file <> path && isError d)
         |> List.map (fun d ->
             obj
                 [ "range", range (0, 0) (0, 1)

@@ -7,8 +7,9 @@ zs=${1:-bin/zs}
 uri="file://$(pwd)/tests/lsp/sample.zs"
 src=$(sed 's/\\/\\\\/g; s/"/\\"/g' tests/lsp/sample.zs | awk '{printf "%s\\n", $0}')
 bad=$(printf '%s' "$src" | sed 's/let total = add 1 2/let total = add 1 true/')
-# spaced as nothing is: range formatting gives the line back laid out, and nothing else
-messy=$(printf '%s' "$bad" | sed 's/let names = \[ "a"; "b" \]/let names=[ "a";"b" ]/')
+# spaced as nothing is: range formatting gives the line back laid out, and nothing else; and a
+# value dropped, a warning (severity 2, its kind as the code)
+messy=$(printf '%s' "$src" | sed 's/let names = \[ "a"; "b" \]/let names=[ "a";"b" ]/; s/\\n  0\\n$/\\n  n\\n  0\\n/')
 
 frame() { printf 'Content-Length: %d\r\n\r\n%s' "$(printf '%s' "$1" | wc -c)" "$1"; }
 

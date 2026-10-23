@@ -64,7 +64,7 @@ between them, where each step runs, the passes) is [compiler/ARCHITECTURE.md](co
 - **Checklist before `compiler/` starts** (the tracks' items without *after phase 11*, 0020's criterion 1 and the phase 11 review; in dependency order, each with its exit test in its track):
   - **What the compiler needs:**
     - [x] 0019 F2: the lossless tree (`tests/cst/roundtrip.sh`), reflow to 100 columns (`tests/fmt/reflow`), `zs fmt --stdin`, range formatting. The F# compiler keeps `Syntax.positions` and stops at a file's first parse error: positions in the nodes and recovery (0019's step 2) are the Z# parser's.
-    - [ ] 0021: the diagnostic record (severity, name, span, message, notes) and `unused-value`; the cycle warning itself stays in phase 12.
+    - [x] 0021: the diagnostic record (severity, name, span, message, notes) and `unused-value` (`tests/err_unused.zs`), `--strict` (on in `./test.sh`), `[<NoWarn>]`, warnings in the editor and the cache; the cycle warning itself stays in phase 12. A statement whose type is still open becomes `unit`, as F#'s rule: `List.iter` takes `'a -> unit`.
     - [ ] 0023: `Json` in Core with parse, print and the derives.
     - [ ] 0024's phase 11 list: `Int.parse` in a radix, `Float.parse`; format specifiers with widths; `HashSet`, `Buffer.push`/`pop`/`clear`/`truncate`; `padLeft`, `padRight`, `trimStart`, `trimEnd`, `splitLines`; `DateTime.utcNow`; `Reader`/`Writer`, `readAllBytes`, `File.move`, `modifiedAt`, temporary files, `getFullPath`, `getRelativePath`; `Process.start` and `Process.wait`; `Unix.listen`, `accept`, `connect`.
     - [ ] 0018 K1 and K4: namespaced dependencies and the `[c]` section; then `zsharp/libclang` and `zsharp/xxhash`.
@@ -131,7 +131,7 @@ real programs.
   - **Installing:** a release archive per target with `zs`, the runtime and the library (one native binary after phase 11, a self-contained .NET publish without it). `zs doctor` checks for clang or zig, and libclang for `import c`, and says how to get what's missing.
   - **Deferred here:** features that aren't needed before phase 11, moved out of earlier phases so those stay small. The third design review checked them against "Simple" (anonymous records were cut) and put the rest on the list above.
     - **From phase 9.5, cycle warnings:** a type that can reach itself through a `ref` or `Buffer` field, not through `weak`, is warned about where it's declared. The warning names the path (`Node.next: ref<option<Node>>`) and suggests `weak`, and `[<Cyclic>]` on the type silences it.
-      - **The first warning:** the compiler has only errors so far, so this brings a warning severity to the CLI, `zs lsp` and `zs mcp`.
+      - **The warning:** the severity, `--strict`, `[<NoWarn>]` and the editor's side came with `unused-value` before phase 11 (0021); this adds the kind `cycle` and `[<Cyclic>]`.
       - **Closures:** a function type doesn't say what it captures, so a cycle through a closure isn't caught. `ZS_LEAKCHECK=1` stays the backstop.
     - **From phase 9.6, ergonomics:**
       - **Patterns at the top level:** `let (a, b) = …` and other patterns, as inside functions.

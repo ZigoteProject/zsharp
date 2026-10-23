@@ -80,7 +80,7 @@ next state, or `None` at the end. Infinite while `f` never gives `None`.
 ### `Seq.iter`
 
 ```zsharp
-Seq.iter : ('a -> 'b / 'e) -> Seq<'a> -> unit / 'e
+Seq.iter : ('a -> unit / 'e) -> Seq<'a> -> unit / 'e
 ```
 
 Calls `f` on each element, in order.
@@ -88,7 +88,7 @@ Calls `f` on each element, in order.
 ### `Seq.iteri`
 
 ```zsharp
-Seq.iteri : ('a -> 'b -> 'c / 'e) -> Seq<'b> -> unit / 'e when 'a : Add
+Seq.iteri : ('a -> 'b -> unit / 'e) -> Seq<'b> -> unit / 'e when 'a : Add
 ```
 
 Like `Seq.iter`, with each element's index: `f i x`.

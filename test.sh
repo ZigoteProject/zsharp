@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Builds the compiler, then checks every tests/**/*.zs that has an expected .out (run output) or
-# .err (compile error) next to it; other .zs files are modules those tests use.
+# .err (compile error) next to it; other .zs files are modules those tests use. Builds are
+# --strict: the repository's own code has no warnings.
 # --valgrind: also run each program under valgrind (memory errors or leaks fail the test).
 # --target <triple>: cross-compile the programs and C interop tests (zs build --target) and run
 #   them under qemu-user, e.g. --target aarch64-linux-musl; the host-only tool checks are skipped.
@@ -26,8 +27,8 @@ for t in $(find tests -name '*.zs' | sort); do
   if [ -n "$target" ] && [ -f "$base.host-only" ]; then echo "skip $t ($(cat "$base.host-only"))"; continue; fi
   if [ -f "$base.err" ]; then
     # compare the error lines, not the source snippets under them
-    actual=$(bin/zs build "$t" "${tgt[@]}" -o "$tmp/exe" 2>&1 | grep -v '^ [ 0-9]* | '); expected=$(cat "$base.err")
-  elif ! bin/zs build "$t" "${tgt[@]}" -o "$tmp/exe" 2>"$tmp/build.log"; then
+    actual=$(bin/zs build --strict "$t" "${tgt[@]}" -o "$tmp/exe" 2>&1 | grep -v '^ [ 0-9]* | '); expected=$(cat "$base.err")
+  elif ! bin/zs build --strict "$t" "${tgt[@]}" -o "$tmp/exe" 2>"$tmp/build.log"; then
     actual=$(cat "$tmp/build.log"); expected=$(cat "$base.out")
   else
     run=("${qemu[@]}" "$tmp/exe")
@@ -151,7 +152,7 @@ else echo "FAIL tests/mcu/effects.zs"; cat "$tmp/effects.log"; fail=1; fi
 
 # the library checks on its own (an editor opening one of its files must not see everything
 # defined twice)
-if bin/zs check lib/core/Collections/List.zs >"$tmp/lib.log" 2>&1; then echo "ok   zs check lib (the library on its own)"
+if bin/zs check --strict lib/core/Collections/List.zs >"$tmp/lib.log" 2>&1; then echo "ok   zs check lib (the library on its own)"
 else echo "FAIL zs check lib"; head -5 "$tmp/lib.log"; fail=1; fi
 
 # the library is fully documented, and docs/reference has its current pages, all in the index

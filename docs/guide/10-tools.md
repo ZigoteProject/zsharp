@@ -7,7 +7,7 @@
 | `zs new <name>` | create a project |
 | `zs build [file.zs] [-o out]` | build an executable (the project's, without a file) |
 | `zs run [file.zs [--]] [args…]` | build and run |
-| `zs check <file.zs>` | type-check only, reporting every error |
+| `zs check <file.zs>` | type-check only, reporting every error and warning |
 | `zs test [file.zs] [filters…]` | run `[<Test>]` functions, each in its own process |
 | `zs fmt [--check] <files…>` | format files in place (`--check`: list unformatted ones; `--stdin`: standard input to standard output) |
 | `zs doc <file.zs>` | print a Markdown reference of a file's documented items |
@@ -30,6 +30,7 @@
 | `--profile-generate` | a program that writes a profile of its run ([below](#profile-guided-optimization)) |
 | `--profile-use <file>` | optimize with a profile |
 | `--time` | how long each compiler phase took |
+| `--strict` | warnings fail the command, as errors do (for CI; `zs build`, `run`, `check`, `test`) |
 
 **Environment variables:**
 - `ZS_BACKTRACE=0` leaves backtraces out of panic output.
@@ -42,6 +43,25 @@
 **Rebuilds:** a program of several files is compiled one module per file, in parallel. Builds keep each compiled module in `~/.cache/zs/modules`, under a key of what its code is made from, so a rebuild generates and compiles only the modules whose code changed. `--time` shows how many came from the cache, and how many objects clang compiled.
 
 **Linking:** the modules and the runtime are compiled to LLVM bitcode and optimized together when they're linked (ThinLTO, with lld), so the runtime's allocation functions inline into the program.
+
+## Warnings
+
+A warning is about code that's probably wrong and may be right: the build goes on, and the
+warning is printed with its kind in brackets.
+
+```text
+main.zs:11:3: warning: this statement's value (int) is discarded: use it, or pipe it to ignore [unused-value]
+ 11 |   twice 3
+    |   ^
+```
+
+| Kind | Warns about |
+|---|---|
+| `unused-value` | a statement whose value isn't `unit` is dropped; `x \|> ignore` says it's on purpose |
+
+- **Silencing:** `[<NoWarn "unused-value">]` on a declaration silences that kind in it; a name that isn't a kind is an error.
+- **`--strict`** makes warnings errors: `2 warnings, errors under --strict`, exit code 1. CI passes it, and `./test.sh` does for the repository's own code; a build on your machine doesn't stop for one.
+- **Editors** underline a warning in the warning color with its kind as the code.
 
 ## Profile-guided optimization
 

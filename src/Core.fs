@@ -839,6 +839,12 @@ type TraitMethod =
       ty: Ty // TGen 0 is the trait's type parameter
       isConst: bool } // `abstract zero : 'a`: implemented as unit -> 'a
 
+/// Whether a diagnostic stops the build (0021).
+[<RequireQualifiedAccess>]
+type Severity =
+    | Error
+    | Warning
+
 type Program =
     { types: Dictionary<string, TypeInfo>
       externs: Dictionary<string, ExternSig>
@@ -853,15 +859,27 @@ type Program =
       /// [<Target "avx2,fma">] functions: "target" and the features; [<Multiversion("avx2",
       /// "sse4.2")>] ones: "multiversion" and a version's features each
       targets: Dictionary<string, string list>
-      errors: Diagnostic list // when type-checking in collect mode
+      /// errors (every declaration's in collect mode, else the first) and warnings, in the order found
+      diagnostics: Diagnostic list
       hovers: Hover list // inferred types at source positions (editor support)
       memberNames: Dictionary<string, string list> } // type -> its members (completion)
 
+/// An error or a warning (0021): a warning has a name, the kind `[<NoWarn "…">]` silences, and
+/// notes are the other places it's about.
 and Diagnostic =
-    { file: string
+    { severity: Severity
+      name: string // a warning's kind ("unused-value"); "" for an error
+      file: string
       line: int
       col: int // 0 = unknown
-      msg: string }
+      msg: string
+      notes: Note list }
+
+and Note =
+    { nfile: string
+      nline: int
+      ncol: int
+      ntext: string }
 
 /// What an identifier at a position is: a use, or a binder (an inlay-hint candidate when its
 /// type wasn't written).
@@ -884,6 +902,21 @@ and Export =
       fname: string
       pars: Ty list // unit parameters excluded
       ret: Ty }
+
+/// An error at a place (line 0: unknown; col 0: the line's start).
+let errorAt (file: string) (line: int) (col: int) (msg: string) : Diagnostic =
+    { severity = Severity.Error
+      name = ""
+      file = file
+      line = line
+      col = col
+      msg = msg
+      notes = [] }
+
+let isError (d: Diagnostic) = d.severity = Severity.Error
+
+/// The warning kinds (0021's table): the names `[<NoWarn "…">]` takes.
+let warningKinds = [ "unused-value" ]
 
 /// Does a value of this type hold a reference count (directly or in a field)?
 /// Does a value of this type hold a reference count (directly or in a field)? `visiting`: the

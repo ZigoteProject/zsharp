@@ -41,19 +41,25 @@ let private projectFile (p: string) =
 
     Path.GetRelativePath(root, full)
 
+/// Errors as `file:line:col: message`, warnings as `file:line:col: warning: message [kind]`.
 let private formatErrors (errors: Diagnostic list) =
     errors
     |> List.map (fun e ->
-        if e.col > 0 then sprintf "%s:%d:%d: %s" e.file e.line e.col e.msg
-        elif e.line > 0 then sprintf "%s:%d: %s" e.file e.line e.msg
-        else sprintf "%s: %s" e.file e.msg)
+        let msg = if isError e then e.msg else sprintf "warning: %s [%s]" e.msg e.name
+        if e.col > 0 then sprintf "%s:%d:%d: %s" e.file e.line e.col msg
+        elif e.line > 0 then sprintf "%s:%d: %s" e.file e.line msg
+        else sprintf "%s: %s" e.file msg)
     |> String.concat "\n"
+
+/// A build's warnings before what it made.
+let private withWarnings (warnings: Diagnostic list) (text: string) =
+    if warnings.IsEmpty then text else formatErrors warnings + "\n" + text
 
 let private check (file: string) =
     try
         Driver.check file false true
     with CompileErrorAt(f, l, c, m) ->
-        raise (ToolError(formatErrors [ { file = f; line = l; col = c; msg = m } ]))
+        raise (ToolError(formatErrors [ errorAt f l c m ]))
 
 let private signature (h: Hover) =
     let needs = if h.constraints = "" then "" else " when " + h.constraints
@@ -91,7 +97,7 @@ let private call (name: string) (args: JsonNode) : string =
     match name with
     | "check" ->
         let prog = check (projectFile (getStr (arg "file")))
-        if prog.errors.IsEmpty then "no errors" else formatErrors prog.errors
+        if prog.diagnostics.IsEmpty then "no errors" else formatErrors prog.diagnostics
     | "type_at" ->
         let file = projectFile (getStr (arg "file"))
         let line, col = getInt (arg "line"), getInt (arg "column")
@@ -130,7 +136,7 @@ let private call (name: string) (args: JsonNode) : string =
         let out = Path.ChangeExtension(file, null)
 
         match Driver.build file out false false false with
-        | Ok() -> sprintf "built %s" out
+        | Ok warnings -> withWarnings warnings (sprintf "built %s" out)
         | Error errors -> raise (ToolError(formatErrors errors))
     | "run" ->
         let file = projectFile (getStr (arg "file"))
@@ -138,7 +144,7 @@ let private call (name: string) (args: JsonNode) : string =
 
         match Driver.build file exe false false false with
         | Error errors -> raise (ToolError(formatErrors errors))
-        | Ok() ->
+        | Ok warnings ->
             let psi = ProcessStartInfo exe
             psi.RedirectStandardOutput <- true
             psi.RedirectStandardError <- true
@@ -156,11 +162,12 @@ let private call (name: string) (args: JsonNode) : string =
             File.Delete exe
             let status = if finished then sprintf "exit code %d" p.ExitCode else "killed after 10 seconds"
             sprintf "%s\n--- stdout\n%s\n--- stderr\n%s" status (limit 20000 out.Result) (limit 20000 err.Result)
+            |> withWarnings warnings
     | "emit_llvm" ->
         let file = projectFile (getStr (arg "file"))
 
         match Driver.compileProgram file false with
-        | Ok(ir, _) -> limit 100000 ir
+        | Ok((ir, _), _) -> limit 100000 ir
         | Error errors -> raise (ToolError(formatErrors errors))
     | "format" ->
         let file = projectFile (getStr (arg "file"))

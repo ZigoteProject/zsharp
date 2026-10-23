@@ -1,0 +1,3 @@
+tests/err_unused.zs:11:3: warning: this statement's value (int) is discarded: use it, or pipe it to ignore [unused-value]
+tests/err_unused.zs:13:3: warning: this statement's value (list<int>) is discarded: use it, or pipe it to ignore [unused-value]
+2 warnings, errors under --strict
