@@ -111,6 +111,8 @@ and ExprShape =
   | YieldAll of Expr
   /// handle e with its operations' clauses and its return clause
   | Handle of Expr * list<OpClause> * option<Pat * Expr>
+  /// what a derive's expansion checks (the checker makes it): an error inside says so, "field run: …"
+  | DeriveCtx of string * Expr
   /// a statement: an error inside it with no place of its own is at its first token (`at`)
   | At of Expr
   /// what a computation expression or a list expression's `->` makes: an error inside it with
@@ -200,3 +202,72 @@ let plainPat (shape: PatShape) : Pat = { pat = shape; patAt = -1 }
 /// The name a desugaring calls (`{x:F2}` calls Format.format, `a @ b` List.append): the library's,
 /// whatever the program opens or defines.
 let libraryName (name: string) : string = "global::" + name
+
+/// The expression with f applied to each of its direct child expressions (its place kept).
+let mapExpr (f: Expr -> Expr / 'e) (x: Expr) : Expr / 'e =
+  let fields (fs: list<FieldValue>) = List.map (fun (v: FieldValue) -> { v with value = f v.value }) fs
+  let shape =
+    match x.e with
+    | Lit _
+    | CharLit _
+    | FloatLit _
+    | BoolLit _
+    | StrLit _
+    | UnitLit
+    | Var _ -> x.e
+    | Call(n, args) -> Call(n, List.map f args)
+    | App(h, args) -> App(f h, List.map f args)
+    | Lambda(ps, b) -> Lambda(ps, f b)
+    | Bin(op, a, b) -> Bin(op, f a, f b)
+    | Neg a -> Neg(f a)
+    | Not a -> Not(f a)
+    | If(c, t, e) -> If(f c, f t, Option.map f e)
+    | Let(p, t, v, b) -> Let(p, t, f v, f b)
+    | LetFun(n, r, ps, t, b, rest) -> LetFun(n, r, ps, t, f b, f rest)
+    | LetRecGroup(fs, rest) -> LetRecGroup(List.map f fs, f rest)
+    | LetMut(n, t, v, b) -> LetMut(n, t, f v, f b)
+    | Assign(a, b) -> Assign(f a, f b)
+    | While(c, b) -> While(f c, f b)
+    | For(n, a, st, b, body) -> For(n, f a, Option.map f st, f b, f body)
+    | ForIn(n, xs, b) -> ForIn(n, f xs, f b)
+    | Seq(a, b) -> Seq(f a, f b)
+    | Tuple xs -> Tuple(List.map f xs)
+    | RecordLit fs -> RecordLit(fields fs)
+    | Update(r, fs) -> Update(f r, fields fs)
+    | Field(r, n) -> Field(f r, n)
+    | Index(a, i) -> Index(f a, f i)
+    | Slice(a, i, j) -> Slice(f a, Option.map f i, Option.map f j)
+    | ArrayLit xs -> ArrayLit(List.map f xs)
+    | Match(sc, cases) -> Match(f sc, List.map (fun (c: Clause) -> { c with guard = Option.map f c.guard; body = f c.body }) cases)
+    | Question a -> Question(f a)
+    | TryBind(p, a, b) -> TryBind(p, f a, f b)
+    | DeriveCtx(c, a) -> DeriveCtx(c, f a)
+    | Measured(a, m) -> Measured(f a, m)
+    | Typed(a, t) -> Typed(f a, t)
+    | Unsafe a -> Unsafe(f a)
+    | ListComp(isArray, b) -> ListComp(isArray, f b)
+    | Yield a -> Yield(f a)
+    | YieldAll a -> YieldAll(f a)
+    | Handle(b, cls, r) ->
+      let ret =
+        match r with
+        | Some(p, c) -> Some(p, f c)
+        | None -> None
+      Handle(f b, List.map (fun (c: OpClause) -> { c with opBody = f c.opBody }) cls, ret)
+    | At a -> At(f a)
+    | AtLine a -> AtLine(f a)
+  { x with e = shape }
+
+/// The pattern with no places, its own or its parts' (one written elsewhere, used here).
+let rec placelessPat (p: Pat) : Pat =
+  let shape =
+    match p.pat with
+    | PIdent(x, Some q) -> PIdent(x, Some(placelessPat q))
+    | PTuple ps -> PTuple(List.map placelessPat ps)
+    | POr(a, b) -> POr(placelessPat a, placelessPat b)
+    | PAs(q, x) -> PAs(placelessPat q, x)
+    | PNamed fs -> PNamed(List.map (fun (n, q) -> (n, placelessPat q)) fs)
+    | PRecord fs -> PRecord(List.map (fun (n, _, q) -> (n, -1, placelessPat q)) fs)
+    | PArgs ps -> PArgs(List.map placelessPat ps)
+    | other -> other
+  { pat = shape; patAt = -1 }

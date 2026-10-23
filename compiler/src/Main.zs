@@ -124,13 +124,33 @@ let parseTime (paths: list<string>) : int =
   println $"{List.length sources} files, {float (int best) / 1000000.0:F1} ms"
   0
 
+// the milliseconds checking a program takes, the library with it, the best of ten runs: against
+// the F# compiler's `zs check-time` (0020's criterion 2, its second half)
+let checkTime (path: string) : int =
+  let run () = Build.Check.program path true true |> ignore
+  run ()
+  let mutable best = u64 0
+  for i in 1 .. 10 do
+    let sw = Diagnostics.Stopwatch.startNew ()
+    run ()
+    let t = sw.ElapsedNanoseconds
+    if i = 1 || t < best then
+      best <- t
+  println $"{path}: {float (int best) / 1000000.0:F1} ms"
+  0
+
 let main () =
   match Environment.args () with
   | [ "tokens"; path ] -> syntax "tokens" path
   | [ "tree"; path ] -> syntax "tree" path
   | "parse-time" :: paths -> parseTime paths
+  | [ "check-time"; path ] -> checkTime path
   | "fmt" :: args -> fmt args
-  | [ "check"; path ] -> check path
+  | [ "check"; path ] -> Build.Check.run path false
+  | [ "check"; "--strict"; path ] -> Build.Check.run path true
+  | [ "build"; "--strict"; path ] -> Build.Check.build path true
+  | [ "build"; path ] -> Build.Check.build path false
+  | [ "check-syntax"; path ] -> check path
   | [ "ast"; path ] ->
     match File.readAllText path with
     | Error e ->

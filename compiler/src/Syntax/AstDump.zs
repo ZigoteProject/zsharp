@@ -216,6 +216,9 @@ let dump (src: Source.Source) (toks: array<Token.Token>) (decls: list<Decl>) : l
         line (d + 1) ("return " + pat q)
         expr (d + 2) body
       | None -> line (d + 1) "noreturn"
+    | DeriveCtx(n, a) ->
+      line d ("DeriveCtx " + n)
+      kids [ a ]
     | At a ->
       line d ($"At {lineOf e.at}" + at e.at)
       kids [ a ]

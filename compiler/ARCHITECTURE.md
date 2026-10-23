@@ -60,34 +60,42 @@ what is above it. About 20,000 lines in all.
 
 | Module | Lines | What it is |
 |---|---|---|
-| `Ty` | 300 | types: variables by number, constructors, functions with effect rows, tuples, records and unions by name, units of measure, kinds. `Ty.show` with rows. |
-| `Vars` | 200 | the context's union-find over variable numbers (`Buffer<Binding>`), levels for generalization, and the trail: `mark`, `undo`. |
-| `Rows` | 250 | effect rows with scoped labels: `unifyRow`, open and closed rows, the empty-row check (`main`, a task body, a `share<F>`, a callback, a trait method, an export). |
-| `Units` | 200 | units of measure as a free abelian group: normalize, solve, the rigid-variable rule. |
-| `Unify` | 350 | `unify : Cx -> Ty -> Ty -> unit / Throw<Mismatch>`, occurs check, rows and units through the modules above. 13 `Mismatch` sites in `Typer.fs` become throws. |
-| `Traits` | 450 | the impl table, trait resolution and coherence, derives' automatic impls, `attempt` for trials (an impl, an overload): the trail undone and the trial's reports dropped on a miss. |
+| `Ty` | 230 | types as plain values: a variable is a number (`TVar i`), constructors, functions with effect rows (Leijen's scoped labels), tuples, a scheme's variables (`TGen`), units of measure; kinds (a literal's allowed types, the traits a variable needs, a trait's other parameters); the built-in names (numbers, SIMD vectors, the generic constructors), and `tcon`, `rowEmpty`, `mkRow`. |
+| `Vars` | 90 | the context's variables: each one's binding and kind in `Buffer`s, by number, and the trail a trial undoes (`mark`, `undo`, `commit`). |
+| `Norm` | 155 | types under their bindings: rows taken apart, measures in normal form, `substGen`, `resolve` (free variables defaulted by kind). |
+| `Show` | 235 | types as text (0025's printer): the ambient row hidden, `/ <>` for an argument that must perform nothing; `explain`, a function's effects in words. |
+| `Fail` | 30 | the checker's two effects: `Fails` (what it can't go on from in a declaration, with a place when known) and `Mismatched` (unification's one way out: the types differ, or one lacks an impl). |
+| `Unify` | 220 | `unify v hooks c a b`: kinds met, occurs check, rows, units as Kennedy's; what it asks of the checker (a user impl, a trait's other parameters) through `Hooks<'c>`, which take the checker's context as an argument rather than capturing it. |
+| `Repr` | 145 | how values are held: `needsRc`, plain unions, `unionRep` (plain, niche, boxed), `cellShape`, and `shareBlocker` (what keeps a type from crossing threads). |
 
-### 2.4 `Infer/`: checking
+### 2.4 `Infer/`: checking, to Core
 
-| Module | Lines | What it is |
-|---|---|---|
-| `Cx` | 200 | the checker's context: `Vars`, the impl table, the module's interface so far, the error type, fresh ids. A record of tables; one per module check, owned by its job. |
-| `Scope` | 100 | names in scope as a persistent `Map`, taken by value into trials and closures. |
-| `Typed` | 200 | the typed tree as arrays indexed by node number (ids are dense per file): a type per node, the resolved impl per trait call, the resolved name per reference with its definition's span (so navigation into a module that isn't open needs no tree); what `Lower` and `Lsp` read. Hover is `Ty.show` of a node's type. Kept in the module's checked result. |
-| `Patterns` | 350 | pattern checking, exhaustiveness and redundancy (`Match.fs`), active patterns. |
-| `Exprs` | 1,200 | expressions: literals, applications, lambdas with their parameter types from the call, `let`, `match`, records with defaults, members with named and optional arguments, operators through the operator traits, interpolation, `?`. |
-| `Builders` | 300 | computation expressions (`option`, `result`, `task`, `seq`, a program's own) and `for` through [0017](../docs/proposals/0017-iteration.md)'s trait. |
-| `Effects` | 250 | `effect` declarations, `handle … with`, clause types, the resumption's type, operations as references. |
-| `Decls` | 700 | `let`, `let rec`, `type`, `module`, `open`, `trait`, `impl`, `extern`, attributes; generalization; the one-error-per-declaration rule is gone: a declaration with an error type still gets its type for the rest of the file. |
-| `Module` | 250 | `check : Options -> Env -> Source -> Tree -> Checked / Report`: a module's interface and its `Typed`, from the environment of the modules before it. The unit of parallel checking. |
-
-### 2.5 `Lower/`: typed tree to Core
+The checker is the F# compiler's `Typer`, ported: it produces Core as it checks (as `Typer`
+did), so there's no separate typed tree and `Lower` (§2.5 was the plan; one walk is less code, and
+lowering is cheap next to checking, in the editor too). Its places are tokens: an error with no
+place of its own takes the nearest expression's that has one (`located`), else its
+declaration's line.
 
 | Module | Lines | What it is |
 |---|---|---|
-| `Lower` | 800 | `Typed` to `Core` per declaration: trait calls to their impls' functions, members to functions, builders to their `bind`s, `?` to a match, interpolation to pieces. `zs lsp` never runs it. |
-| `Derive` | 400 | the derives (`Show`, `Eq`, `Ord`, `Hash`, `Json`, `Binary`, the operator traits) by `Shape` ([DESIGN §3.1](../DESIGN.md#31-derive)), generating Core, hygienic. |
-| `Exports` | 150 | `[<Export>]` signatures and the C header `--lib` writes. |
+| `Builtins` | 255 | the functions built into the compiler, by full name: their primitive, type scheme and arity. |
+| `Cx` | 1,400 | the context, one heap cell (a union of one case, with a property per field: a closure that uses it holds a pointer, and a property reads its one field): the program so far (the F# `State`'s tables as maps in cells), what the declaration being checked is in, and the helpers that need nothing of expressions: names in scope (`resolveWith`, with privacy), written types to types (`toTy`, rows, aliases, `methodType`), `expect` and its messages for newcomers, `useRow`, generalization, records and constructors, hovers. Unification's hooks are here: a user impl, made the first time it's needed by a type's automatic derive (`Late`, what `Decls` defines). |
+| `Patterns` | 265 | patterns to Core (`pattern`), and exhaustiveness and redundancy (Maranget's usefulness, `Match.fs`). |
+| `Derive` | 250 | derive expansion by `Shape` ([DESIGN §3.1](../DESIGN.md#31-derive)), AST to AST before checking, with no places: an error in it is at the type declaration. |
+| `Exprs` | 2,150 | expressions (`infer`): one recursive group, as `Typer.infer` is. The type expected of an expression is a parameter (`inferWith … hint`): it reaches what gives the value (branches, the tails of let and sequences, tuple, list and array elements) and gives a lambda its parameters' types, a record literal its record, a number with a unit its type, and makes a value the dyn, span or share expected of it. (`Typer` kept these in tables keyed by node; a parameter needs no node identity.) |
+| `Decls` | 1,200 | declarations: function groups and generalization, members, C's boundary, traits, impls and derives, effects, constants and top-level values, modules, attributes; `declareOne`, the per-declaration recovery (a failure is the declaration's error; what it changed of the context is put back), and `check` and `finish` for a module and a program. |
+
+An expression written elsewhere and checked here (a constant's body at a use, a field's or a
+parameter's default) is *foreign*: it records no hovers and its places aren't used. A constant's
+record literal keeps the record it built where it's defined (keyed by the constant and the
+literal's first field name).
+
+### 2.5 `Build/`'s checking half
+
+| Module | Lines | What it is |
+|---|---|---|
+| `Modules` | 185 | the modules of a check: the library's (the prelude, Core, Std), then the program's (the main file and what it uses, dependencies first; an import cycle is an error). Packages (0018) are still the F# compiler's. |
+| `Check` | 95 | `zs check`: the modules checked in order, the program's names added after the library's, and the report (with how many of each, `--strict`); `zs build` reports a failed check as F#'s does (its errors only). |
 
 ### 2.6 `Core/`: the intermediate language
 

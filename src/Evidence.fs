@@ -304,6 +304,9 @@ let run (types: Dictionary<string, TypeInfo>) (effects: Dictionary<string, Effec
         and yields (ctx: Ctx) (e: CExpr) : bool =
             match e.k with
             | CPerform _ -> true
+            // a jump to a join point lowered as a local function: that function runs the rest,
+            // so the jump goes through lower, where nothing follows it
+            | CJump(j, _) when ctx.joins.ContainsKey j -> true
             | CApp(h, args) -> (rowsOf args.Length h.ty |> List.exists (isRowEmpty >> not)) || yields ctx h || List.exists (yields ctx) args
             | CHandle _ -> not ctx.ev.IsEmpty
             | CLam _ -> false

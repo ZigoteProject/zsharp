@@ -1,9 +1,10 @@
-# Self-hosting: the Z# compiler's lexer and parser against the F# compiler's
+# Self-hosting: the Z# compiler's front end against the F# compiler's
 
 **Question:** 0020's second criterion, phase 11's gate: is a program of the compiler's shape,
 written in Z#, within 1.5× of the F# compiler? It's measured on code the compiler keeps:
 `compiler/src/Syntax/Lexer.zs` and `Parser.zs`, on 0019's tree, against the F# compiler's
-lexer and parser over the same files.
+lexer and parser over the same files; and the checker, `compiler/src/Infer/`, against `Typer` on
+the same programs.
 
 **Answer:** yes. The Z# lexer and parser, the AST included, take 0.6–0.9× the F# compiler's
 time on the compiler's own sources and 1.0× over every `.zs` file in the repository. They make
@@ -12,8 +13,11 @@ the same tokens, the same tree and the same AST for all 303 files (`compiler/tes
 - **First run:** 1.5× and 2.6×. The parser showed the F# compiler three inefficiencies, all
   fixed there (below), and with them the parser's state, a record of 22 fields passed to every
   function, stopped being copied field by field on each call.
-- **Still to measure:** the subset checker's figure comes with `Infer`, against `Typer` on the
-  same programs.
+- **The checker:** the whole of it (`Infer`, `Typer` ported, not a subset), checking a program
+  and the library it uses, takes 0.8× the F# compiler's time (below). It gives the F# compiler's
+  errors on 90 of the 93 `.err` tests (the other three are errors of passes after checking, and
+  of `import c`) and checks 100 of the 105 programs with an `.out` cleanly (the other five import
+  C): `compiler/tests/errors.sh`.
 
 ## Setup
 
@@ -41,6 +45,33 @@ holes, for their errors.
 | first run (the tree only), the repository | | | 2.6 |
 
 With the tree only (the parser before it made the AST), the figures were 0.55–0.65 and 1.03.
+
+## The checker
+
+| Program (with the library, 6,600 lines) | F# | Z# | Z# / F# |
+|---|---|---|---|
+| `examples/simple.zs` | 107 ms | 84 ms | 0.79 |
+| `tests/json.zs` | 105 ms | 87 ms | 0.83 |
+| `examples/complex.zs` | 105 ms | 85 ms | 0.81 |
+| `tests/modules/main.zs` | 97 ms | 83 ms | 0.85 |
+
+`zs check-time file` in both: parsing and checking the library and the program, the best of ten
+runs in process (the F# one after one for the JIT, with `ZS_NO_CACHE=1`).
+
+The first build took 225–240 ms, 2.0–2.3×. Four changes brought it under the F# compiler's:
+- **The built-in impls' sets were made at each use.** `hasBuiltinImpl`, which unification asks
+  for every literal and trait, built the union of the number and vector types each time; the
+  sets are values now.
+- **The context was copied into closures.** A record of 74 fields captured by a lambda is 74
+  words copied and as many counts incremented: the context is one heap cell now (a union of one
+  case, with a property per field, so its uses read as before).
+- **A field read through the cell copied the whole record.** `match c with Cx d -> d.globals`
+  copies `d` out of the cell before reading the field; `Cx { globals = g } -> g` reads the one
+  field. This was most of what was left (callgrind: 12% of instructions in the copy). The Z#
+  code generator should read a field through the cell either way; until then, the pattern says
+  which field.
+- **Names were resolved again at each use.** `resolveName`, a dozen candidates tried against nine
+  tables, runs several times per name; it's remembered for the declaration now.
 
 ## What the first run found
 
