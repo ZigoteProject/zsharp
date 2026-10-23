@@ -465,6 +465,7 @@ let serve () : int =
                                     "documentSymbolProvider", bool true
                                     "inlayHintProvider", bool true
                                     "documentFormattingProvider", bool true
+                                    "documentRangeFormattingProvider", bool true
                                     "definitionProvider", bool true
                                     "referencesProvider", bool true
                                     "completionProvider", obj [ "triggerCharacters", arr [ str "." ] ] ]
@@ -518,6 +519,17 @@ let serve () : int =
                         let lines = src.Split '\n'
                         respond id (arr [ obj [ "range", range (0, 0) (lines.Length, 0); "newText", str formatted ] ])
                     | _ -> respond id (arr [])
+                | "textDocument/rangeFormatting" ->
+                    // the declarations and statements the range touches, formatted: one edit over
+                    // their lines; none if they're formatted or the document doesn't parse
+                    let r = ps["range"]
+                    let src = Driver.readSource (docPath ())
+
+                    match Format.formatRange src (getInt (r["start"]["line"]) + 1) (getInt (r["end"]["line"]) + 1) with
+                    | Some(a, b, text) ->
+                        let lines = src.Replace("\r\n", "\n").Split('\n')
+                        respond id (arr [ obj [ "range", range (a - 1, 0) (b - 1, lines[b - 1].Length); "newText", str text ] ])
+                    | None -> respond id (arr [])
                 | "shutdown" -> respond id null
                 | "exit" ->
                     running <- false

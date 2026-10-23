@@ -9,7 +9,7 @@
 | `zs run [file.zs [--]] [args…]` | build and run |
 | `zs check <file.zs>` | type-check only, reporting every error |
 | `zs test [file.zs] [filters…]` | run `[<Test>]` functions, each in its own process |
-| `zs fmt [--check] <files…>` | format files in place (`--check`: list unformatted ones) |
+| `zs fmt [--check] <files…>` | format files in place (`--check`: list unformatted ones; `--stdin`: standard input to standard output) |
 | `zs doc <file.zs>` | print a Markdown reference of a file's documented items |
 | `zs fetch` / `zs update` | check out / update git dependencies |
 | `zs lsp` | the language server (stdio) |
@@ -62,9 +62,29 @@ On the host benchmarks it gains a few percent (6% on `binarytrees`); a profile f
 - two-space indentation;
 - consistent spacing around operators and punctuation;
 - trimmed trailing whitespace;
-- at most one blank line in a row.
+- at most one blank line in a row;
+- lines over 100 columns broken, outermost construct first: after a binding's `=` or a lambda's `->`, at an `if`'s branches, before each `|>` of a pipeline, between a match's clauses, and between a list's, a tuple's or a record's items when each line then fits.
 
-**Safety:** comments stay where they are, and the formatter checks that the result has exactly the same tokens as the input, so formatting can't change a program's meaning. Zed runs it on save.
+```zsharp
+type Item = { name: string; price: int }
+
+let report (items: list<Item>) = items |> List.filter (fun i -> i.price > 100) |> List.map (fun i -> i.name) // the expensive ones
+```
+
+becomes
+
+```zsharp
+type Item = { name: string; price: int }
+
+let report (items: list<Item>) =
+  items
+  |> List.filter (fun i -> i.price > 100)
+  |> List.map (fun i -> i.name) // the expensive ones
+```
+
+**What it keeps:** the line breaks you wrote, and comments where they are. A string literal or a comment never breaks, so a line long because of one stays long, and so does a call with many arguments outside brackets, since its arguments can't continue on the next line.
+
+**Safety:** the formatter checks that the result parses to the same program (the same syntax tree, but for layout), so formatting can't change a program's meaning. A file that doesn't parse is left alone, with its error. Zed runs it on save, and formats a selection (range formatting).
 
 ## Documentation comments
 

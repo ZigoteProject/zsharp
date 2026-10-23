@@ -204,13 +204,66 @@ type Tok =
     | KDedent
     | KEof
 
+/// What lies between tokens (0019): a token's trailing trivia runs to the end of its line, its
+/// newline included; the rest (own-line comments, blank lines, indentation) leads the next token.
+type Trivia =
+    | Space of string // spaces and tabs
+    | Newline
+    | Comment of string // "// …", without its newline
+    | DocComment of string // "/// …": what hover and zs doc show
+
 type Token =
     { tok: Tok
       line: int
       col: int // 1-based; 0 for layout tokens
       len: int
       adj: bool // no whitespace before it (F#: `f(x)` binds tighter than `f (x)`)
-      last: int } // the line it ends on: a later one for a string that spans lines
+      last: int // the line it ends on: a later one for a string that spans lines
+      offset: int // in the source with "\r\n" read as "\n"
+      text: string // as written; "" for a layout token (and the `;` a line break makes in { } or [ ])
+      lead: Trivia list
+      trail: Trivia list }
+
+/// The lossless syntax tree (0019): every token in source order, with its trivia, under nodes by
+/// kind (one per construct). Its tokens' text and trivia, in order, are the file's text.
+type Node =
+    { kind: string
+      children: Child[] }
+
+and Child =
+    | T of Token
+    | N of Node
+
+let triviaText =
+    function
+    | Space s
+    | Comment s
+    | DocComment s -> s
+    | Newline -> "\n"
+
+/// A node's tokens, in source order.
+let rec tokensOf (n: Node) : Token seq =
+    seq {
+        for c in n.children do
+            match c with
+            | T t -> yield t
+            | N m -> yield! tokensOf m
+    }
+
+/// The source text a tree was parsed from, byte for byte.
+let treeText (n: Node) =
+    let sb = StringBuilder()
+
+    for t in tokensOf n do
+        for x in t.lead do
+            sb.Append(triviaText x) |> ignore
+
+        sb.Append t.text |> ignore
+
+        for x in t.trail do
+            sb.Append(triviaText x) |> ignore
+
+    sb.ToString()
 
 let showTok =
     function
@@ -351,7 +404,13 @@ and private lexWith (src: string) (keepComments: bool) : Token[] =
     let mutable lastIndent = 0 // of the last line with code
     let mutable resume: (int * int) option = None // a string that spans lines ends here: lexing goes on at (line index, column)
     let mutable first = true
-    let lines = src.Replace("\r\n", "\n").Split '\n'
+    let text = src.Replace("\r\n", "\n")
+    let lines = text.Split '\n'
+    // where each line starts in the text
+    let lineStart = Array.zeroCreate (lines.Length + 1)
+
+    for li in 0 .. lines.Length - 1 do
+        lineStart[li + 1] <- lineStart[li] + lines[li].Length + 1
 
     for li in 0 .. lines.Length - 1 do
         let line = lines[li]
@@ -359,14 +418,23 @@ and private lexWith (src: string) (keepComments: bool) : Token[] =
         let mutable i = 0
         let mutable start = 0
 
-        let add t =
+        let token t written =
             toks.Add
                 { tok = t
                   line = ln
                   col = start + 1
                   len = max 1 (i - start)
                   adj = start > 0 && line[start - 1] <> ' '
-                  last = ln }
+                  last = ln
+                  offset = lineStart[li] + (if written then start else i)
+                  text = (if written then line.Substring(start, i - start) else "")
+                  lead = []
+                  trail = [] }
+
+        // a token as written, from start to i
+        let add t = token t true
+        // a layout token (or the `;` a line break makes), at i, with no text
+        let layout t = token t false
 
         // a line inside a string that spans lines, or the line where one ends (lexing goes on
         // after it); neither starts a line of code
@@ -395,16 +463,16 @@ and private lexWith (src: string) (keepComments: bool) : Token[] =
                 first <- false
             elif i > indents.Peek() then
                 indents.Push i
-                add KIndent
+                layout KIndent
             else
                 while i < indents.Peek() do
                     indents.Pop() |> ignore
-                    add KDedent
+                    layout KDedent
 
                 if i <> indents.Peek() then
                     fail ln "inconsistent indentation"
 
-                add KNewline
+                layout KNewline
         elif not blank && brackets.Count > 0 && not (continuesLine rest) then
             let frame = frames.Peek()
             let closer = rest.StartsWith ")" || rest.StartsWith "}" || rest.StartsWith "]" || rest.StartsWith "|]"
@@ -423,28 +491,28 @@ and private lexWith (src: string) (keepComments: bool) : Token[] =
                 // a block inside the bracket, as at the top level: (fun x -> and a deeper line
                 if frame.Count = 0 && opensBlock && i > lastIndent then
                     frame.Push i
-                    add KIndent
+                    layout KIndent
                 elif frame.Count > 0 then
                     if i > frame.Peek() then
                         frame.Push i
-                        add KIndent
+                        layout KIndent
                     else
                         while frame.Count > 0 && i < frame.Peek() do
                             frame.Pop() |> ignore
-                            add KDedent
+                            layout KDedent
 
                         if frame.Count > 0 then
                             if i <> frame.Peek() then
                                 fail ln "inconsistent indentation"
 
-                            add KNewline
+                            layout KNewline
 
                 // outside such blocks, a new line inside { } or [ ] separates items
                 if frame.Count = 0 && (brackets.Peek() = '{' || brackets.Peek() = '[') then
                     match toks[toks.Count - 1].tok with
                     | KSym(";" | "{" | "[" | "[|")
                     | KKw "with" -> ()
-                    | _ -> add (KSym ";")
+                    | _ -> layout (KSym ";")
 
         if not blank then
             lastIndent <- i
@@ -647,6 +715,7 @@ and private lexWith (src: string) (keepComments: bool) : Token[] =
                     // it ended on a later line: the token takes the rest of this line, and
                     // lexing goes on after the closing quote there
                     resume <- Some(curLine, i)
+                    let until = lineStart[curLine] + i
                     i <- line.Length
 
                     toks.Add
@@ -655,7 +724,11 @@ and private lexWith (src: string) (keepComments: bool) : Token[] =
                           col = start + 1
                           len = line.Length - start
                           adj = start > 0 && line[start - 1] <> ' '
-                          last = curLine + 1 }
+                          last = curLine + 1
+                          offset = lineStart[li] + start
+                          text = text.Substring(lineStart[li] + start, until - lineStart[li] - start)
+                          lead = []
+                          trail = [] }
             else
                 let at = i
                 let two = if at + 1 < line.Length then line.Substring(at, 2) else ""
@@ -716,7 +789,7 @@ and private lexWith (src: string) (keepComments: bool) : Token[] =
                 | ">]" when brackets.Count > 0 ->
                     // the blocks opened inside the bracket end with it
                     for _ in 1 .. frames.Pop().Count do
-                        add KDedent
+                        layout KDedent
 
                     brackets.Pop() |> ignore
                 | _ -> ()
@@ -724,31 +797,136 @@ and private lexWith (src: string) (keepComments: bool) : Token[] =
                 i <- i + s.Length
                 add (KSym(if prefixMinus then "~-" else s))
 
-    for _ in 2 .. indents.Count do
-        toks.Add
-            { tok = KDedent
-              line = lines.Length
-              col = 0
-              len = 0
-              adj = false
-              last = lines.Length }
-
-    toks.Add
-        { tok = KEof
+    let eof t =
+        { tok = t
           line = lines.Length
           col = 0
           len = 0
           adj = false
-          last = lines.Length }
-    toks.ToArray()
+          last = lines.Length
+          offset = text.Length
+          text = ""
+          lead = []
+          trail = [] }
+
+    for _ in 2 .. indents.Count do
+        toks.Add(eof KDedent)
+
+    toks.Add(eof KEof)
+    withTrivia text (toks.ToArray())
+
+/// Gives each written token the trivia around it: what follows it to the end of its line (its
+/// newline included) trails it, and the rest leads the next written token, or the end of file.
+and private withTrivia (text: string) (toks: Token[]) : Token[] =
+    let pieces (from: int) (until: int) =
+        let out = ResizeArray<Trivia>()
+        let mutable i = from
+
+        while i < until do
+            let c = text[i]
+
+            if c = '\n' then
+                out.Add Newline
+                i <- i + 1
+            elif c = '/' && i + 1 < until && text[i + 1] = '/' then
+                let e = text.IndexOf('\n', i)
+                let e = if e < 0 || e > until then until else e
+                let s = text.Substring(i, e - i)
+                out.Add(if s.StartsWith "///" && not (s.StartsWith "////") then DocComment s else Comment s)
+                i <- e
+            else
+                let s = i
+
+                while i < until && text[i] <> '\n' && not (text[i] = '/' && i + 1 < until && text[i + 1] = '/') do
+                    i <- i + 1
+
+                out.Add(Space(text.Substring(s, i - s)))
+
+        List.ofSeq out
+
+    // what trails a token: up to its line's newline, included
+    let split (ts: Trivia list) =
+        match List.tryFindIndex ((=) Newline) ts with
+        | Some k -> List.take (k + 1) ts, List.skip (k + 1) ts
+        | None -> ts, []
+
+    let written = [| for k in 0 .. toks.Length - 1 do if toks[k].text <> "" then k |]
+    let toks = Array.copy toks
+    let mutable prevEnd = 0
+
+    for w in 0 .. written.Length - 1 do
+        let k = written[w]
+        let gap = pieces prevEnd toks[k].offset
+
+        let lead =
+            if w = 0 then
+                gap
+            else
+                let p = written[w - 1]
+                let trail, lead = split gap
+                toks[p] <- { toks[p] with trail = trail }
+                lead
+
+        toks[k] <- { toks[k] with lead = lead }
+        prevEnd <- toks[k].offset + toks[k].text.Length
+
+    let rest = pieces prevEnd text.Length
+    let e = toks.Length - 1
+
+    if written.Length > 0 then
+        let p = written[written.Length - 1]
+        let trail, lead = split rest
+        toks[p] <- { toks[p] with trail = trail }
+        toks[e] <- { toks[e] with lead = lead }
+    else
+        toks[e] <- { toks[e] with lead = rest }
+
+    toks
 
 // ---------------------------------------------------------------- parser
 
 let private cons a b = Call("::", [ Tuple [ a; b ] ])
 
-/// Parses a whole program, or (exprOnly) a single expression.
-let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (int * Decl) list * Expr option =
+/// Parses a whole program, or (exprOnly) a single expression, with its syntax tree.
+let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (int * Decl) list * Expr option * Node =
+    let toks = Array.copy toks // closeAngle splits '>>' in place
     let pos = ref 0
+    // the tree so far: the open nodes, innermost on top, each with its children
+    let opened = Stack<string * ResizeArray<Child>>()
+    opened.Push("File", ResizeArray())
+    let start kind = opened.Push(kind, ResizeArray())
+
+    let finish () =
+        let kind, children = opened.Pop()
+        (snd (opened.Peek())).Add(N { kind = kind; children = children.ToArray() })
+
+    /// The open node's next child: startAt makes a node of the children from there on, for a
+    /// construct found after its first part (an operator after its left operand).
+    let here () = (snd (opened.Peek())).Count
+
+    let startAt (at: int) kind =
+        let children = snd (opened.Peek())
+        let moved = children.GetRange(at, children.Count - at)
+        children.RemoveRange(at, children.Count - at)
+        opened.Push(kind, moved)
+
+    let node kind (f: unit -> 'r) : 'r =
+        start kind
+        let r = f ()
+        finish ()
+        r
+
+    // backtracking: the position, and the tree as it was
+    let save () = pos.Value, opened.Count, here ()
+
+    let restore (p, depth, count) =
+        pos.Value <- p
+
+        while opened.Count > depth do
+            opened.Pop() |> ignore
+
+        let children = snd (opened.Peek())
+        children.RemoveRange(count, children.Count - count)
     // inside a task { }'s body: blocks take let!, do!, return and return! (the body is code in
     // direct style, compiled into a state machine)
     let inTask = ref 0
@@ -772,7 +950,9 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         | _ -> ()
 
         node
-    let advance () = pos.Value <- pos.Value + 1
+    let advance () =
+        (snd (opened.Peek())).Add(T toks[pos.Value])
+        pos.Value <- pos.Value + 1
     let err what =
         let t = toks[pos.Value]
         raise (CompileErrorPos(t.line, t.col, sprintf "expected %s, found %s" what (showTok t.tok)))
@@ -804,16 +984,33 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         else
             false
 
-    /// Consumes one '>' closing a type argument list, splitting '>>' if needed.
+    /// Consumes one '>' closing a type argument list, splitting '>>' if needed: its first '>'
+    /// goes into the tree, the rest stays to be read.
     let closeAngle () =
+        let split rest =
+            let t = toks[pos.Value]
+            (snd (opened.Peek())).Add(T { t with tok = KSym ">"; text = ">"; len = 1; trail = [] })
+
+            toks[pos.Value] <-
+                { t with
+                    tok = KSym rest
+                    text = rest
+                    col = t.col + 1
+                    len = t.len - 1
+                    adj = true
+                    offset = t.offset + 1
+                    lead = [] }
+
         match peek () with
         | KSym ">" -> advance ()
-        | KSym ">>" -> toks[pos.Value] <- { toks[pos.Value] with tok = KSym ">" }
-        | KSym ">>>" -> toks[pos.Value] <- { toks[pos.Value] with tok = KSym ">>" } // list<list<list<int>>>
+        | KSym ">>" -> split ">"
+        | KSym ">>>" -> split ">>" // list<list<list<int>>>
         | _ -> err "'>'"
 
     /// A unit of measure: m, m/s^2, kg m/s^2, 'u, 1 (inside <...> after a numeric type).
-    let measure () =
+    let rec measure () = node "Measure" measureOf
+
+    and measureOf () =
         let rec term () : (string * bool * int) list =
             let unitTerm =
                 match peek () with
@@ -875,13 +1072,17 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         List.contains n [ "int"; "i8"; "i16"; "i32"; "i64"; "u8"; "u16"; "u32"; "u64"; "usize"; "f32"; "f64"; "float"; "c_int" ]
 
     let rec tyAtom () =
+        let at = here ()
+
         let t =
             match peek () with
             | KId n when isNumericName n && peek2 () = KSym "<" ->
+                start "TypeName"
                 advance ()
                 advance ()
                 let m = measure ()
                 closeAngle ()
+                finish ()
                 STName(n, [ m ])
             | KTyVar v ->
                 advance ()
@@ -894,12 +1095,14 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                               | KId _ -> true
                               | _ -> false) ->
                 // dyn Trait: a value of any type that implements the trait
-                advance ()
-                STName("dyn", [ STName(ident (), []) ])
+                node "TypeName" (fun () ->
+                    advance ()
+                    STName("dyn", [ STName(ident (), []) ]))
             | KId n ->
                 advance ()
 
                 if isSym "<" then
+                    startAt at "TypeName"
                     advance ()
                     let args = ResizeArray [ ty () ]
 
@@ -908,14 +1111,16 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                         args.Add(ty ())
 
                     closeAngle ()
+                    finish ()
                     STName(n, List.ofSeq args)
                 else
                     STName(n, [])
             | KSym "(" ->
-                advance ()
-                let t = ty ()
-                expect (KSym ")") "')'"
-                t
+                node "TypeParen" (fun () ->
+                    advance ()
+                    let t = ty ()
+                    expect (KSym ")") "')'"
+                    t)
             | _ -> err "type"
 
         // postfix application: int list, string option
@@ -924,32 +1129,42 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         while (match peek () with
                | KId _ -> true
                | _ -> false) do
+            startAt at "TypeName"
             t <- STName(ident (), [ t ])
+            finish ()
 
         t
 
     and tupleTy () =
+        let at = here ()
         let first = tyAtom ()
 
         if isSym "*" then
+            startAt at "TypeTuple"
             let items = ResizeArray [ first ]
 
             while isSym "*" do
                 advance ()
                 items.Add(tyAtom ())
 
+            finish ()
             STTuple(List.ofSeq items)
         else
             first
 
     and ty () =
+        let at = here ()
         let t = tupleTy ()
 
         if isSym "->" then
+            startAt at "TypeFun"
             advance ()
-            STFun(t, ty ())
+            let r = ty ()
+            finish ()
+            STFun(t, r)
         elif isSym "/" then
             // the effects after a function's result: / E, / 'e, / <E, F | 'e>, / <>
+            startAt at "TypeRow"
             advance ()
 
             let label () =
@@ -957,43 +1172,48 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                 | STName _ as l -> l
                 | _ -> err "an effect"
 
-            match peek () with
-            | KSym "<>" ->
-                advance ()
-                STRow(t, [], None)
-            | KTyVar v ->
-                advance ()
-                STRow(t, [], Some v)
-            | KSym "<" ->
-                advance ()
-                let labels = ResizeArray [ label () ]
-
-                while isSym "," do
+            let r =
+                match peek () with
+                | KSym "<>" ->
                     advance ()
-                    labels.Add(label ())
+                    STRow(t, [], None)
+                | KTyVar v ->
+                    advance ()
+                    STRow(t, [], Some v)
+                | KSym "<" ->
+                    advance ()
+                    let labels = ResizeArray [ label () ]
 
-                let tail =
-                    if isSym "|" then
+                    while isSym "," do
                         advance ()
+                        labels.Add(label ())
 
-                        match peek () with
-                        | KTyVar v ->
+                    let tail =
+                        if isSym "|" then
                             advance ()
-                            Some v
-                        | _ -> err "a row variable ('e)"
-                    else
-                        None
 
-                closeAngle ()
-                STRow(t, List.ofSeq labels, tail)
-            | _ -> STRow(t, [ label () ], None)
+                            match peek () with
+                            | KTyVar v ->
+                                advance ()
+                                Some v
+                            | _ -> err "a row variable ('e)"
+                        else
+                            None
+
+                    closeAngle ()
+                    STRow(t, List.ofSeq labels, tail)
+                | _ -> STRow(t, [ label () ], None)
+
+            finish ()
+            r
         else
             t
 
     let optTy () =
         if isSym ":" then
-            advance ()
-            Some(ty ())
+            node "Annotation" (fun () ->
+                advance ()
+                Some(ty ()))
         else
             None
 
@@ -1012,62 +1232,90 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         | _ -> false
 
     let rec pattern () =
+        let at = here ()
         let mutable p = orPat ()
 
         while peek () = KKw "as" do
+            startAt at "PatternAs"
             advance ()
             p <- PAs(p, ident ())
+            finish ()
 
         p
 
     // before '->', a line starting with '|' continues the or-pattern
     and orPat () =
+        let at = here ()
         let mutable p = tuplePat ()
+        let mutable chain = false
 
         while isSym "|" || (peek () = KNewline && peek2 () = KSym "|") do
+            if not chain then
+                chain <- true
+                startAt at "PatternOr"
+
             if peek () = KNewline then
                 advance ()
 
             advance ()
             p <- POr(p, tuplePat ())
 
+        if chain then
+            finish ()
+
         p
 
     and tuplePat () =
+        let at = here ()
         let first = consPat ()
 
         if isSym "," then
+            startAt at "PatternTuple"
             let items = ResizeArray [ first ]
 
             while isSym "," do
                 advance ()
                 items.Add(consPat ())
 
+            finish ()
             PTuple(List.ofSeq items)
         else
             first
 
     and consPat () =
+        let at = here ()
         let head = appPat ()
 
         if isSym "::" then
+            startAt at "PatternCons"
             advance ()
-            PIdent("::", Some(PTuple [ head; consPat () ]))
+            let tail = consPat ()
+            finish ()
+            PIdent("::", Some(PTuple [ head; tail ]))
         else
             head
 
     and appPat () =
         match peek () with
         | KId c when c <> "_" && startsPatAtom (peek2 ()) && (Char.IsUpper c[0] || c.Contains ".") ->
-            advance ()
+            node "PatternCase" (fun () ->
+                advance ()
 
-            match [ while startsPatAtom (peek ()) do
-                        yield patAtom () ] with
-            | [ p ] -> PIdent(c, Some p)
-            | ps -> PIdent(c, Some(PArgs ps))
+                match [ while startsPatAtom (peek ()) do
+                            yield patAtom () ] with
+                | [ p ] -> PIdent(c, Some p)
+                | ps -> PIdent(c, Some(PArgs ps)))
         | _ -> patAtom ()
 
     and patAtom () =
+        match peek () with
+        | KSym "{" -> node "PatternRecord" patAtomOf
+        | KSym "[" -> node "PatternList" patAtomOf
+        | KSym "(" -> node "PatternParen" patAtomOf
+        | KSym("-" | "~-") -> node "PatternNegative" patAtomOf
+        | _ -> patAtomOf ()
+
+    and patAtomOf () =
         let t = peek ()
 
         if not (startsPatAtom t) then
@@ -1149,13 +1397,14 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
     let param () : Param =
         match peek (), peek2 () with
         | KSym "(", KId _ when (toks[min (pos.Value + 2) (toks.Length - 1)].tok = KSym ":") ->
-            advance ()
-            let xi = pos.Value
-            let x = ident ()
-            advance ()
-            let t = ty ()
-            expect (KSym ")") "')'"
-            mark xi (PIdent(x, None)), Some t
+            node "Parameter" (fun () ->
+                advance ()
+                let xi = pos.Value
+                let x = ident ()
+                advance ()
+                let t = ty ()
+                expect (KSym ")") "')'"
+                mark xi (PIdent(x, None)), Some t)
         | _ -> patAtom (), None
 
     let startsParam t =
@@ -1172,10 +1421,11 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
 
     let rec block () =
         if peek () = KIndent then
-            advance ()
-            let e = seq ()
-            expect KDedent "end of block"
-            e
+            node "Block" (fun () ->
+                advance ()
+                let e = seq ()
+                expect KDedent "end of block"
+                e)
         else
             // a one-line block is a statement too, so its errors have a position
             let si = pos.Value
@@ -1183,7 +1433,9 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
 
             match taskForm () with
             | Some e -> mark si (At(ln, e))
-            | None -> mark si (At(ln, assignment (expr ())))
+            | None ->
+                let at = here ()
+                mark si (At(ln, assignment at (expr ())))
 
     /// In a task's body: `return e` (the task's result), `return! t` and `do! t` (waiting for t);
     /// None for anything else.
@@ -1202,27 +1454,34 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
             | KId "return" ->
                 // return! t: the task t's result, which at the end of the body is t handed this
                 // task's waiter ($awaitLast)
-                advance ()
-                if bang () then Some(Call("$awaitLast", [ block () ])) else Some(block ())
+                node "Return" (fun () ->
+                    advance ()
+                    if bang () then Some(Call("$awaitLast", [ block () ])) else Some(block ()))
             | KKw "do" when peek2 () = KSym "!" ->
-                advance ()
-                advance ()
-                Some(Call("$await", [ block () ]))
+                node "DoBang" (fun () ->
+                    advance ()
+                    advance ()
+                    Some(Call("$await", [ block () ])))
             | _ -> None
 
     /// `lhs <- rhs` (statements, and single-line blocks such as `then x <- 1`), and compound
     /// assignment, `lhs += rhs`: lhs <- lhs + rhs with the place evaluated once, its receiver and
     /// index bound first (then the read, the operation and the write, in that order)
-    and assignment lhs =
+    and assignment (at: int) lhs =
         match peek () with
         | KSym "<-" ->
+            startAt at "Assign"
             advance ()
-            Assign(lhs, expr ())
+            let rhs = expr ()
+            finish ()
+            Assign(lhs, rhs)
         | KSym s when compoundOps.ContainsKey s ->
             let oi = pos.Value
             let ln = line ()
+            startAt at "Assign"
             advance ()
             let rhs = expr ()
+            finish ()
             let temps = ResizeArray<string * Expr>()
 
             // a part of the place with no effects (a name, a literal) stays; any other is bound to a
@@ -1278,11 +1537,13 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                                    | _ -> false) then
             // use x = e: x is disposed (Dispose.dispose) after the rest of the block; in a task,
             // also if the task is cancelled before then
+            start "Use"
             advance ()
             let xi = pos.Value
             let x = ident ()
             expect (KSym "=") "'='"
             let v = block ()
+            finish ()
 
             if peek () <> KNewline then
                 fail ln "'use' must be followed by the rest of the block on the next line"
@@ -1299,11 +1560,13 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                 stmt(ln, Let(mark xi (PIdent(x, None)), None, v, Let(PIdent("$use", None), None, after, Seq(Call("Dispose.dispose", [ Var x ]), Var "$use"))))
         elif inTask.Value > 0 && peek () = KKw "let" && peek2 () = KSym "!" then
             // let! p = t: the rest once the task t has given its result
+            start "LetBang"
             advance ()
             advance ()
             let p = pattern ()
             expect (KSym "=") "'='"
             let v = block ()
+            finish ()
             stmt(ln, Let(p, None, Call("$await", [ v ]), rest ln))
         elif inTask.Value > 0 && (peek () = KId "return" || (peek () = KKw "do" && peek2 () = KSym "!")) then
             // return e: the block's (and the task's) result, last; do! t: then the rest
@@ -1319,6 +1582,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
             else
                 e
         elif peek () = KKw "let" then
+            start "Let"
             advance ()
             let isRec = peek () = KKw "rec"
 
@@ -1332,6 +1596,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                 let ann = optTy ()
                 expect (KSym "=") "'='"
                 let v = block ()
+                finish ()
                 stmt(ln, LetMut(x, ann, v, rest ln))
             | KSym "(", _ when operatorAhead () ->
                 // a local operator: let (<+>) a b = …
@@ -1347,13 +1612,16 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                 let ann = optTy ()
                 expect (KSym "=") "'='"
                 let v = block ()
+                finish ()
 
                 match v with
                 | Question e as q
                 | At(_, (Question e as q)) when ann.IsNone -> stmt(ln, copyPos q (TryBind(p, e, rest ln)))
                 | _ -> stmt(ln, Let(p, ann, v, rest ln))
         else
-            match assignment (expr ()) with
+            let at = here ()
+
+            match assignment at (expr ()) with
             | Question e as q when peek () = KNewline ->
                 advance ()
                 stmt(ln, copyPos q (TryBind(PWild, e, seq ())))
@@ -1418,11 +1686,20 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                 let gbody = block ()
                 members.Add(mark gi (LetFun(g, true, gps, gret, gbody, UnitLit)))
 
+            finish ()
             stmt(ln, LetRecGroup(List.ofSeq members, rest ln))
         else
+            finish ()
             stmt(ln, mark fi (LetFun(f, isRec, ps, ret, body, rest ln)))
 
     and expr () =
+        match peek () with
+        | KId "yield" when inSeq.Value > 0 -> node "Yield" exprForm
+        | KKw("if" | "match" | "handle" | "function" | "fun" | "unsafe" | "while" | "for" as k) ->
+            node (if k = "fun" then "Lambda" else string (Char.ToUpper k[0]) + k.Substring 1) exprForm
+        | _ -> exprForm ()
+
+    and exprForm () =
         match peek () with
         | KId "yield" when inSeq.Value > 0 ->
             // in a seq { }: yield e performs Yield.yield e; yield! s yields s's elements
@@ -1464,9 +1741,12 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
 
             let body =
                 if peek () = KIndent then
-                    advance ()
-                    let e = seq ()
-                    expect KDedent "end of block"
+                    let e =
+                        node "Block" (fun () ->
+                            advance ()
+                            let e = seq ()
+                            expect KDedent "end of block"
+                            e)
 
                     if peek () = KNewline then
                         advance ()
@@ -1556,7 +1836,11 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         let ops = ResizeArray()
         let mutable ret = None
 
-        while nextBar () do
+        while (if peek () = KNewline && peek2 () = KSym "|" then advance ()
+               isSym "|") do
+            start "Clause"
+            advance ()
+
             match peek () with
             | KId "return" ->
                 advance ()
@@ -1583,6 +1867,8 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                 ops.Add(op, List.ofSeq args, k, block ())
             | _ -> err "an operation (Effect.op p…, k -> …) or return p -> …"
 
+            finish ()
+
         if indented then
             expect KDedent "end of block"
 
@@ -1594,11 +1880,15 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         if indented then
             advance ()
 
-        nextBar () |> ignore
         let cases = ResizeArray()
-        let mutable go = true
 
-        while go do
+        // `| p when g -> e`, the first clause's '|' optional
+        let clause () =
+            start "Clause"
+
+            if isSym "|" then
+                advance ()
+
             let p = pattern ()
 
             let guard =
@@ -1610,7 +1900,18 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
 
             expect (KSym "->") "'->'"
             cases.Add(p, guard, body ())
-            go <- nextBar ()
+            finish ()
+
+        if peek () = KNewline && peek2 () = KSym "|" then
+            advance ()
+
+        clause ()
+
+        while isSym "|" || (peek () = KNewline && peek2 () = KSym "|") do
+            if peek () = KNewline then
+                advance ()
+
+            clause ()
 
         if indented then
             expect KDedent "end of block"
@@ -1637,11 +1938,13 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
     /// Statements one after another (`;`, or a line break), until stop: a `let` takes the rest.
     and compSeq (stop: unit -> bool) =
         if peek () = KKw "let" then
+            start "Let"
             advance ()
             let p = pattern ()
             let ann = optTy ()
             expect (KSym "=") "'='"
             let v = block ()
+            finish ()
 
             if peek () = KNewline || isSym ";" || peek () = KKw "in" then
                 advance ()
@@ -1660,14 +1963,23 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
     /// statement.
     and compBlock () =
         if peek () = KIndent then
-            advance ()
-            let e = compSeq (fun () -> peek () = KDedent)
-            expect KDedent "end of block"
-            e
+            node "Block" (fun () ->
+                advance ()
+                let e = compSeq (fun () -> peek () = KDedent)
+                expect KDedent "end of block"
+                e)
         else
             compStmt ()
 
     and compStmt () : Expr =
+        match peek () with
+        | KKw "for" -> node "For" compForm
+        | KKw "if" -> node "If" compForm
+        | KKw "match" -> node "Match" compForm
+        | KId "yield" -> node "Yield" compForm
+        | _ -> compForm ()
+
+    and compForm () : Expr =
         let si = pos.Value
         let ln = line ()
         let stmt (e: Expr) = mark si (At(ln, e))
@@ -1693,7 +2005,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                     advance ()
                     let yi = pos.Value
                     let yl = line ()
-                    mark yi (At(yl, Yield(block ())))
+                    mark yi (At(yl, Yield(node "Yield" block)))
                 else
                     expect (KKw "do") "'do' or '->'"
                     compBlock ()
@@ -1746,7 +2058,9 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                 stmt (YieldAll(expr ()))
             else
                 stmt (Yield(expr ()))
-        | _ -> stmt (assignment (expr ()))
+        | _ ->
+            let at = here ()
+            stmt (assignment at (expr ()))
 
     // an expression without sequencing: the loosest level is ||
     and pipe () = orE ()
@@ -1756,34 +2070,51 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
     and operand (next: unit -> Expr) = if peek () = KKw "fun" || peek () = KKw "function" then expr () else next ()
 
     and orE () =
+        let at = here ()
         let l = andE ()
 
         if isSym "||" then
+            startAt at "Infix"
             advance ()
-            If(l, BoolLit true, Some(orE ()))
+            let r = orE ()
+            finish ()
+            If(l, BoolLit true, Some r)
         else
             l
 
     and andE () =
+        let at = here ()
         let l = cmpE ()
 
         if isSym "&&" then
+            startAt at "Infix"
             advance ()
-            If(l, andE (), Some(BoolLit false))
+            let r = andE ()
+            finish ()
+            If(l, r, Some(BoolLit false))
         else
             l
 
     /// Left-associative operators at one level: `ops`, and the custom operators of `level`
     /// (-1 for none).
     and binary ops level sub =
+        let at = here ()
         let mutable l = sub ()
         let mutable go = true
+        let mutable chain = false
+
+        // the chain's node, from its first operand, at its first operator
+        let infix () =
+            if not chain then
+                chain <- true
+                startAt at "Infix"
 
         while go do
             let oi = pos.Value
 
             match peek () with
             | KSym s when List.contains s ops ->
+                infix ()
                 advance ()
                 l <- Bin(s, l, sub ())
             | KSym(("++" | "--") as s) when (match peek2 () with
@@ -1793,17 +2124,28 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                                              | _ -> false) ->
                 errAt (sprintf "'%s' isn't an operator: write x <- x %s 1, or x %s= 1" s (s.Substring(0, 1)) (s.Substring(0, 1)))
             | KSym s when level >= 0 && isInfixOp s && opLevel s = level ->
+                infix ()
                 advance ()
                 l <- mark oi (Call(s, [ l; operand sub ]))
             | _ -> go <- false
+
+        if chain then
+            finish ()
 
         l
 
     // as in F#, |>, >>, the comparisons and custom operators starting with < > = | & $ share
     // one left-associative level: x |> parse >>= validate is (x |> parse) >>= validate
     and cmpE () =
+        let at = here ()
         let mutable l = bitOrE ()
         let mutable go = true
+        let mutable chain = false
+
+        let infix () =
+            if not chain then
+                chain <- true
+                startAt at "Infix"
 
         while go do
             let oi = pos.Value
@@ -1811,6 +2153,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
             match peek () with
             | KSym "|>" ->
                 // x |> f a  ==>  f a x
+                infix ()
                 advance ()
 
                 l <-
@@ -1822,16 +2165,22 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                     | f -> App(f, [ l ])
             | KSym ">>" ->
                 // f >> g  ==>  fun x -> g (f x)
+                infix ()
                 advance ()
                 let r = operand bitOrE
                 l <- Lambda([ PIdent("$c", None), None ], App(r, [ App(l, [ Var "$c" ]) ]))
             | KSym(("=" | "<>" | "<" | ">" | "<=" | ">=") as s) ->
+                infix ()
                 advance ()
                 l <- Bin(s, l, bitOrE ())
             | KSym s when isInfixOp s && opLevel s = 0 ->
+                infix ()
                 advance ()
                 l <- mark oi (Call(s, [ l; operand bitOrE ]))
             | _ -> go <- false
+
+        if chain then
+            finish ()
 
         l
 
@@ -1843,19 +2192,29 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
 
     // right-associative ::, @ and custom operators starting with @ or ^
     and consE () =
+        let at = here ()
         let l = addE ()
         let oi = pos.Value
 
         match peek () with
         | KSym "::" ->
+            startAt at "Infix"
             advance ()
-            cons l (consE ())
+            let r = consE ()
+            finish ()
+            cons l r
         | KSym "@" ->
+            startAt at "Infix"
             advance ()
-            Call("Collections.List.append", [ l; consE () ])
+            let r = consE ()
+            finish ()
+            Call("Collections.List.append", [ l; r ])
         | KSym s when isInfixOp s && opLevel s = 1 ->
+            startAt at "Infix"
             advance ()
-            mark oi (Call(s, [ l; operand consE ]))
+            let r = operand consE
+            finish ()
+            mark oi (Call(s, [ l; r ]))
         | _ -> l
 
     and addE () = binary [ "+"; "-" ] 2 mulE
@@ -1863,26 +2222,33 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
 
     // right-associative custom operators starting with **
     and powE () =
+        let at = here ()
         let l = unary ()
         let oi = pos.Value
 
         match peek () with
         | KSym s when isInfixOp s && opLevel s = 4 ->
+            startAt at "Infix"
             advance ()
-            mark oi (Call(s, [ l; operand powE ]))
+            let r = operand powE
+            finish ()
+            mark oi (Call(s, [ l; r ]))
         | _ -> l
 
     and unary () =
         if isSym "-" || isSym "~-" then
-            advance ()
-            Neg(unary ())
+            node "Prefix" (fun () ->
+                advance ()
+                Neg(unary ()))
         elif isSym "~~~" then
             // bitwise not: x ^^^ (all ones)
-            advance ()
-            Bin("^^^", unary (), Lit -1L)
+            node "Prefix" (fun () ->
+                advance ()
+                Bin("^^^", unary (), Lit -1L))
         elif peek () = KKw "not" then
-            advance ()
-            Not(unary ())
+            node "Prefix" (fun () ->
+                advance ()
+                Not(unary ()))
         else
             app ()
 
@@ -1906,26 +2272,39 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
 
     // `f x?` applies ? to the whole application
     and app () =
+        let at = here ()
+
+        let args () =
+            startAt at "Apply"
+            let xs = [ while startsAtom () do yield atom () ]
+            finish ()
+            xs
+
         let e =
             match atom () with
-            | Var f as v when startsAtom () -> copyPos v (Call(f, [ while startsAtom () do yield atom () ]))
-            | head when startsAtom () -> App(head, [ while startsAtom () do yield atom () ])
+            | Var f as v when startsAtom () -> copyPos v (Call(f, args ()))
+            | head when startsAtom () -> App(head, args ())
             | head -> head
 
         if isSym "?" then
             let qi = pos.Value
+            startAt at "Question"
             advance ()
+            finish ()
             mark qi (Question e) // errors about it point at the `?`
         else
             e
 
     and atom () =
+        let at = here ()
         let mutable e = primary ()
 
         while isSym "." || (isSym "(" && toks[pos.Value].adj) do
             if isSym "(" then
                 // high-precedence application: f(x), x.M(a, b).N
+                startAt at "Apply"
                 let arg = primary ()
+                finish ()
 
                 e <-
                     match e with
@@ -1936,6 +2315,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                 advance ()
 
                 if isSym "[" then
+                    startAt at "Index"
                     advance ()
 
                     // a.[i], or a slice: a.[i..j], a.[..j], a.[i..]
@@ -1955,8 +2335,12 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                         else
                             expect (KSym "]") "']'"
                             e <- Index(e, i)
+
+                    finish ()
                 else
+                    startAt at "Field"
                     e <- mark pos.Value (Field(e, ident ()))
+                    finish ()
 
         e
 
@@ -1980,25 +2364,33 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
 
         let t = peek ()
         let ln = line ()
+        let at = here ()
         advance ()
+        // a node of what primary read, from its first token
+        let wrap kind (e: Expr) =
+            startAt at kind
+            finish ()
+            e
 
         // 9.58<s>: a measure right after a number literal
         let measured (lit: Expr) =
             if isSym "<" && toks[pos.Value].adj then
-                let save = pos.Value
+                let saved = save ()
 
                 try
+                    startAt at "Measured"
                     advance ()
                     let m = measure ()
 
                     if isSym ">" then
                         advance ()
+                        finish ()
                         Measured(lit, m)
                     else
-                        pos.Value <- save
+                        restore saved
                         lit
                 with CompileError _ ->
-                    pos.Value <- save
+                    restore saved
                     lit
             else
                 lit
@@ -2009,17 +2401,17 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         | KFloat f -> measured (FloatLit f)
         | KStr s -> StrLit s
         | KInterp parts -> interpolate ln parts
-        | KId x when ceAhead () -> computation ln x
+        | KId x when ceAhead () -> wrap "Computation" (computation ln x)
         | KId x -> mark (pos.Value - 1) (Var x)
         | KKw "true" -> BoolLit true
         | KKw "false" -> BoolLit false
-        | KSym "{" -> record ()
-        | KSym "~-" -> Neg(atom ())
-        | KSym s when isPrefixOp s -> mark (pos.Value - 1) (Call(s, [ atom () ])) // !r, ~~x
-        | KSym "[" when peek () = KKw "for" || peek () = KId "yield" -> comprehension false "]"
-        | KSym "[|" when peek () = KKw "for" || peek () = KId "yield" -> comprehension true "|]"
-        | KSym "[" -> List.foldBack cons (items "]") (Var "[]")
-        | KSym "[|" -> ArrayLit(items "|]")
+        | KSym "{" -> wrap "Record" (record ())
+        | KSym "~-" -> wrap "Prefix" (Neg(atom ()))
+        | KSym s when isPrefixOp s -> wrap "Prefix" (mark (pos.Value - 1) (Call(s, [ atom () ]))) // !r, ~~x
+        | KSym "[" when peek () = KKw "for" || peek () = KId "yield" -> wrap "ListComp" (comprehension false "]")
+        | KSym "[|" when peek () = KKw "for" || peek () = KId "yield" -> wrap "ArrayComp" (comprehension true "|]")
+        | KSym "[" -> wrap "List" (List.foldBack cons (items "]") (Var "[]"))
+        | KSym "[|" -> wrap "Array" (ArrayLit(items "|]"))
         | KSym "(" when peek2 () = KSym ")" && (match peek () with
                                                 | KSym s -> isCustomOp s || builtinOperators.Contains s
                                                 | _ -> false) ->
@@ -2034,21 +2426,22 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
             advance ()
             advance ()
 
-            if isCustomOp s then
-                mark oi (Var s)
-            else
-                let a, b = Var "$a", Var "$b"
+            wrap "OperatorValue"
+            <| if isCustomOp s then
+                   mark oi (Var s)
+               else
+                   let a, b = Var "$a", Var "$b"
 
-                let body =
-                    match s with
-                    | "::" -> cons a b
-                    | "@" -> Call("Collections.List.append", [ a; b ])
-                    | _ -> Bin(s, a, b)
+                   let body =
+                       match s with
+                       | "::" -> cons a b
+                       | "@" -> Call("Collections.List.append", [ a; b ])
+                       | _ -> Bin(s, a, b)
 
-                Lambda([ PIdent("$a", None), None; PIdent("$b", None), None ], body)
+                   Lambda([ PIdent("$a", None), None; PIdent("$b", None), None ], body)
         | _ when isSym ")" ->
             advance ()
-            UnitLit
+            wrap "Unit" UnitLit
         | _ ->
             let first = expr ()
 
@@ -2060,16 +2453,16 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                     xs.Add(expr ())
 
                 expect (KSym ")") "')'"
-                Tuple(List.ofSeq xs)
+                wrap "Tuple" (Tuple(List.ofSeq xs))
             elif isSym ":" then
                 // (e: T)
                 advance ()
                 let t = ty ()
                 expect (KSym ")") "')'"
-                Typed(first, t)
+                wrap "Typed" (Typed(first, t))
             else
                 expect (KSym ")") "')'"
-                first
+                wrap "Paren" first
 
     // $"a {x} b"  ==>  "a " + string x + " b"
     and interpolate ln parts =
@@ -2088,7 +2481,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
 
                 let e =
                     try
-                        (snd (parseTokens holeToks true track)).Value
+                        (let _, e, _ = parseTokens holeToks true track in e).Value
                     with
                     | CompileError(_, msg)
                     | CompileErrorPos(_, _, msg) -> fail ln msg
@@ -2112,9 +2505,11 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
             let mutable go = true
 
             while go do
+                start "FieldValue"
                 let f = ident ()
                 expect (KSym "=") "'='"
                 items.Add(f, expr ())
+                finish ()
 
                 if isSym ";" then
                     advance ()
@@ -2164,10 +2559,11 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
             let body =
                 try
                     if peek () = KIndent then
-                        advance ()
-                        let e = seq ()
-                        expect KDedent "end of block"
-                        e
+                        node "Block" (fun () ->
+                            advance ()
+                            let e = seq ()
+                            expect KDedent "end of block"
+                            e)
                     else
                         block ()
                 finally
@@ -2184,10 +2580,11 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
             let body =
                 try
                     if peek () = KIndent then
-                        advance ()
-                        let e = seq ()
-                        expect KDedent "end of block"
-                        e
+                        node "Block" (fun () ->
+                            advance ()
+                            let e = seq ()
+                            expect KDedent "end of block"
+                            e)
                     else
                         block ()
                 finally
@@ -2197,25 +2594,18 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
             At(ln, Call("$task", [ Lambda([ PUnit, None ], body) ]))
         else
 
-        let body =
-            if peek () = KIndent then
-                advance ()
-                let e = ceStmts builder true
-                expect KDedent "end of block"
-                e
-            else
-                ceStmts builder false
-
+        let body = ceBlock builder
         expect (KSym "}") "'}'"
         At(ln, Call(builder + "delay", [ Lambda([ PUnit, None ], body) ]))
 
     /// A block in a computation expression: after `then`, `else`, `do` or `->`.
     and ceBlock (builder: string) =
         if peek () = KIndent then
-            advance ()
-            let e = ceStmts builder true
-            expect KDedent "end of block"
-            e
+            node "Block" (fun () ->
+                advance ()
+                let e = ceStmts builder true
+                expect KDedent "end of block"
+                e)
         else
             ceStmts builder false
 
@@ -2225,6 +2615,30 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         let ln = line ()
         let si = pos.Value
         let stmt e = mark si (At(ln, e))
+
+        let kind =
+            match peek (), peek2 () with
+            | KKw "let", KSym "!" -> "LetBang"
+            | KKw "do", KSym "!" -> "DoBang"
+            | KId "return", _ -> "Return"
+            | KId "use", KId _ -> "Use"
+            | KKw "let", _ -> "Let"
+            | KKw "for", _ -> "For"
+            | KKw "if", _ -> "If"
+            | KKw "match", _ -> "Match"
+            | _ -> ""
+
+        // the statement's node ends before the statements after it
+        let closed = ref (kind = "")
+
+        let close () =
+            if not closed.Value then
+                closed.Value <- true
+                finish ()
+
+        if kind <> "" then
+            start kind
+
         let call f args = Call(builder + f, args)
         let unitPat = PUnit, None
 
@@ -2238,6 +2652,8 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
 
         // the statements after this one, if any
         let next () =
+            close ()
+
             if many && peek () = KNewline then
                 advance ()
                 Some(ceStmts builder true)
@@ -2255,148 +2671,129 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
             | Some rest -> stmt (call "bind" [ e; Lambda([ unitPat ], rest) ])
             | None -> stmt e
 
-        match peek () with
-        | KKw "let" when (match peek2 () with
-                          | KSym "!" -> true
-                          | _ -> false) ->
-            advance ()
-            advance ()
-            let p = pattern ()
-            expect (KSym "=") "'='"
-            let v = block ()
-            stmt (call "bind" [ v; Lambda([ p, None ], needNext "let!") ])
-        | KKw "do" when peek2 () = KSym "!" ->
-            advance ()
-            advance ()
-            let v = block ()
-
-            let rest =
-                match next () with
-                | Some r -> r
-                | None -> call "ret" [ UnitLit ]
-
-            stmt (call "bind" [ v; Lambda([ unitPat ], rest) ])
-        | KId "return" ->
-            advance ()
-            let e = if bang () then block () else call "ret" [ block () ]
-
-            if many && peek () = KNewline then
-                fail (line ()) "nothing can follow return in a computation expression"
-
-            stmt e
-        | KId "use" when (match peek2 () with
-                          | KId _ -> true
-                          | _ -> false) ->
-            advance ()
-            let xi = pos.Value
-            let x = ident ()
-            expect (KSym "=") "'='"
-            let v = block ()
-
-            let rest =
-                match next () with
-                | Some r -> r
-                | None -> call "zero" [ UnitLit ]
-
-            stmt (call "using" [ v; Lambda([ mark xi (PIdent(x, None)), None ], rest) ])
-        | KKw "for" when (
-            // for x in xs do: the builder's forEach; a range (for i in a .. b) is a plain loop
-            let save = pos.Value
-            advance ()
-            pattern () |> ignore
-            let ok = peek () = KKw "in" && (advance (); pipe () |> ignore; peek () = KKw "do")
-            pos.Value <- save
-            ok) ->
-            advance ()
-            let p = pattern ()
-            expect (KKw "in") "'in'"
-            let xs = pipe ()
-            expect (KKw "do") "'do'"
-            let body = ceBlock builder
-            thenRest (call "forEach" [ xs; Lambda([ p, None ], body) ])
-        | KKw "if" ->
-            advance ()
-            let c = expr ()
-            expect (KKw "then") "'then'"
-            let t = ceBlock builder
-
-            if peek () = KNewline && peek2 () = KKw "else" then
+        let r =
+            match peek () with
+            | KKw "let" when (match peek2 () with
+                              | KSym "!" -> true
+                              | _ -> false) ->
                 advance ()
-
-            let e =
-                if peek () = KKw "else" then
-                    advance ()
-                    ceBlock builder
-                else
-                    call "zero" [ UnitLit ]
-
-            thenRest (If(c, t, Some e))
-        | KKw "match" ->
-            advance ()
-            let s = expr ()
-            expect (KKw "with") "'with'"
-            let indented = peek () = KIndent
-
-            if indented then
                 advance ()
-
-            nextBar () |> ignore
-            let cases = ResizeArray()
-            let mutable go = true
-
-            while go do
                 let p = pattern ()
-
-                let guard =
-                    if peek () = KKw "when" then
-                        advance ()
-                        Some(expr ())
-                    else
-                        None
-
-                expect (KSym "->") "'->'"
-                cases.Add(p, guard, ceBlock builder)
-                go <- nextBar ()
-
-            if indented then
-                expect KDedent "end of block"
-
-            thenRest (Match(s, List.ofSeq cases))
-        | KKw "let" ->
-            // a plain let: a value, or a local function
-            advance ()
-            let isRec = peek () = KKw "rec"
-
-            if isRec then
-                advance ()
-
-            match peek (), peek2 () with
-            | KId f, nxt when (isRec || Char.IsLower f[0] || f[0] = '_') && f <> "_" && startsParam nxt ->
-                let fi = pos.Value
-                advance ()
-                let ps = parameters ()
-                let ret = optTy ()
-                expect (KSym "=") "'='"
-                let body = block ()
-                stmt (mark fi (LetFun(f, isRec, ps, ret, body, needNext "let")))
-            | _ ->
-                let p = pattern ()
-                let ann = optTy ()
                 expect (KSym "=") "'='"
                 let v = block ()
-                stmt (Let(p, ann, v, needNext "let"))
-        | _ ->
-            // a plain statement (of type unit)
-            let e = assignment (expr ())
+                stmt (call "bind" [ v; Lambda([ p, None ], needNext "let!") ])
+            | KKw "do" when peek2 () = KSym "!" ->
+                advance ()
+                advance ()
+                let v = block ()
 
-            match next () with
-            | Some rest -> stmt (Seq(e, rest))
-            | None -> stmt (Seq(e, call "zero" [ UnitLit ]))
+                let rest =
+                    match next () with
+                    | Some r -> r
+                    | None -> call "ret" [ UnitLit ]
+
+                stmt (call "bind" [ v; Lambda([ unitPat ], rest) ])
+            | KId "return" ->
+                advance ()
+                let e = if bang () then block () else call "ret" [ block () ]
+
+                if many && peek () = KNewline then
+                    fail (line ()) "nothing can follow return in a computation expression"
+
+                stmt e
+            | KId "use" when (match peek2 () with
+                              | KId _ -> true
+                              | _ -> false) ->
+                advance ()
+                let xi = pos.Value
+                let x = ident ()
+                expect (KSym "=") "'='"
+                let v = block ()
+
+                let rest =
+                    match next () with
+                    | Some r -> r
+                    | None -> call "zero" [ UnitLit ]
+
+                stmt (call "using" [ v; Lambda([ mark xi (PIdent(x, None)), None ], rest) ])
+            | KKw "for" when (
+                // for x in xs do: the builder's forEach; a range (for i in a .. b) is a plain loop
+                let saved = save ()
+                advance ()
+                pattern () |> ignore
+                let ok = peek () = KKw "in" && (advance (); pipe () |> ignore; peek () = KKw "do")
+                restore saved
+                ok) ->
+                advance ()
+                let p = pattern ()
+                expect (KKw "in") "'in'"
+                let xs = pipe ()
+                expect (KKw "do") "'do'"
+                let body = ceBlock builder
+                thenRest (call "forEach" [ xs; Lambda([ p, None ], body) ])
+            | KKw "if" ->
+                advance ()
+                let c = expr ()
+                expect (KKw "then") "'then'"
+                let t = ceBlock builder
+
+                if peek () = KNewline && peek2 () = KKw "else" then
+                    advance ()
+
+                let e =
+                    if peek () = KKw "else" then
+                        advance ()
+                        ceBlock builder
+                    else
+                        call "zero" [ UnitLit ]
+
+                thenRest (If(c, t, Some e))
+            | KKw "match" ->
+                advance ()
+                let s = expr ()
+                expect (KKw "with") "'with'"
+                let cases = casesWith (fun () -> ceBlock builder)
+                thenRest (Match(s, cases))
+            | KKw "let" ->
+                // a plain let: a value, or a local function
+                advance ()
+                let isRec = peek () = KKw "rec"
+
+                if isRec then
+                    advance ()
+
+                match peek (), peek2 () with
+                | KId f, nxt when (isRec || Char.IsLower f[0] || f[0] = '_') && f <> "_" && startsParam nxt ->
+                    let fi = pos.Value
+                    advance ()
+                    let ps = parameters ()
+                    let ret = optTy ()
+                    expect (KSym "=") "'='"
+                    let body = block ()
+                    stmt (mark fi (LetFun(f, isRec, ps, ret, body, needNext "let")))
+                | _ ->
+                    let p = pattern ()
+                    let ann = optTy ()
+                    expect (KSym "=") "'='"
+                    let v = block ()
+                    stmt (Let(p, ann, v, needNext "let"))
+            | _ ->
+                // a plain statement (of type unit)
+                let at = here ()
+                let e = assignment at (expr ())
+
+                match next () with
+                | Some rest -> stmt (Seq(e, rest))
+                | None -> stmt (Seq(e, call "zero" [ UnitLit ]))
+
+        close ()
+        r
 
     let typeBody () =
         if peek () = KKw "member" || peek () = KKw "static" then
             UnionTy [] // only members: a type with no values
         elif isSym "{" then
+            start "RecordBody"
             advance ()
             let fields = ResizeArray()
             let mutable go = true
@@ -2405,6 +2802,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                 if peek () = KKw "mutable" then
                     errAt "record fields can't be mutable: a record is a value; change one with { r with x = … }, bind it with let mutable, or make the field a ref<T>"
 
+                start "Field"
                 let f = ident ()
                 expect (KSym ":") "':'"
                 let t = ty ()
@@ -2416,6 +2814,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                     else
                         None
 
+                finish ()
                 fields.Add(f, t, def)
 
                 if isSym ";" then
@@ -2424,6 +2823,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                 go <- not (isSym "}")
 
             advance ()
+            finish ()
             RecordTy(List.ofSeq fields)
         else
             // payload field: optional 'name:' then a type; '*' separates fields
@@ -2436,10 +2836,14 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                 | _ -> None, tyAtom ()
 
             let cases = ResizeArray()
-            nextBar () |> ignore
-            let mutable go = true
+            start "UnionBody"
 
-            while go do
+            let case () =
+                start "Case"
+
+                if isSym "|" then
+                    advance ()
+
                 let c = ident ()
                 let fields = ResizeArray()
 
@@ -2452,11 +2856,25 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                         fields.Add(field ())
 
                 cases.Add(c, List.ofSeq fields)
-                go <- nextBar ()
+                finish ()
 
+            if peek () = KNewline && peek2 () = KSym "|" then
+                advance ()
+
+            case ()
+
+            while isSym "|" || (peek () = KNewline && peek2 () = KSym "|") do
+                if peek () = KNewline then
+                    advance ()
+
+                case ()
+
+            finish ()
             UnionTy(List.ofSeq cases)
 
-    let memberDecl () : Member =
+    let rec memberDecl () : Member = node "Member" memberOf
+
+    and memberOf () : Member =
         let ln = line ()
         let isStatic = peek () = KKw "static"
 
@@ -2548,11 +2966,31 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         List.ofSeq ms
 
     let rec decl () =
+        let kind =
+            match peek () with
+            | KSym "[<" -> "Attributed"
+            | KKw "open" -> "Open"
+            | KKw "namespace" -> "Namespace"
+            | KKw "module" -> "Module"
+            | KKw "derive" -> "Derive"
+            | KKw "type" -> "Type"
+            | KKw "trait" -> "Trait"
+            | KKw "effect" -> "Effect"
+            | KKw "impl" -> "Impl"
+            | KId "import" -> "Import"
+            | KKw "extern" -> "Extern"
+            | KKw "let" -> "Let"
+            | _ -> ""
+
+        if kind = "" then declOf () else node kind declOf
+
+    and declOf () =
         let ln = line ()
 
         match peek () with
         | KSym "[<" ->
             // [<Name; Name(arg, arg)>] before a declaration
+            start "Attributes"
             advance ()
             let attrs = ResizeArray()
 
@@ -2591,6 +3029,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                     advance ()
 
             advance ()
+            finish ()
 
             if peek () = KNewline then
                 advance ()
@@ -2650,7 +3089,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         | KKw "type" when peek2 () = KKw "private" ->
             advance ()
             toks[pos.Value] <- { toks[pos.Value] with tok = KKw "type" }
-            let _, d = decl ()
+            let _, d = declOf ()
             ln, Private d
         | KKw "type" ->
             advance ()
@@ -2928,19 +3367,33 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                     ln, first
         | _ -> err "'let', 'type' or 'extern'"
 
+    let tree () =
+        advance () // the end of file, with the trivia before it
+        let _, children = opened.Pop()
+        { kind = "File"; children = children.ToArray() }
+
     if exprOnly then
         let e = expr ()
 
         if peek () <> KEof then
             err "end of expression"
 
-        [], Some e
+        [], Some e, tree ()
     else
-        [ while peek () <> KEof do
-              yield decl ()
+        let decls =
+            [ while peek () <> KEof do
+                  yield decl ()
 
-              if peek () = KNewline then advance ()
-              elif peek () <> KEof then err "end of line" ],
-        None
+                  if peek () = KNewline then advance ()
+                  elif peek () <> KEof then err "end of line" ]
 
-let parse (toks: Token[]) : (int * Decl) list = fst (parseTokens toks false true)
+        decls, None, tree ()
+
+let parse (toks: Token[]) : (int * Decl) list =
+    let decls, _, _ = parseTokens toks false true
+    decls
+
+/// A file's declarations and its syntax tree.
+let parseWithTree (toks: Token[]) : (int * Decl) list * Node =
+    let decls, _, tree = parseTokens toks false true
+    decls, tree

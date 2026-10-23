@@ -10,7 +10,7 @@
 
 - [x] Approved in principle
 - [ ] Discussion
-- [ ] Implementation
+- [ ] Implementation (steps 1 and 3 in the F# compiler: the tree, the printer, `--stdin`, range formatting)
 
 ## Summary
 

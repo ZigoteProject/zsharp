@@ -1,4 +1,4 @@
-{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"documentSymbolProvider":true,"inlayHintProvider":true,"documentFormattingProvider":true,"definitionProvider":true,"referencesProvider":true,"completionProvider":{"triggerCharacters":["."]}},"serverInfo":{"name":"zs","version":"0.4"}}}
+{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"documentSymbolProvider":true,"inlayHintProvider":true,"documentFormattingProvider":true,"documentRangeFormattingProvider":true,"definitionProvider":true,"referencesProvider":true,"completionProvider":{"triggerCharacters":["."]}},"serverInfo":{"name":"zs","version":"0.4"}}}
 {"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"URI","diagnostics":[]}}
 {"jsonrpc":"2.0","id":2,"result":{"contents":{"kind":"markdown","value":"\u0060\u0060\u0060zsharp\nadd : \u0027a -\u003E \u0027a -\u003E \u0027a when \u0027a : Add\n\u0060\u0060\u0060\n\n\u0060a \u002B b\u0060."},"range":{"start":{"line":1,"character":4},"end":{"line":1,"character":7}}}}
 {"jsonrpc":"2.0","id":3,"result":{"contents":{"kind":"markdown","value":"\u0060\u0060\u0060zsharp\ntotal : int\n\u0060\u0060\u0060"},"range":{"start":{"line":4,"character":6},"end":{"line":4,"character":11}}}}
@@ -11,4 +11,6 @@
 {"jsonrpc":"2.0","id":15,"result":{"contents":{"kind":"markdown","value":"\u0060\u0060\u0060zsharp\nLength : int\n\u0060\u0060\u0060\n\nThe number of elements. O(n)."},"range":{"start":{"line":6,"character":16},"end":{"line":6,"character":22}}}}
 {"jsonrpc":"2.0","id":13,"result":[{"label":"Length","kind":2,"detail":"list"},{"label":"Head","kind":2,"detail":"list"},{"label":"Tail","kind":2,"detail":"list"},{"label":"IsEmpty","kind":2,"detail":"list"}]}
 {"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"URI","diagnostics":[{"range":{"start":{"line":4,"character":14},"end":{"line":4,"character":24}},"severity":1,"source":"zs","message":"argument 2 of \u0027add\u0027: expected int, got bool"}]}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"URI","diagnostics":[{"range":{"start":{"line":4,"character":14},"end":{"line":4,"character":24}},"severity":1,"source":"zs","message":"argument 2 of \u0027add\u0027: expected int, got bool"}]}}
+{"jsonrpc":"2.0","id":16,"result":[{"range":{"start":{"line":5,"character":0},"end":{"line":5,"character":26}},"newText":"  let names = [ \u0022a\u0022; \u0022b\u0022 ]"}]}
 {"jsonrpc":"2.0","id":6,"result":null}

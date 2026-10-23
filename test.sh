@@ -164,9 +164,18 @@ elif missing=$(for p in "$tmp/ref"/*.md; do grep -q "($(basename "$p"))" docs/re
   echo "FAIL docs/reference/README.md doesn't link: $missing"; fail=1
 else echo "ok   library documented; docs/reference current"; fi
 
-# the repository's own Z# code is formatted (zs fmt)
-if bin/zs fmt --check $(find tests lib -name '*.zs') 2>"$tmp/fmt.log"; then echo "ok   zs fmt --check"
+# the repository's own Z# code is formatted (zs fmt); the tests of parse errors don't parse, so
+# they have no layout to check
+unparsed='tests/err_and.zs|tests/err_operator_builtin.zs|tests/newcomer/(try_with|class|mutable_field|increment|return_braces).zs'
+formatted=$(find tests lib -name '*.zs' | grep -Ev "^($unparsed)\$")
+if bin/zs fmt --check $formatted 2>"$tmp/fmt.log"; then echo "ok   zs fmt --check"
 else echo "FAIL zs fmt --check (run: bin/zs fmt \$(find tests lib -name '*.zs'))"; cat "$tmp/fmt.log"; fail=1; fi
+# the syntax tree is lossless: every file's text comes back from it (0019)
+if out=$(tests/cst/roundtrip.sh 2>&1); then echo "ok   tests/cst/roundtrip.sh ($out)"
+else echo "FAIL tests/cst/roundtrip.sh"; echo "$out" | head; fail=1; fi
+# zs fmt reflows lines over 100 columns on the tree, keeping comments (--stdin, as editors pipe)
+if diff <(bin/zs fmt --stdin < tests/fmt/reflow.in 2>&1) tests/fmt/reflow.zs >"$tmp/reflow.diff"; then echo "ok   tests/fmt/reflow (zs fmt --stdin)"
+else echo "FAIL tests/fmt/reflow"; cat "$tmp/reflow.diff"; fail=1; fi
 
 # the language server: a scripted session (tests/lsp/session.sh) against its expected transcript
 actual=$(tests/lsp/session.sh bin/zs 2>&1); expected=$(cat tests/lsp/session.out)

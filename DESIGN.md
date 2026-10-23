@@ -695,7 +695,7 @@ checker, so tools can't drift from the compiler.
 - **Documentation:** `///` comments above a declaration document it.
   - **Where they show:** hover, completion, the MCP `docs` tool, and `zs doc <file>`, which writes Markdown.
   - **The library:** fully documented, with one reference page per module in `docs/reference` (built-in functions included), which `./test.sh` keeps current.
-- **Formatting:** `zs fmt` has one canonical style and no options. Today it's token-based: it re-indents, spaces operators and keeps comments, and the result must lex to the same tokens. Reflowing long lines to 100 columns needs a lossless syntax tree **(planned, editor track)**.
+- **Formatting:** `zs fmt` has one canonical style and no options. It works on the lossless syntax tree ([proposal 0019](docs/proposals/0019-syntax-tree.md)): each line keeps the breaks it was written with and is re-indented and spaced, comments stay, and a line over 100 columns is broken at the tree's break points, outermost first; the result must parse to the same tree but for layout. `--stdin` and range formatting serve editors.
 - **Editors:**
   - **Grammar:** a tree-sitter grammar (`editors/tree-sitter-zsharp`), for highlighting, indentation and outlines.
   - **`zs lsp`:** diagnostics, hover with types and docs, definition, references, completion, inlay hints, symbols and formatting. Signature help, rename and code actions are **(planned, editor track)**.
@@ -739,7 +739,7 @@ checker, so tools can't drift from the compiler.
 | 30 | Who it's for first | native libraries used from C, CLI tools, microcontroller firmware; games over C libraries next | decided |
 | 31 | Callbacks into C | `callback<A -> R>` = `R (*)(void *user, A)` + `void *user`; borrowed for the call | decided |
 | 32 | Editor support | tree-sitter grammar + `zs lsp` + `zs mcp`, Zed extension first | decided |
-| 33 | Formatter | `zs fmt`, one style, no configuration; lossless syntax tree for reflow (planned) | decided |
+| 33 | Formatter | `zs fmt`, one style, no configuration; lossless syntax tree for reflow ([0019](docs/proposals/0019-syntax-tree.md)) | decided |
 | 34 | Surface syntax | the freeze is lifted. Missing F# syntax comes first (phase L); new non-F# syntax needs a design discussion | decided |
 | 35 | Kept in v1 though not yet needed | `ptr<'a>` + `unsafe`, `Arena`, `dyn Trait`, `weak` references, built in phase V before CEs and `Task` | done |
 | 36 | Optimizations that change evaluation order | only for pure code (fusion requires pure lambdas, and stages that can't panic when the consumer's function has effects; printing pieces evaluates them all first) | decided |

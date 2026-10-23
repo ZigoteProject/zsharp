@@ -63,7 +63,7 @@ phase 11 review settled its questions (decisions 73–79); the compiler's map (m
 between them, where each step runs, the passes) is [compiler/ARCHITECTURE.md](compiler/ARCHITECTURE.md).
 - **Checklist before `compiler/` starts** (the tracks' items without *after phase 11*, 0020's criterion 1 and the phase 11 review; in dependency order, each with its exit test in its track):
   - **What the compiler needs:**
-    - [ ] 0019 F2: the lossless tree, reflow to 100 columns, `zs fmt --stdin`, range formatting.
+    - [x] 0019 F2: the lossless tree (`tests/cst/roundtrip.sh`), reflow to 100 columns (`tests/fmt/reflow`), `zs fmt --stdin`, range formatting. The F# compiler keeps `Syntax.positions` and stops at a file's first parse error: positions in the nodes and recovery (0019's step 2) are the Z# parser's.
     - [ ] 0021: the diagnostic record (severity, name, span, message, notes) and `unused-value`; the cycle warning itself stays in phase 12.
     - [ ] 0023: `Json` in Core with parse, print and the derives.
     - [ ] 0024's phase 11 list: `Int.parse` in a radix, `Float.parse`; format specifiers with widths; `HashSet`, `Buffer.push`/`pop`/`clear`/`truncate`; `padLeft`, `padRight`, `trimStart`, `trimEnd`, `splitLines`; `DateTime.utcNow`; `Reader`/`Writer`, `readAllBytes`, `File.move`, `modifiedAt`, temporary files, `getFullPath`, `getRelativePath`; `Process.start` and `Process.wait`; `Unix.listen`, `accept`, `connect`.
@@ -183,11 +183,11 @@ same support through a thin extension each.
 - **E2a:** `zs lsp` with diagnostics, hover with types, constraints and doc comments, inlay hints, symbols and formatting.
 - **E2b (part):** definition, references, completion (C names included).
 - **E3:** `zs mcp` with `check`, `type_at`, `docs`, `build`, `run`, `emit_llvm`, `format`.
-- **F:** `zs fmt`, token-based, meaning-preserving, keeping the repository formatted.
+- **F:** `zs fmt`, meaning-preserving, keeping the repository formatted.
+- **F2:** a lossless syntax tree ([0019](docs/proposals/0019-syntax-tree.md)); `zs fmt` on it reflows lines over 100 columns, keeping comments; `zs fmt --stdin`; range formatting.
 - **Documentation:** `///` doc comments and `zs doc`.
 
 **Next:**
-- **F2 first:** a lossless syntax tree, so `zs fmt` can reflow lines to 100 columns; `zs fmt --stdin`; range formatting. Rename, code actions, track D's inline expect tests and phase 11's parser all build on it.
 - **E2b, rest:** signature help, rename, code actions (add missing match cases, add an annotation).
 - **E3, rest:** *(after phase 11)* `definition` and `explain` tools.
 - **Exit tests:**

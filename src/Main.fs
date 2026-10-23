@@ -323,6 +323,62 @@ let private run (argv: string[]) =
         with CompileErrorAt(file, line, col, msg) ->
             printError file line col msg
             1
+    | "tree" :: rest ->
+        // zs tree file: the syntax tree (0019), for debugging; --check files…: each one's tree
+        // gives back its text byte for byte (tests/cst/roundtrip.sh)
+        let check = List.contains "--check" rest
+        let mutable status = 0
+
+        for f in rest |> List.filter (fun a -> not (a.StartsWith "--")) do
+            try
+                let src = (File.ReadAllText f).Replace("\r\n", "\n")
+                let _, tree = Syntax.parseWithTree (Syntax.lex src)
+
+                if check then
+                    if Syntax.treeText tree <> src then
+                        eprintfn "%s: the tree's text differs from the file" f
+                        status <- 1
+                else
+                    let rec dump (indent: string) (n: Syntax.Node) =
+                        printfn "%s%s" indent n.kind
+
+                        for c in n.children do
+                            match c with
+                            | Syntax.N m -> dump (indent + "  ") m
+                            | Syntax.T t -> printfn "%s  %s" indent (if t.text = "" then sprintf "<%A>" t.tok else sprintf "%A" t.text)
+
+                    dump "" tree
+            with
+            // a file that doesn't parse has no tree yet (until 0019's recovery): only a tree
+            // that loses text fails the check
+            | CompileError(l, m) ->
+                printError f l 0 m
+                status <- if check then status else 1
+            | CompileErrorPos(l, c, m) ->
+                printError f l c m
+                status <- if check then status else 1
+
+        status
+    | "fmt" :: rest when List.contains "--stdin" rest ->
+        // zs fmt --stdin: standard input formatted to standard output, for editors and git filters;
+        // on an error, nothing on standard output (a pipe mustn't empty a buffer) and exit 1
+        let src = Console.In.ReadToEnd()
+
+        try
+            match Format.format src with
+            | Ok formatted ->
+                Console.Out.Write formatted
+                0
+            | Error msg ->
+                eprintfn "<stdin>: %s" msg
+                1
+        with
+        | CompileError(l, m) ->
+            printError "<stdin>" l 0 m
+            1
+        | CompileErrorPos(l, c, m) ->
+            printError "<stdin>" l c m
+            1
     | "fmt" :: rest ->
         // zs fmt files… rewrites them; --check lists the ones that aren't formatted
         let check = List.contains "--check" rest
