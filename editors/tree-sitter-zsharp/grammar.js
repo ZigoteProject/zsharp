@@ -47,6 +47,7 @@ module.exports = grammar({
 
   conflicts: $ => [
     [$.match_expression],
+    [$.handle_expression],
     [$.function_expression],
     [$.if_expression],
     [$._parameter, $._pattern_atom],
@@ -74,6 +75,7 @@ module.exports = grammar({
       $.extern_declaration,
       $.import_c_declaration,
       $.trait_declaration,
+      $.effect_declaration,
       $.impl_declaration,
       $.derive_declaration,
       $.open_declaration,
@@ -175,6 +177,12 @@ module.exports = grammar({
     ),
     abstract_member: $ => seq('abstract', field('name', $.identifier), ':', $._type),
 
+    // effect Yield<'a> = abstract yield : 'a -> unit …: operations a handler gives meaning to
+    effect_declaration: $ => seq(
+      'effect', field('name', $.identifier), optional($.type_parameters), '=',
+      choice($.abstract_member, seq($._indent, sep1($.abstract_member, $._newline), $._dedent)),
+    ),
+
     impl_declaration: $ => seq('impl', field('trait', $.identifier), '<', $._type, '>', '=', $._definitions),
     derive_declaration: $ => seq('derive', field('name', $.identifier), '=', $._definitions),
     _definitions: $ => seq($._indent, sep1($.definition, $._newline), $._dedent),
@@ -182,8 +190,17 @@ module.exports = grammar({
 
     // ------------------------------------------------------------ types
 
-    _type: $ => choice($.function_type, $.tuple_type, $._type_atom),
+    _type: $ => choice($.function_type, $.tuple_type, $.effect_type, $._type_atom),
     function_type: $ => prec.right(seq(choice($.tuple_type, $._type_atom), '->', $._type)),
+    // a function's result and its effects: int / Throw<string>, unit / <Log, Yield<'a> | 'e>
+    effect_type: $ => prec.right(seq(choice($.tuple_type, $._type_atom), '/', $.effect_row)),
+    effect_row: $ => choice(
+      $.type_name,
+      $.generic_type,
+      $.type_variable,
+      '<>',
+      seq('<', sep1(choice($.type_name, $.generic_type), ','), optional(seq('|', $.type_variable)), '>'),
+    ),
     tuple_type: $ => prec.left(seq($._type_atom, repeat1(seq('*', $._type_atom)))),
     _type_atom: $ => choice($.type_name, $.generic_type, $.postfix_type, $.type_variable, $.variadic, $.dyn_type, seq('(', $._type, ')')),
     dyn_type: $ => seq('dyn', $.type_name), // dyn Trait
@@ -217,6 +234,7 @@ module.exports = grammar({
     _expression: $ => choice(
       $.if_expression,
       $.match_expression,
+      $.handle_expression,
       $.function_expression,
       $.lambda,
       $.yield_expression,
@@ -247,6 +265,24 @@ module.exports = grammar({
       ),
     )),
     single_rule: $ => prec.right(seq(field('pattern', $._pattern), '->', field('body', $._body))),
+
+    // handle e with | E.op x, k -> … | return x -> …: e's operations of E given meaning
+    handle_expression: $ => seq(
+      'handle', field('value', choice($._expression, $.block)), optional($._newline), 'with',
+      choice(
+        repeat1(seq(optional($._newline), $.handle_rule)),
+        seq($._indent, repeat1(seq(optional($._newline), $.handle_rule)), $._dedent),
+      ),
+    ),
+    handle_rule: $ => prec.right(seq(
+      '|',
+      choice(
+        seq('return', field('pattern', $._pattern)),
+        seq(field('operation', choice($.identifier, $.qualified_identifier)), repeat($._pattern_atom), ',', field('resumption', choice($.identifier, $.wildcard))),
+      ),
+      '->',
+      field('body', $._body),
+    )),
     match_rule: $ => prec.right(seq(
       '|', field('pattern', $._pattern), optional(seq('when', field('guard', $._expression))), '->', field('body', $._body),
     )),

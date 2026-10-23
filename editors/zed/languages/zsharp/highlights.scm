@@ -17,7 +17,7 @@
 [
   "let" "rec" "and" "mutable" "private" "type" "of" "with" "member" "static" "extern" "import" "open"
   "module" "namespace" "trait" "impl" "abstract" "derive" "fun" "match" "when" "as" "if" "then" "else"
-  "for" "in" "do" "while" "not" "use" "return" "unsafe" "dyn" "function" "yield"
+  "for" "in" "do" "while" "not" "use" "return" "unsafe" "dyn" "function" "yield" "effect" "handle"
 ] @keyword
 
 (let_bang "!" @keyword)
@@ -51,6 +51,9 @@
 (type_declaration name: (identifier) @type)
 (type_extension name: (identifier) @type)
 (trait_declaration name: (identifier) @type)
+(effect_declaration name: (identifier) @type)
+(handle_rule operation: (_) @function.method)
+(handle_rule resumption: (identifier) @variable.special)
 (impl_declaration trait: (identifier) @type)
 (derive_declaration name: (identifier) @type)
 (open_declaration module: (identifier) @namespace)

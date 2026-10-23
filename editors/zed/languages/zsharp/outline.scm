@@ -6,6 +6,7 @@
 (type_declaration "type" @context name: (identifier) @name) @item
 (type_extension "type" @context name: (identifier) @name) @item
 (trait_declaration "trait" @context name: (identifier) @name) @item
+(effect_declaration "effect" @context name: (identifier) @name) @item
 (impl_declaration "impl" @context trait: (identifier) @name) @item
 (derive_declaration "derive" @context name: (identifier) @name) @item
 (extern_declaration "extern" @context name: (identifier) @name) @item

@@ -24,3 +24,49 @@ let rec fib n =
           body: (binary_expression
             (application function: (identifier) argument: (parenthesized_expression (binary_expression (identifier) (number))))
             (application function: (identifier) argument: (parenthesized_expression (binary_expression (identifier) (number))))))))))
+
+==================
+effects and handlers
+==================
+
+effect Gen<'a> =
+  abstract gen : 'a -> unit
+
+let digit (c: char) : int / Throw<string> = 0
+
+let sum () =
+  handle numbers () with
+  | Gen.gen x, k -> k ()
+  | return () -> 0
+
+---
+
+(source_file
+  (effect_declaration
+    name: (identifier)
+    (type_parameters (type_variable))
+    (abstract_member
+      name: (identifier)
+      (function_type (type_variable) (type_name (identifier)))))
+  (let_declaration
+    name: (identifier)
+    (typed_parameter name: (identifier) (type_annotation (type_name (identifier))))
+    (type_annotation
+      (effect_type
+        (type_name (identifier))
+        (effect_row (generic_type (type_name (identifier)) (type_name (identifier))))))
+    body: (number))
+  (let_declaration
+    name: (identifier)
+    (unit)
+    body: (block
+      (handle_expression
+        value: (application function: (identifier) argument: (unit))
+        (handle_rule
+          operation: (qualified_identifier)
+          (identifier)
+          resumption: (identifier)
+          body: (application function: (identifier) argument: (unit)))
+        (handle_rule
+          pattern: (unit)
+          body: (number))))))
