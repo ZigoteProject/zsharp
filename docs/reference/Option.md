@@ -81,6 +81,14 @@ Option.exists : ('a -> bool) -> option<'a> -> bool
 
 Whether the option holds a value for which `f` is true.
 
+### `Option.forall`
+
+```zsharp
+Option.forall : ('a -> bool) -> option<'a> -> bool
+```
+
+Whether the value of `Some` satisfies `f`; `None` does.
+
 ### `Option.get`
 
 ```zsharp

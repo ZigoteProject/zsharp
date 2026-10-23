@@ -1222,6 +1222,26 @@ let mutable threadSanitizer = false
 
 /// Source files -> checked functions, monomorphic and closure-converted: what reference
 /// counting takes, with its entries (functions called from outside, which own their parameters).
+/// ZS_DUMP_CORE=name (* for all): the Core of matching functions after reference counting, or
+/// after the stage ZS_DUMP_STAGE names (mono, inline, simplify, effects, decide, lift), to compare
+/// with the Z# compiler's.
+let private dumpAt (stage: string) (funs: Mono.MFun list) =
+    let wanted =
+        match Environment.GetEnvironmentVariable "ZS_DUMP_STAGE" with
+        | null
+        | "" -> "rc"
+        | s -> s
+
+    match Environment.GetEnvironmentVariable "ZS_DUMP_CORE" with
+    | null -> ()
+    | name when wanted = stage ->
+        for f in funs do
+            if name = "*" || f.name.Contains name then
+                eprintfn "%s(%s) =\n%s\n" f.name (f.pars |> List.map fst |> String.concat ", ") (Core.showCore 1 f.body)
+    | _ -> ()
+
+let private dumpCore (counted: Mono.MFun list) = dumpAt "rc" counted
+
 let private lift (mainPath: string) (isLib: bool) =
     timings.Clear()
     let prog = timed "parse + check (all)" (fun () -> checkProgram false mainPath (not isLib) true)
@@ -1253,12 +1273,18 @@ let private lift (mainPath: string) (isLib: bool) =
                 let inline' = if Codegen.debugInfo then id else Inline.uncurry fixedNames >> Inline.run
                 // ZS_NO_DECIDE=1: matches as written, to compare with decision trees
                 let decide = if isNull (Environment.GetEnvironmentVariable "ZS_NO_DECIDE") then Decide.run prog.types else id
-                let mono = timed "monomorphize" (fun () -> Mono.run prog |> Mono.checkShared prog |> Mono.fuse)
-                let mono = timed "inline" (fun () -> inline' mono)
-                let mono = timed "simplify" (fun () -> if Codegen.debugInfo then mono else Simplify.run prog.types mono)
-                let mono = timed "effects" (fun () -> Evidence.run prog.types prog.effects mono)
-                let mono = timed "decision trees" (fun () -> decide mono)
-                let lifted = timed "lift closures" (fun () -> Lift.run mono)
+                // ZS_NO_SIMPLIFY=1: no simplification, to compare with the Z# compiler's passes
+                let noSimplify = Codegen.debugInfo || not (isNull (Environment.GetEnvironmentVariable "ZS_NO_SIMPLIFY"))
+                let stage name (funs: Mono.MFun list) =
+                    dumpAt name funs
+                    funs
+
+                let mono = timed "monomorphize" (fun () -> Mono.run prog |> Mono.checkShared prog |> Mono.fuse) |> stage "mono"
+                let mono = timed "inline" (fun () -> inline' mono) |> stage "inline"
+                let mono = timed "simplify" (fun () -> if noSimplify then mono else Simplify.run prog.types mono) |> stage "simplify"
+                let mono = timed "effects" (fun () -> Evidence.run prog.types prog.effects mono) |> stage "effects"
+                let mono = timed "decision trees" (fun () -> decide mono) |> stage "decide"
+                let lifted = timed "lift closures" (fun () -> Lift.run mono) |> stage "lift"
                 // a task's state machine owns its parameters: they live in its coroutine frame
                 // past the call that starts it
                 let rec waits (e: Core.CExpr) =
@@ -1273,14 +1299,6 @@ let private lift (mainPath: string) (isLib: bool) =
 
         Ok(prog, fst funs, snd funs)
 
-/// ZS_DUMP_CORE=name: the Core of matching functions after reference counting.
-let private dumpCore (counted: Mono.MFun list) =
-    match Environment.GetEnvironmentVariable "ZS_DUMP_CORE" with
-    | null -> ()
-    | name ->
-        for f in counted do
-            if f.name.Contains name then
-                eprintfn "%s(%s) =\n%s\n" f.name (f.pars |> List.map fst |> String.concat ", ") (Core.showCore 1 f.body)
 
 /// Source files -> checked and lowered (monomorphic, closure-converted, RC-annotated) functions.
 let private lower (mainPath: string) (isLib: bool) =
@@ -1691,6 +1709,10 @@ let private compileUnits (mainPath: string) (cachedObject: string -> string opti
                 let todo = ResizeArray<CheckedUnit>()
                 let later = ResizeArray<CheckedUnit>()
 
+                // made now, unless a module before it waits: it may call that one, whose ABI isn't
+                // known until the next round
+                let remake (u: CheckedUnit) = if later.Count > 0 then later.Add u else todo.Add u
+
                 for u in pending do
                     match loadWorld (pre u) with
                     | Some w ->
@@ -1704,10 +1726,10 @@ let private compileUnits (mainPath: string) (cachedObject: string -> string opti
 
                         let states = w.deps |> List.map state
 
-                        if states |> List.contains 0 then todo.Add u
+                        if states |> List.contains 0 then remake u
                         elif states |> List.contains 2 then later.Add u // waits for an ABI made now
                         else accept u w
-                    | None -> todo.Add u
+                    | None -> remake u
 
                 if todo.Count > 0 then
                     make (List.ofSeq todo)

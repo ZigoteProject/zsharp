@@ -1052,6 +1052,9 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
     /// A row's effects as text: Yield<int>, Log.
     let effectsText (row: Ty) = fst (rowParts row) |> List.map show |> String.concat ", "
 
+    /// What a when guard is, to the row check: it performs nothing.
+    let guardWhat = "a when guard"
+
     /// A call performs what the function's row has: it joins the row of the body the call is in
     /// (a closed row opened first: calling a function that performs less is fine).
     let useRow (row: Ty) =
@@ -1091,6 +1094,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
             | Some(l, h) -> fail 0 (sprintf "this performs %s, but the innermost handler here is for %s" (show l) (show h))
             | None when ls.IsEmpty -> fail 0 "this call's effects can't be handled here: write the effects of the function it calls (/ E)"
             | None when ctxWhat.Value = "" -> fail 0 (sprintf "this performs %s, which the function it's in can't (its type says what it performs)" (effectsText row))
+            | None when ctxWhat.Value = guardWhat -> fail 0 (sprintf "this performs %s, but a when guard can't: match first, then perform in the case" (effectsText row))
             | None -> fail 0 (sprintf "this performs %s, but %s can't: handle it inside (handle … with)" (effectsText row) ctxWhat.Value)
 
     /// Remembers the type at a node's source position, and what the name refers to.
@@ -2766,10 +2770,12 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                                 ))
                             env
 
+                    // a guard performs nothing: a function it calls is its pure instance, and an
+                    // effect is an error here
                     let cg =
                         guard
                         |> Option.map (fun g ->
-                            let cg = infer env depth g
+                            let cg = withRowAs rowEmpty guardWhat (fun () -> infer env depth g)
                             expect "'when' guard" tBool cg.ty
                             cg)
 

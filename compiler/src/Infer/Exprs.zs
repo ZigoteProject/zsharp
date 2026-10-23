@@ -635,7 +635,9 @@ and matchExpr (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>)
       let cg =
         match c.guard with
         | Some g ->
-          let cg = infer cx envC depth g
+          // a guard performs nothing: a function it calls is its pure instance, and an effect is
+          // an error here
+          let cg = withRowAs cx rowEmpty guardWhat (fun () -> infer cx envC depth g)
           expect cx "'when' guard" tBool cg.ty
           Some cg
         | None -> None

@@ -189,7 +189,12 @@ let runWith (external: string -> int option) (wrapped: bool) (funs: MFun list) :
                 match e.k with
                 | CLocal y when y = x -> mk (CPrim("ref.get", [ mk (CLocal x) cell ])) e.ty
                 | CAssign(y, w) when y = x -> mk (CPrim("ref.set", [ mk (CLocal x) cell; through w ])) e.ty
-                | CArraySet(y, _, _) when y = x -> failwith "Lift: an array element assigned through a loop's cell"
+                | CArraySet(y, i, w) when y = x ->
+                    // the cell's array with the element changed (copied when shared)
+                    let at = TCon("array", [ w.ty ])
+                    let c = mk (CLocal x) cell
+                    let changed = mk (CPrim("array.update", [ mk (CPrim("ref.get", [ c ])) at; through i; through w ])) at
+                    mk (CPrim("ref.set", [ c; changed ])) e.ty
                 | k -> mk (mapChildren through k) e.ty
 
             mk (CLet(x, mk (CPrim("ref", [ v ])) cell, through (cells body))) e.ty

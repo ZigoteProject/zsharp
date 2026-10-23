@@ -35,6 +35,12 @@ let exists f o =
   | Some x -> f x
   | None -> false
 
+/// Whether the value of `Some` satisfies `f`; `None` does.
+let forall f o =
+  match o with
+  | Some x -> f x
+  | None -> true
+
 /// The value of `Some`. Panics on `None`; prefer a match or `Option.defaultValue`.
 let get o =
   match o with

@@ -1,0 +1,1 @@
+tests/err_guard_effect.zs:9:12: error: this performs Stop, but a when guard can't: match first, then perform in the case

@@ -879,6 +879,14 @@ let rec showCore (ind: int) (e: CExpr) : string =
         + line ("| return " + r + " ->")
         + "\n"
         + sub rb
+    | CApp(h, xs) -> line (flat h + " (" + args xs + ")")
+    | CLam(ps, b) -> line ("fun (" + (ps |> List.map fst |> String.concat ", ") + ") ->") + "\n" + sub b
+    | CLetFun(n, _, ps, b, rest) -> line ("let " + n + "(" + (ps |> List.map fst |> String.concat ", ") + ") =") + "\n" + sub b + "\n" + showCore ind rest
+    | CLetRec(fs, rest) ->
+        (fs |> List.map (fun (n, ps, b) -> line ("let rec " + n + "(" + (ps |> List.map fst |> String.concat ", ") + ") =") + "\n" + sub b) |> String.concat "\n")
+        + "\n"
+        + showCore ind rest
+    | CArraySet(x, i, v) -> line (x + ".[" + flat i + "] <- " + flat v)
     | k -> line (sprintf "<%s>" ((sprintf "%A" k).Split(' ', '\n')[0]))
 
 /// The variables a node references itself (not through its children).

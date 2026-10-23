@@ -981,6 +981,9 @@ let rec peel (cx: Cx) (n: int) (t: Ty) : list<Ty> * Ty =
 
 /// Checks a body with its own row: a function's, a lambda's, a handled expression's (what it is,
 /// for an error naming it).
+/// What a when guard is, to the row check: it performs nothing.
+let guardWhat = "a when guard"
+
 let withRowAs (cx: Cx) (row: Ty) (what: string) (f: unit -> 'r / 'e) : 'r / 'e =
   let outer = cx.ctxRow.Value
   let outerWhat = cx.ctxWhat.Value
@@ -1033,6 +1036,7 @@ let useRow (cx: Cx) (row: Ty) : unit / Fails =
     | Some(l, h) -> fail $"this performs {show cx l}, but the innermost handler here is for {show cx h}"
     | None when List.isEmpty ls -> fail "this call's effects can't be handled here: write the effects of the function it calls (/ E)"
     | None when cx.ctxWhat.Value = "" -> fail $"this performs {effectsText cx row}, which the function it's in can't (its type says what it performs)"
+    | None when cx.ctxWhat.Value = guardWhat -> fail $"this performs {effectsText cx row}, but a when guard can't: match first, then perform in the case"
     | None -> fail $"this performs {effectsText cx row}, but {cx.ctxWhat.Value} can't: handle it inside (handle … with)"
 
 // ------------------------------------------------------------ types as written
