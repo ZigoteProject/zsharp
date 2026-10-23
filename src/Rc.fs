@@ -16,9 +16,53 @@ let rec private rootLocal (e: CExpr) =
     | CField(r, _) -> rootLocal r
     | _ -> None
 
+/// A function's body with the parameters of its join points that are its own parameters gone:
+/// where every jump to a join point passes the same parameter of the function from `keep` (one
+/// it borrows) in a place, the join point's body uses that parameter itself, which outlives it,
+/// so no jump dups it to pass it.
+let private elideAliases (keep: string -> bool) (body: CExpr) : CExpr =
+    let passed = System.Collections.Generic.Dictionary<string, string option array>()
+
+    let rec scan (e: CExpr) =
+        match e.k with
+        | CJump(j, args) ->
+            let here = args |> List.map (fun a -> match a.k with CLocal x when keep x -> Some x | _ -> None) |> Array.ofList
+
+            match passed.TryGetValue j with
+            | true, before -> passed[j] <- Array.map2 (fun a b -> if a = b then a else None) before here
+            | _ -> passed[j] <- here
+        | _ -> ()
+
+        children e.k |> List.iter scan
+
+    scan body
+    let elided (j: string) = passed.ContainsKey j && Array.exists Option.isSome passed[j]
+
+    if not (passed.Keys |> Seq.exists elided) then
+        body
+    else
+        let rec subst (m: Map<string, string>) (e: CExpr) =
+            match e.k with
+            | CLocal x when m.ContainsKey x -> { e with k = CLocal m[x] }
+            | k -> { e with k = mapChildren (subst m) k }
+
+        let rec go (e: CExpr) =
+            match e.k with
+            | CJoin(j, ps, b, rest) when elided j ->
+                let slots = passed[j]
+                let m = ps |> List.indexed |> List.choose (fun (i, (q, _)) -> slots[i] |> Option.map (fun x -> q, x)) |> Map.ofList
+                let ps' = ps |> List.indexed |> List.filter (fun (i, _) -> slots[i].IsNone) |> List.map snd
+                { e with k = CJoin(j, ps', go (subst m b), go rest) }
+            | CJump(j, args) when elided j ->
+                let slots = passed[j]
+                { e with k = CJump(j, args |> List.indexed |> List.filter (fun (i, _) -> slots[i].IsNone) |> List.map (snd >> go)) }
+            | k -> { e with k = mapChildren go k }
+
+        go body
+
 /// Borrowed parameters (Perceus borrowing), each function's indices: a heap parameter the
-/// function only applies, reads (a.[i], lengths) or passes on to a borrowed parameter is
-/// borrowed. The caller keeps ownership and the callee neither dups nor drops it, so a closure
+/// function only applies, reads (a.[i], lengths, a record's fields) or passes on to a borrowed
+/// parameter is borrowed. The caller keeps ownership and the callee neither dups nor drops it, so a closure
 /// or array threaded through a loop costs no reference counting. Only for functions called
 /// directly (not closures, which are called through code pointers, nor the entries). For the
 /// whole program, since a caller's code depends on its callees'.
@@ -64,8 +108,10 @@ let borrowingWith
             let rec walk (e: CExpr) =
                 match e.k with
                 | CLocal x when index.ContainsKey x -> bad.Add index[x] |> ignore
+                // a field read dups the field: the record itself stays the caller's
+                | CField({ k = CLocal x }, _) when index.ContainsKey x -> ()
                 | CApplyClo({ k = CLocal x }, args) when index.ContainsKey x -> List.iter walk args
-                | CPrim(("array.get" | "Array.length" | "String.length" | "String.byte" | "fixed.get" | "fixed.length"), { k = CLocal x } :: rest) when index.ContainsKey x ->
+                | CPrim(("array.get" | "Array.length" | "String.length" | "String.byte" | "fixed.get" | "fixed.length" | "ref.get" | "ref.set"), { k = CLocal x } :: rest) when index.ContainsKey x ->
                     List.iter walk rest
                 | CCallDirect(g, args) ->
                     args
@@ -90,7 +136,7 @@ let borrowingWith
                 | k -> children k |> List.iter walk
 
             if not set.IsEmpty then
-                walk f.body
+                walk (elideAliases index.ContainsKey f.body)
 
             if bad.Count > 0 then Some(name, set - Set.ofSeq bad) else None
 
@@ -214,7 +260,14 @@ let lower (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (borr
 
     let rcFun (f: MFun) =
         count.Value.Value <- 0
-        let f = { f with body = rematch (printPieces f.body) }
+
+        let mine =
+            match borrowedParams.TryGetValue f.name with
+            | true, bs -> bs
+            | _ -> Set.empty
+
+        let lent = f.pars |> List.indexed |> List.filter (fun (i, _) -> mine.Contains i) |> List.map (snd >> fst) |> Set.ofList
+        let f = { f with body = elideAliases lent.Contains (rematch (printPieces f.body)) }
         let freeVars = cachedFreeVars ()
         // every variable's type, by unique name
         let vtypes = System.Collections.Generic.Dictionary<string, Ty>()
@@ -460,8 +513,9 @@ let lower (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (borr
                 // a join point's body owns its parameters, as a function's does; jumps pass them.
                 // A body that builds a cell also takes a reuse token (null, or a cell the jump's
                 // path took apart), so that cell can be built in after the jump
+                // and borrows the function's borrowed parameters it uses, as the function does
                 let mine = ps |> List.map fst |> List.filter heapVar |> Set.ofList
-                let body' = rc mine Set.empty body
+                let body' = rc mine lent body
 
                 // the cell it builds, or the one a join point it jumps to builds
                 let rec layoutIn (e: CExpr) =
@@ -876,12 +930,6 @@ let lower (types: System.Collections.Generic.Dictionary<string, TypeInfo>) (borr
                 split sc (cases |> List.map (fun (_, _, b) -> b)) (fun sc' bs -> re (CMatch(sc', List.map2 (fun (p, g, _) b -> p, g, b) cases bs)))
             | k -> re (mapChildren moves k)
 
-        let mine =
-            match borrowedParams.TryGetValue f.name with
-            | true, bs -> bs
-            | _ -> Set.empty
-
-        let lent = f.pars |> List.indexed |> List.filter (fun (i, _) -> mine.Contains i) |> List.map (snd >> fst) |> Set.ofList
         let owned = f.pars |> List.map fst |> List.filter heapVar |> Set.ofList |> fun o -> Set.difference o lent
         { f with body = rc owned lent (moves f.body) }
 

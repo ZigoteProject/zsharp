@@ -483,9 +483,11 @@ let reaching (prog: Program) (funs: MFun list) (external: string -> (string * st
 
     let memo = Dictionary<string, (string * string list * Ty) option>()
     let visiting = HashSet<string>()
-    // set when a walk meets a function it's inside of (a cycle): what that one reaches is found
-    // by the walk it's in, so an answer of nothing made meanwhile isn't kept
-    let mutable cut = false
+    // the functions the outermost walk has gone through and found nothing in: a walk that meets
+    // one again doesn't walk it again (so a walk is linear, whatever cycles it meets), and when
+    // the outermost walk ends with nothing, each of them reaches nothing. A walk meeting a
+    // function it's inside of takes nothing from it: what that one reaches, that walk finds.
+    let nothingYet = HashSet<string>()
 
     /// What an expression of function f reaches (f's locals, for the local functions it calls).
     let rec inExpr (mine: Dictionary<string, CExpr>) (seen: HashSet<string>) (e: CExpr) : (string * string list * Ty) option =
@@ -514,22 +516,27 @@ let reaching (prog: Program) (funs: MFun list) (external: string -> (string * st
     and reach (g: string) =
         match memo.TryGetValue g with
         | true, r -> r
+        | _ when nothingYet.Contains g -> None
         | _ ->
             match byName.TryGetValue g with
             | true, f when visiting.Add g ->
-                let outer = cut
-                cut <- false
                 let r = inExpr (localsOf f) (HashSet()) f.body
                 visiting.Remove g |> ignore
 
-                if r.IsSome || not cut then
-                    memo[g] <- r
+                match r with
+                | Some _ -> memo[g] <- r
+                | None -> nothingYet.Add g |> ignore
 
-                cut <- cut || outer
+                if visiting.Count = 0 then
+                    // the outermost walk: with nothing found, nothing was there to find
+                    if r.IsNone then
+                        for h in nothingYet do
+                            memo[h] <- None
+
+                    nothingYet.Clear()
+
                 r
-            | true, _ ->
-                cut <- true
-                None
+            | true, _ -> None
             | _ -> external g
 
     reach, (fun (f: MFun) (e: CExpr) -> inExpr (localsOf f) (HashSet()) e)

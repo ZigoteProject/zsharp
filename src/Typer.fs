@@ -1250,6 +1250,11 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
     /// opened modules, then globally, then in the auto-opened namespaces. Candidates are tried
     /// in that order and built only as needed: this runs for every name.
     let resolveWith (exists: string -> bool) (x: string) : string option =
+      if x.StartsWith "global::" then
+        // a desugaring's call: the library's name, whatever is opened
+        let g = x.Substring 8
+        if exists g then Some g else None
+      else
         let enclosing = enclosing ()
 
         let rec tryIn (prefixes: string list) =
@@ -2018,7 +2023,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
             // {e:spec}: Format.format e "spec", and a number's specifier checked (0024): F and N
             // for every number, D, X and B for integers, E and G for floats
             let x = uniq "$hole"
-            let c = inf (Let(PIdent(x, None), None, e, Call("Format.format", [ Var x; StrLit spec ])))
+            let c = inf (Let(PIdent(x, None), None, e, Call(libraryName "Format.format", [ Var x; StrLit spec ])))
 
             let kind =
                 match c.k with
@@ -2075,15 +2080,15 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                 with _ ->
                     false
 
-            let side (name: string) (e: Expr) (t: Ty) = if has "Show" t then Call("Show.show", [ Var name ]) else StrLit(exprText e)
+            let side (name: string) (e: Expr) (t: Ty) = if has "Show" t then Call(libraryName "Show.show", [ Var name ]) else StrLit(exprText e)
 
             let at =
                 if op = "=" && has "Diff" ca.ty then
                     [ Match(
-                          Call("Diff.diff", [ Var "$left"; Var "$right" ]),
+                          Call(libraryName "Diff.diff", [ Var "$left"; Var "$right" ]),
                           [ PIdent("Some", Some(PIdent("$at", None))),
                             None,
-                            If(Call("Text.String.startsWith", [ StrLit "."; Var "$at" ]), Bin("+", StrLit "\n  at ", Var "$at"), Some(StrLit ""))
+                            If(Call(libraryName "Text.String.startsWith", [ StrLit "."; Var "$at" ]), Bin("+", StrLit "\n  at ", Var "$at"), Some(StrLit ""))
                             PIdent("None", None), None, StrLit "" ]
                       ) ]
                 else
@@ -2325,7 +2330,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                                             | _ -> (mutableRoot a).IsSome) ->
                     // an element of a fixed-size array in a let mutable, or in its record: the
                     // place gets the changed value
-                    inf (Assign(a, Call("Collections.Fixed.set", [ a; i; rhs ])))
+                    inf (Assign(a, Call(libraryName "Collections.Fixed.set", [ a; i; rhs ])))
                 | TCon("fixed", _), _ ->
                     fail 0 "a fixed-size array is a value: declare it (or the record holding it) with `let mutable` to assign an element, or use Fixed.set, which returns the changed one"
                 | TCon("Buffer", _), _ ->
@@ -2351,7 +2356,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                 | _ when (mutableRoot a).IsSome ->
                     // an element of an array in a let mutable record's field: the record with the
                     // array changed (in place when both are unique)
-                    inf (Assign(a, Call("Collections.Array.set", [ a; i; rhs ])))
+                    inf (Assign(a, Call(libraryName "Collections.Array.set", [ a; i; rhs ])))
                 | _ ->
                     fail
                         0
@@ -3792,8 +3797,8 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
             | e -> e
 
         let inOrder env (b: Expr) =
-            let built = Call("Collections.List.rev", [ Var "$acc" ])
-            let result = if isArray then Call("Collections.Array.ofList", [ built ]) else built
+            let built = Call(libraryName "Collections.List.rev", [ Var "$acc" ])
+            let result = if isArray then Call(libraryName "Collections.Array.ofList", [ built ]) else built
             infer env depth (LetMut("$acc", None, Var "[]", Seq(yields b, result)))
 
         // e with c bound to name, inferred once; in a pipeline, c put where it's used (pure, or
@@ -3833,7 +3838,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                 match prune cxs.ty, stages b with
                 | TCon("list", _), Some st when pureStages x st && not isArray -> piped env x (fst st) (snd st) (Var "$coll")
                 | TCon("array", _), Some st when pureStages x st ->
-                    piped env x (fst st) (snd st) (if isArray then Var "$coll" else Call("Collections.Array.toList", [ Var "$coll" ]))
+                    piped env x (fst st) (snd st) (if isArray then Var "$coll" else Call(libraryName "Collections.Array.toList", [ Var "$coll" ]))
                 | _ -> inOrder env (ForIn(x, Var "$coll", b)))
             |> snd
         | For(x, lo, None, hi, b) ->
@@ -5184,8 +5189,8 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
         // the program's [<Tests>] values, run by the test binary's entry (0009)
         if modName.IsNone && testValues.Count > 0 then
             let all = [ for q, isList in testValues -> if isList then Var q else Call("::", [ Tuple [ Var q; Var "[]" ] ]) ]
-            let joined = Call("Collections.List.concat", [ List.foldBack (fun a acc -> Call("::", [ Tuple [ a; acc ] ])) all (Var "[]") ])
-            declareOne 0 (Fun("$tests", false, [ PUnit, None ], None, Call("Testing.Runner.main", [ joined ])))
+            let joined = Call(libraryName "Collections.List.concat", [ List.foldBack (fun a acc -> Call("::", [ Tuple [ a; acc ] ])) all (Var "[]") ])
+            declareOne 0 (Fun("$tests", false, [ PUnit, None ], None, Call(libraryName "Testing.Runner.main", [ joined ])))
             tests.Add "$tests"
 
         currentModule.Value <- None

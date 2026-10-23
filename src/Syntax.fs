@@ -897,6 +897,13 @@ and private withTrivia (text: string) (toks: Token[]) : Token[] =
 
 let private cons a b = Call("::", [ Tuple [ a; b ] ])
 
+/// The name a desugaring calls (`{x:F2}` calls Format.format, `a @ b` List.append): the library's,
+/// whatever the program opens or defines, so a module named Format can't take it.
+let libraryName (name: string) = "global::" + name
+
+/// A called name as the source would write it.
+let shownName (f: string) = if f.StartsWith "global::" then f.Substring 8 else f
+
 /// An expression as text, near enough to what was written: a failed assert's operands (0009).
 let rec exprText (e: Expr) : string =
     let atom (e: Expr) =
@@ -934,8 +941,8 @@ let rec exprText (e: Expr) : string =
     | UnitLit -> "()"
     | Call("::", _) when (items e).IsSome -> "[ " + ((items e).Value |> List.map exprText |> String.concat "; ") + " ]"
     | Call("::", [ Tuple [ x; rest ] ]) -> atom x + " :: " + exprText rest
-    | Call(f, []) -> f
-    | Call(f, args) -> f + " " + (args |> List.map atom |> String.concat " ")
+    | Call(f, []) -> shownName f
+    | Call(f, args) -> shownName f + " " + (args |> List.map atom |> String.concat " ")
     | App(f, args) -> atom f + " " + (args |> List.map atom |> String.concat " ")
     | Bin(op, a, b) -> exprText a + " " + op + " " + exprText b
     | Neg a -> "-" + atom a
@@ -1623,11 +1630,11 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
 
             if inTask.Value > 0 then
                 let id = sprintf "$use%d" xi
-                let onCancel = Call("Threading.Task.disposeOnCancel", [ Var "$cancel"; Var x ])
-                let finish = Call("Threading.Task.disposed", [ Var "$cancel"; Var id; Var x ])
+                let onCancel = Call(libraryName "Threading.Task.disposeOnCancel", [ Var "$cancel"; Var x ])
+                let finish = Call(libraryName "Threading.Task.disposed", [ Var "$cancel"; Var id; Var x ])
                 stmt(ln, Let(mark xi (PIdent(x, None)), None, v, Let(PIdent(id, None), None, onCancel, Let(PIdent("$use", None), None, after, Seq(finish, Var "$use")))))
             else
-                stmt(ln, Let(mark xi (PIdent(x, None)), None, v, Let(PIdent("$use", None), None, after, Seq(Call("Dispose.dispose", [ Var x ]), Var "$use"))))
+                stmt(ln, Let(mark xi (PIdent(x, None)), None, v, Let(PIdent("$use", None), None, after, Seq(Call(libraryName "Dispose.dispose", [ Var x ]), Var "$use"))))
         elif inTask.Value > 0 && peek () = KKw "let" && peek2 () = KSym "!" then
             // let! p = t: the rest once the task t has given its result
             start "LetBang"
@@ -2278,7 +2285,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
             advance ()
             let r = consE ()
             finish ()
-            Call("Collections.List.append", [ l; r ])
+            Call(libraryName "Collections.List.append", [ l; r ])
         | KSym s when isInfixOp s && opLevel s = 1 ->
             startAt at "Infix"
             advance ()
@@ -2505,7 +2512,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                    let body =
                        match s with
                        | "::" -> cons a b
-                       | "@" -> Call("Collections.List.append", [ a; b ])
+                       | "@" -> Call(libraryName "Collections.List.append", [ a; b ])
                        | _ -> Bin(s, a, b)
 
                    Lambda([ PIdent("$a", None), None; PIdent("$b", None), None ], body)
@@ -2621,11 +2628,11 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                 let shown =
                     match spec with
                     | Some sp -> Call("$format", [ e; StrLit sp ])
-                    | None -> Call("Show.show", [ e ])
+                    | None -> Call(libraryName "Show.show", [ e ])
 
                 match width with
-                | Some w when w < 0 -> Call("Text.String.padRight", [ Lit(int64 -w); shown ])
-                | Some w -> Call("Text.String.padLeft", [ Lit(int64 w); shown ])
+                | Some w when w < 0 -> Call(libraryName "Text.String.padRight", [ Lit(int64 -w); shown ])
+                | Some w -> Call(libraryName "Text.String.padLeft", [ Lit(int64 w); shown ])
                 | None -> shown
             else
                 StrLit s)

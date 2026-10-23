@@ -26,6 +26,12 @@ let rec private forkEach (f: share<'a -> 'b>) (parts: list<array<'a>>) =
     let job = Native.parFork (fun () -> Array.map f part)
     job :: forkEach f rest
 
+// the array in parts of g elements, the array given up for them (it's this function's, not
+// borrowed): once it's gone, a part's elements are only the part's
+let private cut (a: array<'a>) (g: int) : list<array<'a>> =
+  let n = Array.length a
+  if n <= g then [ a ] else [ for i in 0 .. g .. n - 1 -> Array.sub a i (min g (n - i)) ]
+
 /// The array of `f` applied to each element, computed in parallel. The array is cut into parts
 /// and each moves into its job (decision 75): when the caller gives the array up, a job's
 /// elements are its own and aren't marked shared.
@@ -35,6 +41,5 @@ let map (f: share<'a -> 'b>) (a: array<'a>) : array<'b> =
   if n = 0 then
     [||]
   else
-    let g = Threading.Parallel.grain n
-    let parts = [ for i in 0 .. g .. n - 1 -> Array.sub a i (min g (n - i)) ]
+    let parts = cut a (Threading.Parallel.grain n)
     Array.concat (List.map Native.parJoin (forkEach f parts))

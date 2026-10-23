@@ -680,7 +680,8 @@ and CKind =
     // after match lowering
     /// A join point (from a decision tree): `rest`, whose paths may end in a jump to it, then
     /// `body` with the parameters bound to the jump's arguments. A block with phis, not a
-    /// function: the body refers only to its parameters (and other join points).
+    /// function: the body refers only to its parameters, other join points and (after Rc's
+    /// elision) the function's borrowed parameters.
     | CJoin of name: string * pars: (string * Ty) list * body: CExpr * rest: CExpr
     | CJump of string * CExpr list // to a join point, in a tail position of its rest
 

@@ -285,6 +285,10 @@ let run (types: Dictionary<string, TypeInfo>) (funs: MFun list) : MFun list =
 
         and simp' (env: Map<string, Known>) (e: CExpr) : CExpr =
             match e.k with
+            | CLet(x, { k = CLocal y }, body) when not (mutables.Contains x) && not (mutables.Contains y) ->
+                // let x = y, as an inlined call binds its parameters: y itself, so nothing takes a
+                // copy of y (a borrowed parameter stays borrowed)
+                simp env (rename (Map.ofList [ x, y ]) false body)
             | CLet(x, v, body) ->
                 let v = simp env v
 
