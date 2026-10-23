@@ -148,3 +148,26 @@ impl Iter<Box<'a>, 'a> =
       (identifier)
       (identifier)
       body: (application function: (identifier) argument: (member_access (identifier) member: (identifier))))))
+
+==================
+a list argument on lines of its own
+==================
+
+let tests =
+  testList "a" [
+    test "b" f
+    test "c" g
+  ]
+
+---
+
+(source_file
+  (let_declaration
+    name: (identifier)
+    body: (block
+      (application
+        function: (identifier)
+        argument: (string (string_content))
+        argument: (list
+          (application function: (identifier) argument: (string (string_content)) argument: (identifier))
+          (application function: (identifier) argument: (string (string_content)) argument: (identifier)))))))

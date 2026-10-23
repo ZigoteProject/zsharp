@@ -189,7 +189,7 @@ module.exports = grammar({
       choice($.abstract_member, seq($._indent, sep1($.abstract_member, $._newline), $._dedent)),
     ),
 
-    impl_declaration: $ => seq('impl', field('trait', $.identifier), '<', sep1($._type, ','), '>', '=', $._definitions),
+    impl_declaration: $ => seq('impl', field('trait', choice($.identifier, $.qualified_identifier)), '<', sep1($._type, ','), '>', '=', $._definitions),
     // derive Show = let show … ; or a group, derive Json = ToJson, FromJson
     derive_declaration: $ => seq('derive', field('name', $.identifier), '=', choice($._definitions, sep1(field('member', $.identifier), ','))),
     _definitions: $ => seq($._indent, sep1($.definition, $._newline), $._dedent),
@@ -390,8 +390,10 @@ module.exports = grammar({
     power_operator: $ => token(prec(1, new RegExp('\\.*\\*\\*' + OP))),
     typed_expression: $ => seq('(', $._expression, ':', field('type', $._type), ')'),
     tuple: $ => seq('(', $._expression, repeat1(seq(',', $._expression)), ')'),
-    list: $ => seq('[', sep($._expression, choice(';', $._newline)), optional(choice(';', $._newline)), ']'),
-    array: $ => seq('[|', sep($._expression, choice(';', $._newline)), optional(choice(';', $._newline)), '|]'),
+    // [ a; b ], or the items on lines of their own, deeper than the line the bracket is on
+    list: $ => seq('[', optional(choice($._items, seq($._indent, $._items, optional($._dedent)))), ']'),
+    array: $ => seq('[|', optional(choice($._items, seq($._indent, $._items, optional($._dedent)))), '|]'),
+    _items: $ => seq(sep1($._expression, choice(';', $._newline)), optional(choice(';', $._newline))),
     record: $ => seq('{', sep1($.field_value, choice(';', $._newline)), optional(choice(';', $._newline)), '}'),
     record_update: $ => seq('{', $._expression, 'with', sep1($.field_value, choice(';', $._newline)), optional(choice(';', $._newline)), '}'),
     field_value: $ => seq(field('name', $.identifier), '=', $._expression),
