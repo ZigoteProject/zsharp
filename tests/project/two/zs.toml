@@ -1,0 +1,9 @@
+# two dependencies with a Util.zs each
+[package]
+name = "two"
+main = "src/main.zs"
+
+[dependencies]
+alpha = { path = "../alpha" }
+beta = { path = "../beta" }
+cwords = { path = "../cwords" }

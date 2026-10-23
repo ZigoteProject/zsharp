@@ -90,11 +90,13 @@ actual=$(bin/zs test tests/ztest/sample.zs 2>&1); code=$?
 if [ "$actual" = "$(cat tests/ztest/sample.expected)" ] && [ $code = 1 ]; then echo "ok   zs test tests/ztest/sample.zs"
 else echo "FAIL zs test tests/ztest/sample.zs (exit $code)"; diff <(echo "$actual") tests/ztest/sample.expected; fail=1; fi
 
-# projects: a CLI tool built from zs.toml with a path dependency; zs test over a project; zs new
+# projects: a CLI tool built from zs.toml with a path dependency; zs test over a project; two
+# dependencies with a Util.zs each (0018 K1) and one with C code ([c], K4); zs new
 zs="$PWD/bin/zs"
 proj=$( (cd tests/project/wc && "$zs" build >/dev/null && ./build/wc sample.txt missing.txt; echo "exit $?"
          "$zs" run -- -l sample.txt; printf 'a b\nc\n' | ./build/wc
          cd ../text && "$zs" test | tail -1
+         cd ../two && PKG_CONFIG_PATH="$PWD/../cwords" "$zs" run
          cd "$tmp" && "$zs" new demo >/dev/null && cd demo && "$zs" run Z#) 2>&1 )
 expected='4 6 29 sample.txt
 wc: cannot open missing.txt: No such file or directory
@@ -102,10 +104,20 @@ exit 1
 4 sample.txt
 2 3 6 
 2 passed, 0 failed
+alpha: the alpha util 9
+beta: the beta util module, 4 words
+the alpha util / the beta util module / 16
+5 15
 Hello, Z#!'
 if [ "$proj" = "$expected" ]; then echo "ok   projects (zs.toml, path dependency, zs run/test/new)"
 else echo "FAIL projects"; diff <(echo "$proj") <(echo "$expected"); fail=1; fi
-rm -rf tests/project/wc/build
+rm -rf tests/project/wc/build tests/project/two/build
+
+# the first-party packages: their own tests, with their C through [c] (0018 item 4)
+pk=$( (cd packages/xxhash && "$zs" test | tail -1; cd ../libclang && "$zs" test | tail -1) 2>&1 )
+if [ "$pk" = "1 passed, 0 failed
+1 passed, 0 failed" ]; then echo "ok   packages (xxhash, libclang)"
+else echo "FAIL packages"; echo "$pk"; fail=1; fi
 
 # git dependencies against a local repository: tags, branches, zs.lock, zs update, re-fetching
 if diff <(tests/project/git.sh 2>&1) tests/project/git.expected >"$tmp/git.diff"; then echo "ok   tests/project/git.sh (git dependencies)"
@@ -168,9 +180,9 @@ else echo "ok   library documented; docs/reference current"; fi
 # the repository's own Z# code is formatted (zs fmt); the tests of parse errors don't parse, so
 # they have no layout to check
 unparsed='tests/err_and.zs|tests/err_operator_builtin.zs|tests/newcomer/(try_with|class|mutable_field|increment|return_braces).zs'
-formatted=$(find tests lib -name '*.zs' | grep -Ev "^($unparsed)\$")
+formatted=$(find tests lib packages -name '*.zs' | grep -Ev "^($unparsed)\$")
 if bin/zs fmt --check $formatted 2>"$tmp/fmt.log"; then echo "ok   zs fmt --check"
-else echo "FAIL zs fmt --check (run: bin/zs fmt \$(find tests lib -name '*.zs'))"; cat "$tmp/fmt.log"; fail=1; fi
+else echo "FAIL zs fmt --check (run: bin/zs fmt \$(find tests lib packages -name '*.zs'))"; cat "$tmp/fmt.log"; fail=1; fi
 # the syntax tree is lossless: every file's text comes back from it (0019)
 if out=$(tests/cst/roundtrip.sh 2>&1); then echo "ok   tests/cst/roundtrip.sh ($out)"
 else echo "FAIL tests/cst/roundtrip.sh"; echo "$out" | head; fail=1; fi

@@ -9,19 +9,25 @@ RUN dnf install -y --setopt=install_weak_deps=False \
     && dnf clean all
 
 # LLVM from its release, first on the path (Fedora 44 packages 22): clang, lld and the tools the
-# compiler and its tests use, and clang's resource directory (headers; the sanitizer, profile and
-# builtins runtimes). Only those parts of the archive are unpacked (all of it is 12 GB).
+# compiler and its tests use, clang's resource directory (headers; the sanitizer, profile and
+# builtins runtimes), and libclang with its headers, which packages/libclang finds through
+# pkg-config. Only those parts of the archive are unpacked (all of it is 12 GB).
 ARG LLVM_VERSION=23.1.4
-RUN dnf install -y --setopt=install_weak_deps=False zstd && dnf clean all \
+RUN dnf install -y --setopt=install_weak_deps=False zstd pkgconf-pkg-config && dnf clean all \
     && arch=$(uname -m | sed 's/x86_64/X64/;s/aarch64/ARM64/') \
     && dir=LLVM-$LLVM_VERSION-Linux-$arch \
     && curl -fsSL https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/$dir.tar.zst \
        | zstd -dc --long=31 \
-       | tar -x -C /opt --wildcards "$dir/lib/clang/*" $(for t in clang clang-${LLVM_VERSION%%.*} clang++ clang-cpp lld ld.lld \
+       | tar -x -C /opt --wildcards "$dir/lib/clang/*" "$dir/include/clang-c/*" "$dir/lib/libclang.so*" $(for t in clang clang-${LLVM_VERSION%%.*} clang++ clang-cpp lld ld.lld \
            llvm-profdata llvm-ar llvm-ranlib llvm-nm llvm-objdump llvm-symbolizer llvm-addr2line llvm-cov \
            llvm-objcopy llvm-strip llvm-dis llvm-as opt llc; do echo "$dir/bin/$t"; done) \
-    && mv /opt/$dir /opt/llvm
-ENV PATH=/opt/llvm/bin:$PATH
+    && mv /opt/$dir /opt/llvm \
+    && mkdir -p /opt/llvm/lib/pkgconfig \
+    && printf '%s\n' 'prefix=/opt/llvm' 'Name: libclang' "Description: clang's C API" "Version: $LLVM_VERSION" \
+         'Cflags: -I${prefix}/include' 'Libs: -L${prefix}/lib -Wl,-rpath,${prefix}/lib -lclang' \
+         > /opt/llvm/lib/pkgconfig/libclang.pc
+ENV PATH=/opt/llvm/bin:$PATH \
+    PKG_CONFIG_PATH=/opt/llvm/lib/pkgconfig
 
 ENV DOTNET_CLI_TELEMETRY_OPTOUT=1 \
     DOTNET_NOLOGO=1 \

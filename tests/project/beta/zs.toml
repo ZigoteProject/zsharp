@@ -1,0 +1,6 @@
+[package]
+name = "beta"
+main = "src/Beta.zs"
+
+[dependencies]
+text = { path = "../text" }

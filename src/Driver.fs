@@ -32,16 +32,27 @@ let parseFile (path: string) = parseText path (readSource path)
 /// A zs.toml manifest:
 ///   [package]  name = "wc"  version = "0.1.0"  main = "src/main.zs" (the default)
 ///   [dependencies]  text = { path = "../text" }  json = { git = "https://…", rev = "v1" }
+///   [c]  sources = ["c/xxhash.c"]  include = ["c"]  link = ["m"]  pkg-config = ["sqlite3"]
 type Dep =
     | PathDep of string // full path of the dependency's directory
     | GitDep of url: string * rev: string // rev: a tag, branch or commit ("" = the default branch)
+
+/// A package's [c] section (0018 item 4): C sources compiled and linked with it, directories for
+/// its `import c`s and its sources' #includes, libraries to link (names, or files as [<Link>]
+/// takes them), and pkg-config names, whose flags and libraries a host build adds. Paths are full.
+type CConfig =
+    { sources: string list
+      includes: string list
+      link: string list
+      pkgConfig: string list }
 
 type Manifest =
     { root: string // the directory holding zs.toml
       name: string
       version: string
       main: string // full path
-      deps: (string * Dep) list }
+      deps: (string * Dep) list
+      c: CConfig }
 
 /// { k = "v", … } as a dictionary, or the problem with it.
 let private tableFields (value: string) : Result<Dictionary<string, string>, string> =
@@ -65,13 +76,26 @@ let private tableFields (value: string) : Result<Dictionary<string, string>, str
         | Some f -> Error(sprintf "expected key = \"value\" inside { }, found %s" (f.Trim()))
         | None -> Ok d
 
-/// Reads the subset of TOML a manifest uses: [sections], key = "string", key = { k = "v", … }.
+/// [ "a", "b" ] as a list, or the problem with it.
+let private listOf (value: string) : Result<string list, string> =
+    let items = value.Trim('[', ']').Split ',' |> Array.map (fun i -> i.Trim()) |> Array.filter ((<>) "")
+
+    if not (value.StartsWith "[" && value.EndsWith "]") then
+        Error "expected a list such as [\"a.c\", \"b.c\"]"
+    elif items |> Array.forall (fun i -> i.Length >= 2 && i.StartsWith "\"" && i.EndsWith "\"") then
+        Ok [ for i in items -> i.Substring(1, i.Length - 2) ]
+    else
+        Error "expected quoted strings inside [ ]"
+
+/// Reads the subset of TOML a manifest uses: [sections], key = "string", key = { k = "v", … },
+/// key = [ "a", "b" ].
 let readManifest (root: string) : Manifest =
     let file = Path.Combine(root, "zs.toml")
     let fail (n: int) msg = raise (CompileErrorAt(file, n, 0, msg))
     let mutable section = ""
     let package = Dictionary<string, string>()
     let deps = ResizeArray<string * Dep>()
+    let c = Dictionary<string, string list>()
     let unquote (n: int) (v: string) =
         let v = v.Trim()
         if v.Length >= 2 && v.StartsWith "\"" && v.EndsWith "\"" then v.Substring(1, v.Length - 2)
@@ -110,6 +134,11 @@ let readManifest (root: string) : Manifest =
 
                         deps.Add(key, GitDep(url, defaultArg rev ""))
                     | _ -> fail n (sprintf "dependency '%s' needs a path or a git URL" key)
+                | "c" ->
+                    match key, listOf value with
+                    | ("sources" | "include" | "link" | "pkg-config"), Ok items -> c[key] <- items
+                    | ("sources" | "include" | "link" | "pkg-config"), Error msg -> fail n (sprintf "[c] %s: %s" key msg)
+                    | _ -> fail n (sprintf "unknown key '%s' in [c]; it takes sources, include, link and pkg-config" key)
                 | s -> fail n (sprintf "unknown section [%s]" s))
 
     let get k d =
@@ -117,11 +146,23 @@ let readManifest (root: string) : Manifest =
         | true, v -> v
         | _ -> d
 
+    let items k =
+        match c.TryGetValue k with
+        | true, l -> l
+        | _ -> []
+
+    let full (p: string) = Path.GetFullPath(Path.Combine(root, p))
+
     { root = root
       name = get "name" (Path.GetFileName root)
       version = get "version" "0.1.0"
-      main = Path.GetFullPath(Path.Combine(root, get "main" "src/main.zs"))
-      deps = List.ofSeq deps }
+      main = full (get "main" "src/main.zs")
+      deps = List.ofSeq deps
+      c =
+        { sources = items "sources" |> List.map full
+          includes = items "include" |> List.map full
+          link = items "link" |> List.map (fun l -> if l.Contains "/" || List.contains (Path.GetExtension l) [ ".a"; ".so"; ".o" ] then full l else l)
+          pkgConfig = items "pkg-config" } }
 
 /// The nearest zs.toml at or above a directory.
 let rec findProject (dir: string) : Manifest option =
@@ -137,36 +178,77 @@ let private depPath (top: Manifest) (name: string) (d: Dep) =
     | PathDep p -> p
     | GitDep _ -> gitDir top name
 
-/// Where a file's modules are looked up: its own directory, then (inside a project) the
-/// source directory (the one holding `main`) of each dependency, transitively. Git
-/// dependencies must have been fetched (zs fetch, or any zs build/run/test/check).
-let moduleDirs (file: string) : string list =
-    let dir = Path.GetDirectoryName(Path.GetFullPath file)
+/// The module a dependency's code is seen under (0018 K1): its key with the first letter
+/// upper-cased, each `-` dropped and the letter after it upper-cased (`tree-sitter`: TreeSitter).
+let modulePrefix (key: string) =
+    key.Split '-'
+    |> Array.filter (fun p -> p <> "")
+    |> Array.map (fun p -> string (Char.ToUpper p[0]) + p.Substring 1)
+    |> String.concat ""
 
-    let rec depDirs (top: Manifest) (seen: Set<string>) (m: Manifest) =
-        m.deps
-        |> List.fold
-            (fun (seen: Set<string>, acc) (name, dep) ->
-                let path = depPath top name dep
+/// A package as module lookup sees it: the files under `root` (its main's directory) are named
+/// by their path there (`Ast/Expr.zs` is `Ast.Expr`), behind `prefix` for a dependency (`Json`,
+/// so `Json.Ast.Expr`; its main is `Json` itself); its dependencies, by prefix, are seen from its
+/// own files only.
+type Package =
+    { prefix: string option
+      root: string
+      main: string
+      deps: Lazy<(string * Package) list>
+      manifest: Manifest option }
 
-                if seen.Contains path then
-                    seen, acc
-                elif not (File.Exists(Path.Combine(path, "zs.toml"))) then
-                    let msg =
-                        match dep with
-                        | GitDep _ when not (Directory.Exists path) -> sprintf "git dependency '%s' isn't fetched yet: run zs fetch" name
-                        | _ -> sprintf "dependency '%s': no zs.toml in %s" name path
+/// The program around a file: the file's directory, and (inside a project) the project's
+/// dependencies, each read from its zs.toml once. Git dependencies must have been fetched (zs
+/// fetch, or any zs build/run/test/check).
+let packageOf (file: string) : Package =
+    let full = Path.GetFullPath file
+    let made = Dictionary<string, Package>() // a dependency's directory: its package
+    let given = Dictionary<string, string * string>() // a prefix: the directory and key giving it
 
-                    raise (CompileErrorAt(Path.Combine(m.root, "zs.toml"), 0, 0, msg))
-                else
-                    let dm = readManifest path
-                    let seen, more = depDirs top (seen.Add path) dm
-                    seen, acc @ [ Path.GetDirectoryName dm.main ] @ more)
-            (seen, [])
+    let rec package (top: Manifest) (prefix: string option) (m: Manifest) : Package =
+        let deps =
+            lazy
+                [ for name, dep in m.deps do
+                      let path = depPath top name dep
+                      let fail msg = raise (CompileErrorAt(Path.Combine(m.root, "zs.toml"), 0, 0, msg))
+
+                      if not (File.Exists(Path.Combine(path, "zs.toml"))) then
+                          match dep with
+                          | GitDep _ when not (Directory.Exists path) -> fail (sprintf "git dependency '%s' isn't fetched yet: run zs fetch" name)
+                          | _ -> fail (sprintf "dependency '%s': no zs.toml in %s" name path)
+
+                      let key = modulePrefix name
+
+                      match given.TryGetValue key with
+                      | true, (other, otherName) when other <> path ->
+                          fail (sprintf "dependency '%s' is %s, and '%s' is %s: one name is one package in a build" name path otherName other)
+                      | _ -> given[key] <- (path, name)
+
+                      match made.TryGetValue path with
+                      | true, p when p.prefix <> Some key ->
+                          fail (sprintf "the package in %s is a dependency under two names, %s and %s; give it one" path p.prefix.Value key)
+                      | true, p -> yield key, p
+                      | _ ->
+                          let p = package top (Some key) (readManifest path)
+                          made[path] <- p
+                          yield key, p ]
+
+        { prefix = prefix
+          root = Path.GetDirectoryName m.main
+          main = m.main
+          deps = deps
+          manifest = Some m }
+
+    let dir = Path.GetDirectoryName full
 
     match findProject dir with
-    | Some m -> dir :: (snd (depDirs m (Set.singleton m.root) m) |> List.filter ((<>) dir)) |> List.distinct
-    | None -> [ dir ]
+    | Some m -> { package m None m with root = dir; main = full }
+    | None ->
+        { prefix = None
+          root = dir
+          main = full
+          deps = lazy []
+          manifest = None }
 
 /// Runs git; Ok stdout or Error with its message.
 let private git (args: string list) =
@@ -313,6 +395,47 @@ let fetchDeps (top: Manifest) (update: bool) : string list =
 /// archive files (full paths), collected while loading the program's modules.
 let links = ResizeArray<string>()
 
+/// The C flags of the packages' [c] sections (-I for their include directories, pkg-config's
+/// --cflags), for the C sources on the link line.
+let cflags = ResizeArray<string>()
+
+let private pkgConfigs = Dictionary<string * string, string list>() // this build's answers
+
+/// pkg-config's --cflags or --libs for a name in a package's [c], as arguments.
+let private pkgConfig (m: Manifest) (what: string) (name: string) =
+    match pkgConfigs.TryGetValue((what, name)) with
+    | true, r -> r
+    | _ ->
+        let psi = ProcessStartInfo "pkg-config"
+        psi.ArgumentList.Add what
+        psi.ArgumentList.Add name
+        psi.RedirectStandardOutput <- true
+        psi.RedirectStandardError <- true
+
+        let out =
+            try
+                use p = Process.Start psi
+                let out = p.StandardOutput.ReadToEnd()
+                p.StandardError.ReadToEnd() |> ignore
+                p.WaitForExit()
+                if p.ExitCode = 0 then Some out else None
+            with _ ->
+                None
+
+        match out with
+        | Some out ->
+            let r = out.Split([| ' '; '\n'; '\t' |], StringSplitOptions.RemoveEmptyEntries) |> List.ofArray
+            pkgConfigs[(what, name)] <- r
+            r
+        | None ->
+            let msg = sprintf "package %s: pkg-config knows no '%s'; install the library's development files, or give include and link in [c]" m.name name
+            raise (CompileErrorAt(Path.Combine(m.root, "zs.toml"), 0, 0, msg))
+
+/// The arguments the link line takes for [<Link>]s and the packages' [c] sections: the C flags
+/// (for the C sources among them), then the sources, libraries and files.
+let private linked () =
+    List.ofSeq cflags @ [ for l in links -> if l.StartsWith "-" || l.Contains "/" then l else "-l" + l ]
+
 /// Replaces `import c` declarations with the header's declarations (headers are found next
 /// to the importing file, then on the system include path).
 /// Where a file's C imports are saved (for editors without clang, and as what its checked
@@ -327,14 +450,14 @@ let private cimportDir (path: string) =
 
     Path.Combine(root, ".zs-cache", "cimport")
 
-let private expandImports (path: string) (decls: (int * Decl) list) =
+let private expandImports (path: string) (flags: string list) (decls: (int * Decl) list) =
     let dir = Path.GetDirectoryName(Path.GetFullPath path)
 
     decls
     |> List.collect (fun (ln, d) ->
         let imported header =
             try
-                CImport.importHeader header dir (cimportDir path)
+                CImport.importHeader header dir flags (cimportDir path)
             with CompileError(_, msg) ->
                 raise (CompileErrorAt(path, ln, 0, msg))
 
@@ -453,7 +576,8 @@ let private hashBytes (b: byte[]) =
 /// environment it and the tools it runs read. Another environment has a server of its own.
 let serverSocket () =
     let named =
-        [ "PATH"; "HOME"; "XDG_CACHE_HOME"; "TMPDIR"; "CPATH"; "C_INCLUDE_PATH"; "LIBRARY_PATH"; "CC"; "CFLAGS"; "LDFLAGS"; "LANG"; "LC_ALL" ]
+        [ "PATH"; "HOME"; "XDG_CACHE_HOME"; "TMPDIR"; "CPATH"; "C_INCLUDE_PATH"; "LIBRARY_PATH"; "PKG_CONFIG_PATH"; "PKG_CONFIG_LIBDIR"
+          "CC"; "CFLAGS"; "LDFLAGS"; "LANG"; "LC_ALL" ]
         |> List.map (fun v -> v + "=" + (Environment.GetEnvironmentVariable v |> Option.ofObj |> Option.defaultValue ""))
 
     let ours =
@@ -481,12 +605,14 @@ let private evict (dir: string) (pattern: string) (n: int) =
 let private cacheOn () = isNull (Environment.GetEnvironmentVariable "ZS_NO_CACHE")
 
 /// What a build needs of a source file before checking it, kept under a key of its text, so an
-/// unchanged file isn't parsed: its `module` header, the modules it may use (`open M`, `M.x`),
-/// its explicit impls (trait, type as written), and whether it imports C (such a file is always
-/// parsed: its declarations come from clang, and its [<Link>]s are the build's).
+/// unchanged file isn't parsed: its `module` header, the modules it may use (`open M`, `M.x`)
+/// and the ones it opens, its explicit impls (trait, type as written), and whether it imports C
+/// (such a file is always parsed: its declarations come from clang, and its [<Link>]s are the
+/// build's).
 type private Summary =
     { header: string option
       uses: string list
+      opens: string list
       impls: (string * string) list
       importsC: bool }
 
@@ -496,7 +622,8 @@ let private summaryOf (toks: Token[]) (decls: (int * Decl) list) : Summary =
     let rec qualified (toks: Token[]) =
         [ for t in toks do
               match t.tok with
-              | KId s when s.Contains "." && Char.IsUpper s[0] -> yield s.Substring(0, s.IndexOf '.')
+              // A.B.c: the module A.B, or A when B is a module nested in it
+              | KId s when s.Contains "." && Char.IsUpper s[0] -> yield s.Substring(0, s.LastIndexOf '.')
               | KInterp parts ->
                   for isExpr, text, _ in parts do
                       if isExpr then
@@ -508,6 +635,7 @@ let private summaryOf (toks: Token[]) (decls: (int * Decl) list) : Summary =
         | (_, ModuleHeader h) :: _ -> Some h
         | _ -> None
       uses = [ for _, d in decls do match d with Open m -> yield m | _ -> () ] @ qualified toks |> List.distinct
+      opens = [ for _, d in decls do match d with Open m -> yield m | _ -> () ]
       impls = [ for _, d in decls do match d with Impl(tr, STName(n, _), _) -> yield tr, n | _ -> () ]
       importsC = decls |> List.exists (fun (_, d) -> match d with ImportC _ | Attrs(_, ImportC _) -> true | _ -> false) }
 
@@ -532,6 +660,7 @@ let private source (path: string) =
                         Some
                             { header = List.tryHead (field "header")
                               uses = field "use"
+                              opens = field "open"
                               impls = field "impl" |> List.map (fun i -> let p = i.Split ' ' in p[0], p[1])
                               importsC = Array.contains "importsC" lines }
                     else
@@ -554,6 +683,7 @@ let private source (path: string) =
                                 tmp,
                                 (s.header |> Option.map ((+) "header ") |> Option.toList)
                                 @ (s.uses |> List.map ((+) "use "))
+                                @ (s.opens |> List.map ((+) "open "))
                                 @ (s.impls |> List.map (fun (t, n) -> sprintf "impl %s %s" t n))
                                 @ (if s.importsC then [ "importsC" ] else [])
                             )
@@ -602,32 +732,101 @@ let libraryModules (root: string) (hosted: bool) : Loaded list =
     :: [ for f in coreFiles -> load ("core/" + f + ".zs") ]
     @ (if hosted then [ for f in stdFiles -> load ("std/" + f + ".zs") ] else [])
 
-/// The main file and the modules it uses (`open M` or `M.name`, found as M.zs or m.zs next to
-/// it or in a dependency), dependencies first. Each module is named after its file unless it
-/// has a `module` header.
+/// The main file and the modules it uses (`open M` or `M.name`), dependencies first. A module is
+/// a file of its package named by its path under the package's root (`Ast.Expr` is Ast/Expr.zs
+/// or Ast/expr.zs), and a dependency's modules are behind its name (0018 K1): `Json` is the json
+/// package's main file, `Json.Parser` its Parser.zs. A file of the package names the package's
+/// modules as the checker resolves names, in the modules enclosing its own (`Parser` in
+/// `Json.Lexer` is `Json.Parser`), in the modules it opens, then globally; only its files see the
+/// package's dependencies. The program's files are named by a `module` header if they have one.
 let loadModules (mainPath: string) : Loaded list =
-    let dirs = moduleDirs mainPath
     let order = ResizeArray<Loaded>()
     let shown = Dictionary<string, string>() // a module's file: the path it was loaded as
     let finished = Dictionary<string, bool>() // module -> fully loaded?
     let display (p: string) = Path.GetRelativePath(Environment.CurrentDirectory, p)
+    let mainFull = Path.GetFullPath mainPath
 
-    let fileOf (m: string) =
-        [ for dir in dirs do
-              for f in [ m + ".zs"; string (Char.ToLower m[0]) + m.Substring 1 + ".zs" ] -> Path.Combine(dir, f) ]
-        |> List.tryFind (fun f -> File.Exists f || overlay.ContainsKey f)
+    // the file of the module at `path` (A.B) under a package's root, not its main (a
+    // dependency's main is its name alone; the program's isn't a module)
+    let fileIn (pkg: Package) (path: string) =
+        let parts = path.Split '.'
+        let dir = Path.Combine(Array.append [| pkg.root |] parts[.. parts.Length - 2])
+        let last = parts[parts.Length - 1]
 
-    let rec visit (path: string) (modName: string option) (stack: string list) =
+        [ last + ".zs"; string (Char.ToLower last[0]) + last.Substring 1 + ".zs" ]
+        |> List.map (fun f -> Path.Combine(dir, f))
+        |> List.tryFind (fun f -> f <> pkg.main && (File.Exists f || overlay.ContainsKey f))
+
+    // the module with the full name `m`, as a file of pkg or of one of its dependencies
+    let find (pkg: Package) (m: string) =
+        let within (p: Package) (prefix: string option) =
+            match prefix with
+            | Some k when m = k -> Some(m, p.main, p)
+            | Some k when m.StartsWith(k + ".") -> fileIn p (m.Substring(k.Length + 1)) |> Option.map (fun f -> m, f, p)
+            | Some _ -> None
+            | None -> fileIn p m |> Option.map (fun f -> m, f, p)
+
+        match within pkg pkg.prefix with
+        | Some r -> Some r
+        | None -> pkg.deps.Value |> List.tryPick (fun (k, d) -> within d (Some k))
+
+    // the modules a file's uses may name: for A.B, the module A.B wherever it resolves (or A, when
+    // nothing does)
+    let usedBy (pkg: Package) (modName: string option) (summary: Summary) =
+        let enclosing =
+            match modName with
+            | Some n ->
+                let parts = n.Split '.'
+                [ for k in parts.Length .. -1 .. 1 -> String.concat "." parts[.. k - 1] ]
+            | None -> []
+
+        let near (p: string) = (enclosing |> List.map (fun e -> e + "." + p)) @ [ p ]
+        let opened = summary.opens |> List.collect near
+
+        let rec named (m: string) =
+            match (near m @ (opened |> List.map (fun o -> o + "." + m))) |> List.choose (find pkg) with
+            | [] when m.Contains "." -> named (m.Substring(0, m.LastIndexOf '.'))
+            | found -> found
+
+        summary.uses |> List.collect named
+
+    // a package's [c] once a file of it is loaded: its sources, libraries and C flags are the
+    // build's; its include directories and pkg-config's flags are its `import c`s'
+    let used = HashSet<string>()
+
+    let cOf (pkg: Package) =
+        match pkg.manifest with
+        | None -> []
+        | Some m ->
+            let pc what = if Codegen.target = "" && mcu.IsNone then m.c.pkgConfig |> List.collect (pkgConfig m what) else []
+            let flags = (m.c.includes |> List.map ((+) "-I")) @ pc "--cflags"
+
+            if used.Add m.root then
+                for f in flags do
+                    if not (cflags.Contains f) then
+                        cflags.Add f
+
+                for l in m.c.sources @ m.c.link @ pc "--libs" do
+                    if not (links.Contains l) then
+                        links.Add l
+
+            flags
+
+    let rec visit (path: string) (pkg: Package) (modName: string option) (stack: string list) =
         let text, summary, parsed =
             try
                 source path
             with CompileErrorAt(file, l, c, m) when file = path ->
                 raise (CompileErrorAt(display path, l, c, m)) // the path as the user knows it, like other errors
 
+        // the package's [c] is the build's whether or not this file is parsed (a cached check
+        // doesn't parse it)
+        let cFlags = cOf pkg
+
         let decls =
             lazy
                 (try
-                    expandImports path (snd parsed.Value)
+                    expandImports path cFlags (snd parsed.Value)
                  with CompileErrorAt(file, l, c, m) when file = path ->
                      raise (CompileErrorAt(display path, l, c, m)))
 
@@ -648,26 +847,27 @@ let loadModules (mainPath: string) : Loaded list =
             else
                 ""
 
+        // a dependency's file is named by its place in the package; a header may only agree
         let modName =
-            match summary.header, modName with
-            | Some h, Some _ -> Some h
+            match summary.header, modName, pkg.prefix with
+            | Some h, Some m, Some k when h <> m && m <> k + "." + h ->
+                raise (CompileErrorAt(display path, 1, 0, sprintf "this file is the module %s, named by its place in its package; its header says %s: remove it" m h))
+            | Some h, Some _, None -> Some h
             | _ -> modName
 
         let deps =
-            summary.uses
-            |> List.filter (fun m ->
-                match fileOf m with
-                | Some f -> Some m <> modName && f <> path && f <> Path.GetFullPath mainPath
-                | None -> false)
+            usedBy pkg modName summary
+            |> List.filter (fun (m, f, _) -> Some m <> modName && f <> path && f <> mainFull)
+            |> List.distinctBy (fun (m, _, _) -> m)
 
-        for m in deps do
+        for m, f, p in deps do
             match finished.TryGetValue m with
             | true, true -> ()
             | true, false ->
                 raise (CompileErrorAt(display path, 0, 0, sprintf "import cycle: %s" (String.concat " -> " (List.rev (m :: stack)))))
             | _ ->
                 finished[m] <- false
-                visit (fileOf m).Value (Some m) (m :: stack)
+                visit f p (Some m) (m :: stack)
                 finished[m] <- true
 
         shown[path] <- display path
@@ -678,10 +878,10 @@ let loadModules (mainPath: string) : Loaded list =
               text = text
               impls = summary.impls
               decls = decls
-              uses = deps |> List.map (fun m -> shown[(fileOf m).Value])
+              uses = deps |> List.map (fun (_, f, _) -> shown[f])
               imported = imported }
 
-    visit (Path.GetFullPath mainPath) None [ Path.GetFileNameWithoutExtension mainPath ]
+    visit mainFull (packageOf mainPath) None [ Path.GetFileNameWithoutExtension mainPath ]
     // the main file keeps the path the user gave
     let last = order.Count - 1
     order[last] <- { order[last] with path = mainPath }
@@ -955,6 +1155,8 @@ let private checkModules (requireMain: bool) (collect: bool) (withHovers: bool) 
 let private checkUnits (withHovers: bool) (mainPath: string) (requireMain: bool) (collect: bool) : Core.Program * CheckedUnit[] =
     positions.Clear()
     links.Clear()
+    cflags.Clear()
+    pkgConfigs.Clear() // asked again each build: a library may have been installed since
     Typer.unavailable.Clear()
 
     // each library module sees every one before it
@@ -1793,6 +1995,16 @@ let private linkParts (modules: Module list) (out: string) : string option =
                     keepModule key obj
                     obj, compiled))
 
+    // the C sources of [<Link>]s and [c] sections, cached as the runtime is, by their text and
+    // the headers beside them (which they may include)
+    let objects =
+        Array.append
+            objects
+            ([| for l in links do if l.EndsWith ".c" then yield l |]
+             |> Array.Parallel.map (fun c ->
+                 let headers = Directory.GetFiles(Path.GetDirectoryName c, "*.h") |> Array.sort |> Array.map File.ReadAllText
+                 objectOf (String.concat "\n" (File.ReadAllText c :: List.ofArray headers)) (Some c) (flags @ List.ofSeq cflags)))
+
     let compiled = objects |> Array.sumBy (fun o -> match o with Ok(_, true) -> 1 | _ -> 0)
     timings.Add(sprintf "clang (%d of %d new)" compiled objects.Length, sw.Elapsed.TotalMilliseconds)
 
@@ -1802,12 +2014,12 @@ let private linkParts (modules: Module list) (out: string) : string option =
         evict (Path.Combine(cacheRoot (), "objects")) "*.o" 256
         evict (Path.Combine(cacheRoot (), "modules")) "*.o" 256
         let files = objects |> Array.map (fun o -> match o with Ok(f, _) -> f | Error _ -> "") |> List.ofArray
-        let linked = links |> Seq.map (fun l -> if l.Contains "/" then l else "-l" + l) |> List.ofSeq
+        let libs = [ for l in links do if not (l.EndsWith ".c") then yield (if l.StartsWith "-" || l.Contains "/" then l else "-l" + l) ]
         let ltoLink =
             if not lto.IsEmpty then [ "-fuse-ld=lld"; "-Wl,--thinlto-cache-dir=" + Path.Combine(cacheRoot (), "lto") ]
             elif lld.Value then [ "-fuse-ld=lld" ] // faster than the system's linker
             else []
-        timed "link" (fun () -> run "clang" (flags @ ltoLink @ [ "-rdynamic" ] @ files @ linked @ [ "-o"; out; "-lm" ]))
+        timed "link" (fun () -> run "clang" (flags @ ltoLink @ [ "-rdynamic" ] @ files @ libs @ [ "-o"; out; "-lm" ]))
 
 /// .zs -> LLVM IR -> clang (with the runtime) -> native executable, or with isLib a static
 /// library (.a) plus its header (.h).
@@ -1904,8 +2116,7 @@ let build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) (isLib: 
                 let failure =
                     timed "clang" (fun () -> run "clang" (opt @ tclang @ [ "-c"; "-Wno-override-module" ] @ san @ [ ll; "-o"; obj ]))
                     |> Option.orElseWith (fun () ->
-                        let linked = links |> Seq.map (fun l -> if l.Contains "/" then l else "-l" + l) |> List.ofSeq
-                        timed "zig cc" (fun () -> cc (opt @ rtDefines @ [ obj; runtimeFile "rt.c" ] @ linked @ [ "-o"; out; "-lm" ])))
+                        timed "zig cc" (fun () -> cc (opt @ rtDefines @ [ obj; runtimeFile "rt.c" ] @ linked () @ [ "-o"; out; "-lm" ])))
 
                 if File.Exists obj then
                     File.Delete obj
@@ -1926,8 +2137,7 @@ let build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) (isLib: 
                             File.Delete out
 
                         if out.EndsWith ".so" then
-                            let linked = links |> Seq.map (fun l -> if l.Contains "/" then l else "-l" + l) |> List.ofSeq
-                            cc (opt @ [ "-shared" ] @ san @ [ obj; rt ] @ linked @ [ "-o"; out; "-lm" ])
+                            cc (opt @ [ "-shared" ] @ san @ [ obj; rt ] @ linked () @ [ "-o"; out; "-lm" ])
                         else
                             run "llvm-ar" [ "rcs"; out; obj; rt ])
 
@@ -1939,8 +2149,7 @@ let build (src: string) (out: string) (emitLlvm: bool) (sanitize: bool) (isLib: 
 
                 failure
             else
-                let linked = links |> Seq.map (fun l -> if l.Contains "/" then l else "-l" + l) |> List.ofSeq
-                timed "clang" (fun () -> run "clang" (opt @ rtDefines @ [ "-rdynamic"; "-Wno-override-module" ] @ san @ [ ll; runtimeFile "rt.c" ] @ linked @ [ "-o"; out; "-lm" ]))
+                timed "clang" (fun () -> run "clang" (opt @ rtDefines @ [ "-rdynamic"; "-Wno-override-module" ] @ san @ [ ll; runtimeFile "rt.c" ] @ linked () @ [ "-o"; out; "-lm" ]))
 
         if not emitLlvm then
             File.Delete ll

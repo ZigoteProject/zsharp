@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved in principle: namespaced dependencies (item 1) before phase 11; versions, internal modules, C dependencies, targets, integrity, commands and workspaces (items 2–8) after it. Draft for the index |
+| **Status** | Approved in principle. Items 1 (namespaced dependencies, `tests/project/two`) and 4 (the `[c]` section, `tests/project/cwords`; `[target.<name>.c]` with 0022) are built; versions, internal modules, C dependencies, targets, integrity, commands and workspaces (items 2–8) after it. Draft for the index |
 | **Decided at** | track K's plan ([ROADMAP](../../ROADMAP.md#packages-k)); phase 12's "before 0.1" list takes item 2 ([ROADMAP](../../ROADMAP.md#phase-12-release-01)); the index at a later design review |
 | **Builds** | track K: packages |
 | **Rests on** | decisions 26 (`zig cc`), 27 (source packages, `zs.lock`), 37 (Core and Std) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §12](../../DESIGN.md#12-tooling) Projects |

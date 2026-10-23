@@ -6,6 +6,7 @@
 - **Using one:** another file uses it with qualified names (`Geometry.area`), or opens it with `open Geometry`. The compiler finds the files a program uses, next to the main file and in its dependencies, so there's nothing to list in a build file.
 - **Private names:** `let private` and `type private` keep a name inside its module.
 - **Renaming:** `module Name` on a file's first line gives it a different module name.
+- **Folders:** a file in a folder is named by its path from the main file's folder: `Shapes/Square.zs` beside `main.zs` is `Shapes.Square` (the file may be `square.zs`).
 
 ```
 src/
@@ -105,6 +106,12 @@ main = "src/main.zs"        # the default
 [dependencies]
 text = { path = "../text" }                                       # another project on disk
 json = { git = "https://github.com/someone/json", rev = "v1.2" }  # tag, branch or commit
+
+[c]                                  # C code the package wraps (optional)
+sources = ["c/shim.c"]               # compiled and linked with the program
+include = ["c"]                      # where its `import c` and its sources find headers
+link = ["m"]                         # libraries, as [<Link>] takes them
+pkg-config = ["sqlite3"]             # a library's flags and libraries, from pkg-config
 ```
 
 | Command | Does |
@@ -117,7 +124,8 @@ json = { git = "https://github.com/someone/json", rev = "v1.2" }  # tag, branch 
 | `zs update` | moves git dependencies to the newest commit of their `rev` |
 
 **Dependencies:**
-- **Modules:** a dependency is another project, and its modules are found in the folder of its `main`.
+- **Modules:** a dependency is another project, and its modules are behind its name. `json`'s main file is the module `Json` and its `Parser.zs` is `Json.Parser`: write `Json.Parser.parse`, or `open Json` and `Parser.parse`. So two dependencies may each have a `Util.zs`. Inside the dependency, its files name each other without the prefix, and its own dependencies are seen by its files only.
+- **C code:** a package's `[c]` section is the build's when its modules are used: its sources are compiled (once, and again when they or the headers beside them change), its libraries linked, and its include directories and pkg-config's flags are its `import c`s'. pkg-config is asked on a host build only.
 - **Git dependencies:** they're checked out into `.zs-cache/deps/`. `zs.lock` records the exact commit of each, so builds are reproducible and need no network once fetched; commit `zs.lock` with your project. The builds and `zs test` fetch what's missing.
 
 ## Builds

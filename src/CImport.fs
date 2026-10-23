@@ -208,7 +208,7 @@ let private commentFor (lines: string[]) (line: int) =
 
             String.Join("\n", above)
 
-let private importUncached (header: string) (dir: string) : Imported =
+let private importUncached (header: string) (dir: string) (flags: string list) : Imported =
     let tmp = Path.Combine(Path.GetTempPath(), "zs-import-" + Guid.NewGuid().ToString("N") + ".c")
     File.WriteAllText(tmp, sprintf "#include \"%s\"\n" header)
 
@@ -216,12 +216,12 @@ let private importUncached (header: string) (dir: string) : Imported =
         let fail msg = raise (CompileError(0, msg))
 
         let ast =
-            match clang [ "-fsyntax-only"; "-Xclang"; "-ast-dump=json"; "-I"; dir; tmp ] with
+            match clang ([ "-fsyntax-only"; "-Xclang"; "-ast-dump=json"; "-I"; dir ] @ flags @ [ tmp ]) with
             | Ok json -> JsonNode.Parse(json, documentOptions = JsonDocumentOptions(MaxDepth = 10000))
             | Error e -> fail (e.Split('\n') |> Array.head |> fun l -> l.Replace(tmp + ":1:10: ", ""))
 
         let macros =
-            match clang [ "-E"; "-dD"; "-I"; dir; tmp ] with
+            match clang ([ "-E"; "-dD"; "-I"; dir ] @ flags @ [ tmp ]) with
             | Ok text -> text
             | Error e -> fail e
 
@@ -283,6 +283,8 @@ let private importUncached (header: string) (dir: string) : Imported =
 
             match fields |> List.tryPick (fun (_, t) -> match t with Error e -> Some e | Ok _ -> None) with
             | _ when fields.IsEmpty -> skipped.Add(name, "it has no fields here (an opaque struct; pass it as cptr)")
+            | _ when fields |> List.exists (fun (f, _) -> String.IsNullOrEmpty f) ->
+                skipped.Add(name, "a field has no name (a union or struct inside it, without one)")
             | Some e -> skipped.Add(name, "a field: " + e)
             | None when defined.Add name ->
                 ctx.records[name] <- fields |> List.map fst
@@ -523,18 +525,20 @@ let private memo = Dictionary<string * string, DateTime * Imported>()
 /// Where a header's import is saved in cacheDir.
 let cacheFile (header: string) (cacheDir: string) = Path.Combine(cacheDir, Regex.Replace(header, @"[^A-Za-z0-9_.-]", "_") + ".json")
 
-let importHeader (header: string) (dir: string) (cacheDir: string) : (int * Decl) list =
+/// The declarations of a header found next to the importing file (in `dir`), in a package's
+/// include directories (`flags`: -I and pkg-config's flags) or on the system's include path.
+let importHeader (header: string) (dir: string) (flags: string list) (cacheDir: string) : (int * Decl) list =
     let path = Path.Combine(dir, header)
     let stamp = if File.Exists path then File.GetLastWriteTimeUtc path else DateTime.MinValue
     let cacheFile = cacheFile header cacheDir
 
     let r =
-        match memo.TryGetValue((header, dir)) with
+        match memo.TryGetValue((header, String.concat " " (dir :: flags))) with
         | true, (t, r) when t = stamp -> r
         | _ ->
             let r =
                 try
-                    let r = importUncached header dir
+                    let r = importUncached header dir flags
                     (try save cacheFile r with _ -> ())
                     r
                 with CompileError(_, msg) ->
@@ -552,7 +556,7 @@ let importHeader (header: string) (dir: string) (cacheDir: string) : (int * Decl
                             )
                         )
 
-            memo[(header, dir)] <- (stamp, r)
+            memo[(header, String.concat " " (dir :: flags))] <- (stamp, r)
             r
 
     for name, why in r.skipped do

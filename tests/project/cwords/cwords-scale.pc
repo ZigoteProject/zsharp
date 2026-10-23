@@ -1,0 +1,5 @@
+Name: cwords-scale
+Description: C flags for tests/project/cwords
+Version: 1.0
+Cflags: -DCWORDS_SCALE=10
+Libs:

@@ -1,0 +1,10 @@
+# a package with C code: its sources, an include directory, a library and pkg-config's flags
+[package]
+name = "cwords"
+main = "src/Cwords.zs"
+
+[c]
+sources = ["c/vowels.c"]
+include = ["c"]
+link = ["m"]
+pkg-config = ["cwords-scale"]
