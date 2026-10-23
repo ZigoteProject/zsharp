@@ -56,6 +56,282 @@ let private tokenLine (src: string) =
 
         sprintf "%d %d %s" bytesBefore[t.offset] (bytesBefore[t.offset + t.text.Length] - bytesBefore[t.offset]) shown
 
+/// The AST as compiler/'s parser prints it, for comparing the two (zs ast): a node a line, its
+/// children two spaces deeper, a node with a place followed by @line:col.
+let private astDump (decls: (int * Syntax.Decl) list) : string list =
+    let out = ResizeArray<string>()
+    let at (node: obj) =
+        match Syntax.positions.TryGetValue node with
+        | true, (l, c, _) -> sprintf " @%d:%d" l c
+        | _ -> ""
+    let quote (s: string) =
+        let sb = Text.StringBuilder("\"")
+        for c in s do
+            match c with
+            | '\\' -> sb.Append "\\\\" |> ignore
+            | '"' -> sb.Append "\\\"" |> ignore
+            | '\n' -> sb.Append "\\n" |> ignore
+            | '\t' -> sb.Append "\\t" |> ignore
+            | '\r' -> sb.Append "\\r" |> ignore
+            | c when int c < 32 -> sb.Append(sprintf "\\u{%X}" (int c)) |> ignore
+            | c -> sb.Append c |> ignore
+        sb.Append("\"").ToString()
+    let rec ty (t: Syntax.SType) =
+        match t with
+        | Syntax.STName(n, []) -> n
+        | Syntax.STName(n, args) -> n + "<" + (args |> List.map ty |> String.concat ", ") + ">"
+        | Syntax.STVar v -> "'" + v
+        | Syntax.STTuple ts -> "(" + (ts |> List.map ty |> String.concat " * ") + ")"
+        | Syntax.STFun(a, b) -> "(" + ty a + " -> " + ty b + ")"
+        | Syntax.STMeasure us -> "[" + (us |> List.map (fun (u, v, e) -> sprintf "%s%s^%d" (if v then "'" else "") u e) |> String.concat " ") + "]"
+        | Syntax.STRow(t, ls, tail) -> "(" + ty t + " / <" + (ls |> List.map ty |> String.concat ", ") + (match tail with Some v -> " | '" + v | None -> "") + ">)"
+    let ann (t: Syntax.SType option) = match t with Some t -> ty t | None -> "-"
+    let rec pat (p: Syntax.Pat) =
+        match p with
+        | Syntax.PWild -> "_"
+        | Syntax.PIdent(x, None) -> x + at p
+        | Syntax.PIdent(x, Some q) -> "(" + x + " " + pat q + ")" + at p
+        | Syntax.PInt n -> string n
+        | Syntax.PChar c -> sprintf "#%d" c
+        | Syntax.PStr s -> quote s
+        | Syntax.PBool b -> (if b then "true" else "false")
+        | Syntax.PUnit -> "()"
+        | Syntax.PTuple ps -> "(tuple " + (ps |> List.map pat |> String.concat " ") + ")"
+        | Syntax.POr(a, b) -> "(or " + pat a + " " + pat b + ")"
+        | Syntax.PAs(q, x) -> "(as " + pat q + " " + x + ")"
+        | Syntax.PNamed fs -> "(named " + (fs |> List.map (fun (f, q) -> f + "=" + pat q) |> String.concat " ") + ")"
+        | Syntax.PRecord fs -> "(record " + (fs |> List.map (fun (f, q) -> f + "=" + pat q) |> String.concat " ") + ")"
+        | Syntax.PArgs ps -> "(args " + (ps |> List.map pat |> String.concat " ") + ")"
+    let param (q: Syntax.Pat, t: Syntax.SType option) = "param " + pat q + " : " + ann t
+    let line (d: int) (s: string) = out.Add(String.replicate (2 * d) " " + s)
+    let rec expr (d: int) (e: Syntax.Expr) =
+        let kids (xs: Syntax.Expr list) = for x in xs do expr (d + 1) x
+        let opt (x: Syntax.Expr option) = match x with Some x -> expr (d + 1) x | None -> line (d + 1) "None"
+        match e with
+        | Syntax.Lit n -> line d (sprintf "Lit %d" n)
+        | Syntax.CharLit c -> line d (sprintf "CharLit %d" c)
+        | Syntax.FloatLit f -> line d (sprintf "FloatLit %016X" (BitConverter.DoubleToInt64Bits f))
+        | Syntax.BoolLit b -> line d (if b then "BoolLit true" else "BoolLit false")
+        | Syntax.StrLit s -> line d ("StrLit " + quote s)
+        | Syntax.UnitLit -> line d "UnitLit"
+        | Syntax.Var x -> line d ("Var " + x + at e)
+        | Syntax.Call(f, args) ->
+            line d ("Call " + f + at e)
+            kids args
+        | Syntax.App(h, args) ->
+            line d ("App" + at e)
+            kids (h :: args)
+        | Syntax.Lambda(ps, b) ->
+            line d "Lambda"
+            for q in ps do line (d + 1) (param q)
+            expr (d + 1) b
+        | Syntax.Bin(op, a, b) ->
+            line d ("Bin " + op)
+            kids [ a; b ]
+        | Syntax.Neg a ->
+            line d "Neg"
+            kids [ a ]
+        | Syntax.Not a ->
+            line d "Not"
+            kids [ a ]
+        | Syntax.If(c, t, f) ->
+            line d "If"
+            kids [ c; t ]
+            opt f
+        | Syntax.Let(q, t, v, r) ->
+            line d ("Let " + pat q + " : " + ann t)
+            kids [ v; r ]
+        | Syntax.LetFun(f, isRec, ps, ret, b, r) ->
+            line d (sprintf "LetFun %s rec=%b%s" f isRec (at e))
+            for q in ps do line (d + 1) (param q)
+            line (d + 1) ("ret " + ann ret)
+            kids [ b; r ]
+        | Syntax.LetRecGroup(ms, r) ->
+            line d "LetRecGroup"
+            kids (ms @ [ r ])
+        | Syntax.LetMut(x, t, v, r) ->
+            line d ("LetMut " + x + " : " + ann t)
+            kids [ v; r ]
+        | Syntax.Assign(a, b) ->
+            line d ("Assign" + at e)
+            kids [ a; b ]
+        | Syntax.While(c, b) ->
+            line d "While"
+            kids [ c; b ]
+        | Syntax.For(x, a, step, b, body) ->
+            line d ("For " + x)
+            expr (d + 1) a
+            opt step
+            kids [ b; body ]
+        | Syntax.ForIn(x, a, b) ->
+            line d ("ForIn " + x)
+            kids [ a; b ]
+        | Syntax.Seq(a, b) ->
+            line d "Seq"
+            kids [ a; b ]
+        | Syntax.Tuple xs ->
+            line d "Tuple"
+            kids xs
+        | Syntax.RecordLit fs ->
+            line d "RecordLit"
+            for f, v in fs do
+                line (d + 1) ("field " + f)
+                expr (d + 2) v
+        | Syntax.Update(r, fs) ->
+            line d "Update"
+            expr (d + 1) r
+            for f, v in fs do
+                line (d + 1) ("field " + f)
+                expr (d + 2) v
+        | Syntax.Field(r, f) ->
+            line d ("Field " + f + at e)
+            kids [ r ]
+        | Syntax.Index(a, i) ->
+            line d "Index"
+            kids [ a; i ]
+        | Syntax.Slice(a, i, j) ->
+            line d "Slice"
+            expr (d + 1) a
+            opt i
+            opt j
+        | Syntax.ArrayLit xs ->
+            line d "ArrayLit"
+            kids xs
+        | Syntax.Match(sc, cs) ->
+            line d "Match"
+            expr (d + 1) sc
+            for q, g, b in cs do
+                line (d + 1) ("clause " + pat q)
+                (match g with Some g -> expr (d + 2) g | None -> line (d + 2) "None")
+                expr (d + 2) b
+        | Syntax.Question a ->
+            line d ("Question" + at e)
+            kids [ a ]
+        | Syntax.TryBind(q, a, r) ->
+            line d ("TryBind " + pat q + at e)
+            kids [ a; r ]
+        | Syntax.DeriveCtx(n, a) ->
+            line d ("DeriveCtx " + n)
+            kids [ a ]
+        | Syntax.Measured(a, t) ->
+            line d ("Measured " + ty t)
+            kids [ a ]
+        | Syntax.Typed(a, t) ->
+            line d ("Typed " + ty t)
+            kids [ a ]
+        | Syntax.Unsafe a ->
+            line d "Unsafe"
+            kids [ a ]
+        | Syntax.ListComp(isArray, b) ->
+            line d (sprintf "ListComp array=%b" isArray)
+            kids [ b ]
+        | Syntax.Yield a ->
+            line d "Yield"
+            kids [ a ]
+        | Syntax.YieldAll a ->
+            line d "YieldAll"
+            kids [ a ]
+        | Syntax.Handle(b, ops, ret) ->
+            line d "Handle"
+            expr (d + 1) b
+            for op, args, k, body in ops do
+                line (d + 1) ("op " + op + " " + k + " " + (args |> List.map pat |> String.concat " ") + at op)
+                expr (d + 2) body
+            match ret with
+            | Some(q, body) ->
+                line (d + 1) ("return " + pat q)
+                expr (d + 2) body
+            | None -> line (d + 1) "noreturn"
+        | Syntax.At(l, a) ->
+            line d (sprintf "At %d%s" l (at e))
+            kids [ a ]
+    let members (d: int) (ms: Syntax.Member list) =
+        for m in ms do
+            line d (sprintf "member %s static=%b self=%s ret=%s @%d" m.name m.isStatic (defaultArg m.self "-") (ann m.mret) m.mline)
+            match m.mpars with
+            | Some ps ->
+                for q in ps do
+                    line (d + 1) (sprintf "param %s%s : %s" (if q.optional then "?" else "") q.mname (ann q.mty))
+                    match q.mdefault with
+                    | Some v -> expr (d + 2) v
+                    | None -> ()
+            | None -> line (d + 1) "property"
+            expr (d + 1) m.mbody
+    let rec decl (d: int) (ln: int) (x: Syntax.Decl) =
+        let head (s: string) = line d (sprintf "%d: %s" ln s)
+        let defs (ds: (int * string * (Syntax.Pat * Syntax.SType option) list * Syntax.SType option * Syntax.Expr) list) =
+            for l, n, ps, ret, body in ds do
+                line (d + 1) (sprintf "def %s @%d" n l)
+                for q in ps do line (d + 2) (param q)
+                line (d + 2) ("ret " + ann ret)
+                expr (d + 2) body
+        match x with
+        | Syntax.Extern(n, args, variadic, ret) -> head (sprintf "Extern %s variadic=%b : %s -> %s" n variadic (args |> List.map ty |> String.concat " -> ") (ty ret))
+        | Syntax.Fun(n, isRec, ps, ret, body) ->
+            head (sprintf "Fun %s rec=%b%s" n isRec (at x))
+            for q in ps do line (d + 1) (param q)
+            line (d + 1) ("ret " + ann ret)
+            expr (d + 1) body
+        | Syntax.Value(n, t, v) ->
+            head (sprintf "Value %s : %s%s" n (ann t) (at x))
+            expr (d + 1) v
+        | Syntax.FunGroup items ->
+            head "FunGroup"
+            for l, m in items do decl (d + 1) l m
+        | Syntax.TypeGroup items ->
+            head "TypeGroup"
+            for l, m in items do decl (d + 1) l m
+        | Syntax.TypeDecl(n, tps, body, ms) ->
+            head ("TypeDecl " + n + (tps |> List.map (fun v -> " '" + v) |> String.concat ""))
+            match body with
+            | Syntax.RecordTy fs ->
+                line (d + 1) "record"
+                for f, t, def in fs do
+                    line (d + 2) ("field " + f + " : " + ty t)
+                    match def with
+                    | Some v -> expr (d + 3) v
+                    | None -> ()
+            | Syntax.UnionTy cs ->
+                line (d + 1) "union"
+                for c, fs in cs do
+                    line (d + 2) ("case " + c + (fs |> List.map (fun (fname, t) -> " " + defaultArg fname "_" + ":" + ty t) |> String.concat ""))
+            members (d + 1) ms
+        | Syntax.TypeExt(n, tps, ms) ->
+            head ("TypeExt " + n + (tps |> List.map (fun v -> " '" + v) |> String.concat ""))
+            members (d + 1) ms
+        | Syntax.TypeAlias(n, tps, t) -> head ("TypeAlias " + n + (tps |> List.map (fun v -> " '" + v) |> String.concat "") + " = " + ty t)
+        | Syntax.Trait(n, tps, ms) ->
+            head ("Trait " + n + (tps |> List.map (fun v -> " '" + v) |> String.concat ""))
+            for m, t in ms do line (d + 1) ("method " + m + " : " + ty t)
+        | Syntax.Effect(n, tps, ops) ->
+            head ("Effect " + n + (tps |> List.map (fun v -> " '" + v) |> String.concat ""))
+            for m, t in ops do line (d + 1) ("op " + m + " : " + ty t + at m)
+        | Syntax.Derive(n, ds) ->
+            head ("Derive " + n)
+            defs ds
+        | Syntax.DeriveGroup(n, ms) -> head ("DeriveGroup " + n + " " + String.concat " " ms)
+        | Syntax.Attrs(attrs, inner) ->
+            head "Attrs"
+            for a, args in attrs do line (d + 1) ("attr " + a + (args |> List.map (fun x -> " " + quote x) |> String.concat ""))
+            decl (d + 1) ln inner
+        | Syntax.Private inner ->
+            head "Private"
+            decl (d + 1) ln inner
+        | Syntax.Open m -> head ("Open " + m)
+        | Syntax.ModuleHeader m -> head ("ModuleHeader " + m)
+        | Syntax.NestedModule(n, ds) ->
+            head ("NestedModule " + n)
+            for l, m in ds do decl (d + 1) l m
+        | Syntax.Impl(tr, h, others, ds) ->
+            head ("Impl " + tr + " " + ty h + (others |> List.map (fun t -> " " + ty t) |> String.concat ""))
+            defs ds
+        | Syntax.ImportC h -> head ("ImportC " + quote h)
+        | Syntax.Const(n, v) ->
+            head ("Const " + n)
+            expr (d + 1) v
+    for ln, x in decls do decl 0 ln x
+    List.ofSeq out
+
 /// An error, or a warning with its kind after the message (what [<NoWarn>] takes), then its notes.
 let private printDiagnostic (d: Core.Diagnostic) =
     match d.severity with
@@ -522,6 +798,22 @@ let private run (argv: string[]) =
             printfn "%s" (shown t)
 
         0
+    | [ "ast"; f ] ->
+        // zs ast file: the AST as compiler/'s parser prints it, for comparing the two
+        try
+            let decls = Syntax.parse (Syntax.lex ((File.ReadAllText f).Replace("\r\n", "\n")))
+
+            for l in astDump decls do
+                printfn "%s" l
+
+            0
+        with
+        | CompileError(l, m) ->
+            printError f l 0 m
+            1
+        | CompileErrorPos(l, c, m) ->
+            printError f l c m
+            1
     | "parse-time" :: files ->
         // zs parse-time files…: the milliseconds lexing and parsing them takes (the best of ten
         // runs after one for the JIT), against compiler/'s parser (0020's criterion 2)

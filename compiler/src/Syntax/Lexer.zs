@@ -72,6 +72,12 @@ let private isDigitIn (radix: int) (c: int) =
   if radix = 16 then isDigit c || (c >= 97 && c <= 102) || (c >= 65 && c <= 70)
   else c >= 48 && c < 48 + radix
 
+// a character beyond ASCII at i, between quotes: 'é'
+let private charLiteral (s: string) (i: int) (stop: int) =
+  let c = at s i
+  let width = if c >= 240 then 4 else if c >= 224 then 3 else 2
+  c >= 192 && i + 2 < stop && at s (i + width) = 39
+
 /// The tokens of a source, ending in Eof.
 let lex (src: Source.Source) : array<Token> =
   let s = src.text
@@ -88,7 +94,8 @@ let lex (src: Source.Source) : array<Token> =
   let mutable first = true
   let lines = Array.length src.lines
 
-  let report (at: int) (length: int) (message: string) = Report.diagnostic (error { file = src.file; offset = at; length = length } message)
+  let report (at: int) (length: int) (message: string) =
+    Report.diagnostic (error { file = src.file; offset = at; length = length } message)
 
   for li in 0 .. lines - 1 do
     let ls = src.lines.[li]
@@ -214,7 +221,7 @@ let lex (src: Source.Source) : array<Token> =
           Buffer.push { kind = Float; offset = start; length = i - start } toks
         else
           Buffer.push { kind = Int; offset = start; length = i - start } toks
-      else if c = 39 && i + 2 < le && (at s (i + 1) = 92 || at s (i + 2) = 39 || (at s (i + 1) >= 192 && i + 3 < le && at s (i + 1 + (if at s (i + 1) >= 240 then 4 else if at s (i + 1) >= 224 then 3 else 2)) = 39)) then
+      else if c = 39 && i + 2 < le && (at s (i + 1) = 92 || at s (i + 2) = 39 || charLiteral s (i + 1) le) then
         // a character literal: 'a', '\n', '\u{e9}', 'é' (a type variable 'a has no closing quote)
         i <- i + 1
         if at s i = 92 then
@@ -253,7 +260,8 @@ let lex (src: Source.Source) : array<Token> =
           i <- i + 1
           while i < le && isIdent (at s i) do
             i <- i + 1
-        Buffer.push { kind = keyword (String.sub s start (i - start)); offset = start; length = i - start } toks
+        let word = String.sub s start (i - start)
+        Buffer.push { kind = keyword word; offset = start; length = i - start } toks
       else if c = 34 || (c = 36 && at s (i + 1) = 34) then
         let interp = c = 36
         let triple = not interp && at s (i + 1) = 34 && at s (i + 2) = 34
@@ -316,7 +324,7 @@ let lex (src: Source.Source) : array<Token> =
             let signed = String.endsWith "-" run || String.endsWith "+" run
             let len =
               if (String.length run > 1 && signed && Option.isSome (symbol (String.sub run 0 (String.length run - 1)))
-                  && stop < le && (isIdent (at s stop) || at s stop = 40)) then
+                && stop < le && (isIdent (at s stop) || at s stop = 40)) then
                 String.length run - 1
               else
                 String.length run
@@ -354,7 +362,8 @@ let lex (src: Source.Source) : array<Token> =
             | RBrack
             | BarRBrack -> true
             | _ -> false
-        let negates = kind = Minus && i > ls && at s (i - 1) = 32 && i + 1 < le && at s (i + 1) <> 32 && afterOperand
+        let negates =
+          kind = Minus && i > ls && at s (i - 1) = 32 && i + 1 < le && at s (i + 1) <> 32 && afterOperand
 
         match kind with
         | LParen

@@ -9,7 +9,11 @@ let private lines (src: Syntax.Source.Source) (word: string) (offset: int) (span
   let stop = if line < Array.length src.lines then src.lines.[line] - 1 else String.length src.text
   let gutter = $"{line}"
   // a span of length -1 is a line's (the F# compiler's errors with no column)
-  let head = if span < 0 then $"{src.path}:{line}: {word}: {message}" else $"{src.path}:{line}:{col}: {word}: {message}"
+  let head =
+    if span < 0 then
+      $"{src.path}:{line}: {word}: {message}"
+    else
+      $"{src.path}:{line}:{col}: {word}: {message}"
   [ head
     $" {gutter} | {String.sub src.text from (stop - from)}"
     $" {String.repeat (String.length gutter) " "} | {String.repeat (col - 1) " "}^" ]
@@ -20,7 +24,8 @@ let render (sourceOf: int -> Syntax.Source.Source) (d: Diagnostic) : list<string
     match d.severity with
     | Err -> lines (sourceOf d.at.file) "error" d.at.offset d.at.length d.message
     | Warn -> lines (sourceOf d.at.file) "warning" d.at.offset d.at.length $"{d.message} [{d.name}]"
-  List.concat (first :: List.map (fun (n: Note) -> lines (sourceOf n.at.file) "note" n.at.offset n.at.length n.text) d.notes)
+  List.concat (first :: List.map (fun (n: Note) ->
+      lines (sourceOf n.at.file) "note" n.at.offset n.at.length n.text) d.notes)
 
 /// Prints diagnostics on standard error, in order.
 let print (sourceOf: int -> Syntax.Source.Source) (ds: array<Diagnostic>) : unit =

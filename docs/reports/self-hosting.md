@@ -5,10 +5,10 @@ written in Z#, within 1.5× of the F# compiler? It's measured on code the compil
 `compiler/src/Syntax/Lexer.zs` and `Parser.zs`, on 0019's tree, against the F# compiler's
 lexer and parser over the same files.
 
-**Answer:** yes. The Z# lexer and parser take 0.6× the F# compiler's time on the compiler's own
-sources and 1.03× over every `.zs` file in the repository. They make the same tokens and the
-same tree for all 296 files (`compiler/tests/lexer.sh`, `parser.sh`), and the same first error
-for the files that have one.
+**Answer:** yes. The Z# lexer and parser, the AST included, take 0.6–0.9× the F# compiler's
+time on the compiler's own sources and 1.0× over every `.zs` file in the repository. They make
+the same tokens, the same tree and the same AST for all 303 files (`compiler/tests/lexer.sh`,
+`parser.sh`, `ast.sh`), and the same first error for the files that have one.
 - **First run:** 1.5× and 2.6×. The parser showed the F# compiler three inefficiencies, all
   fixed there (below), and with them the parser's state, a record of 22 fields passed to every
   function, stopped being copied field by field on each call.
@@ -23,21 +23,24 @@ for the files that have one.
 | Z# | `compiler/` built by the F# compiler (`zs build`: default optimization, ThinLTO with the runtime) |
 | F# | the F# compiler's `Release` build on .NET 10, after one run for the JIT |
 | What's timed | lexing and parsing, in process, after the files are read: the best of ten runs (`zs parse-time <files>` in both) |
-| Files | `compiler/src` (8 files, 3,343 lines), and every `.zs` file under `tests`, `lib`, `examples`, `packages` and `compiler` (296 files, 14,036 lines; the F# parser takes the 289 without a parse error, since it stops at the first) |
+| Files | `compiler/src` (20 files, 6,601 lines), and every `.zs` file under `tests`, `lib`, `examples`, `packages` and `compiler` that the F# parser takes (303 files, 17,289 lines; it stops at a file's first error) |
 
 **What each makes:** the F# compiler's lexer and parser make tokens with their trivia, the AST,
 the lossless tree (0019's F2) and the positions table. The Z# ones make tokens (a kind, an offset
-and a length) and the same lossless tree as a few arrays indexed by node ids; the AST is a view
-of the tree, made later. Both parse each interpolated string's holes, for their errors.
+and a length), the same lossless tree as a few arrays indexed by node ids, and the AST in the F#
+compiler's shapes, its places token indices into the tree. Both parse each interpolated string's
+holes, for their errors.
 
 ## Results
 
 | Files | F# | Z# | Z# / F# |
 |---|---|---|---|
-| `compiler/src`, 3,343 lines | 22–27 ms | 14.2 ms | 0.55–0.65 |
-| the repository, 14,036 lines | 71 ms | 73 ms | 1.03 |
-| first run, `compiler/src` | | 37.6 ms | 1.5 |
-| first run, the repository | | 187 ms | 2.6 |
+| `compiler/src`, 6,601 lines | 47–69 ms | 42–43 ms | 0.6–0.9 |
+| the repository, 17,289 lines | 115–121 ms | 117–121 ms | 1.0 |
+| first run (the tree only), `compiler/src` | | | 1.5 |
+| first run (the tree only), the repository | | | 2.6 |
+
+With the tree only (the parser before it made the AST), the figures were 0.55–0.65 and 1.03.
 
 ## What the first run found
 

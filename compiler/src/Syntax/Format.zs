@@ -184,7 +184,8 @@ let private layout (text: string) (toks: array<Token>) : string =
         // a closer lines up with its opener's line, unless a block took its level
         let top = Buffer.length openLines - 1
         let closesOwnLevel = isCloser s && top >= 0 && not took.[top]
-        levels.[line] <- depth + Buffer.length openLines - absorbed - (if closesOwnLevel then 1 else 0)
+        let own = if closesOwnLevel then 1 else 0
+        levels.[line] <- depth + Buffer.length openLines - absorbed - own
         firsts.[line] <- i
       lasts.[line] <- i
       lastLine <- line
@@ -207,7 +208,8 @@ let private layout (text: string) (toks: array<Token>) : string =
     let p = symText toks.[prev].kind laid.texts.[prev]
     let c = symText toks.[cur].kind laid.texts.[cur]
     if unaryMinus then ""
-    else if tight || asWritten p || asWritten c || Lexer.isPrefixOp p then (if laid.adjs.[cur] then "" else " ")
+    else if tight || asWritten p || asWritten c || Lexer.isPrefixOp p then
+      (if laid.adjs.[cur] then "" else " ")
     else if isOpener p && isCloser c then ""
     else if p = "[<" || c = ">]" then ""
     else if isOpener p || isCloser c then " "
@@ -291,13 +293,17 @@ let private shape (src: string) (t: Tree.Tree) : list<string> =
   go (Tree.root t)
   Array.toList (Buffer.toArray acc)
 
+// a child's token, when it's a token with text (-1 otherwise)
+let private textToken (t: Tree.Tree) (c: int) : int =
+  if c < 0 && t.tokens.[-1 - c].length > 0 then -1 - c else -1
+
 // the first and the last token with text in a node (-1 for none)
 let rec private firstWritten (t: Tree.Tree) (n: int) : int =
   let mutable found = -1
   let mutable i = 0
   while found < 0 && i < t.counts.[n] do
     let c = Tree.child t n i
-    found <- (if c >= 0 then firstWritten t c else if t.tokens.[-1 - c].length > 0 then -1 - c else -1)
+    found <- if c >= 0 then firstWritten t c else textToken t c
     i <- i + 1
   found
 
@@ -306,7 +312,7 @@ let rec private lastWritten (t: Tree.Tree) (n: int) : int =
   let mutable i = t.counts.[n] - 1
   while found < 0 && i >= 0 do
     let c = Tree.child t n i
-    found <- (if c >= 0 then lastWritten t c else if t.tokens.[-1 - c].length > 0 then -1 - c else -1)
+    found <- if c >= 0 then lastWritten t c else textToken t c
     i <- i - 1
   found
 
@@ -324,13 +330,13 @@ let rec private breaks (src: string) (t: Tree.Tree) (n: int) : list<Break> * boo
   // the first written token of child k, and the last written token before child k
   let written (k: int) =
     let c = child k
-    if c >= 0 then firstWritten t c else if t.tokens.[-1 - c].length > 0 then -1 - c else -1
+    if c >= 0 then firstWritten t c else textToken t c
   let before (k: int) =
     let mutable found = -1
     let mutable j = k - 1
     while found < 0 && j >= 0 do
       let c = child j
-      found <- (if c >= 0 then lastWritten t c else if t.tokens.[-1 - c].length > 0 then -1 - c else -1)
+      found <- if c >= 0 then lastWritten t c else textToken t c
       j <- j - 1
     found
   let isTok (s: string) (k: int) =
@@ -344,7 +350,8 @@ let rec private breaks (src: string) (t: Tree.Tree) (n: int) : list<Break> * boo
     let w = written k
     if p >= 0 && w >= 0 then [ { from = p; next = w; deeper = deeper } ] else []
   let after (s: string) : list<Break> =
-    List.concat [ for k in 1 .. count - 1 do if isTok s (k - 1) && not (isLayout k) then yield atLevel true k ]
+    let after (k: int) = isTok s (k - 1) && not (isLayout k)
+    List.concat [ for k in 1 .. count - 1 do if after k then yield atLevel true k ]
   let isNode (kind: Tree.Kind) (k: int) =
     let c = child k
     c >= 0 && t.kinds.[c] = kind
@@ -360,36 +367,38 @@ let rec private breaks (src: string) (t: Tree.Tree) (n: int) : list<Break> * boo
     // breaks with this one
     let found =
       [ for k in 1 .. count - 1 do
-          if isTok "then" (k - 1) then
-            yield atLevel true k
-          else if isTok "else" k then
-            yield atLevel false k
-          else if isTok "else" (k - 1) then
-            if isNode Tree.If k then yield fst (breaks src t (child k)) else yield atLevel true k ]
+        if isTok "then" (k - 1) then
+          yield atLevel true k
+        else if isTok "else" k then
+          yield atLevel false k
+        else if isTok "else" (k - 1) then
+          if isNode Tree.If k then yield fst (breaks src t (child k)) else yield atLevel true k ]
     (List.concat found, true)
   | Tree.Infix ->
     // before a pipeline's |> or a custom operator: a line starting with one continues the line
     // before
     let found =
       [ for k in 1 .. count - 1 do
-          let c = child k
-          if c < 0 && (t.tokens.[-1 - c].kind = PipeRight || (t.tokens.[-1 - c].kind = Op && Lexer.isInfixOp (Token.text src t.tokens.[-1 - c]))) then
-            yield atLevel false k ]
+        let c = child k
+        if c < 0 && (t.tokens.[-1 - c].kind = PipeRight || (t.tokens.[-1 - c].kind = Op && Lexer.isInfixOp (Token.text src t.tokens.[-1 - c]))) then
+          yield atLevel false k ]
     (List.concat found, true)
   | Tree.Match
   | Tree.Function
-  | Tree.Handle -> (List.concat [ for k in 1 .. count - 1 do if isNode Tree.Clause k then yield atLevel false k ], true)
+  | Tree.Handle ->
+    (List.concat [ for k in 1 .. count - 1 do if isNode Tree.Clause k then yield atLevel false k ],
+      true)
   | Tree.Tuple -> (after ",", false)
   // a line break inside [ ] and { } is a `;`; inside [| |] it's only space, so the `;` stays
   | Tree.List
   | Tree.Record ->
     let found =
       [ for k in 2 .. count - 1 do
-          if isTok ";" (k - 1) && not (isLayout k) then
-            let p = before (k - 1)
-            let w = written k
-            if p >= 0 && w >= 0 then
-              yield { from = p; next = w; deeper = true } ]
+        if isTok ";" (k - 1) && not (isLayout k) then
+          let p = before (k - 1)
+          let w = written k
+          if p >= 0 && w >= 0 then
+            yield { from = p; next = w; deeper = true } ]
     (found, false)
   | Tree.Array -> (after ";", false)
   | _ -> ([], true)
@@ -400,7 +409,7 @@ let rec private breaks (src: string) (t: Tree.Tree) (n: int) : list<Break> * boo
 let private parsed (text: string) : Source.Source * array<Token> * Tree.Tree * int =
   let src = Source.make 0 "" text
   let (toks, ld) = collect (fun () -> Lexer.lex src)
-  let (tree, pd) = collect (fun () -> Parser.parse src toks)
+  let ((tree, _), pd) = collect (fun () -> Parser.parse src toks)
   (src, toks, tree, Array.length ld + Array.length pd)
 
 // the lines of a text, as String.split gives them
@@ -429,7 +438,8 @@ let private reflow (start: string) (expected: list<string>) : string =
       let li = Source.lineOf src tk.offset
       let start = src.lines.[li]
       lineOf.[i] <- li + 1
-      lastOf.[i] <- (if tk.length > 0 then Source.lineOf src (tk.offset + tk.length - 1) + 1 else li + 1)
+      let last = if tk.length > 0 then Source.lineOf src (tk.offset + tk.length - 1) else li
+      lastOf.[i] <- last + 1
       colOf.[i] <- charsIn s start tk.offset + 1
       endOf.[i] <- colOf.[i] - 1 + charsIn s tk.offset (tk.offset + tk.length)
       adjOf.[i] <- tk.offset > start && String.byte s (tk.offset - 1) <> u8 32
@@ -517,7 +527,10 @@ let private reflow (start: string) (expected: list<string>) : string =
             let l = laidLines.[k]
             if String.charCount l > width && not (String.startsWith "//" (String.trimStart l)) then
               fits <- false
-        if errors = 0 && shape laid after = expected && (structural || fits) then Some laid else None
+        if errors = 0 && shape laid after = expected && (structural || fits) then
+          Some laid
+        else
+          None
     let mutable next = None
     let mutable l = 1
     while Option.isNone next && l <= nLines do
@@ -563,7 +576,7 @@ let private formatParsed (text: string) (toks: array<Token>) (tree: Tree.Tree) :
 let format (file: int) (path: string) (text: string) : result<string, string> / Report =
   let src = Source.make file path text
   let (toks, ld) = collect (fun () -> Lexer.lex src)
-  let (tree, pd) = collect (fun () -> Parser.parse src toks)
+  let ((tree, _), pd) = collect (fun () -> Parser.parse src toks)
   if Array.length ld + Array.length pd > 0 then
     for d in Array.append ld pd do
       Report.diagnostic d

@@ -9,7 +9,8 @@ let usage () =
   2
 
 // a diagnostic as the terminal shows it: where, what, and the line with a caret under the place
-let printDiagnostic (src: Source.Source) (d: Diagnostic.Diagnostic) = Render.print (fun _ -> src) [| d |]
+let printDiagnostic (src: Source.Source) (d: Diagnostic.Diagnostic) =
+  Render.print (fun _ -> src) [| d |]
 
 // zs check: a file's errors (its syntax's, for now), as zs build reports them
 let check (path: string) : int =
@@ -92,7 +93,7 @@ let syntax (command: string) (path: string) : int =
           println (Token.display src.text t)
         lexed
       else
-        let (tree, parsed) = Report.collect (fun () -> Parser.parse src toks)
+        let ((tree, _), parsed) = Report.collect (fun () -> Parser.parse src toks)
         Tree.print src.text tree
         Array.append lexed parsed
     for d in diags do
@@ -130,4 +131,18 @@ let main () =
   | "parse-time" :: paths -> parseTime paths
   | "fmt" :: args -> fmt args
   | [ "check"; path ] -> check path
+  | [ "ast"; path ] ->
+    match File.readAllText path with
+    | Error e ->
+      eprintln e
+      1
+    | Ok text ->
+      let src = Source.make 0 path text
+      let (toks, lexed) = Report.collect (fun () -> Lexer.lex src)
+      let ((tree, decls), parsed) = Report.collect (fun () -> Parser.parse src toks)
+      for l in AstDump.dump src tree.tokens decls do
+        println l
+      let diags = Array.append lexed parsed
+      Render.print (fun _ -> src) diags
+      if Array.length diags = 0 then 0 else 1
   | _ -> usage ()

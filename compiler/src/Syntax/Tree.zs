@@ -88,6 +88,8 @@ type Tree =
     tokens: array<Token.Token>
     /// How many of them the lexer made.
     lexed: int
+    /// The missing ones' indices, in order.
+    missing: array<int>
     /// Per node: its kind.
     kinds: array<Kind>
     /// Per node: where its children start in `children`, and how many it has.
@@ -115,7 +117,7 @@ let tokenIndex (c: int) : int = -1 - c
 let child (t: Tree) (n: int) (i: int) : int = t.children.[t.firsts.[n] + i]
 
 /// Whether a token is a missing one: expected there and not found.
-let isMissing (t: Tree) (i: int) : bool = i >= t.lexed && t.tokens.[i].length = 0
+let isMissing (t: Tree) (i: int) : bool = i >= t.lexed && Array.contains i t.missing
 
 /// The index of the token whose text holds an offset, or the last before it (-1 for none).
 let tokenAt (t: Tree) (offset: int) : int =
@@ -150,5 +152,8 @@ let print (src: string) (t: Tree) : unit =
     println (indent + name t.kinds.[n])
     for i in 0 .. t.counts.[n] - 1 do
       let c = child t n i
-      if c < 0 then println (indent + "  " + Token.display src t.tokens.[-1 - c]) else go (indent + "  ") c
+      if c < 0 then
+        println (indent + "  " + Token.display src t.tokens.[-1 - c])
+      else
+        go (indent + "  ") c
   go "" (root t)

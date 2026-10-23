@@ -23,7 +23,8 @@ type Diagnostic =
     notes: list<Note> }
 
 /// An error at a span.
-let error (at: Span) (message: string) : Diagnostic = { severity = Err; name = ""; at = at; message = message; notes = [] }
+let error (at: Span) (message: string) : Diagnostic =
+  { severity = Err; name = ""; at = at; message = message; notes = [] }
 
 /// A warning of a kind at a span.
 let warning (name: string) (at: Span) (message: string) : Diagnostic =
