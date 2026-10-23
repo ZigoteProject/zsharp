@@ -177,7 +177,8 @@ module.exports = grammar({
     member_parameter: $ => seq(optional('?'), field('name', $.identifier), optional($.type_annotation), optional(seq('=', $._expression))),
 
     trait_declaration: $ => seq(
-      'trait', field('name', $.identifier), '<', $.type_variable, '>', '=',
+      // trait Iter<'c, 'a>: the first parameter dispatches, the impl gives the others
+      'trait', field('name', $.identifier), '<', sep1($.type_variable, ','), '>', '=',
       $._indent, sep1($.abstract_member, $._newline), $._dedent,
     ),
     abstract_member: $ => seq('abstract', field('name', $.identifier), ':', $._type),
@@ -188,7 +189,7 @@ module.exports = grammar({
       choice($.abstract_member, seq($._indent, sep1($.abstract_member, $._newline), $._dedent)),
     ),
 
-    impl_declaration: $ => seq('impl', field('trait', $.identifier), '<', $._type, '>', '=', $._definitions),
+    impl_declaration: $ => seq('impl', field('trait', $.identifier), '<', sep1($._type, ','), '>', '=', $._definitions),
     // derive Show = let show … ; or a group, derive Json = ToJson, FromJson
     derive_declaration: $ => seq('derive', field('name', $.identifier), '=', choice($._definitions, sep1(field('member', $.identifier), ','))),
     _definitions: $ => seq($._indent, sep1($.definition, $._newline), $._dedent),

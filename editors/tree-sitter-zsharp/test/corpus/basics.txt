@@ -114,3 +114,37 @@ let s = $"{name,-10} {ratio:F2} {n,8:N0}"
       (interpolation (identifier) format: (format_specifier))
       (interpolated_content)
       (interpolation (identifier) width: (format_width) format: (format_specifier)))))
+
+==================
+a trait with two parameters and its impl
+==================
+
+trait Iter<'c, 'a> =
+  abstract forEach : 'c -> ('a -> bool) -> bool
+
+impl Iter<Box<'a>, 'a> =
+  let forEach b f = f b.item
+
+---
+
+(source_file
+  (trait_declaration
+    name: (identifier)
+    (type_variable)
+    (type_variable)
+    (abstract_member
+      name: (identifier)
+      (function_type
+        (type_variable)
+        (function_type
+          (function_type (type_variable) (type_name (identifier)))
+          (type_name (identifier))))))
+  (impl_declaration
+    trait: (identifier)
+    (generic_type (type_name (identifier)) (type_variable))
+    (type_variable)
+    (definition
+      name: (identifier)
+      (identifier)
+      (identifier)
+      body: (application function: (identifier) argument: (member_access (identifier) member: (identifier))))))
