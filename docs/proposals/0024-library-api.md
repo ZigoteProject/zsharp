@@ -187,6 +187,7 @@ let line (price: Money) = $"{price,10:F}"     // "     12.50"
 | Name | Signature | Layer | When |
 |---|---|---|---|
 | `Endpoint` | `{ address: string; port: int }`, the address as text in dotted or colon form | Std | after 11 |
+| `Unix.listen`, `accept`, `connect` | `listen : string -> result<Listener, string>` (a path; a stale socket file is removed first), `accept : Listener -> Task<result<Socket, string>>`, `connect : string -> Task<result<Socket, string>>`: `Tcp`'s functions over a path, giving `Tcp`'s socket type, so reads and writes are `Tcp`'s, on the event loop; the build server's socket ([0020](0020-self-hosting.md), decision 76) | Std | before 11 |
 | `Udp.bind`, `sendTo`, `receiveFrom` | `bind : string -> int -> result<UdpSocket, string>`; `sendTo : UdpSocket -> Endpoint -> span<u8> -> Task<result<unit, string>>`; `receiveFrom : UdpSocket -> Buffer<u8> -> Task<result<int * Endpoint, string>>`; non-blocking sockets on the event loop, as `Tcp` | Std | after 11 |
 | `Dns.resolve` | `string -> Task<result<list<string>, string>>`, `getaddrinfo` under `Task.blocking`, so the loop never waits on a resolver; `Tcp.connect` moves onto it | Std | after 11 |
 | TLS, HTTP | packages (track K: `tls` over mbedTLS, `http` on `Net.Tcp` and llhttp) | | |
@@ -206,7 +207,7 @@ let line (price: Money) = $"{price,10:F}"     // "     12.50"
 
 ### Order of implementation
 
-1. **Phase 11's list** (before phase 11, in the order the compiler meets it): `Int.parse`, `Float.parse`; format specifiers and widths; `HashSet`, `Buffer.push/pop/clear/truncate`; `padLeft`, `padRight`, `trimStart`, `trimEnd`, `splitLines`; `DateTime` and `utcNow`; readers and writers, `readAllBytes`, `move`, `modifiedAt`, temporary files, `getFullPath`, `getRelativePath`; `Process.start`.
+1. **Phase 11's list** (before phase 11, in the order the compiler meets it): `Int.parse`, `Float.parse`; format specifiers and widths; `HashSet`, `Buffer.push/pop/clear/truncate`; `padLeft`, `padRight`, `trimStart`, `trimEnd`, `splitLines`; `DateTime` and `utcNow`; readers and writers, `readAllBytes`, `move`, `modifiedAt`, temporary files, `getFullPath`, `getRelativePath`; `Process.start`; `Unix.listen`, `accept` and `connect` for the build server.
 2. **After phase 11,** in track S's item order: the F# collection functions, `Queue`, `Stack`, `PriorityQueue`; `Math`, the integer operations, `Random`, `Bytes`; `Utf8` and the `StringBuilder` measurement; `Duration`, ISO 8601 and `DateTime`'s fields; `Udp` and `Dns`. The Advent of Code and `examples/` exit tests close it.
 3. **Before 1.0:** the freeze review, then `[<Deprecated>]` once [0021](0021-warnings.md)'s warnings exist.
 

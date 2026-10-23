@@ -28,11 +28,12 @@ proposal describes a change to it, and [ROADMAP.md](../../ROADMAP.md) says when 
 | 0017 | [Iteration](0017-iteration.md) | Approved in principle, before phase 11 | the third design review |
 | 0018 | [Packages](0018-packages.md) | Approved in principle; the index is a draft | track K's plan |
 | 0019 | [The lossless syntax tree](0019-syntax-tree.md) | Approved in principle | decision 33, track E's plan |
-| 0020 | [The compiler in Z#](0020-self-hosting.md) | Approved in principle: go | the third design review |
+| 0020 | [The compiler in Z#](0020-self-hosting.md) | Approved in principle: go; questions settled | the third design review; the phase 11 review |
 | 0021 | [Warnings](0021-warnings.md) | Approved in principle | phase 12's deferred features |
 | 0022 | [Targets: macOS and Windows](0022-targets-macos-windows.md) | Approved in principle | decision 29, track T's plan |
 | 0023 | [JSON in Core](0023-json-in-core.md) | Approved in principle | track S's plan |
 | 0024 | [The library's API](0024-library-api.md) | Approved in principle | track S's plan |
+| 0025 | [Reading effect rows](0025-reading-effects.md) | Draft | a design review before phase 11's step 3 |
 
 **Status:**
 - **Draft:** written, with its open questions listed.

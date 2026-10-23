@@ -1,0 +1,296 @@
+# The Z# compiler: architecture
+
+The compiler written in Z# (phase 11, [proposal 0020](../docs/proposals/0020-self-hosting.md),
+decisions 65 and 73–79 in [DESIGN §13](../DESIGN.md#13-decisions)). This document is the map of
+`compiler/`: its modules, what flows between them, where each piece of work runs, the passes and
+what each optimizes, and how the compiler keeps itself fast. The language it compiles is
+[DESIGN.md](../DESIGN.md); when it is built, [ROADMAP.md](../ROADMAP.md#phase-11-self-hosting).
+Line counts are estimates from the F# files they replace (`wc -l src/*.fs`: 23,700 at `v0.5`).
+
+## 1. Shape
+
+```
+                 driving thread (the CLI's main, or a server's loop: owns the Session)
+ .zs ──► Lexer ──► Parser ──► Tree ──► Ast ──► Infer ──► Typed ──► Lower ──► Core (per module)
+  │  ▲   parsed in parallel (pool)     │        checked level by level (pool)    │
+  │  └── cache: an unchanged file isn't parsed; an unchanged module isn't checked (0007)
+  │                                    └── zs lsp / zs mcp stop here: hover, completion, …
+  │
+  │  per function, on the pool, a context per job, the function's Core moved into the job:
+  └──► Mono ──► Inline ──► Simplify ──► Evidence ──► Decide ──► Lift ──► Rc ──► [Check after each]
+                                                                          │
+       per module, on the pool:  Codegen ──► LLVM IR (textual, a Writer)  ◄┘
+       as tasks on the loop:     clang per module (Task.all) ──► ThinLTO link ──► binary
+```
+
+- **One binary, `zs`.** `Main` makes an `Options` record from the flags and a `Session`, and calls one entry point: `Build.run`, `Check.run`, `Fmt.run`, `Lsp.serve`, `Mcp.serve`, `Server.serve`, `Test.run`, `Doc.run`, `Project.fetch`/`update`.
+- **Three ways work runs** (decisions 75 and 76):
+  - **The driving thread** owns the `Session` (not Share) and merges every result into it.
+  - **The pool** runs the pure work: parsing per file, checking per module (level by level), the passes per function, code generation per module. A job is a `share<unit -> 'a>` with an empty row: it reads Share data (the environment, `Options`), owns what moved into it, handles its own effects, and returns a value.
+  - **Tasks** on the driving thread's loop run the waits: the LSP and MCP framing, the build server's socket, the processes a build runs.
+- **Errors are values.** A pass reports through the `Report` effect and returns its diagnostics at its boundary (decision 74); the parser recovers into error nodes and the checker into an error type, so a file shows every error. `Throw<Mismatch>` is unification's one non-local exit, caught by the expression under check or by a trial (decision 73). IO returns `result`. A panic is a compiler bug and names the pass.
+- **Nothing global.** No module-level `mutable`; the F# compiler's twenty become fields of `Options`, `Session` or a job's context, and its two file-order hooks (`Inline.kept`, `Typer.userImpl`) parameters.
+
+## 2. Modules
+
+Z# modules form a DAG, so the directories below are in dependency order: a module uses only
+what is above it. About 20,000 lines in all.
+
+### 2.1 `Diag/`: diagnostics
+
+| Module | Lines | What it is |
+|---|---|---|
+| `Diagnostic` | 100 | [0021](../docs/proposals/0021-warnings.md)'s record: severity, name, span, message, notes. `Span` is a file index, an offset and a length. |
+| `Report` | 50 | the effect (`Report.diagnostic : Diagnostic -> unit`) and `collect : (unit -> 'a / Report) -> 'a * array<Diagnostic>`, the handler every job and task boundary wraps its work in. |
+| `Render` | 200 | text for the terminal (file, line and column from a `Source`'s line index), [0023](../docs/proposals/0023-json-in-core.md)'s `Json` for LSP and MCP; sorts by file and position. |
+
+### 2.2 `Syntax/`: text to tree
+
+| Module | Lines | What it is |
+|---|---|---|
+| `Source` | 150 | a file's text as `array<u8>`, its index in the build, and its line index (offset → line and column), built once. |
+| `Token` | 100 | the token kinds; a token is a kind, an offset and a length into the source. |
+| `Lexer` | 450 | `lex : Source -> array<Token>`, the offside rule included (indent and dedent tokens), over a `span<u8>`. Numbers through `Int.parse` and `Float.parse`. An array, not a `seq { }`: the parser looks ahead. |
+| `Tree` | 350 | [0019](../docs/proposals/0019-syntax-tree.md)'s lossless concrete tree: every token, comment and blank line, each node with its id (the file's index and its number in the file) and span; `Tree.children`, `parent`, `tokenAt`. |
+| `Parser` | 1,500 | `parse : Source -> array<Token> -> Tree / Report`: recursive descent on the stack, missing tokens and error nodes as recovery, each a `Report.diagnostic`. Runs under `Arena.with`: nothing outside the tree references a node (ids leave it), so the tree dies whole, in one free. |
+| `Ast` | 500 | the typed view of the tree: `Expr`, `Pattern`, `Decl`, `TypeExpr`, each case carrying its node id, built from a tree on demand (`Ast.ofTree`). An error node is `Expr.Error`. |
+| `Format` | 400 | `zs fmt` on the tree: reflow to 100 columns, comments kept, ranges, `--stdin`. Replaces `Format.fs`'s token pass. |
+
+### 2.3 `Types/`: types, unification, traits
+
+| Module | Lines | What it is |
+|---|---|---|
+| `Ty` | 300 | types: variables by number, constructors, functions with effect rows, tuples, records and unions by name, units of measure, kinds. `Ty.show` with rows. |
+| `Vars` | 200 | the context's union-find over variable numbers (`Buffer<Binding>`), levels for generalization, and the trail: `mark`, `undo`. |
+| `Rows` | 250 | effect rows with scoped labels: `unifyRow`, open and closed rows, the empty-row check (`main`, a task body, a `share<F>`, a callback, a trait method, an export). |
+| `Units` | 200 | units of measure as a free abelian group: normalize, solve, the rigid-variable rule. |
+| `Unify` | 350 | `unify : Cx -> Ty -> Ty -> unit / Throw<Mismatch>`, occurs check, rows and units through the modules above. 13 `Mismatch` sites in `Typer.fs` become throws. |
+| `Traits` | 450 | the impl table, trait resolution and coherence, derives' automatic impls, `attempt` for trials (an impl, an overload): the trail undone and the trial's reports dropped on a miss. |
+
+### 2.4 `Infer/`: checking
+
+| Module | Lines | What it is |
+|---|---|---|
+| `Cx` | 200 | the checker's context: `Vars`, the impl table, the module's interface so far, the error type, fresh ids. A record of tables; one per module check, owned by its job. |
+| `Scope` | 100 | names in scope as a persistent `Map`, taken by value into trials and closures. |
+| `Typed` | 200 | the typed tree as arrays indexed by node number (ids are dense per file): a type per node, the resolved impl per trait call, the resolved name per reference with its definition's span (so navigation into a module that isn't open needs no tree); what `Lower` and `Lsp` read. Hover is `Ty.show` of a node's type. Kept in the module's checked result. |
+| `Patterns` | 350 | pattern checking, exhaustiveness and redundancy (`Match.fs`), active patterns. |
+| `Exprs` | 1,200 | expressions: literals, applications, lambdas with their parameter types from the call, `let`, `match`, records with defaults, members with named and optional arguments, operators through the operator traits, interpolation, `?`. |
+| `Builders` | 300 | computation expressions (`option`, `result`, `task`, `seq`, a program's own) and `for` through [0017](../docs/proposals/0017-iteration.md)'s trait. |
+| `Effects` | 250 | `effect` declarations, `handle … with`, clause types, the resumption's type, operations as references. |
+| `Decls` | 700 | `let`, `let rec`, `type`, `module`, `open`, `trait`, `impl`, `extern`, attributes; generalization; the one-error-per-declaration rule is gone: a declaration with an error type still gets its type for the rest of the file. |
+| `Module` | 250 | `check : Options -> Env -> Source -> Tree -> Checked / Report`: a module's interface and its `Typed`, from the environment of the modules before it. The unit of parallel checking. |
+
+### 2.5 `Lower/`: typed tree to Core
+
+| Module | Lines | What it is |
+|---|---|---|
+| `Lower` | 800 | `Typed` to `Core` per declaration: trait calls to their impls' functions, members to functions, builders to their `bind`s, `?` to a match, interpolation to pieces. `zs lsp` never runs it. |
+| `Derive` | 400 | the derives (`Show`, `Eq`, `Ord`, `Hash`, `Json`, `Binary`, the operator traits) by `Shape` ([DESIGN §3.1](../DESIGN.md#31-derive)), generating Core, hygienic. |
+| `Exports` | 150 | `[<Export>]` signatures and the C header `--lib` writes. |
+
+### 2.6 `Core/`: the intermediate language
+
+| Module | Lines | What it is |
+|---|---|---|
+| `Core` | 500 | `Expr = { kind; ty }` with `Kind`: variables, literals, `let`, applications (known function or closure), lambdas, constructors, `match` on patterns (before `Decide`) or on tags with join points (after), fields, primitives, `handle` and `perform` (before `Evidence`), reference-count operations (after `Rc`). `FunDef`, `TypeInfo`, `UnionRep`, `Program`. |
+| `Fresh` | 50 | a job's counter under its function's name: `fresh cx "x"` is `x.42` in `Parser.expr` whatever thread runs it (decision 77). |
+| `Print` | 200 | `ZS_DUMP_CORE`'s text, and the per-function hash's input. |
+| `Hash` | 100 | the content hash of a function's Core and of a module's IR (`zsharp/xxhash`): names, cache keys, the byte-identical test. |
+| `Check` | 450 | the IR checks between passes in test builds (`--check-ir`): every expression's type matches its use, every owned variable consumed once on every path after `Rc`, no type variable after `Mono`, every join point reached with the same types. A failure is an internal error naming the pass, the function and the node. |
+
+### 2.7 `Opt/`: the passes
+
+| Module | Lines | What it is |
+|---|---|---|
+| `Cx` | 100 | a job's context: `Fresh`'s counter, memo tables keyed by node id, lifted functions, sizes. Returned with the job's result; never thread-local. |
+| `Mono` | 900 | `plan`: the set of instances the program needs, by reachability from its roots over signatures, on the driving thread; `instantiate`: one instance per job, a generic or effect-polymorphic function at the program's types and rows, trait dispatch resolved, units erased, and fusion of list and array pipelines. |
+| `Share` | 200 | after `Mono.plan`, on the driving thread, when every call has its target: follows each `share<F>` to the top-level values it reaches; one that isn't Share is an error. Marks the Share ones for startup. |
+| `Inline` | 250 | uncurrying; inlining of small functions, with the `keep` predicate a parameter. |
+| `Simplify` | 700 | known constructors, case of case, lambdas applied in place, `let` floating, dead `let`s, constant folding of what's safe. |
+| `Evidence` | 900 | effect handlers to evidence passing with yield bubbling: frames per effect, clauses by path (in place when a clause resumes last or stops), loops with yielding calls through a driver, one-shot resumptions. Pure code untouched. |
+| `Decide` | 600 | decision trees for matches, with join points; `ZS_NO_DECIDE=1` compiles clause by clause for comparison. |
+| `Lift` | 200 | closure conversion and lambda lifting; a closure's description (drop function, arity, full entry). |
+| `Rc` | 1,000 | Perceus: ownership, borrow inference per parameter (across modules through the ABI), moves out of mutables, drop specialization, reuse of dying cells, copy-on-write checks, re-matching; the crossing functions take their values owned (decision 75). |
+
+### 2.8 `Emit/`: Core to LLVM IR
+
+| Module | Lines | What it is |
+|---|---|---|
+| `Target` | 200 | triples, the word size, CPUs and features (`--cpu`, `[<Target>]`), what a microcontroller target changes (an `i32` word, the embedded runtime, no Std). |
+| `Layout` | 500 | representation: the one-word header, unions as plain values or cells, static cells for cases without fields, `option` of a pointer as the pointer, closures, strings, arrays, C structs by their ABI, SIMD alignment. |
+| `Llvm` | 300 | the IR writer: a `Writer` over a `Buffer<u8>`, with names, types and constants written as pieces of an interpolation (no string per instruction), and the module's final text hashed by `Core.Hash`. |
+| `Codegen` | 2,200 | functions to IR: calls and tail calls (`musttail`), matches as switches and phis, the reference-count operations against the inlined pool, bounds and overflow checks through intrinsics, `!range` and `inbounds nuw`, copy-on-write checks hoisted, loop versioning. Per module, on the pool. |
+| `Runtime` | 200 | the built-in functions under their full names (`Text.String.length`), their runtime symbols and signatures. |
+| `Simd` | 400 | vector types, lane operations, shuffles, masks, the target intrinsics, `[<Multiversion>]` dispatchers. |
+| `Debug` | 400 | DWARF: lines, locals, unions as variant parts, Z# names in symbols. |
+
+### 2.9 `CImport/`: C headers
+
+| Module | Lines | What it is |
+|---|---|---|
+| `Clang` | 250 | the translation unit and its cursors through `zsharp/libclang` (the one place `unsafe` is called from, inside the package). |
+| `CTypes` | 300 | C declarations to Z# types: structs as `[<CLayout>]` records, unions as `[<CLayout>]` unions, enums, function pointers as `fnptr`, typedefs. |
+| `Macros` | 100 | object-like macros through `clang_tokenize`: constants, no regular expressions. |
+
+### 2.10 `Build/`: from a project to a binary
+
+| Module | Lines | What it is |
+|---|---|---|
+| `Options` | 100 | the record (target, cpu, optimize, sanitizer, debug info, test build, profile, check-ir): immutable, Share, given to every job. |
+| `Session` | 150 | the overlay (unsaved editor text), the checked results in memory (0007's 512), the diagnostics per open document, the pool and loop handles. Not Share; lives on the driving thread. |
+| `Project` | 400 | `zs.toml` and `zs.lock` (parsed by hand, the subset), path and git dependencies, namespaced ([0018](../docs/proposals/0018-packages.md)), `fetch` and `update` through `git` as a process. |
+| `Graph` | 200 | the modules of a program, their dependencies from headers, the levels for parallel checking, and the cycle error. |
+| `Checked`, `Lowered` | 150 | a module's checked result (its interface and its `Typed`) and its Core: two files under the same key, so the editor never lowers and a build lowers once; `[<Derive(Binary)>]`, so the cache's files are the derive's. |
+| `Cache` | 500 | [0007](../docs/proposals/0007-incremental-builds.md)'s keys (`xxhash`, the compiler's own hash in each), the headers kept under a text hash, `~/.cache/zs/checked`, `worlds`, `modules`, `objects`, the LRU by modification time. |
+| `Clang` | 300 | clang and `zig cc` as processes: a `Task<result<unit, Diagnostics>>` per module, `Task.all` with the cores as the limit, standard error read into diagnostics; the linker (lld, ThinLTO with its cache), PGO flags. |
+| `Driver` | 700 | the build: parse, check, lower, the passes, emit, compile, link, in §4's order; `--time` and `--stats`. |
+| `Server` | 250 | `zs server`: a `Net.Unix` listener in the cache directory, one build at a time, idle exit after ten minutes, `stop`. |
+
+### 2.11 `Tools/`: the commands around the compiler
+
+| Module | Lines | What it is |
+|---|---|---|
+| `Rpc` | 150 | JSON-RPC framing over `Console.openStandardInput` and `openStandardOutput`, `Content-Length` over bytes, messages as [0023](../docs/proposals/0023-json-in-core.md)'s `Json`. |
+| `Lsp` | 900 | diagnostics, hover, completion, definition, references, rename, code actions, inlay hints, symbols, formatting, signature help: from `Typed` and the `Tree`, through the session's cache. Runs `Infer`, never `Lower`. |
+| `Mcp` | 300 | `check`, `type_at`, `docs`, `build`, `run`, `emit_llvm`, `format` over the same session. |
+| `Doc` | 300 | `zs doc`: reference pages from `///` comments and `Typed`'s signatures. |
+| `Test` | 400 | `zs test`: finds `[<Tests>]` values ([0009](../docs/proposals/0009-tests-as-values.md)), builds the test binary, runs each test in its own process with a timeout, `--update` for inline expectations through the tree. |
+| `Main` | 400 | the commands, flags to `Options`, exit codes. |
+
+## 3. What flows between them
+
+```
+ Source ──lex──► array<Token> ──parse──► Tree ──view──► Ast ──check──► Typed ──lower──► Core
+   (bytes)      (kind, offset, length)   (ids, spans,    (cases with   (per node id:   (per function,
+                                          every token)    node ids)     type, impl,     owned by its
+                                                                        name, hover)    job later)
+ Checked = interface + Typed ──Binary derive──► ~/.cache/zs/checked/<key>;  Lowered = Core ──► lowered/<key>
+ Core ──passes──► Core ──emit──► IR text (Writer) ──clang──► object ──link──► binary
+```
+
+- **Identity is a number.** A node's id (the file's index, the node's number), a type variable's number, a function's name and the hash of its Core are the only identities. Every table that F# keyed by object identity (`HashIdentity.Reference`, 25 of them) keys on one of these, so the `Binary` derive writes plain values and nothing needs physical equality. Ids are dense (a file's nodes from the parser, a function's Core nodes from `Fresh`), so every table keyed by one is an array indexed by it, and nothing hashes a node. Names are strings: an interner would be the design's one global, under a lock across parallel parsing, and identifiers are short (decision 78).
+- **Positions live in the tree.** Every node has its span, every `Ast` and `Core` node its node id, so a diagnostic from any pass finds its position without a table, and nothing is cleared per check or restored from the cache. A file's `Tree` is made under `Arena.with`: nothing outside it references a node, so it dies whole, in a build after `Lower` and in the editor at the next parse.
+- **The environment of a check** is the interfaces of the modules before it (its `Env`), immutable and Share, so one `Parallel.for` checks a whole level of the dependency graph against it; the results are merged into the session, and the next level's `Env` is built from them.
+- **A function's Core is owned by its job** in the passes: `functions |> Array.Parallel.map (fun f -> collect (fun () -> Opt.run options env f))` moves each function into its job (decision 75), so the passes rebuild it in place with every optimization of [DESIGN §5.2](../DESIGN.md#52-perceus-reference-counting); the `env` (types, signatures, borrow summaries) is the one shared value, borrowed on most paths.
+- **Contexts, not globals.** `Infer.Cx` (one per module check), `Opt.Cx` (one per job), `Emit`'s (one per module). Each is a record of tables owned by the job that made it, returned with the result where the join needs it (the lifted functions, the sizes).
+
+## 4. How a build runs
+
+Where each step runs, for `zs build`:
+
+| Step | Unit | Where | Reads | Writes |
+|---|---|---|---|---|
+| 1 project and graph | the program | driving thread | `zs.toml`, `zs.lock`, the headers (from the cache by text hash) | `Graph` |
+| 2 parse | per file not in the cache | pool, `Array.Parallel.map` | its bytes | `Tree`, diagnostics |
+| 3 check | per module not in the cache, level by level | pool, one `Parallel.for` per level | `Options`, the level's `Env` | `Checked`, diagnostics; merged into the session between levels |
+| 4 restore | per module in the cache | driving thread | `~/.cache/zs/checked` (the `Binary` derive, milliseconds a module) | the session |
+| 5 lower | per module whose Core isn't cached | pool | `Typed` | `Core`, kept as `lowered/<key>` |
+| 6 plan | the program | driving thread | the modules' signatures | the instance set, the `Share` marks |
+| 7 passes | per instance of the modules whose world changed | pool, the function moved in | `Options`, the program's environment | the function's Core, its `Opt.Cx` |
+| 8 emit | per module | pool | the module's functions | IR text, hashed |
+| 9 compile | per module whose IR hash is new | tasks, `Task.all` with the cores as the limit | the IR | an object in `~/.cache/zs/objects` |
+| 10 link | the program | a task | the objects, the runtime | the binary |
+
+- **Diagnostics stop a build after step 3** (a module with errors isn't kept, 0007) and are rendered sorted by file and position; steps 6 onward can report only the `Share` check's errors and internal ones.
+- **Byte-identical whatever `ZS_WORKERS` is** (decision 77): fresh names per function, no `HashMap` iterated into output (a `Map`, a sorted array or source order instead), the join's results placed by index, diagnostics sorted once. `tests/cache.sh` checks it across thread counts.
+- **A rebuild** after a body change in one module: step 1, step 2 for that file, step 3 for that module alone (the others restore), steps 5–8 for that module's own LLVM module (its copies of the library and the generic instances are unchanged and found by their keys), step 9 for it, step 10. The target is 0007's 0.2 s plus the module's own time, through the build server, which keeps the session warm.
+- **`zs check`** is steps 1–4, and **`zs lsp`** the same per keystroke for the edited module, from the overlay, with the other open documents of the same program re-checked after it; both without `Lower`.
+
+### 4.1 Effects in the compiler
+
+| Effect | Performed by | Handled by | Cost (phase 10's measurements) |
+|---|---|---|---|
+| `Report` | the parser, the checker, the `Share` check, `Check` | `collect` at a job's or a task's boundary; `attempt` around a trial, which drops them on a miss | a call through the frame when a diagnostic is made; nothing otherwise |
+| `Throw<Mismatch>` | `Unify` | `check` at the expression (a report, the error type), `attempt` at a trial (the trail undone) | a call to the clause and one check after each call on the way, the same as `?` |
+| `Yield` (`seq { }`) | cold paths only: `zs doc`'s pages, listings | `Seq` | an indirect call per element: not in the lexer, the parser or the passes |
+
+Nothing else: no `Task` on an effect (decision 72), no handlers of the compiler's own, no effect crosses a job (an empty row is required there and the checker enforces it).
+
+### 4.2 Tasks in the compiler
+
+- **`Lsp.serve` and `Mcp.serve`:** `task { while true do let! msg = Rpc.read stdin … }`, the read under `Task.blocking`; a request runs on the loop thread against the session, its parallel parts on the pool.
+- **`Server.serve`:** `Unix.accept` in a loop, each connection a build request answered when its build ends; one at a time.
+- **`Clang.compileAll`:** `Task.all` over the modules with the cores as the limit, each `Process.start` and `Process.wait`; standard error becomes diagnostics with the module's name.
+- **Never `Task.spawn`:** a task never moves to another thread's loop; the session stays where it is.
+
+## 5. The passes and what each optimizes
+
+Every optimization in [DESIGN §9.1](../DESIGN.md#91-optimization-strategy) is carried over; this
+table says where. The rewrite adds none until gen 2 equals gen 3: `.same-ir` tests and
+`bench/host`'s contract pin the output while the compiler changes under it. New ones (track S's
+generator fusion, item 9; `use` under effects, item 10) come after.
+
+| Pass | In | Out | Optimizes | `Check` verifies after it |
+|---|---|---|---|---|
+| `Lower` | `Typed` | Core with generics, traits, effects | nothing; faithful, so `Infer` is the one place meaning is decided | types match their uses; every name bound |
+| `Mono` | Core | Core, monomorphic | fusion: `map`/`filter` from `init`, a list or an array into `sum`/`fold`/`length`/`iter` as one loop (pure lambdas, decision 36); trait calls to known functions; units erased; a pure instance of an effect-polymorphic function under the name it always had | no type variable, no trait call, no row variable |
+| `Share` | Core | Core, with the Share marks | the top-level values a thread may reach marked for startup, and only those | each `share<F>` reaches Share values only |
+| `Inline` | Core | Core | uncurrying (a function whose body is a lambda takes its parameters; a closure applied to its arity calls its full entry); inlining of small functions, `keep` as a parameter | arities match the calls |
+| `Simplify` | Core | Core | known constructors (a match on a value built or bound in sight takes its case); case of case with join points; a `let`-bound lambda only called is applied in place; so an inlined `Option.map` builds no `option` | no unreachable case left by a known constructor |
+| `Evidence` | Core with `handle`/`perform` | Core without them | a clause that resumes last or stops runs where the operation is performed, nothing captured; other paths yield through closures per waiting function; loops with yielding calls run from a driver; pure functions untouched, so their IR is byte-identical to a compiler without effects | no `perform` left; every function's frames match its row |
+| `Decide` | Core with patterns | Core with tag tests and join points | decision trees: no value tested twice, shared bodies as join points reuse tokens pass through | every join point reached with the same types |
+| `Lift` | Core with lambdas | Core with closures | closure conversion; a top-level function's closure goes through a function of its maker's module, so borrowing is per function whatever makes closures of it | no free variable |
+| `Rc` | Core | Core with `dup`, `drop`, `reuse`, `isUnique` | Perceus: ownership and borrowing (summaries in the ABI across modules), moves out of mutables, drop specialization (fields kept out of a dying cell), reuse of a dying cell for a new one of the same size, copy-on-write checks, re-matching | every owned variable consumed once on every path; a borrowed one never dropped |
+| `Codegen` | Core | LLVM IR | representation (`Layout`): unions as plain values, static cells, `option` of a pointer as the pointer, the one-word header and the inlined pool; overflow through `llvm.*.with.overflow`; `!range` on lengths, `inbounds nuw`; copy-on-write checks hoisted out of loops; loop versioning for innermost call-free loops; `musttail` self-calls; `print` of an interpolation as pieces | none: clang parses the module (`-O0` in a debug build catches a malformed one at once) |
+| `Clang`, link | IR | binary | `-O2`/`-Os` per module, ThinLTO with the runtime, PGO, `--cpu`, `[<Target>]`, `[<Multiversion>]` | `tests/*.same-ir` and `bench/host`'s instruction counts |
+
+- **Why this order:** `Mono` first so every later pass sees concrete types and known calls; `Inline` and `Simplify` before `Evidence` so handlers are resolved on simplified code and a `Throw.catch` of a lambda is applied in place (no closure); `Decide` after `Simplify` so known constructors have removed what they can; `Lift` after `Evidence` since yielding makes closures; `Rc` last, on the final shape, so every reuse and borrow is decided on what runs.
+- **Per function, except where it isn't:** `Mono.plan` picks the instances and `Share` follows calls across them on the driving thread, over signatures, then each instance is a job; `Lift` adds functions a job returns in its `Opt.Cx` for the join to place; `Codegen` is per module.
+- **`Check` in test builds only:** `./test.sh` turns `--check-ir` on; a user's build skips it.
+
+## 6. The compiler's own performance
+
+The compiler is the largest Z# program and the workload phase 9's one-word header, pool and
+build-speed work were for. The targets are 0020's: `bench/compile` no slower than the F#
+compiler on a build from nothing, a body change and a signature change; the compiler builds
+itself in no more than the gen 1 build takes; peak memory at most the F# compiler's; a cold
+`zs check hello.zs` bounded by loading the library's cache.
+
+| Lever | Where | Why it pays |
+|---|---|---|
+| **The cache** (0007) | `Build/Cache` | an unchanged file isn't parsed, an unchanged module isn't checked, an unchanged module's IR isn't made, an unchanged object isn't compiled; the `Binary` derive reads a module back in milliseconds |
+| **Parallel halves** | §4's steps 2, 3, 5, 7–9 | parsing, checking by level, the passes per function and code generation per module on every core; clang as tasks |
+| **Crossings move** (decision 75) | `Rc`, the runtime | a job's function keeps positive counts, so the passes write in place and reuse cells; only the environment pays atomic counts, and borrowing skips most of them |
+| **Numbers, not identity** | `Types/Vars`, `Tree`, `Opt/Cx` | union-find over indices in a `Buffer`, path compression, levels; node ids dense per file and per function, so `Typed` and the memo tables are arrays; no cells compared by address, nothing hashes a node |
+| **A trail, not copies** | `Types/Vars` | a trial undoes its bindings instead of copying the variable table (the F# checker copies `tyvars` twice) |
+| **Persistent scopes** | `Infer/Scope` | a `Map` taken by value into a trial or a closure body: nothing to restore, and in-place update when unique |
+| **Tokens as an array** | `Lexer` | the parser's lookahead is an index, not a resumption |
+| **IR by pieces** | `Emit/Llvm` | `Writer.writeText w $"  {name} = add i64 {a}, {b}"` writes the pieces as `print` prints them, so an 8 MB module is never a string |
+| **Hashing by content** | `Core/Hash`, `xxhash` | names per function and cache keys from one fast hash; byte-identical output is a property, not a test's luck |
+| **A tree per arena** | `Parser` | `Parser.parse` runs under `Arena.with`; nothing outside the tree references a node, so a file's tree dies in one free after `Lower`, or at the editor's next parse |
+| **Names are strings** | `Types`, `Infer` | short immutable strings, compared by bytes and hashed where looked up; an interner would be the design's one global, under a lock across parallel parsing |
+| **No SIMD** | | a cached build never lexes an unchanged file, the line index is built once per edit, and the passes are trees and maps |
+
+- **Measured by:** `zs build --time` (what was checked, made, compiled), `zs build --stats` (allocations by size class, reuse hits, copy-on-write copies, atomic marks and operations per pass), `bench/compile/run.sh`, and the compiler building itself in CI per commit.
+- **If a target fails:** `--stats` names the pass whose atomic operations are high, and the fix is in that pass (borrow the environment, or copy into the job the part it walks); both halves stay parallel (decision 79).
+
+## 7. The editor path
+
+`zs lsp` is the same compiler to step 4, run per keystroke ([0019](../docs/proposals/0019-syntax-tree.md), 0007; the roadmap's rule that every feature's types are the checker's in the editor):
+
+- **Per change:** the edited document's text from the overlay is parsed (one file), its module checked against the cached `Env` (the rest restore), and the other open documents of the program re-checked after it. The target is 100 ms for a 2,000-line file.
+- **From `Typed` and the `Tree`:** hover (types with rows, constraints, doc comments), completion, definition and references (resolved names per node id), rename and code actions (edits on the lossless tree, so comments and layout survive), inlay hints (parameter types, inferred effects before `=`), document symbols, formatting, signature help.
+- **All of a file's errors:** error nodes and the error type, so one mistake doesn't hide the next; sorted; the same list `zs check` prints.
+- **`import c` in the editor:** `CImport` runs libclang in the server's process, so a C name has its type in Zed with no build run and no `clang` on PATH; the header's result is cached under its text and flags.
+- **One session, one cache:** the server's session holds the 512 most recent checked results and shares `~/.cache/zs/checked` with the CLI and the build server, so a build after editing restores what the editor checked.
+
+## 8. Testing the compiler
+
+- **The suite is the contract:** every `.out`, `.err`, `.same-ir`, session script and benchmark in `tests/` and `bench/` passes under the F# compiler and under this one before the F# one goes; `tests/err_many.zs` adds a file with five errors in two declarations.
+- **`--check-ir`** after every pass in `./test.sh`, so a pass's bug fails where it is made.
+- **The compiler's own tests** are values ([0009](../docs/proposals/0009-tests-as-values.md)) in `compiler/tests/`: a session per test, in-process, under `Parallel.for`; the lexer and parser on every `.zs` file in the repository (a parse, a print of the tree, byte-identical to the source); `Unify` on tables of pairs; `attempt`'s rollback; `Decide` against `ZS_NO_DECIDE=1`; `Binary` round trips of `Checked`.
+- **Determinism:** `tests/cache.sh` across `ZS_WORKERS=1` and the cores; `tests/bootstrap.sh` comparing gen 2 and gen 3 and naming the first differing function from `ZS_DUMP_IR` when they differ.
+- **Sanitizers and valgrind:** `./test.sh --valgrind` and `--sanitize=thread` over the parallel passes, as over the parallel tests today; `ZS_LEAKCHECK=1` on the compiler building itself.
+- **Differential:** while both compilers exist, `tests/differential.sh` builds every test program with both and compares the `.out` and `.err` results and the benchmarks' instruction counts; the IR itself is allowed to differ (the rewrite lowers differently) until the F# compiler is gone.
+
+## 9. Order and what is still measured
+
+[0020](../docs/proposals/0020-self-hosting.md)'s order: the library's and tracks' items and the
+moving crossing in the F# compiler; `Lexer`, `Parser` and the measurement; `Infer` and `Lower`;
+the passes, `Emit` and `Build`; the tools; the parallel halves and `Check`; gen 2 equals gen 3
+and the deletion. Decided above and in decisions 73–79: effects for diagnostics and unification's
+backtracking, moving crossings, tasks for the waits, ordered output, strings for names, dense ids
+indexing arrays, a tree per arena, no SIMD, the cache's two files, `Mono.plan` then instantiation
+per instance, both halves parallel. One thing is measured, because it is the review's gate and not
+a design choice: the 1.5× criterion on the kept lexer and parser.
