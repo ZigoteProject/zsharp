@@ -5,19 +5,24 @@
 # --valgrind: also run each program under valgrind (memory errors or leaks fail the test).
 # --target <triple>: cross-compile the programs and C interop tests (zs build --target) and run
 #   them under qemu-user, e.g. --target aarch64-linux-musl; the host-only tool checks are skipped.
+# --zs <binary>: test that compiler (compiler/'s, built), installed as bin/zs with the library and
+#   runtime beside it, instead of the F# compiler built from src/.
 set -u
 cd "$(dirname "$0")"
-dotnet build src -c Release -o bin --nologo -v q || exit 1
-export ZS_LEAKCHECK=1 ZS_BACKTRACE=0  # report leaked objects at exit; deterministic panic output
-export ZS_NO_SERVER=1  # each build in its own process (tests/server.sh tests the build server)
-valgrind=0; target=""; tgt=(); qemu=()
+valgrind=0; target=""; tgt=(); qemu=(); zsbin=""
 while [ $# -gt 0 ]; do
   case $1 in
     --valgrind) valgrind=1; export ZS_NO_POOL=1 ;; # objects from malloc, so valgrind sees each one
     --target) target=$2; tgt=(--target "$2"); qemu=("qemu-${2%%-*}"); shift ;;
+    --zs) zsbin=$2; shift ;;
   esac
   shift
 done
+if [ -n "$zsbin" ]; then compiler/install.sh "$zsbin" bin || exit 1
+else dotnet build src -c Release -o bin --nologo -v q || exit 1; fi
+export ZS_LEAKCHECK=1 ZS_BACKTRACE=0  # report leaked objects at exit; deterministic panic output
+export ZS_NO_SERVER=1  # each build in its own process (tests/server.sh tests the build server)
+export ZS_CHECK_IR=1  # the Z# compiler checks its IR after each pass (zs build --check-ir)
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 fail=0
 for t in $(find tests -name '*.zs' | sort); do
@@ -296,5 +301,20 @@ if [ -z "$target" ]; then
     if [ "$actual" == "$(cat tests/cexport/main.out)" ]; then echo "ok   $what"
     else echo "FAIL $what"; diff tests/cexport/main.out <(echo "$actual") | head -20; fail=1; fi
   done
+fi
+
+# ZS_STATS=1 (0020, decision 75): a unique array of trees through Array.Parallel.map moves each
+# tree to its thread, so no object is marked shared
+if [ -z "$target" ]; then
+  if bin/zs build tests/stats/parallel_unique.zs -o "$tmp/pu" 2>"$tmp/pu.log" \
+     && [ "$(ZS_STATS=1 "$tmp/pu" 2>&1 >/dev/null | grep -o '[0-9]* objects marked shared')" = "0 objects marked shared" ]; then
+    echo "ok   tests/stats/parallel_unique.zs (nothing marked shared)"
+  else echo "FAIL tests/stats/parallel_unique.zs"; cat "$tmp/pu.log"; ZS_STATS=1 "$tmp/pu" 2>&1 | tail -2; fail=1; fi
+fi
+
+# the bootstrap (0020): the Z# compiler builds itself to the same bytes
+if [ -n "$zsbin" ] && [ -z "$target" ]; then
+  if out=$(tests/bootstrap.sh bin/zs 2>&1); then echo "ok   tests/bootstrap.sh ($(echo "$out" | paste -sd ';' | sed 's/;/; /g'))"
+  else echo "FAIL tests/bootstrap.sh"; echo "$out"; fail=1; fi
 fi
 exit $fail

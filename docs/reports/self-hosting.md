@@ -1,4 +1,118 @@
-# Self-hosting: the Z# compiler's front end against the F# compiler's
+# Self-hosting: the Z# compiler against the F# compiler
+
+**Question:** phase 11 (0020): can the compiler written in Z# (`compiler/`) replace the F#
+compiler? Every test passing under it, building itself to the same bytes, and no slower and no
+bigger in memory than the F# compiler.
+
+**Answer:** it passes everything the F# compiler does and builds itself to the same bytes. It's
+faster wherever a build is incremental (the cache), at a third of the F# compiler's memory, and
+starts in milliseconds where .NET takes a tenth of a second. Built from nothing it's slower:
+2.4× on the compiler itself in a debug build. The F# compiler runs its passes and code generation
+on every core, and the Z# one still one module after another: the parallel back half (0020's
+"parallel on Z#'s own pool") is what closes that, and comes next (below).
+
+## Setup, 2026-10-24
+
+| | |
+|---|---|
+| Machine | AMD Ryzen 7 PRO 8840U (8 cores, 16 threads), the dev container (`./dev`: Fedora 44, LLVM 23.1.4) |
+| F# | the F# compiler, `Release` on .NET 10 |
+| Z# | `compiler/` built `--release` by itself, installed with its library and runtime beside it (`compiler/install.sh`; `./test.sh --zs <binary>` tests such a build) |
+| Times | wall time of one run (`/usr/bin/time`); peak memory is the largest process's, clang's and the linker's included |
+
+## Every test
+
+| | F# | Z# |
+|---|---:|---:|
+| `./test.sh` (the Z# compiler: `--check-ir` on, `tests/bootstrap.sh` too) | 246 of 246 | 249 of 249 |
+| `./test.sh --target aarch64-linux-musl` (qemu-user) | 201 of 201 | 201 of 201 |
+| `bench/mcu` on a Cortex-M4 and a Cortex-M0+ (qemu-system-arm), 7 programs each | the same table | the same table |
+
+Every result in `bench/mcu` is C's, and the two compilers' tables are the same bytes: the same
+instruction counts, flash, heap and stack. Under the Z# compiler `tests/cache.sh` gives the F#
+compiler's transcript (which modules a change checks again and compiles again, and each test
+program's binary from the cache the same as from nothing), and `bench/host`'s instruction counts
+are within 0.004% of the baseline the F# compiler set. `--check-ir` (`Core.Check` after each
+pass: variables bound, join points and direct calls given their parameters' types, no type
+variable after monomorphization) passes on every program.
+
+## The bootstrap
+
+`compiler/` built `--release` from an empty cache, a module per source file (each module's own
+functions and its copies of the library's as two LLVM modules, compiled in parallel, linked with
+ThinLTO):
+
+| generation | built by | wall | peak memory |
+|---|---|---:|---:|
+| gen 2 | gen 1 (`compiler/` built by the F# compiler, a debug build) | 109 s | 1.15 GB |
+| gen 3 | gen 2 | 81 s | 1.19 GB |
+| gen 3, `ZS_WORKERS=1` | gen 2 | 123 s | 1.14 GB |
+
+Gen 2, gen 3 and the one worker's gen 3 are the same bytes (`cmp`), and `tests/bootstrap.sh`
+checks it in `./test.sh --zs`. Gen 3's build: parsing and checking 1.4 s, the passes 10 s
+(lifting closures 2.2 s and borrowing 1.4 s the largest), LLVM IR 20 s, clang 21 s (125 objects,
+in parallel), the ThinLTO link 26 s.
+
+## Speed and memory
+
+**The compiler building itself** (`compiler/`, 27,656 lines, with `packages/`; an empty cache, then
+again, then after a function added to `Commands.zs`):
+
+| build | F# s | F# MB | Z# s | Z# MB |
+|---|---:|---:|---:|---:|
+| debug, nothing cached | 17.95 | 1315 | 43.96 | 473 |
+| debug, again | 0.59 | 127 | 0.36 | 128 |
+| debug, a function added | 1.20 | 185 | 0.65 | 127 |
+| release, nothing cached | 50.22 | 1346 | 86.32 | 1144 |
+| release, again | 0.74 | 256 | 0.53 | 261 |
+
+**`bench/compile`** (a generated program of modules; each timed build after a change of its own):
+
+| build | 10 modules F# | 10 modules Z# | 40 modules F# | 40 modules Z# |
+|---|---:|---:|---:|---:|
+| first (nothing cached) | 1.641 | 0.926 | 2.800 | 2.519 |
+| again, unchanged | 0.124 | 0.056 | 0.145 | 0.081 |
+| a function's body changed in the main file | 0.144 | 0.073 | 0.169 | 0.104 |
+| a function's body changed in a module | 0.203 | 0.119 | 0.229 | 0.151 |
+| a module's interface changed | 0.169 | 0.097 | 0.199 | 0.130 |
+| without the cache | 0.603 | 0.506 | 1.216 | 1.759 |
+
+**The front end** (`zs check-time`: parsing and checking a program and the library, best of
+ten): `examples/simple.zs` 129 ms F#, 81 ms Z#; `tests/json.zs` 117 and 90; `examples/complex.zs`
+141 and 84; the compiler itself (`compiler/src/Main.zs`) 1,050 and 1,091.
+
+**Where the time goes:** the Z# front end is as fast as the F# one, and its caches make every
+incremental build faster. Built from nothing, the F# compiler's passes (`Decide`, `Lift`, `Rc`,
+`Evidence`) map each function and its driver each module through `Array.Parallel.map` on .NET's
+pool, and the Z# compiler does the same work on one thread: 20 s of LLVM IR in gen 3's build
+alone, where the cores wait. Without the cache on 40 modules, the one row the F# compiler wins,
+it's the same.
+
+## What the port found
+
+Running the same tests through a second implementation found bugs in the first, in the library
+and in LLVM, all fixed:
+- **`Map`, `Set` and `HashMap` equality** was the derived one, over the tree's shape and the
+  buckets' order: two maps with the same entries added in another order compared unequal. They
+  compare their entries now. The checked modules' cache found it: a restored module's sets
+  differed from a checked one's.
+- **`File.writeAllBytes`** wrote through `String.ofBytes`, which replaces each byte that isn't
+  UTF-8 with U+FFFD, and `readAllBytes` read through text: binary files were corrupted.
+- **A mutable variable assigned in an effectful lambda** lost its writes when Simplify didn't run
+  (both compilers): it's boxed under a handler now when a lambda mentions it.
+- **Range formatting** answered a no-op edit for a line already formatted: an F# slice was bound
+  to `String.concat`'s result, not its argument. The session test meant to send a messy line never
+  did (its `sed` missed the JSON-escaped quotes).
+- **ThinLTO and `musttail`** (both compilers): LLVM 23 rejects a module after importing a callee
+  from another module and inlining it at a `musttail` call, so neither compiler could build
+  `compiler/` `--release`. A tail call into another LLVM module is a plain tail call in an
+  optimized build now (LLVM makes it a sibling call all the same).
+- **The object cache** (the Z# port): an object reused from the cache wasn't touched, so eviction,
+  oldest first, could delete one the link was about to read.
+- **`String.join`** was quadratic (writing the compiler's own IR took minutes), and a `--lib`
+  header wrote a struct before the ones its fields hold.
+
+## The front end and the checker (steps 2 and 3)
 
 **Question:** 0020's second criterion, phase 11's gate: is a program of the compiler's shape,
 written in Z#, within 1.5× of the F# compiler? It's measured on code the compiler keeps:
@@ -19,7 +133,7 @@ the same tokens, the same tree and the same AST for all 303 files (`compiler/tes
   of `import c`) and checks 100 of the 105 programs with an `.out` cleanly (the other five import
   C): `compiler/tests/errors.sh`.
 
-## Setup
+### Setup
 
 | | |
 |---|---|
@@ -35,7 +149,7 @@ and a length), the same lossless tree as a few arrays indexed by node ids, and t
 compiler's shapes, its places token indices into the tree. Both parse each interpolated string's
 holes, for their errors.
 
-## Results
+### Results
 
 | Files | F# | Z# | Z# / F# |
 |---|---|---|---|
@@ -46,7 +160,7 @@ holes, for their errors.
 
 With the tree only (the parser before it made the AST), the figures were 0.55–0.65 and 1.03.
 
-## The checker
+### The checker
 
 | Program (with the library, 6,600 lines) | F# | Z# | Z# / F# |
 |---|---|---|---|
@@ -73,7 +187,7 @@ The first build took 225–240 ms, 2.0–2.3×. Four changes brought it under th
 - **Names were resolved again at each use.** `resolveName`, a dozen candidates tried against nine
   tables, runs several times per name; it's remembered for the declaration now.
 
-## What the first run found
+### What the first run found
 
 All three were in the F# compiler, which builds the first generation of `compiler/`; the Z#
 compiler's passes take the same rules.

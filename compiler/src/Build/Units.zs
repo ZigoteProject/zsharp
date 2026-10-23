@@ -483,6 +483,9 @@ let link (o: Options.Options) (built: Built) (linked: Modules.Linked) : result<l
   let job (source: string) (cFile: option<string>) (fs: list<string>) (keep: option<string>) : Job =
     let key = Tools.hashOf (List.concat [ [ "object"; (if Option.isSome cFile then "true" else "false"); profileKey ]; fs; [ source ] ])
     let obj = Path.combine dir (key + ".o")
+    // one there is recently used: kept longest
+    if File.exists obj then
+      File.touch obj |> ignore
     match cFile with
     | Some c -> { obj = obj; input = c; written = false; flags = fs; keep = keep }
     | None ->

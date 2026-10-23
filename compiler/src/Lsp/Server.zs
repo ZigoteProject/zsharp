@@ -512,11 +512,14 @@ let private codeActions (st: State) (path: string) (fromLine: int) (toLine: int)
         let modules =
           match analysisOf st path with
           | Some a ->
-            let definers (f: Core.Ir.FunDef) =
-              match String.lastIndexOf "." f.name with
-              | Some k when String.sub f.name (k + 1) (String.length f.name - k - 1) = name && not (String.contains "$" f.name) -> Some(String.sub f.name 0 k)
+            // every module's functions by name (a module restored from the cache keeps its Core
+            // apart, its names with it)
+            let definers (f: string) =
+              match String.lastIndexOf "." f with
+              | Some k when String.sub f (k + 1) (String.length f - k - 1) = name && not (String.contains "$" f) -> Some(String.sub f 0 k)
               | _ -> None
-            let found = List.distinct (List.choose definers (Array.toList (Buffer.toArray a.checked.cx.funs)))
+            let names = List.collect (fun (u: Build.Check.Unit) -> List.map fst u.names) a.checked.units
+            let found = List.distinct (List.choose definers names)
             let short (m: string) = List.fold (fun (m: string) (ns: string) -> if String.startsWith (ns + ".") m then String.sub m (String.length ns + 1) (String.length m - String.length ns - 1) else m) m Types.Ty.autoOpens
             List.take 5 (List.distinct (List.map short found))
           | None -> []

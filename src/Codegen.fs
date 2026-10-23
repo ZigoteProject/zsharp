@@ -3064,9 +3064,13 @@ let compile
                     // callers); other tail calls, and all at -O0, must be tail calls (constant stack),
                     // except of a result wider than two registers: x86-64 returns it in memory,
                     // where it can't make a musttail call (LLVM still makes a loop of a call to
-                    // itself, at -O2)
+                    // itself, at -O2). In an optimized build, a call to a function of another LLVM
+                    // module is a plain tail call (a sibling call all the same): ThinLTO imports the
+                    // callee and inlines it at a musttail call into a module LLVM's verifier then
+                    // rejects (LLVM 23)
                     let inRegisters = not (rt.StartsWith "{") || (rt.Split(',').Length <= 2 && not (rt.Substring(1).Contains "{") && not (rt.Contains "["))
-                    let kind = if (f = selfName && optimized && not debugInfo) || not inRegisters then "tail" else "musttail"
+                    let elsewhere = optimized && not (defined f)
+                    let kind = if (f = selfName && optimized && not debugInfo) || not inRegisters || elsewhere then "tail" else "musttail"
                     let r = em.Instr(sprintf "%s call %s %s(%s)" kind rt (sym f) argv)
                     em.Emit(sprintf "ret %s %s" rt r)
                     em.Dead()
