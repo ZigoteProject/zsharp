@@ -5,6 +5,7 @@
 /// field name's token is beside it, for rename and references.
 
 /// A type as written.
+[<Derive(Binary)>]
 type SType =
   | STName of string * list<SType>
   /// 'a (the name without its quote)
@@ -18,6 +19,7 @@ type SType =
   | STRow of SType * list<SType> * option<string>
 
 /// A pattern, and its place.
+[<Derive(Binary)>]
 type Pat = { pat: PatShape; patAt: int }
 
 and PatShape =
@@ -40,9 +42,11 @@ and PatShape =
   | PArgs of list<Pat>
 
 /// A parameter: its pattern, and its type when written.
+[<Derive(Binary)>]
 type Param = { param: Pat; ann: option<SType> }
 
 /// An expression, and its place.
+[<Derive(Binary)>]
 type Expr = { e: ExprShape; at: int }
 
 /// A field's value in a record literal or an update: its name, its name's token, its value.
@@ -131,6 +135,7 @@ type TypeBody =
   | UnionTy of list<Case>
 
 /// A member's parameter: its name, its type, whether it's optional (?x) and its default.
+[<Derive(Binary)>]
 type MemberParam = { mname: string; mty: option<SType>; optional: bool; mdefault: option<Expr> }
 
 /// A member of a type: `member v.Name`, `static member Name`, with parameters or a property.
@@ -146,6 +151,7 @@ type Member =
 
 /// A definition in a derive or an impl: its token, its name, its parameters, its result's type
 /// and its body.
+[<Derive(Binary)>]
 type Definition = { defAt: int; dname: string; dpars: list<Param>; dret: option<SType>; dbody: Expr }
 
 /// A declaration: its place (its first token) and, for a function's or a value's, its name's.

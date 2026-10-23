@@ -3,6 +3,7 @@
 /// What this module has needs no variable's binding: the types, the kinds, the built-in names.
 
 /// A type.
+[<Derive(Binary)>]
 type Ty =
   /// int, f64, string, list<_>, user types; a number's argument is its unit of measure
   | TCon of string * list<Ty>
@@ -20,13 +21,16 @@ type Ty =
 /// What a type variable may become: one of `allowed` (a literal's: None is anything) that
 /// implements every trait in `traits`; a trait's other parameters (Iter<int>'s int), which the
 /// impl for the type determines (0017).
+[<Derive(Binary)>]
 type Kind = { allowed: option<Set<string>>; traits: Set<string>; params: Map<string, list<Ty>> }
 
 /// What a type definition is (field types mention TGen, the type's parameters).
+[<Derive(Binary)>]
 type TypeDef =
   | RecordDef of list<string * Ty>
   | UnionDef of list<string * list<Ty>>
 
+[<Derive(Binary)>]
 type TypeInfo = { npars: int; def: TypeDef }
 
 // ------------------------------------------------------------ names

@@ -78,7 +78,7 @@ let private tools : list<string * string * Json> =
     ("format", "A Z# file in the canonical layout (zs fmt). Returns the formatted text; the file is not changed.", schema [ fileArg ] [ "file" ]) ]
 
 // a build's warnings before what it made
-let private withWarnings (b: Build.Check.Built) (text: string) =
+let private withWarnings (b: Build.Make.Built) (text: string) =
   if Array.length b.diagnostics = 0 then text else formatErrors b.sources (Array.toList b.diagnostics) + "\n" + text
 
 // a tool's answer: its text, or Error with the text of what went wrong
@@ -153,7 +153,7 @@ let private call (name: string) (args: Json) : result<string, string> =
     | Error e -> Error e
     | Ok file ->
       let out = Path.changeExtension file ""
-      let b = Build.Check.make (options file out) false
+      let b = Build.Make.make (options file out) false
       if b.made then Ok(withWarnings b $"built {out}") else Error(formatErrors b.sources (Array.toList b.diagnostics))
   else if name = "run" then
     match fileOf () with
@@ -163,7 +163,7 @@ let private call (name: string) (args: Json) : result<string, string> =
         match File.createTemp "zs-" with
         | Ok p -> p
         | Error _ -> Path.combine (Directory.temp ()) "zs-mcp-run"
-      let b = Build.Check.make (options file exe) false
+      let b = Build.Make.make (options file exe) false
       if not b.made then
         File.delete exe |> ignore
         Error(formatErrors b.sources (Array.toList b.diagnostics))
@@ -189,7 +189,7 @@ let private call (name: string) (args: Json) : result<string, string> =
         if not (List.isEmpty errors) then
           Error(formatErrors sources errors)
         else
-          match Build.Compile.generate (options file "") (Build.Check.programOf c.cx) false with
+          match Build.Compile.generate (options file "") (Build.Check.programOf c) false with
           | Ok(_, ir, _, _) -> Ok(limit 100000 ir)
           | Error(Build.Compile.InPass e) -> Error $"{file}:{e.line}: {e.message}"
           | Error(Build.Compile.InTool m) -> Error m

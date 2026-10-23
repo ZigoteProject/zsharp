@@ -121,7 +121,7 @@ literal's first field name).
 | `Lift` | 200 | closure conversion and lambda lifting; a closure's description (drop function, arity, full entry). |
 | `Rc` | 1,000 | Perceus: ownership, borrow inference per parameter (across modules through the ABI), moves out of mutables, drop specialization, reuse of dying cells, copy-on-write checks, re-matching; the crossing functions take their values owned (decision 75). |
 
-*As built (step 4, first part):* `Mono` (with the share check and fusion), `Inline`, `Evidence`, `Lift` and `Rc` are the F# compiler's ported, one function at a time and no `Cx` yet: each pass takes and returns a list of `Core.Program.MFun`, and a pass's error is the `Stops` effect (`Evidence`'s collected and stopped at the end, so its own code stays pure). `Build/Compile.lower` runs them in the F# compiler's order. Their Core is the F# compiler's (`ZS_NO_SIMPLIFY=1 ZS_NO_DECIDE=1`): the same text after `Rc` on the 101 programs with an `.out` that don't import C (`ZS_DUMP_CORE='*'` in both compilers; `ZS_DUMP_STAGE=mono|inline|effects|lift` shows an earlier stage's). `Simplify`, which keys its tables by node identity, and `Decide` come after code generation.
+*As built (step 4, first part):* `Mono` (with the share check and fusion), `Inline`, `Evidence`, `Lift` and `Rc` are the F# compiler's ported, one function at a time and no `Cx` yet: each pass takes and returns a list of `Core.Program.MFun`, and a pass's error is the `Stops` effect (`Evidence`'s collected and stopped at the end, so its own code stays pure). `Build/Compile.lower` runs them in the F# compiler's order. Their Core is the F# compiler's (`ZS_NO_SIMPLIFY=1 ZS_NO_DECIDE=1`): the same text after `Rc` on the 101 programs with an `.out` that don't import C (`ZS_DUMP_CORE='*'` in both compilers; `ZS_DUMP_STAGE=mono|inline|effects|lift` shows an earlier stage's). *Second part:* `Simplify` (without the F# compiler's set of finished nodes: moved code is simplified again) and `Decide` ported; a Core node has an `id` (`Ir.number`), so `Rc` caches free variables by node (`cachedFreeVars`), 3.5 times faster on the compiler.
 
 ### 2.8 `Emit/`: Core to LLVM IR
 
@@ -135,6 +135,8 @@ literal's first field name).
 | `Simd` | 400 | vector types, lane operations, shuffles, masks, the target intrinsics, `[<Multiversion>]` dispatchers. |
 | `Debug` | 400 | DWARF: lines, locals, unions as variant parts, Z# names in symbols. |
 
+*As built:* `Gen/` (`Prelude`, `Emit`, `Layout`, `Helpers`, `Debug`, `Fun`, `Module`, 3,500 lines): the F# `Codegen` ported, its IR byte for byte the F# compiler's on every program of the suite (the module's text compared with `--emit-llvm`, with and without `Decide`).
+
 ### 2.9 `CImport/`: C headers
 
 | Module | Lines | What it is |
@@ -142,6 +144,8 @@ literal's first field name).
 | `Clang` | 250 | the translation unit and its cursors through `zsharp/libclang` (the one place `unsafe` is called from, inside the package). |
 | `CTypes` | 300 | C declarations to Z# types: structs as `[<CLayout>]` records, unions as `[<CLayout>]` unions, enums, function pointers as `fnptr`, typedefs. |
 | `Macros` | 100 | object-like macros through `clang_tokenize`: constants, no regular expressions. |
+
+*As built:* one module, `Build/CImport` (650 lines): the translation unit's cursors through `zsharp/libclang`, C types as strings as the F# compiler read clang's JSON, a macro's body from `clang_tokenize` (no regular expressions); its declarations are the F# compiler's on every header in the repository (`.zs-cache/cimport`'s JSON the same). `zsharp/libclang` opens libclang at its first call (`dlopen`), so the compiler starts where libclang isn't installed and reads the saved import there.
 
 ### 2.10 `Build/`: from a project to a binary
 
@@ -157,6 +161,8 @@ literal's first field name).
 | `Driver` | 700 | the build: parse, check, lower, the passes, emit, compile, link, in §4's order; `--time` and `--stats`. |
 | `Server` | 250 | `zs server`: a `Net.Unix` listener in the cache directory, one build at a time, idle exit after ten minutes, `stop`. |
 
+*As built:* `Options`, `Project` (with `Package`), `Tools` (processes, the cache's paths and keys, whole-file writes), `Modules` (loading, packages, `import c`), `Check` (the checked modules' cache: `Infer/Snapshot`'s `[<Derive(Binary)>]` interface, keyed as the F# compiler's), `Units` (the build by module: worlds, ABIs, the module and object caches, clang in parallel, ThinLTO), `Compile` (the one-module builds: a library, another target, a microcontroller, `--emit-llvm`, `-g`), `Make` (which of the two) and, at the top, `Server` (`zs server` on `Net.Unix`, a request's build run in the server with its output captured). `tests/cache.sh` gives the F# compiler's transcript line for line.
+
 ### 2.11 `Tools/`: the commands around the compiler
 
 | Module | Lines | What it is |
@@ -167,6 +173,8 @@ literal's first field name).
 | `Doc` | 300 | `zs doc`: reference pages from `///` comments and `Typed`'s signatures. |
 | `Test` | 400 | `zs test`: finds `[<Tests>]` values ([0009](../docs/proposals/0009-tests-as-values.md)), builds the test binary, runs each test in its own process with a timeout, `--update` for inline expectations through the tree. |
 | `Main` | 400 | the commands, flags to `Options`, exit codes. |
+
+*As built:* `Lsp/Rpc` (framing, and JSON written as System.Text.Json wrote it, so the F# compiler's transcripts hold), `Lsp/Server`, `Lsp/Mcp`, `Build/Doc` (`docs/reference` byte for byte), `Commands` (build, run, test with `--update`, new, fetch, update, check) and `Main` (with protocol detection when started without arguments).
 
 ## 3. What flows between them
 

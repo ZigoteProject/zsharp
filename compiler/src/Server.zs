@@ -15,12 +15,6 @@ extern fflush : cptr -> i32
 
 let private nul = String.ofByte (u8 0)
 
-// where zs caches what it built: the user's cache directory
-let private cacheRoot () : string =
-  match Environment.getVariable "XDG_CACHE_HOME" with
-  | Some d when d <> "" -> Path.combine d "zs"
-  | _ -> Path.combine (Path.combine (Option.defaultValue "" (Environment.getVariable "HOME")) ".cache") "zs"
-
 /// The server's socket for this compiler and this environment: what a build depends on of each.
 let socketPath () : string =
   let named = [ "PATH"; "HOME"; "XDG_CACHE_HOME"; "TMPDIR"; "CPATH"; "C_INCLUDE_PATH"; "LIBRARY_PATH"; "PKG_CONFIG_PATH"; "PKG_CONFIG_LIBDIR"; "CC"; "CFLAGS"; "LDFLAGS"; "LANG"; "LC_ALL" ]
@@ -37,7 +31,7 @@ let socketPath () : string =
     | Ok t -> $"{t}"
     | Error _ -> ""
   let key = String.join nul (List.concat [ [ $"{size} {time}" ]; values; ours ])
-  Path.getFullPath (Path.combine (Path.combine (cacheRoot ()) "servers") (String.sub (Xxhash.hex (String.bytes key)) 0 16 + ".sock"))
+  Path.getFullPath (Path.combine (Path.combine (Build.Tools.cacheRoot ()) "servers") (String.sub (Xxhash.hex (String.bytes key)) 0 16 + ".sock"))
 
 // ---- messages
 
@@ -154,15 +148,6 @@ let serve (path: string) (run: list<string> -> int) : int =
       File.delete path |> ignore
       0
 
-// this program's full path, for starting another of it
-let private selfPath () : string =
-  let p = Environment.programName ()
-  if String.contains "/" p then
-    Path.getFullPath p
-  else
-    let dirs = String.split ":" (Option.defaultValue "" (Environment.getVariable "PATH"))
-    Option.defaultValue p (List.tryFind File.exists (List.map (fun (d: string) -> Path.combine d p) (List.filter (fun d -> d <> "") dirs)))
-
 /// Asks the build server to run the arguments: its exit code, with its output written here; None
 /// when none answers (one is started for the next build, apart from this process, with this
 /// environment).
@@ -193,7 +178,7 @@ let viaServer (args: list<string>) : option<int> =
   | _ ->
     if args <> [ "stop" ] then
       // its own streams, so a caller reading this one's output isn't kept waiting
-      let s : Diagnostics.ProcessStart = { program = selfPath (); args = [ "server"; path ]; stdin = Diagnostics.Null; stdout = Diagnostics.Null; stderr = Diagnostics.Null }
+      let s : Diagnostics.ProcessStart = { program = Build.Tools.selfPath (); args = [ "server"; path ]; stdin = Diagnostics.Null; stdout = Diagnostics.Null; stderr = Diagnostics.Null }
       match Diagnostics.Process.start s with
       | Ok p -> Dispose.dispose p
       | Error _ -> ()

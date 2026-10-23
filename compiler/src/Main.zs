@@ -170,8 +170,8 @@ let command (args: list<string>) : int =
   // editors may add flags such as --stdio
   | "lsp" :: _ -> Lsp.Server.serve (Console.openStandardInput ()) None
   | "mcp" :: _ -> Lsp.Mcp.serve (Console.openStandardInput ()) None
-  | [ "check"; path ] -> Build.Check.run path false
-  | [ "check"; "--strict"; path ] -> Build.Check.run path true
+  | [ "check"; path ] -> Commands.check path false
+  | [ "check"; "--strict"; path ] -> Commands.check path true
   | "run" :: args -> Commands.run args
   | "test" :: args -> Commands.test args
   | [ "new"; name ] -> if Build.Project.newProject name then 0 else 1

@@ -25,7 +25,10 @@ type Loaded =
     /// the C names its imports left out, with why
     skippedC: list<string * string>
     /// what the editor shows for the C names it imports
-    cInfos: list<string * CImport.CInfo> }
+    cInfos: list<string * CImport.CInfo>
+    /// what its imports gave (each header and its saved import): what its checked result
+    /// depends on beside its text
+    imported: string }
 
 /// The library's files after the prelude, in dependency order; a file's module is its path
 /// (core/Collections/List.zs is Collections.List). Core needs no operating system, so every
@@ -36,15 +39,16 @@ let coreFiles : list<string> =
 let stdFiles : list<string> =
   [ "IO/Stream"; "Console"; "Environment"; "Threading/Atomic"; "Threading/Mutex"; "Threading/Channel"; "Threading/Task"; "Threading/Parallel"; "Collections/Array/Parallel"; "IO/File"; "IO/Directory"; "IO/Path"; "Diagnostics/Process"; "Diagnostics/Stopwatch"; "Net/Tcp"; "Net/Unix"; "Time/Clock"; "Testing/Runner" ]
 
-/// The library: $ZS_LIB, else lib/ beside the compiler, else lib/ two directories up (the
-/// compiler built in compiler/build of a checkout of zs).
+/// The library: $ZS_LIB, else lib/ beside the compiler (an installed one), else the lib/ of the
+/// checkout the compiler was built in (the first directory up from it with lib/prelude.zs).
 let libraryDir () : string =
   match Environment.getVariable "ZS_LIB" with
   | Some d -> d
   | None ->
-    let dir = Path.getDirectoryName (Environment.programName ())
-    let beside = Path.combine dir "lib"
-    if File.exists (Path.combine beside "prelude.zs") then beside else Path.combine (Path.combine (Path.combine dir "..") "..") "lib"
+    let dir = Path.getDirectoryName (Tools.selfPath ())
+    match Tools.findUp dir "lib/prelude.zs" with
+    | Some root -> Path.combine root "lib"
+    | None -> Path.combine dir "lib"
 
 /// The library a file is part of: the lib directory above it that holds prelude.zs and core/. An
 /// editor opening one of its files checks that library on its own, not as a program that would
@@ -117,7 +121,8 @@ let load (texts: Map<string, string>) (index: int) (path: string) (modName: opti
         uses = []
         errors = errors
         skippedC = []
-        cInfos = [] }
+        cInfos = []
+        imported = "" }
     Ok m
 
 /// The library rooted at `root`, the prelude first (its names are global), then Core, then (when
@@ -262,9 +267,11 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (hosted
         problem.Value <- Some(error (lineOf d) msg)
     let skipped = Buffer.empty
     let infos = Buffer.empty
+    let gave = Buffer.empty
     let imported (header: string) (d: Ast.Decl) : list<Ast.Decl> =
       match CImport.importHeader header dir flags cacheDir d.dat with
       | Ok r ->
+        Buffer.push (header + "\n" + Result.defaultValue "" (File.readAllText (CImport.cacheFile header cacheDir))) gave
         for x in r.skipped do
           Buffer.push x skipped
         for x in r.infos do
@@ -292,7 +299,7 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (hosted
     let decls = List.collect expand m.decls
     match problem.Value with
     | Some p -> Error p
-    | None -> Ok { m with decls = decls; skippedC = Array.toList (Buffer.toArray skipped); cInfos = Array.toList (Buffer.toArray infos) }
+    | None -> Ok { m with decls = decls; skippedC = Array.toList (Buffer.toArray skipped); cInfos = Array.toList (Buffer.toArray infos); imported = String.join "\n" (Array.toList (Buffer.toArray gave)) }
   let rec visit (path: string) (pkg: Project.Package) (modName0: option<string>) (stack: list<string>) =
     if Option.isNone failure.Value then
       count.Value <- count.Value + 1

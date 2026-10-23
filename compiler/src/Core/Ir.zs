@@ -3,6 +3,7 @@
 open Types.Ty
 
 /// A pattern of a match in Core.
+[<Derive(Binary)>]
 type CPat =
   | CPWild
   | CPVar of string * Ty
@@ -19,6 +20,7 @@ type CPat =
 
 /// An expression and its type, and its number in the tree when a pass has numbered it (number):
 /// 0 for a node made since (mk), which a pass keying tables by node tells apart that way.
+[<Derive(Binary)>]
 type CExpr = { k: CKind; ty: Ty; id: int }
 
 and CKind =
@@ -259,6 +261,7 @@ let cachedFreeVars () : CExpr -> Set<string> =
   fv
 
 /// A top-level function in Core.
+[<Derive(Binary)>]
 type FunDef =
   { name: string
     pars: list<string * Ty>
@@ -276,21 +279,26 @@ type FunDef =
     line: int }
 
 /// A C function's signature.
+[<Derive(Binary)>]
 type ExternSig = { pars: list<Ty>; ret: Ty; variadic: bool }
 
 /// An effect's operation: its parameter types and result, over the effect's type parameters (TGen
 /// 0 … n - 1) and its own (TGen n …, which appear in the result only: throw : 'e -> 'a).
+[<Derive(Binary)>]
 type EffectOp = { name: string; pars: list<Ty>; ret: Ty; own: int }
 
 /// An effect (DESIGN §6.1): its number of type parameters and its operations, in order.
+[<Derive(Binary)>]
 type EffectInfo = { npars: int; ops: list<EffectOp> }
 
 /// A trait's method: TGen 0 is the trait's first type parameter, the others follow (0017), and
 /// TGen nparams is the method's ambient row (0025); `abstract zero : 'a` is a constant,
 /// implemented as unit -> 'a.
+[<Derive(Binary)>]
 type TraitMethod = { owner: string; name: string; ty: Ty; nparams: int; isConst: bool }
 
 /// [<Export "cname">]: a C entry point for a monomorphic function (unit parameters left out).
+[<Derive(Binary)>]
 type Export = { cname: string; fname: string; pars: list<Ty>; ret: Ty }
 
 /// A pattern with f applied to its variables' types.

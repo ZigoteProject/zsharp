@@ -18,15 +18,18 @@ type Local = { u: string; ty: Ty; mut: bool; depth: int }
 
 /// A member of a type: the function implementing it (`Type#Name`), whether it's static, whether
 /// it's a property (no parameters), and its parameters.
+[<Derive(Binary)>]
 type MemberInfo = { gname: string; isStatic: bool; isProperty: bool; mpars: list<MemberParam> }
 
 /// A top-level function: its type (a scheme once generalized, its TGen variables of these kinds),
 /// how many parameters it takes, and whether its group is being checked (not generalized yet).
+[<Derive(Binary)>]
 type Global = { ty: Ty; kinds: list<Kind>; arity: int; defining: bool }
 
 /// What an identifier at a place is (editor support): a use, or a binder (an inlay hint's place
 /// when its type wasn't written). `key` is what it refers to: a local's unique name or a global's
 /// qualified name ("": unknown); `isDef` says it's where `key` is defined.
+[<Derive(Binary)>]
 type Hover =
   { file: int
     token: int

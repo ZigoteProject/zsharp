@@ -4,17 +4,21 @@
 
 /// An error stops a build; a warning doesn't, unless the build is `--strict`. (The cases aren't
 /// `Error` and `Warning`, which would hide `result`'s `Error` where this module is open.)
+[<Derive(Binary)>]
 type Severity =
   | Err
   | Warn
 
 /// A place in a file of the build: the file's index, a byte offset and a length.
+[<Derive(Binary)>]
 type Span = { file: int; offset: int; length: int }
 
 /// Something said about another place: "the other definition is here".
+[<Derive(Binary)>]
 type Note = { at: Span; text: string }
 
 /// A diagnostic: its severity, its name (`unused-value`, "" for an error), where, what, and notes.
+[<Derive(Binary)>]
 type Diagnostic =
   { severity: Severity
     name: string

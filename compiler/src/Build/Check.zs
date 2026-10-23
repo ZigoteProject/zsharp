@@ -3,13 +3,152 @@
 /// Main's report).
 open Diag.Diagnostic
 
-/// A program checked: its modules (the library's, then the program's) and the checker's context
-/// (its tables, the functions' Core and the diagnostics).
-type Checked = { modules: list<Modules.Loaded>; cx: Infer.Cx.Cx; linked: Modules.Linked }
+/// A module as a check left it: its file and key (what its checked result is made from), whether
+/// it's the library's, the functions it defines (each with how many type variables it's generic
+/// over in its types), their Core (read when needed: a result restored from the cache keeps them
+/// apart), and the modules before it whose interface it sees (by index).
+type Unit = { file: string; key: string; library: bool; names: list<string * int>; funs: unit -> list<Core.Ir.FunDef>; sees: int -> bool }
+
+/// A program checked: its modules (the library's, then the program's), each as the check left it,
+/// the checker's context (its tables and diagnostics), what the packages give the link, and which
+/// of the program's modules were checked rather than restored, with how long each took.
+type Checked =
+  { modules: list<Modules.Loaded>
+    units: list<Unit>
+    cx: Infer.Cx.Cx
+    linked: Modules.Linked
+    checkedNames: list<string>
+    checkedCount: int
+    restoreMs: float
+    checkMs: float }
 
 let private late : Infer.Cx.Late = { autoDerive = Infer.Decls.autoDerive }
 
 let private inFile (m: Modules.Loaded) : Infer.Cx.InFile = { index = m.source.file; source = m.source; tokens = m.tree.tokens }
+
+// ---- the checked modules' cache (0007): each module's result under a key of its source and of
+// what it sees of the modules before it, in the user's cache directory
+
+let private checkedFile (key: string) = Path.combine (Path.combine (Tools.cacheRoot ()) "checked") (key + ".bin")
+
+let private funsFile (key: string) = Path.combine (Path.combine (Tools.cacheRoot ()) "checked") (key + ".funs.bin")
+
+// a module's result under its key, when the cache has a whole one
+let private loadChecked (key: string) : option<Infer.Snapshot.Saved> =
+  match File.readAllBytes (checkedFile key) with
+  | Ok bytes ->
+    let read : result<Infer.Snapshot.Saved, string> = Binary.ofBytes bytes
+    match read with
+    | Ok saved when saved.key = key ->
+      File.touch (checkedFile key) |> ignore
+      Some saved
+    | _ -> None
+  | Error _ -> None
+
+// a module's functions, as its result keeps them apart
+let private loadFuns (key: string) : list<Core.Ir.FunDef> =
+  match File.readAllBytes (funsFile key) with
+  | Ok bytes ->
+    let read : result<list<Core.Ir.FunDef>, string> = Binary.ofBytes bytes
+    Result.defaultValue [] read
+  | Error _ -> []
+
+// the functions a module defines, by how many type variables each is generic over in its types
+let private namesOf (funs: list<Core.Ir.FunDef>) : list<string * int> = List.map (fun (f: Core.Ir.FunDef) -> (f.name, f.ngen - f.rows)) funs
+
+// checks the modules in order (the library's, then the program's), each from the cache when its
+// key is there and no module before it had an error
+let private checkModules (cx: Infer.Cx.Cx) (lib: list<Modules.Loaded>) (prog: list<Modules.Loaded>) : list<Unit> * list<string> * int * float * float =
+  let all = Array.ofList (List.append lib prog)
+  let libCount = List.length lib
+  let names (ms: list<Modules.Loaded>) = List.choose (fun (m: Modules.Loaded) -> m.modName) ms
+  let impls (ms: list<Modules.Loaded>) = List.collect (fun (m: Modules.Loaded) -> m.impls) ms
+  // what every program module's key has: the program's modules and explicit impls
+  let programKey = Tools.hashOf (List.concat [ [ "program" ]; names prog; List.map (fun (t, n) -> t + " " + n) (impls prog) ])
+  let compiler = Tools.compilerId ()
+  let use = Tools.cacheOn ()
+  // each program module sees the library and the modules it uses, directly or not
+  let indexOf = Map.ofList (List.mapi (fun i (m: Modules.Loaded) -> (Path.getFullPath m.path, i)) (Array.toList all))
+  let seenBy = Buffer.create (Array.length all) Set.empty
+  for i in libCount .. Array.length all - 1 do
+    let m = all.[i]
+    let reach (acc: Set<int>) (u: string) =
+      match Map.tryFind (Path.getFullPath u) indexOf with
+      | Some j -> Set.union (Set.add j acc) seenBy.[j]
+      | None -> acc
+    seenBy.[i] <- List.fold reach Set.empty m.uses
+  let ifaces = Buffer.create (Array.length all) ""
+  let seens = Buffer.create (Array.length all) ""
+  let units = Buffer.empty
+  let fresh = Buffer.empty
+  let ok = ref true
+  let mutable restoreNs = u64 0
+  let mutable checkNs = u64 0
+  for i in 0 .. Array.length all - 1 do
+    let m = all.[i]
+    let library = i < libCount
+    let sees (j: int) = library || j < libCount || Set.contains j seenBy.[i]
+    if i = libCount then
+      // the program's modules and explicit impls, as at the start
+      for n in names prog do
+        for e in Infer.Cx.withEnclosing n do
+          cx.moduleNames.Value <- Set.add e cx.moduleNames.Value
+      cx.manualImpls.Value <- Set.union cx.manualImpls.Value (Set.ofList (impls prog))
+      for p in prog do
+        for (n, why) in p.skippedC do
+          cx.skippedC.Value <- Map.add n why cx.skippedC.Value
+    let before = List.init i (fun j -> if sees j then "I" + ifaces.[j] else "G" + seens.[j])
+    let key = Tools.hashOf (List.concat [ [ compiler; "check"; Path.getFullPath m.path; Option.defaultValue "" m.modName; m.source.text; m.imported; (if library then "library" else programKey) ]; before ])
+    let start = Diagnostics.Stopwatch.startNew ()
+    match (if use && ok.Value then loadChecked key else None) with
+    | Some saved ->
+      Infer.Snapshot.restore cx saved.iface
+      let now = m.source.file
+      for h in saved.hovers do
+        Buffer.push (Infer.Snapshot.movedHover saved.index now h) cx.hovers
+      for d in saved.warnings do
+        Buffer.push (Infer.Snapshot.movedDiagnostic saved.index now d) cx.diagnostics
+      match saved.mainAt with
+      | Some at -> cx.mainAt.Value <- Some(Infer.Snapshot.moved saved.index now at)
+      | None -> ()
+      ifaces.[i] <- saved.ifaceHash
+      seens.[i] <- saved.seenHash
+      Buffer.push { file = m.path; key = key; library = library; names = saved.names; funs = (fun () -> loadFuns key); sees = sees } units
+      restoreNs <- restoreNs + start.ElapsedNanoseconds
+    | None ->
+      Buffer.push m fresh
+      let marks = Infer.Snapshot.marks cx
+      let mainBefore = cx.mainAt.Value
+      let errorsBefore = Array.length (Array.filter (fun (d: Diagnostic) -> d.severity = Err) (Buffer.toArray cx.diagnostics))
+      Infer.Decls.check cx (inFile m) m.modName m.decls |> ignore
+      let errorsAfter = Array.length (Array.filter (fun (d: Diagnostic) -> d.severity = Err) (Buffer.toArray cx.diagnostics))
+      // no errors so far: results are kept
+      ok.Value <- ok.Value && errorsAfter = errorsBefore
+      let own = List.init (Buffer.length cx.funs - marks.mfuns) (fun k -> cx.funs.[marks.mfuns + k])
+      match (if ok.Value then Infer.Snapshot.written cx marks else None) with
+      | Some(iface, funs, hovers, warnings) ->
+        let ifaceHash = Xxhash.hex (Binary.toBytes iface)
+        let seenHash = Xxhash.hex (Binary.toBytes (Infer.Snapshot.seen iface))
+        ifaces.[i] <- ifaceHash
+        seens.[i] <- seenHash
+        let mainAt = if cx.mainAt.Value <> mainBefore then cx.mainAt.Value else None
+        let saved : Infer.Snapshot.Saved = { key = key; iface = iface; ifaceHash = ifaceHash; seenHash = seenHash; names = namesOf funs; hovers = hovers; warnings = warnings; mainAt = mainAt; index = m.source.file }
+        if use then
+          Tools.writeWhole (funsFile key) (Binary.toBytes funs)
+          Tools.writeWhole (checkedFile key) (Binary.toBytes saved)
+        Buffer.push { file = m.path; key = key; library = library; names = namesOf funs; funs = (fun () -> funs); sees = sees } units
+      | None ->
+        // not kept, nor anything after it: hashes no key can match
+        ok.Value <- false
+        ifaces.[i] <- "never " + key
+        seens.[i] <- "never " + key
+        Buffer.push { file = m.path; key = key; library = library; names = namesOf own; funs = (fun () -> own); sees = sees } units
+      checkNs <- checkNs + start.ElapsedNanoseconds
+  // which of the program's modules were checked (by file name), so a test can tell
+  let progPaths = Set.ofList (List.map (fun (m: Modules.Loaded) -> m.path) prog)
+  let checkedNames = List.choose (fun (m: Modules.Loaded) -> if Set.contains m.path progPaths then Some(Path.getFileName m.path) else None) (Array.toList (Buffer.toArray fresh))
+  let ms (ns: u64) = float (int ns) / 1000000.0
+  (Array.toList (Buffer.toArray units), checkedNames, Buffer.length fresh, ms restoreNs, ms checkNs)
 
 /// Checks the program whose main file is mainPath, an editor's open file from its text in texts;
 /// what stops it before checking (a file it can't read, an import cycle, syntax errors) is Error,
@@ -39,27 +178,23 @@ let programWith (texts: Map<string, string>) (mainPath: string) (requireMain: bo
         // a microcontroller has no operating system, so no Std
         let unavailable = if chip then Set.ofList (List.map (fun (f: string) -> String.replace f "/" ".") Modules.stdFiles) else Set.empty
         let cx = Infer.Cx.create (requireMain && Option.isNone ownLibrary) collect (names lib) (impls lib) unavailable late (inFile (List.head lib))
-        for m in lib do
-          Infer.Decls.check cx (inFile m) m.modName m.decls |> ignore
-        // the program's modules and explicit impls, as at the start
-        for n in names prog do
-          for e in Infer.Cx.withEnclosing n do
-            cx.moduleNames.Value <- Set.add e cx.moduleNames.Value
-        cx.manualImpls.Value <- Set.union cx.manualImpls.Value (Set.ofList (impls prog))
-        for m in prog do
-          for (n, why) in m.skippedC do
-            cx.skippedC.Value <- Map.add n why cx.skippedC.Value
-        for m in prog do
-          Infer.Decls.check cx (inFile m) m.modName m.decls |> ignore
+        let (units, checkedNames, checkedCount, restoreMs, checkMs) = checkModules cx lib prog
         Infer.Decls.finish cx
-        Ok { modules = all; cx = cx; linked = linked }
+        Ok { modules = all; units = units; cx = cx; linked = linked; checkedNames = checkedNames; checkedCount = checkedCount; restoreMs = restoreMs; checkMs = checkMs }
 
 /// Checks the program whose main file is mainPath, from the files on disk.
 let program (mainPath: string) (requireMain: bool) (collect: bool) (chip: bool) (hostBuild: bool) = programWith Map.empty mainPath requireMain collect chip hostBuild
 
-/// The program the passes after checking take: the context's tables, with every type settled (a
-/// variable bound in the context followed, a free one defaulted, rows in canonical order).
-let programOf (cx: Infer.Cx.Cx) : Core.Program.Program =
+/// A function's checked Core with every type settled, as the passes take it (a variable bound in
+/// the context followed, a free one defaulted, rows in canonical order).
+let settle (cx: Infer.Cx.Cx) (f: Core.Ir.FunDef) : Core.Ir.FunDef =
+  let v = cx.v
+  let s (t: Types.Ty.Ty) = Types.Norm.resolve v t
+  { f with pars = List.map (fun (x, t) -> (x, s t)) f.pars; ret = s f.ret; row = Types.Norm.resolveRow v f.row; body = Core.Ir.mapTypes s f.body }
+
+// the program with these functions
+let private programFrom (c: Checked) (all: list<Core.Ir.FunDef>) : Core.Program.Program =
+  let cx = c.cx
   let v = cx.v
   let settle (t: Types.Ty.Ty) = Types.Norm.resolve v t
   let pars (ps: list<string * Types.Ty.Ty>) = List.map (fun (x, t) -> (x, settle t)) ps
@@ -69,7 +204,7 @@ let programOf (cx: Infer.Cx.Cx) : Core.Program.Program =
   let ext (x: Core.Ir.ExternSig) : Core.Ir.ExternSig = { x with pars = List.map settle x.pars; ret = settle x.ret }
   { types = cx.types.Value
     externs = Map.map (fun _ x -> ext x) cx.externs.Value
-    funs = List.map fn (Array.toList (Buffer.toArray cx.funs))
+    funs = List.map fn all
     traitMethods = cx.traitMethods.Value
     effects = cx.effects.Value
     impls = cx.impls.Value
@@ -79,6 +214,14 @@ let programOf (cx: Infer.Cx.Cx) : Core.Program.Program =
     clayouts = cx.clayouts.Value
     targets = cx.targets.Value
     memberNames = Map.map (fun _ (ms: list<string * Infer.Cx.MemberInfo>) -> List.map fst ms) cx.members.Value }
+
+/// The program the passes after checking take: the context's tables and every module's functions,
+/// every type settled.
+let programOf (c: Checked) : Core.Program.Program = programFrom c (List.collect (fun (u: Unit) -> u.funs ()) c.units)
+
+/// The program's tables without its functions (a build by module reads each module's when it
+/// needs them).
+let tablesOf (c: Checked) : Core.Program.Program = programFrom c []
 
 /// Prints diagnostics and, when there's more than one, how many of each; false when they fail the
 /// command (an error, or a warning under strict).
@@ -112,47 +255,3 @@ let run (mainPath: string) (strict: bool) : int =
   | Ok c ->
     let sources = List.map (fun (m: Modules.Loaded) -> m.source) c.modules
     if report sources (Buffer.toArray c.cx.diagnostics) strict then 0 else 1
-
-// a pass's error as a diagnostic: at its line of its file ("" for the main one), or at the file
-let private passError (sources: list<Syntax.Source.Source>) (mainPath: string) (e: Core.Program.PassError) : Diagnostic =
-  let path = if e.file = "" then mainPath else e.file
-  match List.tryFind (fun (s: Syntax.Source.Source) -> s.path = path) sources with
-  | Some s ->
-    let offset = if e.line > 0 && e.line <= Array.length s.lines then s.lines.[e.line - 1] else -1
-    error { file = s.file; offset = offset; length = -1 } e.message
-  | None -> error { file = -1; offset = -1; length = -1 } e.message
-
-/// zs build: the check, with a build's report (its errors when it has any, its warnings then not
-/// shown; else its warnings), then the build; testBuild: the file's test entry for main (zs test).
-/// What a build left: whether it made the output, and its diagnostics (its errors when it failed,
-/// with the warnings before them; else its warnings), with the sources they're in.
-type Built = { made: bool; diagnostics: array<Diagnostic>; sources: list<Syntax.Source.Source> }
-
-/// zs build without printing: the check, then (with no errors, and no warnings under --strict) the
-/// build; testBuild: the file's test entry for main (zs test).
-let make (o: Options.Options) (testBuild: bool) : Built =
-  match Compile.timed o.time "parse + check" (fun () -> program o.main (not o.isLib) true (Option.isSome o.mcu) (o.target = "")) with
-  | Error(ds, sources) -> { made = false; diagnostics = ds; sources = sources }
-  | Ok c ->
-    let sources = List.map (fun (m: Modules.Loaded) -> m.source) c.modules
-    let all = Buffer.toArray c.cx.diagnostics
-    let errors = Array.filter (fun (d: Diagnostic) -> d.severity = Err) all
-    if Array.length errors > 0 then
-      { made = false; diagnostics = errors; sources = sources }
-    else if o.strict && Array.length all > 0 then
-      { made = false; diagnostics = all; sources = sources }
-    else
-      match Compile.make o (programOf c.cx) c.linked testBuild with
-      | Ok () -> { made = true; diagnostics = all; sources = sources }
-      | Error(Compile.InPass e) -> { made = false; diagnostics = Array.append all [| passError sources o.main e |]; sources = sources }
-      | Error(Compile.InTool m) -> { made = false; diagnostics = Array.append all [| passError sources o.main { file = ""; line = 0; message = m } |]; sources = sources }
-
-let build (o0: Options.Options) (testBuild: bool) : int =
-  // ZS_TIME=1 is --time for every build
-  let o = if Option.isSome (Environment.getVariable "ZS_TIME") then { o0 with time = true } else o0
-  let total = Diagnostics.Stopwatch.startNew ()
-  let b = make o testBuild
-  let code = if report b.sources b.diagnostics o.strict && b.made then 0 else 1
-  if o.time then
-    eprintln (Compile.timeLine (if o.served then "total (build server)" else "total") (float (int total.ElapsedNanoseconds) / 1000000.0))
-  code

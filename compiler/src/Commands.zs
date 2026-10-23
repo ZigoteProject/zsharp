@@ -60,14 +60,14 @@ let build (served: bool) (args: list<string>) : int =
           1
         else
           let dir = Path.combine m.root "build"
-          Directory.create dir |> ignore
-          let out = Path.combine dir m.name
-          let code = Check.build { o with main = m.main; out = out } false
+          Tools.makeDirectory dir
+          let out = if o.out <> "" then o.out else Path.combine dir m.name
+          let code = Make.build { o with main = m.main; out = out } false
           if code = 0 then
             println $"built {Path.getRelativePath (Environment.currentDirectory ()) out}"
           code
     | file :: _ ->
-      if not (fetched (dirOf file)) then 1 else Check.build { o with main = file; out = (if o.out = "" then Path.getFileNameWithoutExtension file else o.out) } false
+      if not (fetched (dirOf file)) then 1 else Make.build { o with main = file; out = (if o.out = "" then Path.getFileNameWithoutExtension file else o.out) } false
 
 /// zs run [file.zs] … [-- arguments]: the program built and run with the arguments; its exit code.
 let run (args: list<string>) : int =
@@ -92,7 +92,7 @@ let run (args: list<string>) : int =
       let exe = scratchExe ()
       // a project's program takes the arguments after its name too
       let programArgs = if List.isEmpty o.rest then List.filter (fun a -> not (isFile a)) files else o.rest
-      if Check.build { o with main = file; out = exe } false = 0 then
+      if Make.build { o with main = file; out = exe } false = 0 then
         let code =
           match Tools.runInherited exe programArgs with
           | Ok c -> c
@@ -104,6 +104,9 @@ let run (args: list<string>) : int =
       else
         File.delete exe |> ignore
         1
+
+/// zs check file.zs: its errors and warnings (its project's git dependencies fetched first).
+let check (path: string) (strict: bool) : int = if fetched (dirOf path) then Check.run path strict else 1
 
 /// zs fetch, zs update: the project's git dependencies checked out at their locked commits, or
 /// moved to the newest of their revs (zs.lock rewritten).
@@ -216,7 +219,7 @@ let private summaryLine (passed: int) (failed: int) (skipped: int) (broken: int)
 let private runTests (o: Options.Options) (src: string) (args: list<string>) : option<int * int * int> =
   let filters = List.filter (fun (a: string) -> not (String.startsWith "--" a)) args
   let exe = scratchExe ()
-  if Check.build { o with main = src; out = exe } true <> 0 then
+  if Make.build { o with main = src; out = exe } true <> 0 then
     File.delete exe |> ignore
     None
   else

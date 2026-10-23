@@ -9,7 +9,7 @@ open Core.Program
 /// ZS_DUMP_CORE=name (* for all): the Core of matching functions after reference counting, or
 /// after the stage ZS_DUMP_STAGE names (mono, inline, simplify, effects, decide, lift), as the F#
 /// compiler shows it.
-let private dumpAt (stage: string) (funs: list<MFun>) =
+let dumpAt (stage: string) (funs: list<MFun>) =
   let wanted =
     match Environment.getVariable "ZS_DUMP_STAGE" with
     | Some s -> if s = "" then "rc" else s
@@ -78,7 +78,7 @@ let lower (prog0: Program) (debugInfo: bool) (time: bool) : result<Map<string, T
   | Stops.stop e, _ -> Error e
 
 // whether the program uses one of these primitives
-let private usesPrim (prims: Set<string>) (funs: list<MFun>) : bool =
+let usesPrim (prims: Set<string>) (funs: list<MFun>) : bool =
   let rec uses (e: Core.Ir.CExpr) : bool =
     match e.k with
     | Core.Ir.CPrim(p, _) -> Set.contains p prims || List.exists uses (Core.Ir.children e.k)
@@ -86,7 +86,7 @@ let private usesPrim (prims: Set<string>) (funs: list<MFun>) : bool =
   List.exists (fun (f: MFun) -> uses f.body) funs
 
 // the primitives of a program that has weak references or arenas (code generation's checkedHeap)
-let private heapPrims : Set<string> = Set.ofList [ "weak.new"; "arena.with" ]
+let heapPrims : Set<string> = Set.ofList [ "weak.new"; "arena.with" ]
 
 // the primitives of a program that runs code on other threads: the thread pool, a task spawned or
 // on Task.blocking's helper thread, values threads share
@@ -103,7 +103,7 @@ let private anyThread (externs: Map<string, Core.Ir.ExternSig>) (n: string) : bo
   | None -> false
 
 // whether the program runs code on other threads (code generation's threaded)
-let private threaded (externs: Map<string, Core.Ir.ExternSig>) (funs: list<MFun>) : bool =
+let threaded (externs: Map<string, Core.Ir.ExternSig>) (funs: list<MFun>) : bool =
   let rec uses (e: Core.Ir.CExpr) : bool =
     match e.k with
     | Core.Ir.CPrim(p, _) when Set.contains p threadPrims -> true
@@ -119,7 +119,7 @@ let rec private wide (t: Ty) : bool =
   | TFun(a, b, _) -> wide a || wide b
   | _ -> false
 
-let private wideVectors (funs: list<MFun>) : bool =
+let wideVectors (funs: list<MFun>) : bool =
   let rec inExpr (e: Core.Ir.CExpr) : bool = wide e.ty || List.exists inExpr (Core.Ir.children e.k)
   List.exists (fun (f: MFun) -> wide f.ret || List.exists (fun (_, t) -> wide t) f.pars || inExpr f.body) funs
 
@@ -141,17 +141,22 @@ let private exportsHandles (prog: Program) : bool =
       | _ -> true
   List.exists (fun (e: Core.Ir.Export) -> handleTy e.ret || List.exists handleTy e.pars) prog.exports
 
-/// The runtime's sources: $ZS_RUNTIME, else beside the compiler, else runtime/ two directories up
-/// (the compiler built in compiler/build of a checkout of zs).
+/// The runtime's sources: $ZS_RUNTIME, else beside the compiler (an installed one), else the
+/// runtime/ of the checkout the compiler was built in.
 let runtimeDir () : string =
   match Environment.getVariable "ZS_RUNTIME" with
   | Some d -> d
   | None ->
-    let dir = Path.getDirectoryName (Environment.programName ())
-    if File.exists (Path.combine dir "rt.c") then dir else Path.combine (Path.combine (Path.combine dir "..") "..") "runtime"
+    let dir = Path.getDirectoryName (Tools.selfPath ())
+    if File.exists (Path.combine dir "rt.c") then
+      dir
+    else
+      match Tools.findUp dir "runtime/rt.c" with
+      | Some root -> Path.combine root "runtime"
+      | None -> dir
 
 // the processor --cpu names, as clang takes it: -march on x86-64, -mcpu elsewhere
-let private cpuFlags (o: Options.Options) : list<string> =
+let cpuFlags (o: Options.Options) : list<string> =
   let x86 = o.target = "" || String.startsWith "x86_64" o.target
   match o.cpu with
   | Some c -> [ (if x86 then "-march=" else "-mcpu=") + c ]
@@ -159,7 +164,7 @@ let private cpuFlags (o: Options.Options) : list<string> =
 
 // what the link takes for the packages' [c] sections: their C flags (for the C sources among
 // them), then the sources, libraries and files (a name is a library's)
-let private linkArgs (linked: Modules.Linked) : list<string> =
+let linkArgs (linked: Modules.Linked) : list<string> =
   List.append linked.cflags (List.map (fun (l: string) -> if String.startsWith "-" l || String.contains "/" l then l else "-l" + l) linked.links)
 
 /// What stops a build after checking: a pass's error (at a line), or a tool's failure.
