@@ -492,6 +492,30 @@ let private run (argv: string[]) =
         with CompileErrorAt(file, line, col, msg) ->
             printError file line col msg
             1
+    | [ "tokens"; f ] ->
+        // zs tokens file: the tokens as compiler/'s lexer prints them, for comparing the two:
+        // offset and length in bytes, then the text or a layout token's name
+        let src = (File.ReadAllText f).Replace("\r\n", "\n")
+        let bytesBefore = Array.zeroCreate (src.Length + 1)
+
+        for i in 0 .. src.Length - 1 do
+            bytesBefore[i + 1] <- bytesBefore[i] + (if Char.IsHighSurrogate src[i] then 4 elif Char.IsLowSurrogate src[i] then 0 else Text.Encoding.UTF8.GetByteCount(string src[i]))
+
+        for t in Syntax.lex src do
+            let shown =
+                match t.tok with
+                | KNewline -> "<newline>"
+                | KIndent -> "<indent>"
+                | KDedent -> "<dedent>"
+                | KEof -> "<eof>"
+                | KSym ";" when t.text = "" -> "<;>"
+                | KSym "~-" -> "~-"
+                | _ -> t.text
+
+            let length = bytesBefore[t.offset + t.text.Length] - bytesBefore[t.offset]
+            printfn "%d %d %s" bytesBefore[t.offset] length shown
+
+        0
     | "tree" :: rest ->
         // zs tree file: the syntax tree (0019), for debugging; --check files…: each one's tree
         // gives back its text byte for byte (tests/cst/roundtrip.sh)

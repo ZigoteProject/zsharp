@@ -1,0 +1,9 @@
+# The Z# compiler, in Z# (phase 11, proposal 0020; compiler/ARCHITECTURE.md is its map)
+[package]
+name = "zs"
+version = "0.5.0"
+main = "src/Main.zs"
+
+[dependencies]
+libclang = { path = "../packages/libclang" }
+xxhash = { path = "../packages/xxhash" }
