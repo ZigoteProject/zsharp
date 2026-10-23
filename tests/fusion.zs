@@ -8,7 +8,11 @@ let noisy x =
 let basics () =
   let r = 3
   let before = Runtime.allocations ()
-  let total = List.init 200 (fun i -> i + r) |> List.map (fun x -> x * 3) |> List.filter (fun x -> x % 2 = 0) |> List.sum
+  let total =
+    List.init 200 (fun i -> i + r)
+    |> List.map (fun x -> x * 3)
+    |> List.filter (fun x -> x % 2 = 0)
+    |> List.sum
   let count = List.init 50 (fun i -> i * i) |> List.filter (fun x -> x % 3 = 1) |> List.length
   let folded = List.init 10 (fun i -> i) |> List.fold (fun acc x -> acc * 2 + x) 0
   let floats = List.init 4 (fun i -> float i * 0.5) |> List.sumBy (fun x -> x * x)
@@ -28,12 +32,16 @@ let more () =
   let fromList = xs |> List.map (fun x -> x * x) |> List.filter (fun x -> x % 2 = 0) |> List.sum
   let counted = xs |> List.filter (fun x -> x > 2) |> List.length
   let fromArray = a |> Array.map (fun x -> x * 2.0) |> Array.sum
-  let folded = a |> Array.toList |> List.map (fun x -> x + 1.0) |> List.fold (fun acc x -> acc * x) 1.0
+  let folded =
+    a |> Array.toList |> List.map (fun x -> x + 1.0) |> List.fold (fun acc x -> acc * x) 1.0
   let allocated = Runtime.allocations () - before
   println $"{fromList} {counted} {fromArray} {folded} allocations {allocated}"
   // iter: a consumer that prints; stages that can't panic run in the same loop
   let before = Runtime.allocations ()
-  xs |> List.filter (fun x -> x % 2 = 1) |> List.map (fun x -> float x * 0.5) |> List.iter (fun h -> print $"{h} ")
+  xs
+  |> List.filter (fun x -> x % 2 = 1)
+  |> List.map (fun x -> float x * 0.5)
+  |> List.iter (fun h -> print $"{h} ")
   a |> Array.map (fun x -> x - 1.0) |> Array.iter (fun x -> print $"{x} ")
   println $"allocations {Runtime.allocations () - before}"
   // a stage that could panic (overflow) isn't fused with a consumer that prints: all of it runs

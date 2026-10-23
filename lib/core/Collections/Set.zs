@@ -36,10 +36,12 @@ module Set =
   let union (a: Set<'a>) (b: Set<'a>) = List.fold (fun s x -> Set.add x s) a (Set.toList b)
 
   /// The elements in both sets.
-  let intersect (a: Set<'a>) (b: Set<'a>) = Set.ofList (List.filter (fun x -> Set.contains x b) (Set.toList a))
+  let intersect (a: Set<'a>) (b: Set<'a>) =
+    Set.ofList (List.filter (fun x -> Set.contains x b) (Set.toList a))
 
   /// The elements of `a` that aren't in `b`.
-  let difference (a: Set<'a>) (b: Set<'a>) = Set.ofList (List.filter (fun x -> not (Set.contains x b)) (Set.toList a))
+  let difference (a: Set<'a>) (b: Set<'a>) =
+    Set.ofList (List.filter (fun x -> not (Set.contains x b)) (Set.toList a))
 
 /// Sets print as `set [1; 2; 3]`.
 impl Show<Set<'a>> =

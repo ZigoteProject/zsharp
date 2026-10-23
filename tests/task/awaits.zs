@@ -35,7 +35,8 @@ let peakKB () =
   | Ok s ->
     String.split "\n" s
     |> List.tryFind (String.startsWith "VmHWM:")
-    |> Option.bind (fun l -> String.parseInt (String.trim (String.replace (String.replace l "VmHWM:" "") "kB" "")))
+    |> Option.bind (fun l ->
+      String.parseInt (String.trim (String.replace (String.replace l "VmHWM:" "") "kB" "")))
     |> Option.defaultValue 0
   | Error _ -> 0
 

@@ -67,7 +67,9 @@ module HashMap =
     { buckets = buckets; size = if present then size - 1 else size }
 
   /// The map without `key`.
-  let remove key (m: HashMap<'k, 'v>) = if Array.length m.buckets = 0 then m else HashMap.removeFrom key m
+  let remove key (m: HashMap<'k, 'v>) =
+    if Array.length m.buckets = 0 then m else HashMap.removeFrom key m
 
   /// A hash map with the pairs' bindings.
-  let ofList (pairs: list<'k * 'v>) = List.fold (fun m (k, v) -> HashMap.add k v m) HashMap.empty pairs
+  let ofList (pairs: list<'k * 'v>) =
+    List.fold (fun m (k, v) -> HashMap.add k v m) HashMap.empty pairs

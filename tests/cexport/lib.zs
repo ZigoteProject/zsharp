@@ -19,7 +19,8 @@ let add (a: Vec2) (b: Vec2) : Vec2 = { x = a.x + b.x; y = a.y + b.y }
 let area (r: Box) : f64 = (r.hi.x - r.lo.x) * (r.hi.y - r.lo.y)
 
 [<Export "geo_grow">]
-let grow (r: Box) (by: f64) : Box = { lo = r.lo; hi = { x = r.hi.x + by; y = r.hi.y + by }; id = r.id + i32 1 }
+let grow (r: Box) (by: f64) : Box =
+  { lo = r.lo; hi = { x = r.hi.x + by; y = r.hi.y + by }; id = r.id + i32 1 }
 
 [<Export "geo_swap">]
 let swap (p: Pair) : Pair = { a = p.b; b = p.a }

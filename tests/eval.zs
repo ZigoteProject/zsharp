@@ -116,5 +116,6 @@ let main () =
   show small
   printf "\n" |> ignore
   let (v2, st2) = eval Empty small 0 { steps = 0; maxDepth = 0 }
-  printf "value = %ld, steps = %ld, size %ld -> %ld\n" v2 st2.steps (size prog) (size small) |> ignore
+  printf "value = %ld, steps = %ld, size %ld -> %ld\n" v2 st2.steps (size prog) (size small)
+  |> ignore
   if v = v2 then 0 else 1

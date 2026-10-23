@@ -11,7 +11,8 @@ let main () =
   println $"{Array.toList (Array.sort a)} {Array.toList (Array.rev a)} {Array.contains 9 a} {Array.toList (Array.sub a 1 2)} {Array.toList (Array.filter (fun x -> x > 3) a)}"
   let s = "  Hello, World  "
   let t = s.Trim()
-  let (world, hell, x, o, comma, dash, l, bigL, ab) = ("World", "Hell", "x", "o", ", ", "-", "l", "L", "ab")
+  let (world, hell, x, o, comma, dash, l, bigL, ab) =
+    ("World", "Hell", "x", "o", ", ", "-", "l", "L", "ab")
   println $"[{t}] {t.ToUpper()} {t.ToLower()} {t.Contains(world)} {t.StartsWith(hell)} {t.EndsWith(x)} {t.IndexOf(o)}"
   println $"{String.split comma t} {String.join dash [ x; o; l ]} {t.Replace(l, bigL)} {t.Substring(7, 5)} {String.repeat 3 ab}"
   let (n1, n2, n3, f1, f2) = ("123", "-45", "12x", "2.5", "nope")

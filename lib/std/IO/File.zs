@@ -32,10 +32,12 @@ let appendAllText (path: string) (text: string) =
   ioResult ()
 
 /// The whole file as a string, read on `Task.blocking`'s helper thread so tasks go on meanwhile.
-let readAllTextAsync (path: string) : Task<result<string, string>> = Task.blocking (fun () -> readAllText path)
+let readAllTextAsync (path: string) : Task<result<string, string>> =
+  Task.blocking (fun () -> readAllText path)
 
 /// Replaces the file's contents with `text`, on `Task.blocking`'s helper thread.
-let writeAllTextAsync (path: string) (text: string) : Task<result<unit, string>> = Task.blocking (fun () -> writeAllText path text)
+let writeAllTextAsync (path: string) (text: string) : Task<result<unit, string>> =
+  Task.blocking (fun () -> writeAllText path text)
 
 /// Deletes the file.
 let delete (path: string) =

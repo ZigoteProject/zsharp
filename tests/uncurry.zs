@@ -28,7 +28,8 @@ let main () =
   let a = add3 "a"
   println $"{add3 "x" "y" "z"} {ab "c"} {a "b" "c"} {apply3 (fun x y z -> z + y + x + s)} {apply3 add3}"
   // a closure with fewer parameters than the call has arguments: the rest go to its result
-  let pick (b: bool) = if b then (fun (x: string) -> fun (y: string) -> x) else (fun x -> fun y -> y)
+  let pick (b: bool) =
+    if b then (fun (x: string) -> fun (y: string) -> x) else (fun x -> fun y -> y)
   let first = pick true
   println $"{first "left" "right"} {pick false "left" "right"}"
   // a curried local function, recursive

@@ -42,7 +42,13 @@ let private secret = 41
 let collatzSteps start =
   let limit = 1000
   // local mutual recursion, capturing `limit`
-  let rec down n steps = if n = 1 || steps > limit then steps else if n % 2 = 0 then down (n / 2) (steps + 1) else up n steps
+  let rec down n steps =
+    if n = 1 || steps > limit then
+      steps
+    else if n % 2 = 0 then
+      down (n / 2) (steps + 1)
+    else
+      up n steps
   and up n steps = down (3 * n + 1) (steps + 1)
   down start 0
 

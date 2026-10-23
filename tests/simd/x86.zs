@@ -10,7 +10,8 @@ let main () =
   let v = F32x4.init (fun i -> f32 (i + 1) * f32 (i + 1))
   let r = Simd.X86.rsqrt4 v
   // an estimate: 1 / sqrt x to within 1.5 * 2^-12
-  let close = F32x4.lessThan (F32x4.abs (r * F32x4.sqrt v - F32x4.splat (f32 1.0))) (F32x4.splat (f32 0.001))
+  let close =
+    F32x4.lessThan (F32x4.abs (r * F32x4.sqrt v - F32x4.splat (f32 1.0))) (F32x4.splat (f32 0.001))
   println $"rsqrt close: {Mask4.all close}"
   println $"movemask {Simd.X86.movemask4 (v - F32x4.splat (f32 5.0))}"
   let a = I16x8.init (fun i -> i16 (i + 1))

@@ -9,4 +9,5 @@ let args () = List.init (Native.argc () - 1) (fun i -> Native.arg (i + 1))
 let programName () = Native.arg 0
 
 /// The environment variable `name`, or `None` when it isn't set.
-let getVariable (name: string) = if Native.hasVariable name then Some (Native.getVariable name) else None
+let getVariable (name: string) =
+  if Native.hasVariable name then Some (Native.getVariable name) else None

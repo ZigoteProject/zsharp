@@ -36,7 +36,9 @@ let main () =
   // a captured list and string cross threads (marked shared): both sides read them
   let names = [ "ada"; "grace"; "edsger" ]
   let greeting = "hello"
-  let (n1, n2) = Parallel.both (fun () -> List.length names) (fun () -> String.length greeting + List.length names)
+  let (n1, n2) =
+    Parallel.both (fun () -> List.length names) (fun () ->
+      String.length greeting + List.length names)
   println $"captured: {n1} {n2}"
 
   // for, counting with an Atomic
@@ -92,7 +94,8 @@ let main () =
   println $"workers: {Parallel.workers () > 0}"
 
   // a top-level list read on every thread
-  let found = Parallel.reduce 0 100 0 (fun i -> if List.contains i primes then 1 else 0) (fun x y -> x + y)
+  let found =
+    Parallel.reduce 0 100 0 (fun i -> if List.contains i primes then 1 else 0) (fun x y -> x + y)
   println $"primes below 100 in the list: {found}"
 
   // a shared array changed in a job: copied there, so the original is unchanged
@@ -107,7 +110,11 @@ let main () =
   let tree = List.fold (fun t x -> insert x t) Leaf [ 50; 20; 80; 10; 30; 70; 90 ]
   let sizes = Array.Parallel.init 8 (fun k -> size (insert (k * 7) tree))
   println $"trees: {Array.sum sizes}"
-  let built = Array.Parallel.init 4 (fun k -> Arena.with (fun () -> size (List.fold (fun t x -> insert x t) Leaf (List.init 100 (fun i -> (i * 37 + k) % 101)))))
+  let built =
+    Array.Parallel.init 4 (fun k ->
+      Arena.with (fun () ->
+        size (List.fold (fun t x -> insert x t) Leaf (List.init 100 (fun i -> (i * 37 + k) % 101)))))
   println $"arenas: {Array.sum built}"
-  let back = Array.Parallel.init 3 (fun k -> List.fold (fun t x -> insert x t) Leaf [ k; k + 1; k + 2 ])
+  let back =
+    Array.Parallel.init 3 (fun k -> List.fold (fun t x -> insert x t) Leaf [ k; k + 1; k + 2 ])
   println $"returned: {size back.[0] + size back.[1] + size back.[2]}"

@@ -14,4 +14,7 @@ module Process =
   /// An `Error` means it couldn't start; a failing program is an `Ok` with a nonzero code.
   let run (program: string) (args: list<string>) =
     let output = Native.runProcess program (String.join (String.ofByte (u8 0)) args)
-    if Native.ioOk () then Ok { code = Native.exitCode (); output = output } else Error (Native.ioError ())
+    if Native.ioOk () then
+      Ok { code = Native.exitCode (); output = output }
+    else
+      Error (Native.ioError ())

@@ -29,11 +29,85 @@ let fail ln msg = panic $"line {ln}: {msg}"
 let ch (s: string) (i: int) = char (String.byte s i)
 
 let keywords =
-  Set.ofList [ "let"; "rec"; "if"; "then"; "else"; "extern"; "true"; "false"; "not"; "match"; "with"; "when"; "type"; "of"; "as"; "fun"; "for"; "in"; "do"; "while"; "mutable"; "member"; "static"; "trait"; "impl"; "abstract"; "derive"; "open"; "module"; "namespace"; "private"; "and" ]
+  Set.ofList [ "let"
+    "rec"
+    "if"
+    "then"
+    "else"
+    "extern"
+    "true"
+    "false"
+    "not"
+    "match"
+    "with"
+    "when"
+    "type"
+    "of"
+    "as"
+    "fun"
+    "for"
+    "in"
+    "do"
+    "while"
+    "mutable"
+    "member"
+    "static"
+    "trait"
+    "impl"
+    "abstract"
+    "derive"
+    "open"
+    "module"
+    "namespace"
+    "private"
+    "and" ]
 
 // longest first
 let symbols =
-  [ "&&&"; "|||"; "^^^"; "<<<"; ">>>"; "~~~"; "..."; ".."; "->"; "<-"; "|>"; "|]"; "[|"; "[<"; ">]"; "::"; ">>"; "<>"; "<="; ">="; "&&"; "||"; "?"; "("; ")"; "{"; "}"; "["; "]"; ","; ";"; "|"; "."; ":"; "="; "<"; ">"; "+"; "-"; "*"; "/"; "%"; "@"; "^" ]
+  [ "&&&"
+    "|||"
+    "^^^"
+    "<<<"
+    ">>>"
+    "~~~"
+    "..."
+    ".."
+    "->"
+    "<-"
+    "|>"
+    "|]"
+    "[|"
+    "[<"
+    ">]"
+    "::"
+    ">>"
+    "<>"
+    "<="
+    ">="
+    "&&"
+    "||"
+    "?"
+    "("
+    ")"
+    "{"
+    "}"
+    "["
+    "]"
+    ","
+    ";"
+    "|"
+    "."
+    ":"
+    "="
+    "<"
+    ">"
+    "+"
+    "-"
+    "*"
+    "/"
+    "%"
+    "@"
+    "^" ]
 
 let symbolSet = Set.ofList symbols
 
@@ -48,7 +122,8 @@ let opRun (line: string) (at: int) =
   String.sub line at (j - at)
 
 let isCustomOp (s: string) =
-  s <> "" && not (Set.contains s symbolSet) && List.forall isOpChar (String.chars s) && not (List.forall (fun c -> c = '.') (String.chars s))
+  s <> "" && not (Set.contains s symbolSet) && List.forall isOpChar (String.chars s) && not (List.forall (fun c ->
+      c = '.') (String.chars s))
 
 let isPrefixOp (s: string) =
   isCustomOp s && ((String.startsWith "!" s && not (String.startsWith "!=" s)) || String.startsWith "~" s)
@@ -99,7 +174,12 @@ let closesCharLit (line: string) (j: int) =
   after < String.length line && ch line after = '\''
 
 let token t ln start i (line: string) =
-  { tok = t; line = ln; col = start + 1; len = max 1 (i - start); adj = start > 0 && ch line (start - 1) <> ' '; last = ln }
+  { tok = t
+    line = ln
+    col = start + 1
+    len = max 1 (i - start)
+    adj = start > 0 && ch line (start - 1) <> ' '
+    last = ln }
 
 let lastTok (toks: list<Token>) =
   match toks with
@@ -173,7 +253,8 @@ let lexComments (src: string) : array<Token> * list<int * int * string> =
         toks <- token KNewline ln start i line :: toks
     else if not blank && not (List.isEmpty brackets) && not (continuesLine rest) then
       let mutable frame = List.head frames
-      let closer = String.startsWith ")" rest || String.startsWith "}" rest || String.startsWith "]" rest || String.startsWith "|]" rest
+      let closer =
+        String.startsWith ")" rest || String.startsWith "}" rest || String.startsWith "]" rest || String.startsWith "|]" rest
       if not closer then
         // a block inside the bracket, as at the top level: (fun x -> and a deeper line
         if List.isEmpty frame && opensBlock (lastTok toks) && i > lastIndent then
@@ -216,10 +297,13 @@ let lexComments (src: string) : array<Token> * list<int * int * string> =
         let s = i
         let mutable value = 0
         while i < n && (hexDigit (ch line i) < radix || ch line i = '_') do
-          if ch line i <> '_' then value <- Int.wrappingAdd (Int.wrappingMul value radix) (hexDigit (ch line i))
+          if ch line i <> '_' then
+            value <- Int.wrappingAdd (Int.wrappingMul value radix) (hexDigit (ch line i))
           i <- i + 1
-        if String.replace (String.sub line s (i - s)) "_" "" = "" then fail ln $"expected digits after 0{ch line (s - 1)}"
-        if i < n && Char.isLetterOrDigit (ch line i) then fail ln $"'{ch line i}' isn't a digit in base {radix}"
+        if String.replace (String.sub line s (i - s)) "_" "" = "" then
+          fail ln $"expected digits after 0{ch line (s - 1)}"
+        if i < n && Char.isLetterOrDigit (ch line i) then
+          fail ln $"'{ch line i}' isn't a digit in base {radix}"
         toks <- token (KInt value) ln start i line :: toks
       else if Char.isDigit c then
         let s = i
@@ -241,8 +325,10 @@ let lexComments (src: string) : array<Token> * list<int * int * string> =
           | None -> fail ln "integer literal too large"
       else if c = '\'' && i + 2 < n && (ch line (i + 1) = '\\' || closesCharLit line (i + 1)) then
         // a character literal: 'a', '\n', '\u{e9}' (a type variable 'a has no closing quote)
-        let (cp, next) = if ch line (i + 1) = '\\' then unescapeAt ln line (i + 2) else codeAt line (i + 1)
-        if next >= n || ch line next <> '\'' then fail ln "a character literal holds one character: 'a'"
+        let (cp, next) =
+          if ch line (i + 1) = '\\' then unescapeAt ln line (i + 2) else codeAt line (i + 1)
+        if next >= n || ch line next <> '\'' then
+          fail ln "a character literal holds one character: 'a'"
         i <- next + 1
         toks <- token (KChar cp) ln start i line :: toks
       else if c = '\'' && i + 1 < n && Char.isLetter (ch line (i + 1)) then
@@ -325,7 +411,12 @@ let lexComments (src: string) : array<Token> * list<int * int * string> =
           // it ended on a later line: the token takes the rest of this line, and lexing goes on
           // after the closing quote there
           resume <- Some (curLine, i)
-          toks <- { tok = tok; line = ln; col = start + 1; len = n - start; adj = start > 0 && ch line (start - 1) <> ' '; last = curLine + 1 } :: toks
+          toks <- { tok = tok
+            line = ln
+            col = start + 1
+            len = n - start
+            adj = start > 0 && ch line (start - 1) <> ' '
+            last = curLine + 1 } :: toks
           i <- n
       else
         let at = i
@@ -338,14 +429,17 @@ let lexComments (src: string) : array<Token> * list<int * int * string> =
             let next = at + String.length run
             // a symbol and then the sign of its operand: x=-1, a*-b (but not (<+) or (++))
             let k = String.length run
-            if k > 1 && (String.endsWith "-" run || String.endsWith "+" run) && Set.contains (String.sub run 0 (k - 1)) symbolSet && next < n && (Char.isLetterOrDigit (ch line next) || ch line next = '_' || ch line next = '(') then String.sub run 0 (k - 1)
+            if k > 1 && (String.endsWith "-" run || String.endsWith "+" run) && Set.contains (String.sub run 0 (k - 1)) symbolSet && next < n && (Char.isLetterOrDigit (ch line next) || ch line next = '_' || ch line next = '(') then
+              String.sub run 0 (k - 1)
             else run
           else
-            match List.tryFind (fun s -> at + String.length s <= n && String.sub line at (String.length s) = s) symbols with
+            match List.tryFind (fun s ->
+              at + String.length s <= n && String.sub line at (String.length s) = s) symbols with
             | Some s -> s
             | None -> fail ln $"unexpected character '{c}'"
         // F#: `f -x` (space before, none after, following an operand) negates an argument
-        let prefixMinus = s = "-" && at > 0 && ch line (at - 1) = ' ' && at + 1 < n && ch line (at + 1) <> ' ' && followsOperandForMinus (lastTok toks)
+        let prefixMinus =
+          s = "-" && at > 0 && ch line (at - 1) = ' ' && at + 1 < n && ch line (at + 1) <> ' ' && followsOperandForMinus (lastTok toks)
         match s with
         | "(" | "{" | "[" ->
           brackets <- ch s 0 :: brackets
@@ -411,7 +505,8 @@ let space (prev: Token) (cur: Token) (unaryMinus: bool) (tight: bool) =
   let p = symText prev.tok
   let c = symText cur.tok
   if unaryMinus then ""
-  else if tight || Set.contains p asWritten || Set.contains c asWritten || isPrefixOp p then (if cur.adj then "" else " ")
+  else if tight || Set.contains p asWritten || Set.contains c asWritten || isPrefixOp p then
+    (if cur.adj then "" else " ")
   else if Set.contains p openers && Set.contains c closers then ""
   else if p = "[<" || c = ">]" then ""
   else if Set.contains p openers || Set.contains c closers then " "
@@ -455,7 +550,8 @@ let kindOf (t: Token) =
   | KInterp parts -> KInterp (List.map (fun (e, s, _) -> (e, s, 0)) parts)
   | k -> k
 
-let kinds (ts: array<Token>) = List.map kindOf (List.filter (fun t -> t.tok <> KEof) (Array.toList ts))
+let kinds (ts: array<Token>) =
+  List.map kindOf (List.filter (fun t -> t.tok <> KEof) (Array.toList ts))
 
 // Formats a source file; Error when the result would lex differently (a formatter bug).
 let format (source: string) : result<string, string> =
@@ -501,7 +597,8 @@ let format (source: string) : result<string, string> =
           lineToks <- []
           current <- t.line
           // a closer lines up with its opener's line, unless a block took its level
-          let closesOwnLevel = Set.contains (symText t.tok) closers && not (List.isEmpty opened) && not (topTook opened)
+          let closesOwnLevel =
+            Set.contains (symText t.tok) closers && not (List.isEmpty opened) && not (topTook opened)
           lineLevel <- layout + List.length opened - absorbed - (if closesOwnLevel then 1 else 0)
         lineToks <- (t, text) :: lineToks
         lastLine <- t.line

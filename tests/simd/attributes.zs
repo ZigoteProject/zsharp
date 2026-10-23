@@ -8,7 +8,8 @@ let sum (a: array<f32>) =
   s
 
 [<Target "avx2,fma">]
-let axpy (a: f32) (x: array<f32>) (y: array<f32>) : array<f32> = Array.init (Array.length x) (fun i -> a * x.[i] + y.[i])
+let axpy (a: f32) (x: array<f32>) (y: array<f32>) : array<f32> =
+  Array.init (Array.length x) (fun i -> a * x.[i] + y.[i])
 
 [<Multiversion("avx2,fma", "sse4.2")>]
 let dot (x: array<f32>) (y: array<f32>) : f32 =

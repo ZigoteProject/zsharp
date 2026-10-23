@@ -35,7 +35,8 @@ let main () =
   let { x = a; y = b } = { x = 4; y = 5 }
   println $"let {a} {b} | norm {norm { x = 3; y = 4 }} | lambda {List.map (fun { x = x } -> x) [ { x = 7; y = 0 }; { x = 8; y = 0 } ]}"
   println $"stack {top { items = [ "a"; "b" ]; depth = 2 }} {top ({ items = []; depth = 0 }: Stack<int>)}"
-  let shapes = [ { kind = Circle; size = 2; label = "one" }; { kind = Square; size = 5; label = "two" } ]
+  let shapes =
+    [ { kind = Circle; size = 2; label = "one" }; { kind = Square; size = 5; label = "two" } ]
   let mutable total = 0
   for { size = n; label = l } in shapes do
     total <- total + n

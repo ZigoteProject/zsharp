@@ -34,7 +34,9 @@ let main () =
   // cancelled on their loops
   let waiting =
     task {
-      let! (a, b) = Task.both (Task.spawn (fun () -> holder "first" log started)) (Task.spawn (fun () -> holder "second" log started))
+      let! (a, b) =
+        Task.both (Task.spawn (fun () -> holder "first" log started)) (Task.spawn (fun () ->
+            holder "second" log started))
       return a + b
     }
 

@@ -34,7 +34,8 @@ let main () =
   let p = { x = 1; y = 2 }
   let q = moved p
   printf "q = (%ld, %ld)\n" q.x q.y |> ignore
-  printf "areas: %ld %ld %ld\n" (area (Circle (p, 2))) (area (Rect (p, { x = 4; y = 6 }))) (area Dot) |> ignore
+  printf "areas: %ld %ld %ld\n" (area (Circle (p, 2))) (area (Rect (p, { x = 4; y = 6 }))) (area Dot)
+  |> ignore
   let (a, b) = swap (1, true)
   printf "swap: %d %ld\n" a b |> ignore
   printf "%s %s %s %s\n" (classify 0) (classify 2) (classify (-5)) (classify 99) |> ignore

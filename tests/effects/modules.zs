@@ -9,6 +9,7 @@ let main () =
   // Tokens.each, purely and with an effect
   Tokens.each (fun w -> print (w + " ")) [ "pure"; "instance" ]
   println ""
-  let shouted = Seq.toList (Seq(fun () -> Tokens.each (fun w -> Yield.yield (String.toUpper w)) [ "a"; "b" ]))
+  let shouted =
+    Seq.toList (Seq(fun () -> Tokens.each (fun w -> Yield.yield (String.toUpper w)) [ "a"; "b" ]))
   println $"{shouted}"
   0

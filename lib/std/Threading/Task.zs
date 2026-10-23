@@ -43,10 +43,12 @@ type Promise<'a> =
 
 /// Functions on tasks.
 module Task =
-  let private newCancel () : Cancel = { cancelled = ref false; actions = ref []; nextAction = ref 0 }
+  let private newCancel () : Cancel =
+    { cancelled = ref false; actions = ref []; nextAction = ref 0 }
 
   // a task that does this work when it runs
-  let private pending (work: Cancel -> ('a -> unit) -> unit) : Task<'a> = { ready = None; work = work }
+  let private pending (work: Cancel -> ('a -> unit) -> unit) : Task<'a> =
+    { ready = None; work = work }
 
   // the work of a task that's ready: never called
   let private never (c: Cancel) (k: 'a -> unit) = ()
@@ -58,7 +60,8 @@ module Task =
     c.actions.Value <- (id, f) :: c.actions.Value
     id
 
-  let private forget (c: Cancel) (id: int) = c.actions.Value <- List.filter (fun (i, _) -> i <> id) c.actions.Value
+  let private forget (c: Cancel) (id: int) =
+    c.actions.Value <- List.filter (fun (i, _) -> i <> id) c.actions.Value
 
   // cancels c: its actions run, newest first (what the task did last is undone first), once
   let private cancelNow (c: Cancel) =
@@ -211,7 +214,8 @@ module Task =
       runIn b cb finish)
 
   /// The task's result, or `None` when it takes longer than `ms` milliseconds (it's cancelled then).
-  let timeout (ms: int) (t: Task<'a>) : Task<option<'a>> = race (map Some t) (map (fun () -> None) (sleep ms))
+  let timeout (ms: int) (t: Task<'a>) : Task<option<'a>> =
+    race (map Some t) (map (fun () -> None) (sleep ms))
 
   /// A promise with no result yet: `Task.fulfill` gives it one.
   let promise () : Promise<'a> = { result = ref None; waiting = ref []; nextWaiting = ref 0 }
@@ -233,7 +237,9 @@ module Task =
       | None ->
         let id = p.nextWaiting.Value
         p.nextWaiting.Value <- id + 1
-        let cid = onCancel c (fun () -> p.waiting.Value <- List.filter (fun (i, _) -> i <> id) p.waiting.Value)
+        let cid =
+          onCancel c (fun () ->
+            p.waiting.Value <- List.filter (fun (i, _) -> i <> id) p.waiting.Value)
         p.waiting.Value <- (id, fun x ->
           forget c cid
           k x) :: p.waiting.Value)

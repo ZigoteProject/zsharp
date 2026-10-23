@@ -70,7 +70,8 @@ let parseInt (s: string) : option<int> =
       if ok then Some (if neg then -acc else acc) else None
 
 /// The floating-point number written in `s`, or `None`.
-let parseFloat (s: string) : option<f64> = if String.isFloat s then Some (String.toFloat s) else None
+let parseFloat (s: string) : option<f64> =
+  if String.isFloat s then Some (String.toFloat s) else None
 
 /// The character that starts at byte `i` of `s`, and the byte index after it (UTF-8 decoding;
 /// a malformed sequence gives U+FFFD and moves one byte). `for c in s` uses it.

@@ -29,7 +29,8 @@ module Map =
         if mapHeight ll >= mapHeight lr then mapNode ll lk lv (mapNode lr k v r)
         else
           match lr with
-          | MapNode (lrl, lrk, lrv, lrr, _) -> mapNode (mapNode ll lk lv lrl) lrk lrv (mapNode lrr k v r)
+          | MapNode (lrl, lrk, lrv, lrr, _) ->
+            mapNode (mapNode ll lk lv lrl) lrk lrv (mapNode lrr k v r)
           | MapLeaf -> mapNode l k v r
       | MapLeaf -> mapNode l k v r
     else if hr > hl + 1 then
@@ -38,7 +39,8 @@ module Map =
         if mapHeight rr >= mapHeight rl then mapNode (mapNode l k v rl) rk rv rr
         else
           match rl with
-          | MapNode (rll, rlk, rlv, rlr, _) -> mapNode (mapNode l k v rll) rlk rlv (mapNode rlr rk rv rr)
+          | MapNode (rll, rlk, rlv, rlr, _) ->
+            mapNode (mapNode l k v rll) rlk rlv (mapNode rlr rk rv rr)
           | MapLeaf -> mapNode l k v r
       | MapLeaf -> mapNode l k v r
     else mapNode l k v r
@@ -144,7 +146,8 @@ module Map =
     | MapNode (l, k, v, r, h) -> MapNode (Map.map f l, k, f k v, Map.map f r, h)
 
   /// The entries for which `f key value` is true.
-  let filter f (m: Map<'k, 'v>) = Map.fold (fun acc k v -> if f k v then Map.add k v acc else acc) Map.empty m
+  let filter f (m: Map<'k, 'v>) =
+    Map.fold (fun acc k v -> if f k v then Map.add k v acc else acc) Map.empty m
 
 /// Maps print as `map [(1, a); (2, b)]`.
 impl Show<Map<'k, 'v>> =

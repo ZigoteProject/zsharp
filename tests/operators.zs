@@ -71,9 +71,14 @@ let pchar c = satisfy (fun x -> x = c)
 let spaces = many (pchar ' ')
 let token p = p .>> spaces
 let digits = satisfy Char.isDigit .>>. many (satisfy Char.isDigit) |>> fun (d, ds) -> d :: ds
-let number = token digits |>> fun ds -> List.fold (fun n d -> n * 10 + Option.get (Char.digitValue d)) 0 ds
+let number =
+  token digits |>> fun ds -> List.fold (fun n d -> n * 10 + Option.get (Char.digitValue d)) 0 ds
 let sign = token (pchar '+') <|> token (pchar '-')
-let sum = number .>>. many (sign .>>. number) |>> fun (first, rest) -> List.fold (fun acc (s, n) -> if s = '+' then acc + n else acc - n) first rest
+let sum =
+  number
+  .>>. many (sign .>>. number)
+  |>> fun (first, rest) ->
+    List.fold (fun acc (s, n) -> if s = '+' then acc + n else acc - n) first rest
 
 // ---- the other precedence classes
 let (=~) (a: f64) (b: f64) = a - b < 0.001 && b - a < 0.001 // like =, so tighter than &&
