@@ -109,6 +109,31 @@ let main () =
 [1; 2; 5; 8]
 ```
 
+**Types that name each other:** a type names itself and the types declared before it; types that
+refer to each other are declared together, joined with `and`, as in F#. A record holds its
+fields, so two records can't hold each other: one of them is a union.
+
+```zsharp
+type Expr = { shape: Shape; line: int }
+
+and Shape =
+  | Lit of int
+  | Add of Expr * Expr
+
+let rec eval (e: Expr) : int =
+  match e.shape with
+  | Lit n -> n
+  | Add (a, b) -> eval a + eval b
+
+let main () =
+  println $"{eval { shape = Add ({ shape = Lit 1; line = 1 }, { shape = Lit 2; line = 1 }); line = 1 }}"
+  0
+```
+
+```text
+3
+```
+
 ## Type aliases
 
 `type Name = <a type>` gives a type another name, as F#'s abbreviations do: it's the same type

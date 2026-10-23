@@ -758,6 +758,7 @@ let private symbols (path: string) : JsonNode =
         | Impl(tr, STName(t, _), _, _) -> [ sym (sprintf "impl %s<%s>" tr t) 5 ln [] ]
         | Derive(name, _)
         | DeriveGroup(name, _) -> [ sym ("derive " + name) 12 ln [] ]
+        | TypeGroup items -> items |> List.collect (fun (l, d) -> ofDecl l d)
         | Attrs(_, d)
         | Private d -> ofDecl ln d
         | _ -> []

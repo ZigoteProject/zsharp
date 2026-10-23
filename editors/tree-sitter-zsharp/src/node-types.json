@@ -277,6 +277,54 @@
     }
   },
   {
+    "type": "and_type",
+    "named": true,
+    "fields": {
+      "alias": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "type_alias",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "member_declaration",
+          "named": true
+        },
+        {
+          "type": "record_type",
+          "named": true
+        },
+        {
+          "type": "type_parameters",
+          "named": true
+        },
+        {
+          "type": "union_type",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "application",
     "named": true,
     "fields": {
@@ -9322,6 +9370,10 @@
       "multiple": true,
       "required": false,
       "types": [
+        {
+          "type": "and_type",
+          "named": true
+        },
         {
           "type": "member_declaration",
           "named": true

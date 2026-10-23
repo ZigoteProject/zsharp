@@ -816,6 +816,44 @@
           "value": "type"
         },
         {
+          "type": "SYMBOL",
+          "name": "_type_definition"
+        },
+        {
+          "type": "REPEAT",
+          "content": {
+            "type": "SEQ",
+            "members": [
+              {
+                "type": "SYMBOL",
+                "name": "_newline"
+              },
+              {
+                "type": "SYMBOL",
+                "name": "and_type"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "and_type": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "and"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "_type_definition"
+        }
+      ]
+    },
+    "_type_definition": {
+      "type": "SEQ",
+      "members": [
+        {
           "type": "CHOICE",
           "members": [
             {
@@ -5972,6 +6010,9 @@
     ],
     [
       "let_declaration"
+    ],
+    [
+      "type_declaration"
     ],
     [
       "let_function"

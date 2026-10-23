@@ -58,6 +58,7 @@ module.exports = grammar({
     [$.union_type],
     [$.union_case, $.type_name], // type T = A: an alias or a union of one case
     [$.let_declaration], // a newline after a body: the next declaration, or `and`
+    [$.type_declaration], // the same after a type's body
     [$.let_function],
     [$._primary, $.computation_expression], // name { : a record argument, or a computation expression
   ],
@@ -121,6 +122,11 @@ module.exports = grammar({
 
     type_declaration: $ => seq(
       'type',
+      $._type_definition,
+      repeat(seq($._newline, $.and_type)), // type A = … and B = …: types that name each other
+    ),
+    and_type: $ => seq('and', $._type_definition),
+    _type_definition: $ => seq(
       optional('private'),
       field('name', $.identifier),
       optional($.type_parameters),

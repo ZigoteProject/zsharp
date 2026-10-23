@@ -51,6 +51,7 @@
 (abstract_member name: (identifier) @function.method)
 (extern_declaration name: (identifier) @function)
 (type_declaration name: (identifier) @type)
+(and_type name: (identifier) @type)
 (type_extension name: (identifier) @type)
 (trait_declaration name: (identifier) @type)
 (effect_declaration name: (identifier) @type)

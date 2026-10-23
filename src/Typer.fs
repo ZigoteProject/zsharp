@@ -4533,12 +4533,15 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
     /// Declares with error recovery (set below): a nested module's declarations each get it.
     let declareRecovering: (int -> Decl -> unit) ref = ref (fun _ _ -> ())
 
+    // the types of a group (type A = … and B = …) declared ahead, before their own declarations
+    let ahead = HashSet<string>()
+
     let rec declare (ln: int) (d: Decl) =
             match d with
             | TypeDecl(name, tps, body, ms) ->
                 let name = qualify name
 
-                if prims.Contains name || builtinCons.ContainsKey name || types.ContainsKey name then
+                if prims.Contains name || builtinCons.ContainsKey name || (types.ContainsKey name && not (ahead.Remove name)) then
                     fail 0 (sprintf "type '%s' is already defined" name)
 
                 // registered first so the body can refer to the type itself
@@ -4789,6 +4792,46 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                     | RecordTy _ -> ()
                 | _ -> fail 0 "'private' applies to 'let' and 'type' declarations"
             | Const(name, v) -> consts[name] <- v
+            | TypeGroup items ->
+                // type A = … and B = …: the names first, so each body may name the others
+                let named =
+                    items
+                    |> List.map (fun (l, d) ->
+                        match d with
+                        | TypeDecl(n, tps, _, _)
+                        | Private(TypeDecl(n, tps, _, _)) -> l, qualify n, tps.Length
+                        | _ -> fail l "'and' joins records and unions")
+
+                for l, n, npars in named do
+                    if prims.Contains n || builtinCons.ContainsKey n || types.ContainsKey n then
+                        fail l (sprintf "type '%s' is already defined" n)
+
+                    types[n] <- { npars = npars; def = UnionDef [] }
+                    ahead.Add n |> ignore
+
+                for l, d in items do
+                    try
+                        declare l d
+                    with CompileError(0, msg) ->
+                        fail l msg
+
+                // a record holds its fields: one of the group reaching itself through records and
+                // tuples would be of no size
+                let rec reaches (target: string) (seen: Set<string>) (t: Ty) =
+                    match prune t with
+                    | TTuple ts -> List.exists (reaches target seen) ts
+                    | TCon(n, args) when n = target -> true
+                    | TCon(n, args) when not (seen.Contains n) ->
+                        match types.TryGetValue n with
+                        | true, { def = RecordDef fs } -> fs |> List.exists (fun (_, ft) -> reaches target (seen.Add n) (substGen args ft))
+                        | _ -> false
+                    | _ -> false
+
+                for l, n, _ in named do
+                    match types[n].def with
+                    | RecordDef fs when fs |> List.exists (fun (_, ft) -> reaches n Set.empty ft) ->
+                        fail l (sprintf "record '%s' contains itself through another record; make one of them a union" (shortName n))
+                    | _ -> ()
             | FunGroup items ->
                 // let rec f … and g …: checked together, so each may call the others
                 let defs =
@@ -5123,7 +5166,8 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
             | Fun(n, _, _, _, _)
             | TypeDecl(n, _, _, _)
             | TypeAlias(n, _, _) -> [ n ]
-            | FunGroup items -> items |> List.collect (snd >> go)
+            | FunGroup items
+            | TypeGroup items -> items |> List.collect (snd >> go)
             | Attrs(_, d)
             | Private d -> go d
             | _ -> []

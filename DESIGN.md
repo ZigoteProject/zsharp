@@ -116,7 +116,7 @@ let sumTo n =                            // imperative code is fine; mutation st
 - **Type inference:** Hindley–Milner, so annotations are optional. `(e: T)` in an expression gives a literal or a record literal its type.
   - **Dot resolution is type-directed, as in F#:** `x.M` needs `x`'s type known where it's read. Otherwise the error says to annotate `x`.
   - **Lambda arguments are typed last:** a lambda without parameter types is typed after the call's other arguments, with the parameter types the call expects. So `names |> List.map (fun s -> s.Length)` works, and so does `List.map (fun s -> s.Length) names`, which F# rejects. A lambda with annotated parameters keeps its place, so its types still reach the arguments after it.
-- **Mutual recursion:** `let rec f … and g …`, at the top level or locally. A top-level group is generalized jointly, so generic members share their type variables.
+- **Mutual recursion:** `let rec f … and g …`, at the top level or locally. A top-level group is generalized jointly, so generic members share their type variables. Types that name each other are joined the same way, `type A = … and B = …` (a type otherwise names itself and those before it); two records can't hold each other, since a record holds its fields.
 
 ### 2.2 F# features kept
 

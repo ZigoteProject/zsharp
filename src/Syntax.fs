@@ -116,6 +116,8 @@ type Decl =
     | Extern of name: string * args: SType list * variadic: bool * ret: SType
     | Fun of name: string * isRec: bool * pars: Param list * ret: SType option * body: Expr
     | FunGroup of (int * Decl) list // let rec f … and g …: Fun declarations (maybe Private) that may call each other
+    /// type A = … and B = …: records and unions (maybe Private) that may name each other
+    | TypeGroup of (int * Decl) list
     | TypeDecl of name: string * tparams: string list * TypeBody * Member list
     | TypeExt of name: string * tparams: string list * Member list // type string with member ...
     /// type Duration = i64<ns>: another name for a type, the same type wherever it's written
@@ -3265,67 +3267,24 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
 
             expect KDedent "end of derive"
             ln, Derive(name, List.ofSeq defs)
-        | KKw "type" when peek2 () = KKw "private" ->
-            advance ()
-            toks[pos.Value] <- { toks[pos.Value] with tok = KKw "type" }
-            let _, d = declOf ()
-            ln, Private d
         | KKw "type" ->
             advance ()
-            let name = ident ()
+            let first = typeDef ()
 
-            if isSym "(" then
-                errAt "classes aren't in Z#: a type is a record { … }, a union | … or an alias; put its functions in a module, or add members to a record with `with`"
+            if peek () = KNewline && peek2 () = KKw "and" then
+                // type A = … and B = …: types that name each other
+                let members = ResizeArray [ ln, first ]
 
-            let tparams = ResizeArray()
-
-            if isSym "<" then
-                advance ()
-
-                let tv () =
-                    match peek () with
-                    | KTyVar v ->
-                        advance ()
-                        v
-                    | _ -> err "type parameter"
-
-                tparams.Add(tv ())
-
-                while isSym "," do
+                while peek () = KNewline && peek2 () = KKw "and" do
                     advance ()
-                    tparams.Add(tv ())
+                    let al = line ()
+                    advance ()
+                    members.Add(al, typeDef ())
 
-                closeAngle ()
-
-            // type Name = <a type> on its line: an alias, as in F# (a record is { … }, and a union's
-            // cases have `|` or `of`: a union of one case without fields is written `| A`)
-            let aliasAhead () =
-                match toks[min (pos.Value + 1) (toks.Length - 1)].tok, toks[min (pos.Value + 2) (toks.Length - 1)].tok with
-                | (KSym("{" | "|") | KIndent | KNewline | KEof | KKw("member" | "static")), _ -> false
-                | KId _, (KKw "of" | KSym "|") -> false
-                | _ -> true
-
-            if peek () = KKw "with" then
-                ln, TypeExt(name, List.ofSeq tparams, members ())
-            elif peek () = KNewline || peek () = KEof then
-                ln, TypeDecl(name, [], UnionTy [], []) // [<Measure>] type m
-            elif isSym "=" && aliasAhead () then
-                advance ()
-                ln, TypeAlias(name, List.ofSeq tparams, ty ())
+                ln, TypeGroup(List.ofSeq members)
             else
-                expect (KSym "=") "'='"
-                let indented = peek () = KIndent
+                ln, first
 
-                if indented then
-                    advance ()
-
-                let body = typeBody ()
-                let inner = members ()
-
-                if indented then
-                    expect KDedent "end of block"
-
-                ln, TypeDecl(name, List.ofSeq tparams, body, inner @ members ())
         | KKw "trait" ->
             // trait Show<'a> = abstract show : 'a -> string ...; trait Iter<'c, 'a> = …
             advance ()
@@ -3568,6 +3527,70 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                 else
                     ln, first
         | _ -> err "'let', 'type' or 'extern'"
+
+    /// A type declaration after its `type` (or `and`): private, or not.
+    and typeDef () =
+        if peek () = KKw "private" then
+            advance ()
+            Private(typeOf ())
+        else
+            typeOf ()
+
+    and typeOf () =
+        let name = ident ()
+
+        if isSym "(" then
+            errAt "classes aren't in Z#: a type is a record { … }, a union | … or an alias; put its functions in a module, or add members to a record with `with`"
+
+        let tparams = ResizeArray()
+
+        if isSym "<" then
+            advance ()
+
+            let tv () =
+                match peek () with
+                | KTyVar v ->
+                    advance ()
+                    v
+                | _ -> err "type parameter"
+
+            tparams.Add(tv ())
+
+            while isSym "," do
+                advance ()
+                tparams.Add(tv ())
+
+            closeAngle ()
+
+        // type Name = <a type> on its line: an alias, as in F# (a record is { … }, and a union's
+        // cases have `|` or `of`: a union of one case without fields is written `| A`)
+        let aliasAhead () =
+            match toks[min (pos.Value + 1) (toks.Length - 1)].tok, toks[min (pos.Value + 2) (toks.Length - 1)].tok with
+            | (KSym("{" | "|") | KIndent | KNewline | KEof | KKw("member" | "static")), _ -> false
+            | KId _, (KKw "of" | KSym "|") -> false
+            | _ -> true
+
+        if peek () = KKw "with" then
+            TypeExt(name, List.ofSeq tparams, members ())
+        elif peek () = KNewline || peek () = KEof then
+            TypeDecl(name, [], UnionTy [], []) // [<Measure>] type m
+        elif isSym "=" && aliasAhead () then
+            advance ()
+            TypeAlias(name, List.ofSeq tparams, ty ())
+        else
+            expect (KSym "=") "'='"
+            let indented = peek () = KIndent
+
+            if indented then
+                advance ()
+
+            let body = typeBody ()
+            let inner = members ()
+
+            if indented then
+                expect KDedent "end of block"
+
+            TypeDecl(name, List.ofSeq tparams, body, inner @ members ())
 
     let tree () =
         advance () // the end of file, with the trivia before it

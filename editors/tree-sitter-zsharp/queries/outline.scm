@@ -4,6 +4,7 @@
 (let_declaration "let" @context name: (_) @name) @item
 (and_definition "and" @context name: (_) @name) @item
 (type_declaration "type" @context name: (identifier) @name) @item
+(and_type "and" @context name: (identifier) @name) @item
 (type_extension "type" @context name: (identifier) @name) @item
 (trait_declaration "trait" @context name: (identifier) @name) @item
 (effect_declaration "effect" @context name: (identifier) @name) @item

@@ -1,0 +1,1 @@
+-4 { shape = Add ({ shape = Lit 1; at = 1 }, { shape = Neg { shape = Lit 5; at = 5 }; at = 9 }); at = 0 } true 2

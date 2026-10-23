@@ -171,3 +171,25 @@ let tests =
         argument: (list
           (application function: (identifier) argument: (string (string_content)) argument: (identifier))
           (application function: (identifier) argument: (string (string_content)) argument: (identifier)))))))
+
+==================
+types that name each other, joined with and
+==================
+
+type Expr = { shape: Shape }
+
+and Shape =
+  | Lit of int
+  | Add of Expr * Expr
+
+---
+
+(source_file
+  (type_declaration
+    name: (identifier)
+    (record_type (field_declaration name: (identifier) (type_name (identifier))))
+    (and_type
+      name: (identifier)
+      (union_type
+        (union_case name: (identifier) (case_field (type_name (identifier))))
+        (union_case name: (identifier) (case_field (type_name (identifier))) (case_field (type_name (identifier))))))))
