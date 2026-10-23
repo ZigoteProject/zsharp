@@ -8,6 +8,8 @@
 (interpolated_string) @string
 (escape_sequence) @string.escape
 (interpolation ["{" "}"] @punctuation.special)
+(format_specifier) @string.special
+(format_width) @number
 (number) @number
 (measured_number) @number
 (boolean) @boolean
