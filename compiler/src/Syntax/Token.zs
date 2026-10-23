@@ -260,3 +260,15 @@ let describe (k: Kind) (text: string) : string =
   | Dedent -> "end of block"
   | Eof -> "end of file"
   | _ -> "'" + text + "'"
+
+/// A token as `zs tokens` and `zs tree` print it in both compilers: its offset, its length and
+/// its text, or a layout token's name.
+let display (src: string) (t: Token) : string =
+  match t.kind with
+  | Newline -> $"{t.offset} 0 <newline>"
+  | Indent -> $"{t.offset} 0 <indent>"
+  | Dedent -> $"{t.offset} 0 <dedent>"
+  | Eof -> $"{t.offset} 0 <eof>"
+  | Semi when t.length = 0 -> $"{t.offset} 0 <;>"
+  | Negate -> $"{t.offset} 1 ~-"
+  | _ -> $"{t.offset} {t.length} {text src t}"

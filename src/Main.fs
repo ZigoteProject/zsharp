@@ -35,6 +35,27 @@ let private printAt (word: string) (file: string) (line: int) (col: int) (msg: s
 
 let private printError (file: string) (line: int) (col: int) (msg: string) = printAt "error" file line col msg
 
+/// A token as compiler/'s `zs tokens` prints it: its offset and length in bytes, then its text or
+/// a layout token's name.
+let private tokenLine (src: string) =
+    let bytesBefore = Array.zeroCreate (src.Length + 1)
+
+    for i in 0 .. src.Length - 1 do
+        bytesBefore[i + 1] <- bytesBefore[i] + (if Char.IsHighSurrogate src[i] then 4 elif Char.IsLowSurrogate src[i] then 0 else Text.Encoding.UTF8.GetByteCount(string src[i]))
+
+    fun (t: Syntax.Token) ->
+        let shown =
+            match t.tok with
+            | KNewline -> "<newline>"
+            | KIndent -> "<indent>"
+            | KDedent -> "<dedent>"
+            | KEof -> "<eof>"
+            | KSym ";" when t.text = "" -> "<;>"
+            | KSym "~-" -> "~-"
+            | _ -> t.text
+
+        sprintf "%d %d %s" bytesBefore[t.offset] (bytesBefore[t.offset + t.text.Length] - bytesBefore[t.offset]) shown
+
 /// An error, or a warning with its kind after the message (what [<NoWarn>] takes), then its notes.
 let private printDiagnostic (d: Core.Diagnostic) =
     match d.severity with
@@ -493,28 +514,42 @@ let private run (argv: string[]) =
             printError file line col msg
             1
     | [ "tokens"; f ] ->
-        // zs tokens file: the tokens as compiler/'s lexer prints them, for comparing the two:
-        // offset and length in bytes, then the text or a layout token's name
+        // zs tokens file: the tokens as compiler/'s lexer prints them, for comparing the two
         let src = (File.ReadAllText f).Replace("\r\n", "\n")
-        let bytesBefore = Array.zeroCreate (src.Length + 1)
-
-        for i in 0 .. src.Length - 1 do
-            bytesBefore[i + 1] <- bytesBefore[i] + (if Char.IsHighSurrogate src[i] then 4 elif Char.IsLowSurrogate src[i] then 0 else Text.Encoding.UTF8.GetByteCount(string src[i]))
+        let shown = tokenLine src
 
         for t in Syntax.lex src do
-            let shown =
-                match t.tok with
-                | KNewline -> "<newline>"
-                | KIndent -> "<indent>"
-                | KDedent -> "<dedent>"
-                | KEof -> "<eof>"
-                | KSym ";" when t.text = "" -> "<;>"
-                | KSym "~-" -> "~-"
-                | _ -> t.text
+            printfn "%s" (shown t)
 
-            let length = bytesBefore[t.offset + t.text.Length] - bytesBefore[t.offset]
-            printfn "%d %d %s" bytesBefore[t.offset] length shown
+        0
+    | "parse-time" :: files ->
+        // zs parse-time files…: the milliseconds lexing and parsing them takes (the best of ten
+        // runs after one for the JIT), against compiler/'s parser (0020's criterion 2)
+        let texts =
+            files
+            |> List.map (fun f -> (File.ReadAllText f).Replace("\r\n", "\n"))
+            |> List.filter (fun t ->
+                try
+                    Syntax.parseWithTree (Syntax.lex t) |> ignore
+                    true
+                with _ ->
+                    false)
+            |> Array.ofList
 
+        let run () =
+            for t in texts do
+                Syntax.parseWithTree (Syntax.lex t) |> ignore
+
+        run ()
+
+        let best =
+            [ for _ in 1..10 ->
+                  let w = Stopwatch.StartNew()
+                  run ()
+                  w.Elapsed.TotalMilliseconds ]
+            |> List.min
+
+        printfn "%d files, %.1f ms" texts.Length best
         0
     | "tree" :: rest ->
         // zs tree file: the syntax tree (0019), for debugging; --check files…: each one's tree
@@ -532,13 +567,17 @@ let private run (argv: string[]) =
                         eprintfn "%s: the tree's text differs from the file" f
                         status <- 1
                 else
+                    // as compiler/'s parser prints it, for comparing the two: a node's kind,
+                    // its children two spaces deeper, a token as zs tokens prints it
+                    let shown = tokenLine src
+
                     let rec dump (indent: string) (n: Syntax.Node) =
                         printfn "%s%s" indent n.kind
 
                         for c in n.children do
                             match c with
                             | Syntax.N m -> dump (indent + "  ") m
-                            | Syntax.T t -> printfn "%s  %s" indent (if t.text = "" then sprintf "<%A>" t.tok else sprintf "%A" t.text)
+                            | Syntax.T t -> printfn "%s  %s" indent (shown t)
 
                     dump "" tree
             with

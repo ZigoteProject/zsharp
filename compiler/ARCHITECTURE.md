@@ -51,8 +51,8 @@ what is above it. About 20,000 lines in all.
 | `Source` | 150 | a file's text as `array<u8>`, its index in the build, and its line index (offset → line and column), built once. |
 | `Token` | 100 | the token kinds; a token is a kind, an offset and a length into the source. |
 | `Lexer` | 450 | `lex : Source -> array<Token>`, the offside rule included (indent and dedent tokens), over a `span<u8>`. Numbers through `Int.parse` and `Float.parse`. An array, not a `seq { }`: the parser looks ahead. |
-| `Tree` | 350 | [0019](../docs/proposals/0019-syntax-tree.md)'s lossless concrete tree: every token, comment and blank line, each node with its id (the file's index and its number in the file) and span; `Tree.children`, `parent`, `tokenAt`. |
-| `Parser` | 1,500 | `parse : Source -> array<Token> -> Tree / Report`: recursive descent on the stack, missing tokens and error nodes as recovery, each a `Report.diagnostic`. Runs under `Arena.with`: nothing outside the tree references a node (ids leave it), so the tree dies whole, in one free. |
+| `Tree` | 350 | [0019](../docs/proposals/0019-syntax-tree.md)'s lossless concrete tree: every token (comments and blank lines are the text between them), each node with its id (its number in the file, in the order nodes end) and span, as a few arrays indexed by ids; `Tree.child`, `parents`, `tokenAt`. |
+| `Parser` | 1,500 | `parse : Source -> array<Token> -> Tree / Report`: recursive descent on the stack, missing tokens and error nodes as recovery, each a `Report.diagnostic`. It builds the tree only (the AST is `Ast`'s view): nodes go into arrays as they end, so nothing outside references a node (ids leave the tree) and the tree dies whole, in a few frees. |
 | `Ast` | 500 | the typed view of the tree: `Expr`, `Pattern`, `Decl`, `TypeExpr`, each case carrying its node id, built from a tree on demand (`Ast.ofTree`). An error node is `Expr.Error`. |
 | `Format` | 400 | `zs fmt` on the tree: reflow to 100 columns, comments kept, ranges, `--stdin`. Replaces `Format.fs`'s token pass. |
 
@@ -258,7 +258,7 @@ itself in no more than the gen 1 build takes; peak memory at most the F# compile
 | **Tokens as an array** | `Lexer` | the parser's lookahead is an index, not a resumption |
 | **IR by pieces** | `Emit/Llvm` | `Writer.writeText w $"  {name} = add i64 {a}, {b}"` writes the pieces as `print` prints them, so an 8 MB module is never a string |
 | **Hashing by content** | `Core/Hash`, `xxhash` | names per function and cache keys from one fast hash; byte-identical output is a property, not a test's luck |
-| **A tree per arena** | `Parser` | `Parser.parse` runs under `Arena.with`; nothing outside the tree references a node, so a file's tree dies in one free after `Lower`, or at the editor's next parse |
+| **A tree as arrays** | `Parser` | a node is its id in a few arrays, not an object: nothing outside the tree references a node, so a file's tree dies in a few frees after `Lower`, or at the editor's next parse |
 | **Names are strings** | `Types`, `Infer` | short immutable strings, compared by bytes and hashed where looked up; an interner would be the design's one global, under a lock across parallel parsing |
 | **No SIMD** | | a cached build never lexes an unchanged file, the line index is built once per edit, and the passes are trees and maps |
 
