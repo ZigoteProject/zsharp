@@ -4,6 +4,6 @@
 [false] tests/mcp/broken.zs:3:3: right operand of \u0027\u002B\u0027: expected int, got string
 [false] square : \u0027a -\u003E \u0027a when \u0027a : Num
 [false] xs : list\u003Cint\u003E
-[false] List.sortWith : (\u0027a -\u003E \u0027a -\u003E \u0027b / \u0027e) -\u003E list\u003C\u0027a\u003E -\u003E list\u003C\u0027a\u003E / \u0027e when \u0027b : Ord\n  The list sorted with \u0060cmp\u0060 (negative, zero or positive, like \u0060compare\u0060). Stable.\nList.sort : list\u003C\u0027a\u003E -\u003E list\u003C\u0027a\u003E when \u0027a : Ord\n  The list sorted in ascending order. Stable.\nList.sortBy : (\u0027a -\u003E \u0027b / \u0027e) -\u003E list\u003C\u0027a\u003E -\u003E list\u003C\u0027a\u003E / \u0027e when \u0027b : Ord\n  The list sorted by the key \u0060f x\u0060. Stable.
+[false] List.sortWith : (\u0027a -\u003E \u0027a -\u003E \u0027b) -\u003E list\u003C\u0027a\u003E -\u003E list\u003C\u0027a\u003E when \u0027b : Ord\n  The list sorted with \u0060cmp\u0060 (negative, zero or positive, like \u0060compare\u0060). Stable.\nList.sort : list\u003C\u0027a\u003E -\u003E list\u003C\u0027a\u003E when \u0027a : Ord\n  The list sorted in ascending order. Stable.\nList.sortBy : (\u0027a -\u003E \u0027b) -\u003E list\u003C\u0027a\u003E -\u003E list\u003C\u0027a\u003E when \u0027b : Ord\n  The list sorted by the key \u0060f x\u0060. Stable.
 [false] exit code 0\n--- stdout\n[1; 4; 9]\n\n--- stderr\n
 [true] /etc/passwd is outside the project (.)

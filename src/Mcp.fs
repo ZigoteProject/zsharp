@@ -63,7 +63,8 @@ let private check (file: string) =
 
 let private signature (h: Hover) =
     let needs = if h.constraints = "" then "" else " when " + h.constraints
-    sprintf "%s : %s%s" (shortName h.name) (show h.hty) needs
+    let words = if h.explain = "" then "" else "\n  " + h.explain
+    sprintf "%s : %s%s%s" (shortName h.name) (show h.hty) needs words
 
 let private schema (props: (string * string * string) list) (required: string list) : JsonNode =
     obj

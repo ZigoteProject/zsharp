@@ -236,8 +236,20 @@ let private hover (path: string) (line: int) (ch: int) : JsonNode =
         let needs = if h.constraints = "" then "" else " when " + h.constraints
         let doc = docOf path h |> Option.map (fun d -> "\n\n" + d) |> Option.defaultValue ""
 
+        // the effects in words, as the definition has them (0025)
+        let words =
+            let def =
+                if h.isDef || h.key = "" then Some h
+                else match results.TryGetValue path with
+                     | true, prog -> prog.hovers |> List.tryFind (fun d -> d.isDef && d.key = h.key)
+                     | _ -> None
+
+            match def with
+            | Some d when d.explain <> "" -> "\n  " + d.explain
+            | _ -> ""
+
         obj
-            [ "contents", obj [ "kind", str "markdown"; "value", str (sprintf "```zsharp\n%s : %s%s\n```%s" h.name (show h.hty) needs doc) ]
+            [ "contents", obj [ "kind", str "markdown"; "value", str (sprintf "```zsharp\n%s : %s%s%s\n```%s" h.name (show h.hty) needs words doc) ]
               "range", range (h.hline - 1, h.hcol - 1) (h.hline - 1, h.hcol - 1 + h.hlen) ]
     | [] -> null
 

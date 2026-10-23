@@ -47,7 +47,8 @@ A result to come: a task's started with `Task.start`, or one given with `Task.fu
 ### `Task.complete`
 
 ```zsharp
-Task.complete : ('a -> unit) -> 'a -> unit
+Task.complete : ('a -> unit / <>) -> 'a -> unit
+  k must perform nothing
 ```
 
 Gives a task's result to what waits for it: the end of the code `task { }` compiles to.
@@ -88,7 +89,8 @@ Lets the other tasks run, then goes on: a turn of the event loop.
 ### `Task.bind`
 
 ```zsharp
-Task.bind : Task<'a> -> ('a -> Task<'b>) -> Task<'b>
+Task.bind : Task<'a> -> ('a -> Task<'b> / <>) -> Task<'b>
+  f must perform nothing
 ```
 
 The task `t`, then the task `f` makes from its result.
@@ -96,7 +98,8 @@ The task `t`, then the task `f` makes from its result.
 ### `Task.map`
 
 ```zsharp
-Task.map : ('a -> 'b) -> Task<'a> -> Task<'b>
+Task.map : ('a -> 'b / <>) -> Task<'a> -> Task<'b>
+  f must perform nothing
 ```
 
 The task's result with `f` applied.
@@ -187,7 +190,8 @@ Waits for the promise's result.
 ### `Task.scope`
 
 ```zsharp
-Task.scope : (Scope -> Task<'a>) -> Task<'a>
+Task.scope : (Scope -> Task<'a> / <>) -> Task<'a>
+  body must perform nothing
 ```
 
 Runs `body` with a scope for tasks to run alongside it (`Task.start`). The scope finishes
@@ -233,7 +237,8 @@ this one cancels it there (its `use` values are disposed on its thread).
 ### `Task.handOff`
 
 ```zsharp
-Task.handOff : Task<'a> -> Cancel -> ('a -> unit) -> unit
+Task.handOff : Task<'a> -> Cancel -> ('a -> unit / <>) -> unit
+  k must perform nothing
 ```
 
 `return! t` at the end of a task's body: `t` runs with the task's cancellation, and its

@@ -450,7 +450,8 @@ let private run (argv: string[]) =
                 |> List.filter (fun h -> h.decl)
                 |> List.map (fun h ->
                     let needs = if h.constraints = "" then "" else " when " + h.constraints
-                    h.name, sprintf "%s : %s%s" (Core.shortName h.name) (Core.show h.hty) needs)
+                    let words = if h.explain = "" then "" else "\n  " + h.explain
+                    h.name, sprintf "%s : %s%s%s" (Core.shortName h.name) (Core.show h.hty) needs words)
                 |> dict
 
             let stem = Path.GetFileNameWithoutExtension full
@@ -480,7 +481,9 @@ let private run (argv: string[]) =
                                 title = ""
                                 line = 0
                                 doc = Some doc },
-                              sprintf "%s : %s" (Core.shortName name) (Core.show t)
+                              sprintf "%s : %s%s" (Core.shortName name) (Core.show t) (match Core.explain [] t with
+                                                                                       | "" -> ""
+                                                                                       | w -> "\n  " + w)
                       | _ -> () ]
 
             let signatures = Dictionary<string, string>(signatures)

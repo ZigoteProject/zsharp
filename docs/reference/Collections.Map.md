@@ -101,7 +101,7 @@ The map without `key` (the same map when `key` isn't bound).
 ### `Map.fold`
 
 ```zsharp
-Map.fold : ('a -> 'b -> 'c -> 'a / 'e) -> 'a -> Map<'b, 'c> -> 'a / 'e
+Map.fold : ('a -> 'b -> 'c -> 'a) -> 'a -> Map<'b, 'c> -> 'a
 ```
 
 Combines the entries in ascending key order: `f state key value`.
@@ -149,7 +149,7 @@ The values in ascending key order.
 ### `Map.iter`
 
 ```zsharp
-Map.iter : ('a -> 'b -> unit / 'e) -> Map<'a, 'b> -> unit / 'e
+Map.iter : ('a -> 'b -> unit) -> Map<'a, 'b> -> unit
 ```
 
 Calls `f key value` on every entry in ascending key order.
@@ -157,7 +157,7 @@ Calls `f key value` on every entry in ascending key order.
 ### `Map.map`
 
 ```zsharp
-Map.map : ('a -> 'b -> 'c / 'e) -> Map<'a, 'b> -> Map<'a, 'c> / 'e
+Map.map : ('a -> 'b -> 'c) -> Map<'a, 'b> -> Map<'a, 'c>
 ```
 
 The map with `f key value` as every value.
@@ -165,7 +165,7 @@ The map with `f key value` as every value.
 ### `Map.filter`
 
 ```zsharp
-Map.filter : ('a -> 'b -> bool / 'e) -> Map<'a, 'b> -> Map<'a, 'b> / 'e when 'a : Ord
+Map.filter : ('a -> 'b -> bool) -> Map<'a, 'b> -> Map<'a, 'b> when 'a : Ord
 ```
 
 The entries for which `f key value` is true.

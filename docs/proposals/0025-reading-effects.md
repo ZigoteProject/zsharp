@@ -2,15 +2,15 @@
 
 | | |
 |---|---|
-| **Status** | Draft |
+| **Status** | Approved and built (the review before `compiler/`, with 0017): the unresolved questions as proposed |
 | **Decided at** | a design review with 0017, before the rewrite starts: 0017's `forEach` needs the trait-method rule, the printed form is part of the suite both compilers must pass, and every signature written with a row costs more to change later |
 | **Builds** | the F# compiler first (the printer, one rule in the checker, hover and `zs doc`), then phase 11's `Types/Ty.show` and `Lsp` carry it over |
 | **Rests on** | decision 23 and [0002](0002-effect-handlers.md) (rows, scoped labels, the empty rows of `share<F>`, callbacks and trait methods); [DESIGN §6.1](../../DESIGN.md#61-effect-handlers-phase-10-v3) |
 | **Related** | [0017 iteration](0017-iteration.md) (`forEach`'s body), [0020 the compiler in Z#](0020-self-hosting.md) (the printer is written twice if this waits), [0021 warnings](0021-warnings.md) (the diagnostic text), [0019 the syntax tree](0019-syntax-tree.md) (hover) |
 
-- [ ] Approved in principle
-- [ ] Discussion
-- [ ] Implementation
+- [x] Approved in principle
+- [x] Discussion
+- [x] Implementation: the printer (`Core.showWith`), the trait-method rule (`Typer.methodType`, `closeDynCalls`), the line in words (`Core.explain`; `tests/lsp/effects.sh`), `tests/effects/trait_ambient.zs` and `err_dyn_ambient.zs`
 
 ## Summary
 
@@ -158,4 +158,5 @@ The line in words is English, as every message is; labels print as `Ty.show` pri
 
 ## History
 
+- **2026-10-23:** reviewed with 0017 before `compiler/` and built, the three questions answered as proposed: `dyn` closes the ambient row (an evidence parameter on every method isn't worth a throwing body through `dyn`), the words "handles … from f, performs …", and the lone rule removed. The line in words is shown when some function argument's row says something (handled labels, or `/ <>`), so a plain `'a -> unit / Log` gets none.
 - **2026-10-23:** drafted from the phase 10 hover forms (`docs/reference`, `tests/lsp/effects.expected`), `Core.showWith`'s lone rule (`Core.fs:316-372`), `Typer.fs:1212`'s treatment of arrows without a row, and 0017's `forEach`.

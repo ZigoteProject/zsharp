@@ -156,8 +156,15 @@ Resumptions are one-shot, so a handler can't try every choice by calling `k` twi
 A function's effects follow its result type: `/ E`, `/ <E, F>` for several, `/ <E | 'e>` for
 those and whatever `'e` is, and `/ <>` for none. They're inferred: a type annotation can leave
 them out, and hover shows them (an editor shows a function's inferred effects before its `=`).
-A function that calls a function it's given has that function's effects, so the library's
-higher-order functions work with any: `List.iter : ('a -> unit / 'e) -> list<'a> -> unit / 'e`.
+
+**A function argument's effects are the function's:** one that calls a function it's given
+performs what that function performs, so the library's higher-order functions work with any:
+`List.iter : ('a -> unit) -> list<'a> -> unit` takes a body that logs or throws, and then
+performs that too. The row variable that says so (`/ 'e` on both arrows) isn't shown. The rare
+function that needs a pure argument shows `/ <>` on it: `Seq.map : ('a -> 'b / <>) -> Seq<'a> -> Seq<'b>`.
+A trait's method works the same way, and hover adds what a type says in words when its rows
+have labels: `Throw.catch : (unit -> 'a / Throw<'b>) -> result<'a, 'b>`, "handles Throw<'b>
+from f".
 
 ```zsharp
 effect Log =

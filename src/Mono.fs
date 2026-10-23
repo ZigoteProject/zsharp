@@ -312,7 +312,7 @@ let runFrom (prog: Program) (def: string -> FunDef) (roots: string list) (extern
 
         if entries.Add name then
             let tm = prog.traitMethods[tr + "." + m]
-            let methodTy = substGen [ t ] tm.ty
+            let methodTy = substGen [ t; rowEmpty ] tm.ty // through dyn, the ambient row is empty (0025)
 
             let rec split ty =
                 match prune ty with

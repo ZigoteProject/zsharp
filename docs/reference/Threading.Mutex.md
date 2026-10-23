@@ -34,7 +34,8 @@ Replaces the value.
 ### `Mutex.update`
 
 ```zsharp
-Mutex.update : Mutex<'a> -> ('a -> 'a) -> 'a
+Mutex.update : Mutex<'a> -> ('a -> 'a / <>) -> 'a
+  the argument must perform nothing
 ```
 
 Replaces the value with `f` of it, holding the lock meanwhile (so updates from several threads don't lose one another), and gives the new value. `f` mustn't use the same mutex.

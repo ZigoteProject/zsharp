@@ -8,7 +8,8 @@ a `result` into a failure.
 ### `Throw.catch`
 
 ```zsharp
-Throw.catch : (unit -> 'a / <Throw<'b> | 'e>) -> result<'a, 'b> / 'e
+Throw.catch : (unit -> 'a / Throw<'b>) -> result<'a, 'b>
+  handles Throw<'b> from f
 ```
 
 Runs `f`, giving `Ok` of its result, or `Error e` when it throws `e`:
@@ -17,7 +18,8 @@ Runs `f`, giving `Ok` of its result, or `Error e` when it throws `e`:
 ### `Throw.recover`
 
 ```zsharp
-Throw.recover : ('a -> 'b / 'e) -> (unit -> 'b / <Throw<'a> | 'e>) -> 'b / 'e
+Throw.recover : ('a -> 'b) -> (unit -> 'b / Throw<'a>) -> 'b
+  handles Throw<'a> from f
 ```
 
 Runs `f`, giving its result, or `onError e` when it throws `e`.

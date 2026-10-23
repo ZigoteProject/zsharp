@@ -63,7 +63,8 @@ The elements of an array, in order.
 ### `Seq.init`
 
 ```zsharp
-Seq.init : int -> (int -> 'a) -> Seq<'a>
+Seq.init : int -> (int -> 'a / <>) -> Seq<'a>
+  f must perform nothing
 ```
 
 `n` elements, `f 0` to `f (n - 1)`, each computed as it's consumed.
@@ -71,7 +72,8 @@ Seq.init : int -> (int -> 'a) -> Seq<'a>
 ### `Seq.unfold`
 
 ```zsharp
-Seq.unfold : ('a -> option<'b * 'a>) -> 'a -> Seq<'b>
+Seq.unfold : ('a -> option<'b * 'a> / <>) -> 'a -> Seq<'b>
+  f must perform nothing
 ```
 
 The elements of `state` unfolded: `f s` gives `Some (x, next)` for the element `x` and the
@@ -80,7 +82,7 @@ next state, or `None` at the end. Infinite while `f` never gives `None`.
 ### `Seq.iter`
 
 ```zsharp
-Seq.iter : ('a -> unit / 'e) -> Seq<'a> -> unit / 'e
+Seq.iter : ('a -> unit) -> Seq<'a> -> unit
 ```
 
 Calls `f` on each element, in order.
@@ -88,7 +90,7 @@ Calls `f` on each element, in order.
 ### `Seq.iteri`
 
 ```zsharp
-Seq.iteri : ('a -> 'b -> unit / 'e) -> Seq<'b> -> unit / 'e when 'a : Add
+Seq.iteri : ('a -> 'b -> unit) -> Seq<'b> -> unit when 'a : Add
 ```
 
 Like `Seq.iter`, with each element's index: `f i x`.
@@ -96,7 +98,7 @@ Like `Seq.iter`, with each element's index: `f i x`.
 ### `Seq.fold`
 
 ```zsharp
-Seq.fold : ('a -> 'b -> 'a / 'e) -> 'a -> Seq<'b> -> 'a / 'e
+Seq.fold : ('a -> 'b -> 'a) -> 'a -> Seq<'b> -> 'a
 ```
 
 Combines the elements from the left: `Seq.fold f s [a; b] = f (f s a) b`.
@@ -136,7 +138,7 @@ The sum of the elements (`0` for none), with `+` and `Add.zero`.
 ### `Seq.sumBy`
 
 ```zsharp
-Seq.sumBy : ('a -> 'b / 'e) -> Seq<'a> -> 'b / 'e when 'b : Add
+Seq.sumBy : ('a -> 'b) -> Seq<'a> -> 'b when 'b : Add
 ```
 
 The sum of `f x` over the elements.
@@ -144,7 +146,7 @@ The sum of `f x` over the elements.
 ### `Seq.exists`
 
 ```zsharp
-Seq.exists : ('a -> bool / 'e) -> Seq<'a> -> bool / 'e
+Seq.exists : ('a -> bool) -> Seq<'a> -> bool
 ```
 
 Whether `f` holds for some element. Stops at the first.
@@ -152,7 +154,7 @@ Whether `f` holds for some element. Stops at the first.
 ### `Seq.forall`
 
 ```zsharp
-Seq.forall : ('a -> bool / 'e) -> Seq<'a> -> bool / 'e
+Seq.forall : ('a -> bool) -> Seq<'a> -> bool
 ```
 
 Whether `f` holds for every element. Stops at the first for which it doesn't.
@@ -160,7 +162,7 @@ Whether `f` holds for every element. Stops at the first for which it doesn't.
 ### `Seq.tryFind`
 
 ```zsharp
-Seq.tryFind : ('a -> bool / 'e) -> Seq<'a> -> option<'a> / 'e
+Seq.tryFind : ('a -> bool) -> Seq<'a> -> option<'a>
 ```
 
 The first element for which `f` holds, if any. Stops there.
@@ -184,7 +186,8 @@ Whether the sequence has no elements. Computes at most the first.
 ### `Seq.map`
 
 ```zsharp
-Seq.map : ('a -> 'b) -> Seq<'a> -> Seq<'b>
+Seq.map : ('a -> 'b / <>) -> Seq<'a> -> Seq<'b>
+  f must perform nothing
 ```
 
 The sequence of `f x` for each element `x`, computed as it's consumed.
@@ -192,7 +195,8 @@ The sequence of `f x` for each element `x`, computed as it's consumed.
 ### `Seq.mapi`
 
 ```zsharp
-Seq.mapi : (int -> 'a -> 'b) -> Seq<'a> -> Seq<'b>
+Seq.mapi : (int -> 'a -> 'b / <>) -> Seq<'a> -> Seq<'b>
+  f must perform nothing
 ```
 
 Like `Seq.map`, with each element's index: `f i x`.
@@ -200,7 +204,8 @@ Like `Seq.map`, with each element's index: `f i x`.
 ### `Seq.filter`
 
 ```zsharp
-Seq.filter : ('a -> bool) -> Seq<'a> -> Seq<'a>
+Seq.filter : ('a -> bool / <>) -> Seq<'a> -> Seq<'a>
+  f must perform nothing
 ```
 
 The elements for which `f` holds, in order.
@@ -208,7 +213,8 @@ The elements for which `f` holds, in order.
 ### `Seq.choose`
 
 ```zsharp
-Seq.choose : ('a -> option<'b>) -> Seq<'a> -> Seq<'b>
+Seq.choose : ('a -> option<'b> / <>) -> Seq<'a> -> Seq<'b>
+  f must perform nothing
 ```
 
 The values of `f x` that are `Some`, in order.
@@ -216,7 +222,8 @@ The values of `f x` that are `Some`, in order.
 ### `Seq.collect`
 
 ```zsharp
-Seq.collect : ('a -> Seq<'b>) -> Seq<'a> -> Seq<'b>
+Seq.collect : ('a -> Seq<'b> / <>) -> Seq<'a> -> Seq<'b>
+  f must perform nothing
 ```
 
 The elements of `f x` for each element `x`, one sequence after another.
@@ -240,7 +247,8 @@ The first `n` elements (all of them when there are fewer); the rest aren't compu
 ### `Seq.takeWhile`
 
 ```zsharp
-Seq.takeWhile : ('a -> bool) -> Seq<'a> -> Seq<'a>
+Seq.takeWhile : ('a -> bool / <>) -> Seq<'a> -> Seq<'a>
+  f must perform nothing
 ```
 
 The elements while `f` holds; the rest aren't computed.

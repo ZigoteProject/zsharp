@@ -927,6 +927,23 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
     // about at its end, when their types are settled (unused-value)
     let discarded = ResizeArray<Ty * int * int>()
 
+    // trait methods called with an ambient row (0025): the value's type, the row, the trait, the
+    // method and the line; through dyn the row must be empty
+    let dynCalls = ResizeArray<Ty * Ty * string * string * int>()
+
+    let closeDynCalls () =
+        let calls = List.ofSeq dynCalls
+        dynCalls.Clear()
+
+        for t, row, tr, m, line in calls do
+            match prune t with
+            | TCon(d, []) when d.StartsWith "dyn:" ->
+                try
+                    unify rowEmpty row
+                with Mismatch ->
+                    fail line (sprintf "this performs %s, but %s is called through dyn %s, where its arguments must perform nothing: call it on the value's own type, or handle it inside" (fst (rowParts row) |> List.map show |> String.concat ", ") m (shortName tr))
+            | _ -> ()
+
     let warnDiscarded () =
         for t, l, c in discarded do
             let shown =
@@ -1025,6 +1042,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                   name = name
                   hty = t
                   constraints = ""
+                  explain = ""
                   decl = false
                   key = key
                   isDef = isDef
@@ -1348,6 +1366,46 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                     t
 
         mkRow (List.map label labels) tailTy
+
+    /// A trait method's type. One with function arguments (0025) has an ambient row, TGen after
+    /// the trait's parameters, shared by those arguments' arrows written without a row and by its
+    /// own last arrow: it performs what the functions it's given perform, and nothing of its own.
+    let methodType (tps: string list) (st: SType) : Ty =
+        let rec takesFunction (st: SType) =
+            match st with
+            | STFun(STFun _, _) -> true
+            | STFun(_, b) -> takesFunction b
+            | _ -> false
+
+        let ambient = TGen tps.Length
+
+        let rec fn (own: bool) (st: SType) =
+            match st with
+            | STFun(a, (STFun _ as b)) -> TFun(arg a, fn own b, rowEmpty)
+            | STFun(_, STRow(_, labels, _)) when own && not labels.IsEmpty ->
+                fail 0 "a trait's method performs nothing of its own; its arguments' effects are its row"
+            | STFun(a, STRow(b, labels, tail)) -> TFun(arg a, toTy (Some tps) b, rowOf (Some tps) labels tail)
+            | STFun(a, b) -> TFun(arg a, toTy (Some tps) b, ambient)
+            | _ -> toTy (Some tps) st
+
+        and arg (a: SType) =
+            match a with
+            | STFun _ -> fn false a
+            | _ -> toTy (Some tps) a
+
+        if takesFunction st then fn true st else toTy (Some tps) st
+
+    /// Whether a trait method's type has an ambient row (methodType).
+    let hasAmbient (t: Ty) =
+        let rec go (t: Ty) =
+            match t with
+            | TGen 1 -> true
+            | TFun(a, b, r) -> go a || go b || go (snd (rowParts r))
+            | TCon(_, ts)
+            | TTuple ts -> List.exists go ts
+            | _ -> false
+
+        go t
 
     let annot ann =
         match ann with
@@ -2885,8 +2943,12 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
     /// A trait method, instantiated; its type parameter must implement the trait.
     and traitMethod (x: string) : CExpr =
         let tm = traitMethods[traitAliases[x]]
-        let t, inst = instantiate [ kTrait tm.owner ] tm.ty
+        let t, inst = instantiate (kTrait tm.owner :: (if hasAmbient tm.ty then [ kRow ] else [])) tm.ty
         let qname = tm.owner + "." + tm.name
+
+        // through dyn, the ambient row is empty: checked once the value's type is known
+        if hasAmbient tm.ty then
+            dynCalls.Add(inst[0], inst[1], tm.owner, tm.name, currentLine.Value)
 
         if tm.isConst then
             mk (CApp(mk (CGlobal(qname, Some inst)) (tfun tUnit t), [ mk CUnit tUnit ])) t
@@ -4128,7 +4190,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                 let ps = if ps.IsEmpty then [ PUnit, None ] else ps
 
                 let expected () =
-                    let t = substGen [ toTy None head ] tm.ty
+                    let t = substGen [ toTy None head; fresh kRow ] tm.ty
                     if tm.isConst then tfun tUnit t else t
 
                 dl, fname, true, ps, ret, body, Some expected)
@@ -4400,8 +4462,16 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
 
                 recordKey d name globals[name].ty false name true
 
+                // its effects in words (0025), with the parameters' names
+                let names =
+                    ps
+                    |> List.map (fun (p, _) ->
+                        match p with
+                        | PIdent(x, None) when System.Char.IsLower x[0] -> x
+                        | _ -> "the argument")
+
                 if hovers.Count > 0 && hovers[hovers.Count - 1].name = name then
-                    hovers[hovers.Count - 1] <- { hovers[hovers.Count - 1] with decl = true }
+                    hovers[hovers.Count - 1] <- { hovers[hovers.Count - 1] with decl = true; explain = explain names globals[name].ty }
 
                 // a generic function's hover shows what its type variables need
                 let g = globals[name]
@@ -4480,7 +4550,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                     fail 0 (sprintf "trait '%s' is already defined" name)
 
                 for m, st in methods do
-                    let t = toTy (Some [ tp ]) st
+                    let t = methodType [ tp ] st
 
                     let isConst =
                         match t with
@@ -4872,6 +4942,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
 
         try
             declare ln d
+            closeDynCalls ()
             warnDiscarded ()
         with
         | CompileError(l, msg) ->

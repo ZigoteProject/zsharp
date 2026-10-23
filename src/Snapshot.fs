@@ -711,6 +711,7 @@ let writeModule (st: State) (marks: Marks) (hovers: Hover seq) (position: obj ->
                     str c h.name
                     ty c h.hty
                     str c h.constraints
+                    str c h.explain
                     bool' c h.decl
                     str c h.key
                     bool' c h.isDef
@@ -1337,6 +1338,7 @@ let readHovers (hovers: byte[]) : Hover list =
             let name = rstr c
             let t = rty c
             let cons = rstr c
+            let explain = rstr c
             let decl = rbool c
             let key = rstr c
             let isDef = rbool c
@@ -1348,6 +1350,7 @@ let readHovers (hovers: byte[]) : Hover list =
               name = name
               hty = t
               constraints = cons
+              explain = explain
               decl = decl
               key = key
               isDef = isDef

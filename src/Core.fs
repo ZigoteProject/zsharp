@@ -315,15 +315,56 @@ let private sameVar (a: Ty) (b: Ty) =
     | TGen i, TGen j -> i = j
     | _ -> false
 
+/// A function type's last arrow's row (`a -> b -> c / R`: R), if the type is a function.
+let rec lastRow (t: Ty) : Ty option =
+    match prune t with
+    | TFun(_, b, r) ->
+        match prune b with
+        | TFun _ -> lastRow b
+        | _ -> Some r
+    | _ -> None
+
+/// The rows in ambient places (0025): a function type's last arrow, and the last arrows of the
+/// function types in argument position, at any depth.
+let rec private ambientRows (t: Ty) : Ty list =
+    match prune t with
+    | TFun(a, b, r) ->
+        let arg =
+            match prune a with
+            | TFun _ -> ambientRows a
+            | _ -> []
+
+        arg
+        @ (match prune b with
+           | TFun _ -> ambientRows b
+           | _ -> [ r ])
+    | _ -> []
+
 /// A type as text. With full, names keep their namespaces (for symbol names and lookup keys,
-/// which must tell a program's own Map from Collections.Map); without, they read as written.
-/// A function's effects follow its result (`int -> unit / Yield<int>`); one without any shows
-/// none, and so does a row variable nothing else in the type mentions (it stands for any
-/// effects, and reads as the function's own).
+/// which must tell a program's own Map from Collections.Map) and every row shows; without, they
+/// read as written. A function's effects follow its result (`int -> unit / Yield<int>`); one
+/// without any shows none. The function's ambient row (its last arrow's row variable) isn't
+/// shown where it only connects the function arguments to the function, as their last arrows'
+/// rows (`List.iter : ('a -> unit) -> list<'a> -> unit`); an argument that must perform nothing
+/// shows `/ <>` (0025).
 let rec showWith (full: bool) t =
     // what naming and hiding row variables needs, found once one is shown
     let vars = lazy (varsIn t)
     let rowVars = ResizeArray<Ty>()
+
+    let ambient =
+        lazy
+            (if full then
+                 None
+             else
+                 match lastRow t |> Option.map (rowParts >> snd >> prune) with
+                 | Some(TVar _ | TGen _ as v) ->
+                     let all = vars.Force() |> List.filter (sameVar v) |> List.length
+                     let placed = ambientRows t |> List.filter (fun r -> sameVar (snd (rowParts r)) v) |> List.length
+                     if all = placed then Some v else None
+                 | _ -> None)
+
+    let hidden (v: Ty) = ambient.Force() |> Option.exists (sameVar v)
 
     let rec findRows (t: Ty) =
         match prune t with
@@ -333,7 +374,7 @@ let rec showWith (full: bool) t =
 
             match prune (snd (rowParts r)) with
             | TVar _
-            | TGen _ as v when not (rowVars.Exists(fun w -> sameVar v w)) -> rowVars.Add v
+            | TGen _ as v when not (rowVars.Exists(fun w -> sameVar v w)) && not (hidden v) -> rowVars.Add v
             | _ -> ()
 
             fst (rowParts r) |> List.iter findRows
@@ -350,47 +391,55 @@ let rec showWith (full: bool) t =
         | 0 -> "'e"
         | i -> sprintf "'e%d" (i + 1)
 
-    let lone (v: Ty) = not full && (vars.Force() |> List.filter (sameVar v) |> List.length) = 1
-
-    let rec rowText (r: Ty) =
+    // arg: the row of an argument's last arrow, which shows <> when empty
+    let rec rowText (arg: bool) (r: Ty) =
         let ls, tail = rowParts r
-        let labels = ls |> List.map show
+        let labels = ls |> List.map (show false)
 
         let tailText =
             match prune tail with
             | TCon("$total", []) -> None
-            | v when lone v -> None
+            | v when hidden v -> None
             | v -> Some(rowVarName v)
 
         match labels, tailText with
+        | [], None when arg && not full && isRowEmpty r -> "<>"
         | [], None -> ""
         | [ l ], None -> l
         | [], Some v -> v
         | ls, None -> "<" + String.concat ", " ls + ">"
         | ls, Some v -> "<" + String.concat ", " ls + " | " + v + ">"
 
-    and show (t: Ty) =
+    // arg: t is a function type in argument position
+    and show (arg: bool) (t: Ty) =
         match prune t with
         | TFun(a, b, r) ->
-            let effects = rowText r
+            let last =
+                match prune b with
+                | TFun _ -> false
+                | _ -> true
+
+            let effects = rowText (arg && last) r
+
             let param =
                 match prune a with
-                | TFun _ -> "(" + show a + ")"
-                | _ -> show a
+                | TFun _ -> "(" + show true a + ")"
+                | _ -> show false a
 
             let result =
                 match prune b with
-                | TFun _ when effects <> "" -> "(" + show b + ")"
-                | _ -> show b
+                | TFun _ when effects <> "" -> "(" + show arg b + ")"
+                | TFun _ -> show arg b
+                | _ -> show false b
 
             param + " -> " + result + (if effects = "" then "" else " / " + effects)
-        | TCon(("$ext" | "$total"), _) as r -> "<" + rowText r + ">"
+        | TCon(("$ext" | "$total"), _) as r -> "<" + rowText false r + ">"
         | TVar r when isRowKind (match r.Value with
                                  | Unbound(_, k) -> k
                                  | _ -> kAny) -> rowVarName t
-        | t -> showOne full show t
+        | t -> showOne full (show false) t
 
-    show t
+    show false t
 
 /// One type constructor's text, its parts through show.
 and private showOne (full: bool) (show: Ty -> string) (t: Ty) =
@@ -437,6 +486,48 @@ and private showOne (full: bool) (show: Ty -> string) (t: Ty) =
 
 let show = showWith false
 let showFull = showWith true
+
+/// A function type's effects in words, for hover and zs doc (0025): what it handles from each
+/// function argument (the labels of the argument's row beyond its own, in order), which arguments
+/// must perform nothing, and what it performs; "" when no argument's row says anything. `names`
+/// are the parameters' names, as the definition has them.
+let explain (names: string list) (t: Ty) : string =
+    let labelsOf (r: Ty) = fst (rowParts r) |> List.map show
+
+    let rec spine (t: Ty) =
+        match prune t with
+        | TFun(a, b, _) -> a :: spine b
+        | _ -> []
+
+    let own = lastRow t |> Option.map labelsOf |> Option.defaultValue []
+
+    // the multiset difference, in xs's order
+    let rec beyond (xs: string list) (ys: string list) =
+        match xs with
+        | [] -> []
+        | x :: rest when List.contains x ys ->
+            let i = List.findIndex ((=) x) ys
+            beyond rest (List.removeAt i ys)
+        | x :: rest -> x :: beyond rest ys
+
+    let args =
+        spine t
+        |> List.mapi (fun i a ->
+            let name = List.tryItem i names |> Option.defaultValue "the argument"
+
+            match lastRow a with
+            | Some r when isRowEmpty r -> [], [ name + " must perform nothing" ]
+            | Some r ->
+                match beyond (labelsOf r) own with
+                | [] -> [], []
+                | ls -> [ sprintf "handles %s from %s" (String.concat ", " ls) name ], []
+            | None -> [], [])
+
+    let handles = args |> List.collect fst
+    let pureArgs = args |> List.collect snd
+
+    if handles.IsEmpty && pureArgs.IsEmpty then ""
+    else String.concat ", " (handles @ pureArgs @ (if own.IsEmpty then [] else [ "performs " + String.concat ", " own ]))
 
 /// Fully resolves a type, defaulting unconstrained variables (int, f64 or string by kind).
 let rec resolve t =
@@ -906,6 +997,7 @@ and Hover =
       name: string
       hty: Ty
       constraints: string // "'a : Add" for generic functions
+      explain: string // a top-level function's effects in words (Core.explain), "" if none
       decl: bool // a top-level function's name
       key: string // what it refers to: a local's unique name or a global's qualified name ("" = unknown)
       isDef: bool // this is where `key` is defined

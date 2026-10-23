@@ -1,0 +1,1 @@
+tests/effects/err_dyn_ambient.zs:12: error: this performs Throw<string>, but each is called through dyn Visit, where its arguments must perform nothing: call it on the value's own type, or handle it inside

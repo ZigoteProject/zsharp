@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # A scripted LSP session over effects (phase 10): hover shows a function's effects and an
 # operation's type, an inlay hint a function's inferred effects before its `=`, and an operation's
-# definition and references (the perform and the clause). Prints the server's responses.
+# definition and references (the perform and the clause), and the line in words under a signature
+# whose rows have labels (0025). Prints the server's responses.
 set -u
 zs=${1:-bin/zs}
 uri="file://$(pwd)/tests/lsp/effects.zs"
@@ -18,6 +19,8 @@ frame() { printf 'Content-Length: %d\r\n\r\n%s' "$(printf '%s' "$1" | wc -c)" "$
   frame '{"jsonrpc":"2.0","id":4,"method":"textDocument/inlayHint","params":{"textDocument":{"uri":"'"$uri"'"},"range":{"start":{"line":0,"character":0},"end":{"line":20,"character":0}}}}'
   frame '{"jsonrpc":"2.0","id":5,"method":"textDocument/definition","params":{"textDocument":{"uri":"'"$uri"'"},"position":{"line":4,"character":4}}}'
   frame '{"jsonrpc":"2.0","id":6,"method":"textDocument/references","params":{"textDocument":{"uri":"'"$uri"'"},"position":{"line":1,"character":12},"context":{"includeDeclaration":true}}}'
+  frame '{"jsonrpc":"2.0","id":8,"method":"textDocument/hover","params":{"textDocument":{"uri":"'"$uri"'"},"position":{"line":17,"character":5}}}'
+  frame '{"jsonrpc":"2.0","id":9,"method":"textDocument/hover","params":{"textDocument":{"uri":"'"$uri"'"},"position":{"line":23,"character":17}}}'
   frame '{"jsonrpc":"2.0","id":7,"method":"shutdown"}'
   frame '{"jsonrpc":"2.0","method":"exit"}'
 } | "$zs" lsp | tr -d '\r' | sed 's/Content-Length: [0-9]*//' | grep -o '{.*}' | grep -v '"method"' | sed "s|$uri|URI|g; s|$(pwd)|.|g"
