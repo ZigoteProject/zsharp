@@ -347,7 +347,8 @@ let rec showCore (showTy: Ty -> string) (ind: int) (e: CExpr) : string =
   let args (xs: list<CExpr>) = String.join ", " (List.map flat xs)
   match e.k with
   | CInt n -> line $"{n}"
-  | CFloat f -> line $"{f}"
+  // as .NET shows a float: an exponent with E
+  | CFloat f -> line (String.replace $"{f}" "e" "E")
   | CBool b -> line (if b then "True" else "False")
   | CStr s -> line ("\"" + s + "\"")
   | CUnit -> line "()"
@@ -401,9 +402,12 @@ let rec showCore (showTy: Ty -> string) (ind: int) (e: CExpr) : string =
       match c with
       | (op, ps, (k, _), body) -> "\n" + line ($"| #{op}(" + String.join ", " (List.map fst ps) + $"), {k} ->") + "\n" + sub body
     line ("handle " + showTy l) + "\n" + sub b + String.concat (List.map clause cls) + "\n" + line ("| return " + r + " ->") + "\n" + sub rb
-  // the rest as the F# compiler shows them: their case's name
-  | CApp _ -> line "<CApp>"
-  | CLam _ -> line "<CLam>"
-  | CLetFun _ -> line "<CLetFun>"
-  | CLetRec _ -> line "<CLetRec>"
-  | CArraySet _ -> line "<CArraySet>"
+  | CApp(h, xs) -> line (flat h + " (" + args xs + ")")
+  | CLam(ps, b) -> line ("fun (" + String.join ", " (List.map fst ps) + ") ->") + "\n" + sub b
+  | CLetFun(n, _, ps, b, rest) -> line ("let " + n + "(" + String.join ", " (List.map fst ps) + ") =") + "\n" + sub b + "\n" + showCore showTy ind rest
+  | CLetRec(fs, rest) ->
+    let one (f: string * list<string * Ty> * CExpr) =
+      match f with
+      | (n, ps, b) -> line ("let rec " + n + "(" + String.join ", " (List.map fst ps) + ") =") + "\n" + sub b
+    String.join "\n" (List.map one fs) + "\n" + showCore showTy ind rest
+  | CArraySet(x, i, w) -> line (x + ".[" + flat i + "] <- " + flat w)

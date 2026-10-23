@@ -99,8 +99,18 @@ let run (mainPath: string) (strict: bool) : int =
     let sources = List.map (fun (m: Modules.Loaded) -> m.source) c.modules
     if report sources (Buffer.toArray c.cx.diagnostics) strict then 0 else 1
 
-/// zs build file: for now the check, with a build's report: its errors when it has any (its
-/// warnings then aren't shown), else its warnings; code generation is still the F# compiler's.
+// a pass's error as a diagnostic: at its line of its file ("" for the main one), or at the file
+let private passError (sources: list<Syntax.Source.Source>) (mainPath: string) (e: Core.Program.PassError) : Diagnostic =
+  let path = if e.file = "" then mainPath else e.file
+  match List.tryFind (fun (s: Syntax.Source.Source) -> s.path = path) sources with
+  | Some s ->
+    let offset = if e.line > 0 && e.line <= Array.length s.lines then s.lines.[e.line - 1] else -1
+    error { file = s.file; offset = offset; length = -1 } e.message
+  | None -> error { file = -1; offset = -1; length = -1 } e.message
+
+/// zs build file: the check, with a build's report (its errors when it has any, its warnings then
+/// not shown; else its warnings), then the passes after it; code generation is still the F#
+/// compiler's.
 let build (mainPath: string) (strict: bool) : int =
   match program mainPath true true with
   | Error(ds, sources) -> if report sources ds strict then 0 else 1
@@ -112,7 +122,12 @@ let build (mainPath: string) (strict: bool) : int =
       report sources errors strict |> ignore
       1
     else if report sources all strict then
-      eprintln "zs: building is the F# compiler's still (phase 11): this one checks"
-      1
+      match Compile.lower (programOf c.cx) with
+      | Error e ->
+        report sources [| passError sources mainPath e |] strict |> ignore
+        1
+      | Ok _ ->
+        eprintln "zs: code generation is the F# compiler's still (phase 11): this one checks and lowers"
+        1
     else
       1

@@ -121,6 +121,8 @@ literal's first field name).
 | `Lift` | 200 | closure conversion and lambda lifting; a closure's description (drop function, arity, full entry). |
 | `Rc` | 1,000 | Perceus: ownership, borrow inference per parameter (across modules through the ABI), moves out of mutables, drop specialization, reuse of dying cells, copy-on-write checks, re-matching; the crossing functions take their values owned (decision 75). |
 
+*As built (step 4, first part):* `Mono` (with the share check and fusion), `Inline`, `Evidence`, `Lift` and `Rc` are the F# compiler's ported, one function at a time and no `Cx` yet: each pass takes and returns a list of `Core.Program.MFun`, and a pass's error is the `Stops` effect (`Evidence`'s collected and stopped at the end, so its own code stays pure). `Build/Compile.lower` runs them in the F# compiler's order. Their Core is the F# compiler's (`ZS_NO_SIMPLIFY=1 ZS_NO_DECIDE=1`): the same text after `Rc` on the 101 programs with an `.out` that don't import C (`ZS_DUMP_CORE='*'` in both compilers; `ZS_DUMP_STAGE=mono|inline|effects|lift` shows an earlier stage's). `Simplify`, which keys its tables by node identity, and `Decide` come after code generation.
+
 ### 2.8 `Emit/`: Core to LLVM IR
 
 | Module | Lines | What it is |
