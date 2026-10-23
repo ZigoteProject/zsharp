@@ -893,6 +893,58 @@ and private withTrivia (text: string) (toks: Token[]) : Token[] =
 
 let private cons a b = Call("::", [ Tuple [ a; b ] ])
 
+/// An expression as text, near enough to what was written: a failed assert's operands (0009).
+let rec exprText (e: Expr) : string =
+    let atom (e: Expr) =
+        match e with
+        | Var _
+        | Lit _
+        | CharLit _
+        | FloatLit _
+        | BoolLit _
+        | StrLit _
+        | UnitLit
+        | Tuple _
+        | Field _
+        | Index _
+        | ArrayLit _
+        | RecordLit _ -> exprText e
+        | Call(_, []) -> exprText e
+        | At(_, e) -> exprText e
+        | _ -> "(" + exprText e + ")"
+
+    // a list literal's elements, when it is one
+    let rec items (e: Expr) =
+        match e with
+        | Var "[]" -> Some []
+        | Call("::", [ Tuple [ x; rest ] ]) -> items rest |> Option.map (fun xs -> x :: xs)
+        | _ -> None
+
+    match e with
+    | Var x -> x
+    | Lit n -> string n
+    | CharLit c -> "'" + string (char c) + "'"
+    | FloatLit f -> string f
+    | BoolLit b -> if b then "true" else "false"
+    | StrLit s -> "\"" + s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n") + "\""
+    | UnitLit -> "()"
+    | Call("::", _) when (items e).IsSome -> "[ " + ((items e).Value |> List.map exprText |> String.concat "; ") + " ]"
+    | Call("::", [ Tuple [ x; rest ] ]) -> atom x + " :: " + exprText rest
+    | Call(f, []) -> f
+    | Call(f, args) -> f + " " + (args |> List.map atom |> String.concat " ")
+    | App(f, args) -> atom f + " " + (args |> List.map atom |> String.concat " ")
+    | Bin(op, a, b) -> exprText a + " " + op + " " + exprText b
+    | Neg a -> "-" + atom a
+    | Not a -> "not " + atom a
+    | Tuple xs -> "(" + (xs |> List.map exprText |> String.concat ", ") + ")"
+    | ArrayLit xs -> "[| " + (xs |> List.map exprText |> String.concat "; ") + " |]"
+    | RecordLit fs -> "{ " + (fs |> List.map (fun (f, v) -> f + " = " + exprText v) |> String.concat "; ") + " }"
+    | Field(r, f) -> atom r + "." + f
+    | Index(a, i) -> atom a + ".[" + exprText i + "]"
+    | Typed(e, _)
+    | At(_, e) -> exprText e
+    | _ -> "…"
+
 /// Parses a whole program, or (exprOnly) a single expression, with its syntax tree.
 let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (int * Decl) list * Expr option * Node =
     let toks = Array.copy toks // closeAngle splits '>>' in place

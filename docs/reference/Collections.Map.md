@@ -49,6 +49,15 @@ impl Show<Map<'k, 'v>>
 
 Maps print as `map [(1, a); (2, b)]`.
 
+### `impl Diff<Map<'k, 'v>>`
+
+```zsharp
+impl Diff<Map<'k, 'v>>
+```
+
+The first key whose value differs (`.[k]: 1 vs 2`), or the first key one map has and the
+other doesn't.
+
 ## Functions
 
 ### `Map.empty`

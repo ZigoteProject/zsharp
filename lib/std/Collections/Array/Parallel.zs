@@ -17,6 +17,24 @@ let init (n: int) (f: share<int -> 'a>) : array<'a> =
   // into one array would need unsafe code
   if n <= 0 then [||] else Array.concat (parts 0 n (Threading.Parallel.grain n) f)
 
-/// The array of `f` applied to each element, computed in parallel.
+// a job per part, each part moved into its job: taken out of the list's cell, it's the job's
+// only reference (decision 75)
+let rec private forkEach (f: share<'a -> 'b>) (parts: list<array<'a>>) =
+  match parts with
+  | [] -> []
+  | part :: rest ->
+    let job = Native.parFork (fun () -> Array.map f part)
+    job :: forkEach f rest
+
+/// The array of `f` applied to each element, computed in parallel. The array is cut into parts
+/// and each moves into its job (decision 75): when the caller gives the array up, a job's
+/// elements are its own and aren't marked shared.
 let map (f: share<'a -> 'b>) (a: array<'a>) : array<'b> =
-  init (Array.length a) (fun i -> f a.[i])
+  let n = Array.length a
+
+  if n = 0 then
+    [||]
+  else
+    let g = Threading.Parallel.grain n
+    let parts = [ for i in 0 .. g .. n - 1 -> Array.sub a i (min g (n - i)) ]
+    Array.concat (List.map Native.parJoin (forkEach f parts))

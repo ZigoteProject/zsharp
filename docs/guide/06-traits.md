@@ -216,4 +216,4 @@ let main () =
 [name; age; admin] [Banned]
 ```
 
-Core's `Text.Json` (`lib/core/Text/Json.zs`) has a fuller example: `[<Derive(Json)>]`, a JSON encoder and decoder written as two derives and a group of them.
+Core's `Text.Json` (`lib/core/Text/Json.zs`) has a fuller example: `[<Derive(Json)>]`, a JSON encoder and decoder written as two derives and a group of them. `Binary` (`lib/core/Binary.zs`) is another: `[<Derive(Binary)>]` writes a value as compact bytes and reads it back (`Binary.toBytes`, `Binary.ofBytes`), for a cache or a message between processes.

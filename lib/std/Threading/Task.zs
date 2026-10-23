@@ -364,3 +364,7 @@ module Task =
   /// result goes to what waits for the task, which is done. So a task that loops by `return!`
   /// keeps one state machine, not one per round.
   let handOff (t: Task<'a>) (c: Cancel) (k: 'a -> unit) = runIn t c k
+
+/// A test whose body is a task: it runs on the event loop, and its result is the outcome.
+impl Testing.Outcome<Task<'a>> =
+  let finish t = Testing.finish (Task.run t)

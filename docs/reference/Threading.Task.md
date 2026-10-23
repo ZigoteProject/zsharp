@@ -42,6 +42,16 @@ type Promise<'a>
 A result to come: a task's started with `Task.start`, or one given with `Task.fulfill`.
 `Task.wait` waits for it.
 
+## Derives and impls
+
+### `impl Testing.Outcome<Task<'a>>`
+
+```zsharp
+impl Testing.Outcome<Task<'a>>
+```
+
+A test whose body is a task: it runs on the event loop, and its result is the outcome.
+
 ## Functions
 
 ### `Task.complete`

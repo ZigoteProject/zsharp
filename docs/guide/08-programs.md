@@ -119,7 +119,7 @@ pkg-config = ["sqlite3"]             # a library's flags and libraries, from pkg
 | `zs new <name>` | creates a project: `zs.toml`, `src/main.zs`, `.gitignore` |
 | `zs build` | builds `build/<name>` (`--release` for an optimized one) |
 | `zs run [args…]` | builds and runs, passing the arguments |
-| `zs test [filters…]` | runs the `[<Test>]` functions in `src/` and `tests/` |
+| `zs test [paths…]` | runs the `[<Tests>]` values in `src/` and `tests/` |
 | `zs fetch` | checks out the git dependencies |
 | `zs update` | moves git dependencies to the newest commit of their `rev` |
 
@@ -185,32 +185,38 @@ src/main.zs .zs notes.md
 
 ## Tests
 
-A function marked `[<Test>]` is a test: a `unit -> unit` function that fails by panicking, usually through `assert`.
-- **Separate processes:** `zs test` runs each test in its own process, so one failure doesn't stop the others.
-- **Output:** a failure reports its message and output.
-- **Where tests go:** they can live next to the code they test, since `main` isn't needed in a test build.
+Tests are values, as in Expecto: `test "name" (fun () -> …)` is a `Test`, `testList "name" [ … ]` groups them, and a top-level value marked `[<Tests>]` is what `zs test` runs. They're in the `Testing` module (`open Testing`).
+- **A test fails** by panicking, usually through `assert`, or by returning an `Error`; a body may also be a `task { }`.
+- **Separate processes:** each test runs in its own process, several at once, so one failure doesn't stop the others; `testSequenced` runs a group one at a time. A test has 60 s (`testWithTimeout ms` for another limit), and a hang fails it.
+- **Data makes tests:** `[ for (input, expected) in cases -> test input (fun () -> …) ]` is a list of tests.
+- **Focus:** `ftest` and `ftestList` run only the focused tests while any are; `ptest` skips one and says so.
+- **Where tests go:** next to the code they test, since a test build needs no `main`.
 
 ```zsharp
+open Testing
+
 let wordCount (s: string) = String.split " " s |> List.filter (fun w -> w <> "") |> List.length
 
-[<Test>]
-let countsWords () =
-  assert (wordCount "two words" = 2)
-  assert (wordCount "  spaced   out  " = 2)
-
-[<Test>]
-let emptyHasNone () =
-  assert (wordCount "" = 0)
+[<Tests>]
+let tests =
+  testList "words" [
+    test "counts words" (fun () -> assert (wordCount "  spaced   out  " = 2))
+    test "empty has none" (fun () -> assert (wordCount "" = 0))
+    test "splits" (fun () -> expect (String.split " " "a b") "[a; b]")
+  ]
 ```
 
 ```sh
 $ zs test counter.zs
-ok   countsWords
-ok   emptyHasNone
-2 passed, 0 failed
+ok   words/counts words
+ok   words/empty has none
+ok   words/splits
+3 passed, 0 failed
 ```
 
-A failing assert names its location, e.g. `FAIL emptyHasNone` followed by `panic: assertion failed at counter.zs:10`.
+- **A failing comparison explains itself:** `assert (parse s = Ok expected)` prints both sides and, for records, unions and collections, where they first differ: `left: { x = 1; y = 4 }`, `right: { x = 1; y = 5 }`, `at .y: 4 vs 5`.
+- **Expect tests:** `expect value "text"` compares the value's text with the literal, and `zs test --update` rewrites the literals of the ones that fail, so the expectation sits next to the code.
+- **Running some:** `zs test counter.zs words/` runs the tests whose path starts with `words/`, `zs test counter.zs empty` those whose path contains it; `--summary` lists each test's time, slowest first, and `--fail-on-focused` fails a run with focused tests left (for CI).
 
 ## Units of measure
 

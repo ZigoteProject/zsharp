@@ -2,15 +2,15 @@
 
 | | |
 |---|---|
-| **Status** | Approved in principle |
+| **Status** | Approved; items 1–3 and 7 built before phase 11 (`tests/ztest/`), the rest after |
 | **Decided at** | track D's plan ([ROADMAP](../../ROADMAP.md#testing-profiling-and-debugging-d)): items 1–3 and 7 before phase 11, the rest after |
 | **Builds** | track D: testing |
 | **Rests on** | decisions 5 (panics), 10 (structural printing), 20 (derive, no macros), 33 (the lossless syntax tree) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §12](../../DESIGN.md#12-tooling) |
 | **Related** | [0010 properties and fuzzing](0010-properties-and-fuzzing.md), [0019 the syntax tree](0019-syntax-tree.md) (`--update` edits literals), [0011 debug info, profiles and traces](0011-debug-info-profiles-traces.md) (coverage) |
 
 - [x] Approved in principle
-- [ ] Discussion
-- [ ] Implementation
+- [x] Discussion
+- [ ] Implementation: steps 1–3 (tests as values, the runner, assertions that explain with `Diff`, expect tests and `--update`); step 4 after phase 11
 
 ## Summary
 
@@ -171,4 +171,5 @@ Printed values go through `Show`, which is invariant (`1.5`, not `1,5`), so expe
 
 ## History
 
+- **2026-10-23:** steps 1–3 built before `compiler/`. A test's body is wrapped by `Outcome.finish` into the `Case`'s `unit -> unit`; the test binary's entry is a function the checker adds for a file's `[<Tests>]` values (`$tests`, calling `Testing.Runner.main`), and `--list` prints path, focus, time limit and sequenced group. `assert`'s rewrite covers the comparison at the top only (unresolved question 2), shows an operand without `Show` as its text (`Syntax.exprText`), and the first difference's path comes from `Diff` (`.y: 4 vs 5`, `.[2]`, `.Some`). An expect test reports `zs-expect file:line`, the text and an end line on standard error; `--update` replaces the call's literal token, a raw string on lines of its own for text with a line break.
 - **2026-10-22:** drafted from track D's plan and Expecto's model.

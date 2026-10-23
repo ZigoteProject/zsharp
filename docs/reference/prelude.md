@@ -193,6 +193,24 @@ abstract forEach : 'c -> ('a -> bool) -> bool
 
 Calls `f` on each element in order until it returns false; whether it ran to the end.
 
+### `Diff`
+
+```zsharp
+trait Diff<'a>
+```
+
+Where two values first differ, for a failed `assert` (0009): the path to it through records'
+fields, unions' cases and collections' elements, and the two values there.
+
+#### `Diff.diff`
+
+```zsharp
+abstract diff : 'a -> 'a -> option<string>
+```
+
+None when the values are equal; else the path to the first difference and the two values
+there: `.items.[2].name: "a" vs "b"`.
+
 ## Effects
 
 ### `Yield`
@@ -343,6 +361,16 @@ derive Show
 
 F#-style text for records (`{ x = 1; y = 2 }`) and unions (`Leaf`, `Some 1`, `Rect (1, 2)`).
 
+### `derive Diff`
+
+```zsharp
+derive Diff
+```
+
+The first difference inside records and unions: a record's field by name, a union's case
+and field (`.Some`, `.Node[2]`); two cases differ as a whole. Applied the first time a type
+needs it, as `Show` is.
+
 ### `impl Show<list<'a>>`
 
 ```zsharp
@@ -352,6 +380,15 @@ impl Show<list<'a>>
 Lists print as `[1; 2; 3]`.
 
 ## Functions
+
+### `diffShown`
+
+```zsharp
+diffShown : 'a -> 'a -> option<string> when 'a : Eq, 'a : Show
+```
+
+Two values that differ as a whole (`: 1 vs 2`), or None when they're equal: Diff on numbers,
+strings, chars and bools.
 
 ### `id`
 
@@ -399,7 +436,7 @@ The smaller of two values.
 assert : bool -> unit
 ```
 
-Panics with "assertion failed" when the condition is false.
+Panics with "assertion failed" when the condition is false; for a comparison (`assert (a = b)`), the message shows both sides and where they first differ.
 
 ### `eprintln`
 

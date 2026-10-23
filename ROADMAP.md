@@ -70,10 +70,10 @@ between them, where each step runs, the passes) is [compiler/ARCHITECTURE.md](co
     - [x] 0018 K1 and K4: namespaced dependencies and the `[c]` section; then `zsharp/libclang` and `zsharp/xxhash` (`tests/project/two`, with `alpha` and `beta`, which both have a `Util.zs`, and `cwords`, whose C has a source, an include directory and pkg-config's flags). The two packages are `packages/libclang` and `packages/xxhash` in this repository, path dependencies until they're published; the dev container has LLVM 23's libclang and a `libclang.pc` for it. `[target.<name>.c]` comes with 0022.
     - [x] 0017: the iteration trait, with 0025's ambient rows for `forEach`'s body (`tests/iter/`; `for` over any collection is one loop, a `Map`'s the same as `Map.iter`'s; the `Iter` module; `Range`; the builders' `forEach` over any `Iter`). List expressions over `Iter` come with 0005.
     - [x] 0025: the printer, the trait-method rule, the line in words (decision 80, decided at the review with 0017: `docs/reference` regenerated, `tests/effects/trait_ambient.zs`, `err_dyn_ambient.zs`, `tests/lsp/effects.sh`).
-    - [ ] 0009 items 1–3 and 7: tests as values, assertions that explain, `zs test path/` with timeouts and `--summary`, inline `expect` with `--update`.
+    - [x] 0009 items 1–3 and 7: tests as values, assertions that explain, `zs test path/` with timeouts and `--summary`, inline `expect` with `--update` (`tests/ztest/sample.zs`, `update.sh`). `Testing` is Core's and its runner Std's; `[<Test>]` is gone. The tasks' outcome is `Task.run`'s; the `Diff` of a tuple waits for tuples' impls.
   - **The phase's own first steps, in the F# compiler:**
-    - [ ] The `Binary` derive, replacing `Snapshot.fs`.
-    - [ ] The moving crossing (decision 75) and `tests/parallel/move.zs`; `ZS_STATS=1` (track D) reports the marks.
+    - [x] The `Binary` derive, replacing `Snapshot.fs` (`lib/core/Binary.zs`, `tests/binary.zs`): the Z# compiler's cache is written with it; `Snapshot.fs` goes with the F# compiler. Impls may be for tuples now (`impl Binary<'a * 'b>`), and `Float.toBits`/`ofBits` exist.
+    - [x] The moving crossing (decision 75) and `tests/parallel/move.zs`; `ZS_STATS=1` (track D) reports the marks (`zs stats: … allocations, … objects marked shared`, and `Runtime.marks ()`). Work items, `Task.spawn`/`blocking` and `Channel.send` move; a `Mutex` shares; `Array.Parallel.map` moves each part into its job.
     - [ ] `compiler/Lexer.zs` and `Parser.zs` on 0019's tree, and criterion 2 measured.
   - **Cheaper before than after** (what remains of phase 12's "kept before phase 11" list):
     - [ ] E2b: signature help, rename, code actions.

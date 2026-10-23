@@ -534,11 +534,11 @@ let libraryDir = runtimeFile "lib"
 /// target has it; Std is for targets that have one.
 let private coreFiles =
     [ "Option"; "Result"; "Math"; "Int"; "Float"; "Runtime"; "Mmio"; "Ptr"; "Weak"; "Arena"; "Simd"; "Simd/X86"; "Simd/Arm"; "Collections/List"; "Collections/Span"; "Collections/Array"; "Collections/Buffer"; "Collections/Fixed"
-      "Text/String"; "Text/Char"; "Collections/Map"; "Collections/Set"; "Collections/HashMap"; "Collections/HashSet"; "Iter"; "Throw"; "Collections/Seq"; "Text/Json"; "Time/DateTime" ]
+      "Text/String"; "Text/Char"; "Collections/Map"; "Collections/Set"; "Collections/HashMap"; "Collections/HashSet"; "Iter"; "Testing"; "Binary"; "Throw"; "Collections/Seq"; "Text/Json"; "Time/DateTime" ]
 
 let private stdFiles =
     [ "IO/Stream"; "Console"; "Environment"; "Threading/Atomic"; "Threading/Mutex"; "Threading/Channel"; "Threading/Task"; "Threading/Parallel"
-      "Collections/Array/Parallel"; "IO/File"; "IO/Directory"; "IO/Path"; "Diagnostics/Process"; "Diagnostics/Stopwatch"; "Net/Tcp"; "Net/Unix"; "Time/Clock" ]
+      "Collections/Array/Parallel"; "IO/File"; "IO/Directory"; "IO/Path"; "Diagnostics/Process"; "Diagnostics/Stopwatch"; "Net/Tcp"; "Net/Unix"; "Time/Clock"; "Testing/Runner" ]
 
 /// The library a file belongs to (the installed one, or lib/ in a checkout of zs): the lib/
 /// directory above it that has prelude.zs and core/.
@@ -1208,7 +1208,7 @@ let checkProgram (withHovers: bool) (mainPath: string) (requireMain: bool) (coll
 let check (mainPath: string) (requireMain: bool) (collect: bool) : Core.Program = checkProgram true mainPath requireMain collect
 
 
-/// zs test: build the [<Test>] functions with a test dispatcher in place of `main`.
+/// zs test: build the file's test entry ($tests, its [<Tests>] values) in place of `main`.
 let mutable testBuild = false
 
 /// --cpu: the processor to compile for (native, x86-64-v3, neoverse-n1, …); None for the
@@ -2255,7 +2255,9 @@ let builtinDocs =
           "string", "The text form of a value (`Show.show`): numbers, bools, strings, and any type with `Show`."
           "panic", "Stops the program with the message (and a backtrace). For bugs, not for errors a caller should handle."
           "failwith", "Same as `panic`."
-          "assert", "Panics with \"assertion failed\" when the condition is false."
+          "assert", "Panics with \"assertion failed\" when the condition is false; for a comparison (`assert (a = b)`), the message shows both sides and where they first differ."
+          "Float.toBits", "The number's 64 bits, as IEEE 754 lays them out (`Float.ofBits` gives it back)."
+          "Float.ofBits", "The number whose IEEE 754 bits these are (`Float.toBits` gives them)."
           "ignore", "Discards a value."
           "ref", "A mutable cell holding the value; read and write it with `r.Value`."
           "Collections.Array.create", "An array of `n` copies of `x`."
@@ -2292,6 +2294,7 @@ let builtinDocs =
           "Int.wrappingMul", "`a * b`, wrapping around on overflow instead of panicking."
           "Runtime.allocations", "The number of heap objects allocated so far."
           "Runtime.mallocs", "The number of times memory was taken from the system allocator: for a chunk of the runtime's object pool, a large object, or an arena's block."
+          "Runtime.marks", "The number of objects marked shared so far, at crossings to other threads: what a value moved to another thread holds alone stays unmarked (`ZS_STATS=1` prints it at exit)."
           "Ptr.read", "The value the pointer points to. Unsafe: only inside `unsafe`."
           "Ptr.write", "Writes the value where the pointer points. Unsafe."
           "Ptr.add", "The pointer moved by a number of elements (pointer arithmetic). Unsafe."

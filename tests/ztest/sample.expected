@@ -1,8 +1,21 @@
-ok   doublesNumbers
-FAIL failsAnAssert
-       panic: assertion failed at sample.zs:10
-FAIL panicsWithAMessage
+ok   sample/doubles numbers
+FAIL sample/fails an assert
+       panic: assertion failed at sample.zs:13: double 2 = 5
+         left:  4
+         right: 5
+FAIL sample/points differ
+       panic: assertion failed at sample.zs:14: { x = 1; y = double 2 } = { x = 1; y = 5 }
+         left:  { x = 1; y = 4 }
+         right: { x = 1; y = 5 }
+         at .y: 4 vs 5
+FAIL sample/panics with a message
        some output first
        panic: List.head: empty list
-ok   stringsWork
-2 passed, 2 failed
+FAIL sample/an Error fails
+       panic: Error two
+ok   sample/strings/concatenate
+ok   sample/strings/expected text
+skip sample/not yet (pending)
+FAIL sample/hangs
+       timed out after 0.2 s
+3 passed, 5 failed, 1 skipped

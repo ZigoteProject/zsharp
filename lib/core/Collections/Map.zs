@@ -194,3 +194,21 @@ module Map =
 /// Maps print as `map [(1, a); (2, b)]`.
 impl Show<Map<'k, 'v>> =
   let show m = "map " + show (Map.toList m)
+
+/// The first key whose value differs (`.[k]: 1 vs 2`), or the first key one map has and the
+/// other doesn't.
+impl Diff<Map<'k, 'v>> =
+  let diff a b =
+    let rec go (xs: list<'k * 'v>) (ys: list<'k * 'v>) =
+      match (xs, ys) with
+      | [], [] -> None
+      | (k, _) :: _, [] -> Some($": key {k} in the first only")
+      | [], (k, _) :: _ -> Some($": key {k} in the second only")
+      | (k, v) :: xs, (j, w) :: ys ->
+        if k < j then Some($": key {k} in the first only")
+        else if j < k then Some($": key {j} in the second only")
+        else
+          match diff v w with
+          | Some rest -> Some($".[{k}]" + rest)
+          | None -> go xs ys
+    go (Map.toList a) (Map.toList b)

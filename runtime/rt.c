@@ -155,6 +155,17 @@ zs_int zs_allocations(void) { return allocations; }
 /// for an arena's block.
 zs_int zs_mallocs(void) { return mallocs; }
 
+/// The objects marked shared at crossings to other threads (DESIGN §7.1; a moved value's own
+/// objects aren't, decision 75): compiled code adds to it, Runtime.marks () reads it.
+zs_int zs_marked;
+
+zs_int zs_marks(void) { return __atomic_load_n(&zs_marked, __ATOMIC_RELAXED); }
+
+// ZS_STATS=1: what reference counting cost, on standard error at exit
+static void print_stats(void) {
+    fprintf(stderr, "zs stats: %lld allocations, %lld objects marked shared\n", (long long)allocations, (long long)zs_marks());
+}
+
 // Ptr.alloc / Ptr.free: C memory for n elements of a size, zeroed
 void *zs_ptr_alloc(zs_int n, zs_int size) {
     if (n < 0) zs_panic_c("Ptr.alloc: negative count");
@@ -1041,6 +1052,8 @@ static _Thread_local zs_str *io_error; // per thread: Task.blocking's helper rea
 void zs_set_args(int32_t argc, char **argv) {
     g_argc = argc;
     g_argv = argv;
+    const char *stats = getenv("ZS_STATS");
+    if (stats && *stats && strcmp(stats, "0") != 0) atexit(print_stats);
 }
 
 zs_int zs_argc(void) { return g_argc; }
@@ -1449,9 +1462,6 @@ zs_int zs_process_wait(zs_int pid) {
 }
 
 zs_int zs_process_kill(zs_int pid) { return kill((pid_t)pid, SIGKILL) == 0 ? 0 : -(zs_int)errno; }
-
-// a test build's argument: which test to run
-zs_int zs_test_index(void) { return g_argc > 1 ? strtoll(g_argv[1], NULL, 10) : -1; }
 
 // ---- the event loop (Task.run): callbacks waiting for file descriptors, timers, a queue of
 // callbacks ready to run, and jobs on a helper thread (Task.blocking). A callback is a Z#

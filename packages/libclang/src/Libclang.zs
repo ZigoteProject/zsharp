@@ -42,20 +42,20 @@ let declarations (tu: cptr) : list<string> =
     CXChildVisit_Continue)
   List.rev names.Value
 
-[<Test>]
-let readsAHeader () =
-  let dir = Directory.createTemp "libclang"
-  match dir with
-  | Error e -> panic e
-  | Ok dir ->
-    let header = Path.combine dir "shapes.h"
-    File.writeAllText header "#include <stddef.h>\nstruct point { int x; int y; };\nint area(struct point p, size_t n);\n"
-    |> ignore
-    let index = clang_createIndex 0 0
-    match parse index header [ "-x"; "c"; "-DSIDES=4" ] (u32 0) with
-    | None -> panic "clang couldn't parse shapes.h"
-    | Some tu ->
-      assert (declarations tu = [ "point"; "area" ])
-      clang_disposeTranslationUnit tu
-    clang_disposeIndex index
-    Directory.deleteRecursive dir |> ignore
+[<Tests>]
+let tests =
+  Testing.test "reads a header" (fun () ->
+    match Directory.createTemp "libclang" with
+    | Error e -> panic e
+    | Ok dir ->
+      let header = Path.combine dir "shapes.h"
+      File.writeAllText header "#include <stddef.h>\nstruct point { int x; int y; };\nint area(struct point p, size_t n);\n"
+      |> ignore
+      let index = clang_createIndex 0 0
+      match parse index header [ "-x"; "c"; "-DSIDES=4" ] (u32 0) with
+      | None -> panic "clang couldn't parse shapes.h"
+      | Some tu ->
+        assert (declarations tu = [ "point"; "area" ])
+        clang_disposeTranslationUnit tu
+      clang_disposeIndex index
+      Directory.deleteRecursive dir |> ignore)

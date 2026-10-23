@@ -84,7 +84,6 @@ declare ptr @zs_ptr_alloc(i_W, i_W)
 declare void @zs_ptr_free(ptr)
 declare i64 @zs_ticks()
 declare void @zs_set_args(i32, ptr)
-declare i_W @zs_test_index()
 declare void @zs_exit(i_W) noreturn
 declare void @llvm.memcpy.p0.p0.i_W(ptr, ptr, i_W, i1)
 declare void @llvm.memmove.p0.p0.i_W(ptr, ptr, i_W, i1)
@@ -107,6 +106,8 @@ declare void @llvm.coro.resume(ptr)
 declare void @llvm.coro.destroy(ptr)
 declare zeroext i1 @zs_cpu_supports(ptr)
 declare void @zs_loop_spawn(ptr)
+@zs_marked = external global i_W
+declare i_W @zs_marks()
 declare i_W @zs_loop_expect(ptr)
 declare void @zs_loop_fulfill(i_W)
 declare ptr @zs_par_fork(ptr, ptr, i_W)
@@ -1108,6 +1109,7 @@ let compile
                     match kind with
                     | "dup" -> dupValue em ft f
                     | "share" -> shareValue em ft f
+                    | "move" -> moveValue em ft f
                     | _ -> dropValue em ft f)
 
             em.Emit "ret void"
@@ -1118,34 +1120,62 @@ let compile
     /// Marks a value's objects shared before it crosses to another thread (DESIGN §7.1): a
     /// thread-local count n becomes -n, which every thread then changes atomically. The walk
     /// stops at static objects and at shared ones, whose objects are shared already.
-    and shareValue (em: Emitter) (t: Ty) (v: string) =
+    and shareValue (em: Emitter) (t: Ty) (v: string) = walkValue "share" em t v
+
+    /// Moves a value to another thread (decision 75): an object the moved value holds the only
+    /// reference to (a count of 1) stays thread-local, the receiver's now, and what it holds
+    /// moves in turn; an object another reference reaches (a count above 1) is marked shared
+    /// with everything under it, as shareValue does. The crossing has consumed the value, so a
+    /// count of 1 means the sender holds nothing of it.
+    and moveValue (em: Emitter) (t: Ty) (v: string) = walkValue "move" em t v
+
+    and walkValue (kind: string) (em: Emitter) (t: Ty) (v: string) =
         if heap t then
             match llty t with
-            | "ptr" -> em.Emit(sprintf "call void %s(ptr %s)" (shareFn t) v)
-            | lt -> em.Emit(sprintf "call void %s(%s %s)" (structHelper "share" t) lt v)
+            | "ptr" -> em.Emit(sprintf "call void %s(ptr %s)" (walkFn kind t) v)
+            | lt -> em.Emit(sprintf "call void %s(%s %s)" (structHelper kind t) lt v)
 
-    and shareFn (t: Ty) : string =
-        let name = sprintf "@\"share.%s\"" (showFull t)
+    and shareFn (t: Ty) : string = walkFn "share" t
+
+    and moveFn (t: Ty) : string = walkFn "move" t
+
+    /// share.T or move.T: the walk at one object, then into what it holds, the same in both modes.
+    and walkFn (kind: string) (t: Ty) : string =
+        let name = sprintf "@\"%s.%s\"" kind (showFull t)
 
         if generated.Add name then
             let em = Emitter()
+            let inner = walkValue kind em
 
             match repOf' t with
             | Some(Niche(_, payload)) ->
                 // the payload itself, or the static @zs.none
-                em.Emit(sprintf "musttail call void %s(ptr %%p)" (shareFn payload))
+                em.Emit(sprintf "musttail call void %s(ptr %%p)" (walkFn kind payload))
                 em.Emit "ret void"
             | _ ->
                 let rc = em.Instr "load atomic i32, ptr %p monotonic, align 4"
-                em.Emit(sprintf "br i1 %s, label %%mark, label %%done" (em.Instr(sprintf "icmp sgt i32 %s, 0" rc)))
-                em.Label "mark"
-                em.Emit(sprintf "store i32 %s, ptr %%p" (em.Instr(sprintf "sub i32 0, %s" rc)))
+
+                if kind = "share" then
+                    em.Emit(sprintf "br i1 %s, label %%mark, label %%done" (em.Instr(sprintf "icmp sgt i32 %s, 0" rc)))
+                    em.Label "mark"
+                    em.Emit(sprintf "store i32 %s, ptr %%p" (em.Instr(sprintf "sub i32 0, %s" rc)))
+                    em.Instr "atomicrmw add ptr @zs_marked, i_W 1 monotonic" |> ignore // ZS_STATS's count
+                else
+                    // only the moved value's: it stays local; another reference's: shared
+                    em.Emit(sprintf "br i1 %s, label %%mark, label %%other" (em.Instr(sprintf "icmp eq i32 %s, 1" rc)))
+                    em.Label "other"
+                    em.Emit(sprintf "br i1 %s, label %%shared, label %%done" (em.Instr(sprintf "icmp sgt i32 %s, 1" rc)))
+                    em.Label "shared"
+                    em.Emit(sprintf "musttail call void %s(ptr %%p)" (shareFn t))
+                    em.Emit "ret void"
+                    em.Label "mark"
 
                 match prune t with
                 | TFun _ ->
-                    // what the closure captured: its description's share function
+                    // what the closure captured: its description's share or move function
                     let info = em.Instr(sprintf "load ptr, ptr %s" (em.Instr "getelementptr { i_W, ptr, ptr }, ptr %p, i32 0, i32 2"))
-                    let f = em.Instr(sprintf "load ptr, ptr %s" (em.Instr(sprintf "getelementptr { ptr, i32, ptr, ptr }, ptr %s, i32 0, i32 3" info)))
+                    let field = if kind = "share" then 3 else 4
+                    let f = em.Instr(sprintf "load ptr, ptr %s" (em.Instr(sprintf "getelementptr { ptr, i32, ptr, ptr, ptr }, ptr %s, i32 0, i32 %d" info field)))
                     em.Emit(sprintf "musttail call void %s(ptr %%p)" f)
                     em.Emit "ret void"
                 | TCon("array", [ el ]) when heap el ->
@@ -1157,7 +1187,7 @@ let compile
                     em.Emit(sprintf "br i1 %s, label %%body, label %%done" (em.Instr(sprintf "icmp slt i_W %s, %s" i len)))
                     em.Label "body"
                     let ep = em.Instr(sprintf "getelementptr { i_W, i_W, [0 x %s] }, ptr %%p, i32 0, i32 2, i_W %s" (llty el) i)
-                    shareValue em el (em.Instr(sprintf "load %s, ptr %s" (llty el) ep))
+                    inner el (em.Instr(sprintf "load %s, ptr %s" (llty el) ep))
                     em.Emit(sprintf "%%next = add i_W %s, 1" i)
                     em.Emit "br label %loop"
                 | TCon(n, _) when (match types.TryGetValue n with
@@ -1189,13 +1219,13 @@ let compile
                         let init, (lt, lv) = List.splitAt (refs.Length - 1) refs |> fun (a, b) -> a, b.Head
 
                         for ft, v in init do
-                            shareValue em ft v
+                            inner ft v
 
                         if llty lt = "ptr" then
-                            em.Emit(sprintf "musttail call void %s(ptr %s)" (shareFn lt) lv)
+                            em.Emit(sprintf "musttail call void %s(ptr %s)" (walkFn kind lt) lv)
                             em.Emit "ret void"
                         else
-                            shareValue em lt lv
+                            inner lt lv
                             em.Emit "br label %done"
                 | _ -> em.Emit "br label %done" // a string; an Atomic, a Mutex or a Channel, whose contents are shared already
 
@@ -1674,21 +1704,24 @@ let compile
         if generated.Add name then
             let n = fnTable[f].pars.Length
             let share = if threaded then shareStub f k else "null"
-            let line = sprintf "%s = private unnamed_addr constant { ptr, i32, ptr, ptr } { ptr %s, i32 %d, ptr %s, ptr %s }" name (dropStub f k) (n - k) (full f k) share
+            let move = if threaded then captureStub "move" f k else "null"
+            let line = sprintf "%s = private unnamed_addr constant { ptr, i32, ptr, ptr, ptr } { ptr %s, i32 %d, ptr %s, ptr %s, ptr %s }" name (dropStub f k) (n - k) (full f k) share move
             top.AppendLine line |> ignore
 
         name
 
-    /// The objects a closure of f holding k parameters captured, marked shared (shareFn of a
-    /// closure has marked the closure itself).
-    and shareStub (f: string) (k: int) : string =
-        let name = sprintf "@\"closhare.%s.%d\"" f k
+    /// The objects a closure of f holding k parameters captured, marked shared or moved (kind)
+    /// after the closure itself was (walkFn).
+    and shareStub (f: string) (k: int) : string = captureStub "share" f k
+
+    and captureStub (kind: string) (f: string) (k: int) : string =
+        let name = sprintf "@\"clo%s.%s.%d\"" kind f k
 
         if generated.Add name then
             let em = Emitter()
 
             for t, v in loadEnv em (fnTable[f].pars |> List.map snd |> List.take k) do
-                shareValue em t v
+                walkValue kind em t v
 
             em.Emit "ret void"
             helpers.Append(sprintf "define private void %s(ptr %%clo) {\n%s}\n\n" name em.Body) |> ignore
@@ -2099,7 +2132,7 @@ let compile
             let msg = "a waiting task's continuation can't cross threads"
             top.AppendLine(sprintf "@zs.face.crossing = private unnamed_addr constant [%d x i8] c\"%s\\00\"" (msg.Length + 1) msg) |> ignore
             helpers.Append "define private void @zs.face.share(ptr %face) {\nentry:\n  call void @zs_panic_c(ptr @zs.face.crossing)\n  unreachable\n}\n\n" |> ignore
-            top.AppendLine "@zs.faceinfo.none = private unnamed_addr constant { ptr, i32, ptr, ptr } { ptr @zs.face.drop, i32 1, ptr null, ptr @zs.face.share }" |> ignore
+            top.AppendLine "@zs.faceinfo.none = private unnamed_addr constant { ptr, i32, ptr, ptr, ptr } { ptr @zs.face.drop, i32 1, ptr null, ptr @zs.face.share, ptr @zs.face.share }" |> ignore
 
     /// The face's code and description for a wait whose result is a t: the code stores the
     /// result in the slot and resumes the coroutine.
@@ -2120,7 +2153,7 @@ let compile
             )
             |> ignore
 
-            top.AppendLine(sprintf "%s = private unnamed_addr constant { ptr, i32, ptr, ptr } { ptr @zs.face.drop, i32 1, ptr %s, ptr @zs.face.share }" info code) |> ignore
+            top.AppendLine(sprintf "%s = private unnamed_addr constant { ptr, i32, ptr, ptr, ptr } { ptr @zs.face.drop, i32 1, ptr %s, ptr @zs.face.share, ptr @zs.face.share }" info code) |> ignore
 
         code, info
 
@@ -2186,6 +2219,9 @@ let compile
                         | None ->
                             let p = "%dbg." + em.Fresh(name.Replace('.', '_'))
                             em.Alloca(sprintf "%s = alloca %s" p (llty t))
+                            // zero until the variable is bound, so gdb shows the same thing at
+                            // every run for a variable not bound yet (not the stack's leftovers)
+                            em.Alloca(sprintf "store %s zeroinitializer, ptr %s" (llty t) p)
                             // a parameter's store has no line, as in C: it is prologue, so a
                             // breakpoint on the function stops after it
                             if arg > 0 then em.Dbg <- ""
@@ -3928,9 +3964,9 @@ let compile
             | _ when runtimePrims.ContainsKey op ->
                 let fn, ret, pts = runtimePrims[op]
 
-                // work for another thread: its objects shared first
+                // work for another thread: moved there (decision 75)
                 if op = "Loop.blocking" || op = "Loop.spawn" then
-                    shareValue em (argTy 0) (arg 0)
+                    moveValue em (argTy 0) (arg 0)
 
                 let real = List.zip args vs |> List.filter (fun (a, _) -> prune a.ty <> tUnit)
 
@@ -4091,6 +4127,7 @@ let compile
                 "zeroinitializer"
             | "Runtime.ticks" -> em.Instr "call i64 @zs_ticks()"
             | "Runtime.mallocs" -> em.Instr "call i_W @zs_mallocs()"
+            | "Runtime.marks" -> em.Instr "call i_W @zs_marks()"
             | "par.fork" ->
                 // a job for the thread pool: the closure's objects shared, its reference moved
                 // into the job, whose runner stores its result for par.join
@@ -4099,7 +4136,7 @@ let compile
                     | TFun(_, r, _) -> r
                     | t -> failwithf "par.fork of %s" (show t)
 
-                shareValue em (argTy 0) (arg 0)
+                moveValue em (argTy 0) (arg 0)
                 em.Instr(sprintf "call ptr @zs_par_fork(ptr %s, ptr %s, i_W %s)" (arg 0) (parRunner rt) (sizeOf em (llty rt)))
             | "par.join" ->
                 // the job's result (moved out), once it has run: here, or on the thread that stole it
@@ -4227,9 +4264,10 @@ let compile
                 check em (em.Instr(sprintf "icmp sge i_W %s, 0" (arg 0))) "a channel's capacity can't be negative"
                 em.Instr(sprintf "call ptr @zs_chan_new(i_W %s, i_W %s, ptr %s)" (arg 0) (sizeOf em (llty vt)) (slotDrop vt))
             | "chan.send" ->
-                // the value, shared, moves into the channel (the runtime copies its bytes)
+                // the value moves into the channel, to the one thread that receives it (the
+                // runtime copies its bytes)
                 let vt = argTy 1
-                shareValue em vt (arg 1)
+                moveValue em vt (arg 1)
                 let slot = "%" + em.Fresh "sent"
                 em.Alloca(sprintf "%s = alloca %s" slot (llty vt))
                 em.Emit(sprintf "store %s %s, ptr %s" (llty vt) (arg 1) slot)
@@ -4460,6 +4498,8 @@ let compile
                 let v = if bits < 64 then em.Instr(sprintf "trunc i64 %s to %s" v lt) else v
                 dropValue em (argTy 1) (arg 1)
                 em.Instr(sprintf "insertvalue %s %s, %s %s, 1" (llty ty) (em.Instr(sprintf "insertvalue %s poison, i1 %s, 0" (llty ty) ok)) lt v)
+            | "float.toBits" -> em.Instr(sprintf "bitcast double %s to i64" (arg 0))
+            | "float.ofBits" -> em.Instr(sprintf "bitcast i64 %s to double" (arg 0))
             | "float.parse" ->
                 // Float.parse's: whether the text is a number, and the number
                 let el =
@@ -4682,20 +4722,15 @@ let compile
         funcs.Append(initValues ()) |> ignore
         funcs.AppendLine(body.Replace("  ret i32", "  call void @zsv.dropAll()\n  ret i32")).AppendLine("}") |> ignore
 
-    // a test build (zs test): `exe <n>` runs test n, so each test runs in its own process
+    // a test build (zs test): main is the file's test entry ($tests, 0009), which lists the tests
+    // or runs the one its argument names, so each test runs in its own process
     if entry && not tests.IsEmpty && not (fnTable.ContainsKey "main") then
-        let cases = tests |> List.mapi (fun i _ -> sprintf "i_W %d, label %%t%d" i i) |> String.concat " "
+        let rt = llty fnTable[tests.Head].ret
         funcs.AppendLine("define i32 @main(i32 %argc, ptr %argv) {") |> ignore
         funcs.AppendLine("  call void @zs_set_args(i32 %argc, ptr %argv)") |> ignore
         funcs.Append(initValues ()) |> ignore
-        funcs.AppendLine("  %n = call i_W @zs_test_index()") |> ignore
-        funcs.AppendLine(sprintf "  switch i_W %%n, label %%bad [ %s ]" cases) |> ignore
-
-        tests
-        |> List.iteri (fun i t ->
-            funcs.AppendLine(sprintf "t%d:\n  call {} %s({} zeroinitializer)\n  call void @zsv.dropAll()\n  ret i32 0" i (sym t)) |> ignore)
-
-        funcs.AppendLine("bad:\n  ret i32 2\n}") |> ignore
+        funcs.AppendLine(sprintf "  %%r = call %s %s({} zeroinitializer)" rt (sym tests.Head)) |> ignore
+        funcs.AppendLine(sprintf "  %%c = trunc %s %%r to i32\n  call void @zsv.dropAll()\n  ret i32 %%c\n}" rt) |> ignore
 
     for e in (if entry then exports else []) do
         let fd = fnTable[e.fname]

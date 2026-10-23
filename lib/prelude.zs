@@ -144,6 +144,42 @@ type result<'a, 'e> =
   /// Failure, with its error.
   | Error of 'e
 
+/// Where two values first differ, for a failed `assert` (0009): the path to it through records'
+/// fields, unions' cases and collections' elements, and the two values there.
+trait Diff<'a> =
+  /// None when the values are equal; else the path to the first difference and the two values
+  /// there: `.items.[2].name: "a" vs "b"`.
+  abstract diff : 'a -> 'a -> option<string>
+
+/// Two values that differ as a whole (`: 1 vs 2`), or None when they're equal: Diff on numbers,
+/// strings, chars and bools.
+let diffShown (a: 'a) (b: 'a) : option<string> =
+  if a = b then None else Some(": " + show a + " vs " + show b)
+
+/// The first difference inside records and unions: a record's field by name, a union's case
+/// and field (`.Some`, `.Node[2]`); two cases differ as a whole. Applied the first time a type
+/// needs it, as `Show` is.
+derive Diff =
+  let diff (a: 'self) (b: 'self) =
+    match Shape.pair a b with
+    | Same c ->
+      let mutable found = None
+      for f in c.fields do
+        match found with
+        | None ->
+          match diff f.left f.right with
+          | Some rest ->
+            let step =
+              match Shape.kind with
+              | RecordKind -> "." + f.name
+              | UnionKind ->
+                if c.count > 1 then "." + c.name + "[" + show f.index + "]" else "." + c.name
+            found <- Some(step + rest)
+          | None -> ()
+        | Some _ -> ()
+      found
+    | Different _ -> Some(": " + show a + " vs " + show b)
+
 /// The elements of a sequence, one at a time: what `yield` in a `seq { }` performs, and what
 /// a `Seq`'s consumer handles (DESIGN §6.1).
 effect Yield<'a> =

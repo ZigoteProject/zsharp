@@ -118,9 +118,13 @@ let builtinImpls =
           "Eq", nums + simdNames + set [ "string"; "bool"; "char"; "unit" ]
           "Ord", nums + set [ "string"; "char" ]
           "Show", nums + simdNames + set [ "string"; "bool"; "char" ]
+          "Diff", nums + set [ "string"; "bool"; "char" ]
           "Format", nums
           "Hash", nums + set [ "string"; "bool"; "char" ]
           "Share", nums + simdNames + set [ "string"; "bool"; "char"; "unit" ] ]
+
+/// The name a tuple size's impls are kept under (impl Binary<'a * 'b>: *2).
+let tupleHead (n: int) = sprintf "*%d" n
 
 let hasBuiltinImpl (tr: string) (n: string) =
     match builtinImpls.TryGetValue tr with
@@ -963,7 +967,7 @@ type Program =
       impls: Dictionary<string * string, Dictionary<string, string>> // (trait, type) -> method -> function
       exports: Export list
       values: (string * string) list // top-level values computed at startup, in order: name, init function
-      tests: string list // [<Test>] functions (unit -> unit), in source order
+      tests: string list // the main file's test entry ($tests, from its [<Tests>] values), if it has any
       clayouts: HashSet<string> // [<CLayout>] records
       /// [<Target "avx2,fma">] functions: "target" and the features; [<Multiversion("avx2",
       /// "sse4.2")>] ones: "multiversion" and a version's features each

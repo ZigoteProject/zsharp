@@ -16,8 +16,9 @@ let hex (bytes: span<u8>) : string =
   let (high, low) = hash128 bytes
   $"{high:x16}{low:x16}"
 
-[<Test>]
-let knownHashes () =
+[<Tests>]
+let tests =
   // XXH128_canonicalFromHash's form (what xxhsum -H2 prints), from c/xxhash.h in C
-  assert (hex (String.bytes "") = "99aa06d3014798d86001c324468d497f")
-  assert (hex (String.bytes "abc") = "06b05ab6733a618578af5f94892f3950")
+  Testing.test "known hashes" (fun () ->
+    assert (hex (String.bytes "") = "99aa06d3014798d86001c324468d497f")
+    assert (hex (String.bytes "abc") = "06b05ab6733a618578af5f94892f3950"))

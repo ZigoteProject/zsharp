@@ -444,6 +444,8 @@ let private builtins =
           b "Text.String.isFloat" "String.isFloat" [] (f tStr tBool) 1
           b "Native.parseInt" "int.parse" [ kInt ] (f tInt (f tStr (TTuple [ tBool; a ]))) 2
           b "Native.parseFloat" "float.parse" [ kFloat ] (f tStr (TTuple [ tBool; a ])) 1
+          b "Float.toBits" "float.toBits" [] (f (tcon "f64") (tcon "u64")) 1
+          b "Float.ofBits" "float.ofBits" [] (f (tcon "u64") (tcon "f64")) 1
           b "Native.clockRealtime" "Clock.realtime" [] (f tUnit (tcon "i64")) 1
           b "Native.fileOpen" "File.open" [] (f tStr (f tInt tInt)) 2
           b "Native.fileModified" "File.mtime" [] (f tStr (tcon "i64")) 1
@@ -514,6 +516,7 @@ let private builtins =
           b "Weak.get" "weak.get" [ kAny ] (f (TCon("weak", [ a ])) (TCon("option", [ a ]))) 1
           b "Arena.with" "arena.with" [ kAny ] (f (f tUnit a) a) 1
           b "Runtime.mallocs" "Runtime.mallocs" [] (f tUnit tInt) 1
+          b "Runtime.marks" "Runtime.marks" [] (f tUnit tInt) 1
           // the thread pool (runtime/rt.c), which Std's Parallel wraps: a job runs a function
           // that crossed threads, and its result comes back to the thread that joins it
           b "Native.parFork" "par.fork" [ kAny ] (f (TCon("share", [ f tUnit a ])) tCPtr) 1
@@ -911,6 +914,10 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                 match implOthers.TryGetValue((tr, n)) with
                 | true, os -> Some(List.map (substGen args) os)
                 | _ -> None
+            | TTuple ts ->
+                match implOthers.TryGetValue((tr, tupleHead ts.Length)) with
+                | true, os -> Some(List.map (substGen ts) os)
+                | _ -> None
             | _ -> None
 
     userImpl <-
@@ -942,6 +949,16 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                     unify (fresh (kTrait tr)) a
 
                 true
+            | TTuple ts ->
+                // an impl for tuples of this size (impl Binary<'a * 'b>), kept under *2
+                match implRequires.TryGetValue((tr, tupleHead ts.Length)) with
+                | true, reqs ->
+                    for a, trs in List.zip ts reqs do
+                        for tr2 in trs do
+                            unify (fresh (kTrait tr2)) a
+
+                    true
+                | _ -> false
             | _ -> false
     let globals = st.globals
     let externs = st.externs
@@ -974,6 +991,9 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
     // trait methods called with an ambient row (0025): the value's type, the row, the trait, the
     // method and the line; through dyn the row must be empty
     let dynCalls = ResizeArray<Ty * Ty * string * string * int>()
+
+    // the [<Tests>] values of the module being checked, and whether each is a list (0009)
+    let testValues = ResizeArray<string * bool>()
 
     let closeDynCalls () =
         let calls = List.ofSeq dynCalls
@@ -1997,6 +2017,68 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
         | Call("$yield", [ e ]) -> perform env depth "Yield.yield" [ e ]
         | Call("$yieldAll", [ e ]) -> call env depth "Collections.Seq.yieldAll" [ e ]
         | Handle(body, ops, ret) -> handleExpr env depth body ops ret
+        | Call("assert", [ At(_, (Bin(("=" | "<>" | "<" | "<=" | ">" | ">="), _, _) as c)) ])
+        | Call("assert", [ Bin(("=" | "<>" | "<" | "<=" | ">" | ">="), _, _) as c ]) when not (env.ContainsKey "assert") ->
+            // a comparison: its sides are evaluated once, and when it fails the message shows
+            // them (through Show, or as written) and where they first differ (Diff) (0009)
+            let op, a, b =
+                match c with
+                | Bin(op, a, b) -> op, a, b
+                | _ -> failwith "assert"
+
+            let file = System.IO.Path.GetFileName currentFile.Value
+            let line = currentLine.Value
+            let ca = infer env depth a
+            let cb = infer env depth b
+
+            let local (c: CExpr) =
+                { u = uniq "$side"
+                  ty = c.ty
+                  mut = false
+                  depth = depth }
+
+            let l, r = local ca, local cb
+            let env' = env.Add("$left", l).Add("$right", r)
+            let cond = infer env' depth (Bin(op, Var "$left", Var "$right"))
+
+            let has (tr: string) (t: Ty) =
+                try
+                    unify (fresh (kTrait tr)) t
+                    true
+                with _ ->
+                    false
+
+            let side (name: string) (e: Expr) (t: Ty) = if has "Show" t then Call("Show.show", [ Var name ]) else StrLit(exprText e)
+
+            let at =
+                if op = "=" && has "Diff" ca.ty then
+                    [ Match(
+                          Call("Diff.diff", [ Var "$left"; Var "$right" ]),
+                          [ PIdent("Some", Some(PIdent("$at", None))),
+                            None,
+                            If(Call("Text.String.startsWith", [ StrLit "."; Var "$at" ]), Bin("+", StrLit "\n  at ", Var "$at"), Some(StrLit ""))
+                            PIdent("None", None), None, StrLit "" ]
+                      ) ]
+                else
+                    []
+
+            let parts =
+                [ StrLit(sprintf "assertion failed at %s:%d: %s\n  left:  " file line (exprText c))
+                  side "$left" a ca.ty
+                  StrLit "\n  right: "
+                  side "$right" b cb.ty ]
+                @ at
+
+            let message = parts |> List.reduce (fun x y -> Bin("+", x, y))
+            let failed = infer env' depth (Call("panic", [ message ]))
+            expect "assert" tUnit failed.ty
+            mk (CLet(l.u, ca, mk (CLet(r.u, cb, mk (CIf(cond, mk CUnit tUnit, failed)) tUnit)) tUnit)) tUnit
+        | Call(f, [ v; lit ]) when not (env.ContainsKey f) && resolveName f = Some "Testing.expect" ->
+            // an expect test: its place goes in, so zs test --update can find its literal (0009)
+            match lit with
+            | StrLit _
+            | At(_, StrLit _) -> call env depth "Testing.expectAt" [ v; lit; StrLit(System.IO.Path.GetFileName currentFile.Value); Lit(int64 currentLine.Value) ]
+            | _ -> fail 0 "expect's expected text is a string literal, which zs test --update can rewrite"
         | Call("assert", [ c ]) when not (env.ContainsKey "assert") ->
             // the location goes into the message: "assertion failed at file:line"
             let cc = infer env depth c
@@ -4189,7 +4271,9 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                 (resolveWith (fun q -> prims.Contains q || builtinCons.ContainsKey q || types.ContainsKey q) n
                  |> Option.defaultValue n),
                 args
-            | _ -> fail 0 "an impl is for a named type, such as Show<Point> or Show<list<'a>>"
+            // a tuple of type variables: the impl for every tuple of that size (*2 for 'a * 'b)
+            | STTuple ts -> tupleHead ts.Length, ts
+            | _ -> fail 0 "an impl is for a named type or a tuple, such as Show<Point>, Show<list<'a>> or Binary<'a * 'b>"
 
         let hvars =
             hargs
@@ -4340,7 +4424,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
     autoDerive <-
         fun tr n ->
             let ok =
-                List.contains tr [ "Eq"; "Ord"; "Hash"; "Show" ]
+                List.contains tr [ "Eq"; "Ord"; "Hash"; "Show"; "Diff" ]
                 && derives.ContainsKey tr
                 && not (manualImpls.Contains((tr, n)) || optOut.Contains((tr, n)))
                 && (match types.TryGetValue n with
@@ -4884,21 +4968,28 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                     | [] -> fail 0 "[<Multiversion>] takes a version's features each: [<Multiversion(\"avx2,fma\", \"sse4.2\")>]"
                     | versions -> st.targets[qualify name] <- "multiversion" :: versions
                 | _ -> ()
-            | Attrs([ "Test", [] ], (Fun(name, _, _, _, _) as f)) ->
-                declare ln f
+            | Attrs([ "Test", [] ], Fun(name, _, _, _, _)) ->
+                fail 0 (sprintf "tests are values now (0009): [<Tests>] let tests = testList \"%s\" [ test \"…\" (fun () -> assert (…)) ]" name)
+            | Attrs([ "Tests", [] ], (Value(name, _, _) as v)) ->
+                // a Test or a list of them, which the file's test entry ($tests) runs
+                declare ln v
                 let q = qualify name
+                let t = globalValues[q]
+                let test = TCon("Testing.Test", [])
 
-                try
-                    unify (TFun(tUnit, tUnit, fresh kRow)) globals[q].ty
-                with Mismatch ->
-                    fail 0 (sprintf "test '%s' must be a function of type unit -> unit, such as: let %s () = assert (...)" name name)
+                let isList =
+                    try
+                        unify test t
+                        false
+                    with Mismatch ->
+                        try
+                            unify (TCon("list", [ test ])) t
+                            true
+                        with Mismatch ->
+                            fail 0 (sprintf "a [<Tests>] value is a Test (test, testList, …) or a list of them, not %s" (show t))
 
-                match prune globals[q].ty with
-                | TFun(_, _, row) when not (isRowEmpty row) ->
-                    fail 0 (sprintf "test '%s' performs %s and nothing handles it: handle it inside the test" name (effectsText row))
-                | _ -> ()
-
-                tests.Add q
+                testValues.Add((q, isList))
+            | Attrs([ "Tests", [] ], _) -> fail 0 "[<Tests>] marks a top-level value: [<Tests>] let tests = testList \"…\" [ … ]"
             | Attrs([ "CLayout", [] ], (TypeDecl(name, tps, RecordTy fields, _) as d)) ->
                 declare ln d
                 let q = qualify name
@@ -5054,8 +5145,17 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
         for n in modName |> Option.map withEnclosing |> Option.defaultValue [] do
             st.moduleNames.Add n |> ignore
 
+        testValues.Clear()
+
         for ln, d in decls do
             declareOne ln d
+
+        // the program's [<Tests>] values, run by the test binary's entry (0009)
+        if modName.IsNone && testValues.Count > 0 then
+            let all = [ for q, isList in testValues -> if isList then Var q else Call("::", [ Tuple [ Var q; Var "[]" ] ]) ]
+            let joined = Call("Collections.List.concat", [ List.foldBack (fun a acc -> Call("::", [ Tuple [ a; acc ] ])) all (Var "[]") ])
+            declareOne 0 (Fun("$tests", false, [ PUnit, None ], None, Call("Testing.Runner.main", [ joined ])))
+            tests.Add "$tests"
 
         currentModule.Value <- None
         errors () = errorsBefore

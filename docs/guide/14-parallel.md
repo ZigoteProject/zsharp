@@ -108,6 +108,15 @@ stops at objects already shared, so sending the same value again costs one test.
 is never unique, so writing to a shared array, or a `List.map` over a shared list, copies
 instead of working in place. Data that stays on one thread keeps every optimization.
 
+**Moving instead of sharing:** a value that only the job, task or channel receiving it will use
+moves there unmarked. A work item, a `Task.spawn` or `Task.blocking` function and a value sent on
+a channel are given up by the sender, so an object the moved value holds the only reference to
+stays thread-local, the receiver's now; only what the sender still reaches is marked shared.
+`Array.Parallel.map` cuts its array into parts and moves each into its job, so mapping an array
+the caller doesn't use afterwards marks nothing. A `Mutex`'s value is always shared, since every
+thread can reach it. `Runtime.marks ()` counts the objects marked so far, and `ZS_STATS=1`
+prints it when the program exits.
+
 Results come back without marking: `Parallel.both`'s results, and an array that
 `Array.Parallel.init` builds, belong to the thread that asked for them.
 

@@ -8,7 +8,7 @@
 | `zs build [file.zs] [-o out]` | build an executable (the project's, without a file) |
 | `zs run [file.zs [--]] [args…]` | build and run |
 | `zs check <file.zs>` | type-check only, reporting every error and warning |
-| `zs test [file.zs] [filters…]` | run `[<Test>]` functions, each in its own process |
+| `zs test [file.zs] [paths…] [--update] [--summary]` | run `[<Tests>]` values, each test in its own process; `--update` rewrites failing `expect` literals |
 | `zs fmt [--check] <files…>` | format files in place (`--check`: list unformatted ones; `--stdin`: standard input to standard output) |
 | `zs doc <file.zs>` | print a Markdown reference of a file's documented items |
 | `zs fetch` / `zs update` | check out / update git dependencies |

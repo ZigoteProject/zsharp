@@ -47,6 +47,14 @@ impl Iter<list<'a>, 'a>
 
 A list's elements, front to back.
 
+### `impl Diff<list<'a>>`
+
+```zsharp
+impl Diff<list<'a>>
+```
+
+The first element where two lists differ (`.[2]: 3 vs 4`), or where one of them ends.
+
 ## Functions
 
 ### `List.rev`
@@ -208,6 +216,14 @@ List.collect : ('a -> list<'b>) -> list<'a> -> list<'b>
 ```
 
 Applies `f` to every element and concatenates the resulting lists.
+
+### `List.concat`
+
+```zsharp
+List.concat : list<list<'a>> -> list<'a>
+```
+
+The lists one after another, in one list.
 
 ### `List.zip`
 

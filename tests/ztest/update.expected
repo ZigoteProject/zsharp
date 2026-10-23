@@ -1,0 +1,22 @@
+FAIL shapes/a circle
+FAIL shapes/lines
+FAIL shapes/text
+updated shapes.zs:12
+updated shapes.zs:14
+updated shapes.zs:15
+0 passed, 3 failed
+[<Tests>]
+let tests =
+  testList "shapes" [
+    test "a circle" (fun () -> expect (Circle 1.5) "Circle 1.5")
+    test "lines" (fun () ->
+      expect (lines "a\nb") "[a; b]")
+    test "text" (fun () -> expect "first\n  second" """
+                             first
+                               second
+                             """)
+  ]
+ok   shapes/a circle
+ok   shapes/lines
+ok   shapes/text
+3 passed, 0 failed

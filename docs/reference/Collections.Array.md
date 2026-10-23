@@ -24,6 +24,14 @@ impl Iter<array<'a>, 'a>
 
 An array's elements, by index.
 
+### `impl Diff<array<'a>>`
+
+```zsharp
+impl Diff<array<'a>>
+```
+
+The first index where two arrays differ (`.[2]: 3 vs 4`), or their lengths.
+
 ## Functions
 
 ### `Array.init`

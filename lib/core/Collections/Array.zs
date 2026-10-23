@@ -121,3 +121,19 @@ impl Iter<array<'a>, 'a> =
       ok <- f a.[i]
       i <- i + 1
     ok
+
+/// The first index where two arrays differ (`.[2]: 3 vs 4`), or their lengths.
+impl Diff<array<'a>> =
+  let diff (a: array<'a>) (b: array<'a>) =
+    let n = min (Array.length a) (Array.length b)
+    let mutable i = 0
+    let mutable found = None
+    while Option.isNone found && i < n do
+      let at = i
+      found <- Option.map (fun rest -> $".[{at}]" + rest) (diff a.[i] b.[i])
+      i <- i + 1
+    match found with
+    | Some _ -> found
+    | None when Array.length a <> Array.length b ->
+      Some($": {Array.length a} elements vs {Array.length b}")
+    | None -> None

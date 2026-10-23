@@ -141,6 +141,9 @@ let choose f xs =
 /// Applies `f` to every element and concatenates the resulting lists.
 let collect f xs = List.fold (fun acc x -> List.append acc (f x)) [] xs
 
+/// The lists one after another, in one list.
+let concat (xss: list<list<'a>>) = List.collect id xss
+
 /// Pairs up the elements of two lists; stops at the end of the shorter one.
 let zip xs ys =
   let rec go acc xs ys =
@@ -276,3 +279,16 @@ impl Iter<list<'a>, 'a> =
         ok <- f x
       | [] -> more <- false
     ok
+
+/// The first element where two lists differ (`.[2]: 3 vs 4`), or where one of them ends.
+impl Diff<list<'a>> =
+  let diff xs ys =
+    let rec go i xs ys =
+      match (xs, ys) with
+      | [], [] -> None
+      | x :: xs, y :: ys ->
+        match diff x y with
+        | Some rest -> Some($".[{i}]" + rest)
+        | None -> go (i + 1) xs ys
+      | _ -> Some($": {i + length xs} elements vs {i + length ys}")
+    go 0 xs ys

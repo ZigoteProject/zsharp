@@ -55,7 +55,7 @@ zs new greeter
 cd greeter
 zs run                   # builds and runs src/main.zs
 zs run Ada               # program arguments follow
-zs test                  # runs the [<Test>] functions
+zs test                  # runs the tests ([<Tests>] values)
 ```
 
 `zs new` writes these files:

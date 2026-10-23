@@ -152,6 +152,7 @@ let runFrom (prog: Program) (def: string -> FunDef) (roots: string list) (extern
         | TCon(n, _) when n = windowType -> "span"
         | TCon("ref", [ TCon(n, _) ]) when n = bufferType -> "Buffer"
         | TCon(n, _) -> n
+        | TTuple ts -> tupleHead ts.Length
         | t -> showFull t
 
     let implFn (tr: string) (m: string) (t: Ty) (methodTy: Ty) : CExpr =
@@ -187,6 +188,8 @@ let runFrom (prog: Program) (def: string -> FunDef) (roots: string list) (extern
             | "Eq.equal", _ -> CBin("=", a 0, a 1)
             | "Ord.compare", _ -> CPrim("compare", args)
             | "Show.show", _ -> CPrim("string", args)
+            // a number, a string, a char or a bool differs as a whole: the prelude's diffShown
+            | "Diff.diff", _ -> CApp(mk (CGlobal(request "diffShown" [ t ], Some [])) (tfun t (tfun t resTy)), args)
             | "Format.format", _ -> CPrim("format", args)
             | "Hash.hash", _ -> CPrim("hash", args)
             | _ -> Syntax.fail 0 (sprintf "%s has no built-in %s" (show t) q)

@@ -21,12 +21,13 @@ let lineCount (s: string) =
     if String.byte s i = u8 10 then n <- n + 1
   n
 
-[<Test>]
-let countsWords () =
-  assert (wordCount "  two words\n" = 2)
-  assert (wordCount "" = 0)
-
-[<Test>]
-let countsLines () =
-  assert (lineCount "a\nb\n" = 2)
-  assert (lineCount "no newline" = 0)
+[<Tests>]
+let tests =
+  Testing.testList "text" [
+    Testing.test "counts words" (fun () ->
+      assert (wordCount "  two words\n" = 2)
+      assert (wordCount "" = 0))
+    Testing.test "counts lines" (fun () ->
+      assert (lineCount "a\nb\n" = 2)
+      assert (lineCount "no newline" = 0))
+  ]

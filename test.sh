@@ -89,6 +89,9 @@ else echo "FAIL bench/host"; cat "$tmp/bench.log"; fail=1; fi
 actual=$(bin/zs test tests/ztest/sample.zs 2>&1); code=$?
 if [ "$actual" = "$(cat tests/ztest/sample.expected)" ] && [ $code = 1 ]; then echo "ok   zs test tests/ztest/sample.zs"
 else echo "FAIL zs test tests/ztest/sample.zs (exit $code)"; diff <(echo "$actual") tests/ztest/sample.expected; fail=1; fi
+# zs test --update rewrites a failing expect test's literal (0009)
+if [ "$(tests/ztest/update.sh 2>&1)" = "$(cat tests/ztest/update.expected)" ]; then echo "ok   tests/ztest/update.sh (zs test --update)"
+else echo "FAIL tests/ztest/update.sh"; diff <(tests/ztest/update.sh 2>&1) tests/ztest/update.expected; fail=1; fi
 
 # projects: a CLI tool built from zs.toml with a path dependency; zs test over a project; two
 # dependencies with a Util.zs each (0018 K1) and one with C code ([c], K4); zs new

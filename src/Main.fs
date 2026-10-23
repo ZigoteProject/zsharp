@@ -115,9 +115,82 @@ let private fetched (dir: string) =
 
 let private dirOf (src: string) = Path.GetDirectoryName(Path.GetFullPath src)
 
-/// Builds a file's [<Test>] functions and runs each in its own process, so a failed assert or
-/// panic fails that test only. Returns (passed, failed), or None when it didn't build.
-let private runTests (src: string) (filter: string list) =
+/// A test of a built test binary (0009): its path, focus, time limit and sequenced group.
+type private Leaf =
+    { path: string
+      focus: string
+      timeout: int
+      sequence: string }
+
+/// Runs a test binary on one test, killed after its time limit: the exit code (None when it
+/// timed out), its output (standard output, then standard error) and how long it took.
+let private runLeaf (exe: string) (l: Leaf) : int option * string * float =
+    let psi = ProcessStartInfo exe
+    psi.ArgumentList.Add l.path
+    psi.RedirectStandardOutput <- true
+    psi.RedirectStandardError <- true
+    psi.RedirectStandardInput <- true
+    let sw = Stopwatch.StartNew()
+    use p = Process.Start psi
+    p.StandardInput.Close()
+    let out = p.StandardOutput.ReadToEndAsync()
+    let err = p.StandardError.ReadToEndAsync()
+
+    if p.WaitForExit l.timeout then
+        p.WaitForExit()
+        Some p.ExitCode, out.Result + err.Result, sw.Elapsed.TotalSeconds
+    else
+        (try p.Kill true with _ -> ())
+        p.WaitForExit()
+        None, out.Result + err.Result, sw.Elapsed.TotalSeconds
+
+// what expectAt prints for zs test --update: the place, the text, an end line (Testing.zs)
+let private expectRecord = Text.RegularExpressions.Regex(@"zs-expect ([^\n]*):(\d+)\n((?:.|\n)*?)\nzs-expect-end\n?")
+
+/// Rewrites an expect test's literal (the last argument of the `expect` on that line) to the
+/// text, through the lossless tree: a plain string when it fits on its line, else a raw string
+/// on lines of its own.
+let private updateExpect (file: string) (line: int) (text: string) =
+    let source = File.ReadAllText file
+    let toks = lex source
+
+    match toks |> Array.tryFindIndex (fun t -> t.line = line && (t.tok = KId "expect" || t.tok = KId "Testing.expect")) with
+    | None -> false
+    | Some i ->
+        // the call's literal: the first string token after the value at the call's depth
+        let rec find (j: int) (depth: int) (seen: bool) =
+            if j >= toks.Length then None
+            else
+                match toks[j].tok with
+                | KSym("(" | "[" | "[|" | "{") -> find (j + 1) (depth + 1) true
+                | KSym(")" | "]" | "|]" | "}") -> find (j + 1) (depth - 1) true
+                | KStr _ when depth = 0 && seen -> Some toks[j]
+                | KNewline | KEof when depth = 0 -> None
+                | _ -> find (j + 1) depth true
+
+        match find (i + 1) 0 false with
+        | None -> false
+        | Some lit ->
+            let indent = String(' ', toks[i].col - 1 + 2)
+
+            let literal =
+                if not (text.Contains '\n' || text.Contains '"' || text.Contains '\\') then "\"" + text + "\""
+                else "\"\"\"\n" + (text.Split '\n' |> Array.map (fun l -> if l = "" then l else indent + l) |> String.concat "\n") + "\n" + indent + "\"\"\""
+
+            File.WriteAllText(file, source.Substring(0, lit.offset) + literal + source.Substring(lit.offset + lit.text.Length))
+            true
+
+/// A run's last line: "3 passed, 1 failed, 2 skipped".
+let private summaryLine (passed: int) (failed: int) (skipped: int) (broken: int) =
+    sprintf "%d passed, %d failed%s%s" passed failed (if skipped > 0 then sprintf ", %d skipped" skipped else "") (if broken > 0 then sprintf ", %d file(s) didn't build" broken else "")
+
+/// Builds a file's [<Tests>] values and runs each test in its own process (0009), at once up to
+/// the number of cores, a sequenced group's tests one at a time, each within its time limit.
+/// args: filters (a path ending in / is a prefix; else a part of the path), --summary,
+/// --fail-on-focused, --update. Returns (passed, failed, skipped), or None when it didn't build.
+let private runTests (src: string) (args: string list) =
+    let filters = args |> List.filter (fun a -> not (a.StartsWith "--"))
+
     let names =
         try
             (Driver.checkProgram false src false false).tests
@@ -129,33 +202,98 @@ let private runTests (src: string) (filter: string list) =
     testBuild <- true
 
     if names.IsEmpty then
-        Some(0, 0)
+        eprintfn "%s: no [<Tests>] values" src
+        Some(0, 0, 0)
     elif not (build src exe false false false) then
         None
     else
         Environment.SetEnvironmentVariable("ZS_BACKTRACE", "0")
+        let _, listed = exec exe [ "--list" ] true
 
-        let chosen =
-            names
-            |> List.indexed
-            |> List.filter (fun (_, n) -> filter.IsEmpty || filter |> List.exists (fun f -> n.Contains f))
+        let leaves =
+            [ for line in listed.Split('\n', StringSplitOptions.RemoveEmptyEntries) do
+                  match line.Split '\t' with
+                  | [| p; f; t; s |] ->
+                      yield
+                          { path = p
+                            focus = f
+                            timeout = int t
+                            sequence = s }
+                  | _ -> () ]
+
+        let wanted (l: Leaf) =
+            filters.IsEmpty || filters |> List.exists (fun f -> if f.EndsWith "/" then l.path.StartsWith f else l.path.Contains f)
+
+        let chosen = leaves |> List.filter wanted
+
+        if chosen.IsEmpty then
+            printfn "no test's path matches %s (they start with %s)" (String.concat " " filters) (leaves |> List.map (fun l -> l.path.Split('/')[0] + "/") |> List.distinct |> String.concat ", ")
+        let focused = chosen |> List.exists (fun l -> l.focus = "focused")
+        let runs (l: Leaf) = l.focus <> "pending" && (not focused || l.focus = "focused")
+        let results = Collections.Concurrent.ConcurrentDictionary<string, int option * string * float>()
+
+        // a sequenced group's tests one after another, each other test on its own
+        let groups =
+            chosen
+            |> List.filter runs
+            |> List.groupBy (fun l -> if l.sequence = "" then "\u0000" + l.path else l.sequence)
+            |> List.map snd
+
+        Threading.Tasks.Parallel.ForEach(
+            groups,
+            Threading.Tasks.ParallelOptions(MaxDegreeOfParallelism = Environment.ProcessorCount),
+            fun (g: Leaf list) ->
+                for l in g do
+                    results[l.path] <- runLeaf exe l
+        )
+        |> ignore
 
         let mutable failed = 0
+        let mutable skipped = 0
+        let updates = ResizeArray<string * int * string>()
 
-        for i, name in chosen do
-            let code, output = exec exe [ string i ] true
-
-            if code = 0 then
-                printfn "ok   %s" name
-            else
+        for l in chosen do
+            match results.TryGetValue l.path with
+            | true, (Some 0, _, _) -> printfn "ok   %s" l.path
+            | true, (code, output, _) ->
                 failed <- failed + 1
-                printfn "FAIL %s" name
+                printfn "FAIL %s" l.path
 
-                for l in output.Trim().Split '\n' do
-                    if l <> "" then printfn "       %s" l
+                for m in expectRecord.Matches output do
+                    updates.Add(m.Groups[1].Value, int m.Groups[2].Value, m.Groups[3].Value)
+
+                let output = expectRecord.Replace(output, "").Trim()
+
+                for line in output.Split '\n' do
+                    if line <> "" then printfn "       %s" line
+
+                if code.IsNone then
+                    printfn "       timed out after %g s" (float l.timeout / 1000.0)
+            | _ ->
+                skipped <- skipped + 1
+                printfn "skip %s%s" l.path (if l.focus = "pending" then " (pending)" else "")
+
+        if List.contains "--update" args then
+            for file, line, text in updates do
+                let path = Path.Combine(dirOf src, file)
+
+                if File.Exists path && updateExpect path line text then
+                    printfn "updated %s:%d" file line
+
+        if List.contains "--summary" args then
+            printfn "times:"
+
+            for path, (_, _, secs) in results |> Seq.map (fun kv -> kv.Key, kv.Value) |> Seq.sortByDescending (fun (_, (_, _, s)) -> s) do
+                printfn "  %8.3f s  %s" secs path
 
         File.Delete exe
-        Some(chosen.Length - failed, failed)
+
+        if focused && List.contains "--fail-on-focused" args then
+            printfn "focused tests are left (--fail-on-focused)"
+            failed <- failed + 1
+
+        let passed = results.Values |> Seq.filter (fun (code, _, _) -> code = Some 0) |> Seq.length
+        Some(passed, failed, skipped)
 
 let private newProject (name: string) =
     if Directory.Exists name then
@@ -167,7 +305,7 @@ let private newProject (name: string) =
 
         File.WriteAllText(
             Path.Combine(name, "src", "main.zs"),
-            "let greeting (who: string) = $\"Hello, {who}!\"\n\nlet main () =\n  match Environment.args () with\n  | [] -> println (greeting \"world\")\n  | who :: _ -> println (greeting who)\n  0\n\n[<Test>]\nlet greets () =\n  assert (greeting \"Z#\" = \"Hello, Z#!\")\n"
+            "open Testing\n\nlet greeting (who: string) = $\"Hello, {who}!\"\n\nlet main () =\n  match Environment.args () with\n  | [] -> println (greeting \"world\")\n  | who :: _ -> println (greeting who)\n  0\n\n[<Tests>]\nlet tests = testList \"greeting\" [ test \"greets\" (fun () -> assert (greeting \"Z#\" = \"Hello, Z#!\")) ]\n"
         )
 
         File.WriteAllText(Path.Combine(name, ".gitignore"), "build/\n")
@@ -300,7 +438,7 @@ let private run (argv: string[]) =
                 |> List.map (fun d -> Path.Combine(m.root, d))
                 |> List.filter Directory.Exists
                 |> List.collect (fun d -> Directory.GetFiles(d, "*.zs", SearchOption.AllDirectories) |> List.ofArray |> List.sort)
-                |> List.filter (fun f -> (File.ReadAllText f).Contains "[<Test>]")
+                |> List.filter (fun f -> (File.ReadAllText f).Contains "[<Tests>]")
 
             let results =
                 files
@@ -308,10 +446,11 @@ let private run (argv: string[]) =
                     printfn "%s" (Path.GetRelativePath(Environment.CurrentDirectory, f))
                     runTests f filter)
 
-            let passed = results |> List.sumBy (Option.map fst >> Option.defaultValue 0)
-            let failed = results |> List.sumBy (Option.map snd >> Option.defaultValue 0)
+            let passed = results |> List.sumBy (function Some(p, _, _) -> p | None -> 0)
+            let failed = results |> List.sumBy (function Some(_, f, _) -> f | None -> 0)
+            let skipped = results |> List.sumBy (function Some(_, _, s) -> s | None -> 0)
             let broken = results |> List.filter Option.isNone |> List.length
-            printfn "%d passed, %d failed%s" passed failed (if broken > 0 then sprintf ", %d file(s) didn't build" broken else "")
+            printfn "%s" (summaryLine passed failed skipped broken)
             if failed = 0 && broken = 0 then 0 else 1
     | [ "new"; name ] -> newProject name
     | [ ("fetch" | "update") as cmd ] ->
@@ -528,11 +667,9 @@ let private run (argv: string[]) =
     | "test" :: src :: filter ->
         match runTests src filter with
         | None -> 1
-        | Some(0, 0) ->
-            eprintfn "%s: no [<Test>] functions" src
-            1
-        | Some(passed, failed) ->
-            printfn "%d passed, %d failed" passed failed
+        | Some(0, 0, 0) -> 1
+        | Some(passed, failed, skipped) ->
+            printfn "%s" (summaryLine passed failed skipped 0)
             if failed = 0 then 0 else 1
     | "lsp" :: _ -> Lsp.serve () // editors may add flags such as --stdio
     | "mcp" :: _ -> Mcp.serve ()
@@ -563,7 +700,7 @@ let private run (argv: string[]) =
             Rpc.input <- new Rpc.PrefixedStream([| byte first |], stdin)
             if char first = '{' then Mcp.serve () else Lsp.serve ()
     | _ ->
-        eprintfn "usage: zs new <name>\n       zs fetch | zs update\n       zs build [<file.zs> [-o <out>] [--lib]] [--release] [-g] [-O0|-O1|-O2|-O3|-Os] [--target <triple>] [--emit-llvm] [--sanitize[=thread]] [--cpu <name>] [--profile-generate | --profile-use <file>] [--time]\n       zs run [<file.zs> [--release] [-g] [--sanitize[=thread]] --] [program arguments…]\n       zs check <file.zs>\n       zs test [<file.zs>] [name filters…]\n       zs doc <file.zs>\n       zs fmt [--check] <files…>\n       zs lsp\n       zs mcp"
+        eprintfn "usage: zs new <name>\n       zs fetch | zs update\n       zs build [<file.zs> [-o <out>] [--lib]] [--release] [-g] [-O0|-O1|-O2|-O3|-Os] [--target <triple>] [--emit-llvm] [--sanitize[=thread]] [--cpu <name>] [--profile-generate | --profile-use <file>] [--time]\n       zs run [<file.zs> [--release] [-g] [--sanitize[=thread]] --] [program arguments…]\n       zs check <file.zs>\n       zs test [<file.zs>] [path/ | name…] [--summary] [--update] [--fail-on-focused]\n       zs doc <file.zs>\n       zs fmt [--check] <files…>\n       zs lsp\n       zs mcp"
         2
 
 /// The build server: zs build asks it to build (one build at a time, in the request's
