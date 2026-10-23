@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Draft |
-| **Decided at** | a design review before phase 11's step 3 (`Infer`): the printed form is part of the suite both compilers must pass, and every signature written with a row costs more to change later |
+| **Decided at** | a design review with 0017, before the rewrite starts: 0017's `forEach` needs the trait-method rule, the printed form is part of the suite both compilers must pass, and every signature written with a row costs more to change later |
 | **Builds** | the F# compiler first (the printer, one rule in the checker, hover and `zs doc`), then phase 11's `Types/Ty.show` and `Lsp` carry it over |
 | **Rests on** | decision 23 and [0002](0002-effect-handlers.md) (rows, scoped labels, the empty rows of `share<F>`, callbacks and trait methods); [DESIGN §6.1](../../DESIGN.md#61-effect-handlers-phase-10-v3) |
 | **Related** | [0017 iteration](0017-iteration.md) (`forEach`'s body), [0020 the compiler in Z#](0020-self-hosting.md) (the printer is written twice if this waits), [0021 warnings](0021-warnings.md) (the diagnostic text), [0019 the syntax tree](0019-syntax-tree.md) (hover) |

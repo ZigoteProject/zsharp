@@ -33,7 +33,7 @@ proposal describes a change to it, and [ROADMAP.md](../../ROADMAP.md) says when 
 | 0022 | [Targets: macOS and Windows](0022-targets-macos-windows.md) | Approved in principle | decision 29, track T's plan |
 | 0023 | [JSON in Core](0023-json-in-core.md) | Approved in principle | track S's plan |
 | 0024 | [The library's API](0024-library-api.md) | Approved in principle | track S's plan |
-| 0025 | [Reading effect rows](0025-reading-effects.md) | Draft | a design review before phase 11's step 3 |
+| 0025 | [Reading effect rows](0025-reading-effects.md) | Draft | a design review with 0017, before phase 11 |
 
 **Status:**
 - **Draft:** written, with its open questions listed.
