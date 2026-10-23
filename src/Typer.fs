@@ -4243,6 +4243,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
         | Lit _
         | FloatLit _
         | StrLit _
+        | CharLit _
         | BoolLit _
         | UnitLit -> true
         | At(_, a)
