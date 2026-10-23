@@ -160,6 +160,7 @@ $3 = {case = Large, Small = 0, Large.0 = 14, Large.1 = 7}
 **What it gives:**
 - tree-sitter highlighting and outline;
 - the `zs lsp` language server: errors as you type, hover with types (effects included) and docs, go to definition, references, completion, inlay hints (types, and a function's inferred effects before its `=`), document symbols and formatting;
+- rename (a function, a type, a case, a local or a record field, in every open file's program), signature help inside a call, and code actions: add a missing match case, `open` the module an unknown name is in (or qualify it), write a binder's type;
 - the `zs mcp` context server, so Zed's agent can check, build and run code and look up documentation.
 
 The extension finds `zs` on your `PATH`. Or set the path in Zed's settings:

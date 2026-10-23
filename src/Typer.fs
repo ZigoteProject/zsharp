@@ -1115,6 +1115,32 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
 
     let record (node: obj) (name: string) (t: Ty) (inlay: bool) = recordKey node name t inlay "" false
 
+    /// The field names a record literal, update, pattern or declaration writes, each a reference
+    /// to (or with isDef the definition of) the field: key field:<record>.<field> (0019's rename).
+    let fieldUses (node: obj) (rname: string) (names: string list) (isDef: bool) =
+        match fieldSpans.TryGetValue node with
+        | true, spans when spans.Length = names.Length ->
+            let types =
+                match st.types.TryGetValue rname with
+                | true, { def = RecordDef fs } -> fs
+                | _ -> []
+
+            for f, (l, c, len) in List.zip names spans do
+                hovers.Add
+                    { hfile = currentFile.Value
+                      hline = l
+                      hcol = c
+                      hlen = len
+                      name = f
+                      hty = types |> List.tryFind (fst >> (=) f) |> Option.map snd |> Option.defaultValue tUnit
+                      constraints = ""
+                      explain = ""
+                      decl = false
+                      key = sprintf "field:%s.%s" rname f
+                      isDef = isDef
+                      inlay = false }
+        | _ -> ()
+
     /// The type with its variables as a scheme's ('a, 'b, … in order), as a hover or an error
     /// shows a generic one; a literal's variable (a number constant's) stays.
     let schemed (t: Ty) =
@@ -1728,6 +1754,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
 
             let rty, targs = instType rname
             expect "pattern" ty rty
+            fieldUses p rname given false
 
             let subs =
                 fieldsOf rname
@@ -2517,6 +2544,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
         | Update(r, fields) ->
             let cr = inf r
             let rname = recordOf cr.ty (fst fields.Head)
+            fieldUses node rname (List.map fst fields) false
             let rty, targs = instType rname
             expect "record update" rty cr.ty
             let tmp = uniq "$r"
@@ -2532,9 +2560,10 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
             let res = at node (fun () -> field cr f)
 
             let key =
-                match memberOf cr.ty f with
-                | Some m -> m.gname
-                | None -> ""
+                match memberOf cr.ty f, prune cr.ty with
+                | Some m, _ -> m.gname
+                | None, TCon(n, _) when records.Contains n -> sprintf "field:%s.%s" n f
+                | None, _ -> ""
 
             recordKey node f res.ty false key false
             res
@@ -3940,6 +3969,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
                         List.last exact
 
         literalRecords[node] <- rname
+        fieldUses node rname given false
         let rty, targs = instType rname
         let defaults = recordDefaults[rname]
 
@@ -4528,6 +4558,7 @@ let session (requireMain: bool) (collect: bool) (allModules: string list) (manua
 
                     types[name] <- { npars = tps.Length; def = RecordDef fs }
                     records.Add name
+                    fieldUses body name (List.map fst fs) true
                     recordDefaults[name] <- fields |> List.map (fun (_, _, d) -> d)
                 | UnionTy cases ->
                     types[name] <-

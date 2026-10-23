@@ -211,6 +211,10 @@ else echo "FAIL tests/lsp/modules.sh"; cat "$tmp/lspm.diff"; fail=1; fi
 # definition and references (tests/lsp/effects.sh)
 if diff <(tests/lsp/effects.sh bin/zs 2>&1) tests/lsp/effects.expected >"$tmp/lspe.diff"; then echo "ok   tests/lsp/effects.sh"
 else echo "FAIL tests/lsp/effects.sh"; cat "$tmp/lspe.diff"; fail=1; fi
+# editing through the server (0019): renaming a record field across modules, signature help,
+# code actions (tests/lsp/edits.sh)
+if diff <(tests/lsp/edits.sh bin/zs 2>&1) tests/lsp/edits.expected >"$tmp/lspx.diff"; then echo "ok   tests/lsp/edits.sh"
+else echo "FAIL tests/lsp/edits.sh"; cat "$tmp/lspx.diff"; fail=1; fi
 # the build server: the binary an in-process build makes, errors and exit codes back
 if diff <(tests/server.sh 2>&1) tests/server.expected >"$tmp/server.diff"; then echo "ok   tests/server.sh (the build server)"
 else echo "FAIL tests/server.sh"; cat "$tmp/server.diff"; fail=1; fi

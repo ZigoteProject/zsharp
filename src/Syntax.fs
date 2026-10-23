@@ -13,6 +13,10 @@ exception CompileErrorAt of file: string * line: int * col: int * msg: string //
 /// binders, calls (their head) and statements. Kept beside the AST so it stays plain.
 let positions = Dictionary<obj, int * int * int>(HashIdentity.Reference)
 
+/// Where a record literal's, update's, pattern's or declaration's field names are: (line, column,
+/// length) per field, by its node, so rename and references find a field's uses (0019).
+let fieldSpans = Dictionary<obj, (int * int * int) list>(HashIdentity.Reference)
+
 /// line 0 = "unknown here"; the nearest enclosing statement/declaration fills it in.
 let fail line msg = raise (CompileError(line, msg))
 
@@ -1398,9 +1402,12 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
         | KSym "{" ->
             // a record pattern: { field = pattern; ... } (line breaks separate fields too)
             let fields = ResizeArray()
+            let spans = ResizeArray()
 
             while not (isSym "}") do
+                let t = toks[pos.Value]
                 let f = ident ()
+                spans.Add(t.line, t.col, t.len)
                 expect (KSym "=") "'='"
                 fields.Add(f, pattern ())
 
@@ -1414,7 +1421,12 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
             if fields.Count = 0 then
                 fail (line ()) "a record pattern names at least one field: { x = x }"
 
-            PRecord(List.ofSeq fields)
+            let p = PRecord(List.ofSeq fields)
+
+            if track then
+                fieldSpans[box p] <- List.ofSeq spans
+
+            p
         | KSym "[" ->
             let items = ResizeArray()
 
@@ -2628,13 +2640,17 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
 
     // after '{':  { f = e; ... }  or  { e with f = e; ... }
     and record () =
+        let spans = ResizeArray()
+
         let fields () =
             let items = ResizeArray()
             let mutable go = true
 
             while go do
                 start "FieldValue"
+                let t = toks[pos.Value]
                 let f = ident ()
+                spans.Add(t.line, t.col, t.len)
                 expect (KSym "=") "'='"
                 items.Add(f, expr ())
                 finish ()
@@ -2647,8 +2663,14 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
             advance ()
             List.ofSeq items
 
+        let spanned (node: Expr) =
+            if track then
+                fieldSpans[box node] <- List.ofSeq spans
+
+            node
+
         match peek (), peek2 () with
-        | KId _, KSym "=" -> RecordLit(fields ())
+        | KId _, KSym "=" -> spanned (RecordLit(fields ()))
         | _ ->
             let e = expr ()
 
@@ -2656,7 +2678,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                 errAt "braces don't make a block: a function body is its indented lines, and { } makes a record ({ x = 1; y = 2 } or { r with x = 1 })"
 
             advance ()
-            Update(e, fields ())
+            spanned (Update(e, fields ()))
 
     /// After a name, at `{`: whether a computation expression's body follows rather than a
     /// record: an indented block, or a statement only a computation expression starts with.
@@ -2924,6 +2946,7 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
             start "RecordBody"
             advance ()
             let fields = ResizeArray()
+            let spans = ResizeArray()
             let mutable go = true
 
             while go do
@@ -2931,7 +2954,9 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
                     errAt "record fields can't be mutable: a record is a value; change one with { r with x = … }, bind it with let mutable, or make the field a ref<T>"
 
                 start "Field"
+                let ft = toks[pos.Value]
                 let f = ident ()
+                spans.Add(ft.line, ft.col, ft.len)
                 expect (KSym ":") "':'"
                 let t = ty ()
 
@@ -2952,7 +2977,12 @@ let rec private parseTokens (toks: Token[]) (exprOnly: bool) (track: bool) : (in
 
             advance ()
             finish ()
-            RecordTy(List.ofSeq fields)
+            let body = RecordTy(List.ofSeq fields)
+
+            if track then
+                fieldSpans[box body] <- List.ofSeq spans
+
+            body
         else
             // payload field: optional 'name:' then a type; '*' separates fields
             let field () =

@@ -1154,6 +1154,7 @@ let private checkModules (requireMain: bool) (collect: bool) (withHovers: bool) 
 /// declaration's error is in the result; with withHovers, every module's hovers (editors).
 let private checkUnits (withHovers: bool) (mainPath: string) (requireMain: bool) (collect: bool) : Core.Program * CheckedUnit[] =
     positions.Clear()
+    fieldSpans.Clear()
     links.Clear()
     cflags.Clear()
     pkgConfigs.Clear() // asked again each build: a library may have been installed since

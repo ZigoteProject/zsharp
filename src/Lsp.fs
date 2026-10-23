@@ -301,6 +301,310 @@ let private keywords =
     [ "let"; "rec"; "mutable"; "if"; "then"; "else"; "match"; "with"; "when"; "fun"; "for"; "in"; "do"; "while"
       "type"; "of"; "member"; "static"; "trait"; "impl"; "derive"; "extern"; "open"; "module"; "private"; "not"; "true"; "false" ]
 
+// ------------------------------------------------------------ rename, signature help, code actions (0019)
+
+/// A file the editor may change: the program's, not the library's or a dependency's.
+let private editable (file: string) =
+    let full = Path.GetFullPath file
+    not (Driver.isLibrary full) && not (full.Contains "/.zs-cache/")
+
+let private isIdentChar (c: char) = Char.IsLetterOrDigit c || c = '_'
+
+/// Where the name `word` is in the text of a reference's span: the last place it stands alone.
+let private wordAt (span: string) (word: string) =
+    let rec go (from: int) =
+        match span.LastIndexOf(word, from, StringComparison.Ordinal) with
+        | -1 -> None
+        | k when (k = 0 || not (isIdentChar span[k - 1])) && (k + word.Length = span.Length || not (isIdentChar span[k + word.Length])) -> Some k
+        | k when k = 0 -> None
+        | k -> go (k - 1)
+
+    if span.Length = 0 || word.Length = 0 then None else go (span.Length - 1)
+
+/// What a rename at a position changes: the name there and every reference to it, in the
+/// programs of the open documents (a field's uses too: its key is field:Record.name), or why it
+/// can't be renamed. A name's key depends on the program it's checked in (a module's names are
+/// qualified, the main file's aren't), so another program's references are those of the
+/// definition at the same place.
+let private renameTarget (path: string) (line: int) (ch: int) : Result<Hover * Hover list, string> =
+    match related path line ch with
+    | Some h, all when h.key <> "" ->
+        if Syntax.cInfo.ContainsKey h.name then
+            Error(sprintf "%s is declared in a C header; rename it there" h.name)
+        else
+            match all |> List.tryFind (fun o -> o.isDef) with
+            | Some d when not (editable d.hfile) -> Error(sprintf "%s is defined in %s, outside the program" (shortName h.name) (Path.GetFileName d.hfile))
+            | def ->
+                let place (o: Hover) = Path.GetFullPath o.hfile, o.hline, o.hcol
+
+                let elsewhere =
+                    match def with
+                    | Some d ->
+                        [ for prog in results.Values do
+                              match prog.hovers |> List.tryFind (fun o -> o.isDef && place o = place d) with
+                              | Some other -> yield! prog.hovers |> List.filter (fun o -> o.key = other.key)
+                              | None -> () ]
+                    | None -> []
+
+                Ok(h, (all @ elsewhere) |> List.filter (fun o -> editable o.hfile) |> List.distinctBy place)
+    | Some h, _ -> Error(sprintf "'%s' isn't a name the checker resolved, so it can't be renamed" h.name)
+    | None, _ -> Error "there's no name here to rename"
+
+// a reference's place: its file, line (0-based) and the columns of the name in it
+let private placeOf (o: Hover) (word: string) =
+    let file = Path.GetFullPath o.hfile
+    let text = lineText file o.hline
+    let from = o.hcol - 1
+
+    if from < 0 || from > text.Length then None
+    else
+        let span = text.Substring(from, min o.hlen (text.Length - from))
+        wordAt span word |> Option.map (fun k -> file, o.hline - 1, from + k)
+
+/// The edits a rename makes: each reference's name replaced, in every file it's in.
+let private renameEdits (h: Hover) (all: Hover list) (newName: string) : JsonNode =
+    let word = h.name.Substring(h.name.LastIndexOf('.') + 1)
+
+    let edits =
+        all
+        |> List.choose (fun o -> placeOf o word)
+        |> List.distinct
+        |> List.map (fun (file, l, c) -> file, obj [ "range", range (l, c) (l, c + word.Length); "newText", str newName ])
+
+    obj [ "changes", obj [ for file, es in List.groupBy fst edits -> toUri file, arr (List.map snd es) ] ]
+
+/// The range prepareRename answers with: the name under the cursor.
+let private renameRange (path: string) (line: int) (ch: int) : JsonNode =
+    match renameTarget path line ch with
+    | Ok(h, _) ->
+        let word = h.name.Substring(h.name.LastIndexOf('.') + 1)
+
+        match placeOf h word with
+        | Some(_, l, c) -> obj [ "range", range (l, c) (l, c + word.Length); "placeholder", str word ]
+        | None -> null
+    | Error _ -> null
+
+/// A name a rename may give: an identifier, not a keyword.
+let private validName (n: string) =
+    n <> "" && (Char.IsLetter n[0] || n[0] = '_') && Seq.forall isIdentChar n && not (Syntax.keywords.Contains n)
+
+/// The call the cursor is in, from its line up to the cursor: the function's name, its
+/// parameters' types and names (from the definition's line) and the parameter the cursor is at.
+let private signatureHelp (path: string) (line: int) (ch: int) : JsonNode =
+    let text = lineText path (line + 1)
+    let upto = text.Substring(0, min ch text.Length)
+    let indent = upto.Length - upto.TrimStart().Length
+
+    let toks =
+        try
+            Syntax.lex (upto.TrimStart()) |> Array.filter (fun t -> t.text <> "")
+        with _ ->
+            [||]
+
+    // the application's atoms back to its start: what's after an operator, a keyword, an opening
+    // bracket or a comma at the cursor's depth; brackets closed before the cursor are one atom
+    let atoms = ResizeArray<Token>()
+    let mutable depth = 0
+    let mutable k = toks.Length - 1
+    let mutable stop = false
+
+    while k >= 0 && not stop do
+        let t = toks[k]
+
+        match t.tok with
+        | KSym(")" | "]" | "|]" | "}") ->
+            depth <- depth + 1
+            k <- k - 1
+        | KSym("(" | "[" | "[|" | "{") when depth > 0 ->
+            depth <- depth - 1
+            if depth = 0 then atoms.Insert(0, t)
+            k <- k - 1
+        | _ when depth > 0 -> k <- k - 1
+        | KId _
+        | KInt _
+        | KFloat _
+        | KStr _
+        | KChar _
+        | KInterp _
+        | KKw("true" | "false") ->
+            atoms.Insert(0, t)
+            k <- k - 1
+        | _ -> stop <- true
+
+    match List.ofSeq atoms with
+    | ({ tok = KId _ } as head) :: args ->
+        let typing = upto.Length > 0 && upto[upto.Length - 1] <> ' '
+        let active = if typing then max 0 (args.Length - 1) else args.Length
+
+        let at =
+            hoversAt path
+            |> List.filter (fun h -> h.hline = line + 1 && h.hcol - 1 = indent + head.col - 1)
+            |> List.sortBy (fun h -> h.hlen)
+            |> List.tryHead
+
+        match at with
+        | Some h ->
+            let rec spine (t: Ty) =
+                match prune t with
+                | TFun(a, b, _) ->
+                    let ps, r = spine b
+                    a :: ps, r
+                | t -> [], t
+
+            let ps, ret = spine h.hty
+
+            // the parameters' names, from the definition's line: its words after the name, up to =
+            let names =
+                match results.TryGetValue path with
+                | true, prog ->
+                    match prog.hovers |> List.tryFind (fun d -> d.isDef && d.key = h.key && d.key <> "") with
+                    | Some d ->
+                        let def = lineText (Path.GetFullPath d.hfile) d.hline
+                        let after = if d.hcol - 1 + d.hlen <= def.Length then def.Substring(d.hcol - 1 + d.hlen) else ""
+
+                        try
+                            let ts = Syntax.lex (after.TrimStart()) |> Array.filter (fun t -> t.text <> "")
+                            let names = ResizeArray<string>()
+                            let mutable d = 0
+                            let mutable seen = false
+                            let mutable i = 0
+
+                            // up to the = (or the result's : ) outside parentheses
+                            while i < ts.Length && (d > 0 || (ts[i].tok <> KSym "=" && ts[i].tok <> KSym ":")) do
+                                match ts[i].tok with
+                                | KSym "(" ->
+                                    d <- d + 1
+                                    seen <- false
+                                | KSym ")" ->
+                                    if d = 1 && not seen then names.Add "()"
+                                    d <- d - 1
+                                | KId x when d <= 1 && not seen ->
+                                    names.Add x
+                                    seen <- d = 1
+                                | _ -> ()
+
+                                i <- i + 1
+
+                            List.ofSeq names
+                        with _ ->
+                            []
+                    | None -> []
+                | _ -> []
+
+            let name = h.name.Substring(h.name.LastIndexOf('.') + 1)
+            let parts = ps |> List.mapi (fun i p -> match List.tryItem i names with
+                                                     | Some n when n <> "()" -> sprintf "(%s: %s)" n (show p)
+                                                     | _ -> show p)
+
+            let label = name + " " + String.concat " " parts + " : " + show ret
+            let mutable at = name.Length + 1
+
+            let offsets =
+                parts
+                |> List.map (fun p ->
+                    let o = arr [ num at; num (at + p.Length) ]
+                    at <- at + p.Length + 1
+                    obj [ "label", o ])
+
+            obj
+                [ "signatures", arr [ obj [ "label", str label; "parameters", arr offsets ] ]
+                  "activeSignature", num 0
+                  "activeParameter", num (min active (max 0 (ps.Length - 1))) ]
+        | None -> null
+    | _ -> null
+
+/// The code actions for a range: missing match cases added, a binder's type written, an `open`
+/// for an unknown name (0019).
+let private codeActions (path: string) (fromLine: int) (toLine: int) (diags: JsonNode) : JsonNode =
+    let uri = toUri path
+    let edit (l: int) (c: int) (text: string) = obj [ "changes", obj [ uri, arr [ obj [ "range", range (l, c) (l, c); "newText", str text ] ] ] ]
+    let action (title: string) (kind: string) (e: JsonNode) = obj [ "title", str title; "kind", str kind; "edit", e ]
+    let lines = (Driver.readSource path).Replace("\r\n", "\n").Split '\n'
+    let indentOf (l: string) = l.Length - l.TrimStart().Length
+
+    let fromDiagnostics =
+        [ for d in (if isNull diags then [] else diags.AsArray() |> List.ofSeq) do
+              let msg = getStr (d["message"])
+              let line = getInt (d["range"]["start"]["line"])
+
+              if msg.StartsWith "match is not exhaustive; missing case: " then
+                  // after the match's last clause: the lines after the match's that are its
+                  // clauses (from the first `|`, at that indentation or deeper)
+                  let case = msg.Substring("match is not exhaustive; missing case: ".Length)
+                  let first = [ line + 1 .. lines.Length - 1 ] |> List.tryFind (fun i -> lines[i].TrimStart().StartsWith "|")
+
+                  match first with
+                  | Some f ->
+                      let ind = indentOf lines[f]
+                      let mutable last = f
+
+                      while last + 1 < lines.Length && (lines[last + 1].Trim() = "" || indentOf lines[last + 1] > ind || (indentOf lines[last + 1] = ind && lines[last + 1].TrimStart().StartsWith "|")) do
+                          last <- last + 1
+
+                      while last > f && lines[last].Trim() = "" do
+                          last <- last - 1
+
+                      let ctor = case.Split(' ')[0]
+                      let clause = sprintf "\n%s| %s -> panic \"todo: %s\"" (String(' ', ind)) case ctor
+                      yield action (sprintf "Add the missing case %s" case) "quickfix" (edit last lines[last].Length clause)
+                  | None -> ()
+              else
+                  let m = Text.RegularExpressions.Regex.Match(msg, "^unknown (function|name) '([A-Za-z_][A-Za-z0-9_]*)'")
+
+                  if m.Success then
+                      let name = m.Groups[2].Value
+
+                      let modules =
+                          match results.TryGetValue path with
+                          | true, prog ->
+                              prog.funs
+                              |> List.choose (fun f ->
+                                  match f.name.LastIndexOf '.' with
+                                  | -1 -> None
+                                  | k when f.name.Substring(k + 1) = name && not (f.name.Contains "$") -> Some(f.name.Substring(0, k))
+                                  | _ -> None)
+                              |> List.distinct
+                              |> List.map (fun m -> List.fold (fun (m: string) (ns: string) -> if m.StartsWith(ns + ".") then m.Substring(ns.Length + 1) else m) m Core.autoOpens)
+                              |> List.distinct
+                              |> List.truncate 5
+                          | _ -> []
+
+                      let lastOpen = lines |> Array.tryFindIndexBack (fun l -> l.StartsWith "open ")
+                      let header = lines |> Array.tryFindIndex (fun l -> l.StartsWith "module " || l.StartsWith "namespace ")
+
+                      for m in modules do
+                          let at = match lastOpen, header with
+                                   | Some i, _ -> i + 1
+                                   | None, Some i -> i + 1
+                                   | None, None -> 0
+
+                          yield action (sprintf "open %s" m) "quickfix" (edit at 0 (sprintf "open %s\n" m))
+                          let col = (lines[line]).IndexOf(name, StringComparison.Ordinal)
+
+                          if col >= 0 then
+                              yield action (sprintf "Write %s.%s" m name) "quickfix" (edit line col (m + ".")) ]
+
+    // a binder whose type isn't written: the type, as hover shows it
+    let annotations =
+        hoversAt path
+        |> List.filter (fun h -> h.inlay && h.hline - 1 >= fromLine && h.hline - 1 <= toLine && not (h.name.StartsWith "_"))
+        |> List.distinctBy (fun h -> h.hline, h.hcol)
+        |> List.map (fun h ->
+            let l, c = h.hline - 1, h.hcol - 1
+            let before = lines[l].Substring(0, c).TrimEnd()
+            let ty = show h.hty
+
+            // after let (or let mutable): x: T; a parameter: (x: T)
+            let e =
+                if before.EndsWith "let" || before.EndsWith "mutable" || before.EndsWith "for" then
+                    edit l (c + h.name.Length) (": " + ty)
+                else
+                    obj [ "changes", obj [ uri, arr [ obj [ "range", range (l, c) (l, c + h.name.Length); "newText", str (sprintf "(%s: %s)" h.name ty) ] ] ] ]
+
+            action (sprintf "Write the type of %s: %s" h.name ty) "refactor" e)
+
+    arr (fromDiagnostics @ annotations)
+
 /// After `x.`: the fields and members of x's type; otherwise names in scope (approximately:
 /// library and project functions, types, constructors, this file's own names) and keywords.
 let private completion (path: string) (line: int) (ch: int) : JsonNode =
@@ -492,7 +796,10 @@ let serve () : int =
                                     "documentRangeFormattingProvider", bool true
                                     "definitionProvider", bool true
                                     "referencesProvider", bool true
-                                    "completionProvider", obj [ "triggerCharacters", arr [ str "." ] ] ]
+                                    "completionProvider", obj [ "triggerCharacters", arr [ str "." ] ]
+                                    "renameProvider", obj [ "prepareProvider", bool true ]
+                                    "signatureHelpProvider", obj [ "triggerCharacters", arr [ str " "; str "("; str "," ] ]
+                                    "codeActionProvider", bool true ]
                               "serverInfo", obj [ "name", str "zs"; "version", str "0.4" ] ])
                 | "textDocument/didOpen" ->
                     let path = docPath ()
@@ -530,6 +837,28 @@ let serve () : int =
                         | c -> c["includeDeclaration"].GetValue<bool>()
 
                     respond id (references (docPath ()) (getInt (p["line"])) (getInt (p["character"])) withDecl)
+                | "textDocument/prepareRename" ->
+                    let p = ps["position"]
+                    respond id (renameRange (docPath ()) (getInt (p["line"])) (getInt (p["character"])))
+                | "textDocument/rename" ->
+                    let p = ps["position"]
+                    let newName = getStr (ps["newName"])
+
+                    match renameTarget (docPath ()) (getInt (p["line"])) (getInt (p["character"])) with
+                    | _ when not (validName newName) ->
+                        send (obj [ "jsonrpc", str "2.0"; "id", id.DeepClone(); "error", obj [ "code", num -32602; "message", str (sprintf "'%s' isn't a name: a letter or _, then letters, digits and _, and not a keyword" newName) ] ])
+                    | Ok(h, all) -> respond id (renameEdits h all newName)
+                    | Error why -> send (obj [ "jsonrpc", str "2.0"; "id", id.DeepClone(); "error", obj [ "code", num -32602; "message", str why ] ])
+                | "textDocument/signatureHelp" ->
+                    let p = ps["position"]
+                    respond id (signatureHelp (docPath ()) (getInt (p["line"])) (getInt (p["character"])))
+                | "textDocument/codeAction" ->
+                    let r = ps["range"]
+                    let diags = match ps["context"] with
+                                | null -> null
+                                | c -> c["diagnostics"]
+
+                    respond id (codeActions (docPath ()) (getInt (r["start"]["line"])) (getInt (r["end"]["line"])) diags)
                 | "textDocument/completion" ->
                     let p = ps["position"]
                     respond id (completion (docPath ()) (getInt (p["line"])) (getInt (p["character"])))

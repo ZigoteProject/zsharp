@@ -76,7 +76,7 @@ between them, where each step runs, the passes) is [compiler/ARCHITECTURE.md](co
     - [x] The moving crossing (decision 75) and `tests/parallel/move.zs`; `ZS_STATS=1` (track D) reports the marks (`zs stats: … allocations, … objects marked shared`, and `Runtime.marks ()`). Work items, `Task.spawn`/`blocking` and `Channel.send` move; a `Mutex` shares; `Array.Parallel.map` moves each part into its job.
     - [ ] `compiler/Lexer.zs` and `Parser.zs` on 0019's tree, and criterion 2 measured.
   - **Cheaper before than after** (what remains of phase 12's "kept before phase 11" list):
-    - [ ] E2b: signature help, rename, code actions.
+    - [x] E2b: signature help, rename, code actions (`tests/lsp/edits.sh`: renaming a record field updates both modules that use it; a missing case, an `open`, a binder's type). A record field's uses are references now (`field:Record.name`, from the parser's field spans).
   - **Alongside, not blocking** (the tracks' unmarked items: known gaps):
     - [ ] M: interrupt handlers, `[<NoAlloc>]` and `--no-heap`, constants in flash, AAPCS structs by value, the heap above 256 bytes and its size in `zs.toml`, `weak` and arenas in the embedded runtime.
     - [ ] D: `zs build --profile` and `zs profile`, `ZS_STATS=1`, DWARF for unions and cells, `-g` at `-O2`, panic backtraces with Z# names.
@@ -188,7 +188,7 @@ same support through a thin extension each.
 - **Documentation:** `///` doc comments and `zs doc`.
 
 **Next:**
-- **E2b, rest:** signature help, rename, code actions (add missing match cases, add an annotation).
+- **E2b, rest:** done: signature help, rename, code actions (add missing match cases, add an `open`, add an annotation).
 - **E3, rest:** *(after phase 11)* `definition` and `explain` tools.
 - **Exit tests:**
   - A 2,000-line file re-checks within 100 ms in Zed.
