@@ -214,15 +214,16 @@ let private patVarName (q: CPat) : option<string> =
   | _ -> None
 
 let run (types: Map<string, TypeInfo>) (funs: list<MFun>) : list<MFun> =
-  let v = Types.Vars.make ()
-  let fieldTypes (t: Ty) (tag: int) : list<Ty> =
-    match t with
-    | TCon(u, args) ->
-      match (Map.find u types).def with
-      | UnionDef cs -> List.map (Types.Norm.substGen v args) (snd (List.item tag cs))
-      | RecordDef _ -> []
-    | _ -> []
   let simplifyFun (f: MFun) : MFun =
+    // tables of its own: the functions are simplified on the pool
+    let v = Types.Vars.make ()
+    let fieldTypes (t: Ty) (tag: int) : list<Ty> =
+      match t with
+      | TCon(u, args) ->
+        match (Map.find u types).def with
+        | UnionDef cs -> List.map (Types.Norm.substGen v args) (snd (List.item tag cs))
+        | RecordDef _ -> []
+      | _ -> []
     // numbered per function: a function's code doesn't depend on the others'
     let counter = ref 0
     let fresh (x: string) : string =
@@ -610,4 +611,5 @@ let run (types: Map<string, TypeInfo>) (funs: list<MFun>) : list<MFun> =
         let body = into s
         Some(List.fold (fun (acc: CExpr) (j, ps, b) -> mk (CJoin(j, ps, b, acc)) ty) body (List.rev (Array.toList (Buffer.toArray joins))))
     { f with body = simp Map.empty f.body }
-  List.map simplifyFun funs
+  // each function on the pool (decision 76)
+  Array.toList (Array.Parallel.map simplifyFun (Array.ofList funs))

@@ -14,12 +14,8 @@ let rec private resultAfter (n: int) (t: Ty) : Ty =
   | (_, TFun(_, r, _)) -> resultAfter (n - 1) r
   | _ -> panic "resultAfter: not a function type"
 
-/// external: the arity of a function another module has the code of. wrapped: a closure of a
-/// top-level function goes through a function of its maker's own, which calls it, so a function
-/// borrows what it may whatever makes closures of it (a module's code is then the same whichever
-/// modules are made with it).
-let runWith (external: string -> option<int>) (wrapped: bool) (funs: list<MFun>) : list<MFun> =
-  let arities = Map.ofList (List.map (fun (f: MFun) -> (f.name, List.length f.pars)) funs)
+// one function's conversion: its lifted lambdas, then it (arities: the program's functions')
+let private liftOne (arities: Map<string, int>) (external: share<string -> option<int>>) (wrapped: bool) (f0: MFun) : list<MFun> =
   let arity (g: string) : int =
     match Map.tryFind g arities with
     | Some n -> n
@@ -161,6 +157,15 @@ let runWith (external: string -> option<int>) (wrapped: bool) (funs: list<MFun>)
     let body = conv Map.empty f.name (cells f.body)
     Buffer.push { f with body = body } mine
     Array.toList (Buffer.toArray mine)
-  List.concat (List.map one funs)
+  one f0
+
+/// external: the arity of a function another module has the code of. wrapped: a closure of a
+/// top-level function goes through a function of its maker's own, which calls it, so a function
+/// borrows what it may whatever makes closures of it (a module's code is then the same whichever
+/// modules are made with it).
+let runWith (external: share<string -> option<int>>) (wrapped: bool) (funs: list<MFun>) : list<MFun> =
+  let arities = Map.ofList (List.map (fun (f: MFun) -> (f.name, List.length f.pars)) funs)
+  // each function on the pool (decision 76)
+  List.concat (Array.toList (Array.Parallel.map (fun (f: MFun) -> liftOne arities external wrapped f) (Array.ofList funs)))
 
 let run (funs: list<MFun>) : list<MFun> = runWith (fun _ -> None) false funs

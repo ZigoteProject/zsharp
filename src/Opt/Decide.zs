@@ -486,4 +486,5 @@ let run (types: Map<string, TypeInfo>) (funs: list<MFun>) : list<MFun> =
         if size tree <= 8 * size e + 64 then tree else e
       | _ -> e
     { f with body = lower f.body }
-  List.map one funs
+  // each function on the pool (decision 76)
+  Array.toList (Array.Parallel.map one (Array.ofList funs))

@@ -77,7 +77,7 @@ let private elideAliases (keep: string -> bool) (body: CExpr) : CExpr =
 /// (not closures, which are called through code pointers, nor the entries). For the whole
 /// program, since a caller's code depends on its callees'. external: what another module's code
 /// borrows (its functions aren't in funs).
-let borrowingWith (types: Map<string, TypeInfo>) (entries: Set<string>) (external: string -> option<Set<int>>) (funs: list<MFun>) : Map<string, Set<int>> =
+let borrowingWith (types: Map<string, TypeInfo>) (entries: Set<string>) (external: share<string -> option<Set<int>>>) (funs: list<MFun>) : Map<string, Set<int>> =
   let v = Types.Vars.make ()
   let heap (t: Ty) = Types.Repr.needsRc v types t
   let asValues = ref entries
@@ -100,8 +100,9 @@ let borrowingWith (types: Map<string, TypeInfo>) (entries: Set<string>) (externa
   let fnOf = Map.ofList (List.map (fun (f: MFun) -> (f.name, f)) funs)
   let changed = ref true
   // each round from the sets of the round before: they only shrink, so the rounds end at the same
-  // sets in any order
+  // sets in any order; a round's functions on the pool
   while changed.Value do
+    let current = borrowedOf.Value
     let fewer (entry: string * Set<int>) : option<string * Set<int>> =
       // the parameters of the set the body uses in other ways, in one walk
       let (name, set) = entry
@@ -121,7 +122,7 @@ let borrowingWith (types: Map<string, TypeInfo>) (entries: Set<string>) (externa
             | CLocal x when Map.containsKey x index ->
               let once = List.length (List.filter (isLocalNamed x) args) = 1
               let bs =
-                match Map.tryFind g borrowedOf.Value with
+                match Map.tryFind g current with
                 | Some bs -> Some bs
                 | None -> if Map.containsKey g fnOf then None else external g
               match bs with
@@ -137,7 +138,7 @@ let borrowingWith (types: Map<string, TypeInfo>) (entries: Set<string>) (externa
       if not (Set.isEmpty set) then
         walk (elideAliases (fun x -> Map.containsKey x index) f.body)
       if Set.isEmpty bad.Value then None else Some(name, Set.difference set bad.Value)
-    let updates = List.choose fewer (Map.toList borrowedOf.Value)
+    let updates = List.choose (fun (u: option<string * Set<int>>) -> u) (Array.toList (Array.Parallel.map fewer (Array.ofList (Map.toList current))))
     changed.Value <- not (List.isEmpty updates)
     for (name, set) in updates do
       borrowedOf.Value <- Map.add name set borrowedOf.Value
@@ -210,8 +211,8 @@ let rec private markAssign (x: string) (e: CExpr) : CExpr =
   | CLine(l, a) -> mk (CLine(l, markAssign x a)) e.ty
   | _ -> e
 
-/// Reference counting for funs, with the program's borrowed parameters (borrowing).
-let lower (types: Map<string, TypeInfo>) (borrowedParams: Map<string, Set<int>>) (funs: list<MFun>) : list<MFun> =
+// reference counting for one function, with tables of its own
+let private lowerFun (types: Map<string, TypeInfo>) (borrowedParams: Map<string, Set<int>>) (one: MFun) : MFun =
   let v = Types.Vars.make ()
   let heap (t: Ty) = Types.Repr.needsRc v types t
   // temporaries numbered per function: a function's code doesn't depend on the others'
@@ -824,5 +825,9 @@ let lower (types: Map<string, TypeInfo>) (borrowedParams: Map<string, Set<int>>)
           build h2 (List.map (fun c -> moves (List.fold (fun c2 x -> markAssign x c2) c ok)) conts)
     let owned = Set.difference (Set.ofList (List.filter heapVar (List.map fst f.pars))) lent
     { f with body = rc owned lent (number (moves f.body)) }
-  // ponytail: one function at a time; on every core when the passes run in parallel (step 6)
-  List.map rcFun funs
+  rcFun one
+
+/// Reference counting for funs, with the program's borrowed parameters (borrowing): each function
+/// on the pool (decision 76).
+let lower (types: Map<string, TypeInfo>) (borrowedParams: Map<string, Set<int>>) (funs: list<MFun>) : list<MFun> =
+  Array.toList (Array.Parallel.map (fun (f: MFun) -> lowerFun types borrowedParams f) (Array.ofList funs))

@@ -112,10 +112,11 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
       if not u.library && ngen = 0 && not (testBuild && n = "main") then
         owner.Value <- Map.add n u.file owner.Value
   // a lifted lambda or local function goes with the function it's in
-  let root (name: string) =
+  let root (name: string) : string / <> =
     let i = String.indexOfFrom name "$" 1
     if i < 0 then name else String.sub name 0 i
-  let unitOf (name: string) : option<string> = Map.tryFind (root name) owner.Value
+  let owners = owner.Value
+  let unitOf (name: string) : option<string> / <> = Map.tryFind (root name) owners
   let ownOf (u: Check.Unit) = List.choose (fun (n, ngen) -> if Map.containsKey n owner.Value && ngen = 0 then Some n else None) u.names
   // the main module also starts the library's values
   let isLibraryFun (i: string) =
@@ -180,16 +181,18 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
     let mono3 = check "effects" mono3a
     types.Value <- lowered
     let mono4 = check "decision trees" (timedInto timedLines "decision trees" (fun () -> if decide then Opt.Decide.run types.Value mono3 else mono3))
-    let arityOf (g: string) : option<int> =
-      match Map.tryFind g abiFun.Value with
+    // the other modules' ABIs, as the jobs read them
+    let abis = abiFun.Value
+    let arityOf (g: string) : option<int> / <> =
+      match Map.tryFind g abis with
       | Some a -> Some(List.length a.apars)
       | None -> None
     let lifted = check "lift closures" (timedInto timedLines "lift closures" (fun () -> Opt.Lift.runWith arityOf true mono4))
     // a task's state machine owns its parameters: they live in its coroutine frame past the call
     // that starts it
     let machines = Set.ofList (List.map (fun (f: MFun) -> f.name) (List.filter (fun (f: MFun) -> waits f.body) lifted))
-    let borrowedOf (g: string) : option<Set<int>> =
-      match Map.tryFind g abiFun.Value with
+    let borrowedOf (g: string) : option<Set<int>> / <> =
+      match Map.tryFind g abis with
       | Some a -> Some(Set.ofList a.borrowed)
       | None -> None
     let borrowed = timedInto timedLines "borrowed parameters" (fun () -> Opt.Rc.borrowingWith types.Value (Set.union fixedNames machines) borrowedOf lifted)
@@ -197,9 +200,21 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
     // what the module's code was made from is what monomorphization copied, before inlining hid
     // some of it
     let monoByName = Map.ofList (List.map (fun (f: MFun) -> (f.name, f)) monomorphic)
+    // what each function refers to, found once (on the pool), however many modules reach it
+    let refsIn (funs: list<MFun>) : Map<string, list<string>> =
+      Map.ofList (Array.toList (Array.Parallel.map (fun (f: MFun) -> (f.name, refs f.body)) (Array.ofList funs)))
+    let liftedRefs = refsIn lifted
+    let monoRefs = refsIn monomorphic
+    // each module's functions (its own and their lambdas), in one pass
+    let byUnit =
+      let add (m: Map<string, list<string>>) (f: MFun) =
+        match unitOf f.name with
+        | Some u -> Map.add u (f.name :: Option.defaultValue [] (Map.tryFind u m)) m
+        | None -> m
+      List.fold add Map.empty lifted
     // what a module's functions reach in a list of functions: those of its own and the copies
     // (shared ones), and the other modules' it calls
-    let reached (unit: string) (start: list<string>) (funs: Map<string, MFun>) : Set<string> * Set<string> =
+    let reached (unit: string) (start: list<string>) (funs: Map<string, MFun>) (refsOf: Map<string, list<string>>) : Set<string> * Set<string> =
       let inModule = ref Set.empty
       let others = ref Set.empty
       let queue = Buffer.empty
@@ -212,9 +227,9 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
           enqueue n
       let mutable i = 0
       while i < Buffer.length queue do
-        let f = Map.find queue.[i] funs
+        let n = queue.[i]
         i <- i + 1
-        for g in refs f.body do
+        for g in Map.find n refsOf do
           if Map.containsKey g funs then
             match unitOf g with
             | None -> enqueue g
@@ -225,8 +240,8 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
       (inModule.Value, others.Value)
     for u in these do
       let ownNames = ownOf u
-      let start = List.map (fun (f: MFun) -> f.name) (List.filter (fun (f: MFun) -> unitOf f.name = Some u.file) lifted)
-      let (funsHere, others) = reached u.file (List.append start (seeds u)) byName
+      let start = Option.defaultValue [] (Map.tryFind u.file byUnit)
+      let (funsHere, others) = reached u.file (List.append start (seeds u)) byName liftedRefs
       // its ABI: its own functions as the others call them
       let abiOf (n: string) : AbiFun =
         let f = Map.find n byName
@@ -238,7 +253,7 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
       let abi = List.map abiOf ownNames
       // what it was made from: the generic functions it copied (before inlining, so those inlined
       // count), and the other modules it calls
-      let (copied, _) = reached u.file (seeds u) monoByName
+      let (copied, _) = reached u.file (seeds u) monoByName monoRefs
       let checkOf (n: string) : option<string> =
         match unitOf n with
         | None ->
@@ -249,7 +264,7 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
       let checks = List.distinct (List.choose checkOf (Set.toList copied))
       let calls = List.distinct (List.filter (fun f -> f <> u.file) (List.choose unitOf (Set.toList others)))
       // by name: the order the run made them in depends on what else it made
-      let funs = List.sortBy (fun (f: MFun) -> f.name) (List.filter (fun (f: MFun) -> Set.contains f.name funsHere) lifted)
+      let funs = List.map (fun (n: string) -> Map.find n byName) (Set.toList funsHere)
       let facts =
         List.filter (fun x -> x <> "") [ (if Compile.usesPrim Compile.heapPrims funs then "weak" else ""); (if Compile.wideVectors funs then "wide" else ""); (if Compile.threaded prog.externs funs then "threads" else "") ]
       let deps = List.append (List.map (fun d -> (d, "check", Map.find d keyOf)) (List.sort checks)) (List.map (fun d -> (d, "abi", "")) (List.sort calls))
@@ -260,6 +275,7 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
     // others' ABIs, and its code with reference counting
     for u in these do
       accept u (Map.find u.file worlds.Value)
+    let counting = Buffer.empty
     for u in these do
       let w0 = Map.find u.file worlds.Value
       let deps = List.map (fun (d, kind, h) -> if kind = "abi" then (d, kind, Map.find d abiHash.Value) else (d, kind, h)) w0.deps
@@ -270,15 +286,21 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
       let defined = Set.ofList (List.map (fun (f: MFun) -> f.name) m.mfuns)
       let externals = ref Set.empty
       for f in m.mfuns do
-        for g in refs f.body do
+        for g in Map.find f.name liftedRefs do
           if not (Set.contains g defined) && Map.containsKey g abiFun.Value then
             externals.Value <- Set.add g externals.Value
       // reference counting with the parameters each callee borrows, this module's own and the
       // others'
       let all = List.fold (fun acc g -> Map.add g (Set.ofList (Map.find g abiFun.Value).borrowed) acc) borrowed (Set.toList externals.Value)
-      let counted = check "reference counting" (timedInto timedLines "reference counting" (fun () -> Opt.Rc.lower types.Value all m.mfuns))
-      Compile.dumpAt "rc" counted
-      made.Value <- Map.add u.file { mfuns = counted; calls = List.map (fun g -> Map.find g abiFun.Value) (Set.toList externals.Value) } made.Value
+      Buffer.push (u, Set.toList externals.Value, all, m.mfuns) counting
+    // the modules' code counted on the pool
+    let typesNow = types.Value
+    let counted = timedInto timedLines "reference counting" (fun () -> Array.Parallel.map (fun (p: Map<string, Set<int>> * list<MFun>) -> Opt.Rc.lower typesNow (fst p) (snd p)) (Array.map (fun (_, _, all, mfuns) -> (all, mfuns)) (Buffer.toArray counting)))
+    for k in 0 .. Buffer.length counting - 1 do
+      let (u, externals, _, _) = counting.[k]
+      let mine = check "reference counting" counted.[k]
+      Compile.dumpAt "rc" mine
+      made.Value <- Map.add u.file { mfuns = mine; calls = List.map (fun g -> Map.find g abiFun.Value) externals } made.Value
   // a module's code is current when what it was made from is: its checked result's key and the
   // library's (in its key), the generic functions it copied, and the ABIs of the modules it calls;
   // those come before it, so they're known in order. One made now may change an ABI a later one
@@ -342,7 +364,8 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
   Buffer.push ($"made ({(if List.isEmpty names then "none" else String.join " " names)})", 0.0) timedLines
   // a module is named after its source file (relative to the main one): what a profile calls its
   // internal functions, which must be the same in every build
-  let nameOf (file: string) = Path.getRelativePath (Path.getDirectoryName (Path.getFullPath mainUnit.file)) (Path.getFullPath file)
+  let mainFile = mainUnit.file
+  let nameOf (file: string) : string / <> = Path.getRelativePath (Path.getDirectoryName (Path.getFullPath mainFile)) (Path.getFullPath file)
   let gopts : Gen.Emit.Options =
     { debugInfo = o.debugInfo
       optimized = level <> "-O0"
@@ -353,7 +376,7 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
       cpu = o.cpu
       wideVectors = wideVectors
       threaded = threaded }
-  let stub (a: AbiFun) : MFun =
+  let stub (a: AbiFun) : MFun / <> =
     { name = a.aname
       pars = List.mapi (fun i t -> ($"a{i}", t)) a.apars
       ret = a.aret
@@ -361,53 +384,78 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
       body = Core.Ir.mk Core.Ir.CUnit tUnit
       file = ""
       line = 0 }
-  let compileOne (p: Check.Unit * string) : result<string, PassError> =
-    let (u, kind) = p
-    let m = Map.find u.file made.Value
-    let own = Set.ofList (ownOf u)
-    let defined =
-      if kind = "own" then List.filter (fun (f: MFun) -> unitOf f.name = Some u.file) m.mfuns
-      else if kind = "copies" then List.filter (fun (f: MFun) -> unitOf f.name <> Some u.file) m.mfuns
-      else m.mfuns
+  // the ABIs, as the jobs read them (the main module's entries)
+  let abiNow = abiFun.Value
+  // the types as bytes: each job reads a copy of its own (every job looks types up all the time,
+  // and the counts of a table they shared would be atomic ones all the jobs wait on)
+  let typesBytes = Binary.toBytes types.Value
+  let dumpDir = Environment.getVariable "ZS_DUMP_IR"
+  // a part's IR, made by a job that owns what it walks (0020's *Crossings move*): the part's
+  // file and kind (own, copies or whole), its module's own functions' names, the functions it
+  // defines, the module's others by their signatures (it declares them) and the other modules'
+  // it calls
+  let compileOne (p: string * string * Set<string> * list<MFun> * list<MFun> * list<AbiFun>) : result<string, PassError> / <> =
+    let (file, kind, own, defined, others, calls) = p
+    let typesHere : Map<string, TypeInfo> =
+      match Binary.ofBytes typesBytes with
+      | Ok t -> t
+      | Error e -> panic $"the types' copy: {e}"
     let part : option<Gen.Emit.Part> =
       if kind = "whole" then
         None
       else
-        let p : Gen.Emit.Part = { defines = Set.ofList (List.map (fun (f: MFun) -> f.name) defined); called = own; entry = (kind = "own" && u.file = mainUnit.file); copies = (kind = "copies"); file = Path.getFullPath u.file }
+        let p : Gen.Emit.Part = { defines = Set.ofList (List.map (fun (f: MFun) -> f.name) defined); called = own; entry = (kind = "own" && file = mainFile); copies = (kind = "copies"); file = Path.getFullPath file }
         Some p
     // the other modules' functions it calls, by their ABI; and the entry's: main, the tests,
     // exports and the values' initializers
-    let stubs = List.map stub m.calls
-    let have = ref (Set.ofList (List.map (fun (f: MFun) -> f.name) (List.append m.mfuns stubs)))
+    let stubs = List.map stub calls
+    let have = ref (Set.ofList (List.map (fun (f: MFun) -> f.name) (List.concat [ defined; others; stubs ])))
     let entry (n: string) : option<MFun> =
-      match Map.tryFind n abiFun.Value with
+      match Map.tryFind n abiNow with
       | Some a when not (Set.contains n have.Value) ->
         have.Value <- Set.add n have.Value
         Some(stub a)
       | _ -> None
-    let entries = if u.file <> mainUnit.file then [] else List.choose entry (List.append (Set.toList fixedNames) (List.map snd prog.values))
-    let name = if kind = "copies" then nameOf u.file + "#copies" else nameOf u.file
+    let entries = if file <> mainFile then [] else List.choose entry (List.append (Set.toList fixedNames) (List.map snd prog.values))
+    let name = if kind = "copies" then nameOf file + "#copies" else nameOf file
     // the functions it calls in the module's other part are declared, from its functions
-    match Gen.Module.compile gopts types.Value prog.externs prog.exports prog.tests prog.values prog.clayouts part (List.concat [ m.mfuns; stubs; entries ]) with
+    match Gen.Module.compile gopts typesHere prog.externs prog.exports prog.tests prog.values prog.clayouts part (List.concat [ defined; others; stubs; entries ]) with
     | Ok(ir0, _) ->
       let ir = $"source_filename = \"{name}\"\n" + ir0
-      match Environment.getVariable "ZS_DUMP_IR" with
+      match dumpDir with
       | Some dir -> File.writeAllText (Path.combine dir (String.replace name "/" "_" + ".ll")) ir |> ignore
       | None -> ()
       Ok ir
-    | Error(line, msg) -> Error { file = u.file; line = line; message = msg }
+    | Error(line, msg) -> Error { file = file; line = line; message = msg }
   let sw = Diagnostics.Stopwatch.startNew ()
-  let rec compileAll (i: int) (acc: list<Part>) : result<list<Part>, PassError> =
+  // the parts the cache doesn't have, each one's IR made on the pool (decision 76): a job reads
+  // the tables above and makes its module's code on its own, so the bytes don't depend on the
+  // workers
+  let wanted = List.filter (fun i -> Option.isNone found.[i]) (List.init (Array.length partsOf) (fun i -> i))
+  // a module's functions split between its parts: the ones a part defines, with their code, and
+  // the others' signatures
+  let signature (f: MFun) : MFun = { f with body = Core.Ir.mk Core.Ir.CUnit tUnit }
+  let jobOf (i: int) =
+    let (u, kind) = partsOf.[i]
+    let m = Map.find u.file made.Value
+    let mine (f: MFun) = kind = "whole" || (kind = "own") = (unitOf f.name = Some u.file)
+    let (defined, others) = List.partition mine m.mfuns
+    (u.file, kind, Set.ofList (ownOf u), defined, List.map signature others, m.calls)
+  let jobs = Array.ofList (List.map jobOf wanted)
+  // nothing else holds the modules' code now: it moves into the jobs, its counts plain
+  made.Value <- Map.empty
+  let irs = Array.Parallel.map compileOne jobs
+  let rec compileAll (i: int) (j: int) (acc: list<Part>) : result<list<Part>, PassError> =
     if i = Array.length partsOf then
       Ok(List.rev acc)
     else
       match found.[i] with
-      | Some obj -> compileAll (i + 1) (Cached obj :: acc)
+      | Some obj -> compileAll (i + 1) j (Cached obj :: acc)
       | None ->
-        match compileOne partsOf.[i] with
-        | Ok ir -> compileAll (i + 1) (Fresh(ir, keys.[i]) :: acc)
+        match irs.[j] with
+        | Ok ir -> compileAll (i + 1) (j + 1) (Fresh(ir, keys.[i]) :: acc)
         | Error e -> Error e
-  let result = compileAll 0 []
+  let result = compileAll 0 0 []
   Buffer.push ("LLVM IR", float (int sw.ElapsedNanoseconds) / 1000000.0) timedLines
   match result with
   | Error e -> Error e

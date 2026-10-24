@@ -129,16 +129,12 @@ let load (texts: Map<string, string>) (index: int) (path: string) (modName: opti
 /// hosted) Std; each file's module named by its header.
 let library (texts: Map<string, string>) (root: string) (hosted: bool) : result<list<Loaded>, string> =
   let files = List.concat [ [ "prelude.zs" ]; List.map (fun f -> "core/" + f + ".zs") coreFiles; (if hosted then List.map (fun f -> "std/" + f + ".zs") stdFiles else []) ]
-  let loaded = Buffer.empty
-  let failure = ref None
-  for f in files do
-    if Option.isNone failure.Value then
-      match load texts (Buffer.length loaded) (Path.combine root f) None with
-      | Ok m -> Buffer.push { m with modName = headerOf m.decls } loaded
-      | Error e -> failure.Value <- Some e
-  match failure.Value with
+  // each file read and parsed on the pool (decision 76), numbered by its place
+  let paths = Array.ofList (List.map (fun (f: string) -> Path.combine root f) files)
+  let all = Array.toList (Array.Parallel.init (Array.length paths) (fun i -> load texts i paths.[i] None))
+  match List.tryPick (fun (r: result<Loaded, string>) -> match r with | Error e -> Some e | Ok _ -> None) all with
   | Some e -> Error e
-  | None -> Ok(Array.toList (Buffer.toArray loaded))
+  | None -> Ok(List.choose (fun (r: result<Loaded, string>) -> match r with | Ok m -> Some { m with modName = headerOf m.decls } | Error _ -> None) all)
 
 /// What a program's packages give the link (their [c] sections): C flags for the C sources among
 /// them, and the sources, libraries and files.
