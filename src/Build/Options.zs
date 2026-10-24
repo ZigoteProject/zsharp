@@ -131,3 +131,24 @@ let optLevel (o: Options) : string =
   match o.opt with
   | Some l -> l
   | None -> if o.release || Option.isSome o.mcu then "-O2" else "-O0"
+
+/// Whether the link drops the functions and data nothing reaches: an optimized build's (a hello
+/// world is 17 KB, not 93, most of it the runtime's unused functions). A debug build keeps them
+/// all, and exports them (-rdynamic) so a panic's backtrace names the runtime's frames.
+let dropsUnused (o: Options) : bool = optLevel o <> "-O0" && not o.debugInfo
+
+/// Compile flags for that: each function and datum in a section of its own.
+let sectionFlags (o: Options) : list<string> = if dropsUnused o then [ "-ffunction-sections"; "-fdata-sections" ] else []
+
+/// Link flags for that, by the target's linker (lld-link drops them by itself without -g); a
+/// debug build's -rdynamic instead, on the host.
+let unusedLinkFlags (o: Options) : list<string> =
+  let os =
+    if o.target = "" then Tools.hostOs ()
+    else if String.contains "-macos" o.target then "macos"
+    else if String.contains "-windows" o.target then "windows"
+    else "linux"
+  if not (dropsUnused o) then (if o.target = "" && os <> "windows" then [ "-rdynamic" ] else [])
+  else if os = "macos" then [ "-Wl,-dead_strip" ]
+  else if os = "windows" then []
+  else [ "-Wl,--gc-sections" ]

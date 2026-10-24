@@ -518,7 +518,7 @@ let private useLto (o: Options.Options) = o.release && lld () && Option.isNone (
 
 /// The clang flags of a host build's objects.
 let objectFlags (o: Options.Options) : list<string> =
-  List.concat [ [ Options.optLevel o ]; Compile.cpuFlags o; fst (profileFlags o); (if useLto o then [ "-flto=thin" ] else []) ]
+  List.concat [ [ Options.optLevel o ]; Compile.cpuFlags o; fst (profileFlags o); (if useLto o then [ "-flto=thin" ] else []); Options.sectionFlags o ]
 
 /// Where the module cache keeps the object of a module's key, built with this build's flags.
 let private moduleObject (o: Options.Options) (key: string) =
@@ -566,7 +566,7 @@ let link (o: Options.Options) (built: Built) (linked: Modules.Linked) : result<l
   let rt = Compile.runtimeDir ()
   let rtFile = Path.combine rt "rt.c"
   let defines = List.append (if built.threaded then [ "-DZS_THREADS" ] else []) (if Option.isSome (Environment.getVariable "ZS_NO_POOL") then [ "-DZS_NO_POOL" ] else [])
-  let rtFlags = List.append (if useLto o then flags else List.concat [ [ "-O2" ]; Compile.cpuFlags o; profile ]) defines
+  let rtFlags = List.append (if useLto o then flags else List.concat [ [ "-O2" ]; Compile.cpuFlags o; profile; Options.sectionFlags o ]) defines
   let runtime = job (Result.defaultValue "" (File.readAllText rtFile)) (Some rtFile) rtFlags None
   let ofPart (p: Part) : option<Job> =
     match p with
@@ -618,6 +618,6 @@ let link (o: Options.Options) (built: Built) (linked: Modules.Linked) : result<l
       else if lld () then [ "-fuse-ld=lld" ]
       else []
     let linkSw = Diagnostics.Stopwatch.startNew ()
-    match Tools.run "clang" (List.concat [ flags; ltoLink; [ "-rdynamic" ]; files; libs; [ "-o"; o.out; "-lm" ] ]) with
+    match Tools.run "clang" (List.concat [ flags; ltoLink; Options.unusedLinkFlags o; files; libs; [ "-o"; o.out; "-lm" ] ]) with
     | Error e -> Error e
     | Ok () -> Ok [ clangLine; ("link", float (int linkSw.ElapsedNanoseconds) / 1000000.0) ]
