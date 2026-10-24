@@ -1,30 +1,30 @@
 # Self-hosting: the Z# compiler against the F# compiler
 
-**Question:** phase 11 (0020): can the compiler written in Z# (`compiler/`) replace the F#
-compiler? Every test passing under it, building itself to the same bytes, and no slower and no
-bigger in memory than the F# compiler.
+**Question:** phase 11 (0020): can the compiler written in Z# (`src/`, `compiler/` before the
+switch) replace the F# compiler? Every test passing under it, building itself to the same bytes,
+and no slower and no bigger in memory than the F# compiler (0020's *Performance*).
 
-**Answer:** it passes everything the F# compiler does and builds itself to the same bytes. It's
-faster wherever a build is incremental (the cache), at a third of the F# compiler's memory, and
-starts in milliseconds where .NET takes a tenth of a second. Built from nothing it's slower:
-2.4× on the compiler itself in a debug build. The F# compiler runs its passes and code generation
-on every core, and the Z# one still one module after another: the parallel back half (0020's
-"parallel on Z#'s own pool") is what closes that, and comes next (below).
+**Answer:** yes. It passes everything the F# compiler did and builds itself to the same bytes.
+Built from nothing it's as fast as the F# compiler (the compiler itself: 15.3 s and 15.2 s debug,
+46.3 s and 45.4 s release), and faster on every incremental build and on every row of
+`bench/compile`, with a quarter of the F# compiler's memory there and three fifths on itself. It
+got there once its back half ran on every core (*From one thread to the pool*, below): at the
+switch it took 2.4× the F# compiler's time on itself.
 
 ## Setup, 2026-10-24
 
 | | |
 |---|---|
 | Machine | AMD Ryzen 7 PRO 8840U (8 cores, 16 threads), the dev container (`./dev`: Fedora 44, LLVM 23.1.4) |
-| F# | the F# compiler, `Release` on .NET 10 |
-| Z# | `compiler/` built `--release` by itself, installed with its library and runtime beside it (`compiler/install.sh`; `./test.sh --zs <binary>` tests such a build) |
-| Times | wall time of one run (`/usr/bin/time`); peak memory is the largest process's, clang's and the linker's included |
+| F# | the F# compiler of `v0.6`, published self-contained with ReadyToRun (`dotnet publish -c Release`), as 0020's targets name it |
+| Z# | `src/` at the end of the phase, built `--release` by itself (gen 2), with its library and runtime beside it (`src/install.sh`) |
+| Times | wall time of one run (`/usr/bin/time`), the two compilers measured in the same session; peak memory is the largest process's, clang's and the linker's included |
 
 ## Every test
 
 | | F# | Z# |
 |---|---:|---:|
-| `./test.sh` (the Z# compiler: `--check-ir` on, `tests/bootstrap.sh` too) | 246 of 246 | 249 of 249 |
+| `./test.sh` (the Z# compiler: `--check-ir` on, `tests/bootstrap.sh` too) | 248 of 248 | 251 of 251 |
 | `./test.sh --target aarch64-linux-musl` (qemu-user) | 201 of 201 | 201 of 201 |
 | `bench/mcu` on a Cortex-M4 and a Cortex-M0+ (qemu-system-arm), 7 programs each | the same table | the same table |
 
@@ -34,13 +34,14 @@ compiler's transcript (which modules a change checks again and compiles again, a
 program's binary from the cache the same as from nothing), and `bench/host`'s instruction counts
 are within 0.004% of the baseline the F# compiler set. `--check-ir` (`Core.Check` after each
 pass: variables bound, join points and direct calls given their parameters' types, no type
-variable after monomorphization) passes on every program.
+variable after monomorphization) passes on every program. The last runs were in the container
+without .NET, the F# compiler gone.
 
 ## The bootstrap
 
-`compiler/` built `--release` from an empty cache, a module per source file (each module's own
+`src/` built `--release` from an empty cache, a module per source file (each module's own
 functions and its copies of the library's as two LLVM modules, compiled in parallel, linked with
-ThinLTO):
+ThinLTO). At the switch, its back half on one thread:
 
 | generation | built by | wall | peak memory |
 |---|---|---:|---:|
@@ -48,45 +49,93 @@ ThinLTO):
 | gen 3 | gen 2 | 81 s | 1.19 GB |
 | gen 3, `ZS_WORKERS=1` | gen 2 | 123 s | 1.14 GB |
 
-Gen 2, gen 3 and the one worker's gen 3 are the same bytes (`cmp`), and `tests/bootstrap.sh`
-checks it in `./test.sh --zs`. Gen 3's build: parsing and checking 1.4 s, the passes 10 s
-(lifting closures 2.2 s and borrowing 1.4 s the largest), LLVM IR 20 s, clang 21 s (125 objects,
-in parallel), the ThinLTO link 26 s.
+Gen 2, gen 3 and the one worker's gen 3 are the same bytes (`cmp`); `tests/bootstrap.sh` checks it
+in every `./test.sh`, and keeps each generation's IR to name the first module that differs. With
+the back half on the pool, a generation takes 46 s.
+
+**One unexplained difference:** in one run of the suite, the one worker's gen 3 differed from gen
+3 under the cores (gen 2 = gen 3 held). It didn't come back in 33 builds since (3 whole
+bootstraps among them, under the cores and one worker), ThreadSanitizer finds no race in the
+compiler building a 40-module program on 4 and 16 threads, and memcheck no uninitialized read; the
+bootstrap now keeps the IR, so a recurrence names its module.
 
 ## Speed and memory
 
-**The compiler building itself** (`compiler/`, 27,656 lines, with `packages/`; an empty cache, then
-again, then after a function added to `Commands.zs`):
+**The compiler building itself** (`src/`, 27,815 lines, with `packages/`; an empty cache, then
+again, then after a function added to `Commands.zs`; "at the switch" is the Z# compiler with its
+back half on one thread, against the F# compiler's `Release` build of the time):
 
-| build | F# s | F# MB | Z# s | Z# MB |
-|---|---:|---:|---:|---:|
-| debug, nothing cached | 17.95 | 1315 | 43.96 | 473 |
-| debug, again | 0.59 | 127 | 0.36 | 128 |
-| debug, a function added | 1.20 | 185 | 0.65 | 127 |
-| release, nothing cached | 50.22 | 1346 | 86.32 | 1144 |
-| release, again | 0.74 | 256 | 0.53 | 261 |
+| build | F# s | F# MB | Z# s | Z# MB | Z# at the switch s | F# then s |
+|---|---:|---:|---:|---:|---:|---:|
+| debug, nothing cached | 15.15 | 1292 | 15.32 | 756 | 43.96 | 17.95 |
+| debug, again | 0.40 | 127 | 0.29 | 127 | 0.36 | 0.59 |
+| debug, a function added | 0.66 | 162 | 0.43 | 127 | 0.65 | 1.20 |
+| release, nothing cached | 45.44 | 1240 | 46.27 | 1076 | 86.32 | 50.22 |
+| release, again | 0.53 | 250 | 0.42 | 242 | 0.53 | 0.74 |
 
 **`bench/compile`** (a generated program of modules; each timed build after a change of its own):
 
 | build | 10 modules F# | 10 modules Z# | 40 modules F# | 40 modules Z# |
 |---|---:|---:|---:|---:|
-| first (nothing cached) | 1.641 | 0.926 | 2.800 | 2.519 |
-| again, unchanged | 0.124 | 0.056 | 0.145 | 0.081 |
-| a function's body changed in the main file | 0.144 | 0.073 | 0.169 | 0.104 |
-| a function's body changed in a module | 0.203 | 0.119 | 0.229 | 0.151 |
-| a module's interface changed | 0.169 | 0.097 | 0.199 | 0.130 |
-| without the cache | 0.603 | 0.506 | 1.216 | 1.759 |
+| first (nothing cached) | 1.192 | 0.752 | 2.207 | 1.846 |
+| again, unchanged | 0.091 | 0.048 | 0.114 | 0.085 |
+| a function's body changed in the main file | 0.110 | 0.068 | 0.140 | 0.108 |
+| a function's body changed in a module | 0.168 | 0.104 | 0.181 | 0.156 |
+| a module's interface changed | 0.130 | 0.082 | 0.155 | 0.134 |
+| without the cache | 0.496 | 0.325 | 1.459 | 1.013 |
+
+Peak memory building the 40 modules from nothing: 316 MB under the F# compiler, 81 MB under the Z#
+one.
 
 **The front end** (`zs check-time`: parsing and checking a program and the library, best of
-ten): `examples/simple.zs` 129 ms F#, 81 ms Z#; `tests/json.zs` 117 and 90; `examples/complex.zs`
-141 and 84; the compiler itself (`compiler/src/Main.zs`) 1,050 and 1,091.
+ten): `examples/simple.zs` 130 ms F#, 73 ms Z#; `tests/json.zs` 112 and 79; `examples/complex.zs`
+114 and 74; the compiler itself (`src/Main.zs`) 929 and 1,002.
 
-**Where the time goes:** the Z# front end is as fast as the F# one, and its caches make every
-incremental build faster. Built from nothing, the F# compiler's passes (`Decide`, `Lift`, `Rc`,
-`Evidence`) map each function and its driver each module through `Array.Parallel.map` on .NET's
-pool, and the Z# compiler does the same work on one thread: 20 s of LLVM IR in gen 3's build
-alone, where the cores wait. Without the cache on 40 modules, the one row the F# compiler wins,
-it's the same.
+**0020's targets:** `bench/compile` no slower than the F# compiler, from nothing and after a body
+or a signature change: met, on every row. Memory at most the F# compiler's: met (a quarter on
+`bench/compile`). Itself from nothing in no more than stage 0's time: half of it (stage 0, the
+0.6 release, takes 93 s), and within 2% of the F# compiler's. A one-module change: 0.43 s.
+Startup: a check is the library's cache, 73 ms with it. Byte-identical whatever `ZS_WORKERS` is:
+met, but for the one difference above. The per-function passes summed over their jobs within 10%
+of one thread: not met (below).
+
+## From one thread to the pool
+
+Step 6 put `Lift`, `Simplify`, `Decide` and `Rc` per function, code generation per LLVM module and
+the library's parsing on the pool (`Array.Parallel.map`), each job with tables of its own. The
+first run was slower than one thread: 38 s on 16 workers, 54 s on one, against 44 s at the switch.
+Two things made it pay:
+
+- **The runtime counted every allocation in three global counters**, an atomic add each, and a
+  program with threads got its objects from malloc, not the pool: 600 million allocations from 16
+  threads on one cache line, 314 s of CPU for a 38 s build. Each thread counts its own now (a
+  cache line of its own, summed when read) and has a pool of its own (free lists and a chunk; an
+  object goes on the list of the thread that frees it).
+
+| workers | before: wall, CPU | after: wall, CPU | IR, after |
+|---|---:|---:|---:|
+| 1 | 54.2 s, 51 s | 43.3 s, 40 s | 13.7 s |
+| 4 | | 27.7 s, 56 s | 6.6 s |
+| 16 | 38.1 s, 314 s | 21.5 s, 112 s | 5.5 s |
+
+- **The jobs share less** (0020's *Crossings move*): a code generation job owns the functions it
+  defines, the module's others coming as signatures, and decodes a copy of the types of its own
+  from one array of bytes (every job looks types up all the time: shared, their counts were
+  atomic ones all the jobs waited on); a pass gets its list as an argument, not through a closure
+  that keeps it; the module build walks each function's references once instead of once per
+  module that reaches it. That took the build from 21.5 s to the 15.3 s above.
+
+**What crosses shared** (`Runtime.marks ()` around each step of the compiler building itself):
+lifting 10 thousand objects and code generation 49 thousand, the environment their jobs read;
+`Simplify` 1.0 million, `Decide` 1.1 million and reference counting 0.8 million, which also mark
+what their jobs do share (a callee's body inlined at several call sites, a library instance in
+the copies of every module that uses it). Copying a job's input on its way in costs more than the
+atomic counts it saves (tried on code generation: 1.3 s more). So 0020's last target, the
+per-function passes within 10% of one thread summed over their jobs, isn't met: code generation's
+parts take 2.5 times as long summed on 8 workers as on one. That isn't the functions' counts (a
+private copy of them changed nothing); what it is, a laptop chip's clocks under all-core load,
+memory, or the tables the jobs still share, is left to measure with hardware counters, which the
+container doesn't give.
 
 ## What the port found
 
@@ -111,6 +160,8 @@ and in LLVM, all fixed:
   oldest first, could delete one the link was about to read.
 - **`String.join`** was quadratic (writing the compiler's own IR took minutes), and a `--lib`
   header wrote a struct before the ones its fields hold.
+- **The runtime's object counts** were global atomics every allocation of a program with threads
+  waited on, and such a program had no pool (above).
 
 ## The front end and the checker (steps 2 and 3)
 
