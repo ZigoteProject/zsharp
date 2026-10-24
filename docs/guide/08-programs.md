@@ -191,6 +191,7 @@ Tests are values, as in Expecto: `test "name" (fun () -> …)` is a `Test`, `tes
 - **Data makes tests:** `[ for (input, expected) in cases -> test input (fun () -> …) ]` is a list of tests.
 - **Focus:** `ftest` and `ftestList` run only the focused tests while any are; `ptest` skips one and says so.
 - **Where tests go:** next to the code they test, since a test build needs no `main`.
+- **In a project:** `zs test` runs the files with `[<Tests>]` in `src/` and `tests/`. Each names modules from the main file's folder, as the program does, so `tests/StatsTests.zs` writes `Domain.Stats` for `src/Domain/Stats.zs`; a module not found there is looked for beside the test file (a helper in `tests/`).
 
 ```zsharp
 open Testing

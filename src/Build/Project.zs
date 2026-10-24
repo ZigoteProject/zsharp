@@ -168,7 +168,10 @@ type Package = { prefix: option<string>; root: string; main: string; deps: list<
 and PackageDep = PackageDep of string * Package
 
 /// The program around a file: the file's directory, and (inside a project) the project's
-/// dependencies, each read from its zs.toml once. Git dependencies must have been fetched (zs
+/// dependencies, each read from its zs.toml once. A project's file other than its main (a test
+/// in tests/ or beside the code) names modules from the main's directory, as the program does,
+/// so `Domain.Stats` is the same module in both; Modules.fileIn looks in the file's own
+/// directory after it. Git dependencies must have been fetched (zs
 /// fetch, or any zs build, run, test or check).
 let packageOf (file: string) : result<Package, Problem> =
   let full = Path.getFullPath file
@@ -219,7 +222,7 @@ let packageOf (file: string) : result<Package, Problem> =
   match findProject dir with
   | Some(Ok m) ->
     match package m None m with
-    | Ok p -> Ok { p with root = dir; main = full }
+    | Ok p -> Ok { p with main = full }
     | Error e -> Error e
   | Some(Error e) -> Error e
   | None -> Ok { prefix = None; root = dir; main = full; deps = []; manifest = None }

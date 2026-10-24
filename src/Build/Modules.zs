@@ -207,12 +207,18 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
     count.Value <- count.Value + 1
     fail (problem (count.Value - 1) p)
   // the file of the module at `path` (A.B) under a package's root, not its main (a dependency's
-  // main is its name alone; the program's isn't a module)
+  // main is its name alone; the program's isn't a module); then under the main's own directory,
+  // when that isn't the root (a test in tests/ finds its helpers beside it)
   let fileIn (pkg: Project.Package) (path: string) : option<string> =
     let parts = String.split "." path
-    let dir = List.fold Path.combine pkg.root (List.take (List.length parts - 1) parts)
     let last = List.last parts
-    List.tryFind (fun (f: string) -> f <> pkg.main && File.exists f) [ Path.combine dir (last + ".zs"); Path.combine dir (lowerFirst last + ".zs") ]
+    let under (root: string) =
+      let dir = List.fold Path.combine root (List.take (List.length parts - 1) parts)
+      List.tryFind (fun (f: string) -> f <> pkg.main && File.exists f) [ Path.combine dir (last + ".zs"); Path.combine dir (lowerFirst last + ".zs") ]
+    let own = Path.getDirectoryName pkg.main
+    match under pkg.root with
+    | None when own <> pkg.root -> under own
+    | found -> found
   // the module with the full name m, as a file of pkg or of one of its dependencies
   let find (pkg: Project.Package) (m: string) : option<string * string * Project.Package> =
     let within (p: Project.Package) (prefix: option<string>) : option<string * string * Project.Package> =
