@@ -77,7 +77,7 @@ let private elideAliases (keep: string -> bool) (body: CExpr) : CExpr =
 /// (not closures, which are called through code pointers, nor the entries). For the whole
 /// program, since a caller's code depends on its callees'. external: what another module's code
 /// borrows (its functions aren't in funs).
-let borrowingWith (types: Map<string, TypeInfo>) (entries: Set<string>) (external: share<string -> option<Set<int>>>) (funs: list<MFun>) : Map<string, Set<int>> =
+let borrowingWith (types: Map<string, TypeInfo>) (entries: Set<string>) (external: string -> option<Set<int>>) (funs: list<MFun>) : Map<string, Set<int>> =
   let v = Types.Vars.make ()
   let heap (t: Ty) = Types.Repr.needsRc v types t
   let asValues = ref entries
@@ -100,7 +100,8 @@ let borrowingWith (types: Map<string, TypeInfo>) (entries: Set<string>) (externa
   let fnOf = Map.ofList (List.map (fun (f: MFun) -> (f.name, f)) funs)
   let changed = ref true
   // each round from the sets of the round before: they only shrink, so the rounds end at the same
-  // sets in any order; a round's functions on the pool
+  // sets in any order. On this thread: a round reads every function's code, which another thread
+  // could read only shared, every count of it atomic
   while changed.Value do
     let current = borrowedOf.Value
     let fewer (entry: string * Set<int>) : option<string * Set<int>> =
@@ -138,7 +139,7 @@ let borrowingWith (types: Map<string, TypeInfo>) (entries: Set<string>) (externa
       if not (Set.isEmpty set) then
         walk (elideAliases (fun x -> Map.containsKey x index) f.body)
       if Set.isEmpty bad.Value then None else Some(name, Set.difference set bad.Value)
-    let updates = List.choose (fun (u: option<string * Set<int>>) -> u) (Array.toList (Array.Parallel.map fewer (Array.ofList (Map.toList current))))
+    let updates = List.choose fewer (Map.toList current)
     changed.Value <- not (List.isEmpty updates)
     for (name, set) in updates do
       borrowedOf.Value <- Map.add name set borrowedOf.Value
