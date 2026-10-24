@@ -2471,6 +2471,10 @@ void zs_loop_spawn(void *work) {
 
 // Runs what's ready, then waits once for a descriptor, a timer or a job. False when nothing is
 // left that could happen (Task.run then stops).
+// helper jobs and spawned tasks this loop still waits on (Task.run waits for them all, so a
+// cancelled spawned task has disposed what it holds before the program goes on)
+zs_int zs_loop_jobs(void) { return (zs_int)L.jobs; }
+
 bool zs_loop_step(void) {
     if (L.stepping) zs_panic_c("Task.run inside a task: use let! there instead");
     L.stepping = true;

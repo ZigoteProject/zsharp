@@ -49,7 +49,6 @@ Rust, Swift and OCaml for the host benchmarks).
 4. **Targets (phase 11.5):** macOS and Windows programs and compilers build (`--target`), and Windows's suite passes under Wine, but nothing has run on a Mac or a Windows machine yet: the suite on each in CI, and their release archives on clean machines, close the phase.
 5. **`use` under effects (track S):** a throw, or a clause that doesn't resume, passes over a `use` without disposing what it bound (it's freed). Item 10 of track S disposes it.
 6. **Generators (track S):** a pipeline of `Seq` functions allocates nothing per element but isn't one loop yet, as a list pipeline is: each stage is an indirect call per element (4.8× a fused list pipeline's time). Item 9 of track S fuses it.
-7. **Cancelling spawned tasks (track S):** a spawned task that's cancelled disposes its `use` values on its own thread, but `Task.run` doesn't wait for that, so it can return first, and the program exit with them still allocated. Under valgrind, `tests/task/cancel.zs` and `echo.sh --threads` lose that race now and then (as they did before phase 10). Item 11 of track S waits for them.
 
 ## Next
 
@@ -278,7 +277,7 @@ DESIGN §9's layers.
   8. **Net:** Unix sockets (`Unix.listen`, `accept`, `connect`: `Tcp`'s functions over a path, on the event loop), which the build server needs (phase 11, decision 76). *After phase 11:* UDP, and name lookup through `Task.blocking getaddrinfo`. TLS and HTTP are packages.
   9. **Generators as one loop:** *(after phase 11)* a `Seq` pipeline compiled as a fused list pipeline is. Simplify floats `let`s and resolves the match on a `Seq` built in the same function, so a stage's handle encloses the generator's code, and Evidence calls a clause that resumes last right where the handle it's in is known (its frame is the one just made) instead of through the frame. Pure code stays as it is (phase 10's exit test).
   10. **`use` under effects:** a stop (a throw, a generator a consumer stopped) runs the disposals of the `use`s it passes over, newest first, as a task's cancellation does: Evidence gives a function that has a `use` open at a call that may yield a stop branch that disposes, instead of only returning.
-  11. **Spawned tasks' cancellation, waited for:** `Task.run` closes its loop once each spawned task it cancelled has said it's done (its token, `zs_loop_fulfill`), so their `use` values are disposed before it returns, as `tests/task/cancel.zs` says. A runtime change: the loop waits for its tokens still out.
+  11. **Spawned tasks' cancellation, waited for:** *(done in phase 11.5: GitHub's runner lost the race without valgrind)* `Task.run` closes its loop once each spawned task it cancelled has said it's done (its token, `zs_loop_fulfill`), so their `use` values are disposed before it returns, as `tests/task/cancel.zs` says. A runtime change: the loop waits for its tokens still out.
 - **Freeze at 1.0:** a review checks every name against .NET and F#. After it, renaming something takes a `[<Deprecated "use X">]` warning for one release.
 - **Exit tests:**
   - *After phase 11:* ten Advent of Code puzzles written with only the prelude, Core and Std, with no helper that F#'s library already has.

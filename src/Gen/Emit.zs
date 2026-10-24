@@ -195,6 +195,7 @@ let private runtimeList : list<string * (string * string * list<string>)> =
     ("Loop.timer", ("zs_loop_timer", "i_W", [ "i_W"; "ptr!" ]))
     ("Loop.untimer", ("zs_loop_untimer", "void", [ "i_W" ]))
     ("Loop.step", ("zs_loop_step", "zeroext i1", []))
+    ("Loop.jobs", ("zs_loop_jobs", "i_W", []))
     ("Loop.close", ("zs_loop_close", "void", []))
     ("Loop.enter", ("zs_loop_enter", "zeroext i1", []))
     ("Loop.leave", ("zs_loop_leave", "void", []))

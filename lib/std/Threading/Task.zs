@@ -130,6 +130,10 @@ module Task =
     runIn t (newCancel ()) (fun x -> result.Value <- Some x)
     while Option.isNone result.Value && Native.loopStep () do
       ()
+    // what it spawned and then cancelled answers once it's done there (its use values disposed
+    // on its thread): waited for, so nothing of it outlives this
+    while Native.loopJobs () > 0 && Native.loopStep () do
+      ()
     Native.loopClose ()
     match result.Value with
     | Some x -> x

@@ -203,6 +203,7 @@ let builtins : Map<string, Builtin> =
       b "Native.loopTimer" "Loop.timer" [] (f tInt (f (f tUnit tUnit) tInt)) 2
       b "Native.loopUntimer" "Loop.untimer" [] (f tInt tUnit) 1
       b "Native.loopStep" "Loop.step" [] (f tUnit tBool) 1
+      b "Native.loopJobs" "Loop.jobs" [] (f tUnit tInt) 1
       b "Native.loopClose" "Loop.close" [] (f tUnit tUnit) 1
       b "Native.loopEnter" "Loop.enter" [] (f tUnit tBool) 1
       b "Native.loopLeave" "Loop.leave" [] (f tUnit tUnit) 1
