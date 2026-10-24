@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Installs a Z# compiler binary into a directory as zs expects to find itself: zs, the library
 # (lib/), the runtime's C (rt.c, rt-embedded.c) and the boards' linker scripts (boards/).
-#   compiler/install.sh <zs binary> <directory>
+#   src/install.sh <zs binary> <directory>
 set -eu
 cd "$(dirname "$0")/.."
 zs=$1; dir=$2

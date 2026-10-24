@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Builds the compiler, then checks every tests/**/*.zs that has an expected .out (run output) or
-# .err (compile error) next to it; other .zs files are modules those tests use. Builds are
-# --strict: the repository's own code has no warnings.
+# Builds the compiler (src/, by stage 0: the release ./dev provides as $ZS_STAGE0), then checks
+# every tests/**/*.zs that has an expected .out (run output) or .err (compile error) next to it;
+# other .zs files are modules those tests use. Builds are --strict: the repository's own code has
+# no warnings.
 # --valgrind: also run each program under valgrind (memory errors or leaks fail the test).
 # --target <triple>: cross-compile the programs and C interop tests (zs build --target) and run
 #   them under qemu-user, e.g. --target aarch64-linux-musl; the host-only tool checks are skipped.
-# --zs <binary>: test that compiler (compiler/'s, built), installed as bin/zs with the library and
-#   runtime beside it, instead of the F# compiler built from src/.
+# --zs <binary>: test that compiler, installed as bin/zs with the library and runtime beside it,
+#   instead of building src/.
 set -u
 cd "$(dirname "$0")"
 valgrind=0; target=""; tgt=(); qemu=(); zsbin=""
@@ -18,11 +19,15 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-if [ -n "$zsbin" ]; then compiler/install.sh "$zsbin" bin || exit 1
-else dotnet build src -c Release -o bin --nologo -v q || exit 1; fi
+if [ -z "$zsbin" ]; then
+  [ -x "${ZS_STAGE0:-}" ] || { echo "no stage 0 compiler (\$ZS_STAGE0): run the tests through ./dev"; exit 1; }
+  mkdir -p build && ZS_NO_SERVER=1 "$ZS_STAGE0" build src/Main.zs --release -o build/zs || exit 1
+  zsbin=build/zs
+fi
+src/install.sh "$zsbin" bin || exit 1
 export ZS_LEAKCHECK=1 ZS_BACKTRACE=0  # report leaked objects at exit; deterministic panic output
 export ZS_NO_SERVER=1  # each build in its own process (tests/server.sh tests the build server)
-export ZS_CHECK_IR=1  # the Z# compiler checks its IR after each pass (zs build --check-ir)
+export ZS_CHECK_IR=1  # the compiler checks its IR after each pass (zs build --check-ir)
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 fail=0
 for t in $(find tests -name '*.zs' | sort); do
@@ -312,8 +317,8 @@ if [ -z "$target" ]; then
   else echo "FAIL tests/stats/parallel_unique.zs"; cat "$tmp/pu.log"; ZS_STATS=1 "$tmp/pu" 2>&1 | tail -2; fail=1; fi
 fi
 
-# the bootstrap (0020): the Z# compiler builds itself to the same bytes
-if [ -n "$zsbin" ] && [ -z "$target" ]; then
+# the bootstrap (0020): the compiler builds itself to the same bytes
+if [ -z "$target" ]; then
   if out=$(tests/bootstrap.sh bin/zs 2>&1); then echo "ok   tests/bootstrap.sh ($(echo "$out" | paste -sd ';' | sed 's/;/; /g'))"
   else echo "FAIL tests/bootstrap.sh"; echo "$out"; fail=1; fi
 fi

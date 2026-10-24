@@ -7,11 +7,13 @@ hints, document symbols and formatting. Zed's agent gets the `zs mcp` context se
 
 ## Install (dev extension)
 
-1. Build a self-contained `zs` (it then runs without a .NET installation, which matters for the
-   Flatpak build of Zed, whose sandbox has no `dotnet`):
+1. Install `zs` where Zed can run it (a native binary with its library and runtime beside it; it
+   needs no .NET and, for `import c`, finds libclang when there is one and reads the saved
+   import when there isn't, which matters for the Flatpak build of Zed):
 
    ```sh
-   ./dev dotnet publish src -c Release -r linux-x64 --self-contained -o dist/zs
+   ./dev ./test.sh                       # or any build of bin/zs
+   src/install.sh bin/zs dist/zs
    ```
 
    Put `dist/zs` on `PATH`, or set the path in Zed's settings:

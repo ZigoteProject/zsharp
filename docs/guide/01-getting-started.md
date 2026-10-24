@@ -2,20 +2,20 @@
 
 ## Building the compiler
 
-The compiler is written in F# (.NET 10). It drives clang to produce native executables.
+The compiler is written in Z# itself (`src/`). It drives clang to produce native executables, and
+builds itself with the previous release of the compiler (stage 0).
 
-**The dev container (recommended):** the repository's development environment is a container with everything the compiler and its tests need: .NET, clang and LLVM, zig, qemu, gdb and valgrind. `./dev` runs a command inside it, building the image the first time:
+**The dev container (recommended):** the repository's development environment is a container with everything the compiler and its tests need: clang and LLVM, zig, qemu, gdb and valgrind, and the stage-0 compiler. `./dev` runs a command inside it, building the image the first time:
 
 ```sh
 ./dev ./test.sh                  # build the compiler and run every test
 ./dev bin/zs run hello.zs        # use the freshly built compiler
 ```
 
-**Without the container:** you need the .NET 10 SDK and clang.
+**Without the container:** you need clang, and a `zs` from a release (or from the container) to build `src/` with:
 
 ```sh
-dotnet build src -c Release -o bin          # bin/zs
-dotnet publish src -c Release -r linux-x64 --self-contained -o dist/zs   # a standalone dist/zs/zs
+zs build src/Main.zs --release -o zs-new && src/install.sh zs-new bin   # bin/zs, its library and runtime beside it
 ```
 
 ## Hello, world

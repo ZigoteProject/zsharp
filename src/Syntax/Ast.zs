@@ -1,5 +1,5 @@
 /// The AST: what the checker reads, the parser's view of the tree (0019). The parser makes it
-/// as it makes the tree, in the F# compiler's shapes (`compiler/tests/ast.sh` compares the two).
+/// as it makes the tree, in the shapes of the F# compiler's (`v0.5`), which `zs ast` prints.
 /// A node's `at` is where it is, a token's index in the tree (-1 when it has no place of its own:
 /// an error inside it is at the nearest node around it that has one, as in the F# compiler); a
 /// field name's token is beside it, for rename and references.

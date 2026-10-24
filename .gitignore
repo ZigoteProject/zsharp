@@ -1,5 +1,4 @@
 bin/
-obj/
 *.ll
 dist/
 editors/zed/target/

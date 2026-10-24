@@ -26,7 +26,7 @@ impl zed::Extension for ZSharp {
             .and_then(|b| b.path.clone())
             .or_else(|| worktree.which("zs"))
             .ok_or_else(|| {
-                "zs was not found on PATH. Build it (dotnet publish src -c Release -r linux-x64 --self-contained -o ~/.local/zs) \
+                "zs was not found on PATH. Install it (./dev ./test.sh, then src/install.sh bin/zs ~/.local/zs) \
                  and add it to PATH, or set lsp.zs.binary.path in Zed's settings."
                     .to_string()
             })?;

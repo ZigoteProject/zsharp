@@ -542,7 +542,7 @@ There are three levels, from free to manual.
      ─► clang -O2/-Os per module, in parallel, cached ─► ThinLTO link     Driver
 ```
 
-- **Implementation language:** F# (.NET 10). Self-hosting is optional and late (phase 11).
+- **Implementation language:** Z#. The compiler builds itself (phase 11), the previous release being stage 0 (`./dev` fetches it); the F# compiler it replaced, on .NET 10, is tagged `v0.5`.
 - **Reading the optimizer:** `ZS_DUMP_CORE=name` prints the Core of the functions whose name contains `name`, after reference counting, and `ZS_DUMP_IR=dir` writes each LLVM module of a build of several files there. `ZS_NO_DECIDE=1` compiles matches clause by clause, for comparison. `ZS_NO_CACHE=1` checks and makes everything again instead of using the cache, keeping only what's kept under a hash of its contents (objects under their IR's).
 - **Backend:** textual LLVM IR passed to clang, so reading the `.ll` file is the debugger (`--emit-llvm` writes the whole program as one module). A switch to the LLVM C API was to come when compile time demanded it, and phase 9 measured that it doesn't: parsing the text is 2.6% of clang's time on a program's 8 MB of IR, and the module cache skips the IR of unchanged modules.
   - **Debug and release:** a build is a debug one unless `--release` is given: the program's modules compiled at `-O0` (the runtime at `-O2`, once) and linked with lld, so a rebuild after an edit is quick. Z#'s own passes run in both, so a program allocates the same in both, and a call to itself in tail position is a `musttail` call at `-O0`. A release build is `-O2`; a microcontroller's is optimized either way, since `-O0` code doesn't fit a chip.

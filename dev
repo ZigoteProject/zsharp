@@ -1,13 +1,26 @@
 #!/usr/bin/env bash
-# Runs a command inside the Z# dev container (built on first use), e.g. ./dev ./test.sh
+# Runs a command inside the Z# dev container (built on first use), e.g. ./dev ./test.sh. The
+# compiler in src/ is built by stage 0, the release pinned below, fetched on first use into
+# build/stage0/ from $ZS_RELEASES: a directory of release archives (src/release.sh writes them
+# to dist/), or a URL under which v<version>/<archive> is each release's.
 set -euo pipefail
 cd "$(dirname "$0")"
 image=zsharp-dev
+stage0=0.6
 if [ "${1:-}" = "--rebuild" ] || ! podman image exists "$image"; then
   [ "${1:-}" = "--rebuild" ] && shift
   podman build -t "$image" -f .devcontainer/Containerfile .devcontainer
 fi
+name=zs-$stage0-linux-$(uname -m)
+if [ ! -x "build/stage0/$name/zs" ]; then
+  from=${ZS_RELEASES:-dist}
+  mkdir -p build/stage0
+  case $from in
+    http://* | https://*) curl -fsSL "$from/v$stage0/$name.tar.gz" | tar -xz -C build/stage0 ;;
+    *) tar -xzf "$from/$name.tar.gz" -C build/stage0 ;;
+  esac || { echo "no stage 0: $name.tar.gz isn't in $from (set ZS_RELEASES)" >&2; exit 1; }
+fi
 tty=(); [ -t 0 ] && tty=(-it)
 mkdir -p bin
 exec podman run --rm "${tty[@]}" --userns=keep-id -v "$PWD":/work:z -v zsharp-home:/tmp/home:U \
-  -e HOME=/tmp/home -w /work "$image" "${@:-bash}"
+  -e HOME=/tmp/home -e "ZS_STAGE0=/work/build/stage0/$name/zs" -w /work "$image" "${@:-bash}"

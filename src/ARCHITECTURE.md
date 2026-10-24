@@ -2,7 +2,7 @@
 
 The compiler written in Z# (phase 11, [proposal 0020](../docs/proposals/0020-self-hosting.md),
 decisions 65 and 73–79 in [DESIGN §13](../DESIGN.md#13-decisions)). This document is the map of
-`compiler/`: its modules, what flows between them, where each piece of work runs, the passes and
+`src/`: its modules, what flows between them, where each piece of work runs, the passes and
 what each optimizes, and how the compiler keeps itself fast. The language it compiles is
 [DESIGN.md](../DESIGN.md); when it is built, [ROADMAP.md](../ROADMAP.md#phase-11-self-hosting).
 Line counts are estimates from the F# files they replace (`wc -l src/*.fs`: 23,700 at `v0.5`).
@@ -53,7 +53,7 @@ what is above it. About 20,000 lines in all.
 | `Lexer` | 450 | `lex : Source -> array<Token>`, the offside rule included (indent and dedent tokens), over a `span<u8>`. Numbers through `Int.parse` and `Float.parse`. An array, not a `seq { }`: the parser looks ahead. |
 | `Tree` | 350 | [0019](../docs/proposals/0019-syntax-tree.md)'s lossless concrete tree: every token (comments and blank lines are the text between them), each node with its id (its number in the file, in the order nodes end) and span, as a few arrays indexed by ids; `Tree.child`, `parents`, `tokenAt`. |
 | `Parser` | 3,100 | `parse : Source -> array<Token> -> Tree * list<Decl> / Report`: recursive descent on the stack, missing tokens and error nodes as recovery, each a `Report.diagnostic`. It builds the tree and the AST together: tree nodes go into arrays as they end, so nothing outside references a node and the tree dies whole, in a few frees; an interpolated string's holes are lexed into the same token buffer and parsed by a parser of their own. |
-| `Ast` | 200 | the AST the checker reads, in the F# compiler's shapes (`compiler/tests/ast.sh` compares the two through `zs ast`): `Expr`, `Pat`, `Decl`, `SType`, each node with its place, a token's index in the tree (-1: none of its own, the nearest one around it is meant). `Literal` turns literal tokens into values. |
+| `Ast` | 200 | the AST the checker reads, in the F# compiler's shapes (`zs ast` prints it): `Expr`, `Pat`, `Decl`, `SType`, each node with its place, a token's index in the tree (-1: none of its own, the nearest one around it is meant). `Literal` turns literal tokens into values. |
 | `Format` | 400 | `zs fmt` on the tree: reflow to 100 columns, comments kept, ranges, `--stdin`. Replaces `Format.fs`'s token pass. |
 
 ### 2.3 `Types/`: types, unification, traits
@@ -295,9 +295,9 @@ itself in no more than the gen 1 build takes; peak memory at most the F# compile
 
 ## 8. Testing the compiler
 
-- **The suite is the contract:** every `.out`, `.err`, `.same-ir`, session script and benchmark in `tests/` and `bench/` passes under the F# compiler and under this one before the F# one goes; `tests/err_many.zs` adds a file with five errors in two declarations.
+- **The suite is the contract:** every `.out`, `.err`, `.same-ir`, session script and benchmark in `tests/` and `bench/` passed under the F# compiler and under this one before the F# one went ([the report](../docs/reports/self-hosting.md)); `tests/err_many.zs` adds a file with five errors in two declarations.
 - **`--check-ir`** after every pass in `./test.sh`, so a pass's bug fails where it is made.
-- **The compiler's own tests** are values ([0009](../docs/proposals/0009-tests-as-values.md)) in `compiler/tests/`: a session per test, in-process, under `Parallel.for`; the lexer and parser on every `.zs` file in the repository (a parse, a print of the tree, byte-identical to the source); `Unify` on tables of pairs; `attempt`'s rollback; `Decide` against `ZS_NO_DECIDE=1`; `Binary` round trips of `Checked`.
+- **The compiler's own tests** are values ([0009](../docs/proposals/0009-tests-as-values.md)) in `src/tests/` (to come): a session per test, in-process, under `Parallel.for`; the lexer and parser on every `.zs` file in the repository (a parse, a print of the tree, byte-identical to the source); `Unify` on tables of pairs; `attempt`'s rollback; `Decide` against `ZS_NO_DECIDE=1`; `Binary` round trips of `Checked`.
 - **Determinism:** `tests/cache.sh` across `ZS_WORKERS=1` and the cores; `tests/bootstrap.sh` comparing gen 2 and gen 3 and naming the first differing function from `ZS_DUMP_IR` when they differ.
 - **Sanitizers and valgrind:** `./test.sh --valgrind` and `--sanitize=thread` over the parallel passes, as over the parallel tests today; `ZS_LEAKCHECK=1` on the compiler building itself.
 - **Differential:** while both compilers exist, `tests/differential.sh` builds every test program with both and compares the `.out` and `.err` results and the benchmarks' instruction counts; the IR itself is allowed to differ (the rewrite lowers differently) until the F# compiler is gone.

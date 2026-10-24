@@ -1,5 +1,5 @@
 /// The parser (0019): a file's tokens to its tree and its AST, by recursive descent, as the F#
-/// compiler's parser makes them (`compiler/tests/parser.sh` and `ast.sh` compare the two). Where
+/// compiler's parser made them (`v0.5`; the two were compared on every file before it went). Where
 /// a token is missing, it reports that and puts a missing token in the tree; where it can't go
 /// on, it reports and skips into an Error node, to the end of the line at the block's
 /// indentation. A mistake is reported once: no error is reported at a token an earlier error was
