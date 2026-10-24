@@ -387,8 +387,11 @@ and inferNode (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>)
     let fty = funTyRow (parTypes pars) rty row
     let self = localOf (uniq cx name) fty false depth
     let envB = withPars (if isRec then Map.add name self env else env) pars (depth + 1)
-    let cb = withRow cx row (fun () -> infer cx envB (depth + 1) body)
-    expect cx $"result of '{name}'" rty cb.ty
+    let checkBody () =
+      let c = withRow cx row (fun () -> infer cx envB (depth + 1) body)
+      expect cx $"result of '{name}'" rty c.ty
+      c
+    let cb = recovered cx (fun () -> rty) checkBody
     recordKey cx node.at name fty false self.u true
     cx.localValues.Value <- Map.add self.u (mk (CLam(parsOf pars, cb)) fty) cx.localValues.Value
     let cr = inferWith cx (Map.add name self env) depth hint rest
@@ -402,15 +405,24 @@ and inferNode (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>)
     match plainVar with
     | Some x ->
       let pat = p.patAt
-      let cv =
+      let declared =
         match ann with
-        | Some a -> inferHint cx env depth (toTy cx None a) value0
+        | Some a -> Some(toTy cx None a)
+        | None -> None
+      let value () =
+        match declared with
+        | Some t ->
+          let c = inferHint cx env depth t value0
+          expect cx $"value of '{x}'" t c.ty
+          c
         | None -> inf value0
+      let fallback () =
+        match declared with
+        | Some t -> t
+        | None -> fresh v kAny
+      let cv = recovered cx fallback value
       let u = uniq cx x
       recordKey cx pat x cv.ty (Option.isNone ann) u true
-      match ann with
-      | Some a -> expect cx $"value of '{x}'" (toTy cx None a) cv.ty
-      | None -> ()
       cx.localValues.Value <- Map.add u cv cx.localValues.Value
       let l = localOf u cv.ty false depth
       let cr = inferWith cx (Map.add x l env) depth hint rest
@@ -420,10 +432,21 @@ and inferNode (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>)
         fail "type annotations on patterns are not supported yet"
       inferWith cx env depth hint (plain (Match(value0, [ { pattern = p; guard = None; body = rest } ])))
   | LetMut(x, ann, value0, rest) ->
-    let cv = inf value0
-    match ann with
-    | Some a -> expect cx $"value of '{x}'" (toTy cx None a) cv.ty
-    | None -> ()
+    let declared =
+      match ann with
+      | Some a -> Some(toTy cx None a)
+      | None -> None
+    let value () =
+      let c = inf value0
+      match declared with
+      | Some t -> expect cx $"value of '{x}'" t c.ty
+      | None -> ()
+      c
+    let fallback () =
+      match declared with
+      | Some t -> t
+      | None -> fresh v kAny
+    let cv = recovered cx fallback value
     let l = localOf (uniq cx x) cv.ty true depth
     let cr = inferWith cx (Map.add x l env) depth hint rest
     mk (CLetMut(l.u, cv, cr)) cr.ty
@@ -542,10 +565,11 @@ and inferNode (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>)
           | _ -> None
         | _ -> None
       | _ -> None
-    match assigned with
-    | Some x -> fail $"'=' compares; to assign to '{x}' write {x} <- …"
-    | None -> ()
-    let ca = inf a
+    let statement () =
+      match assigned with
+      | Some x -> fail $"'=' compares; to assign to '{x}' write {x} <- …"
+      | None -> inf a
+    let ca = recovered cx (fun () -> tUnit) statement
     // a statement is unit: a type still open here becomes unit (a panic's, a callback's in
     // List.iter, as F#'s rule), and any other is a dropped value: unused-value (0021), warned
     // about at the end of the declaration, when its type is settled
@@ -796,6 +820,7 @@ and assertCompare (cx: Cx) (env: Map<string, Local>) (depth: int) (c: Expr) : CE
       | Mismatched.throw _, _ -> false
     handle matched () with
     | Fails.fail _, _ -> false
+    | Fails.report x, k -> k (Fails.report x)
   let side (name: string) (e: Expr) (t: Ty) =
     if has "Show" t then plain (Call(libraryName "Show.show", [ plain (Var name) ])) else plain (StrLit(exprText e))
   let atPart =

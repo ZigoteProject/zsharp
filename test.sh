@@ -217,6 +217,9 @@ else echo "FAIL tests/lsp/session.sh"; diff <(echo "$expected") <(echo "$actual"
 # the other's diagnostics again (tests/lsp/modules.sh)
 if diff <(tests/lsp/modules.sh bin/zs 2>&1) tests/lsp/modules.out >"$tmp/lspm.diff"; then echo "ok   tests/lsp/modules.sh"
 else echo "FAIL tests/lsp/modules.sh"; cat "$tmp/lspm.diff"; fail=1; fi
+# every mistake of a declaration, the same from zs check and the language server (tests/lsp/many.sh)
+if diff <(tests/lsp/many.sh bin/zs 2>&1) tests/lsp/many.out >"$tmp/lspmany.diff"; then echo "ok   tests/lsp/many.sh"
+else echo "FAIL tests/lsp/many.sh"; cat "$tmp/lspmany.diff"; fail=1; fi
 # the language server on effects: rows in hover, the effects inlay hint, an operation's
 # definition and references (tests/lsp/effects.sh)
 if diff <(tests/lsp/effects.sh bin/zs 2>&1) tests/lsp/effects.expected >"$tmp/lspe.diff"; then echo "ok   tests/lsp/effects.sh"

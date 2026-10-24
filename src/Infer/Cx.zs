@@ -581,14 +581,93 @@ let warnAt (cx: Cx) (kind: string) (at: Span) (msg: string) =
   if not (Set.contains kind cx.silenced.Value) then
     Buffer.push (warning kind at msg) cx.diagnostics
 
+/// What a declaration's check may change of the context: put back when it fails, and when one of
+/// its statements does.
+type Scope =
+  { stv: Map<string, Ty>
+    srow: Ty
+    swhat: string
+    sinlining: Set<string>
+    swrapping: bool
+    sfast: bool
+    sunsafe: bool
+    sexporting: bool
+    sdef: string
+    sconst: string
+    sforeign: bool
+    ssilenced: Set<string>
+    smodule: option<string>
+    sopens: list<string> }
+
+let saveScope (cx: Cx) : Scope =
+  { stv = cx.tyvars.Value
+    srow = cx.ctxRow.Value
+    swhat = cx.ctxWhat.Value
+    sinlining = cx.inlining.Value
+    swrapping = cx.wrapping.Value
+    sfast = cx.fastMath.Value
+    sunsafe = cx.unsafeOn.Value
+    sexporting = cx.exporting.Value
+    sdef = cx.currentDef.Value
+    sconst = cx.inConst.Value
+    sforeign = cx.foreign.Value
+    ssilenced = cx.silenced.Value
+    smodule = cx.currentModule.Value
+    sopens = cx.opens.Value }
+
+let restoreScope (cx: Cx) (s: Scope) =
+  cx.tyvars.Value <- s.stv
+  cx.ctxRow.Value <- s.srow
+  cx.ctxWhat.Value <- s.swhat
+  cx.inlining.Value <- s.sinlining
+  cx.wrapping.Value <- s.swrapping
+  cx.fastMath.Value <- s.sfast
+  cx.unsafeOn.Value <- s.sunsafe
+  cx.exporting.Value <- s.sexporting
+  cx.currentDef.Value <- s.sdef
+  cx.inConst.Value <- s.sconst
+  cx.foreign.Value <- s.sforeign
+  cx.silenced.Value <- s.ssilenced
+  cx.currentModule.Value <- s.smodule
+  cx.opens.Value <- s.sopens
+
+/// Runs a statement's check so that its failure doesn't end the declaration's (0020): reported
+/// instead, the context and the types put back as they were before it, and the statement standing
+/// for a value of fallback's type (what it declares, or one nothing constrains yet), so the block
+/// goes on and each mistake is reported, not only the first. When the checker stops at the first
+/// error, a failure goes on up as it is.
+let recovered (cx: Cx) (fallback: unit -> Ty) (f: unit -> CExpr / <Fails | 'e>) : CExpr / <Fails | 'e> =
+  if not cx.collect then
+    f ()
+  else
+    let scope = saveScope cx
+    let trail = mark cx.v
+    let discarded = Buffer.length cx.discarded
+    let dynCalls = Buffer.length cx.dynCalls
+    let attempt () =
+      let c = f ()
+      commit cx.v trail
+      c
+    handle attempt () with
+    | Fails.fail x, _ ->
+      undo cx.v trail
+      restoreScope cx scope
+      Buffer.truncate discarded cx.discarded
+      Buffer.truncate dynCalls cx.dynCalls
+      Fails.report x
+      mk CUnit (fallback ())
+    | Fails.report x, k -> k (Fails.report x)
+
 /// Runs f; a failure in it with no place of its own is at the token (a line's, with no column,
 /// when lineOnly). With no token (-1), or in an expression written elsewhere, f as it is.
 let located (cx: Cx) (tok: int) (lineOnly: bool) (f: unit -> 'r / <Fails | 'e>) : 'r / <Fails | 'e> =
   if tok < 0 || cx.foreign.Value then
     f ()
   else
+    let placed (x: Failure) = if x.token < 0 then { x with token = tok; lineOnly = lineOnly } else x
     handle f () with
-    | Fails.fail x, _ -> if x.token < 0 then Fails.fail { x with token = tok; lineOnly = lineOnly } else Fails.fail x
+    | Fails.fail x, _ -> Fails.fail (placed x)
+    | Fails.report x, k -> k (Fails.report (placed x))
 
 /// Runs f on an expression written elsewhere (a constant's body at a use, a default).
 let foreignly (cx: Cx) (f: unit -> 'r / 'e) : 'r / 'e =
@@ -602,14 +681,17 @@ let foreignly (cx: Cx) (f: unit -> 'r / 'e) : 'r / 'e =
 let saying (context: string) (f: unit -> 'r / <Fails | 'e>) : 'r / <Fails | 'e> =
   handle f () with
   | Fails.fail x, _ -> Fails.fail { x with message = context + ": " + x.message }
+  | Fails.report x, k -> k (Fails.report { x with message = context + ": " + x.message })
 
 /// Runs f; a failure in it is at the token's line when it has no place, and its message follows
 /// `context: ` (a derive's).
 let inContext (context: string) (tok: int) (f: unit -> 'r / <Fails | 'e>) : 'r / <Fails | 'e> =
-  handle f () with
-  | Fails.fail x, _ ->
+  let said (x: Failure) =
     let place = if x.token < 0 then { x with token = tok; lineOnly = true } else x
-    Fails.fail { place with message = context + ": " + x.message }
+    { place with message = context + ": " + x.message }
+  handle f () with
+  | Fails.fail x, _ -> Fails.fail (said x)
+  | Fails.report x, k -> k (Fails.report (said x))
 
 /// Remembers the type at a token, and what the name there refers to (editor support).
 let recordKey (cx: Cx) (tok: int) (name: string) (t: Ty) (inlay: bool) (key: string) (isDef: bool) =

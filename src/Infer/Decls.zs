@@ -48,23 +48,6 @@ type private GroupFun =
     recNode: Decl
     recPrivate: bool }
 
-// what a declaration may change of the context, put back when it fails
-type private Saved =
-  { stv: Map<string, Ty>
-    srow: Ty
-    swhat: string
-    sinlining: Set<string>
-    swrapping: bool
-    sfast: bool
-    sunsafe: bool
-    sexporting: bool
-    sdef: string
-    sconst: string
-    sforeign: bool
-    ssilenced: Set<string>
-    smodule: option<string>
-    sopens: list<string> }
-
 let private item (at: int) (name: string) (isRec: bool) (ps: list<Param>) (ret: option<SType>) (body: Expr) : Item =
   { itemAt = at; iname = name; isRec = isRec; ips = ps; iret = ret; ibody = body; expected = None }
 
@@ -374,6 +357,7 @@ let private shapeOf (cx: Cx) (tname: string) : Derive.ShapeInfo =
 let private explained (context: string) (f: unit -> 'r / <Fails | 'e>) : 'r / <Fails | 'e> =
   handle f () with
   | Fails.fail x, _ -> Fails.fail { x with message = context + ": " + x.message }
+  | Fails.report x, k -> k (Fails.report { x with message = context + ": " + x.message })
 
 /// Implements trait `tr` for the types `tnames` (declared together, so they may hold each other)
 /// by expanding `derive tr` for each: every impl is registered before any body is checked. An
@@ -580,38 +564,6 @@ let private warnDiscarded (cx: Cx) =
     | None -> ()
   Buffer.clear cx.discarded
 
-let private save (cx: Cx) : Saved =
-  { stv = cx.tyvars.Value
-    srow = cx.ctxRow.Value
-    swhat = cx.ctxWhat.Value
-    sinlining = cx.inlining.Value
-    swrapping = cx.wrapping.Value
-    sfast = cx.fastMath.Value
-    sunsafe = cx.unsafeOn.Value
-    sexporting = cx.exporting.Value
-    sdef = cx.currentDef.Value
-    sconst = cx.inConst.Value
-    sforeign = cx.foreign.Value
-    ssilenced = cx.silenced.Value
-    smodule = cx.currentModule.Value
-    sopens = cx.opens.Value }
-
-let private restore (cx: Cx) (s: Saved) =
-  cx.tyvars.Value <- s.stv
-  cx.ctxRow.Value <- s.srow
-  cx.ctxWhat.Value <- s.swhat
-  cx.inlining.Value <- s.sinlining
-  cx.wrapping.Value <- s.swrapping
-  cx.fastMath.Value <- s.sfast
-  cx.unsafeOn.Value <- s.sunsafe
-  cx.exporting.Value <- s.sexporting
-  cx.currentDef.Value <- s.sdef
-  cx.inConst.Value <- s.sconst
-  cx.foreign.Value <- s.sforeign
-  cx.silenced.Value <- s.ssilenced
-  cx.currentModule.Value <- s.smodule
-  cx.opens.Value <- s.sopens
-
 /// An error found, unless it mentions a declaration that already failed (it's that one's
 /// consequence).
 let private report (cx: Cx) (dg: Diagnostic) =
@@ -715,6 +667,7 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
       // keep later declarations from seeing a half-defined function
       cx.globals.Value <- Map.remove name cx.globals.Value
       Fails.fail x
+    | Fails.report x, k -> k (Fails.report x)
     let g = Map.find name cx.globals.Value
     recordKey cx d.named name g.ty false name true
     // its effects in words (0025), with the parameters' names
@@ -889,6 +842,7 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
       for m in defs do
         cx.globals.Value <- Map.remove (qualify cx m.recName) cx.globals.Value
       Fails.fail x
+    | Fails.report x, k -> k (Fails.report x)
     for m in defs do
       let q = qualify cx m.recName
       recordKey cx m.recNode.named m.recName (Map.find q cx.globals.Value).ty false q true
@@ -1134,25 +1088,42 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
 let private guarded (cx: Cx) (d: Decl) (f: unit -> 'a / <Fails, Mismatched>) : option<'a> / <> =
   // names resolve anew in each declaration: the ones before it may have defined them
   cx.resolved.Value <- Map.empty
-  let saved = save cx
+  let saved = saveScope cx
+  // the declaration's errors, in the file's order when it's done: its statements' (the check
+  // going on after each) and the one it stopped at
+  let errors : Buffer<Diagnostic> = Buffer.empty
+  let found (x: Failure) : unit / <> =
+    let at = if x.token < 0 then spanOf cx d.dat true else spanOf cx x.token x.lineOnly
+    Buffer.push (error at x.message) errors
+  let flush () : unit / <> =
+    for dg in List.sortBy (fun (dg: Diagnostic) -> dg.at.offset) (Array.toList (Buffer.toArray errors)) do
+      report cx dg
+    Buffer.clear errors
   let failing () =
     handle Some(f ()) with
     | Fails.fail x, _ ->
-      restore cx saved
+      restoreScope cx saved
       Buffer.clear cx.discarded
       Buffer.clear cx.dynCalls
-      let at = if x.token < 0 then spanOf cx d.dat true else spanOf cx x.token x.lineOnly
-      report cx (error at x.message)
+      found x
+      flush ()
       for n in declaredNames d do
         cx.failed.Value <- Set.add (qualify cx n) (Set.add n cx.failed.Value)
       if not cx.collect then
         cx.stopped.Value <- true
       None
-  handle failing () with
-  | Mismatched.throw _, _ ->
-    restore cx saved
-    report cx (error (spanOf cx d.dat true) "internal error: a type mismatch nothing caught")
-    None
+    | Fails.report x, k ->
+      found x
+      k ()
+  let r =
+    handle failing () with
+    | Mismatched.throw _, _ ->
+      restoreScope cx saved
+      flush ()
+      report cx (error (spanOf cx d.dat true) "internal error: a type mismatch nothing caught")
+      None
+  flush ()
+  r
 
 /// Declares with error recovery: a failure is the declaration's error, and the next goes on. A
 /// nested module's declarations each get their own: it sees the enclosing modules' names, and an
@@ -1246,12 +1217,14 @@ let private checkMain (cx: Cx) : unit / Fails =
 let finish (cx: Cx) : unit =
   // a test file needs no main
   if (cx.requireMain && Buffer.length cx.tests = 0) || Map.containsKey "main" cx.globals.Value then
+    // at main when it was checked here; else no place yet (the driver gives main's, when the
+    // main module came from the cache)
+    let at =
+      match cx.mainAt.Value with
+      | Some s -> s
+      | None -> { file = -1; offset = -1; length = -1 }
     handle checkMain cx with
-    | Fails.fail x, _ ->
-      // at main when it was checked here; else no place yet (the driver gives main's, when the
-      // main module came from the cache)
-      let at =
-        match cx.mainAt.Value with
-        | Some s -> s
-        | None -> { file = -1; offset = -1; length = -1 }
+    | Fails.fail x, _ -> report cx (error at x.message)
+    | Fails.report x, k ->
       report cx (error at x.message)
+      k ()

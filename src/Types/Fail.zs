@@ -11,6 +11,9 @@ type Failure = { message: string; token: int; lineOnly: bool }
 effect Fails =
   /// Fails with a failure.
   abstract fail : Failure -> 'a
+  /// Reports a failure the checker went on from: a statement's, the rest of its block checked
+  /// all the same (0020).
+  abstract report : Failure -> unit
 
 /// Fails with a message whose place the nearest node with one gives.
 let fail (message: string) : 'a / Fails = Fails.fail { message = message; token = -1; lineOnly = false }

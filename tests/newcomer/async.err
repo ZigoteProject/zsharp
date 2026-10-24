@@ -1,1 +1,3 @@
 tests/newcomer/async.zs:3: error: there's no async { }: write task { }, and run it with Task.run
+tests/newcomer/async.zs:4:3: error: there's no Async: write task { }, and run it with Task.run
+2 errors

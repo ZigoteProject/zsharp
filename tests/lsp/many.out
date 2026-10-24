@@ -1,0 +1,6 @@
+4: right operand of '+': expected int, got string
+5: value of 'tall': expected string, got int: interpolate it, $"{x}"
+6: unknown name 'missing'
+10: value of 'shown': expected bool, got int: a number isn't a condition; compare it, x <> 0
+11: value of 'named': expected string, got int: interpolate it, $"{x}"
+the language server: the same

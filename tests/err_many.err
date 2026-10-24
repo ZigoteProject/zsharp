@@ -1,3 +1,6 @@
-tests/err_many.zs:1:13: error: right operand of '+': bool does not implement Add
-tests/err_many.zs:3:18: error: unknown function 'undefinedThing'
-2 errors
+tests/err_many.zs:4:14: error: right operand of '+': expected int, got string
+tests/err_many.zs:5:3: error: value of 'tall': expected string, got int: interpolate it, $"{x}"
+tests/err_many.zs:6:14: error: unknown name 'missing'
+tests/err_many.zs:10:3: error: value of 'shown': expected bool, got int: a number isn't a condition; compare it, x <> 0
+tests/err_many.zs:11:3: error: value of 'named': expected string, got int: interpolate it, $"{x}"
+5 errors

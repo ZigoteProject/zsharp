@@ -1,0 +1,3 @@
+tests/err_decls.zs:1:13: error: right operand of '+': bool does not implement Add
+tests/err_decls.zs:3:18: error: unknown function 'undefinedThing'
+2 errors

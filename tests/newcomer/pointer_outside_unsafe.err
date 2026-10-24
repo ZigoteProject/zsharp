@@ -1,1 +1,5 @@
 tests/newcomer/pointer_outside_unsafe.zs:3:11: error: 'Ptr.alloc' is unsafe: use it inside `unsafe`
+tests/newcomer/pointer_outside_unsafe.zs:4:3: error: 'Ptr.write' is unsafe: use it inside `unsafe`
+tests/newcomer/pointer_outside_unsafe.zs:5:11: error: 'Ptr.read' is unsafe: use it inside `unsafe`
+tests/newcomer/pointer_outside_unsafe.zs:6:3: error: 'Ptr.free' is unsafe: use it inside `unsafe`
+4 errors
