@@ -1,0 +1,6 @@
+[package]
+name = "long"
+main = "main.zs"
+
+[c]
+sources = ["lib.c"]

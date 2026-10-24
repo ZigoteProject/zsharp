@@ -162,7 +162,7 @@ let private targetFlags (target: string) : list<string> =
   else
     let empty = Result.defaultValue "" (File.createTemp "zs-target-")
     let listed =
-      match Tools.runMerged "zig" [ "cc"; "-target"; target; "-E"; "-Wp,-v"; "-x"; "c"; empty; "-o"; empty + ".i" ] with
+      match Tools.runMerged "zig" [ "cc"; "-target"; target; "-E"; "-v"; "-x"; "c"; empty; "-o"; empty + ".i" ] with
       | Ok r ->
         // the lines between "#include <...> search starts here:" and "End of search list."
         let rec dirs (inside: bool) (lines: list<string>) : list<string> =
