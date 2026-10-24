@@ -253,6 +253,7 @@ The full example is Core's `Text.Json` (`lib/core/Text/Json.zs`, [proposal 0023]
   - `Shape.of x` is `Record r` or `Union c`. `r.fields` lists every field, and `c.name`/`c.fields` describe the active case.
   - Each field has `name`, `index` and a `value` of the field's own type; a record's field also has `default`, `Some` of its default or `None`.
   - `c.index` and `c.count` give the case's position and its number of fields.
+  - `for c in Shape.cases do …` is unrolled once per case of a union, without a value: `c.name`, `c.index`, `c.count` and its fields' `name` and `index`. The `args` package's derive lists its options with it.
 - **Two values at once:** `match Shape.pair a b with Same c -> … | Different (i, j) -> …`. With `Same`, each field has `f.left` and `f.right`; `Different` carries the two case indexes.
 - **Building values:** `Shape.kind` tells a derive whether it builds a record or a union.
   - `Shape.build (fun f -> …)` makes a record from per-field results, stopping at the first `Error`.

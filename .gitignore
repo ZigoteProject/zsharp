@@ -11,4 +11,6 @@ core.*
 build/
 examples/raylib/demo
 .zs-cache/
+# a cache directory a tool was pointed at inside the checkout (XDG_CACHE_HOME=.cache)
+.cache/
 bench/mcu/out/
