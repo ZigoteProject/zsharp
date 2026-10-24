@@ -8,11 +8,13 @@ on: [push, pull_request]
 jobs:
   linux-x86_64:
     runs-on: ubuntu-24.04
-    env:
-      # stage 0's archive: this repository's release v0.6 (./dev fetches v<version>/<archive>)
-      ZS_RELEASES: https://github.com/${{ github.repository }}/releases/download
     steps:
       - uses: actions/checkout@v4
+      # stage 0: this repository's release v0.6, into dist/ where ./dev looks first (a private
+      # repository's releases need the job's token)
+      - run: gh release download v0.6 -p 'zs-0.6-linux-x86_64.tar.gz' -D dist
+        env:
+          GH_TOKEN: ${{ github.token }}
       - run: ./dev ./test.sh
       - run: ./dev bash -c 'src/release.sh build/zs ci aarch64-macos x86_64-macos x86_64-windows-gnu aarch64-windows-gnu aarch64-linux-gnu'
       - uses: actions/upload-artifact@v4
