@@ -256,7 +256,12 @@ let make (o: Options.Options) (prog0: Program) (linked: Modules.Linked) (testBui
       // runtime and links against Zig's bundled libc (musl: a static binary, no sysroot needed)
       let cross = o.target <> ""
       let tclang = if cross then [ "--target=" + Options.clangTriple o ] else []
-      let cc (args: list<string>) = if cross then Tools.run "zig" (List.append [ "cc"; "-target"; o.target ] args) else Tools.run "clang" args
+      // zig cc writes debug info unless told not to (clang doesn't): without -g, none, so the
+      // binary doesn't carry its temporary files' paths and builds to the same bytes each time
+      // (the C library's objects zig builds itself have it anyway, naming zig's cache: the link
+      // drops it, -S to ld.lld and ld64.lld; on Windows -s, which writes no .pdb either)
+      let nodebug = if o.debugInfo then [] else if String.contains "-windows" o.target then [ "-g0"; "-s" ] else [ "-g0"; "-Wl,-S" ]
+      let cc (args: list<string>) = if cross then Tools.run "zig" (List.concat [ [ "cc"; "-target"; o.target ]; nodebug; args ]) else Tools.run "clang" args
       let built =
         match o.mcu with
         | Some m ->
