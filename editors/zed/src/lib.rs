@@ -44,7 +44,8 @@ impl zed::Extension for ZSharp {
         })
     }
 
-    // `zs mcp` for Zed's agent. Its build/run tools only touch files inside the project.
+    // `zs mcp` for Zed's agent. Its tools take only files inside the project, but `run` runs the
+    // program it builds with the user's full rights, unsandboxed.
     // The command comes from the context server's settings, else `zs` on PATH:
     //   "context_servers": { "zs": { "command": { "path": "/path/to/zs", "args": ["mcp"] } } }
     fn context_server_command(&mut self, id: &ContextServerId, project: &Project) -> Result<zed::Command> {

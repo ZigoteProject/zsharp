@@ -28,11 +28,17 @@ let private limit (n: int) (s: string) =
       b <- next
     String.sub s 0 b + $"\n… ({String.charCount s - n} more characters)"
 
-// a tool's file: inside the directory the server was started in, and there
+// a tool's file: inside the directory the server was started in, reached through no symbolic
+// link (getFullPath works on the text, so a link could lead out of it), and there
 let private projectFile (p: string) : result<string, string> =
   let full = Path.getFullPath p
   let root = Path.getFullPath (Environment.currentDirectory ())
+  let rec linked (dir: string) (parts: list<string>) =
+    match parts with
+    | [] -> false
+    | x :: rest -> Native.isSymlink (Path.combine dir x) || linked (Path.combine dir x) rest
   if not (String.startsWith (root + "/") full) then Error $"{p} is outside the project ({root})"
+  else if linked root (String.split "/" (Path.getRelativePath root full)) then Error $"{p} is reached through a symbolic link"
   else if not (File.exists full) then Error $"{p} does not exist"
   else Ok(Path.getRelativePath root full)
 
@@ -159,24 +165,25 @@ let private call (name: string) (args: Json) : result<string, string> =
     match fileOf () with
     | Error e -> Error e
     | Ok file ->
-      let exe =
-        match File.createTemp "zs-" with
-        | Ok p -> p
-        | Error _ -> Path.combine (Directory.temp ()) "zs-mcp-run"
-      let b = Build.Make.make (options file exe) false
-      if not b.made then
-        File.delete exe |> ignore
-        Error(formatErrors b.sources (Array.toList b.diagnostics))
-      else
-        // ponytail: standard output read to its end before standard error; a program filling the
-        // second pipe waits there until the time limit
-        let ran = Build.Tools.runSplit "env" [ "ZS_LEAKCHECK=1"; "timeout"; "--kill-after=1"; "10"; exe ]
-        File.delete exe |> ignore
-        match ran with
-        | Error e -> Error e
-        | Ok r ->
-          let status = if r.code = 124 || r.code = 137 then "killed after 10 seconds" else $"exit code {r.code}"
-          Ok(withWarnings b $"{status}\n--- stdout\n{limit 20000 r.out}\n--- stderr\n{limit 20000 r.err}")
+      // a fresh temporary file, never a fixed name: in a shared /tmp another user could swap it
+      // between the build and the run
+      match File.createTemp "zs-" with
+      | Error e -> Error $"no temporary file for the program: {e}"
+      | Ok exe ->
+        let b = Build.Make.make (options file exe) false
+        if not b.made then
+          File.delete exe |> ignore
+          Error(formatErrors b.sources (Array.toList b.diagnostics))
+        else
+          // ponytail: standard output read to its end before standard error; a program filling the
+          // second pipe waits there until the time limit
+          let ran = Build.Tools.runSplit "env" [ "ZS_LEAKCHECK=1"; "timeout"; "--kill-after=1"; "10"; exe ]
+          File.delete exe |> ignore
+          match ran with
+          | Error e -> Error e
+          | Ok r ->
+            let status = if r.code = 124 || r.code = 137 then "killed after 10 seconds" else $"exit code {r.code}"
+            Ok(withWarnings b $"{status}\n--- stdout\n{limit 20000 r.out}\n--- stderr\n{limit 20000 r.err}")
   else if name = "emit_llvm" then
     match fileOf () with
     | Error e -> Error e

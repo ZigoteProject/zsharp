@@ -12,13 +12,23 @@ if [ "${1:-}" = "--rebuild" ] || ! podman image exists "$image"; then
   podman build -t "$image" -f .devcontainer/Containerfile .devcontainer
 fi
 name=zs-$stage0-linux-$(uname -m)
+# each stage 0 archive's sha256: it runs with the repository mounted writable, so an archive
+# from anywhere else is refused
+declare -A sha256=([zs-0.6-linux-x86_64]=514729697528b78daa159dc1b3639977bf49a12afbd76a2d8a80a7f9838d28bc)
 if [ ! -x "build/stage0/$name/zs" ]; then
+  sum=${sha256[$name]:-}
+  [ -n "$sum" ] || { echo "no stage 0 for $(uname -m): only ${!sha256[*]} are pinned" >&2; exit 1; }
   from=${ZS_RELEASES:-dist}
+  # a fresh clone has no dist/: stage 0 comes from this repository's GitHub releases
+  [ -n "${ZS_RELEASES:-}" ] || [ -f "dist/$name.tar.gz" ] || from=https://github.com/ZigoteProject/zsharp/releases/download
   mkdir -p build/stage0
+  archive=build/stage0/$name.tar.gz
   case $from in
-    http://* | https://*) curl -fsSL "$from/v$stage0/$name.tar.gz" | tar -xz -C build/stage0 ;;
-    *) tar -xzf "$from/$name.tar.gz" -C build/stage0 ;;
+    http://* | https://*) curl -fsSL -o "$archive" "$from/v$stage0/$name.tar.gz" ;;
+    *) cp "$from/$name.tar.gz" "$archive" ;;
   esac || { echo "no stage 0: $name.tar.gz isn't in $from (set ZS_RELEASES)" >&2; exit 1; }
+  echo "$sum  $archive" | sha256sum -c --quiet - || { rm -f "$archive"; echo "stage 0: $archive isn't the pinned $name" >&2; exit 1; }
+  tar -xzf "$archive" -C build/stage0 && rm "$archive"
 fi
 tty=(); [ -t 0 ] && tty=(-it)
 mkdir -p bin

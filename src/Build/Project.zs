@@ -58,6 +58,11 @@ let private listOf (value: string) : result<list<string>, string> =
 
 let private cKeys : list<string> = [ "sources"; "include"; "link"; "pkg-config" ]
 
+// a dependency's name, also its directory under .zs-cache/deps (fetch replaces what is there):
+// letters, digits, - and _, so never `..`, a `/` or an absolute path
+let private depName (key: string) =
+  key <> "" && List.forall (fun (c: char) -> Char.isLetterOrDigit c || c = '-' || c = '_') (String.chars key)
+
 /// Reads the subset of TOML a manifest uses: [sections], key = "string", key = { k = "v", … },
 /// key = [ "a", "b" ].
 let readManifest (root: string) : result<Manifest, Problem> =
@@ -99,12 +104,15 @@ let readManifest (root: string) : result<Manifest, Problem> =
             | "dependencies" ->
               match tableFields value with
               | Error msg -> fail n $"dependency '{key}': {msg}"
+              | Ok _ when not (depName key) -> fail n $"dependency '{key}': a name is letters, digits, - and _"
               | Ok fields ->
                 match (Map.tryFind "path" fields, Map.tryFind "git" fields) with
                 | (Some p, _) -> Buffer.push (key, PathDep(Path.getFullPath (Path.combine root p))) deps
                 | (None, Some url) ->
-                  let rev = List.tryPick (fun k -> Map.tryFind k fields) [ "rev"; "tag"; "branch" ]
-                  Buffer.push (key, GitDep(url, Option.defaultValue "" rev)) deps
+                  let rev = Option.defaultValue "" (List.tryPick (fun k -> Map.tryFind k fields) [ "rev"; "tag"; "branch" ])
+                  // git would take it as an option
+                  if String.startsWith "-" rev then fail n $"dependency '{key}': rev '{rev}' starts with -"
+                  else Buffer.push (key, GitDep(url, rev)) deps
                 | _ -> fail n $"dependency '{key}' needs a path or a git URL"
             | "c" ->
               if List.contains key cKeys then
@@ -236,7 +244,8 @@ let private readLock (root: string) : Map<string, string * string * string> =
           match tableFields (String.trim (String.sub line (eq + 1) (String.length line - eq - 1))) with
           | Ok fields ->
             match (Map.tryFind "git" fields, Map.tryFind "commit" fields) with
-            | (Some url, Some commit) -> Map.add (String.trim (String.sub line 0 eq)) (url, Option.defaultValue "" (Map.tryFind "rev" fields), commit) acc
+            // a commit git would take as an option is no commit: the rev is resolved again
+            | (Some url, Some commit) when not (String.startsWith "-" commit) -> Map.add (String.trim (String.sub line 0 eq)) (url, Option.defaultValue "" (Map.tryFind "rev" fields), commit) acc
             | _ -> acc
           | Error _ -> acc
         else

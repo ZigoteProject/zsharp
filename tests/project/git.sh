@@ -48,3 +48,12 @@ let twice (s: string) = s + s' >> "$t/text/src/Text.zs" && g commit -am "add twi
 rm -rf .zs-cache && "$zs" check src/main.zs 2>/dev/null && echo "re-fetched from zs.lock"
 sed -i 's|file://[^"]*|file:///nonexistent/text|' zs.toml && rm -rf .zs-cache
 "$zs" build 2>&1 | grep -o "zs: git dependency 'text' (file:///nonexistent/text main):" 
+
+# a dependency's name is its directory under .zs-cache/deps: one leading out of it is refused and
+# fetch deletes nothing; a rev git would take as an option is refused too
+mkdir -p "$t/keep"
+printf '[package]\nname = "app"\n\n[dependencies]\n../../../keep = { git = "file:///nonexistent/x" }\n' > zs.toml
+"$zs" fetch 2>&1 | grep -o "dependency '../../../keep': a name is letters, digits, - and _"
+[ -d "$t/keep" ] && echo "../../../keep is still there"
+printf '[package]\nname = "app"\n\n[dependencies]\ntext = { git = "file:///nonexistent/x", rev = "--orphan=x" }\n' > zs.toml
+"$zs" fetch 2>&1 | grep -o "rev '--orphan=x' starts with -"

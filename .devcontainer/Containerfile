@@ -13,14 +13,20 @@ RUN dnf install -y --setopt=install_weak_deps=False \
 # builtins runtimes), and libclang with its headers, which packages/libclang opens beside
 # clang. Only those parts of the archive are unpacked (all of it is 12 GB).
 ARG LLVM_VERSION=23.1.4
+# the archives' sha256, from the release's asset digests (a new version needs both again)
+ARG LLVM_SHA256_X64=efdd1dbd089b99bfcfcde7b8eb1236163f2e88df5a981cca4f783ec9cb5e0378
+ARG LLVM_SHA256_ARM64=0975f753e0f9b5f83146a7a2f4678bc143e713496b56520716a4de047a63f99f
 RUN dnf install -y --setopt=install_weak_deps=False zstd pkgconf-pkg-config && dnf clean all \
     && arch=$(uname -m | sed 's/x86_64/X64/;s/aarch64/ARM64/') \
     && dir=LLVM-$LLVM_VERSION-Linux-$arch \
-    && curl -fsSL https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/$dir.tar.zst \
-       | zstd -dc --long=31 \
+    && curl -fsSL -o /tmp/llvm.tar.zst https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/$dir.tar.zst \
+    && sum=$([ $arch = X64 ] && echo $LLVM_SHA256_X64 || echo $LLVM_SHA256_ARM64) \
+    && echo "$sum  /tmp/llvm.tar.zst" | sha256sum -c --quiet - \
+    && zstd -dc --long=31 /tmp/llvm.tar.zst \
        | tar -x -C /opt --wildcards "$dir/lib/clang/*" "$dir/include/clang-c/*" "$dir/lib/libclang.so*" $(for t in clang clang-${LLVM_VERSION%%.*} clang++ clang-cpp lld ld.lld \
            llvm-profdata llvm-ar llvm-ranlib llvm-nm llvm-objdump llvm-symbolizer llvm-addr2line llvm-cov \
            llvm-objcopy llvm-strip llvm-dis llvm-as opt llc; do echo "$dir/bin/$t"; done) \
+    && rm /tmp/llvm.tar.zst \
     && mv /opt/$dir /opt/llvm \
     && mkdir -p /opt/llvm/lib/pkgconfig \
     && printf '%s\n' 'prefix=/opt/llvm' 'Name: libclang' "Description: clang's C API" "Version: $LLVM_VERSION" \
