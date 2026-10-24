@@ -52,6 +52,17 @@ type Options =
 let private levels : Set<string> = Set.ofList [ "-O0"; "-O1"; "-O2"; "-O3"; "-Os" ]
 
 /// The options of no flags.
+extern zs_host_arch : unit -> cstr
+
+/// The machine the compiler runs on, as a triple's first part (x86_64, aarch64).
+let hostArch () : string = String.ofCStr (zs_host_arch ())
+
+/// What a build without --target is for: the host, except on Windows, where it's the platform's
+/// mingw-w64 target, so it goes through the cross path (clang for the IR, zig cc with mingw-w64
+/// for the runtime and the link): clang alone there targets MSVC, without the headers and the C
+/// library the runtime is written against.
+let nativeTarget () : string = if Tools.hostOs () = "windows" then hostArch () + "-windows-gnu" else ""
+
 let defaults : Options =
   { main = ""
     out = ""
@@ -103,12 +114,7 @@ let parse (args: list<string>) : result<Options * list<string>, string> =
       else if String.startsWith "--cpu=" a then go { o with cpu = Some(String.sub a 6 (String.length a - 6)) } others more
       else if List.contains a [ "-o"; "--target"; "--cpu"; "--profile-use" ] then Error $"zs: {a} needs a value"
       else go o (a :: others) more
-  go defaults [] args
-
-extern zs_host_arch : unit -> cstr
-
-/// The machine the compiler runs on, as a triple's first part (x86_64, aarch64).
-let hostArch () : string = String.ofCStr (zs_host_arch ())
+  go { defaults with target = nativeTarget () } [] args
 
 /// The architecture built for: the target triple's first part, or the host's (a native build).
 let arch (o: Options) : string =

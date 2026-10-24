@@ -28,6 +28,12 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+# Windows, built for or run on (Git Bash): its expected output where a test has a .windows.out,
+# \r\n read as \n, and C built with zig cc for mingw-w64, as zs links (clang alone targets MSVC)
+windows=0; [[ $target == *-windows-* ]] && windows=1
+case $(uname -s) in
+  MINGW* | MSYS* | CYGWIN*) windows=1; syslibs=(-lws2_32 -lapi-ms-win-core-synch-l1-2-0) ;;
+esac
 if [ -z "$zsbin" ]; then
   [ -x "${ZS_STAGE0:-}" ] || { echo "no stage 0 compiler (\$ZS_STAGE0): run the tests through ./dev"; exit 1; }
   mkdir -p build && ZS_NO_SERVER=1 "$ZS_STAGE0" build src/Main.zs --release -o build/zs || exit 1
@@ -56,7 +62,7 @@ for t in $(find tests -name '*.zs' | sort); do
     # panics abort without cleanup by design, so only exit-normally programs are leak-checked
     [ $valgrind = 1 ] && ! grep -q "^panic:" "$base.out" && run=(valgrind -q --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=all --error-exitcode=99 "$tmp/exe")
     actual=$("${run[@]}" < /dev/null 2>&1); code=$?
-    expected=$(cat "$base.out"); [[ $target == *-windows-* ]] && [ -f "$base.windows.out" ] && expected=$(cat "$base.windows.out")
+    expected=$(cat "$base.out"); [ $windows = 1 ] && [ -f "$base.windows.out" ] && expected=$(cat "$base.windows.out")
     [ $code = 99 ] && actual="$actual
 (valgrind reported memory errors or leaks)"
   fi
@@ -67,6 +73,7 @@ for t in $(find tests -name '*.zs' | sort); do
     cmp -s "$tmp/a.ll" "$tmp/b.ll" || actual="$actual
 (LLVM IR differs from $other)"
   fi
+  [ $windows = 1 ] && actual=${actual//$'\r\n'/$'\n'}
   if [ "$actual" == "$expected" ]; then echo "ok   $t"
   else echo "FAIL $t"; diff <(echo "$expected") <(echo "$actual") | head -20; fail=1; fi
 done
@@ -84,6 +91,7 @@ else echo "FAIL tests/task/echo.sh"; cat "$tmp/echo.diff"; fail=1; fi
 
 # threads under ThreadSanitizer: the pool, Atomic, Mutex, Channel and Task.spawn race on nothing
 for t in tests/parallel/basics tests/parallel/anythread tests/task/spawn tests/task/cancel; do
+  [ $windows = 1 ] && { echo "skip $t.zs under ThreadSanitizer (none for mingw-w64)"; continue; }
   if bin/zs build $t.zs -o "$tmp/tsan" --sanitize=thread 2>"$tmp/tsan.log" && actual=$(timeout 120 "$tmp/tsan" 2>"$tmp/tsan.log") \
      && [ "$actual" = "$(cat $t.out)" ] && ! grep -q ThreadSanitizer "$tmp/tsan.log"; then echo "ok   $t.zs under ThreadSanitizer"
   else echo "FAIL $t.zs under ThreadSanitizer"; head -40 "$tmp/tsan.log"; fail=1; fi
@@ -169,7 +177,7 @@ if [ -f /usr/include/raylib.h ]; then
 else echo "skip examples/raylib (no raylib.h)"; fi
 
 # debug info: gdb on a zs build -g program (breakpoints, arguments, locals, stepping, backtrace)
-if command -v gdb >/dev/null; then
+if command -v gdb >/dev/null && [ $windows = 0 ]; then
   if diff <(tests/debug/gdb.sh) tests/debug/gdb.expected >"$tmp/gdb.diff"; then echo "ok   tests/debug/gdb.sh"
   else echo "FAIL tests/debug/gdb.sh"; cat "$tmp/gdb.diff"; fail=1; fi
 else echo "skip tests/debug/gdb.sh (no gdb)"; fi
@@ -274,6 +282,7 @@ fi
 
 # C interop: a directory with main.c links the static library built from its lib.zs
 cc=(clang); [ -n "$target" ] && cc=(zig cc -target "$target")
+[ $windows = 1 ] && [ -z "$target" ] && cc=(zig cc -target "$(uname -m | sed 's/arm64/aarch64/')-windows-gnu")
 for c in $(find tests -name main.c | sort); do
   d=$(dirname "$c")
   if bin/zs build "$d/lib.zs" "${tgt[@]}" --lib -o "$tmp/lib.a" 2>"$tmp/build.log" && "${cc[@]}" -I"$tmp" "$c" "$tmp/lib.a" -lm "${syslibs[@]}" -o "$tmp/cexe" 2>>"$tmp/build.log"; then
@@ -304,8 +313,8 @@ fi
 
 # shared libraries (host only): a C program links the library as a .so, and a C shared library
 # links a --lib archive whole (--whole-archive, so the archive needs position-independent code)
-# with a C program calling Z# through it
-if [ -z "$target" ]; then
+# with a C program calling Z# through it (POSIX's: a Windows DLL is another test)
+if [ -z "$target" ] && [ $windows = 0 ]; then
   so="$tmp/so"; mkdir -p "$so"; run=(); [ $valgrind = 1 ] && run=(valgrind -q --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=all --error-exitcode=99)
   for kind in so whole; do
     if [ $kind = so ]; then

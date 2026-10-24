@@ -102,7 +102,13 @@ let getRelativePath (from: string) (path: string) =
     match (xs, ys) with
     | (x :: xrest, y :: yrest) when x = y -> drop xrest yrest
     | _ -> (xs, ys)
-  let (up, down) = drop (normalParts (getFullPath from)) (normalParts (getFullPath path))
-  match List.map (fun _ -> "..") up @ down with
-  | [] -> "."
-  | parts -> String.join sep parts
+  let fullFrom = getFullPath from
+  let fullPath = getFullPath path
+  // on Windows, paths on two drives have no relative path between them: the path itself, whole
+  if drive fullFrom && String.sub fullFrom 0 2 <> String.sub fullPath 0 2 then
+    fullPath
+  else
+    let (up, down) = drop (normalParts fullFrom) (normalParts fullPath)
+    match List.map (fun _ -> "..") up @ down with
+    | [] -> "."
+    | parts -> String.join sep parts

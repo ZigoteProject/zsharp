@@ -40,7 +40,7 @@ jobs:
       matrix:
         include:
           - { os: macos-15, archive: zs-ci-macos-aarch64 }
-          - { os: macos-13, archive: zs-ci-macos-x86_64 }
+          - { os: macos-15-intel, archive: zs-ci-macos-x86_64 }
           - { os: windows-2025, archive: zs-ci-windows-x86_64 }
           - { os: windows-11-arm, archive: zs-ci-windows-aarch64 }
           - { os: ubuntu-24.04-arm, archive: zs-ci-linux-aarch64 }
