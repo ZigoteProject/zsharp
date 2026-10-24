@@ -37,6 +37,8 @@ type private P =
     /// the `>>`s split, and what each was
     splitAt: Buffer<int>
     splitWas: Buffer<Token>
+    /// the tokens that name a type, where types are written
+    typeNames: Buffer<int>
     diags: Buffer<Diagnostic>
     /// the errors found, reported or not (a trial fails on one)
     errors: ref<int>
@@ -56,6 +58,7 @@ type private Saved =
     tokenCount: int
     missingCount: int
     splitCount: int
+    typeNameCount: int
     diagCount: int
     errorCount: int
     quietAt: int }
@@ -80,6 +83,7 @@ let private make (src: Source.Source) (toks: Buffer<Token>) (start: int) (eof: i
     missingAt = Buffer.empty
     splitAt = Buffer.empty
     splitWas = Buffer.empty
+    typeNames = Buffer.empty
     diags = Buffer.empty
     errors = ref 0
     quiet = ref (-1)
@@ -266,6 +270,7 @@ let private save (p: P) : Saved =
     tokenCount = Buffer.length p.toks
     missingCount = Buffer.length p.missingAt
     splitCount = Buffer.length p.splitAt
+    typeNameCount = Buffer.length p.typeNames
     diagCount = Buffer.length p.diags
     errorCount = p.errors.Value
     quietAt = p.quiet.Value }
@@ -288,6 +293,7 @@ let private restore (p: P) (s: Saved) =
     p.toks.[i] <- Buffer.removeLast p.splitWas
   Buffer.truncate s.tokenCount p.toks
   Buffer.truncate s.missingCount p.missingAt
+  Buffer.truncate s.typeNameCount p.typeNames
   Buffer.truncate s.diagCount p.diags
   p.errors.Value <- s.errorCount
   p.quiet.Value <- s.quietAt
@@ -563,6 +569,7 @@ let rec private tyAtom (p: P) : Ast.SType =
     match peek p with
     | Id when peek2 p = Lt && isNumericName p p.pos.Value ->
       let n = textOf p p.pos.Value
+      Buffer.push p.pos.Value p.typeNames
       start p Tree.TypeName
       advance p
       advance p
@@ -583,11 +590,13 @@ let rec private tyAtom (p: P) : Ast.SType =
       // dyn Trait: a value of any type that implements the trait
       start p Tree.TypeName
       advance p
+      Buffer.push p.pos.Value p.typeNames
       let n = name p
       finish p
       Ast.STName("dyn", [ Ast.STName(n, []) ])
     | Id ->
       let n = idName p p.pos.Value
+      Buffer.push p.pos.Value p.typeNames
       advance p
       if peek p = Lt then
         startAt p at Tree.TypeName
@@ -616,6 +625,7 @@ let rec private tyAtom (p: P) : Ast.SType =
   let mutable t = first
   while peek p = Id do
     startAt p at Tree.TypeName
+    Buffer.push p.pos.Value p.typeNames
     t <- Ast.STName(name p, [ t ])
     finish p
   t
@@ -2653,6 +2663,7 @@ let private typeDef (p: P) (ln: int) : Ast.Decl =
   let isPrivate = peek p = Private
   if isPrivate then
     advance p
+  let ni = p.pos.Value
   let n = name p
   if peek p = LParen then
     errAt p "classes aren't in Z#: a type is a record { … }, a union | … or an alias; put its functions in a module, or add members to a record with `with`"
@@ -2676,7 +2687,8 @@ let private typeDef (p: P) (ln: int) : Ast.Decl =
       if indented then
         dedent p "end of block"
       Ast.TypeDecl(n, tps, body, List.append inner (members p))
-  if isPrivate then Ast.decl (Ast.Private(Ast.decl d ln)) ln else Ast.decl d ln
+  let named = { Ast.decl d ln with named = ni }
+  if isPrivate then { named with d = Ast.Private named } else named
 
 // type Name …, and the types joined to it with `and`
 let private typeDecl (p: P) (ln: int) : Ast.Decl =
@@ -3009,6 +3021,7 @@ let private tree (p: P) : Tree.Tree =
   { tokens = Buffer.toArray p.toks
     lexed = p.eof + 1
     missing = Buffer.toArray p.missingAt
+    typeNames = Buffer.toArray p.typeNames
     kinds = Buffer.toArray p.kinds
     firsts = Buffer.toArray p.firsts
     counts = Buffer.toArray p.counts

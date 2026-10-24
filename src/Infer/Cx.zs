@@ -47,7 +47,7 @@ type Hover =
 
 /// The file being checked: its index in the build, its source, and its tree's tokens (an AST
 /// node's place is a token's index).
-type InFile = { index: int; source: Syntax.Source.Source; tokens: array<Syntax.Token.Token> }
+type InFile = { index: int; source: Syntax.Source.Source; tokens: array<Syntax.Token.Token>; typeNames: array<int> }
 
 /// The context: one heap cell, so a closure that uses it holds a pointer, not its fields.
 type Cx =

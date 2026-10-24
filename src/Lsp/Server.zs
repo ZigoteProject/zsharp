@@ -219,7 +219,13 @@ let private hover (st: State) (path: string) (line: int) (ch: int) : Json =
       match definitionOf a s with
       | Some d when d.h.explain <> "" -> "\n  " + d.h.explain
       | _ -> ""
-    let value = "```zsharp\n" + h.name + " : " + show a h.ty + needs + words + "\n```" + doc
+    // a type: its declaration's line
+    let head =
+      match definitionOf a s with
+      | Some d when String.startsWith "type:" h.key -> String.trimStart (String.trimEnd (lineText st d.path d.line))
+      | _ when String.startsWith "type:" h.key -> "type " + h.name
+      | _ -> h.name + " : " + show a h.ty + needs + words
+    let value = "```zsharp\n" + head + "\n```" + doc
     JObject [ ("contents", JObject [ ("kind", JString "markdown"); ("value", JString value) ]); ("range", range (s.line - 1) (s.col - 1) (s.line - 1) (s.col - 1 + s.len)) ]
   | _ -> JNull
 
@@ -608,7 +614,7 @@ let private completion (st: State) (path: string) (line: int) (ch: int) : Json =
       let kind = if String.startsWith "typedef struct" ci.csig then 22 else if String.contains "(" ci.csig then 3 else 21
       JObject [ ("label", JString n); ("kind", num kind); ("detail", JString ci.csig); ("documentation", JObject [ ("kind", JString "markdown"); ("value", JString ci.cdoc) ]) ]
     let cNames = List.map cName (Map.toList a.cInfos)
-    let locals = List.map (fun (h: Spot) -> item h.h.name 6 (show a h.h.ty)) (firstByName (List.filter (fun (h: Spot) -> h.h.isDef && not h.h.decl) (hoversAt st path)))
+    let locals = List.map (fun (h: Spot) -> item h.h.name 6 (show a h.h.ty)) (firstByName (List.filter (fun (h: Spot) -> h.h.isDef && not h.h.decl && not (String.startsWith "type:" h.h.key)) (hoversAt st path)))
     let typeItems (p: string * Types.Ty.TypeInfo) : list<Json> =
       let (n, info) = p
       if String.contains "$" n then
@@ -654,7 +660,20 @@ let private inlayHints (st: State) (path: string) (fromLine: int) (toLine: int) 
         if List.isEmpty ls then None else Some(JObject [ ("position", pos (h.line - 1) eq); ("label", JString(" / " + text)); ("kind", num 1) ])
       | _ -> None
     let effects = List.choose effectHint (List.filter (fun (h: Spot) -> h.h.decl) spots)
-    JArray(List.append types effects)
+    // a function's signature at the end of its line, as F#'s line lens: // int -> string
+    let isFun (t: Types.Ty.Ty) =
+      match Types.Vars.prune v t with
+      | Types.Ty.TFun _ -> true
+      | _ -> false
+    let defines (h: Spot) =
+      let before = String.trimEnd (upToChar (lineText st path h.line) (h.col - 1))
+      List.exists (fun (k: string) -> before = k || String.endsWith (" " + k) before) [ "let"; "rec"; "and"; "private"; "inline"; "mutable" ]
+    let sigOf (h: Spot) =
+      let line = lineText st path h.line
+      JObject [ ("position", pos (h.line - 1) (chars line)); ("label", JString("// " + show a h.h.ty)); ("kind", num 1); ("paddingLeft", JBool true) ]
+    let funs = List.filter (fun (h: Spot) -> h.h.isDef && not h.h.inlay && h.h.key <> "" && isFun h.h.ty && defines h) spots
+    let oneALine = List.fold (fun (acc: list<Spot>) (h: Spot) -> if List.exists (fun (o: Spot) -> o.line = h.line) acc then acc else List.append acc [ h ]) [] funs
+    JArray(List.concat [ types; effects; List.map sigOf oneALine ])
 
 // top-level declarations, with union cases and members as children
 let private symbols (st: State) (path: string) : Json =

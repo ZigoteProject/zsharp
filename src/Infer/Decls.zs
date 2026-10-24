@@ -584,6 +584,7 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
   match d.d with
   | TypeDecl(name0, tps, body, ms) ->
     let name = qualify cx name0
+    recordKey cx d.named name0 (TCon(name, [])) false ("type:" + name) true
     let defined = Map.containsKey name cx.types.Value
     let wasAhead = Set.contains name cx.ahead.Value
     if defined && wasAhead then
@@ -1069,6 +1070,7 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
     | _ -> fail "attributes are only supported on type declarations yet"
   | TypeAlias(name0, tps, target) ->
     let q = qualify cx name0
+    recordKey cx d.named name0 (TCon(q, [])) false ("type:" + q) true
     if Map.containsKey q cx.types.Value || Map.containsKey q cx.aliases.Value then
       fail $"type '{name0}' is already defined"
     cx.aliases.Value <- Map.add q (List.length tps, toTy cx (Some tps) target) cx.aliases.Value
@@ -1191,6 +1193,20 @@ let check (cx: Cx) (file: InFile) (modName: option<string>) (decls: list<Decl>) 
     let entry = plain (Call(libraryName "Testing.Runner.main", [ joined ]))
     declareOne cx (decl (Fun("$tests", false, [ unitParam ], None, entry)) -1)
     Buffer.push "$tests" cx.tests
+  // the types its annotations name, for the editor: a type's key is type:Its.Name
+  // ponytail: resolved as the file's top level sees them, so a nested module's own type is found only qualified
+  let isType (q: string) = Map.containsKey q cx.types.Value || Map.containsKey q cx.aliases.Value || Set.contains q cx.traitNames.Value
+  for tok in file.typeNames do
+    let t = file.tokens.[tok]
+    let n = String.sub file.source.text t.offset t.length
+    // a private type of another module isn't its
+    let found =
+      handle resolveWith cx isType n with
+      | Fails.fail _, _ -> None
+      | Fails.report _, k -> k ()
+    match found with
+    | Some q -> recordKey cx tok n (TCon(q, [])) false ("type:" + q) false
+    | None -> ()
   cx.currentModule.Value <- None
   errorCount cx = errorsBefore
 

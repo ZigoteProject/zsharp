@@ -90,6 +90,8 @@ type Tree =
     lexed: int
     /// The missing ones' indices, in order.
     missing: array<int>
+    /// The tokens that name a type where one is written (an annotation, a type's body), in order.
+    typeNames: array<int>
     /// Per node: its kind.
     kinds: array<Kind>
     /// Per node: where its children start in `children`, and how many it has.

@@ -24,7 +24,7 @@ type Checked =
 
 let private late : Infer.Cx.Late = { autoDerive = Infer.Decls.autoDerive }
 
-let private inFile (m: Modules.Loaded) : Infer.Cx.InFile = { index = m.source.file; source = m.source; tokens = m.tree.tokens }
+let private inFile (m: Modules.Loaded) : Infer.Cx.InFile = { index = m.source.file; source = m.source; tokens = m.tree.tokens; typeNames = m.tree.typeNames }
 
 // ---- the checked modules' cache (0007): each module's result under a key of its source and of
 // what it sees of the modules before it, in the user's cache directory
