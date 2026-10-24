@@ -614,7 +614,10 @@ let link (o: Options.Options) (built: Built) (linked: Modules.Linked) : result<l
     let files = List.concat [ [ runtime.obj ]; partObjects; List.map (fun (c: string) -> (ofC c).obj) cSources ]
     let libs = List.map (fun (l: string) -> if String.startsWith "-" l || String.contains "/" l then l else "-l" + l) (List.filter (fun (l: string) -> not (String.endsWith ".c" l)) linked.links)
     let ltoLink =
-      if useLto o then [ "-fuse-ld=lld"; "-Wl,--thinlto-cache-dir=" + Path.combine (Tools.cacheRoot ()) "lto" ]
+      if useLto o then
+        // ld64.lld (macOS) names the ThinLTO cache its own way
+        let cache = Path.combine (Tools.cacheRoot ()) "lto"
+        [ "-fuse-ld=lld"; (if Tools.hostOs () = "macos" then "-Wl,-cache_path_lto," + cache else "-Wl,--thinlto-cache-dir=" + cache) ]
       else if lld () then [ "-fuse-ld=lld" ]
       else []
     let linkSw = Diagnostics.Stopwatch.startNew ()
