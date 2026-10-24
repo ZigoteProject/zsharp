@@ -53,46 +53,17 @@ let runSplit (program: string) (args: list<string>) : result<Ran, string> =
     Dispose.dispose p
     Ok { code = code; out = out; err = err }
 
-// the list without its first n elements
-let rec private drop (n: int) (xs: list<'a>) : list<'a> =
-  if n <= 0 then
-    xs
-  else
-    match xs with
-    | _ :: rest -> drop (n - 1) rest
-    | [] -> []
-
-/// Runs the programs, at most `width` at a time (each its own process, its output collected):
-/// how each went, in order, as `run` says it.
-let runMany (width: int) (cmds: list<string * list<string>>) : list<result<unit, string>> =
-  let start (cmd: string * list<string>) : result<Diagnostics.Process, string> =
-    let (program, args) = cmd
-    let s : Diagnostics.ProcessStart = { program = "sh"; args = List.append [ "-c"; "exec \"$0\" \"$@\" 2>&1"; program ] args; stdin = Diagnostics.Null; stdout = Diagnostics.Piped }
-    Diagnostics.Process.start s
-  let finish (cmd: string * list<string>) (started: result<Diagnostics.Process, string>) : result<unit, string> =
-    let (program, _) = cmd
-    match started with
-    | Error e -> Error $"{program}: {e}"
-    | Ok p ->
-      let out = drain p.stdout
-      let code = Task.run (Diagnostics.Process.wait p)
-      Dispose.dispose p
-      if code = 0 then Ok () else Error $"{program} failed: {String.trim out}"
-  let rec batches (rest: list<string * list<string>>) (acc: list<result<unit, string>>) : list<result<unit, string>> =
-    match rest with
-    | [] -> List.rev acc
-    | _ ->
-      let these = List.take width rest
-      let started = List.map start these
-      let done = List.map2 finish these started
-      batches (drop (List.length these) rest) (List.append (List.rev done) acc)
-  batches cmds []
-
 /// Runs a tool: Error with its name and output when it fails or can't start.
 let run (program: string) (args: list<string>) : result<unit, string> =
   match runMerged program args with
   | Ok r -> if r.code = 0 then Ok () else Error $"{program} failed: {String.trim r.out}"
   | Error e -> Error $"{program}: {e}"
+
+/// Runs the programs, as many at once as the pool has workers (a worker that's done starts the
+/// next, as the F# compiler's did: batches waited for their slowest): how each went, in order, as
+/// `run` says it.
+let runMany (cmds: list<string * list<string>>) : list<result<unit, string>> =
+  Array.toList (Array.Parallel.map (fun (cmd: string * list<string>) -> run (fst cmd) (snd cmd)) (Array.ofList cmds))
 
 /// Runs a program in the foreground (its streams this program's): its exit code.
 let runInherited (program: string) (args: list<string>) : result<int, string> =

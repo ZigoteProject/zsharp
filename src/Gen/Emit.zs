@@ -2,6 +2,30 @@
 /// function, the options code generation takes, and how C values are passed.
 open Types.Ty
 
+/// Text built a piece at a time, as the F# compiler's code generator built it in .NET's
+/// StringBuilder: each piece copied once, into storage that doubles when full, and the text once
+/// more by `toString`. (The compiler's own: it builds against its stage 0's library, which has
+/// none.)
+type StringBuilder = { bytes: ref<Buffer<u8>>; length: ref<int> }
+
+module StringBuilder =
+  let create () : StringBuilder = { bytes = ref Buffer.empty; length = ref 0 }
+
+  /// Appends `n` bytes of `s` from `start` (the code generator cuts its text at ASCII).
+  let appendSub (s: string) (start: int) (n: int) (b: StringBuilder) =
+    let at = b.length.Value
+    let room = Buffer.length b.bytes.Value
+    if at + n > room then
+      let grown = Buffer.create (max (max 64 (2 * room)) (at + n)) (u8 0)
+      Buffer.blit b.bytes.Value 0 grown 0 at
+      b.bytes.Value <- grown
+    Buffer.blit (String.bytes s) start b.bytes.Value at n
+    b.length.Value <- at + n
+
+  let append (s: string) (b: StringBuilder) = appendSub s 0 (String.length s) b
+
+  let toString (b: StringBuilder) : string = String.ofBytes (Buffer.slice b.bytes.Value 0 b.length.Value)
+
 /// LLVM IR being written for one function: its instructions, its allocas (which go first, in the
 /// entry block), the counter its names are numbered by, the block being written, and the debug
 /// location attached to each instruction ("" for none). One heap cell, so a closure holds a
@@ -9,10 +33,10 @@ open Types.Ty
 type Emitter =
   | Emitter of EmitterData
 
-and EmitterData = { code: Buffer<string>; allocas: Buffer<string>; count: ref<int>; block: ref<string>; dbg: ref<string> }
+and EmitterData = { code: StringBuilder; allocas: StringBuilder; count: ref<int>; block: ref<string>; dbg: ref<string> }
 
 /// An emitter for a new function, in its entry block.
-let emitter () : Emitter = Emitter { code = Buffer.empty; allocas = Buffer.empty; count = ref 0; block = ref "entry"; dbg = ref "" }
+let emitter () : Emitter = Emitter { code = StringBuilder.create (); allocas = StringBuilder.create (); count = ref 0; block = ref "entry"; dbg = ref "" }
 
 /// The pieces of a buffer of text, joined.
 let joined (b: Buffer<string>) : string = String.concat (Array.toList (Buffer.toArray b))
@@ -30,12 +54,21 @@ let tmp (em: Emitter) : string = "%" + fresh em "t"
 /// Appends an instruction, with the debug location when there is one.
 let emit (em: Emitter) (s: string) =
   match em with
-  | Emitter { code = c; dbg = d } -> if d.Value = "" then Buffer.push ("  " + s + "\n") c else Buffer.push ("  " + s + ", !dbg " + d.Value + "\n") c
+  | Emitter { code = c; dbg = d } ->
+    StringBuilder.append "  " c
+    StringBuilder.append s c
+    if d.Value <> "" then
+      StringBuilder.append ", !dbg " c
+      StringBuilder.append d.Value c
+    StringBuilder.append "\n" c
 
 /// A line that isn't an instruction (a debug record).
 let raw (em: Emitter) (s: string) =
   match em with
-  | Emitter { code = c } -> Buffer.push ("  " + s + "\n") c
+  | Emitter { code = c } ->
+    StringBuilder.append "  " c
+    StringBuilder.append s c
+    StringBuilder.append "\n" c
 
 /// An instruction with a result: its name.
 let instr (em: Emitter) (s: string) : string =
@@ -47,7 +80,8 @@ let instr (em: Emitter) (s: string) : string =
 let enter (em: Emitter) (l: string) =
   match em with
   | Emitter { code = c; block = b } ->
-    Buffer.push (l + ":\n") c
+    StringBuilder.append l c
+    StringBuilder.append ":\n" c
     b.Value <- l
 
 /// Continues in a fresh block that nothing jumps to (after ret / unreachable).
@@ -56,7 +90,10 @@ let dead (em: Emitter) = enter em (fresh em "dead")
 /// An alloca, for the entry block.
 let alloca (em: Emitter) (s: string) =
   match em with
-  | Emitter { allocas = a } -> Buffer.push ("  " + s + "\n") a
+  | Emitter { allocas = a } ->
+    StringBuilder.append "  " a
+    StringBuilder.append s a
+    StringBuilder.append "\n" a
 
 /// The block being written.
 let current (em: Emitter) : string =
@@ -75,12 +112,12 @@ let setDbg (em: Emitter) (loc: string) =
 /// The function's body: the entry block's allocas, then the code.
 let bodyOf (em: Emitter) : string =
   match em with
-  | Emitter { code = c; allocas = a } -> "entry:\n" + joined a + joined c
+  | Emitter { code = c; allocas = a } -> "entry:\n" + StringBuilder.toString a + StringBuilder.toString c
 
 /// The instructions alone, for code that goes into another function's block.
 let codeOf (em: Emitter) : string =
   match em with
-  | Emitter { code = c } -> joined c
+  | Emitter { code = c } -> StringBuilder.toString c
 
 /// A variable in the code: an SSA value, or a `let mutable`'s stack slot.
 type Binding =

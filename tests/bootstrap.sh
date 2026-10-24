@@ -6,11 +6,14 @@ set -u
 cd "$(dirname "$0")/.."
 zs=${1:-bin/zs}
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
-# the library and the runtime of the tree: a generation in a directory of its own has neither
-export ZS_NO_SERVER=1 ZS_LIB=$PWD/lib ZS_RUNTIME=$PWD/runtime
+# every generation builds one copy of the tree, taken now: an edit meanwhile (another session's,
+# once: the one worker's gen 3, built last, compiled it) can't make two generations differ
+mkdir "$t/tree" && cp -r src packages lib runtime "$t/tree/"
+# the copy's library and runtime: a generation in a directory of its own has neither
+export ZS_NO_SERVER=1 ZS_LIB=$t/tree/lib ZS_RUNTIME=$t/tree/runtime
 build() { # compiler out [VAR=value…]: a release build from an empty cache of its own
   local z=$1 out=$2; shift 2
-  env XDG_CACHE_HOME="$t/cache-$(basename "$out")" "$@" "$z" build src/Main.zs --release -o "$out" >/dev/null 2>"$t/err" \
+  env XDG_CACHE_HOME="$t/cache-$(basename "$out")" "$@" "$z" build "$t/tree/src/Main.zs" --release -o "$out" >/dev/null 2>"$t/err" \
     || { echo "$(basename "$out") doesn't build: $(head -1 "$t/err")"; exit 1; }
 }
 # each generation's IR kept as it's built: when two binaries differ, the first module whose IR

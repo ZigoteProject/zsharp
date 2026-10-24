@@ -814,10 +814,17 @@ static zs_int utf8_seq(const uint8_t *p, zs_int n) {
 zs_str *zs_str_of_bytes(const uint8_t *p, zs_int n) {
     zs_int len = 0;
     for (zs_int i = 0; i < n;) {
+        uint64_t w;
+        if (i + 8 <= n && (memcpy(&w, p + i, 8), (w & 0x8080808080808080ull) == 0)) {
+            len += 8; // eight ASCII bytes
+            i += 8;
+            continue;
+        }
         zs_int k = utf8_seq(p + i, n - i);
         len += k ? k : 3;
         i += k ? k : 1;
     }
+    if (len == n) return str_of((const char *)p, n); // well-formed (a malformed byte counts 3)
     zs_str *s = str_new(len);
     char *out = s->data;
     for (zs_int i = 0; i < n;) {

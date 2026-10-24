@@ -534,7 +534,7 @@ let cachedModule (o: Options.Options) (key: string) : option<string> =
 
 // an object to have: from the cache when it has one for exactly its source and flags, else
 // compiled from its input (the IR written to a file of its own, or the C file) and kept there
-type private Job = { obj: string; input: string; written: bool; flags: list<string>; keep: option<string> }
+type private Job = { obj: string; input: string; written: bool; flags: list<string>; keep: option<string>; size: int }
 
 /// Compiles the program's modules to objects in parallel (each one the caches haven't seen), the
 /// runtime too and the C of the program's packages, and links them into the executable: Error with
@@ -553,14 +553,14 @@ let link (o: Options.Options) (built: Built) (linked: Modules.Linked) : result<l
     if File.exists obj then
       File.touch obj |> ignore
     match cFile with
-    | Some c -> { obj = obj; input = c; written = false; flags = fs; keep = keep }
+    | Some c -> { obj = obj; input = c; written = false; flags = fs; keep = keep; size = String.length source }
     | None ->
       if File.exists obj then
-        { obj = obj; input = ""; written = false; flags = fs; keep = keep }
+        { obj = obj; input = ""; written = false; flags = fs; keep = keep; size = String.length source }
       else
         let input = Path.combine dir (key + ".ll")
         File.writeAllText input source |> ignore
-        { obj = obj; input = input; written = true; flags = fs; keep = keep }
+        { obj = obj; input = input; written = true; flags = fs; keep = keep; size = String.length source }
   // the runtime optimized in a debug build too (a program debugs its own code)
   let rt = Compile.runtimeDir ()
   let rtFile = Path.combine rt "rt.c"
@@ -582,11 +582,12 @@ let link (o: Options.Options) (built: Built) (linked: Modules.Linked) : result<l
     job (String.join "\n" (Result.defaultValue "" (File.readAllText c) :: headers)) (Some c) (List.append flags linked.cflags) None
   let cSources = List.filter (fun (l: string) -> String.endsWith ".c" l) linked.links
   let jobs = List.concat [ [ runtime ]; List.choose ofPart built.parts; List.map ofC cSources ]
-  let fresh = List.filter (fun (j: Job) -> not (File.exists j.obj)) jobs
+  // the biggest first: clang takes at least as long as its biggest job, which mustn't start last
+  let fresh = List.sortBy (fun (j: Job) -> 0 - j.size) (List.filter (fun (j: Job) -> not (File.exists j.obj)) jobs)
   let unique (j: Job) = j.obj + "." + Path.getFileName (Result.defaultValue "tmp" (File.createTemp "zs-")) + ".o"
   let tmps = List.map unique fresh
   let cmds = List.map2 (fun (j: Job) (t: string) -> ("clang", List.concat [ j.flags; [ "-c"; "-Wno-override-module"; j.input; "-o"; t ] ])) fresh tmps
-  let results = Tools.runMany (max 1 (Parallel.workers ())) cmds
+  let results = Tools.runMany cmds
   for (j, t) in List.zip fresh tmps do
     if File.exists t then
       File.move t j.obj |> ignore

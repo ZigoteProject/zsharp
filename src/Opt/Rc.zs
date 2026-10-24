@@ -215,7 +215,16 @@ let rec private markAssign (x: string) (e: CExpr) : CExpr =
 // reference counting for one function, with tables of its own
 let private lowerFun (types: Map<string, TypeInfo>) (borrowedParams: Map<string, Set<int>>) (one: MFun) : MFun =
   let v = Types.Vars.make ()
-  let heap (t: Ty) = Types.Repr.needsRc v types t
+  // whether a type holds a count, each type's answer kept: the types table is every job's, and a
+  // look-up takes and gives back a reference to its entry, an atomic count other jobs wait on
+  let heapSeen = ref Map.empty
+  let heap (t: Ty) =
+    match Map.tryFind t heapSeen.Value with
+    | Some b -> b
+    | None ->
+      let b = Types.Repr.needsRc v types t
+      heapSeen.Value <- Map.add t b heapSeen.Value
+      b
   // temporaries numbered per function: a function's code doesn't depend on the others'
   let count = ref 0
   let next () =

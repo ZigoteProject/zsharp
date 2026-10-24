@@ -32,7 +32,38 @@ let resolveWord (opts: Options) (ir: string) : string =
     let head1 = if opts.wideVectors then String.replace head0 "@zs_alloc(" "@zs_alloc_wide(" else head0
     let head2 = if opts.checkedHeap then String.replace (String.replace head1 "@zs_alloc(" "@zs_alloc_checked(") "@zs_free(" "@zs_free_checked(" else head1
     String.replace (String.replace (String.replace head2 "i_W" w) "HDR2" h2) "HDR1" h1 + tail
-  String.join "\n" (List.map one (String.split "\n" ir))
+  if opts.optimizeSize || opts.wideVectors || opts.checkedHeap then
+    String.join "\n" (List.map one (String.split "\n" ir))
+  else
+    // one pass over the text, what's between the placeholders copied whole, and a string
+    // constant (c"…" after a space, to its closing quote) left as written: splitting the text
+    // into lines and replacing in each was an eighth of a build's instructions
+    let b = String.bytes ir
+    let n = String.length ir
+    let out = StringBuilder.create ()
+    let mutable from = 0
+    let mutable i = 0
+    while i < n do
+      let c = b.[i]
+      if c = u8 99 && i > 0 && b.[i - 1] = u8 32 && i + 1 < n && b.[i + 1] = u8 34 then
+        i <- i + 2
+        while i < n && b.[i] <> u8 34 do
+          i <- i + 1
+        i <- i + 1
+      else if c = u8 105 && i + 2 < n && b.[i + 1] = u8 95 && b.[i + 2] = u8 87 then
+        StringBuilder.appendSub ir from (i - from) out
+        StringBuilder.append w out
+        i <- i + 3
+        from <- i
+      else if c = u8 72 && i + 3 < n && b.[i + 1] = u8 68 && b.[i + 2] = u8 82 && (b.[i + 3] = u8 49 || b.[i + 3] = u8 50) then
+        StringBuilder.appendSub ir from (i - from) out
+        StringBuilder.append (if b.[i + 3] = u8 49 then h1 else h2) out
+        i <- i + 4
+        from <- i
+      else
+        i <- i + 1
+    StringBuilder.appendSub ir from (n - from) out
+    StringBuilder.toString out
 
 let private isUnitTy (t: Ty) : bool =
   match t with
@@ -313,5 +344,5 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
   match g.failure.Value with
   | Some(line, msg) -> Error(line, msg)
   | None ->
-    let ir = joined top + "\n" + joined g.helpers + joined g.funcs + "\n" + joined g.md
+    let ir = String.concat [ joined top; "\n"; joined g.helpers; joined g.funcs; "\n"; joined g.md ]
     Ok(resolveWord opts ir, joined header)
