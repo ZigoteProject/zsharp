@@ -240,7 +240,7 @@ let make (o: Options.Options) (prog0: Program) (linked: Modules.Linked) (testBui
       let defines = List.append (if threads then [ "-DZS_THREADS" ] else []) (if Option.isSome (Environment.getVariable "ZS_NO_POOL") then [ "-DZS_NO_POOL" ] else [])
       let san =
         if not o.sanitize then []
-        else if o.threadSanitizer then [ "-fsanitize=thread"; "-g" ]
+        else if o.threadSanitizer then [ "-fsanitize=thread"; "-g"; "-DZS_NO_POOL" ]
         // AddressSanitizer sees each object
         else [ "-fsanitize=address,undefined"; "-g"; "-DZS_NO_POOL" ]
       // -g: unoptimized, so stepping follows the source

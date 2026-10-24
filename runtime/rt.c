@@ -30,16 +30,6 @@ typedef struct {
     char data[]; // len bytes + NUL
 } zs_str;
 
-static int64_t live; // objects currently allocated, reported at exit when ZS_LEAKCHECK is set
-
-// counting objects: atomic when the program runs code on Task.blocking's helper thread (the
-// driver compiles this file with ZS_THREADS then), plain otherwise
-#ifdef ZS_THREADS
-#define COUNT(x, d) __atomic_fetch_add(&(x), (d), __ATOMIC_RELAXED)
-#else
-#define COUNT(x, d) ((x) += (d))
-#endif
-
 // A panic stops the program at once (no cleanup) with exit status 134, like abort() but without
 // a core dump, so system crash reporters don't flag every panic. ZS_ABORT=1 aborts for real
 // (a core file for a debugger).
@@ -72,23 +62,76 @@ _Noreturn void zs_panic_c(const char *msg) {
 
 _Noreturn void zs_panic(zs_str *msg) { zs_panic_c(msg->data); }
 
-static int64_t allocations, mallocs;
+// The objects counted: allocated now (reported at exit when ZS_LEAKCHECK is set), allocated in
+// all (Runtime.allocations, ZS_STATS) and the system allocator's calls (Runtime.mallocs). With
+// threads (the driver compiles this file with ZS_THREADS then) each thread counts its own, in a
+// cache line of its own, so no allocation waits on another thread's; a total sums them all, the
+// threads that ended too.
+#ifdef ZS_THREADS
+#include <pthread.h>
+#include <stddef.h>
+typedef struct counts {
+    int64_t live, allocations, mallocs;
+    struct counts *next;
+} counts;
+static counts *all_counts; // every thread's that counted, the newest first
+static pthread_mutex_t counts_mu = PTHREAD_MUTEX_INITIALIZER;
+static _Thread_local counts *my_counts;
 
-// Objects come from a pool in a program without threads: 8-byte size classes up to 256 bytes,
-// each with a free list, carved from 64 KB chunks; a freed object goes on its class's list, and
-// the next allocation of that size takes it (no system allocator call either way). Byte 6 of
-// the header says where an object came from: its class, or SYSTEM for malloc and aligned_alloc.
-// With threads, a sanitizer or valgrind (ZS_NO_POOL), it's plain malloc, so the tools see every
-// object.
-// ponytail: chunks are kept until exit; a program whose small objects peak once keeps that memory
-#if !defined(ZS_THREADS) && !defined(ZS_NO_POOL)
+static counts *here(void) {
+    counts *c = my_counts;
+    if (!c) {
+        c = aligned_alloc(64, 64);
+        if (!c) zs_panic_c("out of memory");
+        memset(c, 0, 64);
+        pthread_mutex_lock(&counts_mu);
+        c->next = all_counts;
+        all_counts = c;
+        pthread_mutex_unlock(&counts_mu);
+        my_counts = c;
+    }
+    return c;
+}
+
+// only the thread itself writes its counts; another reads them whole
+#define COUNT(x, d) do { counts *c_ = here(); __atomic_store_n(&c_->x, c_->x + (d), __ATOMIC_RELAXED); } while (0)
+
+static int64_t total(size_t at) {
+    int64_t n = 0;
+    pthread_mutex_lock(&counts_mu);
+    for (counts *c = all_counts; c; c = c->next) n += __atomic_load_n((int64_t *)((char *)c + at), __ATOMIC_RELAXED);
+    pthread_mutex_unlock(&counts_mu);
+    return n;
+}
+#define TOTAL(x) total(offsetof(counts, x))
+#else
+static int64_t live, allocations, mallocs;
+#define COUNT(x, d) ((x) += (d))
+#define TOTAL(x) (x)
+#endif
+
+// Objects come from a pool: 8-byte size classes up to 256 bytes, each with a free list, carved
+// from 64 KB chunks; a freed object goes on its class's list, and the next allocation of that
+// size takes it (no system allocator call either way). With threads, each thread has lists and a
+// chunk of its own: an object goes on the list of the thread that frees it, whichever made it,
+// so no lock and no atomic either. Byte 6 of the header says where an object came from: its
+// class, or SYSTEM for malloc and aligned_alloc. With a sanitizer or valgrind (ZS_NO_POOL), it's
+// plain malloc, so the tools see every object.
+// ponytail: chunks are kept until exit; a program whose small objects peak once keeps that
+// memory, and so does a thread that frees objects of a size it doesn't make (a consumer's)
+#if !defined(ZS_NO_POOL)
 #define ZS_POOL 1
 #define POOL_MAX 256
 #define POOL_CHUNK ((size_t)64 * 1024)
 #define FROM(p) (((uint8_t *)(p))[6])
 #define SYSTEM 0xFF
-static void *pool_free[POOL_MAX / 8 + 1];
-static char *pool_next, *pool_end;
+#ifdef ZS_THREADS
+#define POOL_LOCAL _Thread_local
+#else
+#define POOL_LOCAL
+#endif
+static POOL_LOCAL void *pool_free[POOL_MAX / 8 + 1];
+static POOL_LOCAL char *pool_next, *pool_end;
 
 static void pool_chunk(void) {
     pool_next = malloc(POOL_CHUNK);
@@ -149,11 +192,11 @@ void *zs_alloc_wide(zs_int size) {
 void *zs_coro_alloc(zs_int size) { return zs_alloc_wide(size); }
 
 /// Runtime.allocations (): heap objects allocated so far (tests check copy-on-write with it).
-zs_int zs_allocations(void) { return allocations; }
+zs_int zs_allocations(void) { return TOTAL(allocations); }
 
 /// Runtime.mallocs (): the times memory was taken from the system allocator, for an object or
 /// for an arena's block.
-zs_int zs_mallocs(void) { return mallocs; }
+zs_int zs_mallocs(void) { return TOTAL(mallocs); }
 
 /// The objects marked shared at crossings to other threads (DESIGN §7.1; a moved value's own
 /// objects aren't, decision 75): compiled code adds to it, Runtime.marks () reads it.
@@ -163,7 +206,7 @@ zs_int zs_marks(void) { return __atomic_load_n(&zs_marked, __ATOMIC_RELAXED); }
 
 // ZS_STATS=1: what reference counting cost, on standard error at exit
 static void print_stats(void) {
-    fprintf(stderr, "zs stats: %lld allocations, %lld objects marked shared\n", (long long)allocations, (long long)zs_marks());
+    fprintf(stderr, "zs stats: %lld allocations, %lld objects marked shared\n", (long long)TOTAL(allocations), (long long)zs_marks());
 }
 
 // Ptr.alloc / Ptr.free: C memory for n elements of a size, zeroed
@@ -526,8 +569,8 @@ void zs_reused(void *p) {
 static void boxes_sweep(void);
 
 static void leak_report(void) {
-    if (getenv("ZS_LEAKCHECK") && live != 0)
-        fprintf(stderr, "leak check: %" PRId64 " object(s) still allocated\n", live);
+    if (getenv("ZS_LEAKCHECK") && TOTAL(live) != 0)
+        fprintf(stderr, "leak check: %" PRId64 " object(s) still allocated\n", TOTAL(live));
 }
 
 __attribute__((constructor)) static void zs_init(void) {
