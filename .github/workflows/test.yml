@@ -16,6 +16,8 @@ jobs:
           docker system prune -af >/dev/null
           df -h /
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the whole history: test.sh diffs the grammar against Zed's pinned commit
       # stage 0: this repository's release v0.6, into dist/ where ./dev looks first (a private
       # repository's releases need the job's token)
       - run: gh release download v0.6 -p 'zs-0.6-linux-x86_64.tar.gz' -D dist
@@ -45,6 +47,8 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the whole history: test.sh diffs the grammar against Zed's pinned commit
       - uses: actions/download-artifact@v4
         with:
           name: releases
