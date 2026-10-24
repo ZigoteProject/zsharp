@@ -46,12 +46,27 @@ Rust, Swift and OCaml for the host benchmarks).
 1. **C ABI (track M):** 32-bit ARM passes structs by value with the x86-64 rules.
 2. **Weak references and arenas on microcontrollers (track M):** they're hosted-only so far; the embedded runtime lacks their functions.
 3. **Debug info (track D):** lists and other boxed unions aren't shown as gdb values (plain unions are).
-4. **Targets (track T):** no macOS or Windows builds (and so no kqueue loop yet).
+4. **Targets (phase 11.5):** no macOS or Windows builds yet (and so no kqueue or IOCP loop), and no native compiler on Linux arm64.
 5. **`use` under effects (track S):** a throw, or a clause that doesn't resume, passes over a `use` without disposing what it bound (it's freed). Item 10 of track S disposes it.
 6. **Generators (track S):** a pipeline of `Seq` functions allocates nothing per element but isn't one loop yet, as a list pipeline is: each stage is an indirect call per element (4.8× a fused list pipeline's time). Item 9 of track S fuses it.
 7. **Cancelling spawned tasks (track S):** a spawned task that's cancelled disposes its `use` values on its own thread, but `Task.run` doesn't wait for that, so it can return first, and the program exit with them still allocated. Under valgrind, `tests/task/cancel.zs` and `echo.sh --threads` lose that race now and then (as they did before phase 10). Item 11 of track S waits for them.
 
 ## Next
+
+### Phase 11.5: cross-platform: macOS, Windows and Linux on arm64 and x86-64
+Z# builds programs for, and runs its compiler on, the platforms people develop on: macOS arm64
+and x86-64, Windows x64 and arm64, and Linux arm64 beside Linux x86-64. It comes before 0.1, so the
+release ships on all of them, and because each port (a calling convention, the runtime off POSIX,
+a loop on kqueue and on IOCP, the compiler's own processes and paths) costs less before 0.1 has
+users than after. **Design:** [proposal 0022](docs/proposals/0022-targets-macos-windows.md) for
+macOS arm64 and Windows x64; its decisions carry to the other three, settled as each starts.
+- **Programs for each** (`zs build --target`, through `zig cc` as the Linux cross builds are, so no SDK is installed):
+  - **macOS** (`aarch64-macos`, `x86_64-macos`): Mach-O, ad-hoc signed; Apple's arm64 calling convention, SysV on x86-64; kqueue behind the loop's interface (decision 48); a kernel wait for `Mutex`; `sysctl` for CPU features; backtraces from libSystem.
+  - **Windows** (`x86_64-windows-gnu`, `aarch64-windows-gnu`): PE, mingw-w64's C runtime; the Microsoft x64 and ARM64 conventions; `rt.c` off POSIX in one `_WIN32` part: wepoll (epoll's API over IOCP) so the loop keeps its shape, `WaitOnAddress` for `Mutex`, Win32 threads, files, directories, processes and sockets behind the same `Native` functions, a UTF-8 console, drives and backslashes in `Path`.
+  - **Linux arm64** (`aarch64-linux-gnu`, and native on an aarch64 machine): what `aarch64-linux-musl` has today, and host detection, so a native build there uses AAPCS64's struct rules, not x86-64's.
+- **The compiler on each** (Z# since phase 11, so it ports with the runtime): `src/release.sh` makes each platform's release by building `src/` with `--target`; libclang found per platform (a `.dylib` beside clang or Xcode's, `libclang.dll` beside LLVM's clang); the cache's and the build server's paths (a named pipe on Windows); clang and zig started as processes there; `./dev`'s stage 0 picked by the host.
+- **Testing:** the whole suite on each in CI (GitHub's macOS arm64 and x86-64, Windows x64 and arm64, and Linux arm64 runners), not only built. Without one, `./test.sh --target <triple> --build-only` builds every test program for it, and qemu-user runs Linux arm64's.
+- **Exit tests:** `./test.sh` green on the five in CI, `tests/bootstrap.sh` included (each builds its own compiler to the same bytes); a release archive per platform, six with Linux x86-64; on a clean machine of each, the archive to a running hello world, following the guide.
 
 ### Phase 12: release 0.1
 The first public release: the language works for people other than its author, in one niche
@@ -68,8 +83,8 @@ real programs.
     - **If the flagship is a microcontroller:** M4 (one real board), M9 (bit fields), M11 (`Cpu`) and async on bare metal (0016).
     - Everything else marked *after phase 11* follows 0.1.
   - **A flagship project:** one real program in the niche Z# is best at, built alongside the release, so it decides what the library and the first packages need. The niche is picked at the start of the phase; microcontrollers are the strongest case (SVD registers, bit fields, `[<NoAlloc>]`, interrupt handlers). Picking them moves track M's async on bare metal into the "before 0.1" list.
-  - **macOS arm64 (track T, item 1):** many programmers' machine, with the whole suite run there in CI, not only built. Windows waits until after 0.1.
-  - **Installing:** a release archive per target with `zs`, the runtime and the library (one native binary after phase 11, a self-contained .NET publish without it). `zs doctor` checks for clang or zig, and libclang for `import c`, and says how to get what's missing.
+  - **Every platform (phase 11.5):** the release's archives for the six, built and tested in CI.
+  - **Installing:** phase 11.5's release archive per platform, with `zs`, the runtime and the library. `zs doctor` checks for clang or zig, and libclang for `import c`, and says how to get what's missing.
   - **Deferred here:** features that aren't needed before phase 11, moved out of earlier phases so those stay small. The third design review checked them against "Simple" (anonymous records were cut) and put the rest on the list above.
     - **From phase 9.5, cycle warnings:** a type that can reach itself through a `ref` or `Buffer` field, not through `weak`, is warned about where it's declared. The warning names the path (`Node.next: ref<option<Node>>`) and suggests `weak`, and `[<Cyclic>]` on the type silences it.
       - **The warning:** the severity, `--strict`, `[<NoWarn>]` and the editor's side came with `unused-value` before phase 11 (0021); this adds the kind `cycle` and `[<Cyclic>]`.
@@ -81,10 +96,10 @@ real programs.
       - **Layout facts:** `sizeof<T>`, `alignof<T>` and `offsetof<T> "field"` as constants. A top-level `assert` on constants is checked at compile time, so a record's layout is checked against C's with the `assert` the language already has, not a new `static assert`.
       - **C unions:** `import c` brings them in as `[<CLayout>]` unions, read only in `unsafe`.
     - **Kept before phase 11:** compound assignment, `function`, list expressions, slices and `span`, tests as values, assertions, inline expect tests, the iteration trait, and rename and code actions. They change how code and tests are written, or break an API, so they're cheaper before the compiler is rewritten in Z# and before 0.1 has users.
-    - **From the tracks:** the items marked *after phase 11* in E, D, M, S and K, and tracks P and T whole.
+    - **From the tracks:** the items marked *after phase 11* in E, D, M, S and K, and track P whole.
   - **Launch:** the guide, the "Z# for F# programmers" page, the flagship project as the example, and a post for each of the strongest results (Perceus on a Cortex-M, atomic counts only on shared objects, SIMD next to C).
 - **Exit tests:**
-  - On clean Fedora, Ubuntu and macOS machines, a newcomer gets from the release archive to a running hello world in five minutes, following only the guide.
+  - On clean Fedora, Ubuntu, macOS and Windows machines, a newcomer gets from the release archive to a running hello world in five minutes, following only the guide.
   - The flagship project builds from its repository with `zs build` alone, and runs on its hardware.
   - The "before 0.1" list is empty, and `CHANGELOG.md` has its first entry.
   - Each deferred feature taken into 0.1 passes its exit test:
@@ -138,14 +153,10 @@ same support through a thin extension each.
   - Given a file with a type error, Zed's agent fixes it using only the MCP tools.
 
 ### More targets (T)
-*After phase 11*: macOS in phase 12, Windows after 0.1.
-Tier 3 (DESIGN §10), through `zig cc` as the Linux cross builds are.
+Phase 11.5 takes this track whole, before 0.1: macOS arm64 and x86-64, Windows x64 and arm64, and
+the compiler on Linux arm64 (reordered on 2026-10-24; proposal 0022 had macOS in 0.1 and Windows
+after it). Tier 3 (DESIGN §10), through `zig cc` as the Linux cross builds are.
 **Design:** [proposal 0022](docs/proposals/0022-targets-macos-windows.md).
-- **Next:**
-  1. **macOS arm64:** Mach-O output and Apple's arm64 calling convention. Phase 6's event loop uses kqueue there.
-  2. **Windows x64:** PE output, the Microsoft x64 calling convention, and a port of `rt.c` off POSIX.
-- **Testing:** macOS runs the whole suite in CI on arm64 runners (phase 12 needs it). Windows is build-only until a machine runs the suite: a build-only mode of `./test.sh --target` cross-compiles every test program.
-- **Exit tests:** `./test.sh` passes on macOS arm64; every test program builds for Windows.
 
 ### Type providers (P)
 *After 0.1*, the whole track. **Design:** [proposal 0001](docs/proposals/0001-type-providers.md), approved in principle at the third design review (decision 56).
@@ -308,7 +319,8 @@ and modules found transitively. Packages stay source (decision 27).
 - **Phases 9.5 and 9.6 split infrastructure from language.** Incremental builds and threads come first, so the language features that follow are tested on fast builds.
 - **The third design review comes before phase 10.** Effect handlers add effect rows to every function type, the biggest change to the language left, so what the language already has is settled and pruned first.
 - **Phase 10 comes last** of the language phases. It needs Task's API stable and opaque, and Perceus; DESIGN §6.1 lists what must stay true until then.
-- **Phase 12 comes after 11** (or after 10 if 11 is skipped): a release is worth making once the language is settled, and self-hosting has shaken out the bugs a large program finds.
+- **Phase 11.5, the platforms, comes before the release:** 0.1 ships where people develop, and each port changes code 0.1's users would otherwise wait on: a calling convention, the runtime off POSIX, the compiler's own processes and paths.
+- **Phase 12 comes after 11 and 11.5** (or after 10 if 11 is skipped): a release is worth making once the language is settled, self-hosting has shaken out the bugs a large program finds, and it runs where its users are.
 - **The tracks (E, D, M, T, P, S, K) run alongside.** Each phase keeps their tests passing.
 - **K1 (namespaced dependencies) comes before anything else in S or K:** it's the only change that would break packages people have already written. The first-party packages come after K2, so they can have versions.
 

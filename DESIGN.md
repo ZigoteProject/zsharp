@@ -734,7 +734,7 @@ checker, so tools can't drift from the compiler.
 | 26 | From Zig | cross-compilation through `zig cc`; a checked opt-in instead of no-hidden-allocation (`[<NoAlloc>]`, #42). Not adopted: explicit allocators, comptime | decided |
 | 27 | Libraries | source packages (path, git + `zs.lock`), checked Core cached per module; no binary IR format | decided |
 | 28 | Strings and `char` | UTF-8 strings, `Length` is bytes; `char` is a Unicode scalar; `for c in s` decodes UTF-8 (malformed bytes become U+FFFD) | decided |
-| 29 | Target order | Linux x64/arm64; bare-metal Cortex-M; macOS arm64 (the suite in CI, phase 12), Windows x64 (build-only until a machine runs the tests); WASM | decided |
+| 29 | Target order | Linux x64/arm64; bare-metal Cortex-M; then, before 0.1 (phase 11.5, reordered 2026-10-24), macOS arm64 and x64, Windows x64 and arm64, and the compiler on Linux arm64, each with the suite in CI; WASM | decided |
 | 30 | Who it's for first | native libraries used from C, CLI tools, microcontroller firmware; games over C libraries next | decided |
 | 31 | Callbacks into C | `callback<A -> R>` = `R (*)(void *user, A)` + `void *user`; borrowed for the call | decided |
 | 32 | Editor support | tree-sitter grammar + `zs lsp` + `zs mcp`, Zed extension first | decided |
