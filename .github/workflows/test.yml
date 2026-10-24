@@ -57,11 +57,22 @@ jobs:
           name: releases
           path: dist
       # clang and libclang from LLVM's release or Homebrew's llvm (Apple's clang lags), and zig
+      # and a bash newer than macOS's 3.2, whose set -u takes an empty array for an unset one
       - if: runner.os == 'macOS'
-        run: brew install llvm zig && echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+        run: brew install llvm zig bash && echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
       - if: runner.os == 'Windows'
         run: choco install -y llvm zig
+      # the dev image's LLVM and zig, from their releases (Ubuntu's clang is too old for the IR,
+      # and it packages no zig)
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y clang llvm lld libclang-dev zig valgrind gdb
+        run: |
+          sudo apt-get update && sudo apt-get install -y zstd valgrind gdb pkg-config
+          dir=LLVM-23.1.4-Linux-ARM64
+          curl -fsSL https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.4/$dir.tar.zst | zstd -dc --long=31 \
+            | sudo tar -x -C /opt --wildcards "$dir/lib/clang/*" "$dir/include/clang-c/*" "$dir/lib/libclang.so*" \
+                $(for t in clang clang-23 clang++ lld ld.lld llvm-ar llvm-nm llvm-objdump llvm-strip llvm-profdata llvm-symbolizer llvm-dis llvm-as opt llc; do echo "$dir/bin/$t"; done)
+          sudo mv /opt/$dir /opt/llvm && echo /opt/llvm/bin >> "$GITHUB_PATH"
+          curl -fsSL https://ziglang.org/download/0.16.0/zig-aarch64-linux-0.16.0.tar.xz | sudo tar -xJ -C /opt
+          echo /opt/zig-aarch64-linux-0.16.0 >> "$GITHUB_PATH"
       - run: tar -xzf "dist/${{ matrix.archive }}.tar.gz" -C dist
       - run: ./test.sh --zs "dist/${{ matrix.archive }}/zs"
