@@ -154,15 +154,42 @@ let problem (index: int) (p: Project.Problem) : Diagnostic * option<Source.Sourc
     (error { file = index; offset = offset; length = -1 } p.message, Some src)
   | Error _ -> (error { file = -1; offset = -1; length = -1 } (p.file + ": " + p.message), None)
 
+/// import c's flags for a target with an OS: clang's triple, and zig's C library headers for it
+/// as the system's (what the build links against), from `zig cc -v`'s search list; none for this
+/// machine or a chip.
+let private targetFlags (target: string) : list<string> =
+  if target = "" || String.contains "-none" target then []
+  else
+    let empty = Result.defaultValue "" (File.createTemp "zs-target-")
+    let listed =
+      match Tools.runMerged "zig" [ "cc"; "-target"; target; "-E"; "-Wp,-v"; "-x"; "c"; empty; "-o"; empty + ".i" ] with
+      | Ok r ->
+        // the lines between "#include <...> search starts here:" and "End of search list."
+        let rec dirs (inside: bool) (lines: list<string>) : list<string> =
+          match lines with
+          | [] -> []
+          | l :: rest ->
+            if String.startsWith "#include <...>" l then dirs true rest
+            else if String.startsWith "End of search list" l then []
+            else if inside then l :: dirs true rest
+            else dirs false rest
+        dirs false (List.map String.trim (String.split "\n" r.out))
+      | Error _ -> []
+    File.delete empty |> ignore
+    File.delete (empty + ".i") |> ignore
+    ("--target=" + Options.clangTriple { Options.defaults with target = target }) :: "-nostdlibinc" :: List.collect (fun d -> [ "-isystem"; d ]) listed
+
 /// The main file and the modules it uses, dependencies first (files from index `first` on), and
 /// what its packages give the link. A module is a file of its package named by its path under
 /// the package's root (`Ast.Expr` is Ast/Expr.zs or Ast/expr.zs), and a dependency's modules are
 /// behind its name (0018 K1): `Json` is the json package's main file, `Json.Parser` its
 /// Parser.zs. A file names the package's modules as the checker resolves names, in the modules
 /// enclosing its own, in the modules it opens, then globally; only its package's files see its
-/// dependencies. An import cycle is an error at the file that closes it. hosted: pkg-config runs
-/// (a build for this machine).
-let program (texts: Map<string, string>) (first: int) (mainPath: string) (hosted: bool) : result<list<Loaded> * Linked, Diagnostic * option<Source.Source>> =
+/// dependencies. An import cycle is an error at the file that closes it. target: --target's
+/// triple, "" for this machine (where pkg-config runs).
+let program (texts: Map<string, string>) (first: int) (mainPath: string) (target: string) : result<list<Loaded> * Linked, Diagnostic * option<Source.Source>> =
+  let hosted = target = ""
+  let forTarget = targetFlags target
   let order = Buffer.empty
   let count = ref first
   // a module: whether it's fully loaded
@@ -267,7 +294,7 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (hosted
     let imported (header: string) (d: Ast.Decl) : list<Ast.Decl> =
       match CImport.importHeader header dir flags cacheDir d.dat with
       | Ok r ->
-        Buffer.push (header + "\n" + Result.defaultValue "" (File.readAllText (CImport.cacheFile header cacheDir))) gave
+        Buffer.push (header + "\n" + Result.defaultValue "" (File.readAllText (CImport.savedFile header flags cacheDir))) gave
         for x in r.skipped do
           Buffer.push x skipped
         for x in r.infos do
@@ -304,7 +331,7 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (hosted
       | Ok loaded ->
         // the package's [c] is the build's; its include directories and pkg-config's flags are
         // its import c's
-        match imports loaded path (cOf pkg) with
+        match imports loaded path (List.append (cOf pkg) forTarget) with
         | Error d -> fail (d, Some loaded.source)
         | Ok m ->
           // a dependency's file is named by its place in the package; a header may only agree

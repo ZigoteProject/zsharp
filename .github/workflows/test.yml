@@ -1,0 +1,52 @@
+# The suite on every platform Z# ships for (phase 11.5). Linux x86-64 builds the compiler from
+# stage 0 in the dev container, runs the whole suite and makes the release archive of every
+# platform (src/release.sh); each other runner unpacks its own archive and runs the suite with
+# that compiler, built natively (tests/bootstrap.sh included: it builds itself to the same bytes).
+name: test
+on: [push, pull_request]
+
+jobs:
+  linux-x86_64:
+    runs-on: ubuntu-24.04
+    env:
+      # stage 0's archive: this repository's release v0.6 (./dev fetches v<version>/<archive>)
+      ZS_RELEASES: https://github.com/${{ github.repository }}/releases/download
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./dev ./test.sh
+      - run: ./dev bash -c 'src/release.sh build/zs ci aarch64-macos x86_64-macos x86_64-windows-gnu aarch64-windows-gnu aarch64-linux-gnu'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: releases
+          path: dist/zs-ci-*
+
+  native:
+    needs: linux-x86_64
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-15, archive: zs-ci-macos-aarch64 }
+          - { os: macos-13, archive: zs-ci-macos-x86_64 }
+          - { os: windows-2025, archive: zs-ci-windows-x86_64 }
+          - { os: windows-11-arm, archive: zs-ci-windows-aarch64 }
+          - { os: ubuntu-24.04-arm, archive: zs-ci-linux-aarch64 }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: releases
+          path: dist
+      # clang and libclang from LLVM's release or Homebrew's llvm (Apple's clang lags), and zig
+      - if: runner.os == 'macOS'
+        run: brew install llvm zig && echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+      - if: runner.os == 'Windows'
+        run: choco install -y llvm zig
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y clang llvm lld libclang-dev zig valgrind gdb
+      - run: tar -xzf "dist/${{ matrix.archive }}.tar.gz" -C dist
+      - run: ./test.sh --zs "dist/${{ matrix.archive }}/zs"

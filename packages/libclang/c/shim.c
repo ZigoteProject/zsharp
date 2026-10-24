@@ -5,7 +5,22 @@
 // editor's sandbox): zs_clang_load says whether it's there.
 #define _GNU_SOURCE // dladdr
 #include <dirent.h>
+#ifdef _WIN32
+// LLVM's Windows release has libclang.dll in bin/, beside clang.exe, and PATH is ';'-separated
+#include <windows.h>
+#include <io.h>
+#define dlopen(path, flags) ((void *)LoadLibraryA(path))
+#define dlsym(lib, name) ((void *)GetProcAddress((HMODULE)(lib), name))
+#define realpath(path, out) _fullpath(out, path, 4096)
+#define X_OK 0
+#define PATH_SEP ';'
+#define CLANG_EXE "clang.exe"
+#define BESIDE_CLANG "/libclang.dll"
+#else
 #include <dlfcn.h>
+#define PATH_SEP ':'
+#define CLANG_EXE "clang"
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,21 +40,36 @@ static int tried;
 
 static void *open_at(const char *path) { return dlopen(path, RTLD_NOW | RTLD_LOCAL); }
 
+#ifdef __APPLE__
+#define LIB_EXT ".dylib"
+#elif defined(_WIN32)
+#define LIB_EXT ".dll"
+#else
+#define LIB_EXT ".so"
+#endif
+#ifndef BESIDE_CLANG
+#define BESIDE_CLANG "/../lib/libclang" LIB_EXT
+#endif
+
 // $ZS_LIBCLANG; else the libclang of the first clang on PATH (its ../lib); else the system's, by
-// its name and then its versioned names, newest first
+// its name and then its versioned names, newest first (on macOS, Homebrew's and then Xcode's)
 static void *open_libclang(void) {
   const char *env = getenv("ZS_LIBCLANG");
   if (env && *env) return open_at(env);
   char path[4096], real[4096];
   for (const char *p = getenv("PATH"); p && *p;) {
-    const char *end = strchr(p, ':');
+    const char *end = strchr(p, PATH_SEP);
     int n = end ? (int)(end - p) : (int)strlen(p);
-    snprintf(path, sizeof path, "%.*s/clang", n, p);
+    snprintf(path, sizeof path, "%.*s/" CLANG_EXE, n, p);
     if (n > 0 && access(path, X_OK) == 0) {
       void *h = NULL;
       if (realpath(path, real)) {
-        *strrchr(real, '/') = 0;
-        snprintf(path, sizeof path, "%s/../lib/libclang.so", real);
+        char *slash = strrchr(real, '/');
+#ifdef _WIN32
+        if (!slash || (strrchr(real, '\\') && strrchr(real, '\\') > slash)) slash = strrchr(real, '\\');
+#endif
+        *slash = 0;
+        snprintf(path, sizeof path, "%s" BESIDE_CLANG, real);
         h = open_at(path);
       }
       if (h) return h;
@@ -47,7 +77,14 @@ static void *open_libclang(void) {
     }
     p = end ? end + 1 : NULL;
   }
-  void *h = open_at("libclang.so");
+#ifdef __APPLE__
+  const char *mac[] = {"/opt/homebrew/opt/llvm/lib/libclang.dylib", "/usr/local/opt/llvm/lib/libclang.dylib",
+                       "/Library/Developer/CommandLineTools/usr/lib/libclang.dylib",
+                       "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/libclang.dylib"};
+  for (size_t i = 0; i < sizeof mac / sizeof *mac; i++)
+    if (access(mac[i], R_OK) == 0) return open_at(mac[i]);
+#endif
+  void *h = open_at("libclang" LIB_EXT);
   for (int v = 40; !h && v >= 13; v--) {
     snprintf(path, sizeof path, "libclang.so.%d.1", v);
     h = open_at(path);
@@ -75,12 +112,19 @@ const char *zs_clang_resource_dir(void) {
   static int looked;
   if (looked || !zs_clang_load()) return found;
   looked = 1;
-  Dl_info info;
   char real[4096], base[4200];
+#ifdef _WIN32
+  // the DLL is in bin/, the resource directory under lib/
+  if (!GetModuleFileNameA((HMODULE)lib, real, sizeof real)) return found;
+  *strrchr(real, '\\') = 0;
+  snprintf(base, sizeof base, "%s/../lib/clang", real);
+#else
+  Dl_info info;
   void *f = dlsym(lib, "clang_createIndex");
   if (!f || !dladdr(f, &info) || !info.dli_fname || !realpath(info.dli_fname, real)) return found;
   *strrchr(real, '/') = 0;
   snprintf(base, sizeof base, "%s/clang", real);
+#endif
   DIR *d = opendir(base);
   if (!d) return found;
   long best = -1;

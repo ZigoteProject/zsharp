@@ -462,7 +462,9 @@ let rec private isConstant (cx: Cx) (e: Expr) : bool =
     // a Buffer of constants: a constant's uses are its expression, so each use is a new Buffer
     // (Buffer.empty)
     let freshBuffer = Exprs.resolveName cx f = Some "Collections.Buffer.ofArray"
-    (isCtorCall || conversion f || freshBuffer) && List.forall (isConstant cx) args
+    // whether the build is for Windows: the code generator's constant (Path's separator)
+    let perTarget = Exprs.resolveName cx f = Some "Native.isWindows"
+    (isCtorCall || conversion f || freshBuffer || perTarget) && List.forall (isConstant cx) args
   | _ -> false
 
 /// A written type with its names resolved where it is written (a constant's annotation).

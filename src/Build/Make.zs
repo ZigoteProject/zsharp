@@ -20,7 +20,7 @@ type Built = { made: bool; diagnostics: array<Diagnostic>; sources: list<Syntax.
 /// zs build without printing: the check, then (with no errors, and no warnings under --strict) the
 /// build; testBuild: the file's test entry for main (zs test).
 let make (o: Options.Options) (testBuild: bool) : Built =
-  match Compile.timed o.time "parse + check" (fun () -> Check.program o.main (not o.isLib) true (Option.isSome o.mcu) (o.target = "")) with
+  match Compile.timed o.time "parse + check" (fun () -> Check.program o.main (not o.isLib) true (Option.isSome o.mcu) o.target) with
   | Error(ds, sources) -> { made = false; diagnostics = ds; sources = sources }
   | Ok c ->
     if o.time then

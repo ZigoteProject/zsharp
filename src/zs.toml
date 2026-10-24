@@ -4,6 +4,10 @@ name = "zs"
 version = "0.6.0"
 main = "Main.zs"
 
+# the machine the compiler runs on: its architecture and its own executable
+[c]
+sources = ["host.c"]
+
 [dependencies]
 libclang = { path = "../packages/libclang" }
 xxhash = { path = "../packages/xxhash" }

@@ -115,6 +115,7 @@ let builtins : Map<string, Builtin> =
       b "Native.deleteDirectory" "Dir.delete" [] (f tStr tUnit) 1
       b "Native.isSymlink" "File.isSymlink" [] (f tStr tBool) 1
       b "Native.currentDirectory" "Env.cwd" [] (f tUnit tStr) 1
+      b "Native.isWindows" "Env.windows" [] (f tUnit tBool) 1
       b "Native.processStart" "Process.start" [] (f tStr (f tStr (f tStr (f tBool (f tStr (f tInt (f tInt (f tInt tInt)))))))) 8
       b "Native.processPipe" "Process.pipe" [] (f tInt tInt) 1
       b "Native.processWait" "Process.wait" [] (f tInt tInt) 1

@@ -105,6 +105,26 @@ let parse (args: list<string>) : result<Options * list<string>, string> =
       else go o (a :: others) more
   go defaults [] args
 
+extern zs_host_arch : unit -> cstr
+
+/// The machine the compiler runs on, as a triple's first part (x86_64, aarch64).
+let hostArch () : string = String.ofCStr (zs_host_arch ())
+
+/// The architecture built for: the target triple's first part, or the host's (a native build).
+let arch (o: Options) : string =
+  if o.target = "" then hostArch () else List.head (String.split "-" o.target)
+
+/// The target as clang names it: Zig's names (--target) are clang's but for Apple's vendor.
+let clangTriple (o: Options) : string =
+  match String.split "-" o.target with
+  | [ a; "macos" ] -> a + "-apple-macos"
+  | _ -> o.target
+
+/// What the runtime links on the target beyond the C library: on Windows, Winsock (the loop,
+/// sockets) and the API set with WaitOnAddress (Mutex).
+let systemLibs (o: Options) : list<string> =
+  if String.contains "-windows" o.target then [ "-lws2_32"; "-lapi-ms-win-core-synch-l1-2-0" ] else []
+
 /// The optimization level for clang: what was asked, else -O2 for a release build or a chip and
 /// -O0 for a debug build.
 let optLevel (o: Options) : string =

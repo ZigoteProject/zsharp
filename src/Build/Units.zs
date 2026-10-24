@@ -387,6 +387,7 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
       optimized = level <> "-O0"
       optimizeSize = level = "-Os"
       target = o.target
+      arch = Options.arch o
       checkedHeap = checkedHeap
       targets = prog.targets
       cpu = o.cpu

@@ -5,16 +5,25 @@
 # no warnings.
 # --valgrind: also run each program under valgrind (memory errors or leaks fail the test).
 # --target <triple>: cross-compile the programs and C interop tests (zs build --target) and run
-#   them under qemu-user, e.g. --target aarch64-linux-musl; the host-only tool checks are skipped.
+#   them under qemu-user, e.g. --target aarch64-linux-musl, or Wine for x86_64-windows-gnu; the
+#   host-only tool checks are skipped.
+# --build-only: with --target, build every program and C interop test and run none (macOS's,
+#   where nothing here runs them); a failed build fails the test.
 # --zs <binary>: test that compiler, installed as bin/zs with the library and runtime beside it,
 #   instead of building src/.
 set -u
 cd "$(dirname "$0")"
-valgrind=0; target=""; tgt=(); qemu=(); zsbin=""
+valgrind=0; target=""; tgt=(); qemu=(); zsbin=""; buildonly=0; syslibs=()
 while [ $# -gt 0 ]; do
   case $1 in
     --valgrind) valgrind=1; export ZS_NO_POOL=1 ;; # objects from malloc, so valgrind sees each one
-    --target) target=$2; tgt=(--target "$2"); qemu=("qemu-${2%%-*}"); shift ;;
+    --target) target=$2; tgt=(--target "$2"); shift
+      case $target in
+        *-windows-*) qemu=(timeout 120 wine); syslibs=(-lws2_32 -lapi-ms-win-core-synch-l1-2-0)
+          export WINEDEBUG=-all XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/tmp/zs-xdg-$UID}; mkdir -p "$XDG_RUNTIME_DIR" ;;
+        *) qemu=("qemu-${target%%-*}") ;;
+      esac ;;
+    --build-only) buildonly=1 ;;
     --zs) zsbin=$2; shift ;;
   esac
   shift
@@ -40,12 +49,14 @@ for t in $(find tests -name '*.zs' | sort); do
     actual=$(bin/zs build --strict "$t" "${tgt[@]}" -o "$tmp/exe" 2>&1 | grep -v '^ [ 0-9]* | '); expected=$(cat "$base.err")
   elif ! bin/zs build --strict "$t" "${tgt[@]}" -o "$tmp/exe" 2>"$tmp/build.log"; then
     actual=$(cat "$tmp/build.log"); expected=$(cat "$base.out")
+  elif [ $buildonly = 1 ]; then
+    actual=$(cat "$base.out"); expected=$actual
   else
     run=("${qemu[@]}" "$tmp/exe")
     # panics abort without cleanup by design, so only exit-normally programs are leak-checked
     [ $valgrind = 1 ] && ! grep -q "^panic:" "$base.out" && run=(valgrind -q --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=all --error-exitcode=99 "$tmp/exe")
     actual=$("${run[@]}" < /dev/null 2>&1); code=$?
-    expected=$(cat "$base.out")
+    expected=$(cat "$base.out"); [[ $target == *-windows-* ]] && [ -f "$base.windows.out" ] && expected=$(cat "$base.windows.out")
     [ $code = 99 ] && actual="$actual
 (valgrind reported memory errors or leaks)"
   fi
@@ -265,9 +276,10 @@ fi
 cc=(clang); [ -n "$target" ] && cc=(zig cc -target "$target")
 for c in $(find tests -name main.c | sort); do
   d=$(dirname "$c")
-  if bin/zs build "$d/lib.zs" "${tgt[@]}" --lib -o "$tmp/lib.a" 2>"$tmp/build.log" && "${cc[@]}" -I"$tmp" "$c" "$tmp/lib.a" -lm -o "$tmp/cexe" 2>>"$tmp/build.log"; then
-    run=("${qemu[@]}" "$tmp/cexe"); [ $valgrind = 1 ] && run=(valgrind -q --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=all --error-exitcode=99 "$tmp/cexe")
-    actual=$("${run[@]}" 2>&1); [ $? = 99 ] && actual="$actual
+  if bin/zs build "$d/lib.zs" "${tgt[@]}" --lib -o "$tmp/lib.a" 2>"$tmp/build.log" && "${cc[@]}" -I"$tmp" "$c" "$tmp/lib.a" -lm "${syslibs[@]}" -o "$tmp/cexe" 2>>"$tmp/build.log"; then
+    run=("${qemu[@]}" "$tmp/cexe"); [ $buildonly = 1 ] && run=(cat "$d/main.out"); [ $valgrind = 1 ] && run=(valgrind -q --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=all --error-exitcode=99 "$tmp/cexe")
+    # a C program's stdout is in text mode on Windows: \n is written \r\n there
+    actual=$("${run[@]}" 2>&1); code=$?; actual=${actual//$'\r'/}; [ $code = 99 ] && actual="$actual
 (valgrind reported memory errors or leaks)"
   else actual=$(cat "$tmp/build.log"); fi
   expected=$(cat "$d/main.out")

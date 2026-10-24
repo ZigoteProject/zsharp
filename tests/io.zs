@@ -1,8 +1,7 @@
 // Files, directories and paths (0024): readers and writers, bytes, copying and moving, times
 // and sizes, temporary directories, recursive listing and deleting
-let run () : result<unit, string> =
-  let dir = (Directory.createTemp "zsio")?
-  let path = Path.combine dir "a.txt"
+// written and read back, both closed at the end (Windows deletes no directory with files open)
+let writeAndRead (path: string) : result<unit, string> =
   let opened = (File.openWrite path)?
   use w = opened
   (Writer.writeText w "first line\r\nsecond\n")?
@@ -11,6 +10,12 @@ let run () : result<unit, string> =
   let reading = (File.openRead path)?
   use r = reading
   println $"{Reader.readLine r} {Reader.readLine r} {Reader.readLine r} {Reader.readLine r}"
+  Ok ()
+
+let run () : result<unit, string> =
+  let dir = (Directory.createTemp "zsio")?
+  let path = Path.combine dir "a.txt"
+  (writeAndRead path)?
   let bytes = (File.readAllBytes path)?
   let size = (File.size path)?
   let changed = (File.modifiedAt path)?

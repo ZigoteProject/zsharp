@@ -9,8 +9,8 @@
 | **Related** | [0011 debug info, profiles and traces](0011-debug-info-profiles-traces.md) (lldb, DAP), [0008 threads](0008-threads.md) (the pool on other OSes), [0024 library API](0024-library-api.md) (`Path` on POSIX, processes), [0018 packages](0018-packages.md) (C dependencies per target), [0014 placement](0014-placement.md) (the per-target manifest table) |
 
 - [x] Approved in principle
-- [ ] Discussion
-- [ ] Implementation
+- [x] Discussion
+- [x] Implementation (phase 11.5, decision 82: built for every target, Windows's suite run under Wine; CI on the platforms' runners next)
 
 ## Summary
 
@@ -258,4 +258,5 @@ Each step keeps `./test.sh` green on Linux, and the `.same-ir` tests say the IR 
 
 ## History
 
+- **2026-10-24:** implemented (decision 82). Settled while porting: threads through winpthreads (question 6: zig ships it, and the thread code stays as it is); sockets as indices into the runtime's own table (question 4); `__ulock_wait` on every macOS, not `os_sync_wait_on_address` (one call for every version); file names through the narrow (`A`) calls, UTF-8 when the process's code page is (a manifest's `activeCodePage`, not yet embedded: until then a non-ASCII path is the ANSI code page's); `long` 32 bits on Windows by the target's data model (question 2's first answer). Windows on arm64 and Linux arm64 build by the same code, and Wine runs Windows's suite in the dev container.
 - **2026-10-22:** drafted from track T's plan, phase 12's "macOS arm64" item, DESIGN §6, §10 and §11, and the facts sheet's survey of `rt.c`'s POSIX surface and `Codegen`'s ABI code.

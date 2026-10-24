@@ -145,7 +145,7 @@ let parseTime (paths: list<string>) : int =
 // the milliseconds checking a program takes, the library with it, the best of ten runs: against
 // the F# compiler's `zs check-time` (0020's criterion 2, its second half)
 let checkTime (path: string) : int =
-  let run () = Build.Check.program path true true false true |> ignore
+  let run () = Build.Check.program path true true false "" |> ignore
   run ()
   let mutable best = u64 0
   for i in 1 .. 10 do

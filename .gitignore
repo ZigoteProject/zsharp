@@ -8,6 +8,7 @@ editors/tree-sitter-zsharp/build/
 editors/tree-sitter-zsharp/node_modules/
 vgcore.*
 core.*
+qemu_*.core
 build/
 examples/raylib/demo
 .zs-cache/

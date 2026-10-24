@@ -1,11 +1,14 @@
 /// The programs a build runs (clang, zig, llvm-ar, pkg-config, git): run without a shell, their
 /// output captured.
 
-extern realpath : cstr -> cptr -> cstr
+extern zs_host_exe : unit -> cstr
+extern zs_host_os : unit -> cstr
 
-/// This program's executable, its symbolic links followed: where its library and runtime are
-/// (Linux names it in /proc).
-let selfPath () : string = String.ofCStr (realpath "/proc/self/exe" (Ptr.toCPtr (Ptr.null () : ptr<u8>)))
+/// The operating system the compiler runs on: linux, macos or windows.
+let hostOs () : string = String.ofCStr (zs_host_os ())
+
+/// This program's executable, its symbolic links followed: where its library and runtime are.
+let selfPath () : string = String.ofCStr (zs_host_exe ())
 
 /// The first directory from dir upward that holds the file at `relative` (lib/prelude.zs): a
 /// compiler built inside a checkout finds the checkout's library and runtime.
@@ -27,19 +30,6 @@ let private drain (r: option<IO.Reader>) : string =
     | Error _ -> ""
   | None -> ""
 
-/// Runs the program with the arguments, its standard error into its standard output (so neither
-/// pipe fills while the other is read); Error when it can't start.
-let runMerged (program: string) (args: list<string>) : result<Ran, string> =
-  // sh only joins the streams: the program and its arguments are its positional parameters
-  let s : Diagnostics.ProcessStart = { program = "sh"; args = List.append [ "-c"; "exec \"$0\" \"$@\" 2>&1"; program ] args; stdin = Diagnostics.Null; stdout = Diagnostics.Piped }
-  match Diagnostics.Process.start s with
-  | Error e -> Error e
-  | Ok p ->
-    let out = drain p.stdout
-    let code = Task.run (Diagnostics.Process.wait p)
-    Dispose.dispose p
-    Ok { code = code; out = out; err = "" }
-
 /// Runs the program, its standard output and standard error captured apart (read one after the
 /// other: for a program that writes little to the second, as git does).
 let runSplit (program: string) (args: list<string>) : result<Ran, string> =
@@ -52,6 +42,27 @@ let runSplit (program: string) (args: list<string>) : result<Ran, string> =
     let code = Task.run (Diagnostics.Process.wait p)
     Dispose.dispose p
     Ok { code = code; out = out; err = err }
+
+/// Runs the program with the arguments, its standard error into its standard output (so neither
+/// pipe fills while the other is read); Error when it can't start.
+let runMerged (program: string) (args: list<string>) : result<Ran, string> =
+  if hostOs () = "windows" then
+    // no sh: the two streams captured apart, then joined
+    // ponytail: read one after the other, so a tool writing over a pipe's worth to standard error
+    // before it ends blocks; read both at once if one does
+    match runSplit program args with
+    | Ok r -> Ok { r with out = r.out + r.err; err = "" }
+    | Error e -> Error e
+  else
+    // sh only joins the streams: the program and its arguments are its positional parameters
+    let s : Diagnostics.ProcessStart = { program = "sh"; args = List.append [ "-c"; "exec \"$0\" \"$@\" 2>&1"; program ] args; stdin = Diagnostics.Null; stdout = Diagnostics.Piped }
+    match Diagnostics.Process.start s with
+    | Error e -> Error e
+    | Ok p ->
+      let out = drain p.stdout
+      let code = Task.run (Diagnostics.Process.wait p)
+      Dispose.dispose p
+      Ok { code = code; out = out; err = "" }
 
 /// Runs a tool: Error with its name and output when it fails or can't start.
 let run (program: string) (args: list<string>) : result<unit, string> =

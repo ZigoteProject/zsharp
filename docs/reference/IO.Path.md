@@ -1,7 +1,8 @@
 # IO.Path
 
-File paths as text, with `/` between the parts: joining them and taking them apart. Nothing
-here touches the file system (`getFullPath` reads the working directory).
+File paths as text, with `/` between the parts (on Windows `\`, and `/` is one too):
+joining them and taking them apart. Nothing here touches the file system (`getFullPath`
+reads the working directory). Paths compare as strings, case and all.
 
 ## Functions
 
@@ -11,7 +12,7 @@ here touches the file system (`getFullPath` reads the working directory).
 let separator
 ```
 
-The character between a path's parts.
+The character between a path's parts: `\` on Windows, else `/`.
 
 ### `Path.isAbsolute`
 
@@ -19,7 +20,8 @@ The character between a path's parts.
 Path.isAbsolute : string -> bool
 ```
 
-Whether the path starts at the root (`/`).
+Whether the path starts at a root: `/`; on Windows also `\`, a drive's (`C:\`) or a share
+(`\\server\share`).
 
 ### `Path.combine`
 
@@ -27,7 +29,8 @@ Whether the path starts at the root (`/`).
 Path.combine : string -> string -> string
 ```
 
-`a` and `b` joined with a `/`; `b` itself when it is absolute (starts with `/`).
+`a` and `b` joined with a separator; `b` itself when it is absolute. A bare drive joins
+without one (`C:x`, relative to that drive), as .NET's `Path.Combine`.
 
 ### `Path.getFileName`
 
@@ -35,7 +38,7 @@ Path.combine : string -> string -> string
 Path.getFileName : string -> string
 ```
 
-The part after the last `/`: `"main.zs"` for `src/main.zs`.
+The part after the last separator: `"main.zs"` for `src/main.zs`.
 
 ### `Path.getDirectoryName`
 
@@ -43,8 +46,8 @@ The part after the last `/`: `"main.zs"` for `src/main.zs`.
 Path.getDirectoryName : string -> string
 ```
 
-The part before the last `/`: `"src"` for `src/main.zs`, `"/"` for `/etc`, and `""` when
-there is no `/`.
+The part before the last separator: `"src"` for `src/main.zs`, `"/"` for `/etc` (`C:\` for
+`C:\a`), and `""` when there is none.
 
 ### `Path.getExtension`
 
@@ -77,8 +80,9 @@ The path with its extension replaced by `ext` (`".md"` or `"md"`); `""` removes 
 Path.getFullPath : string -> string
 ```
 
-The path made absolute against the working directory, with `.`, `..` and repeated `/`
-worked out on the text (symbolic links aren't followed), as .NET's `Path.GetFullPath`.
+The path made absolute against the working directory, with `.`, `..` and repeated
+separators worked out on the text (symbolic links aren't followed), as .NET's
+`Path.GetFullPath`.
 
 ### `Path.getRelativePath`
 

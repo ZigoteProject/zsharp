@@ -15,11 +15,18 @@ let list (path: string) =
   let names = if String.isEmpty raw then [] else String.split (String.ofByte (u8 0)) raw
   ioResult (List.sort names)
 
-/// The directory for temporary files: `$TMPDIR`, else `/tmp`.
+/// The directory for temporary files: `$TMPDIR`, else `/tmp` (on Windows `%TMP%`, else
+/// `%TEMP%`).
 let temp () =
-  match Environment.getVariable "TMPDIR" with
-  | Some d when not (String.isEmpty d) -> d
-  | _ -> "/tmp"
+  let set (name: string) =
+    match Environment.getVariable name with
+    | Some d when not (String.isEmpty d) -> Some d
+    | _ -> None
+  match set "TMPDIR" with
+  | Some d -> d
+  | None ->
+    if not (Native.isWindows ()) then "/tmp"
+    else Option.defaultValue "." (Option.orElse (set "TEMP") (set "TMP"))
 
 /// A new empty directory in the temporary directory, named `prefix` and six characters: its path.
 let createTemp (prefix: string) : result<string, string> =

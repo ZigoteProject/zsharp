@@ -5,7 +5,7 @@ along with the whole `./test.sh`. Design and rationale: [DESIGN.md](DESIGN.md). 
 language: [the guide](docs/guide/README.md).
 
 **Development** happens in a container (`.devcontainer/Containerfile`: Fedora 44, .NET 10,
-clang/LLVM 23.1 (LLVM's release), zig, valgrind, gdb, qemu-user, qemu-system-arm and raylib, plus
+clang/LLVM 23.1 (LLVM's release), zig, valgrind, gdb, qemu-user, qemu-system-arm, Wine and raylib, plus
 Rust, Swift and OCaml for the host benchmarks).
 - **Commands:** `./dev ./test.sh` runs the suite, plain `./dev` opens a shell, and `./dev --rebuild` rebuilds the image.
 - **One at a time:** run one `./dev` at a time, since runs share `bin/`. The container mounts the repository with a shared SELinux label (`:z`). A tool that mounts it with a private one (`:Z`) cuts off a container that's running.
@@ -19,7 +19,7 @@ Rust, Swift and OCaml for the host benchmarks).
  alongside:            E editors, D testing, profiling and debugging, M microcontrollers,
                        T more targets, P type providers, S library, K packages
 
- done: 0–10, L, V and the third design review      now: phase 11
+ done: 0–11, L, V and the third design review      now: phase 11.5
 ```
 
 - **v1 (phases 0–6, L and V):** the complete single-threaded language. It is fast, memory-safe, has C interop, and runs async on one event loop.
@@ -38,7 +38,7 @@ Rust, Swift and OCaml for the host benchmarks).
 - **Parallelism:** a work-stealing thread pool (`Parallel.both`, `for`, `reduce`, `Array.Parallel`) any thread forks onto, with spare workers for jobs waiting in a channel or a mutex; `Atomic`, `Mutex` and `Channel` (capacity 0 is a rendezvous); what crosses threads is checked at compile time (`Share`, `share<F>`), and only shared objects have atomic reference counts.
 - **SIMD:** portable vectors of every number type at 128, 256 and 512 bits (`f32x8`, `u8x16`, …) with masks and shuffles, `[<FastMath>]`, `--cpu`, `[<Target>]` and `[<Multiversion>]`, and x86-64 and aarch64 intrinsics; within 10% of C with intrinsics on both.
 - **C:** C import and export (static and shared libraries), structs with array fields (`fixed<u8, 16>`), spans passed as a pointer and a length, C function pointers, Z# objects held by C as handles (a Share value's on any of the host's threads, any other checked to stay on its own), callbacks C may call on any thread (`callback<share<F>>`), and a panic hook for C hosts.
-- **Targets:** x86-64, aarch64 (cross), Cortex-M4 and M0+ (bare metal).
+- **Targets:** Linux on x86-64 and aarch64, Windows on x64 (its suite under Wine) and arm64, macOS on arm64 and x86-64 (built, not yet run on a Mac), Cortex-M4 and M0+ (bare metal); the compiler builds for each.
 - **Tooling:** projects with path and git dependencies, debug and release builds, builds and editor checks incremental by module (one cache for the CLI, LSP, MCP and `zs doc`, and a build server that keeps the compiler warm), `zs test`/`fmt`/`doc`, gdb debug info (strings, records and unions as values), and an LSP, MCP server and Zed extension.
 - **The compiler:** Z# (`src/`), built by the previous release and building itself to the same bytes; its passes and code generation run on every core, and it reports every mistake of a declaration, in the editor too.
 
@@ -46,7 +46,7 @@ Rust, Swift and OCaml for the host benchmarks).
 1. **C ABI (track M):** 32-bit ARM passes structs by value with the x86-64 rules.
 2. **Weak references and arenas on microcontrollers (track M):** they're hosted-only so far; the embedded runtime lacks their functions.
 3. **Debug info (track D):** lists and other boxed unions aren't shown as gdb values (plain unions are).
-4. **Targets (phase 11.5):** no macOS or Windows builds yet (and so no kqueue or IOCP loop), and no native compiler on Linux arm64.
+4. **Targets (phase 11.5):** macOS and Windows programs and compilers build (`--target`), and Windows's suite passes under Wine, but nothing has run on a Mac or a Windows machine yet: the suite on each in CI, and their release archives on clean machines, close the phase. `import c` of a C library's own headers for Windows is untested (zig's system headers are read).
 5. **`use` under effects (track S):** a throw, or a clause that doesn't resume, passes over a `use` without disposing what it bound (it's freed). Item 10 of track S disposes it.
 6. **Generators (track S):** a pipeline of `Seq` functions allocates nothing per element but isn't one loop yet, as a list pipeline is: each stage is an indirect call per element (4.8× a fused list pipeline's time). Item 9 of track S fuses it.
 7. **Cancelling spawned tasks (track S):** a spawned task that's cancelled disposes its `use` values on its own thread, but `Task.run` doesn't wait for that, so it can return first, and the program exit with them still allocated. Under valgrind, `tests/task/cancel.zs` and `echo.sh --threads` lose that race now and then (as they did before phase 10). Item 11 of track S waits for them.
@@ -67,6 +67,7 @@ macOS arm64 and Windows x64; its decisions carry to the other three, settled as 
 - **The compiler on each** (Z# since phase 11, so it ports with the runtime): `src/release.sh` makes each platform's release by building `src/` with `--target`; libclang found per platform (a `.dylib` beside clang or Xcode's, `libclang.dll` beside LLVM's clang); the cache's and the build server's paths (a named pipe on Windows); clang and zig started as processes there; `./dev`'s stage 0 picked by the host.
 - **Testing:** the whole suite on each in CI (GitHub's macOS arm64 and x86-64, Windows x64 and arm64, and Linux arm64 runners), not only built. Without one, `./test.sh --target <triple> --build-only` builds every test program for it, and qemu-user runs Linux arm64's.
 - **Exit tests:** `./test.sh` green on the five in CI, `tests/bootstrap.sh` included (each builds its own compiler to the same bytes); a release archive per platform, six with Linux x86-64; on a clean machine of each, the archive to a running hello world, following the guide.
+- **Status (2026-10-24):** built, waiting on machines. Every target builds programs and the compiler (decision 82): the host architecture from the compiler's own `host.c`, so a native aarch64 build uses AAPCS64; Microsoft x64's struct rules; `rt.c` on kqueue and `__ulock_wait` for macOS, on wepoll, winpthreads, Winsock and `WaitOnAddress` for Windows; `Path` and `Directory.temp` by the OS; `import c` reading zig's headers for the target. Here, `./test.sh` passes on Linux x86-64, under qemu for aarch64, under Wine for Windows x64 (`--target x86_64-windows-gnu`, which runs the programs there), and `--target aarch64-macos --build-only` builds every program; the Windows compiler runs under Wine up to clang. `src/release.sh <zs> <version> <target>…` makes each platform's archive, and `.github/workflows/test.yml` runs the suite on each platform's runner with its archive's compiler. Left: a remote for that workflow to run on, and so the five green in CI and the clean-machine checks; lldb (phase 12).
 
 ### Phase 12: release 0.1
 The first public release: the language works for people other than its author, in one niche

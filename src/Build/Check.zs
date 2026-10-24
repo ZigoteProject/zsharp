@@ -154,7 +154,7 @@ let private checkModules (cx: Infer.Cx.Cx) (lib: list<Modules.Loaded>) (prog: li
 /// what stops it before checking (a file it can't read, an import cycle, syntax errors) is Error,
 /// with the sources the errors are in. chip: a microcontroller's build (no Std); hostBuild: a
 /// build for this machine (pkg-config's flags).
-let programWith (texts: Map<string, string>) (mainPath: string) (requireMain: bool) (collect: bool) (chip: bool) (hostBuild: bool) : result<Checked, array<Diagnostic> * list<Syntax.Source.Source>> =
+let programWith (texts: Map<string, string>) (mainPath: string) (requireMain: bool) (collect: bool) (chip: bool) (target: string) : result<Checked, array<Diagnostic> * list<Syntax.Source.Source>> =
   let noPlace : Span = { file = -1; offset = -1; length = -1 }
   // a file of a library itself: that library, checked on its own
   let ownLibrary = Modules.libraryRootOf mainPath
@@ -162,7 +162,7 @@ let programWith (texts: Map<string, string>) (mainPath: string) (requireMain: bo
   | Error e -> Error([| error noPlace e |], [])
   | Ok lib ->
     let none : Modules.Linked = { cflags = []; links = [] }
-    let loaded = if Option.isSome ownLibrary then Ok([], none) else Modules.program texts (List.length lib) mainPath hostBuild
+    let loaded = if Option.isSome ownLibrary then Ok([], none) else Modules.program texts (List.length lib) mainPath target
     match loaded with
     | Error(d, src) -> Error([| d |], Option.toList src)
     | Ok(prog, linked) ->
@@ -183,7 +183,7 @@ let programWith (texts: Map<string, string>) (mainPath: string) (requireMain: bo
         Ok { modules = all; units = units; cx = cx; linked = linked; checkedNames = checkedNames; checkedCount = checkedCount; restoreMs = restoreMs; checkMs = checkMs }
 
 /// Checks the program whose main file is mainPath, from the files on disk.
-let program (mainPath: string) (requireMain: bool) (collect: bool) (chip: bool) (hostBuild: bool) = programWith Map.empty mainPath requireMain collect chip hostBuild
+let program (mainPath: string) (requireMain: bool) (collect: bool) (chip: bool) (target: string) = programWith Map.empty mainPath requireMain collect chip target
 
 /// A function's checked Core with every type settled, as the passes take it (a variable bound in
 /// the context followed, a free one defaulted, rows in canonical order).
@@ -250,7 +250,7 @@ let report (sources: list<Syntax.Source.Source>) (ds: array<Diagnostic>) (strict
 
 /// zs check file: every error and warning, nothing built; 0 when it passes.
 let run (mainPath: string) (strict: bool) : int =
-  match program mainPath true true false true with
+  match program mainPath true true false "" with
   | Error(ds, sources) -> if report sources ds strict then 0 else 1
   | Ok c ->
     let sources = List.map (fun (m: Modules.Loaded) -> m.source) c.modules

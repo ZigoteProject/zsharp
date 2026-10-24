@@ -1,30 +1,55 @@
-/// File paths as text, with `/` between the parts: joining them and taking them apart. Nothing
-/// here touches the file system (`getFullPath` reads the working directory).
+/// File paths as text, with `/` between the parts (on Windows `\`, and `/` is one too):
+/// joining them and taking them apart. Nothing here touches the file system (`getFullPath`
+/// reads the working directory). Paths compare as strings, case and all.
 module IO.Path
 
-/// The character between a path's parts.
-let separator = '/'
+let private windows = Native.isWindows ()
 
-/// Whether the path starts at the root (`/`).
-let isAbsolute (path: string) = String.startsWith "/" path
+/// The character between a path's parts: `\` on Windows, else `/`.
+let separator = if Native.isWindows () then '\\' else '/'
 
-/// `a` and `b` joined with a `/`; `b` itself when it is absolute (starts with `/`).
+let private sep = if windows then "\\" else "/"
+
+// whether the path starts with a separator
+let private rooted (path: string) =
+  String.startsWith "/" path || (windows && String.startsWith "\\" path)
+
+// a drive and a colon (`C:`) at the start, on Windows
+let private drive (path: string) =
+  windows && String.length path >= 2 && String.sub path 1 1 = ":"
+
+/// Whether the path starts at a root: `/`; on Windows also `\`, a drive's (`C:\`) or a share
+/// (`\\server\share`).
+let isAbsolute (path: string) =
+  rooted path || (drive path && String.length path >= 3 && rooted (String.sub path 2 (String.length path - 2)))
+
+// where the last separator is
+let private lastSep (path: string) =
+  match (String.lastIndexOf "/" path, (if windows then String.lastIndexOf "\\" path else None)) with
+  | (Some i, Some j) -> Some (max i j)
+  | (Some i, None) | (None, Some i) -> Some i
+  | (None, None) -> None
+
+/// `a` and `b` joined with a separator; `b` itself when it is absolute. A bare drive joins
+/// without one (`C:x`, relative to that drive), as .NET's `Path.Combine`.
 let combine (a: string) (b: string) =
-  if String.startsWith "/" b || String.isEmpty a then b
-  else if String.endsWith "/" a then a + b
-  else a + "/" + b
+  if isAbsolute b || String.isEmpty a then b
+  else if String.endsWith "/" a || (windows && String.endsWith "\\" a) || (drive a && String.length a = 2) then
+    a + b
+  else a + sep + b
 
-/// The part after the last `/`: `"main.zs"` for `src/main.zs`.
+/// The part after the last separator: `"main.zs"` for `src/main.zs`.
 let getFileName (path: string) =
-  match String.lastIndexOf "/" path with
+  match lastSep path with
   | Some i -> String.sub path (i + 1) (String.length path - i - 1)
   | None -> path
 
-/// The part before the last `/`: `"src"` for `src/main.zs`, `"/"` for `/etc`, and `""` when
-/// there is no `/`.
+/// The part before the last separator: `"src"` for `src/main.zs`, `"/"` for `/etc` (`C:\` for
+/// `C:\a`), and `""` when there is none.
 let getDirectoryName (path: string) =
-  match String.lastIndexOf "/" path with
-  | Some 0 -> "/"
+  match lastSep path with
+  | Some 0 -> String.sub path 0 1
+  | Some 2 when drive path -> String.sub path 0 3
   | Some i -> String.sub path 0 i
   | None -> ""
 
@@ -59,13 +84,16 @@ let private normalParts (path: string) =
       | p :: rest when p <> ".." -> rest
       | _ -> if isAbsolute path then acc else ".." :: acc
     | _ -> part :: acc
-  List.rev (List.fold step [] (String.split "/" path))
+  let parts = String.split "/" (if windows then String.replace path "\\" "/" else path)
+  List.rev (List.fold step [] (if drive path then List.tail parts else parts))
 
-/// The path made absolute against the working directory, with `.`, `..` and repeated `/`
-/// worked out on the text (symbolic links aren't followed), as .NET's `Path.GetFullPath`.
+/// The path made absolute against the working directory, with `.`, `..` and repeated
+/// separators worked out on the text (symbolic links aren't followed), as .NET's
+/// `Path.GetFullPath`.
 let getFullPath (path: string) =
   let full = if isAbsolute path then path else combine (Environment.currentDirectory ()) path
-  "/" + String.join "/" (normalParts full)
+  let root = if drive full then String.sub full 0 2 + sep else sep
+  root + String.join sep (normalParts full)
 
 /// The path of `path` from the directory `from`: `getRelativePath "/a/b" "/a/c/d"` is
 /// `"../c/d"`, and `"."` for the same place.
@@ -77,4 +105,4 @@ let getRelativePath (from: string) (path: string) =
   let (up, down) = drop (normalParts (getFullPath from)) (normalParts (getFullPath path))
   match List.map (fun _ -> "..") up @ down with
   | [] -> "."
-  | parts -> String.join "/" parts
+  | parts -> String.join sep parts

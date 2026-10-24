@@ -26,7 +26,8 @@ The names in the directory (not `.` or `..`), sorted.
 Directory.temp : unit -> string
 ```
 
-The directory for temporary files: `$TMPDIR`, else `/tmp`.
+The directory for temporary files: `$TMPDIR`, else `/tmp` (on Windows `%TMP%`, else
+`%TEMP%`).
 
 ### `Directory.createTemp`
 

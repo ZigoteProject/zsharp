@@ -613,9 +613,6 @@ let private forEachIndex (em: Emitter) (n: string) (body: string -> unit) =
 // the bits of an integer's LLVM type (i32: 32), a float's (float: 32, double: 64)
 let private bitsOf (t: string) : int = if t = "float" then 32 else if t = "double" then 64 else toInt (String.sub t 1 (String.length t - 1))
 
-// ponytail: the compiler runs on x86-64 Linux; an aarch64 host needs its architecture here
-let private hostArch () : string = "x86_64"
-
 /// SIMD vectors and masks (DESIGN §8): their functions, a module per type (F32x8.load).
 let private simdPrim (fx: F) (op: string) (args: list<CExpr>) (vs: list<string>) (ty: Ty) (borrowed0: bool) (unchecked: bool) : string =
   let g = fx.g
@@ -1191,7 +1188,10 @@ let rec gen (fx: F) (env: Map<string, Binding>) (tail: bool) (e: CExpr) : string
         match g.part with
         | Some p -> g.opts.optimized && not (Set.contains fname p.defines)
         | None -> false
-      let kind = if (fname = fx.f.name && g.opts.optimized && not g.opts.debugInfo) || not inRegisters || elsewhere then "tail" else "musttail"
+      // an empty struct's result (unit) too: -O2 replaces the result with a constant and merges
+      // the function's returns, leaving the musttail call before a branch (LLVM 23)
+      let unitResult = g.opts.optimized && rt = "{}"
+      let kind = if (fname = fx.f.name && g.opts.optimized && not g.opts.debugInfo) || not inRegisters || elsewhere || unitResult then "tail" else "musttail"
       let r = instr em $"{kind} call {rt} {sym g fname}({argv})"
       emit em $"ret {rt} {r}"
       dead em
@@ -2026,6 +2026,7 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
     "zeroinitializer"
   | "Runtime.ticks" -> instr em "call i64 @zs_ticks()"
   | "Runtime.mallocs" -> instr em "call i_W @zs_mallocs()"
+  | "Env.windows" -> if isWindows g then "true" else "false"
   | "Runtime.marks" -> instr em "call i_W @zs_marks()"
   | "par.fork" ->
     // a job for the thread pool: the closure's objects shared, its reference moved into the job,
@@ -2213,7 +2214,7 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
     // a target intrinsic (Simd.X86, Simd.Arm): for its architecture only
     let name = String.sub op 5 (String.length op - 5)
     let arch = if String.startsWith "llvm.x86." name then "x86_64" else "aarch64"
-    let building = if g.opts.target = "" then hostArch () else List.head (String.split "-" g.opts.target)
+    let building = g.opts.arch
     let (zsName, _, _, _, need) = List.find (fun (_, i, _, _, _) -> i = name) simdIntrinsics
     if building <> arch then
       fail fx $"{zsName} is for {arch}; this build is for {building}" |> ignore

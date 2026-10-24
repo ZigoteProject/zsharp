@@ -169,7 +169,7 @@ let runtimeDir () : string =
 
 // the processor --cpu names, as clang takes it: -march on x86-64, -mcpu elsewhere
 let cpuFlags (o: Options.Options) : list<string> =
-  let x86 = o.target = "" || String.startsWith "x86_64" o.target
+  let x86 = Options.arch o = "x86_64"
   match o.cpu with
   | Some c -> [ (if x86 then "-march=" else "-mcpu=") + c ]
   | None -> []
@@ -212,6 +212,7 @@ let generate (o: Options.Options) (prog0: Program) (testBuild: bool) : result<Pr
           optimized = level <> "-O0"
           optimizeSize = level = "-Os"
           target = o.target
+          arch = Options.arch o
           checkedHeap = usesPrim heapPrims funs
           targets = prog.targets
           cpu = o.cpu
@@ -254,7 +255,7 @@ let make (o: Options.Options) (prog0: Program) (linked: Modules.Linked) (testBui
       // a cross build (--target): clang compiles the IR for the target, and zig cc compiles the
       // runtime and links against Zig's bundled libc (musl: a static binary, no sysroot needed)
       let cross = o.target <> ""
-      let tclang = if cross then [ "--target=" + o.target ] else []
+      let tclang = if cross then [ "--target=" + Options.clangTriple o ] else []
       let cc (args: list<string>) = if cross then Tools.run "zig" (List.append [ "cc"; "-target"; o.target ] args) else Tools.run "clang" args
       let built =
         match o.mcu with
@@ -294,7 +295,7 @@ let make (o: Options.Options) (prog0: Program) (linked: Modules.Linked) (testBui
           else if cross then
             let obj = Path.changeExtension ll ".o"
             let r1 = timed o.time "clang" (fun () -> Tools.run "clang" (List.concat [ opt; tclang; [ "-c"; "-Wno-override-module" ]; san; [ ll; "-o"; obj ] ]))
-            let r2 = andThen (fun () -> timed o.time "zig cc" (fun () -> cc (List.concat [ opt; defines; [ obj; runtimeFile "rt.c" ]; linkArgs linked; [ "-o"; o.out; "-lm" ] ]))) r1
+            let r2 = andThen (fun () -> timed o.time "zig cc" (fun () -> cc (List.concat [ opt; defines; [ obj; runtimeFile "rt.c" ]; linkArgs linked; [ "-o"; o.out; "-lm" ]; Options.systemLibs o ]))) r1
             File.delete obj |> ignore
             r2
           else

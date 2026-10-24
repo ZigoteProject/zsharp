@@ -20,14 +20,16 @@ let socketPath () : string =
   let named = [ "PATH"; "HOME"; "XDG_CACHE_HOME"; "TMPDIR"; "CPATH"; "C_INCLUDE_PATH"; "LIBRARY_PATH"; "PKG_CONFIG_PATH"; "PKG_CONFIG_LIBDIR"; "CC"; "CFLAGS"; "LDFLAGS"; "LANG"; "LC_ALL" ]
   let values = List.map (fun (v: string) -> v + "=" + Option.defaultValue "" (Environment.getVariable v)) named
   // every ZS_ variable (Linux lists them in /proc)
+  // ponytail: none on macOS (no /proc): a ZS_ variable changed there reuses the server; list
+  // them through environ when that matters
   let ours =
     match File.readAllText "/proc/self/environ" with
     | Ok text -> List.sort (List.filter (fun (kv: string) -> String.startsWith "ZS_" kv) (String.split nul text))
     | Error _ -> []
   // the compiler: its binary's size and time
-  let size = Result.defaultValue (i64 0) (File.size "/proc/self/exe")
+  let size = Result.defaultValue (i64 0) (File.size (Build.Tools.selfPath ()))
   let time =
-    match File.modifiedAt "/proc/self/exe" with
+    match File.modifiedAt (Build.Tools.selfPath ()) with
     | Ok t -> $"{t}"
     | Error _ -> ""
   let key = String.join nul (List.concat [ [ $"{size} {time}" ]; values; ours ])

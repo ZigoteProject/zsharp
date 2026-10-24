@@ -142,8 +142,11 @@ type Options =
     optimized: bool
     /// -Os: optsize on every function, and loop versioning only for small loops
     optimizeSize: bool
-    /// the target triple (zs build --target), "" for the host (x86-64 Linux): it decides the C ABI
+    /// the target triple (zs build --target), "" for the host
     target: string
+    /// the architecture built for: the target's first part, or the host's (x86_64, aarch64,
+    /// thumbv7em): it decides the C ABI and which intrinsics there are
+    arch: string
     /// the program has weak references or arenas: its objects go through the runtime's checked
     /// allocation, and a cell Perceus reuses is reported
     checkedHeap: bool

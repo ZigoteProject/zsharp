@@ -29,4 +29,8 @@ RUN dnf install -y --setopt=install_weak_deps=False zstd pkgconf-pkg-config && d
 ENV PATH=/opt/llvm/bin:$PATH \
     PKG_CONFIG_PATH=/opt/llvm/lib/pkgconfig
 
+# Wine runs the Windows test programs (./test.sh --target x86_64-windows-gnu), as qemu-user runs
+# aarch64's
+RUN dnf install -y --setopt=install_weak_deps=False wine-core && dnf clean all
+
 WORKDIR /work

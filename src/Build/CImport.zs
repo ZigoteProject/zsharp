@@ -15,7 +15,7 @@ type CInfo = { csig: string; cdoc: string; cfile: string; cline: int }
 type Imported = { decls: list<Ast.DeclShape>; skipped: list<string * string>; infos: list<string * CInfo>; headerFile: string }
 
 // the C types seen so far: typedefs (name to C type), imported structs (their fields), enums
-type private Ctx = { typedefs: ref<Map<string, string>>; records: ref<Map<string, list<string>>>; enums: ref<Set<string>> }
+type private Ctx = { typedefs: ref<Map<string, string>>; records: ref<Map<string, list<string>>>; enums: ref<Set<string>>; llp64: bool }
 
 let private isWordByte (b: u8) =
   (b >= u8 97 && b <= u8 122) || (b >= u8 65 && b <= u8 90) || (b >= u8 48 && b <= u8 57) || b = u8 95
@@ -71,6 +71,13 @@ let private scalars : Map<string, string> =
       ("unsigned long long", "u64"); ("unsigned long long int", "u64"); ("float", "f32"); ("double", "f64") ]
   Map.ofList pairs
 
+// Windows's data model (LLP64): long is 32 bits there
+let private llp64Scalars : Map<string, string> =
+  List.fold (fun m (c, z) -> Map.add c z m) scalars [ ("long", "i32"); ("long int", "i32"); ("unsigned long", "u32"); ("unsigned long int", "u32") ]
+
+// whether the import is for Windows: the build's flags name its target
+let private isLlp64 (flags: list<string>) = List.exists (fun (f: string) -> String.startsWith "--target=" f && String.contains "windows" f) flags
+
 let private named (n: string) : result<Ast.SType, string> = Ok(Ast.STName(n, []))
 
 // R (*)(A, B) split as R and "A, B": the last "(*)" followed by a parenthesized end
@@ -113,7 +120,7 @@ let rec private zsType (ctx: Ctx) (depth: int) (qt: string) : result<Ast.SType, 
     // typedef struct X X;
     Error $"'{t}' is an opaque struct (pass a pointer to it, as cptr)"
   else
-    match Map.tryFind t scalars with
+    match Map.tryFind t (if ctx.llp64 then llp64Scalars else scalars) with
     | Some s -> named s
     | None ->
       if String.contains "(" t then
@@ -325,9 +332,9 @@ let private decayed (t: string) : string =
 
 // the declarations of a parsed translation unit (its file includes the header), at the import's
 // place `at`
-let private declarationsOf (tu: cptr) (header: string) (at: int) : Imported =
+let private declarationsOf (tu: cptr) (header: string) (llp64: bool) (at: int) : Imported =
   let fromHeader (file: string) = file <> "" && (file = header || String.endsWith ("/" + header) file || Path.getFileName file = Path.getFileName header)
-  let ctx : Ctx = { typedefs = ref Map.empty; records = ref Map.empty; enums = ref Set.empty }
+  let ctx : Ctx = { typedefs = ref Map.empty; records = ref Map.empty; enums = ref Set.empty; llp64 = llp64 }
   let decls = Buffer.empty
   let skipped = Buffer.empty
   let infos = Buffer.empty
@@ -500,7 +507,7 @@ let private importUncached (header: string) (dir: string) (flags: list<string>) 
           let r =
             match Libclang.errors tu with
             | e :: _ -> Error(String.replace e (tmp + ":1:10: ") "")
-            | [] -> Ok(declarationsOf tu header at)
+            | [] -> Ok(declarationsOf tu header (isLlp64 flags) at)
           clang_disposeTranslationUnit tu
           r
       clang_disposeIndex index
@@ -632,8 +639,13 @@ let cacheFile (header: string) (cacheDir: string) : string =
 /// include directories (`flags`: -I and pkg-config's flags) or on the system's include path, at
 /// the import's place `at`. Saved in cacheDir for machines where libclang or the header is
 /// missing, which read it from there.
+/// Where the import of a header with these flags is saved: a header reads differently on Windows
+/// (long, its own headers), so its import there is saved apart.
+let savedFile (header: string) (flags: list<string>) (cacheDir: string) : string =
+  if isLlp64 flags then Path.changeExtension (cacheFile header cacheDir) ".llp64.json" else cacheFile header cacheDir
+
 let importHeader (header: string) (dir: string) (flags: list<string>) (cacheDir: string) (at: int) : result<Imported, string> =
-  let saved = cacheFile header cacheDir
+  let saved = savedFile header flags cacheDir
   match importUncached header dir flags at with
   | Ok r ->
     save saved r

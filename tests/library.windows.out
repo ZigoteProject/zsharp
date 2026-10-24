@@ -1,0 +1,7 @@
+3 [2; 4] HEY! 3
+6 abc 1
+map [(1, a); (2, b)] set [1; 2; 3]
+a/b\c.txt /abs c.tar.gz a/b
+.gz [] main a/main.md
+Some 3 None / []
+stopwatch true true

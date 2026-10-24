@@ -163,7 +163,11 @@ let sym (g: G) (f: string) : string =
 /// Whether a value of the type holds a reference count.
 let heap (g: G) (t: Ty) : bool = needsRc g.v g.types t
 
-let isArm64 (g: G) : bool = String.startsWith "aarch64" g.opts.target
+let isArm64 (g: G) : bool = g.opts.arch = "aarch64"
+
+/// Windows: the Microsoft x64 convention on x86-64 (on arm64, Windows's is AAPCS64's for
+/// structs), LLP64.
+let isWindows (g: G) : bool = String.contains "-windows" g.opts.target
 
 /// The machine word (int, usize, reference counts, lengths): 32 bits on a Cortex-M, else 64.
 let is32 (g: G) : bool = String.startsWith "thumb" g.opts.target
@@ -424,12 +428,20 @@ let abiArm64 (g: G) (t: Ty) (isResult: bool) : Abi =
     else if isResult then Pieces [ $"i{8 * size}" ]
     else Pieces [ "i64" ]
 
+/// Microsoft x64: a struct of 1, 2, 4 or 8 bytes as an integer that size, any other by a pointer
+/// to a copy (or returned through an sret pointer).
+let abiWin64 (g: G) (t: Ty) : Abi =
+  let (size, _, _) = cLayout g t
+  if size = 1 || size = 2 || size = 4 || size = 8 then Pieces [ $"i{8 * size}" ] else Memory
+
 let abiFor (g: G) (t: Ty) (isResult: bool) : Abi =
   let lt = llty g t
   if not (String.startsWith "{" lt) then
     Scalar
   else if isArm64 g then
     abiArm64 g t isResult
+  else if isWindows g then
+    abiWin64 g t
   else
     let (size, _, scalars) = cLayout g t
     if size > 16 then
@@ -454,7 +466,7 @@ let cParam (g: G) (t: Ty) : string = if llty g t = "i1" then "i1 zeroext" else l
 /// when all its eightbytes fit in the ones left (6 for integers, less one for an sret pointer, and
 /// 8 for floating point); otherwise it goes on the stack whole, as a struct in memory does. A
 /// scalar past the registers goes on the stack by itself, which LLVM does. AAPCS64's rules for the
-/// arrays it is given are LLVM's own.
+/// arrays it is given are LLVM's own, as Microsoft x64's four slots by position are.
 let cModes (g: G) (pars: list<Ty>) (sret: bool) : list<Abi> =
   let ints = ref (if sret then 5 else 6)
   let sses = ref 8
@@ -471,7 +483,7 @@ let cModes (g: G) (pars: list<Ty>) (sret: bool) : list<Abi> =
         if llty g t = "double" || llty g t = "float" then sses.Value <- sses.Value - 1 else ints.Value <- ints.Value - 1
         Scalar
       | Pieces ps ->
-        if isArm64 g then
+        if isArm64 g || isWindows g then
           Pieces ps
         else
           let ni = List.length (List.filter (fun (p: string) -> String.startsWith "i" p) ps)
@@ -485,11 +497,11 @@ let cModes (g: G) (pars: list<Ty>) (sret: bool) : list<Abi> =
       | Memory -> Memory
   List.map mode pars
 
-/// A struct passed in memory: x86-64 copies it onto the stack (byval); AAPCS64 passes a pointer
-/// to a copy the caller made.
+/// A struct passed in memory: x86-64 System V copies it onto the stack (byval); AAPCS64 and
+/// Microsoft x64 pass a pointer to a copy the caller made.
 let byval (g: G) (t: Ty) : string =
   let (_, a, _) = cLayout g t
-  if isArm64 g then "ptr" else $"ptr byval({llty g t}) align {a}"
+  if isArm64 g || isWindows g then "ptr" else $"ptr byval({llty g t}) align {a}"
 
 /// LLVM return type for a C result, and whether it is returned through an sret pointer.
 let cRet (g: G) (t: Ty) : string * bool =

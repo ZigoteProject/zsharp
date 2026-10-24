@@ -1,0 +1,7 @@
+\a\c\d ..\c\d . false \
+true true
+Ok Some first line Ok Some second Ok Some no newline Ok None
+29 29 true
+[a.txt; c.txt; sub; sub/d.txt] false
+cannot open DIR\missing: No such file or directory
+false
