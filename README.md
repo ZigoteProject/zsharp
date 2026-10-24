@@ -4,7 +4,7 @@ Z# is a functional-first programming language with F# syntax that compiles to na
 through LLVM.
 - **Memory:** no garbage collector or VM. The compiler inserts and optimizes reference counting.
 - **C interop:** direct, including `import c "header.h"`.
-- **Targets:** x86-64 and aarch64 Linux, and bare-metal Cortex-M microcontrollers.
+- **Targets:** Linux, macOS and Windows on x86-64 and aarch64, and bare-metal Cortex-M microcontrollers.
 
 ```fsharp
 type Shape =
@@ -50,3 +50,23 @@ let main () =
 Read **[the guide](docs/guide/README.md)** to learn the language. [DESIGN.md](DESIGN.md) covers
 the design and the reasons behind it, [ROADMAP.md](ROADMAP.md) what's done and what's next, and
 [docs/proposals](docs/proposals/README.md) the designs under discussion.
+
+## Status
+
+Z# is pre-1.0: the language and the library still change between releases. The compiler is
+written in Z# and builds itself; `./dev` fetches the previous release (stage 0, pinned in `dev`)
+from this repository's [GitHub releases](https://github.com/ZigoteProject/zsharp/releases) on first use.
+It needs [podman](https://podman.io).
+
+## License
+
+Z# is under the [MIT license](LICENSE). It includes:
+
+| Component | Where | License |
+|---|---|---|
+| [xxHash](https://github.com/Cyan4973/xxHash) | `packages/xxhash/c` | [BSD 2-Clause](packages/xxhash/c/LICENSE) |
+| [wepoll](https://github.com/piscisaureus/wepoll) | `runtime/wepoll` | [BSD 2-Clause](runtime/wepoll/LICENSE) |
+| [tree-sitter](https://github.com/tree-sitter/tree-sitter)'s parser headers | `editors/tree-sitter-zsharp/src/tree_sitter` | [MIT](editors/tree-sitter-zsharp/src/tree_sitter/LICENSE) |
+
+`import c` opens the system's libclang (LLVM, Apache 2.0 with LLVM exceptions) at run time; none
+of LLVM is shipped.
