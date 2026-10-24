@@ -20,7 +20,7 @@ while [ $# -gt 0 ]; do
     --target) target=$2; tgt=(--target "$2"); shift
       case $target in
         *-windows-*) qemu=(timeout 120 wine); syslibs=(-lws2_32 -lapi-ms-win-core-synch-l1-2-0)
-          export WINEDEBUG=-all XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/tmp/zs-xdg-$UID}; mkdir -p "$XDG_RUNTIME_DIR" ;;
+          export LANG=C.UTF-8 WINEDEBUG=-all XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/tmp/zs-xdg-$UID}; mkdir -p "$XDG_RUNTIME_DIR" ;;
         *) qemu=("qemu-${target%%-*}") ;;
       esac ;;
     --build-only) buildonly=1 ;;

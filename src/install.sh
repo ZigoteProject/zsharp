@@ -9,6 +9,6 @@ mkdir -p "$dir"
 name=zs; case $zs in *.exe) name=zs.exe ;; esac  # Windows's
 cp "$zs" "$dir/$name.new" && mv "$dir/$name.new" "$dir/$name"
 rm -rf "$dir/lib" && cp -r lib "$dir/lib"
-cp runtime/rt.c runtime/rt-embedded.c "$dir/"
+cp runtime/rt.c runtime/rt-embedded.c runtime/utf8.rc runtime/utf8.manifest "$dir/"
 rm -rf "$dir/wepoll" && cp -r runtime/wepoll "$dir/wepoll"
 mkdir -p "$dir/boards" && cp runtime/boards/*.ld "$dir/boards/"

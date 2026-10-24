@@ -295,7 +295,7 @@ let make (o: Options.Options) (prog0: Program) (linked: Modules.Linked) (testBui
           else if cross then
             let obj = Path.changeExtension ll ".o"
             let r1 = timed o.time "clang" (fun () -> Tools.run "clang" (List.concat [ opt; tclang; [ "-c"; "-Wno-override-module" ]; san; [ ll; "-o"; obj ] ]))
-            let r2 = andThen (fun () -> timed o.time "zig cc" (fun () -> cc (List.concat [ opt; defines; [ obj; runtimeFile "rt.c" ]; linkArgs linked; [ "-o"; o.out; "-lm" ]; Options.systemLibs o ]))) r1
+            let r2 = andThen (fun () -> timed o.time "zig cc" (fun () -> cc (List.concat [ opt; defines; [ obj; runtimeFile "rt.c" ]; linkArgs linked; [ "-o"; o.out; "-lm" ]; Options.systemLibs o; (if String.contains "-windows" o.target then [ runtimeFile "utf8.rc" ] else []) ]))) r1
             File.delete obj |> ignore
             r2
           else

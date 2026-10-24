@@ -24,6 +24,7 @@
 #include <fcntl.h>
 #include <io.h>
 #include <sys/utime.h>
+#include <locale.h>
 // no aligned_alloc: _aligned_malloc's memory goes back through _aligned_free, so every block
 // the runtime frees as an object, an arena's block or a pool job comes from it
 #define aligned_alloc(a, n) _aligned_malloc((n), (a))
@@ -1173,6 +1174,7 @@ void zs_set_args(int32_t argc, char **argv) {
 #ifdef _WIN32
     // the console in UTF-8, and standard output and error as bytes: println writes what Show
     // made, \n not turned into \r\n (an executable's manifest makes the rest UTF-8: argv, paths)
+    setlocale(LC_CTYPE, ".UTF8"); // the C runtime's calls in UTF-8 too, as the manifest has the system's
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
     _setmode(_fileno(stdout), _O_BINARY);

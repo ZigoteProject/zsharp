@@ -1,0 +1,3 @@
+// Every Windows program's manifest (RT_MANIFEST, id 1): the process's code page is UTF-8, so the
+// runtime's narrow calls (file names, arguments, the environment) take and give UTF-8
+1 24 "utf8.manifest"
