@@ -244,7 +244,8 @@ let rec private macroValue (ctx: Ctx) (body0: string) : option<Ast.Expr> =
     match floatLiteral body with
     | Some v -> Some(Ast.plain (Ast.FloatLit v))
     | None ->
-      let inner = String.sub body 1 (max 0 (String.length body - 2))
+      // what's between the first and the last byte (an empty body, a guard's #define, has none)
+      let inner = if String.length body >= 2 then String.sub body 1 (String.length body - 2) else ""
       if String.length body >= 2 && String.startsWith "\"" body && String.endsWith "\"" body && not (String.contains "\"" inner) && not (String.contains "\\" inner) then
         Some(Ast.plain (Ast.StrLit inner))
       else
@@ -489,14 +490,16 @@ let private importUncached (header: string) (dir: string) (flags: list<string>) 
     | Ok tmp ->
       File.writeAllText tmp $"#include \"{header}\"\n" |> ignore
       let index = clang_createIndex 0 0
-      let args = List.concat [ [ "-x"; "c"; "-I"; dir ]; flags ]
+      // clang's own headers (stdbool.h and the like) from the resource directory beside libclang
+      let resources = Libclang.resourceDir ()
+      let args = List.concat [ [ "-x"; "c"; "-I"; dir ]; (if resources = "" then [] else [ "-resource-dir"; resources ]); flags ]
       let r =
         match Libclang.parse index tmp args (u32 CXTranslationUnit_DetailedPreprocessingRecord) with
         | None -> Error "libclang couldn't parse it"
         | Some tu ->
           let r =
             match Libclang.errors tu with
-            | e :: _ -> Error(String.replace (tmp + ":1:10: ") "" e)
+            | e :: _ -> Error(String.replace e (tmp + ":1:10: ") "")
             | [] -> Ok(declarationsOf tu header at)
           clang_disposeTranslationUnit tu
           r

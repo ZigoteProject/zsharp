@@ -7,10 +7,16 @@ extern zs_clang_load : unit -> i32
 extern zs_clang_visit_children : CXCursor -> callback<ptr<CXCursor> -> i32> -> u32
 extern zs_clang_text : CXString -> cstr
 extern zs_clang_parse : cptr -> cstr -> span<u8> -> i32 -> u32 -> cptr
+extern zs_clang_resource_dir : unit -> cstr
 
 /// Whether libclang is here, opened from $ZS_LIBCLANG, else beside the first clang on PATH, else
 /// from the system's libraries. A libclang function called where it isn't stops the program.
 let available () : bool = zs_clang_load () <> 0
+
+/// clang's resource directory beside the libclang opened (its own headers, stdbool.h and the
+/// like), for `-resource-dir`: an LLVM release's libclang doesn't find it by itself. Empty when
+/// there's none there.
+let resourceDir () : string = String.ofCStr (zs_clang_resource_dir ())
 
 /// A CXString's text, copied (empty for a null one); the CXString is disposed.
 let text (s: CXString) : string =

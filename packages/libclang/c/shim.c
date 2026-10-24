@@ -3,6 +3,8 @@
 // parse in one NUL-separated buffer. And libclang itself, opened when first used rather than
 // linked, so a program built with this package starts where libclang isn't installed (an
 // editor's sandbox): zs_clang_load says whether it's there.
+#define _GNU_SOURCE // dladdr
+#include <dirent.h>
 #include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -63,6 +65,34 @@ int zs_clang_load(void) {
     tried = 1;
   }
   return lib != NULL;
+}
+
+// clang's resource directory beside the libclang opened (its own headers: stdbool.h, stddef.h…),
+// which an LLVM release's libclang doesn't find by itself: <its directory>/clang/<the newest
+// version there>; "" when there's none (a system's libclang finds its own)
+const char *zs_clang_resource_dir(void) {
+  static char found[4096];
+  static int looked;
+  if (looked || !zs_clang_load()) return found;
+  looked = 1;
+  Dl_info info;
+  char real[4096], base[4200];
+  void *f = dlsym(lib, "clang_createIndex");
+  if (!f || !dladdr(f, &info) || !info.dli_fname || !realpath(info.dli_fname, real)) return found;
+  *strrchr(real, '/') = 0;
+  snprintf(base, sizeof base, "%s/clang", real);
+  DIR *d = opendir(base);
+  if (!d) return found;
+  long best = -1;
+  for (struct dirent *e; (e = readdir(d));) {
+    long v = strtol(e->d_name, NULL, 10);
+    if (e->d_name[0] != '.' && v > best) {
+      best = v;
+      snprintf(found, sizeof found, "%s/%s", base, e->d_name);
+    }
+  }
+  closedir(d);
+  return found;
 }
 
 static void *sym(const char *name) {
