@@ -1,0 +1,200 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Z#",
+  "scopeName": "source.zsharp",
+  "fileTypes": ["zs"],
+  "comment": "The TextMate counterpart of editors/tree-sitter-zsharp/queries/highlights.scm; ./test.sh checks that the keywords match.",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#attributes" },
+    { "include": "#strings" },
+    { "include": "#chars" },
+    { "include": "#numbers" },
+    { "include": "#declarations" },
+    { "include": "#keywords" },
+    { "include": "#constants" },
+    { "include": "#types" },
+    { "include": "#names" },
+    { "include": "#operators" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "name": "comment.line.documentation.zsharp", "match": "///.*$" },
+        { "name": "comment.line.double-slash.zsharp", "match": "//.*$" }
+      ]
+    },
+    "attributes": {
+      "name": "meta.attribute.zsharp",
+      "begin": "\\[<",
+      "end": ">\\]",
+      "beginCaptures": { "0": { "name": "punctuation.definition.attribute.begin.zsharp" } },
+      "endCaptures": { "0": { "name": "punctuation.definition.attribute.end.zsharp" } },
+      "patterns": [
+        { "match": "(?:(?<=\\[<)|(?<=;))\\s*([A-Za-z_][A-Za-z0-9_]*)", "captures": { "1": { "name": "entity.other.attribute-name.zsharp" } } },
+        { "include": "#strings" },
+        { "include": "#numbers" },
+        { "include": "#punctuation" }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        { "name": "string.quoted.triple.zsharp", "begin": "\"\"\"", "end": "\"\"\"" },
+        {
+          "name": "string.interpolated.zsharp",
+          "begin": "\\$\"",
+          "end": "\"",
+          "patterns": [
+            { "name": "constant.character.escape.zsharp", "match": "\\{\\{|\\}\\}" },
+            { "include": "#escapes" },
+            {
+              "name": "meta.interpolation.zsharp",
+              "begin": "\\{",
+              "end": "\\}",
+              "beginCaptures": { "0": { "name": "punctuation.section.interpolation.begin.zsharp" } },
+              "endCaptures": { "0": { "name": "punctuation.section.interpolation.end.zsharp" } },
+              "patterns": [
+                {
+                  "match": "(,)\\s*(-?[0-9]+)(?=\\s*[:}])",
+                  "captures": { "1": { "name": "punctuation.separator.zsharp" }, "2": { "name": "constant.numeric.zsharp" } }
+                },
+                {
+                  "match": "(:)([A-Za-z][0-9]{0,2})(?=\\})",
+                  "captures": { "1": { "name": "punctuation.separator.zsharp" }, "2": { "name": "constant.other.format-specifier.zsharp" } }
+                },
+                { "include": "$self" }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.double.zsharp",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [{ "include": "#escapes" }]
+        }
+      ]
+    },
+    "escapes": {
+      "name": "constant.character.escape.zsharp",
+      "match": "\\\\(?:[nrt0\\\\\"']|u\\{[0-9a-fA-F]+\\})"
+    },
+    "chars": {
+      "name": "string.quoted.single.zsharp",
+      "match": "'(?:[^'\\\\\\n]|\\\\(?:[nrt0\\\\\"']|u\\{[0-9a-fA-F]+\\}))'"
+    },
+    "numbers": {
+      "name": "constant.numeric.zsharp",
+      "match": "\\b(?:0[xX][0-9a-fA-F_]+|0[bB][01_]+|0[oO][0-7_]+|[0-9][0-9_]*(?:\\.[0-9][0-9_]*(?:[eE][+-]?[0-9]+)?)?)\\b"
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "match": "\\b(let|and)((?:\\s+(?:rec|mutable|private))*)\\s+([a-z_][A-Za-z0-9_]*|``[^`\\n]+``)",
+          "captures": {
+            "1": { "name": "keyword.other.zsharp" },
+            "2": { "patterns": [{ "include": "#keywords" }] },
+            "3": { "name": "entity.name.function.zsharp" }
+          }
+        },
+        {
+          "match": "\\b(type|and)((?:\\s+private)?)\\s+([A-Z][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.other.zsharp" },
+            "2": { "patterns": [{ "include": "#keywords" }] },
+            "3": { "name": "entity.name.type.zsharp" }
+          }
+        },
+        {
+          "match": "\\b(trait|effect|impl|derive)\\s+([A-Za-z_][A-Za-z0-9_.]*)",
+          "captures": {
+            "1": { "name": "keyword.other.zsharp" },
+            "2": { "name": "entity.name.type.zsharp" }
+          }
+        },
+        {
+          "match": "\\b(module|namespace|open)\\s+([A-Za-z_][A-Za-z0-9_.]*)",
+          "captures": {
+            "1": { "name": "keyword.other.zsharp" },
+            "2": { "name": "entity.name.namespace.zsharp" }
+          }
+        },
+        {
+          "match": "\\b(member)\\s+(?:([a-z_][A-Za-z0-9_]*)(\\.))?([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.other.zsharp" },
+            "2": { "name": "variable.language.self.zsharp" },
+            "3": { "name": "punctuation.accessor.zsharp" },
+            "4": { "name": "entity.name.function.member.zsharp" }
+          }
+        },
+        {
+          "match": "\\b(abstract|extern)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.other.zsharp" },
+            "2": { "name": "entity.name.function.zsharp" }
+          }
+        },
+        {
+          "match": "\\b(import)\\s+(c)\\b",
+          "captures": { "1": { "name": "keyword.other.zsharp" }, "2": { "name": "keyword.other.zsharp" } }
+        },
+        {
+          "comment": "a type after an annotation's colon or a case's of: x : int, Circle of float",
+          "match": "(?:(?<!:)(:)(?!:)|\\b(of)\\b)\\s*([a-z_][A-Za-z0-9_]*)\\b(?!\\s*:(?!:))",
+          "captures": {
+            "1": { "name": "keyword.operator.zsharp" },
+            "2": { "name": "keyword.other.zsharp" },
+            "3": { "name": "entity.name.type.zsharp" }
+          }
+        },
+        {
+          "comment": "a computation expression's builder: seq { … }, task { … }",
+          "match": "\\b([a-z_][A-Za-z0-9_]*)\\s*(?=\\{)",
+          "captures": { "1": { "name": "keyword.control.builder.zsharp" } }
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        { "name": "keyword.control.zsharp", "match": "\\b(?:let|do|return|yield)!" },
+        {
+          "name": "keyword.other.zsharp",
+          "match": "\\b(?:let|rec|and|mutable|private|type|of|with|member|static|extern|import|open|module|namespace|trait|impl|abstract|derive|fun|match|when|as|if|then|else|for|in|do|while|not|use|return|unsafe|dyn|function|yield|effect|handle)\\b"
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        { "name": "constant.language.boolean.zsharp", "match": "\\b(?:true|false)\\b" },
+        { "name": "constant.language.unit.zsharp", "match": "\\(\\s*\\)" },
+        { "name": "variable.language.wildcard.zsharp", "match": "\\b_\\b" }
+      ]
+    },
+    "types": {
+      "patterns": [
+        { "name": "entity.name.type.parameter.zsharp", "match": "'[A-Za-z_][A-Za-z0-9_]*" },
+        { "comment": "constructors, types and modules start with an upper-case letter", "name": "entity.name.type.zsharp", "match": "\\b[A-Z][A-Za-z0-9_]*\\b" }
+      ]
+    },
+    "names": {
+      "patterns": [
+        { "name": "variable.other.zsharp", "match": "``[^`\\n]+``" },
+        { "name": "variable.other.zsharp", "match": "\\b[a-z_][A-Za-z0-9_]*\\b" }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        { "name": "keyword.operator.arrow.zsharp", "match": "->|<-" },
+        { "name": "keyword.operator.zsharp", "match": "[!%&*+\\-./<=>?@^|~$:]+" }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        { "name": "punctuation.section.brackets.zsharp", "match": "\\[\\||\\|\\]|[()\\[\\]{}]" },
+        { "name": "punctuation.separator.zsharp", "match": "[,;]" }
+      ]
+    }
+  }
+}

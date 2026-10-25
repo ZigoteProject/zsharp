@@ -139,6 +139,7 @@ same support through a thin extension each.
 - **E2a:** `zs lsp` with diagnostics, hover with types, constraints and doc comments, inlay hints, symbols and formatting.
 - **E2b (part):** definition, references, completion (C names included).
 - **E3:** `zs mcp` with `check`, `type_at`, `docs`, `build`, `run`, `emit_llvm`, `format`.
+- **E4:** VS Code and Rider (`editors/vscode`, `editors/rider`): one TextMate grammar (its keywords checked against the tree-sitter highlights by `./test.sh`), the language server and, in VS Code, the MCP server.
 - **F:** `zs fmt`, meaning-preserving, keeping the repository formatted.
 - **F2:** a lossless syntax tree ([0019](docs/proposals/0019-syntax-tree.md)); `zs fmt` on it reflows lines over 100 columns, keeping comments; `zs fmt --stdin`; range formatting.
 - **Documentation:** `///` doc comments and `zs doc`.

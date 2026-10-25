@@ -16,3 +16,9 @@ examples/raylib/demo
 .cache/
 bench/mcu/out/
 .claude/
+editors/vscode/node_modules/
+editors/vscode/*.vsix
+editors/rider/.gradle/
+editors/rider/.intellijPlatform/
+editors/rider/build/
+editors/vscode/.vscode-test/

@@ -69,6 +69,8 @@ Projects, modules and dependencies are covered in [Programs](08-programs.md).
 
 **Zed:** the repository has a Zed extension (`editors/zed`). It gives syntax highlighting, the language server (errors as you type, hover types and docs, go to definition, completion, formatting) and an MCP server for Zed's agent. [Tools](10-tools.md#editors) describes the setup.
 
+**VS Code and Rider:** `editors/vscode` and `editors/rider` give the same: highlighting, the language server and (in VS Code) the MCP server for the agent.
+
 **Other editors:** run `zs lsp` as the language server for `.zs` files. The tree-sitter grammar in `editors/tree-sitter-zsharp` works in editors that use tree-sitter.
 
 ## Comments

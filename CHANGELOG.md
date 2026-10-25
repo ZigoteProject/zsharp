@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Editor
+- A VS Code extension (`editors/vscode`) and a Rider plugin (`editors/rider`, any JetBrains IDE
+  2025.2 or later): highlighting, the language server and, in VS Code, the MCP server for the
+  agent, as the Zed extension gives. Both share one TextMate grammar.
+
 ## 0.6.1 (2026-10-25)
 
 The first release for more than Linux: the compiler for Linux x86-64, macOS arm64 and

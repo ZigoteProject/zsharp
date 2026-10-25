@@ -1,0 +1,20 @@
+<idea-plugin>
+  <id>dev.zsharp</id>
+  <name>Z#</name>
+  <vendor url="https://github.com/ZigoteProject/zsharp">Zigote Project</vendor>
+  <description><![CDATA[
+    Z# support: TextMate highlighting, bracket matching and indentation, plus the <code>zs lsp</code>
+    language server: diagnostics as you type, hover with types and docs, go to definition,
+    references, completion, inlay type hints, the structure view, rename, signature help, code
+    actions and formatting. Settings → Tools → Z# sets the path to <code>zs</code>.
+  ]]></description>
+  <depends>com.intellij.modules.platform</depends>
+  <depends>com.intellij.modules.lsp</depends>
+  <depends>org.jetbrains.plugins.textmate</depends>
+  <extensions defaultExtensionNs="com.intellij">
+    <platform.lsp.serverSupportProvider implementation="zsharp.ZSharpLsp"/>
+    <textmate.bundleProvider implementation="zsharp.ZSharpBundle"/>
+    <applicationService serviceImplementation="zsharp.ZSharpSettings"/>
+    <applicationConfigurable parentId="tools" id="zsharp" displayName="Z#" instance="zsharp.ZSharpConfigurable"/>
+  </extensions>
+</idea-plugin>

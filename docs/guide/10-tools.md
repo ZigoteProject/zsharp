@@ -170,6 +170,18 @@ The extension finds `zs` on your `PATH`. Or set the path in Zed's settings:
 "context_servers": { "zs": { "command": "/path/to/zs", "args": ["mcp"] } }
 ```
 
+### VS Code
+
+`editors/vscode` is a VS Code extension (1.101 or later). Package it with `npx @vscode/vsce package` in that folder and install the `.vsix`, or open the folder and press F5. It gives what the Zed extension does: TextMate highlighting, the language server's features, and the `zs mcp` server for the agent (Copilot's agent mode).
+
+It finds `zs` on your `PATH`, or set `"zsharp.path": "/path/to/zs"`; `zsharp.lsp.arguments` and `zsharp.mcp.arguments` change the arguments. It stays off in an untrusted workspace, whose settings could point it at another program.
+
+### Rider
+
+`editors/rider` is a plugin for Rider and the other JetBrains IDEs, 2025.2 or later. Build it with `./gradlew buildPlugin` in that folder (it needs a JDK 25) and install `build/distributions/zsharp-rider-0.1.0.zip` from disk. It gives the same highlighting (the VS Code extension's grammar) and the language server through the IDE's LSP support, with the structure view, quick fixes and parameter info. **Settings → Tools → Z#** sets the path to `zs`.
+
+JetBrains' AI Assistant and Junie take MCP servers from their own settings: add `zs` with the argument `mcp` there.
+
 ### Other editors
 
 Run `zs lsp` over stdio as the language server for `.zs` files. The tree-sitter grammar is in `editors/tree-sitter-zsharp`, with highlight, indent and outline queries. `zs mcp` works with any MCP client.

@@ -294,8 +294,8 @@ One `zs` binary holds the compiler and its tools.
 | `zs fmt`, `zs doc` | one canonical format; Markdown docs from `///` comments |
 | `zs lsp`, `zs mcp` | a language server (types on hover, rename, code actions) and an MCP server for AI agents |
 
-Editors: the [Zed extension](editors/zed), and the [tree-sitter grammar](editors/tree-sitter-zsharp)
-for the others.
+Editors: the [Zed extension](editors/zed), the [VS Code extension](editors/vscode), the
+[Rider plugin](editors/rider), and the [tree-sitter grammar](editors/tree-sitter-zsharp) for the others.
 
 ## Getting started
 

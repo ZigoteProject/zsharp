@@ -1,0 +1,95 @@
+{
+  "name": "zsharp",
+  "displayName": "Z#",
+  "description": "Z# support: syntax highlighting, the zs language server (diagnostics, hover types, inlay hints, rename, code actions) and the zs MCP server for the agent.",
+  "version": "0.1.0",
+  "publisher": "zigote",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ZigoteProject/zsharp"
+  },
+  "engines": {
+    "vscode": "^1.101.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Formatters"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "The extension runs zs, whose path and arguments a workspace's settings can set, on the workspace's code."
+    }
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "zsharp",
+        "aliases": [
+          "Z#",
+          "zsharp"
+        ],
+        "extensions": [
+          ".zs"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "zsharp",
+        "scopeName": "source.zsharp",
+        "path": "./syntaxes/zsharp.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Z#",
+      "properties": {
+        "zsharp.path": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Path to `zs`, for the language server and the MCP server. Empty: `zs` on `PATH`."
+        },
+        "zsharp.lsp.arguments": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "lsp"
+          ],
+          "description": "Arguments that start the language server."
+        },
+        "zsharp.mcp.arguments": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "mcp"
+          ],
+          "description": "Arguments that start the MCP server."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "zsharp.restart",
+        "title": "Restart Language Server",
+        "category": "Z#"
+      }
+    ],
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "zsharp.mcp",
+        "label": "Z# (zs mcp)"
+      }
+    ]
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  }
+}
