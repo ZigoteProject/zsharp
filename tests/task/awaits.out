@@ -1,4 +1,4 @@
-15 and 5000050000: 7 and 7 allocations for 10 and 200,000 waits
+15 and 5000050000: 8 and 8 allocations for 10 and 200,000 waits
 return!: 20,000 rounds in steady memory: true
 inner done
 r closed

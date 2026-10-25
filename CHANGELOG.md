@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Language
+- A `type private` record's fields are private too: outside its module, code can't read, set,
+  build or match them, even on a value it reached through a public record's field.
+- A task cancelled at a wait no longer leaks a value it took apart with a tuple pattern
+  (`let! (x, reply, nack) = …`) before that wait.
+
 ### Editor
 - A VS Code extension (`editors/vscode`) and a Rider plugin (`editors/rider`, any JetBrains IDE
   2025.2 or later): highlighting, the language server and, in VS Code, the MCP server for the

@@ -1,0 +1,11 @@
+ping-pong: 200000 round trips
+ring of 1000 tasks: token passed 200000 times
+1000 nested guards and maps: 1000
+choose over 10000 never-ready takes and always: always
+choose over 10000 channels, a give on the last: last
+1000000 syncs on always in a for loop: 1000000
+1000000 syncs on always through return!: 1000000
+50000 maps on always: 50000
+50000 maps on a take that waits: 50000
+a map over a choice nested 50000 deep: 1
+a cascade of 50000 nacks: 50000 gave up

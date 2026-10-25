@@ -1403,6 +1403,40 @@ and genPlain (fx: F) (env: Map<string, Binding>) (e: CExpr) : string =
     "zeroinitializer"
   | _ -> panic "Codegen: not a loop"
 
+/// What a wait calls between its save and its suspend: work c face, through the closure's
+/// description (all at once when it takes both, else one at a time), then work dropped. Not in
+/// the coroutine (nor inlined into it), since work may resume it before returning.
+and taskStart (g: G) (cTy: Ty) (workTy: Ty) : string =
+  let ct = llty g cTy
+  let name = $"@\"zs.task.start.{showF g cTy}\""
+  if firstTime g name then
+    let em = emitter ()
+    let wp = instr em "getelementptr { i_W, ptr, ptr }, ptr %work, i32 0, i32 2"
+    let winf = instr em $"load ptr, ptr {wp}"
+    let ap = instr em $"getelementptr {{ ptr, i32, ptr }}, ptr {winf}, i32 0, i32 1"
+    let arity = instr em $"load i32, ptr {ap}"
+    let two = instr em $"icmp eq i32 {arity}, 2"
+    emit em $"br i1 {two}, label %full, label %curried"
+    enter em "full"
+    let fp = instr em $"getelementptr {{ ptr, i32, ptr }}, ptr {winf}, i32 0, i32 2"
+    let full = instr em $"load ptr, ptr {fp}"
+    emit em $"call {{}} {full}(ptr %work, {ct} %c, ptr %face)"
+    emit em "br label %called"
+    enter em "curried"
+    let cp1 = instr em "getelementptr { i_W, ptr }, ptr %work, i32 0, i32 1"
+    let code1 = instr em $"load ptr, ptr {cp1}"
+    let partial = instr em $"call ptr {code1}(ptr %work, {ct} %c)"
+    let cp2 = instr em $"getelementptr {{ i_W, ptr }}, ptr {partial}, i32 0, i32 1"
+    let code2 = instr em $"load ptr, ptr {cp2}"
+    emit em $"call {{}} {code2}(ptr {partial}, ptr %face)"
+    emit em $"call void @zs.drop.clo(ptr {partial})"
+    emit em "br label %called"
+    enter em "called"
+    dropValue g em workTy "%work"
+    emit em "ret void"
+    helper g $"define private void {name}(ptr %work, {ct} %c, ptr %face) noinline {{\n{bodyOf em}}}\n\n"
+  name
+
 /// A wait in a task's state machine: task.suspend(work, c) runs the awaited task's work with the
 /// face as its continuation, then suspends until the face is called with the result; task.abandon
 /// suspends for good (the task was cancelled). Both end with task.held: what a cancelled task
@@ -1428,34 +1462,11 @@ and wait (fx: F) (env: Map<string, Binding>) (op: string) (args: list<CExpr>) (t
       // the awaited task's reference
       emit em "call void @zs.dup(ptr %face)"
       let save = instr em "call token @llvm.coro.save(ptr %coro.hdl)"
-      // work c face, through the closure's description: all at once when it takes both, else one
-      // at a time
+      // one call between the save and the suspend: work may resume the coroutine before it
+      // returns, so nothing here may use a value of the frame's after it
       let ct = llty g (List.item 1 real).ty
-      let wp = instr em $"getelementptr {{ i_W, ptr, ptr }}, ptr {work}, i32 0, i32 2"
-      let winf = instr em $"load ptr, ptr {wp}"
-      let ap = instr em $"getelementptr {{ ptr, i32, ptr }}, ptr {winf}, i32 0, i32 1"
-      let arity = instr em $"load i32, ptr {ap}"
-      let fullL = n + ".full"
-      let oneL = n + ".curried"
-      let doneL = n + ".called"
-      let two = instr em $"icmp eq i32 {arity}, 2"
-      emit em $"br i1 {two}, label %{fullL}, label %{oneL}"
-      enter em fullL
-      let fp = instr em $"getelementptr {{ ptr, i32, ptr }}, ptr {winf}, i32 0, i32 2"
-      let full = instr em $"load ptr, ptr {fp}"
-      emit em $"call {{}} {full}(ptr {work}, {ct} {c}, ptr %face)"
-      emit em $"br label %{doneL}"
-      enter em oneL
-      let cp1 = instr em $"getelementptr {{ i_W, ptr }}, ptr {work}, i32 0, i32 1"
-      let code1 = instr em $"load ptr, ptr {cp1}"
-      let partial = instr em $"call ptr {code1}(ptr {work}, {ct} {c})"
-      let cp2 = instr em $"getelementptr {{ i_W, ptr }}, ptr {partial}, i32 0, i32 1"
-      let code2 = instr em $"load ptr, ptr {cp2}"
-      emit em $"call {{}} {code2}(ptr {partial}, ptr %face)"
-      emit em $"call void @zs.drop.clo(ptr {partial})"
-      emit em $"br label %{doneL}"
-      enter em doneL
-      dropValue g em (List.item 0 real).ty work
+      let start = taskStart g (List.item 1 real).ty (List.item 0 real).ty
+      emit em $"call void {start}(ptr {work}, {ct} {c}, ptr %face)"
       save
     else
       instr em "call token @llvm.coro.save(ptr %coro.hdl)"

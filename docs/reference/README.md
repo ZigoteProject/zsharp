@@ -24,7 +24,7 @@ The names every program has without qualification: the operator traits and their
 | none | [Console](Console.md), [Environment](Environment.md) |
 | `IO` | [File](IO.File.md), [Directory](IO.Directory.md), [Path](IO.Path.md), [Reader and Writer](IO.Stream.md) |
 | `Diagnostics` | [Process](Diagnostics.Process.md), [Stopwatch](Diagnostics.Stopwatch.md) |
-| `Threading` | [Task](Threading.Task.md), [Parallel](Threading.Parallel.md), [Atomic](Threading.Atomic.md), [Mutex](Threading.Mutex.md), [Channel](Threading.Channel.md) |
+| `Threading` | [Task](Threading.Task.md), [Alt](Threading.Alt.md), [Parallel](Threading.Parallel.md), [Atomic](Threading.Atomic.md), [Mutex](Threading.Mutex.md), [Channel](Threading.Channel.md) |
 | `Collections` | [Array.Parallel](Collections.Array.Parallel.md) |
 | `Net` | [Tcp](Net.Tcp.md), [Unix](Net.Unix.md) |
 | `Time` | [DateTime.utcNow](Time.Clock.md) |

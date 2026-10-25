@@ -1,0 +1,7 @@
+left bias: a
+one of two: took a 1, b still has 2
+loser left b's queue: send on b: None
+self: alone, choose [give c 1; take c; after 10]: timed out
+choose []: None
+two waits on one promise: 1 delivery
+exactly once: 30000 received, each value once: true, sum 450015000

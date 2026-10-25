@@ -105,6 +105,70 @@ gave up after 20 ms
 
 **Blocking calls:** `Task.blocking (fun () -> …)` runs a function on a helper thread, for a C call that blocks (a database's, say), while the event loop goes on. The function crosses threads, so what it captures must be shareable ([chapter 14](14-parallel.md#what-can-cross-to-another-thread)), as its result must. `File.readAllTextAsync` and `File.writeAllTextAsync` work this way.
 
+### Choosing between events
+
+**Events:** `Threading.Alt` is Concurrent ML's events (Hopac's alternatives) for tasks. An `Alt<'a>` is something a task can wait for: a value on a channel, room to give one, a timer, a promise. `Alt.sync e` waits for it. `Alt.choose [ … ]` is an event too: the first of its branches to happen, and exactly one of them does.
+- **`Ch.make ()`:** a channel. `Ch.give ch x` meets a `Ch.take ch` in another task, and both go on. It holds nothing in between, so a giver waits for a taker. `Ch.send ch x` and `Ch.receive ch` are short for `Alt.sync (Ch.give ch x)` and `Alt.sync (Ch.take ch)`.
+- **`Mailbox.make ()`:** a queue. `Mailbox.post` never waits, and `Mailbox.take` is an event.
+- **`Alt.map f e`**, **`Alt.after ms`**, **`Alt.always x`**, **`Alt.wait p`** (a promise), and **`Alt.guard`** (an event a task makes at each sync).
+- **One loop:** a Ch or Mailbox is for the tasks of one event loop. Its values need not be shareable, and it can't cross threads.
+
+```zsharp
+let main () =
+  let numbers = Ch.make ()
+  let words = Ch.make ()
+  let r =
+    Task.run (Task.scope (fun s ->
+      task {
+        Task.start s (Ch.send words "hello") |> ignore
+        let first = Alt.choose [ Alt.map string (Ch.take numbers); Ch.take words; Alt.map (fun () -> "nothing") (Alt.after 100) ]
+        return! Alt.sync first
+      }))
+  println r
+  0
+```
+
+```text
+hello
+```
+
+**Nacks:** `Alt.withNack (fun nack -> e)` makes e at each sync and hands it `nack`, an event that happens if the sync commits to another branch, or the task is cancelled while it waits. A server that is sent `nack` with a request chooses between replying and seeing that the client gave up:
+
+```zsharp
+let server (requests: Mailbox<int * Ch<int> * Alt<unit>>) =
+  task {
+    let! (x, reply, nack) = Alt.sync (Mailbox.take requests)
+    do! Task.sleep 20
+    let! said = Alt.sync (Alt.choose [ Alt.map (fun () -> "replied") (Ch.give reply (x * 2)); Alt.map (fun () -> "the client gave up") nack ])
+    println said
+    return ()
+  }
+
+let call (requests: Mailbox<int * Ch<int> * Alt<unit>>) (x: int) : Alt<int> =
+  Alt.withNack (fun nack ->
+    let reply = Ch.make ()
+    Mailbox.post requests (x, reply, nack)
+    Ch.take reply)
+
+let main () =
+  let requests = Mailbox.make ()
+  Task.run (Task.scope (fun s ->
+    task {
+      Task.start s (server requests) |> ignore
+      let! r = Alt.sync (Alt.choose [ Alt.map Some (call requests 21); Alt.map (fun () -> None) (Alt.after 5) ])
+      println $"client: {r}"
+      return ()
+    }))
+  0
+```
+
+```text
+client: None
+the client gave up
+```
+
+**Not Task.race:** racing two `Ch.receive`s isn't a choice. The race cancels the loser after the fact, so when the winner's resumption has to wait for a turn of the loop, the loser can also take a value, which is then lost. A choice commits exactly one branch, and drops the others before any task goes on.
+
 ## Sockets
 
 `Tcp` has TCP for tasks: `Tcp.listen`, then `Tcp.accept` for each connection; `Tcp.connect`; and `Tcp.read`, `Tcp.write` and `Tcp.writeText`. Each gives a `result`, and `use` closes a connection. An echo server, with a task per connection (the whole program is `examples/echo/server.zs`):

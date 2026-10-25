@@ -1,0 +1,12 @@
+tests/alt/err_internals.zs:6:3: error: 'drainCallbacks' is private to module Threading
+tests/alt/err_internals.zs:7:14: error: unknown name 'Task.onCancel'
+tests/alt/err_internals.zs:8:16: error: unknown name 'Task.cancelNow'
+tests/alt/err_internals.zs:9:15: error: 'child' is private to module Threading
+tests/alt/err_internals.zs:14:35: error: the fields of 'Callbacks' are private to module Threading
+tests/alt/err_internals.zs:17:26: error: the fields of 'Callbacks' are private to module Threading
+tests/alt/err_internals.zs:21:13: error: the fields of 'Queue' are private to module Threading
+tests/alt/err_internals.zs:23:17: error: the fields of 'Queue' are private to module Threading
+tests/alt/err_internals.zs:27:11: error: the fields of 'Queue' are private to module Threading
+tests/alt/err_internals.zs:31:3: error: the fields of 'Queue' are private to module Threading
+tests/alt/err_internals.zs:35:3: error: 'Prims' is private to module Threading
+11 errors

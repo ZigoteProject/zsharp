@@ -1,0 +1,14 @@
+receive timed out: None
+then send timed out: None
+blocked on a, b, c and after 60000: r closed, None
+a, b, c have no waiter: true
+next give on a goes to a live taker: 1
+cancelled giver: value never received: None
+1000 blocked receivers, scope cancelled: send: None
+sends through = values received: true
+give meets a waiting take, cancelled by its partner: went on false, r closed
+two waits on a promise, cancelled by its partner: went on false, r closed
+a map wakes a task, cancelled by its partner: went on false, r closed
+a looping server, cancelled: served 2
+servers cancelled while they wait to reply: 3
+a commit posted, then the taker cancelled: got 7, give went through true; mapped: got 7, give went through true

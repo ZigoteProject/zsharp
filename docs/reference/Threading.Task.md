@@ -164,6 +164,10 @@ Task.race : Task<'a> -> Task<'a> -> Task<'a>
 
 Runs both tasks at once, and gives the result of the first to finish. The other is
 cancelled: what it waits for is dropped, and what it bound with `use` disposed.
+It isn't a choice: when both finish in the same turn of the loop (both had a value ready,
+say), the second's result is dropped, and a task that had taken something to give it (a
+queue's value) loses it. To wait for the first of several such things, use Alt.choose,
+which commits exactly one.
 
 ### `Task.timeout`
 

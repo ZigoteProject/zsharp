@@ -1,0 +1,14 @@
+taker got 7
+giver done
+giver done
+taker got 8
+fifo: 1 2 3
+stream: 100000 messages, sum 5000050000
+alt and send agree: true
+always 3
+after 0 before always: after 0
+never loses to after 5: timer
+map: 14
+not Share: ref 5, closure 6
+mailbox: 1 2 3
+promise: 9 later, 4 already

@@ -444,9 +444,10 @@ let private lowerFun (types: Map<string, TypeInfo>) (borrowedParams: Map<string,
       let fv = freeVars e
       let lv = live e
       let dead = Set.difference owned lv
-      // what e reaches only through borrowed fields: borrowed by e, dropped after it
+      // what e reaches only through borrowed fields: borrowed by e, dropped after it, so a wait
+      // inside e holds it (a match's value, while its pattern's variables are used)
       let viaFields = Set.difference (Set.intersect owned lv) fv
-      let e2 = rcIn (Set.intersect owned fv) (Set.union borrowed viaFields) e
+      let e2 = holding viaFields (fun () -> rcIn (Set.intersect owned fv) (Set.union borrowed viaFields) e)
       // the drops go where e ends: after its value, or before a jump (which doesn't come back),
       // after the jump's arguments
       let rec after (x: CExpr) : CExpr =
@@ -601,9 +602,10 @@ let private lowerFun (types: Map<string, TypeInfo>) (borrowedParams: Map<string,
         | _ -> viaTemp owned borrowed fe (fun w -> re (CApplyClo(w, args)))
       | CWhile _
       | CFor _ ->
-        // loop parts run repeatedly, so they only borrow; owned variables die after the loop
+        // loop parts run repeatedly, so they only borrow; owned variables die after the loop, so a
+        // wait inside it holds them
         let all = Set.union owned borrowed
-        let loop = re (mapChildren (rc Set.empty all) e.k)
+        let loop = holding owned (fun () -> re (mapChildren (rc Set.empty all) e.k))
         mk (CSeq(loop, drops owned (mk CUnit tUnit))) tUnit
       | CAssign(x, w) when heapVar x -> assignHeap owned borrowed e x w
       // the variable's own reference, moved out

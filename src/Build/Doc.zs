@@ -375,9 +375,9 @@ let docItems (text: string) : list<DocItem> =
           add "operation" (container + "." + String.sub t (word "abstract" t 0) (abstractEnd - word "abstract" t 0))
         else
           let memberStart = word "member" t (optional "static" t 0)
-          // member x.Name: the name after the self's
+          // member x.Name: the name after the self's (a private type's members aren't listed)
           let first = ident false t memberStart
-          if first >= 0 then
+          if first >= 0 && containerKind <> "private" then
             let second = if first < String.length t && String.byte t first = u8 46 then ident false t (first + 1) else -1
             let name = if second >= 0 then String.sub t (first + 1) (second - first - 1) else String.sub t memberStart (first - memberStart)
             add "member" (container + "#" + name)

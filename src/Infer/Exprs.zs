@@ -1192,6 +1192,7 @@ and field (cx: Cx) (cr: CExpr) (f: string) : CExpr =
     fail $"cannot resolve '.{f}': the type of this expression isn't known here; add a type annotation"
   | _ ->
     let rname = recordOf cx cr.ty f
+    fieldsVisible cx rname
     let (rty, targs) = instType cx rname
     expect cx $"field '{f}'" rty cr.ty
     let defs = fieldsOf cx rname

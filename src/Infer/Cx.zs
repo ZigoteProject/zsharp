@@ -711,10 +711,31 @@ let recordKey (cx: Cx) (tok: int) (name: string) (t: Ty) (inlay: bool) (key: str
 
 let record (cx: Cx) (tok: int) (name: string) (t: Ty) (inlay: bool) = recordKey cx tok name t inlay "" false
 
+/// Whether code here sees what's private to owner: its module and the modules nested in it do.
+let visibleTo (cx: Cx) (owner: option<string>) : bool =
+  match (owner, cx.currentModule.Value) with
+  | (o, c) when o = c -> true
+  | (Some o, Some c) -> String.startsWith (o + ".") c
+  | (None, Some c) -> Set.contains c cx.mainNested.Value
+  | _ -> false
+
+/// Fails unless code here may use the record's fields: a private record's are for its module,
+/// even where one of its values is reached (through a public record's field, say).
+let fieldsVisible (cx: Cx) (rname: string) =
+  match Map.tryFind rname cx.privates.Value with
+  | Some owner when not (visibleTo cx owner) ->
+    let o =
+      match owner with
+      | Some m -> m
+      | None -> "?"
+    fail $"the fields of '{shortName rname}' are private to module {o}"
+  | _ -> ()
+
 /// The field names a record literal, update, pattern or declaration writes (each with its name's
 /// token), each a reference to (or with isDef the definition of) the field: key
-/// field:<record>.<field> (0019's rename).
+/// field:<record>.<field> (0019's rename). A private record's fields are for its module.
 let fieldUses (cx: Cx) (rname: string) (names: list<string * int>) (isDef: bool) =
+  fieldsVisible cx rname
   let types =
     match Map.tryFind rname cx.types.Value with
     | Some { def = RecordDef fs } -> fs
@@ -792,13 +813,6 @@ let resolveWith (cx: Cx) (exists: string -> bool / <Fails | 'e>) (x: string) : o
       | p :: rest ->
         let q = p + "." + x
         if exists q then Some q else tryIn rest
-    // a private name is visible in its module and in the modules nested in it
-    let visibleTo (owner: option<string>) =
-      match (owner, cx.currentModule.Value) with
-      | (o, c) when o = c -> true
-      | (Some o, Some c) -> String.startsWith (o + ".") c
-      | (None, Some c) -> Set.contains c cx.mainNested.Value
-      | _ -> false
     let found =
       match tryIn (enclosing cx) with
       | Some q -> Some q
@@ -810,7 +824,7 @@ let resolveWith (cx: Cx) (exists: string -> bool / <Fails | 'e>) (x: string) : o
     | Some q ->
       match Map.tryFind q cx.privates.Value with
       | Some owner ->
-        if visibleTo owner then
+        if visibleTo cx owner then
           Some q
         else
           let o =

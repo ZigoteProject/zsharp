@@ -1,0 +1,13 @@
+nack
+got b 2
+own branch won: none
+nack
+cancelled: None
+inner nack
+got b 3
+outer none
+guard ran 3 times in 3 syncs
+a guard that waits runs before polling: late
+guard cancelled while it waits: r closed, None
+cancelled by its own function: nack
+the next withNack function ran after the cancel: false

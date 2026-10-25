@@ -3,16 +3,22 @@
 /// has a loop of its own: `Task.spawn` starts a task on another thread's, to use every core.
 namespace Threading
 
+// where a Callbacks is: the number the next one gets, and how many have been taken back
+type private Counts = { next: int; dead: int }
+
+// callbacks under numbers, in the order they were added: a Cancel's actions, or the tasks
+// waiting for a Promise. Adding one, taking it back and taking them all out are cheap, whatever
+// the order. Each entry has its number, ascending (None once taken back)
+type private Callbacks<'f> = { entries: Buffer<int * option<'f>>; counts: ref<Counts> }
+
 /// A task's cancellation: whether it has been cancelled, and what to do then (stop waiting,
 /// dispose what `use` bound). A task started by `both`, `all`, `race` or `Task.start` has its
 /// own, under its parent's, so cancelling a task cancels what it started.
 type Cancel =
   { /// Whether it has been cancelled.
     cancelled: ref<bool>
-    /// What to do then, newest first, each with the number it was added under.
-    actions: ref<list<int * (unit -> unit)>>
-    /// The number the next action gets.
-    nextAction: ref<int> }
+    /// What to do then.
+    actions: Callbacks<unit -> unit> }
 
 /// Work that may wait (for input, a timer, other tasks) and then gives an `'a`. A task is cold:
 /// making one does nothing, and running it twice does the work twice.
@@ -36,47 +42,118 @@ type Scope =
 type Promise<'a> =
   { /// The result, once there is one.
     result: ref<option<'a>>
-    /// The tasks waiting for it, newest first, each with its number.
-    waiting: ref<list<int * ('a -> unit)>>
-    /// The number the next waiting task gets.
-    nextWaiting: ref<int> }
+    /// The tasks waiting for it.
+    waiting: Callbacks<'a -> unit> }
+
+// ---------------------------------------------------------------- callbacks
+// For Task and Alt only (they're private to the namespace): a Cancel's actions, a Promise's
+// waiting tasks, and what Alt leaves on them.
+
+// none yet
+let private callbacks () : Callbacks<'f> =
+  { entries = Buffer.empty; counts = ref { next = 0; dead = 0 } }
+
+// adds f, and gives the number that takes it back
+let private addCallback (cs: Callbacks<'f>) (f: 'f) : int =
+  let c = cs.counts.Value
+  cs.counts.Value <- { c with next = c.next + 1 }
+  Buffer.push (c.next, Some f) cs.entries
+  c.next
+
+// the place of id among the entries, or -1
+let private findCallback (cs: Callbacks<'f>) (id: int) : int =
+  let mutable lo = 0
+  let mutable hi = Buffer.length cs.entries
+  while lo < hi do
+    let mid = (lo + hi) / 2
+    if fst cs.entries.[mid] < id then lo <- mid + 1 else hi <- mid
+  if lo < Buffer.length cs.entries && fst cs.entries.[lo] = id then lo else -1
+
+// drops the taken-back entries at the end, and moves the rest up once most are taken back
+let private compactCallbacks (cs: Callbacks<'f>) =
+  let es = cs.entries
+  let before = cs.counts.Value.dead
+  let mutable dead = before
+  while Buffer.length es > 0 && Option.isNone (snd es.[Buffer.length es - 1]) do
+    Buffer.removeLast es |> ignore
+    dead <- dead - 1
+  let n = Buffer.length es
+  if dead > 32 && 2 * dead > n then
+    let mutable j = 0
+    for i in 0 .. n - 1 do
+      if Option.isSome (snd es.[i]) then
+        es.[j] <- es.[i]
+        j <- j + 1
+    Buffer.truncate j es
+    dead <- 0
+  if dead <> before then cs.counts.Value <- { cs.counts.Value with dead = dead }
+
+// takes back what's under id, and says whether it was still there
+let private removeCallback (cs: Callbacks<'f>) (id: int) : bool =
+  let es = cs.entries
+  let n = Buffer.length es
+  if n > 0 && fst es.[n - 1] = id then
+    // the newest, as a wait's is (the last entry is never one taken back)
+    Buffer.removeLast es |> ignore
+    compactCallbacks cs
+    true
+  else
+    let i = findCallback cs id
+    if i >= 0 && Option.isSome (snd es.[i]) then
+      es.[i] <- (id, None)
+      cs.counts.Value <- { cs.counts.Value with dead = cs.counts.Value.dead + 1 }
+      compactCallbacks cs
+      true
+    else
+      false
+
+// takes them all out, and gives each to call: newest first, or oldest first
+let private drainCallbacks (cs: Callbacks<'f>) (newestFirst: bool) (call: 'f -> unit) =
+  let n = Buffer.length cs.entries
+  cs.counts.Value <- { cs.counts.Value with dead = 0 }
+  if n = 1 then
+    // the usual case, with nothing to copy (the one entry is never one taken back)
+    match snd (Buffer.removeLast cs.entries) with
+    | Some f -> call f
+    | None -> ()
+  else if n > 1 then
+    // a copy, as call may add more or take some back
+    let all = Buffer.toArray cs.entries
+    Buffer.truncate 0 cs.entries
+    for j in 0 .. n - 1 do
+      match snd all.[if newestFirst then n - 1 - j else j] with
+      | Some f -> call f
+      | None -> ()
+
+let private newCancel () : Cancel = { cancelled = ref false; actions = callbacks () }
+
+// adds f to what c does when it's cancelled (a wait to undo then, as Alt's are); its number
+// goes to forget once it's not needed
+let private onCancel (c: Cancel) (f: unit -> unit) : int = addCallback c.actions f
+
+// takes back an action onCancel added
+let private forget (c: Cancel) (id: int) = removeCallback c.actions id |> ignore
+
+// cancels c: its actions run, newest first, once
+let private cancelNow (c: Cancel) =
+  if not c.cancelled.Value then
+    c.cancelled.Value <- true
+    drainCallbacks c.actions true (fun f -> f ())
+
+// a cancellation under c, cancelled with it, and the number (forget c) that unlinks it
+let private child (c: Cancel) : Cancel * int =
+  let k = newCancel ()
+  let link = onCancel c (fun () -> cancelNow k)
+  (k, link)
 
 /// Functions on tasks.
 module Task =
-  let private newCancel () : Cancel =
-    { cancelled = ref false; actions = ref []; nextAction = ref 0 }
-
   // a task that does this work when it runs
   let private pending (work: Cancel -> ('a -> unit) -> unit) : Task<'a> =
     { ready = None; work = work }
 
   // the work of a task that's ready: never called
   let private never (c: Cancel) (k: 'a -> unit) = ()
-
-  // adds an action for when c is cancelled; its number removes it (forget) once it's not needed
-  let private onCancel (c: Cancel) (f: unit -> unit) =
-    let id = c.nextAction.Value
-    c.nextAction.Value <- id + 1
-    c.actions.Value <- (id, f) :: c.actions.Value
-    id
-
-  let private forget (c: Cancel) (id: int) =
-    c.actions.Value <- List.filter (fun (i, _) -> i <> id) c.actions.Value
-
-  // cancels c: its actions run, newest first (what the task did last is undone first), once
-  let private cancelNow (c: Cancel) =
-    if not c.cancelled.Value then
-      c.cancelled.Value <- true
-      let actions = c.actions.Value
-      c.actions.Value <- []
-      for (_, f) in actions do
-        f ()
-
-  // a cancellation under c, cancelled with it; the number unlinks it once it's done
-  let private child (c: Cancel) =
-    let k = newCancel ()
-    let link = onCancel c (fun () -> cancelNow k)
-    (k, link)
 
   // calls k x now, or through the event loop when continuations are already nested deeply (a
   // run of awaits that complete at once would otherwise grow the stack)
@@ -102,8 +179,8 @@ module Task =
 
   /// The end of a `use` scope in a task: x is disposed, and no longer on cancellation.
   let disposed (c: Cancel) (id: int) (x: 'r) =
-    forget c id
-    dispose x
+    // gone when the cancellation has disposed it already
+    if removeCallback c.actions id then dispose x
 
   /// A task that gives `x` at once.
   let ret (x: 'a) : Task<'a> = { ready = Some x; work = never }
@@ -201,6 +278,10 @@ module Task =
 
   /// Runs both tasks at once, and gives the result of the first to finish. The other is
   /// cancelled: what it waits for is dropped, and what it bound with `use` disposed.
+  /// It isn't a choice: when both finish in the same turn of the loop (both had a value ready,
+  /// say), the second's result is dropped, and a task that had taken something to give it (a
+  /// queue's value) loses it. To wait for the first of several such things, use Alt.choose,
+  /// which commits exactly one.
   let race (a: Task<'a>) (b: Task<'a>) : Task<'a> =
     pending (fun c k ->
       let (ca, la) = child c
@@ -222,16 +303,13 @@ module Task =
     race (map Some t) (map (fun () -> None) (sleep ms))
 
   /// A promise with no result yet: `Task.fulfill` gives it one.
-  let promise () : Promise<'a> = { result = ref None; waiting = ref []; nextWaiting = ref 0 }
+  let promise () : Promise<'a> = { result = ref None; waiting = callbacks () }
 
   /// Gives the promise its result (only the first time), and the tasks waiting for it go on.
   let fulfill (p: Promise<'a>) (x: 'a) =
     if Option.isNone p.result.Value then
       p.result.Value <- Some x
-      let waiting = List.rev p.waiting.Value
-      p.waiting.Value <- []
-      for (_, k) in waiting do
-        resume k x
+      drainCallbacks p.waiting false (fun k -> resume k x)
 
   /// Waits for the promise's result.
   let wait (p: Promise<'a>) : Task<'a> =
@@ -239,14 +317,15 @@ module Task =
       match p.result.Value with
       | Some x -> resume k x
       | None ->
-        let id = p.nextWaiting.Value
-        p.nextWaiting.Value <- id + 1
-        let cid =
-          onCancel c (fun () ->
-            p.waiting.Value <- List.filter (fun (i, _) -> i <> id) p.waiting.Value)
-        p.waiting.Value <- (id, fun x ->
-          forget c cid
-          k x) :: p.waiting.Value)
+        // the number addCallback gives it below
+        let id = p.waiting.counts.Value.next
+        let cid = onCancel c (fun () -> removeCallback p.waiting id |> ignore)
+        // a task resumed before it may have cancelled this one
+        addCallback p.waiting (fun x ->
+          if not c.cancelled.Value then
+            forget c cid
+            k x)
+        |> ignore)
 
   /// Runs `body` with a scope for tasks to run alongside it (`Task.start`). The scope finishes
   /// once its body has and every task started in it has finished or been cancelled.
@@ -284,11 +363,13 @@ module Task =
           forget s.children link
           finished s)
       runIn t c (fun x ->
-        over.Value <- true
-        forget c id
-        forget s.children link
-        fulfill p x
-        finished s)
+        // a task cancelled after its last wait was over goes on to here: it's finished already
+        if not over.Value then
+          over.Value <- true
+          forget c id
+          forget s.children link
+          fulfill p x
+          finished s)
     p
 
   /// Cancels the tasks started in the scope (and what they started).

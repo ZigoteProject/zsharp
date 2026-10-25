@@ -1,0 +1,3 @@
+tests/alt/err_cases.zs:3:22: error: 'Prims' is private to module Threading
+tests/alt/err_cases.zs:4:22: error: 'Guard' is private to module Threading
+2 errors

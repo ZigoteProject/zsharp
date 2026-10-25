@@ -16,7 +16,8 @@ src/
 
 **Nested modules:** `module Inner =` followed by indented declarations defines a module inside a file.
 - **Names:** its names are `Outer.Inner.name`, and code inside it sees the names of the modules it's in.
-- **Privacy:** a `private` name is visible in its module and the modules nested in it.
+- **Privacy:** a `private` name is visible in its module and the modules nested in it. So are a
+  `type private` record's fields, even where one of its values turns up (in a public record's field).
 - **`open`:** inside a module, it lasts until the module ends.
 
 ```zsharp
