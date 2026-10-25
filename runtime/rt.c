@@ -1434,7 +1434,8 @@ static void temp_path(zs_str *prefix, char *path, size_t size) {
 
 #ifdef _WIN32
 // the UCRT has _mktemp_s, not mkdtemp (mingw-w64 has mkstemp): a name, then made if no one
-// took it first
+// took it first; under a name of its own, as newer mingw-w64 headers declare one
+#define mkdtemp zs_mkdtemp
 static char *mkdtemp(char *path) {
     size_t n = strlen(path);
     for (int tries = 0; tries < 100; tries++) {

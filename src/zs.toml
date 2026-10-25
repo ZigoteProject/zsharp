@@ -1,7 +1,7 @@
 # The Z# compiler, in Z# (phase 11, proposal 0020; ARCHITECTURE.md beside this file is its map)
 [package]
 name = "zs"
-version = "0.6.0"
+version = "0.6.1"
 main = "Main.zs"
 
 # the machine the compiler runs on: its architecture and its own executable

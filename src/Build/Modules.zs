@@ -141,8 +141,11 @@ let library (texts: Map<string, string>) (root: string) (hosted: bool) : result<
 type Linked = { cflags: list<string>; links: list<string> }
 
 let private lowerFirst (s: string) : string =
-  let b = String.byte s 0
-  (if isUpper b then String.ofByte (b + u8 32) else String.ofByte b) + String.sub s 1 (String.length s - 1)
+  if String.length s = 0 then
+    s
+  else
+    let b = String.byte s 0
+    (if isUpper b then String.ofByte (b + u8 32) else String.ofByte b) + String.sub s 1 (String.length s - 1)
 
 /// A project's problem as a diagnostic, with the source it's in (the file's index in the build).
 let problem (index: int) (p: Project.Problem) : Diagnostic * option<Source.Source> =
