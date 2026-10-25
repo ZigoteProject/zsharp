@@ -6,7 +6,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 image=zsharp-dev
-stage0=0.6
+stage0=0.6.1
 if [ "${1:-}" = "--rebuild" ] || ! podman image exists "$image"; then
   [ "${1:-}" = "--rebuild" ] && shift
   podman build -t "$image" -f .devcontainer/Containerfile .devcontainer
@@ -14,7 +14,7 @@ fi
 name=zs-$stage0-linux-$(uname -m)
 # each stage 0 archive's sha256: it runs with the repository mounted writable, so an archive
 # from anywhere else is refused
-declare -A sha256=([zs-0.6-linux-x86_64]=514729697528b78daa159dc1b3639977bf49a12afbd76a2d8a80a7f9838d28bc)
+declare -A sha256=([zs-0.6.1-linux-x86_64]=fdbc7d66b0ec54fef17d50ab231d846b4a7aa9cc1aac9c4e23df1d3dbe15dfa8)
 if [ ! -x "build/stage0/$name/zs" ]; then
   sum=${sha256[$name]:-}
   [ -n "$sum" ] || { echo "no stage 0 for $(uname -m): only ${!sha256[*]} are pinned" >&2; exit 1; }

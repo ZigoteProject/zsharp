@@ -21,9 +21,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0 # the whole history: test.sh diffs the grammar against Zed's pinned commit
-      # stage 0: this repository's release v0.6, into dist/ where ./dev looks first (a private
+      # stage 0: this repository's release v0.6.1, into dist/ where ./dev looks first (a private
       # repository's releases need the job's token)
-      - run: gh release download v0.6 -p 'zs-0.6-linux-x86_64.tar.gz' -D dist
+      - run: gh release download v0.6.1 -p 'zs-0.6.1-linux-x86_64.tar.gz' -D dist
         env:
           GH_TOKEN: ${{ github.token }}
       - run: ./dev ./test.sh
