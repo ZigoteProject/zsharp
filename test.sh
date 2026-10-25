@@ -199,6 +199,12 @@ if command -v qemu-system-arm >/dev/null && bin/zs build tests/mcu/effects.zs --
   echo "ok   tests/mcu/effects.zs (effect handlers on a Cortex-M0+, under qemu)"
 else echo "FAIL tests/mcu/effects.zs"; cat "$tmp/effects.log"; fail=1; fi
 
+# freestanding WebAssembly: the same effects test, run by the Node host
+if command -v node >/dev/null && bin/zs build tests/mcu/effects.zs --target wasm32 -o "$tmp/effects.wasm" 2>"$tmp/effects.log" \
+   && [ "$(node bin/run-wasm.mjs "$tmp/effects.wasm" 2>&1)" = "$(cat tests/mcu/effects.expected)" ]; then
+  echo "ok   tests/mcu/effects.zs (effect handlers on wasm32, under node)"
+else echo "FAIL tests/mcu/effects.zs (wasm32)"; cat "$tmp/effects.log"; fail=1; fi
+
 # the library checks on its own (an editor opening one of its files must not see everything
 # defined twice)
 if bin/zs check --strict lib/core/Collections/List.zs >"$tmp/lib.log" 2>&1; then echo "ok   zs check lib (the library on its own)"

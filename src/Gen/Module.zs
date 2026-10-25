@@ -13,7 +13,7 @@ open Fun
 /// The module text with the word placeholders resolved (i_W, and the header sizes HDR1 = one
 /// word, HDR2 = two). String constants (c"...") are left as written.
 let resolveWord (opts: Options) (ir: string) : string =
-  let (w, h1, h2) = if String.startsWith "thumb" opts.target then ("i32", "4", "8") else ("i64", "8", "16")
+  let (w, h1, h2) = if word32 opts.target then ("i32", "4", "8") else ("i64", "8", "16")
   // -Os: optsize on every function definition. LLVM's unroller and vectorizer go by this
   // attribute (clang adds it to C functions), not by the -Os flag alone
   let sized (line: string) : string =

@@ -1,8 +1,9 @@
-// Z# runtime for bare-metal ARM Cortex-M (zs build --target cortex-m4 | cortex-m0plus): no OS
-// and no libc. The heap is a static array with size-class free lists; output and the exit code
-// go to the debugger or emulator through semihosting. The vector table and reset handler are
-// here too. What needs an OS (files, processes, environment) isn't provided, so a program that
-// uses it fails to link, naming the function.
+// Z# runtime for bare-metal ARM Cortex-M (zs build --target cortex-m4 | cortex-m0plus) and
+// freestanding WebAssembly (--target wasm32): no OS and no libc. The heap is a static array with
+// size-class free lists. On a Cortex-M, output and the exit code go to the debugger or emulator
+// through semihosting, and the vector table and reset handler are here too; on WebAssembly they
+// are the host's imports. What needs an OS (files, processes, environment) isn't provided, so a
+// program that uses it fails to link, naming the function.
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -58,6 +59,21 @@ size_t strlen(const char *s) {
     return n;
 }
 
+#if defined(__wasm__)
+// ---- the host: output, exit and Runtime.ticks () are the imports zs.write (bytes, length),
+// zs.exit (code) and zs.ticks (); a program imports only those it uses
+
+__attribute__((import_module("zs"), import_name("write"))) void host_write(const char *p, zs_int n);
+__attribute__((import_module("zs"), import_name("exit"))) void host_exit(int32_t code);
+__attribute__((import_module("zs"), import_name("ticks"))) int64_t host_ticks(void);
+
+static void write_bytes(const char *p, int64_t n) { host_write(p, (zs_int)n); }
+
+_Noreturn static void stop(int code) {
+    host_exit(code);
+    __builtin_trap(); // a host whose exit returns
+}
+#else
 // ---- semihosting (ARM's debug channel; QEMU: -semihosting-config enable=on)
 
 static int semihost(int op, void *arg) {
@@ -79,8 +95,6 @@ static void write_bytes(const char *p, int64_t n) {
     }
 }
 
-static void write_c(const char *s) { write_bytes(s, (int64_t)strlen(s)); }
-
 static void report(void);
 
 _Noreturn static void stop(int code) {
@@ -89,6 +103,9 @@ _Noreturn static void stop(int code) {
     semihost(0x20, block);                          // SYS_EXIT_EXTENDED
     for (;;) {}
 }
+#endif
+
+static void write_c(const char *s) { write_bytes(s, (int64_t)strlen(s)); }
 
 // ---- heap: 8-byte header holding the block size; free lists per 8-byte class up to 256 bytes
 
@@ -557,6 +574,16 @@ void zs_set_args(int32_t argc, char **argv) {
 
 zs_int zs_argc(void) { return 0; }
 
+#if defined(__wasm__)
+// ---- startup: the entry runs main (a library, --lib, has none, and no entry) and exits
+
+int main(int argc, char **argv) __attribute__((weak));
+
+void _start(void) { stop(main(0, 0)); }
+
+/// Runtime.ticks (): the host's count.
+int64_t zs_ticks(void) { return host_ticks(); }
+#else
 // ---- startup: vector table, reset handler, stack painting, the exit report
 
 extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss, _sstack, _estack;
@@ -623,6 +650,7 @@ int64_t zs_ticks(void) {
 __attribute__((section(".vectors"), used)) static void *const vectors[16] = {
     &_estack, Reset_Handler, fault, fault, fault, fault, fault, 0, 0, 0, 0, fault, fault, 0, fault, SysTick_Handler,
 };
+#endif
 
 // SIMD on a microcontroller: LLVM does a vector's operations lane by lane (with what DSP
 // instructions the chip has), so a wide vector needs no more than a word's alignment

@@ -602,7 +602,8 @@ and gives LLVM the facts it can't prove. Everything in this table is built.
 | 1 | Linux x86-64 and aarch64 | native, or `--target aarch64-linux-musl` (static) |
 | 2 | Bare-metal ARM Cortex-M: `cortex-m4` (M4F), `cortex-m0plus` | `--target cortex-m4`; tested under QEMU |
 | 3 | macOS aarch64, Windows x86-64 | through `zig cc` (planned, targets track) |
-| 4 | WASM (WASI) | later |
+| 4 | Freestanding WebAssembly: `wasm32` | `--target wasm32`; tested under Node |
+| 5 | WASM (WASI) | later |
 
 **Cross-compiling:** `zs build --target <triple>`. clang compiles the program for the target,
 and `zig cc` builds the runtime and links with Zig's bundled C library, so no sysroot is
@@ -624,6 +625,10 @@ needed. C structs by value follow the target's convention: x86-64 System V, or A
   - **Externs** count as not allocating: C is outside the check.
   - **Interrupt handlers** are `NoAlloc` implicitly, since the allocator isn't reentrant.
   - **`--no-heap`:** the whole program is checked, and the image has no heap.
+
+**Freestanding WebAssembly (`wasm32`):** the bare-metal build, for a host instead of a board.
+- **Runtime:** `rt-embedded.c` without the Cortex-M parts: a 1 MB static heap, and output, exit and `Runtime.ticks ()` as the imports `zs.write (ptr, len)`, `zs.exit (code)` and `zs.ticks ()` (a module imports only those it uses). No Std, as on a chip.
+- **Module:** `_start` runs `main`; `[<Export>]` functions are exported, with WebAssembly's C ABI (a struct by pointer, returned through sret); `--lib` has no entry. `runtime/run-wasm.mjs` is a Node host: `node run-wasm.mjs prog.wasm`.
 
 ## 11. C interop
 

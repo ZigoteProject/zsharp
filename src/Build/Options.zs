@@ -1,14 +1,16 @@
 /// What a build is asked for: zs build's flags (the F# compiler's Main and Driver settings).
 
-/// A bare-metal microcontroller target (zs build --target cortex-m4): how clang and zig cc are
-/// told about the chip, the QEMU board whose memory map the program is linked for, and the heap
-/// size. The program uses runtime/rt-embedded.c instead of the OS runtime.
+/// A bare-metal target (zs build --target cortex-m4, wasm32): how clang and zig cc are told about
+/// the chip, the QEMU board whose memory map the program is linked for ("" for WebAssembly), and
+/// the heap size. The program uses runtime/rt-embedded.c instead of the OS runtime.
 type Mcu = { triple: string; cflags: list<string>; zigTarget: string; zigCpu: string; board: string; heap: int }
 
-/// The chips --target knows by name.
+/// The chips --target knows by name, and WebAssembly.
 let mcus : list<string * Mcu> =
   [ ("cortex-m4", { triple = "thumbv7em-none-eabihf"; cflags = [ "-mcpu=cortex-m4"; "-mfpu=fpv4-sp-d16"; "-mfloat-abi=hard" ]; zigTarget = "thumb-freestanding-eabihf"; zigCpu = "cortex_m4+vfp4d16sp"; board = "mps2-an386"; heap = 64 * 1024 })
-    ("cortex-m0plus", { triple = "thumbv6m-none-eabi"; cflags = [ "-mcpu=cortex-m0plus"; "-mfloat-abi=soft" ]; zigTarget = "thumb-freestanding-eabi"; zigCpu = "cortex_m0plus"; board = "microbit"; heap = 8 * 1024 }) ]
+    ("cortex-m0plus", { triple = "thumbv6m-none-eabi"; cflags = [ "-mcpu=cortex-m0plus"; "-mfloat-abi=soft" ]; zigTarget = "thumb-freestanding-eabi"; zigCpu = "cortex_m0plus"; board = "microbit"; heap = 8 * 1024 })
+    // freestanding WebAssembly: no OS, the host gives output and exit as imports
+    ("wasm32", { triple = "wasm32-unknown-unknown"; cflags = []; zigTarget = "wasm32-freestanding"; zigCpu = "generic"; board = ""; heap = 1024 * 1024 }) ]
 
 /// A build's options.
 type Options =

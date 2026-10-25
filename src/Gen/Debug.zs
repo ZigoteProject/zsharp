@@ -20,7 +20,7 @@ let lenRange (g: G) : string =
   match g.lenRange.Value with
   | Some r -> r
   | None ->
-    let r = meta g (if String.startsWith "thumb" g.opts.target then "!{i_W 0, i_W 2147483648}" else "!{i_W 0, i_W 140737488355328}")
+    let r = meta g (if word32 g.opts.target then "!{i_W 0, i_W 2147483648}" else "!{i_W 0, i_W 140737488355328}")
     g.lenRange.Value <- Some r
     r
 

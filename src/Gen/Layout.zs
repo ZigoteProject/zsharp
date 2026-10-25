@@ -169,8 +169,13 @@ let isArm64 (g: G) : bool = g.opts.arch = "aarch64"
 /// structs), LLP64.
 let isWindows (g: G) : bool = String.contains "-windows" g.opts.target
 
-/// The machine word (int, usize, reference counts, lengths): 32 bits on a Cortex-M, else 64.
-let is32 (g: G) : bool = String.startsWith "thumb" g.opts.target
+/// The machine word (int, usize, reference counts, lengths): 32 bits on a Cortex-M and wasm32,
+/// else 64.
+let is32 (g: G) : bool = word32 g.opts.target
+
+/// WebAssembly's C ABI: a struct of one scalar as that scalar, any other by a pointer to a copy
+/// (byval), returned through an sret pointer.
+let isWasm (g: G) : bool = String.startsWith "wasm" g.opts.target
 
 let pointerBytes (g: G) : int = if is32 g then 4 else 8
 
@@ -442,6 +447,10 @@ let abiFor (g: G) (t: Ty) (isResult: bool) : Abi =
     abiArm64 g t isResult
   else if isWindows g then
     abiWin64 g t
+  else if isWasm g then
+    match cLayout g t with
+    | (_, _, [ (_, s) ]) -> Pieces [ s ]
+    | _ -> Memory
   else
     let (size, _, scalars) = cLayout g t
     if size > 16 then
@@ -483,7 +492,7 @@ let cModes (g: G) (pars: list<Ty>) (sret: bool) : list<Abi> =
         if llty g t = "double" || llty g t = "float" then sses.Value <- sses.Value - 1 else ints.Value <- ints.Value - 1
         Scalar
       | Pieces ps ->
-        if isArm64 g || isWindows g then
+        if isArm64 g || isWindows g || isWasm g then
           Pieces ps
         else
           let ni = List.length (List.filter (fun (p: string) -> String.startsWith "i" p) ps)

@@ -71,3 +71,16 @@ println $"took {Runtime.ticks () - t0} ticks"
 ```
 
 `bench/mcu/run.sh` builds each benchmark program in both Z# and C, runs them under QEMU, and prints a table of instructions, flash, heap and stack.
+
+## Freestanding WebAssembly
+
+`--target wasm32` is the same bare-metal build for a WebAssembly host (a browser, Node, an engine
+embedded in a program) instead of a chip: no Std, a 1 MB heap inside the module.
+
+```sh
+zs build hello.zs --target wasm32 -o hello.wasm
+node run-wasm.mjs hello.wasm                    # beside zs; runtime/ in a checkout
+```
+
+- **Imports:** output, exit and `Runtime.ticks ()` come from the host as `zs.write (ptr, len)` (bytes in the module's memory), `zs.exit (code)` (it must not return: throw) and `zs.ticks ()`. A module imports only those it uses. `run-wasm.mjs` is the whole host, about twenty lines.
+- **Exports:** `memory`, `_start` (runs `main`, then calls `zs.exit`) and each `[<Export>]` function, with WebAssembly's C ABI: a `[<CLayout>]` record by a pointer into memory, returned through a pointer the caller passes first. `--lib` builds a module with no `main` and no `_start`.

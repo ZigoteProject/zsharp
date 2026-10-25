@@ -159,6 +159,9 @@ type Options =
     /// the program runs code on more than one thread: shared objects' counts change atomically
     threaded: bool }
 
+/// Whether the target's machine word is 32 bits: a Cortex-M's (thumb…) or WebAssembly's (wasm32).
+let word32 (target: string) : bool = String.startsWith "thumb" target || String.startsWith "wasm32" target
+
 /// One of the LLVM modules a program is split into, compiled on its own: the functions it
 /// defines, those of them the other modules call, whether it has the entry points (main, the
 /// tests, C exports), and whether it holds copies of library functions and generic instances

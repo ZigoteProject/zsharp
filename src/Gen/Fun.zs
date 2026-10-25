@@ -1728,7 +1728,7 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
     // OS. Defined by the programs that have effects (each module that uses them, merged by the
     // linker), so the others and the runtime are as they were.
     if firstTime g "zs_yield" then
-      let tls = if String.contains "-none-" g.opts.target then "" else "thread_local "
+      let tls = if String.contains "-none-" g.opts.target || isWasm g then "" else "thread_local "
       helper g $"@zs_yield = linkonce_odr hidden {tls}global {{ i_W, i_W, ptr, ptr }} zeroinitializer\n"
       helper g $"@zs_yield_marker = linkonce_odr hidden {tls}global i_W 0\n"
     let field (i: int) = instr em $"getelementptr {{ i_W, i_W, ptr, ptr }}, ptr @zs_yield, i32 0, i32 {i}"

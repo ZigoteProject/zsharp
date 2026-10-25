@@ -264,6 +264,16 @@ let make (o: Options.Options) (prog0: Program) (linked: Modules.Linked) (testBui
       let cc (args: list<string>) = if cross then Tools.run "zig" (List.concat [ [ "cc"; "-target"; o.target ]; nodebug; args ]) else Tools.run "clang" args
       let built =
         match o.mcu with
+        | Some m when m.board = "" ->
+          // freestanding WebAssembly: the IR and the embedded runtime, linked with _start as the
+          // entry (a library has none), and the C exports exported
+          let obj = Path.changeExtension ll ".o"
+          let entry = if o.isLib then [ "-Wl,--no-entry" ] else []
+          let exports = List.map (fun (e: Core.Ir.Export) -> "-Wl,--export=" + e.cname) prog.exports
+          let compiled = timed o.time "clang" (fun () -> Tools.run "clang" (List.concat [ opt; [ "--target=" + m.triple ]; Options.sectionFlags o; [ "-c"; "-Wno-override-module"; ll; "-o"; obj ] ]))
+          let r = andThen (fun () -> timed o.time "zig cc" (fun () -> Tools.run "zig" (List.concat [ [ "cc"; "-target"; m.zigTarget ]; opt; Options.sectionFlags o; [ $"-DZS_HEAP_SIZE={m.heap}" ]; entry; exports; [ obj; runtimeFile "rt-embedded.c"; "-o"; o.out ] ]))) compiled
+          File.delete obj |> ignore
+          r
         | Some m ->
           // bare metal: the IR and the embedded runtime for the chip, linked for the board
           let obj = Path.changeExtension ll ".o"
