@@ -2892,7 +2892,8 @@ static void dq_push(par_deque *q, par_job *j) {
         cap *= 2;
     }
     atomic_store_explicit(&a[b & (cap - 1)], j, memory_order_relaxed);
-    atomic_store_explicit(&q->bottom, b + 1, memory_order_release); // publishes the job
+    // publishes the job; seq_cst, as is zs_par_fork's look for sleepers after it (see run_jobs)
+    atomic_store_explicit(&q->bottom, b + 1, memory_order_seq_cst);
 }
 
 static par_job *dq_pop(par_deque *q) {
@@ -2943,10 +2944,11 @@ static par_job *steal_any(unsigned *seed) {
     return NULL;
 }
 
+// whether a deque has a job: its bottom read seq_cst, for a worker going to sleep (run_jobs)
 static bool work_left(void) {
     int n = atomic_load_explicit(&P.slots, memory_order_acquire);
     for (int k = 0; k < n; k++)
-        if (atomic_load_explicit(&P.deques[k].top, memory_order_relaxed) < atomic_load_explicit(&P.deques[k].bottom, memory_order_relaxed)) return true;
+        if (atomic_load_explicit(&P.deques[k].top, memory_order_relaxed) < atomic_load(&P.deques[k].bottom)) return true;
     return false;
 }
 
@@ -3046,17 +3048,11 @@ static void run_jobs(bool spare) {
             pthread_mutex_unlock(&P.mu);
             continue;
         }
+        // no wake-up is lost: a fork pushes its job, then reads sleeping; this thread counts
+        // itself in sleeping, then looks at the deques. All four are seq_cst, so one of the two
+        // sees the other: the fork signals, or this thread finds the job
         atomic_fetch_add(&P.sleeping, 1);
-        while (!atomic_load(&P.stop) && !work_left()) {
-            struct timespec t;
-            clock_gettime(CLOCK_REALTIME, &t);
-            t.tv_nsec += 1000000; // 1 ms: a wake-up that comes between the test and the wait isn't lost for long
-            if (t.tv_nsec >= 1000000000) {
-                t.tv_sec++;
-                t.tv_nsec -= 1000000000;
-            }
-            pthread_cond_timedwait(&P.cv, &P.mu, &t);
-        }
+        while (!atomic_load(&P.stop) && !work_left()) pthread_cond_wait(&P.cv, &P.mu);
         atomic_fetch_sub(&P.sleeping, 1);
         pthread_mutex_unlock(&P.mu);
     }
@@ -3143,7 +3139,7 @@ void *zs_par_fork(void *clo, void (*run)(void *, void *), zs_int size) {
     j->clo = clo;
     atomic_init(&j->done, 0);
     dq_push(&P.deques[me], j);
-    if (atomic_load_explicit(&P.sleeping, memory_order_relaxed) > 0) {
+    if (atomic_load(&P.sleeping) > 0) { // seq_cst, after the push's: see run_jobs
         pthread_mutex_lock(&P.mu);
         pthread_cond_signal(&P.cv);
         pthread_mutex_unlock(&P.mu);

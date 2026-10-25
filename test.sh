@@ -97,6 +97,12 @@ for t in tests/parallel/basics tests/parallel/anythread tests/task/spawn tests/t
   else echo "FAIL $t.zs under ThreadSanitizer"; head -40 "$tmp/tsan.log"; fail=1; fi
 done
 
+# the pool's one worker going to sleep as jobs are forked: woken for each one (a wake-up lost
+# hangs it, with nothing polling the deques to find the job)
+if bin/zs build --strict tests/parallel/wake.zs -o "$tmp/wake" 2>"$tmp/wake.log" \
+   && [ "$(ZS_WORKERS=2 timeout 120 "$tmp/wake" 2>&1)" = "$(cat tests/parallel/wake.expected)" ]; then echo "ok   tests/parallel/wake.zs (one worker, woken for every job)"
+else echo "FAIL tests/parallel/wake.zs"; cat "$tmp/wake.log"; fail=1; fi
+
 # aarch64's intrinsics (Simd.Arm): built for it and run under qemu
 if command -v qemu-aarch64 >/dev/null && bin/zs build tests/simd/arm.zs --target aarch64-linux-musl -o "$tmp/arm" 2>"$tmp/arm.log" \
    && [ "$(qemu-aarch64 "$tmp/arm" 2>&1)" = "$(cat tests/simd/arm.expected)" ]; then echo "ok   tests/simd/arm.zs (built for aarch64, under qemu)"
