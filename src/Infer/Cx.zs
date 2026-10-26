@@ -157,6 +157,11 @@ and CxData =
     file: ref<InFile>
     /// the warning kinds the declaration being checked silences ([<NoWarn "…">])
     silenced: ref<Set<string>>
+    /// the module's types in order, for the cycle warning (0021): each one, its name's token, its
+    /// record fields' tokens, and whether [<NoWarn "cycle">] is on it
+    typesHere: Buffer<string * int * Map<string, int> * bool>
+    /// the types marked [<Cyclic>]: their cycles are the program's to break
+    cyclic: ref<Set<string>>
     /// the values statements drop in the declaration being checked, with their places: warned
     /// about at its end, when their types are settled (unused-value)
     discarded: Buffer<Ty * Span>
@@ -374,6 +379,12 @@ type Cx with
   member c.silenced =
     match c with
     | Cx { silenced = x } -> x
+  member c.typesHere =
+    match c with
+    | Cx { typesHere = x } -> x
+  member c.cyclic =
+    match c with
+    | Cx { cyclic = x } -> x
   member c.discarded =
     match c with
     | Cx { discarded = x } -> x
@@ -511,6 +522,8 @@ let create (requireMain: bool) (collect: bool) (allModules: list<string>) (manua
       hovers = Buffer.empty
       file = ref first
       silenced = ref Set.empty
+      typesHere = Buffer.empty
+      cyclic = ref Set.empty
       discarded = Buffer.empty
       dynCalls = Buffer.empty
       testValues = Buffer.empty

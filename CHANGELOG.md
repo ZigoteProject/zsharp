@@ -17,6 +17,11 @@
   (`unsafe d.U32`); it can't be matched, compared or printed. It crosses to C by value as C
   passes a union on every target, sits in `[<CLayout>]` records, and is declared in `--lib`
   headers; debuggers show it as C's. Hovering a `[<CLayout>]` type shows its size and alignment.
+- The `cycle` warning (0021): a type whose objects can form a reference cycle through a `ref`,
+  `Buffer`, `Mutex` or `Channel` (two ways back, or two types reaching each other), which
+  counting never frees, is warned where it's declared, with the path and notes at the other
+  types' fields, and the fixes: a `weak` back-pointer, `[<Cyclic>]` on a type whose cycles the
+  program breaks, or `[<NoWarn "cycle">]`.
 - A public constant that uses a private one of its module works from other modules (it was
   `'x' is private to module M` at the use).
 - A `type private` record's fields are private too: outside its module, code can't read, set,

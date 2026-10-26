@@ -6,6 +6,16 @@
 
 **Cycles:** data can only point to data made before it, so ordinary values never form a cycle. A cycle needs a mutable cell: a `ref` that holds a value pointing back to the cell. Reference counting never frees a cycle. It stays safe, but it leaks, and `ZS_LEAKCHECK=1` reports the objects left at exit.
 
+**The warning:** a type whose objects can form a cycle through a cell (`ref`, `Buffer`, `Mutex`, `Channel`) is warned about where it's declared, with the path:
+
+```text
+list.zs:1:6: warning: 'Node' can reach itself through 'next: ref<option<Node>>' and 'prev: ref<option<Node>>', so its objects can form a cycle that reference counting never frees; make the back-pointer 'weak<Node>', or mark the type [<Cyclic>] when the program breaks its cycles, or [<NoWarn "cycle">] when it can't form one [cycle]
+```
+
+- **What it looks at:** the types of a module and their fields, through containers (`option`, `list`, a generic type's arguments) but not through `weak`. One way back to itself is a list or a tree and isn't warned; two (`next` and `prev`, or a parent's children and a child's parent) are a forward link and a back link.
+- **The answers:** make the back-pointer `weak`; mark the type `[<Cyclic>]` when the program breaks its cycles itself (it silences every cycle through the type); or `[<NoWarn "cycle">]` when it can't form one, as a mutable binary tree's two children can't, which the warning can't tell from a doubly linked list.
+- **What it can't see:** a cycle through a closure (a function type doesn't say what it captures) or a `dyn` value, and a list linked into a loop. `ZS_LEAKCHECK=1` is the backstop.
+
 **Weak references:** a `weak<T>` refers to an object without keeping it alive, so a back-pointer (a child's parent, a list of observers) made weak isn't part of a cycle.
 - **Making one:** `Weak.create x`, for an object: a union's cell, a `ref`, an array, a string, a closure or a `dyn` value.
 - **Using one:** `Weak.get w` is `Some x` while the object lives, and `None` once it has gone.

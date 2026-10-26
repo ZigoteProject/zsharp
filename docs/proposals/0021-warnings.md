@@ -11,7 +11,7 @@
 
 - [x] Approved in principle
 - [ ] Discussion
-- [ ] Implementation (step 1 and the `unused-value` kind, before phase 11; `cycle` in phase 12)
+- [x] Implementation (step 1 and the `unused-value` kind, before phase 11; `cycle` in phase 12. A record can't name itself in Z#, so the examples' self-referencing types are one-case unions with named fields, whose fields the message names as a record's)
 
 ## Summary
 

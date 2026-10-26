@@ -58,8 +58,10 @@ main.zs:11:3: warning: this statement's value (int) is discarded: use it, or pip
 | Kind | Warns about |
 |---|---|
 | `unused-value` | a statement whose value isn't `unit` is dropped; `x \|> ignore` says it's on purpose |
+| `cycle` | a type whose objects can form a reference cycle through a cell, at its declaration with the path ([memory](12-memory.md#cycles-and-weak-references)); `[<Cyclic>]` marks a type whose cycles the program breaks |
 
 - **Silencing:** `[<NoWarn "unused-value">]` on a declaration silences that kind in it; a name that isn't a kind is an error.
+- **Notes:** a warning about several places names the others under it (`note: 'Parent.kids: ref<list<Child>>' is on the cycle`), and an editor shows them as related places.
 - **`--strict`** makes warnings errors: `2 warnings, errors under --strict`, exit code 1. CI passes it, and `./test.sh` does for the repository's own code; a build on your machine doesn't stop for one.
 - **Editors** underline a warning in the warning color with its kind as the code.
 

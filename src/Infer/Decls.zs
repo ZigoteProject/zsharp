@@ -12,7 +12,7 @@ open Diag.Diagnostic
 open Cx
 
 /// The warning kinds (0021's table): the names `[<NoWarn "…">]` takes.
-let warningKinds : list<string> = [ "unused-value" ]
+let warningKinds : list<string> = [ "unused-value"; "cycle" ]
 
 // a top-level function to define: its place (its first token), its full name, whether it may call
 // itself, its parameters, result and body, and the type a trait gives it (an impl's method)
@@ -820,6 +820,11 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
   | TypeDecl(name0, tps, body, ms) ->
     let name = qualify cx name0
     recordKey cx d.named name0 (TCon(name, [])) false ("type:" + name) true
+    let fieldAts =
+      match body with
+      | RecordTy fs -> Map.ofList (List.map (fun (f: RecordField) -> (f.name, f.fieldAt)) fs)
+      | UnionTy _ -> Map.empty
+    Buffer.push (name, d.named, fieldAts, Set.contains "cycle" cx.silenced.Value) cx.typesHere
     let defined = Map.containsKey name cx.types.Value
     let wasAhead = Set.contains name cx.ahead.Value
     if defined && wasAhead then
@@ -1325,6 +1330,7 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
             deriveImpl cx $"Derive({tr}) on {name}" tr name
         | "NoEquality" -> cx.optOut.Value <- Set.add ("Hash", name) (Set.add ("Eq", name) cx.optOut.Value)
         | "NoComparison" -> cx.optOut.Value <- Set.add ("Ord", name) cx.optOut.Value
+        | "Cyclic" -> cx.cyclic.Value <- Set.add name cx.cyclic.Value
         | _ -> fail $"unknown attribute '{a}'"
     | TypeGroup items ->
       // type A = … and B = …: each derive for every type of the group at once
@@ -1350,6 +1356,7 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
         | "NoComparison" ->
           for name in names do
             cx.optOut.Value <- Set.add ("Ord", name) cx.optOut.Value
+        | "Cyclic" -> cx.cyclic.Value <- Set.union cx.cyclic.Value (Set.ofList names)
         | _ -> fail $"unknown attribute '{a}'"
     | _ -> fail "attributes are only supported on type declarations yet"
   | TypeAlias(name0, tps, target) ->
@@ -1438,6 +1445,108 @@ let rec declareOne (cx: Cx) (d: Decl) : unit / <> =
         warnDiscarded cx
       guarded cx d run |> ignore
 
+// ------------------------------------------------------------ cycles (0021)
+
+// the types of `here` a field's type reaches, each with whether a cell (ref, Buffer, Mutex,
+// Channel) is on the way: through containers and a generic type's arguments (Cell<Node> is
+// looked through at its fields); weak, Atomic, functions, dyn and C pointers reach nothing, and
+// a type of an earlier module none of this one's
+let rec private reaches (cx: Cx) (here: Set<string>) (seen: Set<string>) (cell: bool) (t: Ty) : list<string * bool> =
+  match prune cx.v t with
+  | TCon("weak", _)
+  | TCon("Atomic", _)
+  | TCon("share", _)
+  | TCon("callback", _)
+  | TCon("fnptr", _)
+  | TCon("ptr", _)
+  | TFun _ -> []
+  | TCon(n, _) when isDynName n -> []
+  | TCon(n, args) when n = "ref" || n = "Buffer" || n = "Mutex" || n = "Channel" -> List.collect (reaches cx here seen true) args
+  | TCon(n, args) when Set.contains n here -> (n, cell) :: List.collect (reaches cx here seen cell) args
+  | TCon(n, args) ->
+    let key = Types.Show.showFull cx.v (TCon(n, args))
+    match Map.tryFind n cx.types.Value with
+    | Some info when not (List.isEmpty args) && not (Set.contains key seen) ->
+      let fields =
+        match info.def with
+        | RecordDef fs -> List.map snd fs
+        | UnionDef cs -> List.collect snd cs
+        | CUnionDef _ -> []
+      List.collect (fun ft -> reaches cx here (Set.add key seen) cell (substGen cx.v args ft)) fields
+    | Some _ -> []
+    | None -> List.collect (reaches cx here seen cell) args
+  | TTuple ts -> List.collect (reaches cx here seen cell) ts
+  | _ -> []
+
+// a type whose objects can form a reference cycle through a cell, which counting never frees:
+// one warning per cycle of the module's type graph that has a cell on it, at the type declared
+// last on it, unless a type on it is [<Cyclic>]; one type reaching itself through one field (a
+// list, a tree, a graph's edges) is left alone, having no back-pointer
+let private warnCycles (cx: Cx) =
+  let decls = Array.toList (Buffer.toArray cx.typesHere)
+  let nameOf (d: string * int * Map<string, int> * bool) =
+    let (q, _, _, _) = d
+    q
+  let here = Set.ofList (List.map nameOf decls)
+  // each field of a type that reaches a type of here: the field as shown, its token, its type,
+  // the type it reaches, and whether through a cell
+  let edgesOf (d: string * int * Map<string, int> * bool) : list<string * int * Ty * string * bool> =
+    let (q, at, fieldAts, _) = d
+    let fields =
+      match (Map.find q cx.types.Value).def with
+      | RecordDef fs -> List.map (fun (f, ft) -> (f, Option.defaultValue at (Map.tryFind f fieldAts), ft)) fs
+      | UnionDef cs ->
+        // a one-case union's fields by their names, as a record's; others' after their case
+        // (Add.item1)
+        let caseFields (cf: string * list<Ty>) =
+          let (c, fts) = cf
+          let names = Option.defaultValue [] (Map.tryFind c cx.ctorFieldNames.Value)
+          let one (i: int) (ft: Ty) =
+            let field =
+              match List.tryItem i names with
+              | Some(Some n) -> n
+              | _ -> if List.length fts = 1 then "" else $"item{i + 1}"
+            let shown = if field = "" then afterLastDot c else if List.length cs = 1 then field else afterLastDot c + "." + field
+            (shown, at, ft)
+          List.mapi one fts
+        List.collect caseFields cs
+      | CUnionDef _ -> []
+    List.collect (fun (f, fat, ft) -> List.map (fun (u, cell) -> (f, fat, ft, u, cell)) (reaches cx here Set.empty false ft)) fields
+  let edges = Map.ofList (List.map (fun d -> (nameOf d, edgesOf d)) decls)
+  let rec reach (seen: Set<string>) (n: string) : Set<string> =
+    List.fold (fun (s: Set<string>) (_, _, _, u, _) -> if Set.contains u s then s else reach (Set.add u s) u) seen (Map.find n edges)
+  let reachable = Map.ofList (List.map (fun d -> (nameOf d, reach Set.empty (nameOf d))) decls)
+  let mutable visited = Set.empty
+  for d in decls do
+    let q = nameOf d
+    if not (Set.contains q visited) then
+      // its strongly connected component: the types it reaches that reach it back
+      let scc = Set.add q (Set.ofList (List.filter (fun u -> Set.contains q (Map.find u reachable)) (Set.toList (Map.find q reachable))))
+      visited <- Set.union visited scc
+      let inside = List.filter (fun x -> Set.contains (nameOf x) scc) decls
+      let (w, wat, _, quiet) = List.last inside
+      // the fields on the cycle, the warned type's first, each once
+      let onCycle (n: string) = List.filter (fun (_, _, _, u, _) -> Set.contains u scc) (Map.find n edges)
+      let edgesOn = List.collect (fun n -> List.map (fun e -> (n, e)) (onCycle n)) (w :: List.filter (fun n -> n <> w) (List.map nameOf inside))
+      let steps = List.distinct (List.map (fun (n, (f, fat, ft, _, _)) -> (n, f, fat, ft)) edgesOn)
+      let isCycle = Set.count scc > 1 || List.length steps > 1
+      let celled = List.exists (fun (_, (_, _, _, _, cell)) -> cell) edgesOn
+      if isCycle && celled && not quiet && Set.isEmpty (Set.intersect scc cx.cyclic.Value) then
+        let shown (n: string) (f: string) (ft: Ty) = if n = w then $"'{f}: {show cx ft}'" else $"'{afterLastDot n}.{f}: {show cx ft}'"
+        let words = List.map (fun (n, f, _, ft) -> shown n f ft) steps
+        let path = if List.length words = 1 then List.head words else String.join ", " (List.take (List.length words - 1) words) + " and " + List.last words
+        // the back-pointer: what the warned type's last field on the cycle points to
+        let back =
+          match List.tryLast (onCycle w) with
+          | Some(_, _, _, u, _) -> afterLastDot u
+          | None -> afterLastDot w
+        let msg = $"'{afterLastDot w}' can reach itself through {path}, so its objects can form a cycle that reference counting never frees; make the back-pointer 'weak<{back}>', or mark the type [<Cyclic>] when the program breaks its cycles, or [<NoWarn \"cycle\">] when it can't form one"
+        let note (st: string * string * int * Ty) : Note =
+          let (n, f, fat, ft) = st
+          { at = spanOf cx fat false; text = $"{shown n f ft} is on the cycle" }
+        let notes = List.map note (List.filter (fun (n, _, _, _) -> n <> w) steps)
+        Buffer.push { (warning "cycle" (spanOf cx wat false) msg) with notes = notes } cx.diagnostics
+
 // ------------------------------------------------------------ modules
 
 let private errorCount (cx: Cx) : int =
@@ -1464,8 +1573,11 @@ let check (cx: Cx) (file: InFile) (modName: option<string>) (decls: list<Decl>) 
       cx.moduleNames.Value <- Set.add n cx.moduleNames.Value
   | None -> ()
   Buffer.clear cx.testValues
+  Buffer.clear cx.typesHere
+  cx.cyclic.Value <- Set.empty
   for d in decls do
     declareOne cx d
+  warnCycles cx
   // the program's [<Tests>] values, run by the test binary's entry (0009)
   if Option.isNone modName && Buffer.length cx.testValues > 0 then
     let one (t: string * bool) =
