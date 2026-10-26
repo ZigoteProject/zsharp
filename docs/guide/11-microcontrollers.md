@@ -151,7 +151,7 @@ let main () =
   0
 ```
 
-`examples/mcu/uart.zs` is such a driver, run under QEMU with its serial as the input.
+`examples/mcu/uart.zs` is such a driver, run under QEMU with its serial as the input, and [examples/nucleo](../../examples/nucleo) a firmware of three tasks for a real board: an LED, a button and a serial shell.
 
 - **Time:** `Task.sleep ms` counts SysTick's cycles at the board's clock: 25 MHz on QEMU's `mps2-an386`, 16 MHz on the micro:bit and on the Nucleo-F401RE after reset. Firmware that changes the clock (its PLL) calls `Runtime.setClock hz`. `Task.timeout`, `race`, `both`, `all` and `Task.scope` work as on a computer.
 - **Interrupts:** `Irq.wait n` enables line `n` and goes on once it fires. The runtime's handler disables the line again, so the task goes on with it quiet: clear the device's flag before waiting again. One task waits on a line at a time.

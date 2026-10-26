@@ -30,6 +30,11 @@
   (`let! (x, reply, nack) = …`) before that wait.
 
 ### Platforms
+- The flagship, `examples/nucleo`: firmware for the Nucleo-F401RE as a project (`zs build` there
+  builds it for the board, `zs test` tests its shell on the computer), three tasks on the
+  runtime's loop: the LED's, the button's (`Irq.wait`) and a serial shell fed by USART2's
+  handler through an `Spsc` and a `Signal`, its registers `[<Bits>]` records, its log over RTT.
+  `./test.sh` runs it on QEMU's STM32F405, typing at its USART2.
 - Tasks on a microcontroller (0016): the same `task { }`, `Task.run`, `sleep`, `both`, `all`,
   `race`, `timeout` and `scope` as on a computer, on the embedded runtime's event loop: timers on
   SysTick, the core asleep (`wfi`) when nothing runs. `Irq.wait n` is a task that goes on once

@@ -1,0 +1,6 @@
+# Firmware for an ST Nucleo-F401RE (README.md): zs build makes build/nucleo for the board, zs run
+# flashes it through probe-rs and shows its log, zs test runs the shell's tests on this computer
+[package]
+name = "nucleo"
+main = "src/main.zs"
+target = "nucleo-f401"

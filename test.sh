@@ -252,6 +252,22 @@ if command -v qemu-system-arm >/dev/null && command -v node >/dev/null; then
     echo "ok   tests/mcu/bits.zs on nucleo-f401 (under qemu's STM32F405, output over RTT)"
   else echo "FAIL tests/mcu/bits.zs on nucleo-f401"; cat "$tmp/bits.log"; fail=1; fi
 fi
+# the flagship (phase 12): examples/nucleo, built by zs build alone (zs.toml's target), its shell
+# tested on this computer, then run on qemu's STM32F405 (the same memory map and USART2): commands
+# typed at USART2 reach the shell's task through its handler's Spsc and Signal, the replies come
+# back, and the log is read over RTT from a dump of its RAM (the monitor's socket, then quit)
+if (cd examples/nucleo && "$OLDPWD/bin/zs" build -Os -o "$tmp/flagship" >"$tmp/flagship.log" 2>&1 && "$OLDPWD/bin/zs" test >>"$tmp/flagship.log" 2>&1); then
+  echo "ok   examples/nucleo (zs build for the board, zs test of its shell)"
+else echo "FAIL examples/nucleo"; cat "$tmp/flagship.log"; fail=1; fi
+if command -v qemu-system-arm >/dev/null && command -v node >/dev/null && command -v nc >/dev/null; then
+  serial=$( (sleep 1; printf 'status\r'; sleep 0.3; printf 'blink 100\r'; sleep 0.3; printf 'reboot\r'; sleep 0.5
+             printf 'pmemsave 0x20000000 0x18000 "%s"\nquit\n' "$tmp/flagship.ram" | nc -U "$tmp/mon.sock" >/dev/null) \
+           | timeout 30 qemu-system-arm -M netduinoplus2 -display none -monitor "unix:$tmp/mon.sock,server,nowait" -serial null -serial stdio -kernel "$tmp/flagship" 2>/dev/null | tr -d '\r')
+  if [ "$serial" = "$(printf '\n> status\nled off\n> blink 100\nled blinking every 100 ms\n> reboot\ncommands: on | off | blink <ms> | status\n> ')" ] \
+     && [ "$(node tests/mcu/rtt.mjs "$tmp/flagship.ram")" = "$(printf 'nucleo: ready; USART2 at 115200 takes on | off | blink <ms> | status\nstatus: led off\nblink 100: led blinking every 100 ms\nreboot: commands: on | off | blink <ms> | status')" ]; then
+    echo "ok   examples/nucleo under qemu's STM32F405 (its shell over USART2, its log over RTT)"
+  else echo "FAIL examples/nucleo under qemu"; echo "$serial"; fail=1; fi
+fi
 # a driver's receive side as a task (0016): it waits for the UART's receive interrupt
 # (Irq.wait); qemu's serial is fed once the program has turned its receiver on (input before
 # that, qemu's UART refuses and never asks for again)

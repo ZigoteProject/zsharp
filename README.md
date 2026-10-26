@@ -248,10 +248,15 @@ let buttonDown () = Mmio.read32 gpiocIdr &&& bit 13 = u32 0
 
 This is part of [examples/mcu/nucleo-f401.zs](examples/mcu/nucleo-f401.zs): an LED with three
 modes, a debounced button and a serial command line, for an ST Nucleo-F401RE. Built with
-`zs build --target nucleo-f401 -Os`, the whole firmware is 5,056 bytes of flash. `Mode` is a plain
+`zs build --target nucleo-f401 -Os`, the whole firmware is 5,124 bytes of flash. `Mode` is a plain
 value that never touches the heap, and in the machine code `setLed` is one store instruction and
 `buttonDown` one load. `zs run --target nucleo-f401` flashes it through
 [probe-rs](https://probe.rs), and its `println` comes back over RTT.
+
+[examples/nucleo](examples/nucleo) is the same firmware as a project and three tasks, the core
+asleep between their events: the LED's, the button's (`Irq.wait` for its edge) and a shell's, fed
+by USART2's interrupt handler through an `Spsc` and a `Signal`. `zs build` there builds it for the
+board, and `zs test` tests its shell on the computer.
 
 | Target | Chips | Heap | Tested on |
 |---|---|---|---|
@@ -260,7 +265,8 @@ value that never touches the heap, and in the machine code `setLed` is one store
 | `nucleo-f401` | the ST Nucleo-F401RE board (STM32F401RE) | 64 KB | QEMU `netduinoplus2`, the same memory map; output over RTT |
 
 ```sh
-zs build examples/mcu/uart.zs --target cortex-m4 -Os -o uart.elf     # 2,556 bytes of flash
+zs run examples/mcu/uart.zs --target cortex-m4      # type a line: a task waits for the UART's interrupt
+zs build examples/mcu/uart.zs --target cortex-m4 -Os -o uart.elf
 qemu-system-arm -M mps2-an386 -nographic -semihosting-config enable=on -kernel uart.elf
 ```
 
