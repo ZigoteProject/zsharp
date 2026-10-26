@@ -45,11 +45,16 @@ export ZS_NO_SERVER=1  # each build in its own process (tests/server.sh tests th
 export ZS_CHECK_IR=1  # the compiler checks its IR after each pass (zs build --check-ir)
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 fail=0
+# the architecture the programs are built for: the target's, else this machine's
+arch=$(uname -m); [ -n "$target" ] && arch=${target%%-*}
 for t in $(find tests -name '*.zs' | sort); do
   base=${t%.zs}
   [ -f "$base.out" ] || [ -f "$base.err" ] || continue
   # base.host-only: the reason it can't run cross-compiled under qemu-user
   if [ -n "$target" ] && [ -f "$base.host-only" ]; then echo "skip $t ($(cat "$base.host-only"))"; continue; fi
+  # base.x86_64-only: the reason it's about x86-64 (its CPU features, its intrinsics): skipped in a
+  # build for another architecture, an arm64 machine's own included
+  if [ -f "$base.x86_64-only" ] && [ "$arch" != x86_64 ]; then echo "skip $t ($(cat "$base.x86_64-only"))"; continue; fi
   if [ -f "$base.err" ]; then
     # compare the error lines, not the source snippets under them
     actual=$(bin/zs build --strict "$t" "${tgt[@]}" -o "$tmp/exe" 2>&1 | grep -v '^ [ 0-9]* | '); expected=$(cat "$base.err")
@@ -224,6 +229,9 @@ if command -v qemu-system-arm >/dev/null; then
     if bin/zs build tests/cimport/abi.zs --target $chip -o "$tmp/abi.elf" 2>"$tmp/abi.log" \
        && [ "$("${qsys[@]}" "$tmp/abi.elf" 2>&1 | grep -v '^#zs')" = "$(cat tests/cimport/abi.out)" ]; then echo "ok   tests/cimport/abi.zs on $chip (under qemu)"
     else echo "FAIL tests/cimport/abi.zs on $chip"; cat "$tmp/abi.log"; fail=1; fi
+    if bin/zs build tests/mcu/vendor/main.zs --target $chip -o "$tmp/vendor.elf" 2>"$tmp/vendor.log" \
+       && [ "$("${qsys[@]}" "$tmp/vendor.elf" 2>&1 | grep -v '^#zs')" = "$(cat tests/mcu/vendor/main.expected)" ]; then echo "ok   tests/mcu/vendor/main.zs on $chip (import c of a header for the chip, under qemu)"
+    else echo "FAIL tests/mcu/vendor/main.zs on $chip"; cat "$tmp/vendor.log"; fail=1; fi
     fw="$tmp/fw"; rm -rf "$fw"; mkdir -p "$fw"
     # the board's script with the shared Cortex-M layout in place of its INCLUDE
     awk -v b=runtime/boards/cortex-m.ld '/INCLUDE cortex-m.ld/ { while ((getline l < b) > 0) print l; next } { print }' "runtime/boards/$board.ld" > "$fw/fw.ld"

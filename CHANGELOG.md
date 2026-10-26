@@ -27,6 +27,11 @@
   `zs_stop` and `zs_ticks`.
 - WebAssembly: `[<Link>]` C sources are linked in, and `--lib -o lib.a` makes an archive for a C
   program built for WebAssembly.
+- `import c` in a build for a chip or WebAssembly reads the header as the target's compiler does
+  (its triple and flags, freestanding), so a vendor's header sees the chip it's written for.
+- macOS and Windows: a module's file is found by its exact name. Their file systems ignore case,
+  so a file could be taken for a module of another name: `fixed.zs` for the library's `Fixed`,
+  or `simd/x86.zs` for `Simd.X86`.
 - An exported function that returns a struct through memory declares the struct's own alignment
   for the pointer it's given (it said 8, which lets a Cortex-M fault on a 4-aligned struct).
 

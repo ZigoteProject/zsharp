@@ -157,11 +157,20 @@ let problem (index: int) (p: Project.Problem) : Diagnostic * option<Source.Sourc
     (error { file = index; offset = offset; length = -1 } p.message, Some src)
   | Error _ -> (error { file = -1; offset = -1; length = -1 } (p.file + ": " + p.message), None)
 
-/// import c's flags for a target with an OS: clang's triple, and zig's C library headers for it
-/// as the system's (what the build links against), from `zig cc -v`'s search list; none for this
-/// machine or a chip.
+/// import c's flags for a target: for one with an OS, clang's triple and zig's C library headers
+/// for it as the system's (what the build links against), from `zig cc -v`'s search list; for a
+/// chip or WebAssembly, its triple and flags, freestanding, with the compiler's own headers only
+/// (stdint.h, stddef.h: there's no C library), so a vendor's header sees the chip it's for; none
+/// for this machine.
 let private targetFlags (target: string) : list<string> =
-  if target = "" || String.contains "-none" target then []
+  if target = "" then []
+  else if String.contains "-none" target || String.startsWith "wasm32" target then
+    let chip = List.tryFind (fun (c: string * Options.Mcu) -> (snd c).triple = target) Options.mcus
+    let flags =
+      match chip with
+      | Some(_, m) -> m.cflags
+      | None -> []
+    List.append [ "--target=" + target; "-ffreestanding"; "-nostdlibinc" ] flags
   else
     let empty = Result.defaultValue "" (File.createTemp "zs-target-")
     let listed =
@@ -215,9 +224,21 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
   let fileIn (pkg: Project.Package) (path: string) : option<string> =
     let parts = String.split "." path
     let last = List.last parts
+    let dirs = List.take (List.length parts - 1) parts
+    // each name below root as the directory lists it: macOS's and Windows's file systems ignore
+    // case, so File.exists finds simd/x86.zs for Simd/X86.zs, which would make a file the module
+    // of another name (a library's, or the file itself)
+    let rec listed (dir: string) (names: list<string>) =
+      match names with
+      | [] -> true
+      | n :: rest ->
+        match Directory.list dir with
+        | Ok here -> List.contains n here && listed (Path.combine dir n) rest
+        | Error _ -> true
     let under (root: string) =
-      let dir = List.fold Path.combine root (List.take (List.length parts - 1) parts)
-      List.tryFind (fun (f: string) -> f <> pkg.main && File.exists f) [ Path.combine dir (last + ".zs"); Path.combine dir (lowerFirst last + ".zs") ]
+      let dir = List.fold Path.combine root dirs
+      let named (file: string) = Path.combine dir file <> pkg.main && File.exists (Path.combine dir file) && listed root (List.append dirs [ file ])
+      Option.map (Path.combine dir) (List.tryFind named [ last + ".zs"; lowerFirst last + ".zs" ])
     let own = Path.getDirectoryName pkg.main
     match under pkg.root with
     | None when own <> pkg.root -> under own
