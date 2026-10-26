@@ -30,7 +30,10 @@ let rec private forkEach (f: share<'a -> 'b>) (parts: list<array<'a>>) =
 // borrowed): once it's gone, a part's elements are only the part's
 let private cut (a: array<'a>) (g: int) : list<array<'a>> =
   let n = Array.length a
-  if n <= g then [ a ] else [ for i in 0 .. g .. n - 1 -> Array.sub a i (min g (n - i)) ]
+  if n <= g then
+    [ a ]
+  else
+    [ for i in 0 .. g .. n - 1 -> Array.sub a i (if g < n - i then g else n - i) ]
 
 /// The array of `f` applied to each element, computed in parallel. The array is cut into parts
 /// and each moves into its job (decision 75): when the caller gives the array up, a job's

@@ -1,0 +1,7 @@
+# the orphan rule across packages (K9): the library's trait for alpha's type isn't this
+# program's impl to write
+[package]
+name = "orphan"
+
+[dependencies]
+alpha = { path = "../alpha" }

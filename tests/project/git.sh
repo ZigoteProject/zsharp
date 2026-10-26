@@ -57,3 +57,36 @@ printf '[package]\nname = "app"\n\n[dependencies]\n../../../keep = { git = "file
 [ -d "$t/keep" ] && echo "../../../keep is still there"
 printf '[package]\nname = "app"\n\n[dependencies]\ntext = { git = "file:///nonexistent/x", rev = "--orphan=x" }\n' > zs.toml
 "$zs" fetch 2>&1 | grep -o "rev '--orphan=x' starts with -"
+
+# versions (0018 item 2): minimal version selection over tags, as Go's. c has releases 1.1, 1.3,
+# 1.4 and 2.0; a 1.0 asks for c 1.1 and b 1.0 for c 1.3, so a program asking for c 1.0, a and b
+# gets c 1.3, not the newest; c's major 2 is another package, c2, in the same program
+repo() { mkdir -p "$t/$1/src" && git -C "$t/$1" init -q -b main; }
+release() { git -C "$t/$1" -c user.name=zs -c user.email=zs@example.invalid add -A >/dev/null && git -C "$t/$1" -c user.name=zs -c user.email=zs@example.invalid commit -qm "$2" && git -C "$t/$1" tag "v$2"; }
+repo c
+for v in 1.1.0 1.3.0 1.4.0 2.0.0; do
+  printf '[package]\nname = "c"\nmain = "src/C.zs"\n' > "$t/c/zs.toml"
+  printf '/// The release.\nlet release () = "%s"\n' "$v" > "$t/c/src/C.zs"
+  release c "$v"
+done
+for p in a:1.1 b:1.3; do
+  n=${p%%:*}; need=${p##*:}; repo "$n"
+  printf '[package]\nname = "%s"\nmain = "src/%s.zs"\n\n[dependencies]\nc = { git = "file://%s/c", version = "%s" }\n' "$n" "$(echo $n | tr a-z A-Z)" "$t" "$need" > "$t/$n/zs.toml"
+  printf '/// The release of c this one sees.\nlet sees () = C.release ()\n' > "$t/$n/src/$(echo $n | tr a-z A-Z).zs"
+  release "$n" 1.0.0
+done
+mkdir -p "$t/diamond/src" && cd "$t/diamond"
+printf '[package]\nname = "diamond"\n\n[dependencies]\na = { git = "file://%s/a", version = "1.0" }\nb = { git = "file://%s/b", version = "1.0" }\nc = { git = "file://%s/c", version = "1.0" }\nc2 = { git = "file://%s/c", version = "2.0" }\n' "$t" "$t" "$t" "$t" > zs.toml
+echo 'let main () =
+  println $"c {C.release ()}, a sees {A.sees ()}, b sees {B.sees ()}, c2 {C2.release ()}"
+  0' > src/main.zs
+"$zs" run 2>/dev/null
+grep -o 'c = { git = "[^"]*", version = "[^"]*"' zs.lock | sed 's/git = "[^"]*", //'
+rm -rf .zs-cache && "$zs" run 2>/dev/null | sed 's/^/(from zs.lock) /'
+# zs update raises the program's own minimums in zs.toml to the newest releases
+"$zs" update 2>/dev/null && grep -o '^c = { git = "[^"]*", version = "[^"]*"' zs.toml | sed 's/git = "[^"]*", //'
+"$zs" run 2>/dev/null | sed 's/^/(updated) /'
+sed -i 's/c = { git = "\([^"]*\)", version = "1.4.0" }/c = { git = "\1", version = "1.5" }/' zs.toml
+"$zs" build 2>&1 | grep -o "c: no tag v1.5.0 or later below v2.0.0 (the newest is v1.4.0)"
+printf '[package]\nname = "both"\n\n[dependencies]\nc = { git = "file:///x", rev = "main", version = "1.0" }\n' > zs.toml
+"$zs" fetch 2>&1 | grep -o "dependency 'c' has both rev and version; keep one"

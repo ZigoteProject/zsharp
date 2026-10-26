@@ -107,8 +107,9 @@ version = "0.1.0"
 main = "src/main.zs"        # the default
 
 [dependencies]
-text = { path = "../text" }                                       # another project on disk
-json = { git = "https://github.com/someone/json", rev = "v1.2" }  # tag, branch or commit
+text = { path = "../text" }                                         # another project on disk
+json = { git = "https://github.com/someone/json", version = "1.2" } # its releases: v1.2.0 or later
+yaml = { git = "https://github.com/someone/yaml", rev = "main" }    # a tag, branch or commit
 
 [c]                                  # C code the package wraps (optional)
 sources = ["c/shim.c"]               # compiled and linked with the program
@@ -135,12 +136,14 @@ microcontroller.
 | `zs run [args…]` | builds and runs, passing the arguments (a chip's image under QEMU, a WebAssembly module under Node) |
 | `zs test [paths…]` | runs the `[<Tests>]` values in `src/` and `tests/` |
 | `zs fetch` | checks out the git dependencies |
-| `zs update` | moves git dependencies to the newest commit of their `rev` |
+| `zs update` | raises the project's `version`s to the newest releases, and moves `rev`s to their newest commits |
 
 **Dependencies:**
 - **Modules:** a dependency is another project, and its modules are behind its name. `json`'s main file is the module `Json` and its `Parser.zs` is `Json.Parser`: write `Json.Parser.parse`, or `open Json` and `Parser.parse`. So two dependencies may each have a `Util.zs`. Inside the dependency, its files name each other without the prefix, and its own dependencies are seen by its files only.
 - **C code:** a package's `[c]` section is the build's when its modules are used: its sources are compiled (once, and again when they or the headers beside them change), its libraries linked, and its include directories and pkg-config's flags are its `import c`s'. pkg-config is asked on a host build only.
 - **Git dependencies:** they're checked out into `.zs-cache/deps/`. `zs.lock` records the exact commit of each, so builds are reproducible and need no network once fetched; commit `zs.lock` with your project. The builds and `zs test` fetch what's missing.
+- **Versions:** `version = "1.2"` takes the repository's releases, its tags `v1.2.3`: 1.2.0 or later, below 2.0.0 (0.x and 1.x are one series, as in Go). When several packages ask for one, it gets the highest version asked for, not the newest there is: a diamond where `a` asks for `c` 1.1 and `b` for 1.3 builds with 1.3 on every machine, from the manifests alone, with no solver. Major version 2 is another package, with a key of its own (`json2 = { git = "…", version = "2.0" }`, the module `Json2`), so one program can use both.
+- **Impls:** an impl is written in its trait's package or its type's, so two packages can't both write one that a program using both would have twice. The program's trait for a library type, or a library trait for the program's type, is the program's to write; the library's trait for a dependency's type isn't (wrap the type in a one-case union of your own).
 
 ## Builds
 

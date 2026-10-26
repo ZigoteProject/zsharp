@@ -10,10 +10,27 @@
 ///   [target.cortex-m4]  heap = "256K" (a chip's heap: bytes, or K and M)
 
 /// A dependency: a directory (its full path), or a git repository at a rev (a tag, branch or
-/// commit; "" for the default branch).
+/// commit; "" for the default branch), or a git repository's releases (0018 item 2): its tags
+/// v<major>.<minor>.<patch>, at least this version within its major.
 type Dep =
   | PathDep of string
   | GitDep of string * string
+  | GitVersion of string * Version
+
+/// A release's version: a tag's (v1.2.3), or the least one a dependency asks for ("1.2" is 1.2.0).
+and Version = { major: int; minor: int; patch: int }
+
+/// "1.2" (1.2.0) or "1.2.3", a tag's after its v.
+let parseVersion (s: string) : option<Version> =
+  match List.map (fun (p: string) -> Int.parse p) (String.split "." s) with
+  | [ Some a; Some b ] when a >= 0 && b >= 0 -> Some { major = a; minor = b; patch = 0 }
+  | [ Some a; Some b; Some c ] when a >= 0 && b >= 0 && c >= 0 -> Some { major = a; minor = b; patch = c }
+  | _ -> None
+
+let showVersion (v: Version) : string = $"{v.major}.{v.minor}.{v.patch}"
+
+// the major a release is in: 0 and 1 are one series (1.0.0 is a promise, not a break), as in Go
+let private seriesOf (v: Version) : int = if v.major <= 1 then 1 else v.major
 
 /// A package's [c] section (0018 item 4): C sources compiled and linked with it, directories for
 /// its `import c`s and its sources' #includes, libraries to link (names, or files as [<Link>]
@@ -80,11 +97,15 @@ let private depName (key: string) =
 
 /// Reads the subset of TOML a manifest uses: [sections], key = "string", key = { k = "v", … },
 /// key = [ "a", "b" ].
-let readManifest (root: string) : result<Manifest, Problem> =
+let rec readManifest (root: string) : result<Manifest, Problem> =
   let file = Path.combine root "zs.toml"
   match File.readAllLines file with
   | Error e -> Error { file = file; line = 0; message = e }
-  | Ok lines ->
+  | Ok lines -> parseManifest root file lines
+
+/// A manifest's lines (zs.toml, or a release's, read at its tag): its paths under root, its
+/// problems reported in file.
+and parseManifest (root: string) (file: string) (lines: list<string>) : result<Manifest, Problem> =
     let section = ref ""
     let package = ref Map.empty
     let deps = Buffer.empty
@@ -134,9 +155,15 @@ let readManifest (root: string) : result<Manifest, Problem> =
                 | (Some p, _) -> Buffer.push (key, PathDep(Path.getFullPath (Path.combine root p))) deps
                 | (None, Some url) ->
                   let rev = Option.defaultValue "" (List.tryPick (fun k -> Map.tryFind k fields) [ "rev"; "tag"; "branch" ])
+                  match Map.tryFind "version" fields with
+                  | Some _ when rev <> "" -> fail n $"dependency '{key}' has both rev and version; keep one"
+                  | Some vs ->
+                    match parseVersion vs with
+                    | Some v -> Buffer.push (key, GitVersion(url, v)) deps
+                    | None -> fail n $"dependency '{key}': version '{vs}' isn't one such as 1.2 or 1.2.3"
                   // git would take it as an option
-                  if String.startsWith "-" rev then fail n $"dependency '{key}': rev '{rev}' starts with -"
-                  else Buffer.push (key, GitDep(url, rev)) deps
+                  | None when String.startsWith "-" rev -> fail n $"dependency '{key}': rev '{rev}' starts with -"
+                  | None -> Buffer.push (key, GitDep(url, rev)) deps
                 | _ -> fail n $"dependency '{key}' needs a path or a git URL"
             | s when s = "c" || String.startsWith "c." s ->
               let target = if s = "c" then "" else String.sub s 2 (String.length s - 2)
@@ -198,7 +225,8 @@ let gitDir (top: Manifest) (name: string) : string = Path.combine (Path.combine 
 let private depPath (top: Manifest) (name: string) (d: Dep) : string =
   match d with
   | PathDep p -> p
-  | GitDep _ -> gitDir top name
+  | GitDep _
+  | GitVersion _ -> gitDir top name
 
 /// The module a dependency's code is seen under (0018 K1): its key with the first letter
 /// upper-cased, each `-` dropped and the letter after it upper-cased (`tree-sitter`: TreeSitter).
@@ -238,7 +266,8 @@ let packageOf (file: string) : result<Package, Problem> =
         let path = depPath top name dep
         if not (File.exists (Path.combine path "zs.toml")) then
           match dep with
-          | GitDep _ ->
+          | GitDep _
+          | GitVersion _ ->
             if Directory.exists path then fail $"dependency '{name}': no zs.toml in {path}" else fail $"git dependency '{name}' isn't fetched yet: run zs fetch"
           | PathDep _ -> fail $"dependency '{name}': no zs.toml in {path}"
         else
@@ -281,22 +310,30 @@ let private git (args: list<string>) : result<string, string> =
   | Ok r -> if r.code = 0 then Ok(String.trim r.out) else Error(String.trim r.err)
   | Error _ -> Error "git isn't installed"
 
-// zs.lock: the commit each git dependency resolved to, with the URL and rev it came from
+// zs.lock: the commit each git dependency resolved to, with the URL and the rev or the release
+// (version, its tag's name after the v) it came from
 //   [dependencies]
 //   json = { git = "https://…", rev = "v1", commit = "<sha>" }
-let private readLock (root: string) : Map<string, string * string * string> =
+//   text = { git = "https://…", version = "1.3.0", commit = "<sha>" }
+// A release's rev is its tag (v1.3.0) here; isVersion says which it was.
+type private Locked = { url: string; rev: string; commit: string; isVersion: bool }
+
+let private readLock (root: string) : Map<string, Locked> =
   match File.readAllLines (Path.combine root "zs.lock") with
   | Error _ -> Map.empty
   | Ok lines ->
-    let entry (acc: Map<string, string * string * string>) (line: string) =
+    let entry (acc: Map<string, Locked>) (line: string) =
       match String.indexOf "=" line with
       | Some eq ->
         if eq > 0 && not (String.startsWith "#" (String.trim line)) then
           match tableFields (String.trim (String.sub line (eq + 1) (String.length line - eq - 1))) with
           | Ok fields ->
-            match (Map.tryFind "git" fields, Map.tryFind "commit" fields) with
+            let name = String.trim (String.sub line 0 eq)
+            match (Map.tryFind "git" fields, Map.tryFind "commit" fields, Map.tryFind "version" fields) with
             // a commit git would take as an option is no commit: the rev is resolved again
-            | (Some url, Some commit) when not (String.startsWith "-" commit) -> Map.add (String.trim (String.sub line 0 eq)) (url, Option.defaultValue "" (Map.tryFind "rev" fields), commit) acc
+            | (Some url, Some commit, _) when String.startsWith "-" commit -> acc
+            | (Some url, Some commit, Some v) -> Map.add name { url = url; rev = "v" + v; commit = commit; isVersion = true } acc
+            | (Some url, Some commit, None) -> Map.add name { url = url; rev = Option.defaultValue "" (Map.tryFind "rev" fields); commit = commit; isVersion = false } acc
             | _ -> acc
           | Error _ -> acc
         else
@@ -304,40 +341,49 @@ let private readLock (root: string) : Map<string, string * string * string> =
       | None -> acc
     List.fold entry Map.empty lines
 
-let private writeLock (root: string) (entries: list<string * (string * string * string)>) =
-  let line (e: string * (string * string * string)) =
-    let (name, (url, rev, commit)) = e
-    $"{name} = {{ git = \"{url}\", rev = \"{rev}\", commit = \"{commit}\" }}"
-  let lines = List.append [ "# zs.lock: the exact commits of git dependencies. zs update moves them to the newest"; "# commit of their rev; commit this file so every build uses the same code."; "[dependencies]" ] (List.map line (List.sortBy fst entries))
+let private writeLock (root: string) (entries: list<string * Locked>) =
+  let line (e: string * Locked) =
+    let (name, l) = e
+    let how = if l.isVersion then $"version = \"{String.sub l.rev 1 (String.length l.rev - 1)}\"" else $"rev = \"{l.rev}\""
+    $"{name} = {{ git = \"{l.url}\", {how}, commit = \"{l.commit}\" }}"
+  let lines = List.append [ "# zs.lock: the exact commits of git dependencies. zs update moves them to the newest"; "# commit of their rev, or release; commit this file so every build uses the same code."; "[dependencies]" ] (List.map line (List.sortBy fst entries))
   File.writeAllText (Path.combine root "zs.lock") (String.join "\n" lines + "\n") |> ignore
 
 /// Checks out every git dependency of the project (and of its dependencies) at the commit in
 /// zs.lock. A new dependency, a changed URL or rev, or update resolves the rev again (fetching
-/// when needed) and records the new commit. Returns error messages.
+/// when needed) and records the new commit. A dependency on releases (version) gets one by
+/// minimal version selection (0018 item 2, Go's): asking for at least 1.2 of a package is its
+/// lowest release at or above 1.2.0 within the major; that release's zs.toml (read at its tag)
+/// asks for its own; each package gets the highest release asked for, so the result follows
+/// from the manifests alone. The lock stands while it gives every release asked for at least
+/// what's asked; update first raises the project's own minimums in zs.toml to the newest
+/// releases. Returns error messages.
 let fetchDeps (top: Manifest) (update: bool) : list<string> =
   let lock = readLock top.root
   let resolved = ref Map.empty
   let errors = Buffer.empty
   let visited = ref Set.empty
-  let checkout (name: string) (url: string) (rev: string) : bool =
+  // a clone of the dependency's repository, made once
+  let cloneOf (name: string) (url: string) : result<string, string> =
+    let dir = gitDir top name
+    if Directory.exists (Path.combine dir ".git") then
+      Ok dir
+    else
+      if Directory.exists dir then
+        Directory.deleteRecursive dir |> ignore
+      Directory.create (Path.combine top.root ".zs-cache") |> ignore
+      Directory.create (Path.getDirectoryName dir) |> ignore
+      eprintln $"fetching {name} from {url}"
+      Result.map (fun _ -> dir) (git [ "clone"; "--quiet"; "--"; url; dir ])
+  let checkout (name: string) (url: string) (rev: string) (isVersion: bool) : bool =
     let dir = gitDir top name
     let locked =
       match Map.tryFind name lock with
-      | Some(u, r, c) -> if u = url && r = rev && not update then Some c else None
+      | Some l -> if l.url = url && l.rev = rev && not update then Some l.commit else None
       | None -> None
     let head () = git [ "-C"; dir; "rev-parse"; "HEAD" ]
-    let cloned =
-      if Directory.exists (Path.combine dir ".git") then
-        Ok ""
-      else
-        if Directory.exists dir then
-          Directory.deleteRecursive dir |> ignore
-        Directory.create (Path.combine top.root ".zs-cache") |> ignore
-        Directory.create (Path.getDirectoryName dir) |> ignore
-        eprintln $"fetching {name} from {url}"
-        git [ "clone"; "--quiet"; "--"; url; dir ]
     let checkedOut =
-      match cloned with
+      match cloneOf name url with
       | Error e -> Error e
       | Ok _ ->
         match locked with
@@ -376,26 +422,81 @@ let fetchDeps (top: Manifest) (update: bool) : list<string> =
             | Ok _ -> head ()
     match checkedOut with
     | Ok commit ->
-      resolved.Value <- Map.add name (url, rev, commit) resolved.Value
+      resolved.Value <- Map.add name { url = url; rev = rev; commit = commit; isVersion = isVersion } resolved.Value
       true
     | Error e ->
       Buffer.push $"git dependency '{name}' ({url}{(if rev = "" then "" else " " + rev)}): {e}" errors
       false
+  // a package's releases, its tags (v1.2.3) by version, fetched once a run
+  let tagLists = ref Map.empty
+  let releases (name: string) (url: string) : result<list<Version * string>, string> =
+    match Map.tryFind name tagLists.Value with
+    | Some r -> r
+    | None ->
+      let listed =
+        match cloneOf name url with
+        | Error e -> Error e
+        | Ok dir ->
+          match git [ "-C"; dir; "fetch"; "--quiet"; "--tags"; "--force"; "origin" ] with
+          | Error e -> Error e
+          | Ok _ -> Result.map (fun (out: string) -> String.split "\n" out) (git [ "-C"; dir; "tag"; "--list"; "v*" ])
+      let tagged (t: string) = Option.map (fun (v: Version) -> (v, t)) (parseVersion (String.sub t 1 (String.length t - 1)))
+      let r = Result.map (fun (ts: list<string>) -> List.choose tagged (List.filter (fun (t: string) -> String.length t > 1) ts)) listed
+      tagLists.Value <- Map.add name r tagLists.Value
+      r
+  // the project's own minimums, raised to the newest releases by update (zs.toml rewritten)
+  let raise (name: string) (url: string) (least: Version) : Version =
+    match releases name url with
+    | Ok tags when update ->
+      let mine = List.filter (fun (vt: Version * string) -> seriesOf (fst vt) = seriesOf least) tags
+      if List.isEmpty mine then
+        least
+      else
+        let newest = fst (List.last (List.sortBy fst mine))
+        if newest > least then
+          match File.readAllLines (Path.combine top.root "zs.toml") with
+          | Ok lines ->
+            let bump (l: string) =
+              let t = String.trim l
+              if (String.startsWith (name + " ") t || String.startsWith (name + "=") t) && String.contains "version" t then
+                match String.indexOf "version" l with
+                | Some at ->
+                  let rest = String.sub l at (String.length l - at)
+                  match (String.indexOf "\"" rest) with
+                  | Some q1 ->
+                    let after = String.sub rest (q1 + 1) (String.length rest - q1 - 1)
+                    match String.indexOf "\"" after with
+                    | Some q2 -> String.sub l 0 (at + q1 + 1) + showVersion newest + String.sub after q2 (String.length after - q2)
+                    | None -> l
+                  | None -> l
+                | None -> l
+              else
+                l
+            File.writeAllText (Path.combine top.root "zs.toml") (String.join "\n" (List.map bump lines) + "\n") |> ignore
+            eprintln $"{name}: version {showVersion least} -> {showVersion newest}"
+          | Error _ -> ()
+          newest
+        else
+          least
+    | _ -> least
+  // what the project and its path and rev dependencies ask for of releases
+  let wanted = Buffer.empty
   let rec visit (m: Manifest) =
     for (name, dep) in m.deps do
       match dep with
       | GitDep(url, rev) ->
         match Map.tryFind name resolved.Value with
-        | Some(u, _, _) ->
-          if u <> url then
-            Buffer.push $"two git dependencies are named '{name}': {u} and {url}" errors
+        | Some l ->
+          if l.url <> url then
+            Buffer.push $"two git dependencies are named '{name}': {l.url} and {url}" errors
         | None ->
           let dir = gitDir top name
-          if checkout name url rev && File.exists (Path.combine dir "zs.toml") && not (Set.contains dir visited.Value) then
+          if checkout name url rev false && File.exists (Path.combine dir "zs.toml") && not (Set.contains dir visited.Value) then
             visited.Value <- Set.add dir visited.Value
             match readManifest dir with
             | Ok dm -> visit dm
             | Error p -> Buffer.push $"{p.file}: {p.message}" errors
+      | GitVersion(url, least) -> Buffer.push (name, url, (if m.root = top.root then raise name url least else least)) wanted
       | PathDep p ->
         if File.exists (Path.combine p "zs.toml") && not (Set.contains p visited.Value) then
           visited.Value <- Set.add p visited.Value
@@ -403,6 +504,63 @@ let fetchDeps (top: Manifest) (update: bool) : list<string> =
           | Ok dm -> visit dm
           | Error pr -> Buffer.push $"{pr.file}: {pr.message}" errors
   visit top
+  // the releases: the lock's while it gives each at least what's asked, else selected
+  let asked = Array.toList (Buffer.toArray wanted)
+  let fromLock (w: string * string * Version) =
+    let (name, url, least) = w
+    match Map.tryFind name lock with
+    | Some l when l.isVersion && l.url = url ->
+      match parseVersion (String.sub l.rev 1 (String.length l.rev - 1)) with
+      | Some v -> seriesOf v = seriesOf least && v >= least
+      | None -> false
+    | _ -> false
+  let chosen : ref<Map<string, string * Version * string>> = ref Map.empty
+  if not update && List.forall fromLock asked then
+    for (name, l) in Map.toList lock do
+      match (l.isVersion, parseVersion (String.sub l.rev 1 (String.length l.rev - 1))) with
+      | (true, Some v) -> chosen.Value <- Map.add name (l.url, v, l.rev) chosen.Value
+      | _ -> ()
+  else
+    let met = ref Set.empty
+    let rec require (name: string) (url: string) (least: Version) =
+      match releases name url with
+      | Error e -> Buffer.push $"git dependency '{name}' ({url}): {e}" errors
+      | Ok tags ->
+        let series = List.filter (fun (vt: Version * string) -> seriesOf (fst vt) = seriesOf least) tags
+        match List.sortBy fst (List.filter (fun (vt: Version * string) -> fst vt >= least) series) with
+        | [] ->
+          let newest = if List.isEmpty series then "it has none" else $"the newest is {snd (List.last (List.sortBy fst series))}"
+          Buffer.push $"{name}: no tag v{showVersion least} or later below v{seriesOf least + 1}.0.0 ({newest}); ask for an older version, or for a release" errors
+        | (v, tag) :: _ ->
+          match Map.tryFind name chosen.Value with
+          | Some(u, _, _) when u <> url -> Buffer.push $"two dependencies are named '{name}': {u} and {url}; a name is one package in a build" errors
+          | _ ->
+            if not (Set.contains (name, tag) met.Value) then
+              met.Value <- Set.add (name, tag) met.Value
+              match Map.tryFind name chosen.Value with
+              | Some(_, w, _) when w >= v -> ()
+              | _ -> chosen.Value <- Map.add name (url, v, tag) chosen.Value
+              // what that release asks for, from its zs.toml at its tag
+              match git [ "-C"; gitDir top name; "show"; tag + ":zs.toml" ] with
+              | Ok text ->
+                match parseManifest (gitDir top name) $"{name} {tag}: zs.toml" (String.split "\n" text) with
+                | Ok dm ->
+                  for (k, d) in dm.deps do
+                    match d with
+                    | GitVersion(u2, l2) -> require k u2 l2
+                    | _ -> ()
+                | Error p -> Buffer.push $"{p.file}: {p.message}" errors
+              | Error _ -> ()
+    for (name, url, least) in asked do
+      require name url least
+  // each chosen release checked out, and what it depends on by path or rev visited
+  for (name, (url, _, tag)) in Map.toList chosen.Value do
+    let dir = gitDir top name
+    if checkout name url tag true && File.exists (Path.combine dir "zs.toml") && not (Set.contains dir visited.Value) then
+      visited.Value <- Set.add dir visited.Value
+      match readManifest dir with
+      | Ok dm -> visit dm
+      | Error p -> Buffer.push $"{p.file}: {p.message}" errors
   if Buffer.length errors = 0 && (not (Map.isEmpty resolved.Value) || File.exists (Path.combine top.root "zs.lock")) then
     writeLock top.root (Map.toList resolved.Value)
   Array.toList (Buffer.toArray errors)

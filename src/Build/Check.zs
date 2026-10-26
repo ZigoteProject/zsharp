@@ -94,6 +94,9 @@ let private checkModules (cx: Infer.Cx.Cx) (lib: list<Modules.Loaded>) (prog: li
         for e in Infer.Cx.withEnclosing n do
           cx.moduleNames.Value <- Set.add e cx.moduleNames.Value
       cx.manualImpls.Value <- Set.union cx.manualImpls.Value (Set.ofList (impls prog))
+      // whose a trait or a type is, for the orphan rule (K9)
+      cx.libraryNames.Value <- Set.union (Set.ofList (List.map fst (Map.toList cx.types.Value))) cx.traitNames.Value
+      cx.dependencies.Value <- Set.ofList (List.choose (fun (m: Modules.Loaded) -> m.package) prog)
       for p in prog do
         for (n, why) in p.skippedC do
           cx.skippedC.Value <- Map.add n why cx.skippedC.Value

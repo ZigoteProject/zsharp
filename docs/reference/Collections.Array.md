@@ -252,6 +252,52 @@ Array.ofIter : 'a -> array<'b> when 'a : Iter<'b>
 The elements of a collection in an array, in its order: a list, a set, a string's
 characters, …
 
+### `Array.sumBy`
+
+```zsharp
+Array.sumBy : ('a -> 'b) -> span<'a> -> 'b when 'b : Add
+```
+
+The sum of `f x` over the elements.
+
+### `Array.max`
+
+```zsharp
+Array.max : span<'a> -> 'a when 'a : Ord
+```
+
+The largest element. Panics on an empty array.
+
+### `Array.min`
+
+```zsharp
+Array.min : span<'a> -> 'a when 'a : Ord
+```
+
+The smallest element. Panics on an empty array.
+
+### `Array.maxBy`
+
+```zsharp
+Array.maxBy : ('a -> 'b) -> span<'a> -> 'a when 'b : Ord
+```
+
+The element whose `f x` is largest, the first of equals. Panics on an empty array.
+
+```zsharp
+let words = [| "fig"; "banana"; "kiwi" |]
+println $"{Array.maxBy String.length words} {Array.minBy String.length words} {Array.max [| 3; 9; 2 |]}"
+// => banana fig 9
+```
+
+### `Array.minBy`
+
+```zsharp
+Array.minBy : ('a -> 'b) -> span<'a> -> 'a when 'b : Ord
+```
+
+The element whose `f x` is smallest, the first of equals. Panics on an empty array.
+
 ### `Array.copy`
 
 ```zsharp

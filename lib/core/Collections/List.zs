@@ -317,6 +317,17 @@ let max xs = List.reduce (fun a b -> if b > a then b else a) xs
 /// The smallest element. Panics on an empty list.
 let min xs = List.reduce (fun a b -> if b < a then b else a) xs
 
+/// The element whose `f x` is largest, the first of equals. Panics on an empty list.
+///
+/// ```zsharp
+/// println $"{List.maxBy String.length [ "fig"; "banana"; "kiwi"; "cherry" ]}"
+/// // => banana
+/// ```
+let maxBy f xs = List.reduce (fun a b -> if f b > f a then b else a) xs
+
+/// The element whose `f x` is smallest, the first of equals. Panics on an empty list.
+let minBy f xs = List.reduce (fun a b -> if f b < f a then b else a) xs
+
 /// The sum of `f x` over the elements.
 let sumBy f xs = List.fold (fun acc x -> acc + f x) Add.zero xs
 

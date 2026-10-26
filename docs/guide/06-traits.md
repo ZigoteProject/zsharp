@@ -46,7 +46,7 @@ true true 1
 
 ## Implementing a trait
 
-`impl Trait<Type>` gives a type its own implementation. An explicit impl replaces the derived one, and implementing `Add` and `Num` makes the operators work.
+`impl Trait<Type>` gives a type its own implementation. An explicit impl replaces the derived one, from where it's written on, so write it before the type's first use (next to the type); implementing `Add` and `Num` makes the operators work. An impl lives with its trait or its type: a program can't write the library's `Show` for the library's `Map`, or for a dependency's type (see [Programs](08-programs.md#projects)).
 
 ```zsharp
 type Vec = { x: f64; y: f64 }

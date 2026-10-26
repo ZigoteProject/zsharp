@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Language
+- The orphan rule (K9): an impl written lives in its trait's package or its type's, so two
+  packages can't both write one that a program using both would have twice. **To rewrite:** an
+  impl of the library's trait for the library's type, or for a dependency's: wrap the type in a
+  one-case union of your own. A hand-written impl used before it's checked (further on, or in a
+  later module) is an error saying to write it before its first use; it was a wrong
+  "does not implement" or "already implemented".
 - Patterns at the top level: `let (width, height) = (800, 600)` declares both names. A tuple of
   constants stays constants; anything else is computed once at startup. A local `let`'s pattern
   takes an annotation (`let (a, b): int * string = …`), and a `let` whose pattern can fail says
@@ -113,6 +119,7 @@
   for the pointer it's given (it said 8, which lets a Cortex-M fault on a 4-aligned struct).
 
 ### Library
+- `List.maxBy` and `minBy`; `Array.max`, `min`, `maxBy`, `minBy` and `sumBy`.
 - `unit` has `Show`, printing `()` as F# does, so `result<unit, int>` and the like print.
 - `Math`: `floor`, `ceil`, `round` (half to even, as F#'s), `trunc`, `exp`, `log`, `log2`,
   `log10`, `sin`, `cos`, `tan`, `pow` and `atan2` for `f64` and `f32`, as LLVM's intrinsics (an
@@ -134,6 +141,14 @@
   caller's reference stayed, and every call copied the array: quadratic once inside a `while`).
 - The runtime's threads (the pool's workers, the event loop, helpers) have 8 MB stacks, as Linux
   gives and as the main thread has: on macOS they had 512 KB, which deep recursion ran out of.
+
+### Packages
+- Versions (0018 item 2): `json = { git = "…", version = "1.2" }` takes the repository's releases
+  (tags `v1.2.3`, 1.2.0 or later below 2.0.0) by minimal version selection, as Go's: each
+  package gets the highest version asked for it, so a diamond builds the same on every machine
+  with no solver. `zs.lock` records the release; `zs update` raises the project's own versions
+  to the newest. A major of 2 or more is another package with its own key (`json2`), so both build
+  in one program.
 
 ### Editor
 - Doc tests: a fenced `zsharp` block in a `///` comment is an example that `zs test --doc` builds

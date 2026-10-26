@@ -167,6 +167,12 @@ Hello, Z#!'
 if [ "$proj" = "$expected" ]; then echo "ok   projects (zs.toml, path dependency, zs run/test/new)"
 else echo "FAIL projects"; diff <(echo "$proj") <(echo "$expected"); fail=1; fi
 rm -rf tests/project/wc/build tests/project/two/build
+# the orphan rule across packages (K9): this program writing the library's trait for alpha's type
+actual=$(cd tests/project/orphan && "$OLDPWD/bin/zs" build 2>&1 | grep -v '^ [ 0-9]* | ' | sed 's|^.*tests/project/orphan/||')
+if [ "$actual" = "src/main.zs:1: error: impl Hash<Alpha.Shapes.Square.Square>: Hash is the library's and Alpha.Shapes.Square.Square package Alpha's, so the impl belongs in the library's or package Alpha's code (an impl lives with its trait or its type, so no two packages write the same one); to give Alpha.Shapes.Square.Square another, wrap it in a type of your own, a one-case union, which costs nothing" ]; then
+  echo "ok   tests/project/orphan (the orphan rule across packages)"
+else echo "FAIL tests/project/orphan"; echo "$actual"; fail=1; fi
+rm -rf tests/project/orphan/build
 
 # what for over Iter costs (0017): a for over a Map is Map.iter's loop; loops over an array, a
 # list and a string allocate nothing

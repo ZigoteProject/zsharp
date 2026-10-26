@@ -1,0 +1,1 @@
+tests/err_orphan.zs:19: error: impl Hash<Queue>: Hash is the library's and Queue the library's, so the impl belongs in the library's code (an impl lives with its trait or its type, so no two packages write the same one); to give Queue another, wrap it in a type of your own, a one-case union, which costs nothing

@@ -247,7 +247,7 @@ let rec private checkCallback (cx: Cx) (what: string) (f: Ty) : unit / Fails =
 /// over types that hold each other) may use one another. What finishImpl checks.
 type private Started = { strait: string; shead: string; hvars: list<string>; items: list<Item> }
 
-let private startImpl (cx: Cx) (tr0: string) (head: SType) (others: list<SType>) (defs: list<Definition>) : Started =
+let private startImpl (cx: Cx) (written: bool) (tr0: string) (head: SType) (others: list<SType>) (defs: list<Definition>) : Started =
   let v = cx.v
   let tr = Option.defaultValue tr0 (resolveWith cx (fun q -> Set.contains q cx.traitNames.Value) tr0)
   let owned = List.filter (fun (tm: TraitMethod) -> tm.owner = tr) (List.map snd (Map.toList cx.traitMethods.Value))
@@ -275,6 +275,26 @@ let private startImpl (cx: Cx) (tr0: string) (head: SType) (others: list<SType>)
   let hvars = List.map hvar hargs
   if List.length (List.distinct hvars) <> List.length hvars then
     fail "impl type variables must be distinct"
+  // the orphan rule (K9, Rust's): an impl written lives in its trait's package or its type's, so
+  // two packages can't both write one that a program using both would have twice (a derive goes
+  // with its type). Whose a name is: the library's, a dependency's (by its module prefix,
+  // Json.…), or the program's
+  if written && not (Set.isEmpty cx.libraryNames.Value) then
+    let whose (n: string) =
+      if Set.contains n cx.libraryNames.Value || Set.contains n prims || Option.isSome (builtinCons n) || String.startsWith "*" n then "the library"
+      else
+        let first = List.head (String.split "." n)
+        if Set.contains first cx.dependencies.Value then $"package {first}" else "this program"
+    let here =
+      match cx.currentModule.Value with
+      | Some m when Set.contains (List.head (String.split "." m)) cx.dependencies.Value -> $"package {List.head (String.split "." m)}"
+      | _ -> "this program"
+    let (wt, wh) = (whose tr, whose hn)
+    if wt <> here && wh <> here then
+      let where = if wt = wh then $"{wt}'s" else $"{wt}'s or {wh}'s"
+      fail $"impl {shortName tr}<{shortName hn}>: {shortName tr} is {wt}'s and {shortName hn} {wh}'s, so the impl belongs in {where} code (an impl lives with its trait or its type, so no two packages write the same one); to give {shortName hn} another, wrap it in a type of your own, a one-case union, which costs nothing"
+  if written && Set.contains (tr, hn) cx.autoDerived.Value then
+    fail $"{shortName tr}<{shortName hn}> was derived automatically where it was first needed, before this impl: write the impl before its first use, next to {shortName hn}"
   if Map.containsKey (tr, hn) cx.impls.Value then
     fail $"{tr}<{hn}> is already implemented"
   if List.length others <> arity - 1 then
@@ -335,7 +355,7 @@ let private finishImpl (cx: Cx) (st: Started) =
     Set.ofList (List.collect fromResult results)
   cx.implRequires.Value <- Map.add (tr, hn) (List.map needs hvars) cx.implRequires.Value
 
-let private declareImpl (cx: Cx) (tr0: string) (head: SType) (others: list<SType>) (defs: list<Definition>) = finishImpl cx (startImpl cx tr0 head others defs)
+let private declareImpl (cx: Cx) (tr0: string) (head: SType) (others: list<SType>) (defs: list<Definition>) = finishImpl cx (startImpl cx true tr0 head others defs)
 
 // a type's shape, as a derive sees it
 let private shapeOf (cx: Cx) (tname: string) : Derive.ShapeInfo =
@@ -404,7 +424,7 @@ let private deriveImpls (cx: Cx) (context: string -> string) (tr: string) (tname
     let npars = (Map.find tname cx.types.Value).npars
     let head = STName(tname, List.init npars (fun i -> STVar $"t{i}"))
     let defs = List.map (fun (d: Definition) -> { d with dbody = hygienic d.dbody }) (Derive.expand tname head (shapeOf cx tname) (Map.find tr cx.derives.Value))
-    explained (context tname) (fun () -> startImpl cx tr head [] defs)
+    explained (context tname) (fun () -> startImpl cx false tr head [] defs)
   let started = List.map (fun (n: string) -> (n, start n)) tnames
   for (tname, st) in started do
     explained (context tname) (fun () -> finishImpl cx st)
@@ -425,6 +445,10 @@ let autoDerive (cx: Cx) (tr: string) (n: string) : bool / <Fails, Mismatched> =
     | Some { def = UnionDef cs } -> not (List.isEmpty cs)
     | _ -> false
   let wanted = List.contains tr [ "Eq"; "Ord"; "Hash"; "Show"; "Diff" ] && Map.containsKey tr cx.derives.Value
+  // an impl written by hand that isn't checked yet (further on, or in a module checked after this
+  // one) can't be used here, and a derive here would be a second (K9)
+  if wanted && derivable && not asInteger && Set.contains (tr, n) cx.manualImpls.Value then
+    fail $"{shortName tr}<{shortName n}> is written by hand where it's checked after this use (further on, or in a later module): write the impl before its first use, next to {shortName n}"
   let ok = not asInteger && wanted && not (Set.contains (tr, n) cx.manualImpls.Value || Set.contains (tr, n) cx.optOut.Value) && derivable
   if ok then
     cx.autoDerived.Value <- Set.add (tr, n) cx.autoDerived.Value

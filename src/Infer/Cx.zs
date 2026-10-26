@@ -206,6 +206,10 @@ and CxData =
     foreign: ref<bool>
     /// C names import c skipped: why
     skippedC: ref<Map<string, string>>
+    /// the library's types and traits, and the dependencies' module prefixes (Json): whose an
+    /// impl's trait and type are, for the orphan rule; empty while the library is checked
+    libraryNames: ref<Set<string>>
+    dependencies: ref<Set<string>>
     /// the types of a group (type A = … and B = …) declared ahead of their own declarations
     ahead: ref<Set<string>>
     /// an error stopped the check (when not collecting every declaration's)
@@ -449,6 +453,12 @@ type Cx with
   member c.skippedC =
     match c with
     | Cx { skippedC = x } -> x
+  member c.libraryNames =
+    match c with
+    | Cx { libraryNames = x } -> x
+  member c.dependencies =
+    match c with
+    | Cx { dependencies = x } -> x
   member c.ahead =
     match c with
     | Cx { ahead = x } -> x
@@ -554,6 +564,8 @@ let create (requireMain: bool) (collect: bool) (allModules: list<string>) (manua
       inConst = ref ""
       foreign = ref false
       skippedC = ref Map.empty
+      libraryNames = ref Set.empty
+      dependencies = ref Set.empty
       ahead = ref Set.empty
       stopped = ref false
       mainAt = ref None

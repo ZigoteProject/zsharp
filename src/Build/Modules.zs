@@ -28,7 +28,10 @@ type Loaded =
     cInfos: list<string * CImport.CInfo>
     /// what its imports gave (each header and its saved import): what its checked result
     /// depends on beside its text
-    imported: string }
+    imported: string
+    /// the dependency it's part of, by its module prefix (Json); None for the program's and the
+    /// library's
+    package: option<string> }
 
 /// The library's files after the prelude, in dependency order; a file's module is its path
 /// (core/Collections/List.zs is Collections.List). Core needs no operating system, so every
@@ -121,6 +124,7 @@ let load (texts: Map<string, string>) (index: int) (path: string) (modName: opti
         uses = []
         errors = errors
         skippedC = []
+        package = None
         cInfos = []
         imported = "" }
     Ok m
@@ -392,7 +396,7 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
                   visit f p (Some n) (n :: stack)
                   finished.Value <- Map.add n true finished.Value
             let usedFiles = List.map (fun (_, f, _) -> display f) deps
-            Buffer.push { m with modName = modName; uses = usedFiles } order
+            Buffer.push { m with modName = modName; uses = usedFiles; package = pkg.prefix } order
   match Project.packageOf mainPath with
   | Error p ->
     failProblem p

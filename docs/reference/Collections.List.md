@@ -410,6 +410,27 @@ List.min : list<'a> -> 'a when 'a : Ord
 
 The smallest element. Panics on an empty list.
 
+### `List.maxBy`
+
+```zsharp
+List.maxBy : ('a -> 'b) -> list<'a> -> 'a when 'b : Ord
+```
+
+The element whose `f x` is largest, the first of equals. Panics on an empty list.
+
+```zsharp
+println $"{List.maxBy String.length [ "fig"; "banana"; "kiwi"; "cherry" ]}"
+// => banana
+```
+
+### `List.minBy`
+
+```zsharp
+List.minBy : ('a -> 'b) -> list<'a> -> 'a when 'b : Ord
+```
+
+The element whose `f x` is smallest, the first of equals. Panics on an empty list.
+
 ### `List.sumBy`
 
 ```zsharp

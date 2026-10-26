@@ -201,3 +201,39 @@ impl Diff<array<'a>> =
     | None when Array.length a <> Array.length b ->
       Some($": {Array.length a} elements vs {Array.length b}")
     | None -> None
+
+// last: max and min would hide the prelude's max a b and min a b from the functions above
+
+/// The sum of `f x` over the elements.
+let sumBy f (a: span<'a>) = Array.fold (fun acc x -> acc + f x) Add.zero a
+
+// the element whose key `f` gives wins over each before it (`better new old`); panics when there's none
+let private best (what: string) (better: 'k -> 'k -> bool) (f: 'a -> 'k) (a: span<'a>) : 'a =
+  if Array.length a = 0 then
+    panic $"Array.{what} of an empty array"
+  let mutable top = a.[0]
+  let mutable key = f top
+  for i in 1 .. Array.length a - 1 do
+    let k = f a.[i]
+    if better k key then
+      top <- a.[i]
+      key <- k
+  top
+
+/// The largest element. Panics on an empty array.
+let max (a: span<'a>) = best "max" (fun x y -> x > y) (fun x -> x) a
+
+/// The smallest element. Panics on an empty array.
+let min (a: span<'a>) = best "min" (fun x y -> x < y) (fun x -> x) a
+
+/// The element whose `f x` is largest, the first of equals. Panics on an empty array.
+///
+/// ```zsharp
+/// let words = [| "fig"; "banana"; "kiwi" |]
+/// println $"{Array.maxBy String.length words} {Array.minBy String.length words} {Array.max [| 3; 9; 2 |]}"
+/// // => banana fig 9
+/// ```
+let maxBy f (a: span<'a>) = best "maxBy" (fun x y -> x > y) f a
+
+/// The element whose `f x` is smallest, the first of equals. Panics on an empty array.
+let minBy f (a: span<'a>) = best "minBy" (fun x y -> x < y) f a

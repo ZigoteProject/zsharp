@@ -1,0 +1,1 @@
+tests/err_impl_late.zs:5:27: error: Show<Point> is written by hand where it's checked after this use (further on, or in a later module): write the impl before its first use, next to Point

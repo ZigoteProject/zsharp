@@ -11,3 +11,10 @@ zs: git dependency 'text' (file:///nonexistent/text main):
 dependency '../../../keep': a name is letters, digits, - and _
 ../../../keep is still there
 rev '--orphan=x' starts with -
+c 1.3.0, a sees 1.3.0, b sees 1.3.0, c2 2.0.0
+c = { version = "1.3.0"
+(from zs.lock) c 1.3.0, a sees 1.3.0, b sees 1.3.0, c2 2.0.0
+c = { version = "1.4.0"
+(updated) c 1.4.0, a sees 1.4.0, b sees 1.4.0, c2 2.0.0
+c: no tag v1.5.0 or later below v2.0.0 (the newest is v1.4.0)
+dependency 'c' has both rev and version; keep one
