@@ -222,7 +222,8 @@ let rec testIn (fx: F) (known: bool) (p: CPat) (t: Ty) (v: string) (failL: strin
       | TCon(n, args) ->
         match (Map.find n g.types).def with
         | RecordDef rfs -> List.map (fun (_, ft) -> substGen g args ft) rfs
-        | UnionDef _ -> panic "record pattern on a union"
+        | UnionDef _
+        | CUnionDef _ -> panic "record pattern on a union"
       | _ -> panic "record pattern on a non-record"
     let field (en: Map<string, Binding>) (ix: int * ((string * CPat) * Ty)) =
       let (i, ((_, q), ft)) = ix
@@ -1071,6 +1072,15 @@ let rec gen (fx: F) (env: Map<string, Binding>) (tail: bool) (e: CExpr) : string
   | CField(r, i) ->
     let rv = gen fx env false r
     instr em $"extractvalue {llty g r.ty} {rv}, {i}"
+  | CCtor(_, _, [ a ]) when Option.isSome (cUnion g e.ty) ->
+    // a C union (0004): its bytes zeroed, then the case's field written over the first of them
+    let x = gen fx env false a
+    let lt = llty g e.ty
+    let slot = "%" + fresh em "cunion"
+    alloca em $"{slot} = alloca {lt}"
+    emit em $"store {lt} zeroinitializer, ptr {slot}"
+    emit em $"store {llty g a.ty} {x}, ptr {slot}"
+    instr em $"load {lt}, ptr {slot}"
   | CCtor(_, tag, args) ->
     if plainUnion g.v g.types e.ty then
       // a value: the tag and this case's fields, the other cases' fields zero
@@ -1536,6 +1546,16 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
       emit em $"store {llty g el} {arg 2}, ptr {ep}"
       dropValue g em el v
       instr em $"load {llty g t}, ptr {slot}"
+  | "cunion.get" ->
+    // a C union's case: its bytes read as the case's field (a bool as any byte but 0)
+    let lt = llty g (argTy 0)
+    let slot = "%" + fresh em "cunion"
+    alloca em $"{slot} = alloca {lt}"
+    emit em $"store {lt} {arg 0}, ptr {slot}"
+    if llty g ty = "i1" then
+      instr em $"icmp ne i8 {instr em $"load i8, ptr {slot}"}, 0"
+    else
+      instr em $"load {llty g ty}, ptr {slot}"
   | "fixed.ofArray" ->
     // the elements of an array (or a window) of exactly N, copied in
     let (el, n) =

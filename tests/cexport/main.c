@@ -26,6 +26,7 @@ int main(void) {
     printf("label %lld\n", (long long)geo_label_length("hello"));
     printf("square %d %d\n", geo_is_square(r), geo_is_square((Box){{0, 0}, {2, 2}, 0}));
     printf("ratio %lld\n", (long long)geo_ratio(r));
+    printf("union %d\n", geo_next((Num){.Float = 1.0f}).Int);
     zs_set_panic_hook(on_panic);
     geo_ratio((Box){{1, 0}, {1, 2}, 0}); // zero width: division by zero
     printf("not reached\n");

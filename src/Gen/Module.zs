@@ -310,8 +310,13 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
   let rec writeStruct (n: string) =
     if Set.contains n clayouts && not (Set.contains n written.Value) then
       written.Value <- Set.add n written.Value
-      match Map.tryFind n types with
-      | Some { def = RecordDef fs } ->
+      let shape =
+        match Map.tryFind n types with
+        | Some { def = RecordDef fs } -> Some("struct", fs)
+        | Some { def = CUnionDef cs } -> Some("union", List.map (fun (c, ft) -> (Infer.Cx.afterLastDot c, ft)) cs)
+        | _ -> None
+      match shape with
+      | Some(kind, fs) ->
         let rec held (t: Ty) =
           match t with
           | TCon(m, args) ->
@@ -328,8 +333,8 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
           match Types.Repr.layout g.v types (pointerBytes g) (TCon(n, [])) with
           | Some(size, _) -> $"_Static_assert(sizeof({name}) == {size}, \"{name} is {size} bytes in Z#\");\n"
           | None -> ""
-        Buffer.push $"typedef struct {name} {{\n{fields}\n}} {name};\n{check}\n" header
-      | _ -> ()
+        Buffer.push $"typedef {kind} {name} {{\n{fields}\n}} {name};\n{check}\n" header
+      | None -> ()
   for n in Set.toList clayouts do
     writeStruct n
   for e in exports do

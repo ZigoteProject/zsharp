@@ -43,13 +43,15 @@ hello has 5 letters; abs -5 = 5
 |---|---|
 | functions | externs |
 | structs | `[<CLayout>]` records, named or `typedef`'d unnamed alike |
+| unions | `[<CLayout>]` unions ([C unions](#c-unions)), a member a case named through the union: `Data.u32` |
+| a struct or union without a name in a struct's field (`union { … } body;`) | a type named after both: `Msg_body` |
 | enum values and `#define` numbers and strings | constants |
 | struct literal macros (`#define RED (Color){ 230, 41, 55, 255 }`) | record constants |
 | function pointers (`double (*area)(double, double)`, typedef'd or not) | `fnptr` types |
 | array fields (`uint8_t data[16]`, `int m[3][4]`) | `fixed<u8, 16>`, `fixed<fixed<i32, 4>, 3>` ([fixed-size arrays](05-collections.md#fixed-size-arrays)) |
 | array parameters (`const int xs[4]`) | pointers to the first element, as in C |
 
-**What's left out:** unions, arrays without a length, and `static inline` functions. Using one gives an error that says why: `C name 'Msg' wasn't imported: a field: it uses an array without a length`.
+**What's left out:** arrays without a length, structs with bit fields (where a compiler puts them is its own choice), members without a name (C11's anonymous unions), and `static inline` functions. Using one gives an error that says why: `C name 'Msg' wasn't imported: a field: it uses an array without a length`.
 
 **Spans:** an `extern` taking a `span<'a>` of a C type gets two arguments, a pointer to the first element and the length (`int count(const uint8_t *p, size_t n)`); the span's owner stays alive for the call. A span can't come from C, which has no owner to give it; `unsafe` code makes one over C memory with `Span.ofPtr p n`, whose lifetime is the programmer's to keep.
 
@@ -92,7 +94,7 @@ extern vec_length : Vec2 -> f32     // float vec_length(Vec2 v);
 - **Large structs:** these go by memory.
 - **Out of registers:** on x86-64, a struct whose parts don't all fit in the registers left goes on the stack whole, and the arguments after it still take the registers left, as C does.
 
-`tests/cimport/abi.zs` checks every shape on both x86-64 and aarch64.
+`tests/cimport/abi.zs` checks every shape, unions included, on x86-64, aarch64, the Cortex-M chips and WebAssembly.
 
 **Checking a layout:** `sizeof<T>`, `alignof<T>` and `offsetof<T> "field"` are `int` constants for the target the build is for, a `[<CLayout>]` type's as C lays it out. A top-level `assert` on constants is checked when compiling, so a record that drifts from its C struct stops the build instead of corrupting memory at a call:
 
@@ -113,6 +115,35 @@ let main () =
 
 When a field changes, the build stops at the `assert` with what it read: `assert fails when compiling: sizeof<Packet> = 16 is false (sizeof<Packet> is 20)`. An `assert` whose condition isn't a constant runs at startup instead, and `zs build --lib` puts a `_Static_assert` of each struct's size in the header it writes, so the C side checks the same fact.
 
+## C unions
+
+```zsharp
+// C: union { uint32_t u32; uint64_t u64; void *ptr; }
+[<CLayout>]
+type Data =
+  | U32 of u32
+  | U64 of u64
+  | Ptr of cptr
+
+let main () =
+  let d = U64(u64 4294967303)
+  // the first four bytes, as C reads them
+  println $"{unsafe d.U32} {unsafe d.U64} {sizeof<Data>}"
+  0
+```
+
+```text
+7 4294967303 8
+```
+
+**A `[<CLayout>]` union** is C's: it has no tag, and each case is a view of the same bytes, so its size is its largest case's and its alignment the strictest.
+- **Building one:** by a case, which writes that case's field; the bytes after it are zero.
+- **Reading one:** `v.Case` inside `unsafe`. The compiler can't know which case is there, so the code that knows is marked. Without a tag there's nothing to match on, compare, hash or print, so a C union can't be matched, and it has no `=`, ordering, hashing or `Show`.
+- **Cases:** each has one field, of a type that crosses to C: a number, a pointer, a `[<CLayout>]` record or union, a `fixed` array.
+- **Crossing to C:** by value, as C passes a struct of its size and class, and in a record's field, as C's are in structs. `zs build --lib` declares it in the header it writes.
+
+**From a header:** a member of an imported union is a case named through it, as C names it through a value: `union epoll_data { int fd; … }` is built with `epoll_data.fd 3` and read with `unsafe ev.data.fd`. Two unions in a header can have members of the same name, as in C.
+
 ## Callbacks
 
 A `callback<A -> R>` parameter takes any Z# function, including a closure. C receives a function pointer and a `void *` user-data pointer that carries the closure:
@@ -129,7 +160,7 @@ let sumSquares n =
 
 ## Pointers and unsafe
 
-**Raw pointers:** a `ptr<T>` points at C data: a number, a `bool`, a `[<CLayout>]` record or another pointer.
+**Raw pointers:** a `ptr<T>` points at C data: a number, a `bool`, a `[<CLayout>]` record or union, or another pointer.
 - **Unsafe on purpose:** reading and writing through a pointer, pointer arithmetic, casts and freeing compile only inside `unsafe`, which is an expression or an indented block. The compiler can't check that the memory is there, so the code that trusts it is marked.
 - **The functions:** `Ptr.read p`, `Ptr.write p x`, `Ptr.add p n` (n elements on), `Ptr.alloc n` and `Ptr.free p` (C's `calloc` and `free`), and `Ptr.cast`. `Ptr.null ()`, `Ptr.isNull p` and `Ptr.toCPtr p` (to pass to a `cptr` parameter) are safe.
 

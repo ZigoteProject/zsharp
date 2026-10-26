@@ -12,6 +12,11 @@
   when compiling (`assert (sizeof<Packet> = 16)`), naming what it read when it fails; any other
   top-level `assert` runs at startup. The header `zs build --lib` writes checks each struct's size
   with `_Static_assert`.
+- C unions: a `[<CLayout>]` union has no tag, each case a view of the same bytes. It's built by
+  case (the bytes after the case's field zero) and read by case name inside `unsafe`
+  (`unsafe d.U32`); it can't be matched, compared or printed. It crosses to C by value as C
+  passes a union on every target, sits in `[<CLayout>]` records, and is declared in `--lib`
+  headers; debuggers show it as C's. Hovering a `[<CLayout>]` type shows its size and alignment.
 - A public constant that uses a private one of its module works from other modules (it was
   `'x' is private to module M` at the use).
 - A `type private` record's fields are private too: outside its module, code can't read, set,
@@ -27,6 +32,10 @@
   `zs_stop` and `zs_ticks`.
 - WebAssembly: `[<Link>]` C sources are linked in, and `--lib -o lib.a` makes an archive for a C
   program built for WebAssembly.
+- `import c` brings C unions in, a member a case named through its union (`epoll_data.fd 3`,
+  `unsafe ev.data.fd`), and a struct or union without a name in a field as a type named after
+  both (`Msg_body`). A struct with bit fields is left out, saying so (it was imported with every
+  bit field a whole field, the wrong layout).
 - `import c` in a build for a chip or WebAssembly reads the header as the target's compiler does
   (its triple and flags, freestanding), so a vendor's header sees the chip it's written for.
   `size_t` and `uintptr_t` are `usize`, and `ptrdiff_t`, `intptr_t` and `ssize_t` are `int`, on

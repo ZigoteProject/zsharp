@@ -1409,19 +1409,28 @@ let isCtor (cx: Cx) (c: string) : bool / Fails = Option.isSome (ctorName cx c)
 let caseFields (cx: Cx) (u: string) (tag: int) (args: list<Ty>) : list<Ty> =
   match (Map.find u cx.types.Value).def with
   | UnionDef cs -> List.map (substGen cx.v args) (snd (List.item tag cs))
+  | CUnionDef cs -> [ snd (List.item tag cs) ]
   | RecordDef _ -> []
 
 /// A union's cases and how many fields each has.
 let unionCases (cx: Cx) (u: string) : list<string * int> =
   match (Map.find u cx.types.Value).def with
   | UnionDef cs -> List.map (fun (n, ts) -> (n, List.length ts)) cs
+  | CUnionDef cs -> List.map (fun (n, _) -> (n, 1)) cs
   | RecordDef _ -> []
+
+/// A C union's cases ([<CLayout>] union, 0004): each case's name and its one field's type.
+let cUnionCases (cx: Cx) (n: string) : option<list<string * Ty>> =
+  match Map.tryFind n cx.types.Value with
+  | Some { def = CUnionDef cs } -> Some cs
+  | _ -> None
 
 /// A record's fields.
 let fieldsOf (cx: Cx) (r: string) : list<string * Ty> =
   match (Map.find r cx.types.Value).def with
   | RecordDef fs -> fs
-  | UnionDef _ -> []
+  | UnionDef _
+  | CUnionDef _ -> []
 
 /// Whether a type is a record.
 let isRecord (cx: Cx) (n: string) : bool =

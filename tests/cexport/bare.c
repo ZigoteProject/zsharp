@@ -97,6 +97,7 @@ int main(void) {
     say("label "); say_int(geo_label_length("hello")); say("\n");
     say("square "); say_int(geo_is_square(r)); say(" "); say_int(geo_is_square((Box){{0, 0}, {2, 2}, 0})); say("\n");
     say("ratio "); say_int(geo_ratio(r)); say("\n");
+    say("union "); say_int(geo_next((Num){.Float = 1.0f}).Int); say("\n");
     zs_set_panic_hook(on_panic);
     geo_ratio((Box){{1, 0}, {1, 2}, 0}); // zero width: division by zero
     say("not reached\n");

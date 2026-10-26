@@ -103,6 +103,7 @@ int clang_Cursor_getNumArguments(CXCursor C);
 CXCursor clang_Cursor_getArgument(CXCursor C, unsigned i);
 enum CX_StorageClass clang_Cursor_getStorageClass(CXCursor);
 unsigned clang_Cursor_isMacroFunctionLike(CXCursor C);
+unsigned clang_Cursor_isBitField(CXCursor C);
 
 CXString clang_getTypeSpelling(CXType CT);
 CXType clang_getResultType(CXType T);

@@ -9,6 +9,12 @@ type Pair = { a: i32; b: i32 }
 [<CLayout>]
 type Box = { lo: Vec2; hi: Vec2; id: i32 }
 
+// a C union: the header declares it, and C reads the case Z# wrote
+[<CLayout>]
+type Num =
+  | Int of i32
+  | Float of f32
+
 // a C function that calls back into Z#
 extern each : int -> callback<int -> unit> -> unit
 
@@ -37,6 +43,9 @@ let labelLength (s: cstr) : int = (String.ofCStr s).Length
 
 [<Export "geo_is_square">]
 let isSquare (r: Box) : bool = r.hi.x - r.lo.x = r.hi.y - r.lo.y
+
+[<Export "geo_next">]
+let next (n: Num) : Num = Int(unsafe n.Int + i32 1)
 
 // panics on a zero width: C's panic hook runs, then the process stops
 [<Export "geo_ratio">]

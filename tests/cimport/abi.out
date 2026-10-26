@@ -8,3 +8,9 @@ many 78
 d2 six 123456789123
 p3 after 912345678
 big after 18 5 67
+union int 42
+union floats [|2.5; 1.5|] 2.5
+union wide [|12; 11; 10; 9; 8; 7; 6; 5; 4; 3; 2; 1|]
+union big 321
+union in a struct 2 2.5
+union without a name 2 2.5

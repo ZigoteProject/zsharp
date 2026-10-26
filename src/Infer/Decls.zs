@@ -352,6 +352,8 @@ let private shapeOf (cx: Cx) (tname: string) : Derive.ShapeInfo =
         | None -> List.map (fun _ -> None) fts
       List.mapi (fun j (n: option<string>) -> Option.defaultValue $"item{j + 1}" n) given
     Derive.UnionShape(List.map (fun (c, fts) -> (c, names c fts)) cs)
+  // nothing to derive from: deriveImpl refuses a C union first
+  | CUnionDef _ -> Derive.UnionShape []
 
 // runs f, a failure in it said to be in the context first
 let private explained (context: string) (f: unit -> 'r / <Fails | 'e>) : 'r / <Fails | 'e> =
@@ -394,6 +396,9 @@ let private deriveImpls (cx: Cx) (context: string -> string) (tr: string) (tname
   // may run in the middle of another function
   let saved = cx.tyvars.Value
   let start (tname: string) : Started =
+    match (Map.find tname cx.types.Value).def with
+    | CUnionDef _ -> fail $"a C union has no tag to tell its cases apart, so nothing can be derived for {shortName tname}"
+    | _ -> ()
     let npars = (Map.find tname cx.types.Value).npars
     let head = STName(tname, List.init npars (fun i -> STVar $"t{i}"))
     let defs = List.map (fun (d: Definition) -> { d with dbody = hygienic d.dbody }) (Derive.expand tname head (shapeOf cx tname) (Map.find tr cx.derives.Value))
@@ -723,6 +728,11 @@ let private funName (d: Decl) : option<string> =
 let private recordDeclOf (d: Decl) : option<string * list<string>> =
   match d.d with
   | TypeDecl(n, tps, RecordTy _, _) -> Some(n, tps)
+  | _ -> None
+
+let private unionDeclOf (d: Decl) : option<string * list<string>> =
+  match d.d with
+  | TypeDecl(n, tps, UnionTy _, _) -> Some(n, tps)
   | _ -> None
 
 // the name of a top-level value's declaration
@@ -1268,11 +1278,35 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
     let fs =
       match (Map.find q cx.types.Value).def with
       | RecordDef fs -> fs
-      | UnionDef _ -> []
+      | UnionDef _
+      | CUnionDef _ -> []
     for (f, ft) in fs do
       match prune v ft with
       | TCon("unit", []) -> fail $"[<CLayout>] field '{f}' can't be unit"
       | _ -> checkCType cx $"[<CLayout>] field '{f}'" ft
+  | Attrs([ ("CLayout", []) ], inner) when Option.isSome (unionDeclOf inner) ->
+    // a C union (0004): no tag, one field a case, each case a view of the same bytes
+    declare cx inner
+    let (name, tps) = Option.get (unionDeclOf inner)
+    let q = qualify cx name
+    if not (List.isEmpty tps) then
+      fail "a [<CLayout>] union can't be generic"
+    let info = Map.find q cx.types.Value
+    let one (c: string * list<Ty>) : string * Ty =
+      let n = afterLastDot (fst c)
+      match snd c with
+      | [ ft ] ->
+        match prune v ft with
+        | TCon("unit", []) -> fail $"[<CLayout>] case '{n}' can't be unit"
+        | _ -> checkCType cx $"[<CLayout>] field '{n}'" ft
+        (fst c, ft)
+      | _ -> fail $"a case of a C union has one field: {n} of …"
+    let cases =
+      match info.def with
+      | UnionDef cs -> List.map one cs
+      | _ -> []
+    cx.types.Value <- Map.add q { info with def = CUnionDef cases } cx.types.Value
+    cx.clayouts.Value <- Set.add q cx.clayouts.Value
   | Attrs(attrs, inner) ->
     declare cx inner
     match inner.d with

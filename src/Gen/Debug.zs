@@ -78,6 +78,7 @@ let structFields (g: G) (t: Ty) : list<Ty> =
     match (Map.find n g.types).def with
     | RecordDef fs -> List.map (fun (_, ft) -> substGen g args ft) fs
     | UnionDef cs -> tcon (if tagTy cs = "i8" then "u8" else "i32") :: List.map (substGen g args) (List.collect snd cs)
+    | CUnionDef _ -> []
   | _ -> []
 
 /// Size and alignment in bytes, as LLVM (and C) lays the value out.
@@ -92,6 +93,9 @@ let rec sizeAlign (g: G) (t: Ty) : int * int =
   | "double" -> (8, 8)
   | "ptr" -> (pointerBytes g, pointerBytes g)
   | "{}" -> (0, 1)
+  | _ when Option.isSome (cUnion g t) ->
+    let (size, align, _) = cLayout g t
+    (size, align)
   | _ ->
     let (size, align, _) = layout g (structFields g t)
     (size, align)
@@ -170,10 +174,17 @@ let rec diTypeOf (g: G) (field: bool) (t: Ty) : option<string> =
       // text
       Option.bind (pointer "char*") (basic "char" 8 "DW_ATE_signed_char")
   | TTuple ts -> structOf (showT g t) (List.mapi (fun i ft -> ($"Item{i + 1}", ft)) ts)
+  | TCon(_, []) when Option.isSome (cUnion g t) ->
+    // a C union, as C's is described: each case a member at offset 0
+    let make () =
+      let cases = List.map (fun (c, ft) -> ((Infer.Cx.afterLastDot c, ft), 0)) (Option.get (cUnion g t))
+      meta g $"!DICompositeType(tag: DW_TAG_union_type, name: \"{showT g t}\", size: {8 * fst (sizeAlign g t)}, elements: !{{{String.join ", " (List.choose memberAt cases)}}})"
+    named ("union " + showF g t) make
   | TCon(n, args) when isRecordType g n ->
     match (Map.find n g.types).def with
     | RecordDef fs -> structOf (showT g t) (List.map (fun (f, ft) -> (f, substGen g args ft)) fs)
-    | UnionDef _ -> None
+    | UnionDef _
+    | CUnionDef _ -> None
   | TCon(n, _) when isUnionType g n && Types.Repr.plainUnion g.v g.types t ->
     // the tag as an enumeration of the cases; then each case's fields, named after it
     let (_, cases) = union g t

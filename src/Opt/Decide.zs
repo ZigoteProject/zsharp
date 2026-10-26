@@ -161,6 +161,8 @@ let private lowerMatch (types: Map<string, TypeInfo>) (fresh: string -> string) 
       match (Map.find u types).def with
       | UnionDef cs -> List.map (Types.Norm.substGen v args) (snd (List.item tag cs))
       | RecordDef fs -> List.map (fun (_, ft) -> Types.Norm.substGen v args ft) fs
+      // never matched (the checker refuses it)
+      | CUnionDef _ -> []
     | TTuple ts -> ts
     | _ -> []
   let caseCount (t: Ty) : int =
@@ -168,7 +170,8 @@ let private lowerMatch (types: Map<string, TypeInfo>) (fresh: string -> string) 
     | TCon(u, _) ->
       match (Map.find u types).def with
       | UnionDef cs -> List.length cs
-      | RecordDef _ -> 1
+      | RecordDef _
+      | CUnionDef _ -> 1
     | _ -> 1
   // variables and as-patterns go into the row's renaming, leaving wildcards
   let rec norm (col: string) (p: CPat) (ren: Map<string, string>) : CPat * Map<string, string> =

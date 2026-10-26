@@ -29,6 +29,9 @@ type Kind = { allowed: option<Set<string>>; traits: Set<string>; params: Map<str
 type TypeDef =
   | RecordDef of list<string * Ty>
   | UnionDef of list<string * list<Ty>>
+  /// a [<CLayout>] union: no tag, each case (its name, its one field's type) a view of the same
+  /// bytes (0004)
+  | CUnionDef of list<string * Ty>
 
 [<Derive(Binary)>]
 type TypeInfo = { npars: int; def: TypeDef }

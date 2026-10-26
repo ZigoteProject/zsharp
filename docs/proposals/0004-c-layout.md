@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved in principle: `fixed` (decision 53, phase 9.6); C unions and layout facts (decision 70, phase 12) |
+| **Status** | Implemented: `fixed` (decision 53, phase 9.6); C unions and layout facts (decision 70, phase 12) |
 | **Decided at** | the phase 9.6 design review (`fixed`); the third design review ([ROADMAP](../../ROADMAP.md#third-design-review-)) (the rest: by case with no zeroed form yet, `sizeof<'a>` in expressions only, no C bit-fields) |
 | **Builds** | phase 9.6 and phase 12 ([ROADMAP](../../ROADMAP.md#phase-12-release-01)) |
 | **Rests on** | decisions 20 (no compile-time evaluation beyond derive), 53 (`fixed`) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §11](../../DESIGN.md#11-c-interop) |
@@ -10,7 +10,7 @@
 
 - [x] Approved in principle (`fixed`)
 - [x] Approved in principle (unions, layout facts)
-- [ ] Implementation
+- [x] Implementation (an imported union's members are cases named through it, `epoll_data.fd`, since C's members are scoped by their union and Z#'s cases by their module)
 
 ## Summary
 

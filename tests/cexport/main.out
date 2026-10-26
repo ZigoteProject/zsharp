@@ -6,5 +6,6 @@ sum of squares 30
 label 5
 square 0 1
 ratio 1
+union 1065353217
 panic: division by zero
 hook: division by zero

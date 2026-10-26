@@ -14,6 +14,7 @@ frame() { printf 'Content-Length: %d\r\n\r\n%s' "$(printf '%s' "$1" | wc -c)" "$
   frame '{"jsonrpc":"2.0","id":4,"method":"textDocument/definition","params":{"textDocument":{"uri":"'"$uri"'"},"position":{"line":7,"character":19}}}'
   frame '{"jsonrpc":"2.0","id":5,"method":"textDocument/hover","params":{"textDocument":{"uri":"'"$uri"'"},"position":{"line":7,"character":12}}}'
   frame '{"jsonrpc":"2.0","id":6,"method":"textDocument/inlayHint","params":{"textDocument":{"uri":"'"$uri"'"},"range":{"start":{"line":0,"character":0},"end":{"line":20,"character":0}}}}'
+  frame '{"jsonrpc":"2.0","id":8,"method":"textDocument/hover","params":{"textDocument":{"uri":"'"$uri"'"},"position":{"line":13,"character":14}}}'
   frame '{"jsonrpc":"2.0","id":7,"method":"shutdown"}'
   frame '{"jsonrpc":"2.0","method":"exit"}'
 } | "$zs" lsp | tr -d '\r' | sed 's/Content-Length: [0-9]*//' | grep -o '{.*}' | grep -v publishDiag

@@ -2,8 +2,8 @@
 /// declarations (externs, [<CLayout>] records, constants), read through libclang in this process
 /// (zsharp/libclang): the translation unit's cursors, and a macro's tokens for its value. Only
 /// what the header itself declares is imported, not the headers it includes. Whatever can't cross
-/// the C boundary (unions, arrays without a length, static inline functions) is left out, with a
-/// reason. The F# compiler's CImport, which ran clang for its JSON AST and its macro listing.
+/// the C boundary (arrays without a length, bit fields, static inline functions) is left out, with
+/// a reason. The F# compiler's CImport, which ran clang for its JSON AST and its macro listing.
 open Syntax
 
 /// What the editor shows for a C name: its C declaration, the comment documenting it, and where
@@ -14,8 +14,9 @@ type CInfo = { csig: string; cdoc: string; cfile: string; cline: int }
 /// header's full path as libclang found it.
 type Imported = { decls: list<Ast.DeclShape>; skipped: list<string * string>; infos: list<string * CInfo>; headerFile: string }
 
-// the C types seen so far: typedefs (name to C type), imported structs (their fields), enums
-type private Ctx = { typedefs: ref<Map<string, string>>; records: ref<Map<string, list<string>>>; enums: ref<Set<string>>; llp64: bool }
+// the C types seen so far: typedefs (name to C type), imported structs (their fields), structs
+// left out (why), enums
+type private Ctx = { typedefs: ref<Map<string, string>>; records: ref<Map<string, list<string>>>; left: ref<Map<string, string>>; enums: ref<Set<string>>; llp64: bool }
 
 let private isWordByte (b: u8) =
   (b >= u8 97 && b <= u8 122) || (b >= u8 65 && b <= u8 90) || (b >= u8 48 && b <= u8 57) || b = u8 95
@@ -129,6 +130,8 @@ let rec private zsType (ctx: Ctx) (depth: int) (qt: string) : result<Ast.SType, 
         // a function pointer, R (*)(A, B): fnptr<A -> B -> R>, or fnptr<unit -> R> for one that
         // takes nothing
         match fnPointer t with
+        // a struct or union inside a record, without a name: the name it's imported under
+        | _ when Map.containsKey t ctx.typedefs.Value -> zsType ctx (depth + 1) (Map.find t ctx.typedefs.Value)
         | Some(r, ps0) when not (String.contains "(" (String.trim ps0)) ->
           let ps1 = String.trim ps0
           let ps = if ps1 = "" || ps1 = "void" then [] else List.map String.trim (String.split "," ps1)
@@ -158,9 +161,10 @@ let rec private zsType (ctx: Ctx) (depth: int) (qt: string) : result<Ast.SType, 
             named (if pointee = "char" || pointee = "signed char" then "cstr" else "cptr")
           else if String.startsWith "struct " t then zsType ctx (depth + 1) (String.sub t 7 (String.length t - 7))
           else if String.startsWith "enum " t then named "i32"
-          else if String.startsWith "union " t then Error "it uses a union"
+          else if String.startsWith "union " t then zsType ctx (depth + 1) (String.sub t 6 (String.length t - 6))
           else if Map.containsKey t ctx.records.Value then named t
           else if Set.contains t ctx.enums.Value then named "i32"
+          else if Map.containsKey t ctx.left.Value then Error $"{t} was left out: {Map.find t ctx.left.Value}"
           else
             match Map.tryFind t ctx.typedefs.Value with
             | Some u when u <> t -> zsType ctx (depth + 1) u
@@ -336,7 +340,7 @@ let private decayed (t: string) : string =
 // place `at`
 let private declarationsOf (tu: cptr) (header: string) (llp64: bool) (at: int) : Imported =
   let fromHeader (file: string) = file <> "" && (file = header || String.endsWith ("/" + header) file || Path.getFileName file = Path.getFileName header)
-  let ctx : Ctx = { typedefs = ref Map.empty; records = ref Map.empty; enums = ref Set.empty; llp64 = llp64 }
+  let ctx : Ctx = { typedefs = ref Map.empty; records = ref Map.empty; left = ref Map.empty; enums = ref Set.empty; llp64 = llp64 }
   let decls = Buffer.empty
   let skipped = Buffer.empty
   let infos = Buffer.empty
@@ -363,36 +367,54 @@ let private declarationsOf (tu: cptr) (header: string) (llp64: bool) (at: int) :
     Buffer.push (name, { csig = csig; cdoc = commentFor (linesOfHeader ()) line; cfile = headerFile.Value; cline = line }) infos
   let add (shape: Ast.DeclShape) = Buffer.push shape decls
   let children (c: Libclang.CXCursor) = Libclang.children c
-  let addRecord (name: string) (n: Libclang.CXCursor) (mine: bool) =
+  let rec addRecord (name: string) (n: Libclang.CXCursor) (mine: bool) =
+    let isUnion = clang_getCursorKind n = CXCursor_UnionDecl
     let kids = children n
     let raw = List.filter (fun (f: Libclang.CXCursor) -> clang_getCursorKind f = CXCursor_FieldDecl) kids
-    let fields = List.map (fun (f: Libclang.CXCursor) -> (ident (spelling f), zsType ctx 0 (typeText (clang_getCursorType f)))) raw
-    // a union or struct inside it without a name: its fields are the record's, unnamed
-    let anonymous (k: Libclang.CXCursor) =
+    // a struct or union inside it without a name: the type of the field right after it (union
+    // { … } data;), imported named after the record and the field (Event_data); one without a
+    // field has its fields in the record's (C11), which a record can't say
+    let loose = ref false
+    for (i, k) in List.indexed kids do
       let kind = clang_getCursorKind k
-      (kind = CXCursor_StructDecl || kind = CXCursor_UnionDecl) && unnamedSpelling (spelling k)
+      if (kind = CXCursor_StructDecl || kind = CXCursor_UnionDecl) && unnamedSpelling (spelling k) then
+        match List.tryItem (i + 1) kids with
+        | Some f when clang_getCursorKind f = CXCursor_FieldDecl && unnamedSpelling (typeText (clang_getCursorType f)) ->
+          let inside = name + "_" + spelling f
+          ctx.typedefs.Value <- Map.add (normalize (typeText (clang_getCursorType f))) inside ctx.typedefs.Value
+          addRecord inside k mine
+        | _ -> loose.Value <- true
+    let fields = List.map (fun (f: Libclang.CXCursor) -> (ident (spelling f), zsType ctx 0 (typeText (clang_getCursorType f)))) raw
+    let leave (why: string) =
+      Buffer.push (name, why) skipped
+      ctx.left.Value <- Map.add name why ctx.left.Value
     if List.isEmpty fields then
-      Buffer.push (name, "it has no fields here (an opaque struct; pass it as cptr)") skipped
-    else if List.exists (fun (f, _) -> f = "") fields || List.exists anonymous kids then
-      Buffer.push (name, "a field has no name (a union or struct inside it, without one)") skipped
+      leave "it has no fields here (an opaque struct; pass it as cptr)"
+    else if List.exists (fun (f, _) -> f = "") fields || loose.Value then
+      leave "a field has no name (a union or struct inside it, without one)"
+    else if List.exists (fun (f: Libclang.CXCursor) -> clang_Cursor_isBitField f <> u32 0) raw then
+      // where a compiler packs them is its own choice (0013)
+      leave "it has bit fields"
     else
       match firstError (List.map snd fields) with
-      | Some e -> Buffer.push (name, "a field: " + e) skipped
+      | Some e -> leave ("a field: " + e)
       | None ->
         if define name then
           ctx.records.Value <- Map.add name (List.map fst fields) ctx.records.Value
           if mine then
-            let field (p: string * result<Ast.SType, string>) : Ast.RecordField =
-              let (f, t) = p
-              let ty =
-                match t with
-                | Ok x -> x
-                | Error _ -> Ast.STName("unit", [])
-              let r : Ast.RecordField = { name = f; fieldAt = -1; ty = ty; default = None }
-              r
-            add (Ast.Attrs([ ("CLayout", []) ], Ast.decl (Ast.TypeDecl(name, [], Ast.RecordTy (List.map field fields), [])) at))
+            let ty (t: result<Ast.SType, string>) =
+              match t with
+              | Ok x -> x
+              | Error _ -> Ast.STName("unit", [])
+            let body =
+              if isUnion then
+                // a case a member, named through the union as C names it through a value (Data.u32)
+                Ast.UnionTy(List.map (fun (f, t) -> ({ case = name + "." + f; fields = [ (None, ty t) ] } : Ast.Case)) fields)
+              else
+                Ast.RecordTy(List.map (fun (f, t) -> ({ name = f; fieldAt = -1; ty = ty t; default = None } : Ast.RecordField)) fields)
+            add (Ast.Attrs([ ("CLayout", []) ], Ast.decl (Ast.TypeDecl(name, [], body, [])) at))
             let members = String.join "\n" (List.map (fun (f: Libclang.CXCursor) -> $"    {typeText (clang_getCursorType f)} {spelling f};") raw)
-            info name $"typedef struct {name} {{\n{members}\n}} {name};" (lineOf n)
+            info name $"typedef {(if isUnion then "union" else "struct")} {name} {{\n{members}\n}} {name};" (lineOf n)
   // the last struct without a name, and whether it's the header's: the typedef after it names it
   let unnamed : ref<option<Libclang.CXCursor * bool>> = ref None
   let top = children (clang_getTranslationUnitCursor tu)
@@ -413,7 +435,7 @@ let private declarationsOf (tu: cptr) (header: string) (llp64: bool) (at: int) :
       | _ ->
         if name <> "" && not (String.contains "(unnamed" qt || String.contains "(anonymous" qt) then
           ctx.typedefs.Value <- Map.add name qt ctx.typedefs.Value
-    else if kind = CXCursor_StructDecl then
+    else if kind = CXCursor_StructDecl || kind = CXCursor_UnionDecl then
       if not (List.isEmpty (children n)) then
         if unnamedSpelling name then unnamed.Value <- Some(n, mine) else addRecord name n mine
     else if kind = CXCursor_EnumDecl then
@@ -569,6 +591,8 @@ let private declJson (d: Ast.DeclShape) : Json =
   | Ast.Extern(name, args, variadic, ret) -> JObject [ ("extern", JString name); ("args", JArray(List.map styJson args)); ("variadic", JBool variadic); ("ret", styJson ret) ]
   | Ast.Attrs(_, { d = Ast.TypeDecl(name, _, Ast.RecordTy fields, _) }) ->
     JObject [ ("struct", JString name); ("fields", JArray(List.map (fun (f: Ast.RecordField) -> JArray [ JString f.name; styJson f.ty ]) fields)) ]
+  | Ast.Attrs(_, { d = Ast.TypeDecl(name, _, Ast.UnionTy cases, _) }) ->
+    JObject [ ("union", JString name); ("cases", JArray(List.map (fun (c: Ast.Case) -> JArray [ JString c.case; styJson (snd (List.head c.fields)) ]) cases)) ]
   | Ast.Const(name, v) -> JObject [ ("const", JString name); ("value", exprJson v) ]
   | _ -> JNull
 
@@ -591,6 +615,16 @@ let private declOf (at: int) (j: Json) : option<Ast.DeclShape> =
       | _ -> None
     let fields = List.choose field fs
     if List.length fields = List.length fs then Some(Ast.Attrs([ ("CLayout", []) ], Ast.decl (Ast.TypeDecl(name, [], Ast.RecordTy fields, [])) at)) else None
+  | JObject [ ("union", JString name); ("cases", JArray cs) ] ->
+    let case (c: Json) : option<Ast.Case> =
+      match c with
+      | JArray [ JString n; t ] ->
+        match styOf t with
+        | Ok ty -> Some({ case = n; fields = [ (None, ty) ] } : Ast.Case)
+        | Error _ -> None
+      | _ -> None
+    let cases = List.choose case cs
+    if List.length cases = List.length cs then Some(Ast.Attrs([ ("CLayout", []) ], Ast.decl (Ast.TypeDecl(name, [], Ast.UnionTy cases, [])) at)) else None
   | JObject [ ("const", JString name); ("value", v) ] -> Option.map (fun e -> Ast.Const(name, e)) (exprOf v)
   | _ -> None
 

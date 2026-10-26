@@ -25,4 +25,17 @@ let main () =
   println $"p3 after {p3_after 1 2 3 4 5 { x = 6; y = 7; z = 8 } 9}"
   let ba = big_after 1 2 3 4 { x = 5; y = 6; z = 7 } 8
   println $"big after {ba.a} {ba.b} {ba.c}"
+  // C unions: a case named through its union (C's v.i is unsafe v.i)
+  let n = iof_next (IntOrFloat.i 41)
+  println $"union int {unsafe n.i}"
+  let fl = floats_swap (Floats.two (Fixed.ofArray [| f32 1.5; f32 2.5 |]))
+  println $"union floats {unsafe fl.two} {unsafe fl.one}"
+  let w = wide_flip (Wide.bytes (Fixed.init (fun i -> u8 (i + 1))))
+  println $"union wide {unsafe w.bytes}"
+  // named by its tag (union big3), not capitalized
+  println $"union big {big3_sum (big3.words (Fixed.ofArray [| i64 1; i64 20; i64 300 |]))}"
+  let t = tagged_bump { kind = 1; value = IntOrFloat.f (f32 1.25) }
+  println $"union in a struct {t.kind} {unsafe t.value.f}"
+  let m = msg_reply { kind = 1; body = Msg_body.code 10 }
+  println $"union without a name {m.kind} {unsafe m.body.ratio}"
   0

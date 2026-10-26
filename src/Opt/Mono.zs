@@ -114,6 +114,7 @@ let lowered (prog: Program) : Program =
     match info.def with
     | RecordDef fs -> { info with def = RecordDef(List.map (fun (f, t) -> (f, lower t)) fs) }
     | UnionDef cs -> { info with def = UnionDef(List.map (fun (c, ts) -> (c, List.map lower ts)) cs) }
+    | CUnionDef cs -> { info with def = CUnionDef(List.map (fun (c, t) -> (c, lower t)) cs) }
   { prog with types = Map.map (fun _ info -> one info) prog.types }
 
 /// Copies of each function reached from roots, at each instantiation reached: a generic function

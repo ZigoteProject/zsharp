@@ -309,7 +309,8 @@ lspt=$(tests/lsp/types.sh bin/zs 2>&1)
 if echo "$lspt" | grep -q 'type Point = { x: int; y: int }\\n\\u0060\\u0060\\u0060\\n\\nA point on the plane' \
    && [ "$(echo "$lspt" | grep '"id":3' | grep -o '"uri"' | wc -l)" -eq 4 ] \
    && echo "$lspt" | grep -q '"id":4,"result":{"uri":"[^"]*types.zs","range":{"start":{"line":2,"character":5}' \
-   && echo "$lspt" | grep -q 'type option\\u003C' && echo "$lspt" | grep -q '"label":"// Point -\\u003E int -\\u003E Point"'; then
+   && echo "$lspt" | grep -q 'type option\\u003C' && echo "$lspt" | grep -q '"label":"// Point -\\u003E int -\\u003E Point"' \
+   && echo "$lspt" | grep '"id":8' | grep -q '6 bytes, aligned to 2'; then
   echo "ok   tests/lsp/types.sh"
 else echo "FAIL tests/lsp/types.sh"; echo "$lspt" | cut -c1-300; fail=1; fi
 

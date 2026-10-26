@@ -15,4 +15,4 @@ int canvas_paint(Canvas *c, Point p) { if (p.x >= 0 && p.x < c->w && p.y >= 0 &&
 void canvas_free(Canvas *c) { free(c); }
 int sum_array(int xs[4]) { return xs[0] + xs[1] + xs[2] + xs[3]; }
 void apply(int (*f)(int), int x) { f(x); }
-Number number_of(int i) { Number n; n.i = i; return n; }
+Flags flags_of(int i) { Flags f = {0}; f.kind = i; return f; }

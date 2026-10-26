@@ -206,6 +206,15 @@ let isRecordType (g: G) (n: string) : bool =
   | Some { def = RecordDef _ } -> true
   | _ -> false
 
+/// A C union's cases (0004), when the type is one.
+let cUnion (g: G) (t: Ty) : option<list<string * Ty>> =
+  match t with
+  | TCon(n, []) ->
+    match Map.tryFind n g.types with
+    | Some { def = CUnionDef cs } -> Some cs
+    | _ -> None
+  | _ -> None
+
 /// A plain union's tag: a byte for an enum (no case has fields, so the tag is all there is, and an
 /// array of them is a byte per element), else an i32: next to fields a byte saves no space, and on
 /// a 32-bit chip it costs an extension at each test.
@@ -255,6 +264,14 @@ let rec llty (g: G) (t: Ty) : string =
         "{ " + tagTy cs + String.concat (List.map (fun ft -> ", " + llty g (substGen g args ft)) (List.collect snd cs)) + " }"
       else
         "ptr"
+    | CUnionDef cs ->
+      // as clang lays a C union out: its case aligned most strictly (the largest of those), then
+      // bytes to the union's size
+      let sa (ft: Ty) = Option.get (Types.Repr.layout g.v g.types (pointerBytes g) ft)
+      let better (a: Ty) (b: Ty) = snd (sa b) > snd (sa a) || (snd (sa b) = snd (sa a) && fst (sa b) > fst (sa a))
+      let storage = List.fold (fun (best: Ty) (_, ft) -> if better best ft then ft else best) (snd (List.head cs)) cs
+      let pad = fst (sa t) - fst (sa storage)
+      "{ " + llty g storage + (if pad > 0 then $", [{pad} x i8]" else "") + " }"
   | TTuple ts -> structTy g ts
   | other -> panic $"llty: unresolved type {showT g other}"
 
@@ -291,7 +308,8 @@ let union (g: G) (t: Ty) : string * list<string * list<Ty>> =
   | TCon(u, args) ->
     match (Map.find u g.types).def with
     | UnionDef cs -> (u, List.map (fun (n, fs) -> (n, List.map (substGen g args) fs)) cs)
-    | RecordDef _ -> panic "not a union"
+    | RecordDef _
+    | CUnionDef _ -> panic "not a union"
   | _ -> panic "not a union"
 
 /// Where case `tag`'s field j sits in a plain union's struct: after the tag and the earlier cases'
@@ -400,13 +418,20 @@ let rec cLayout (g: G) (t: Ty) : int * int * list<int * string> =
       let k = toInt n
       (sz * k, a, List.collect (fun i -> List.map (fun (o, s) -> (i * sz + o, s)) sc) (List.init k (fun i -> i)))
     | TCon("fixed", _) -> panic $"cLayout: {showT g t}"
+    | _ when Option.isSome (cUnion g t) ->
+      // every case at offset 0, so all their scalars; the largest's size, the strictest alignment
+      let parts = List.map (fun (_, ft) -> cLayout g ft) (Option.get (cUnion g t))
+      let al = List.fold (fun m (_, a, _) -> max m a) 1 parts
+      let size = List.fold (fun m (s, _, _) -> max m s) 0 parts
+      ((size + al - 1) / al * al, al, List.collect (fun (_, _, sc) -> sc) parts)
     | _ ->
       let fs =
         match t with
         | TCon(n, _) ->
           match (Map.find n g.types).def with
           | RecordDef fs -> List.map snd fs
-          | UnionDef _ -> []
+          | UnionDef _
+          | CUnionDef _ -> []
         | _ -> []
       let off = ref 0
       let al = ref 1
@@ -420,14 +445,22 @@ let rec cLayout (g: G) (t: Ty) : int * int * list<int * string> =
         al.Value <- max al.Value a
       ((off.Value + al.Value - 1) / al.Value * al.Value, al.Value, Array.toList (Buffer.toArray scalars))
 
-/// AAPCS64 (aarch64): an HFA (1-4 fields, all float or all double) goes in float registers as an
-/// array; up to 16 bytes in one or two integer registers; anything bigger by reference.
+// a homogeneous aggregate (AAPCS's HFA) of 1-4 floats or 1-4 doubles: the kind and how many,
+// counted by the size (a union's cases overlap)
+let private hfaOf (size: int) (scalars: list<int * string>) : option<string * int> =
+  match List.distinct (List.map snd scalars) with
+  | [ k ] when k = "float" || k = "double" ->
+    let n = size / (if k = "float" then 4 else 8)
+    if n <= 4 then Some(k, n) else None
+  | _ -> None
+
+/// AAPCS64 (aarch64): an HFA goes in float registers as an array; up to 16 bytes in one or two
+/// integer registers; anything bigger by reference.
 let abiArm64 (g: G) (t: Ty) (isResult: bool) : Abi =
   let (size, _, scalars) = cLayout g t
-  let kinds = List.distinct (List.map snd scalars)
-  match kinds with
-  | [ k ] when (k = "float" || k = "double") && List.length scalars <= 4 -> Pieces [ $"[{List.length scalars} x {k}]" ]
-  | _ ->
+  match hfaOf size scalars with
+  | Some(k, n) -> Pieces [ $"[{n} x {k}]" ]
+  | None ->
     if size > 16 then Memory
     else if size > 8 then Pieces [ "[2 x i64]" ]
     else if isResult then Pieces [ $"i{8 * size}" ]
@@ -443,11 +476,7 @@ let isArm32 (g: G) : bool = String.startsWith "thumb" g.opts.target || String.st
 /// it fits in 4 bytes, else through an sret pointer.
 let abiArm32 (g: G) (t: Ty) (isResult: bool) : Abi =
   let (size, align, scalars) = cLayout g t
-  let hfa =
-    match List.distinct (List.map snd scalars) with
-    | [ k ] -> (k = "float" || k = "double") && List.length scalars <= 4 && String.endsWith "hf" g.opts.target
-    | _ -> false
-  if hfa then Pieces [ llty g t ]
+  if Option.isSome (hfaOf size scalars) && String.endsWith "hf" g.opts.target then Pieces [ llty g t ]
   else if isResult then
     if size = 1 then Pieces [ "i8" ]
     else if size = 2 then Pieces [ "i16" ]
@@ -483,12 +512,12 @@ let abiFor (g: G) (t: Ty) (isResult: bool) : Abi =
       Memory
     else
       let eightbyte (k: int) =
-        let here = List.map snd (List.filter (fun (o, _) -> o >= 8 * k && o < 8 * k + 8) scalars)
-        if List.forall (fun s -> s = "float" || s = "double") here then
-          match here with
-          | [ "double" ] -> "double"
-          | [ "float"; "float" ] -> "<2 x float>"
-          | _ -> "float"
+        let here = List.filter (fun (o, _) -> o >= 8 * k && o < 8 * k + 8) scalars
+        if List.forall (fun (_, s) -> s = "float" || s = "double") here then
+          // SSE: a double, two floats or one (a union's cases are all here)
+          if List.exists (fun (_, s) -> s = "double") here then "double"
+          else if List.exists (fun (o, _) -> o = 8 * k + 4) here then "<2 x float>"
+          else "float"
         else
           $"i{8 * min 8 (size - 8 * k)}"
       Pieces(List.map eightbyte (List.init ((size - 1) / 8 + 1) (fun k -> k)))

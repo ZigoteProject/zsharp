@@ -374,14 +374,17 @@ and inferNode (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>)
     else
       callNode cx env depth node f args []
   | App({ e = Field(r, f); at = fat }, args) ->
-    let cr = inf r
-    settle cx cr.ty
-    match memberOf cx cr.ty f with
-    | Some m when not m.isStatic && not m.isProperty ->
-      let res = memberCall cx env depth m (Some cr) args f
-      recordKey cx fat f res.ty false m.gname false
-      res
-    | _ -> apply cx env depth (field cx cr f) args None
+    match caseThrough cx env r f with
+    | Some c -> apply cx env depth (inf { e = Var c; at = fat }) args None
+    | None ->
+      let cr = inf r
+      settle cx cr.ty
+      match memberOf cx cr.ty f with
+      | Some m when not m.isStatic && not m.isProperty ->
+        let res = memberCall cx env depth m (Some cr) args f
+        recordKey cx fat f res.ty false m.gname false
+        res
+      | _ -> apply cx env depth (field cx cr f) args None
   | App(h, args) -> apply cx env depth (inf h) args None
   | Lambda(ps0, body0) ->
     let (ps, body) = lowerParams cx ps0 body0
@@ -662,15 +665,18 @@ and inferNode (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>)
     let built = buildRecord cx env depth rname targs fields old
     mk (CLet(tmp, cr, built)) built.ty
   | Field(r, f) ->
-    let cr = inf r
-    let res = located cx node.at false (fun () -> field cx cr f)
-    let key =
-      match (memberOf cx cr.ty f, prune v cr.ty) with
-      | (Some m, _) -> m.gname
-      | (None, TCon(n, _)) when isRecord cx n -> $"field:{n}.{f}"
-      | _ -> ""
-    recordKey cx node.at f res.ty false key false
-    res
+    match caseThrough cx env r f with
+    | Some c -> inf { node with e = Var c }
+    | None ->
+      let cr = inf r
+      let res = located cx node.at false (fun () -> field cx cr f)
+      let key =
+        match (memberOf cx cr.ty f, prune v cr.ty) with
+        | (Some m, _) -> m.gname
+        | (None, TCon(n, _)) when isRecord cx n -> $"field:{n}.{f}"
+        | _ -> ""
+      recordKey cx node.at f res.ty false key false
+      res
   | Question _ -> fail "'?' is only supported as `let x = e?` or as a whole statement (for now)"
   | Unsafe a ->
     let outer = cx.unsafeOn.Value
@@ -1242,6 +1248,14 @@ and field (cx: Cx) (cr: CExpr) (f: string) : CExpr =
     mk (CPrim("ref.get", [ cr ])) a
   | (TVar _, _) when Option.isNone (fieldRecord cx f) ->
     fail $"cannot resolve '.{f}': the type of this expression isn't known here; add a type annotation"
+  | (TCon(n, []), _) when Option.isSome (cUnionCases cx n) ->
+    // a C union's case (0004): its bytes as the case's field
+    match List.tryFind (fun (c, _) -> afterLastDot c = f) (Option.get (cUnionCases cx n)) with
+    | Some(_, ft) ->
+      if not cx.unsafeOn.Value then
+        fail $"reading a case of a C union needs unsafe: {show cx cr.ty} has no tag"
+      mk (CPrim("cunion.get", [ cr ])) ft
+    | None -> fail $"{show cx cr.ty} has no case or member '{f}'"
   | _ ->
     let rname = recordOf cx cr.ty f
     fieldsVisible cx rname
@@ -1251,6 +1265,13 @@ and field (cx: Cx) (cr: CExpr) (f: string) : CExpr =
     match List.tryFindIndex (fun (g, _) -> g = f) defs with
     | Some i -> mk (CField(cr, i)) (substGen v targs (snd (List.item i defs)))
     | None -> fail $"{show cx cr.ty} has no field or member '{f}'"
+
+/// `x.f` naming a case through a union whose name isn't capitalized, so it isn't one qualified
+/// name (import c's epoll_data.fd), unless a value is named x.
+and caseThrough (cx: Cx) (env: Map<string, Local>) (r: Expr) (f: string) : option<string> =
+  match r.e with
+  | Var x when not (Map.containsKey x env) -> if Option.isNone (resolveName cx x) && isCtor cx (x + "." + f) then Some(x + "." + f) else None
+  | _ -> None
 
 and typeName (cx: Cx) (t: Ty) : string =
   match prune cx.v t with

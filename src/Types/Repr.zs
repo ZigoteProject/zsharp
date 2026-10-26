@@ -76,6 +76,7 @@ let rec shareBlocker (v: Vars) (onVar: Ty -> unit / 'e) (types: Map<string, Type
       | Some { def = RecordDef fs } -> List.tryPick (fun (_, ft) -> inner (Set.add key visiting) (Norm.substGen v args ft)) fs
       | Some { def = UnionDef cs } ->
         List.tryPick (fun (_, fs) -> List.tryPick (fun ft -> inner (Set.add key visiting) (Norm.substGen v args ft)) fs) cs
+      | Some { def = CUnionDef cs } -> List.tryPick (fun (_, ft) -> inner (Set.add key visiting) ft) cs
       | None -> Some(TCon(n, args))
   | TTuple ts -> List.tryPick (inner visiting) ts
   | x -> Some x
@@ -194,6 +195,13 @@ let rec layout (v: Vars) (types: Map<string, TypeInfo>) (word: int) (t: Ty) : op
   | TCon(n, args) when Map.containsKey n types ->
     match (Map.find n types).def with
     | RecordDef fs -> Option.map structOf (all (List.map (fun (_, ft) -> Norm.substGen v args ft) fs))
+    // a C union: its largest case, at the strictest alignment
+    | CUnionDef cs ->
+      let union (parts: list<int * int>) =
+        let align = List.fold (fun m (_, a) -> max m a) 1 parts
+        let size = List.fold (fun m (s, _) -> max m s) 0 parts
+        ((size + align - 1) / align * align, align)
+      Option.map union (all (List.map snd cs))
     | UnionDef cs ->
       if List.exists (fun x -> Option.isNone (layout v types word x)) args then None
       else if plainUnion v types t then

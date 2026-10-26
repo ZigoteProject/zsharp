@@ -34,7 +34,8 @@ and structHelper (g: G) (kind: string) (t: Ty) : string =
       | TCon(n, args) ->
         match (Map.find n g.types).def with
         | RecordDef fs -> List.map (fun (_, ft) -> substGen g args ft) fs
-        | UnionDef _ -> []
+        | UnionDef _
+        | CUnionDef _ -> []
       | _ -> []
     let em = emitter ()
     let one (i: int) (ft: Ty) =

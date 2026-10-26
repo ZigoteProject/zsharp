@@ -24,3 +24,13 @@ Big big_after(long a, long b, long c, long d, P3 p, long e) {
     Big r = {(int)(a + b + c + d + e), p.x * 1.0, p.y * 10.0 + p.z};
     return r;
 }
+
+IntOrFloat iof_next(IntOrFloat v) { v.i += 1; return v; }
+Floats floats_swap(Floats v) { float t = v.two[0]; v.two[0] = v.two[1]; v.two[1] = t; return v; }
+Wide wide_flip(Wide w) {
+    for (int i = 0; i < 6; i++) { unsigned char t = w.bytes[i]; w.bytes[i] = w.bytes[11 - i]; w.bytes[11 - i] = t; }
+    return w;
+}
+long long big3_sum(Big3 b) { return b.words[0] + b.words[1] + b.words[2]; }
+Tagged tagged_bump(Tagged t) { t.kind += 1; t.value.f *= 2; return t; }
+Msg msg_reply(Msg m) { m.body.ratio = m.body.code / 4.0f; m.kind = 2; return m; }

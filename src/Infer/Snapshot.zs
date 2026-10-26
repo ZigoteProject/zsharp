@@ -201,6 +201,7 @@ let private settleInfo (s: Ty -> Ty) (i: TypeInfo) : TypeInfo =
   match i.def with
   | RecordDef fs -> { i with def = RecordDef(List.map (fun (f, t) -> (f, s t)) fs) }
   | UnionDef cs -> { i with def = UnionDef(List.map (fun (c, ts) -> (c, List.map s ts)) cs) }
+  | CUnionDef cs -> { i with def = CUnionDef(List.map (fun (c, t) -> (c, s t)) cs) }
 
 let private settleGlobal (s: Ty -> Ty) (g: Global) : Global = { g with ty = s g.ty; kinds = List.map (settleKind s) g.kinds }
 
@@ -216,7 +217,8 @@ let private ifaceTypes (i: Iface) : list<Ty> =
   let ofKind (k: Kind) = List.concat (List.map snd (Map.toList k.params))
   let ofInfo (t: TypeInfo) =
     match t.def with
-    | RecordDef fs -> List.map snd fs
+    | RecordDef fs
+    | CUnionDef fs -> List.map snd fs
     | UnionDef cs -> List.collect snd cs
   let parts =
     [ List.collect (fun (_, t) -> ofInfo t) i.types

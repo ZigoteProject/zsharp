@@ -32,6 +32,8 @@ let rec pattern (cx: Cx) (names: ref<Map<string, string>>) (p: Pat) (ty: Ty) : C
       u
   let ctorPattern (c: string) (arg: option<Pat>) =
     let (u, tag) = Map.find c cx.ctors.Value
+    if Option.isSome (cUnionCases cx u) then
+      fail $"a C union can't be matched: read a case with unsafe v.{afterLastDot c}"
     let (uty, targs) = instType cx u
     expect cx "pattern" ty uty
     let fields = caseFields cx u tag targs

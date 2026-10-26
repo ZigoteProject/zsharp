@@ -364,7 +364,8 @@ let private lowerFun (types: Map<string, TypeInfo>) (borrowedParams: Map<string,
       | TCon(u, args) ->
         match (Map.find u types).def with
         | UnionDef cs -> List.map (Types.Norm.substGen v args) (snd (List.item tag cs))
-        | RecordDef _ -> []
+        | RecordDef _
+        | CUnionDef _ -> []
       | _ -> []
     // join points whose body builds a cell: their reuse-token parameter and the cell's layout
     let joinTok = ref Map.empty

@@ -35,5 +35,5 @@ void apply(int (*f)(int), int x);
 
 // left out, with reasons
 static inline int twice(int x) { return 2 * x; }
-typedef union { int i; float f; } Number;
-Number number_of(int i);
+typedef struct { unsigned kind : 4; unsigned size : 12; } Flags;  // where bit fields go is the compiler's
+Flags flags_of(int i);

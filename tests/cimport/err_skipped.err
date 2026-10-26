@@ -1,1 +1,1 @@
-tests/cimport/err_skipped.zs:5:3: error: C function 'number_of' wasn't imported: the return type: it uses a union
+tests/cimport/err_skipped.zs:5:3: error: C function 'flags_of' wasn't imported: the return type: Flags was left out: it has bit fields

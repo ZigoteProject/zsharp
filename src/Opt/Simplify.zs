@@ -222,7 +222,8 @@ let run (types: Map<string, TypeInfo>) (funs: list<MFun>) : list<MFun> =
       | TCon(u, args) ->
         match (Map.find u types).def with
         | UnionDef cs -> List.map (Types.Norm.substGen v args) (snd (List.item tag cs))
-        | RecordDef _ -> []
+        | RecordDef _
+        | CUnionDef _ -> []
       | _ -> []
     // numbered per function: a function's code doesn't depend on the others'
     let counter = ref 0
