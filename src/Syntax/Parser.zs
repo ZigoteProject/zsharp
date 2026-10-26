@@ -2739,6 +2739,36 @@ let private externDecl (p: P) (ln: int) : Ast.Decl =
     pars |> List.choose id |> List.filter (fun (t: Ast.SType) -> t <> Ast.STName("unit", []))
   Ast.decl (Ast.Extern(n, args, variadic, ret)) ln
 
+// whether a let at the top level binds a pattern, (a, b), { x = x } or _, rather than a name, an
+// operator or an active pattern
+let private patternAhead (p: P) : bool =
+  let mutable k = 1
+  if ahead p k = Rec then
+    k <- k + 1
+  if ahead p k = Private then
+    k <- k + 1
+  let i = min (p.pos.Value + k) p.eof
+  match ahead p k with
+  | LParen -> ahead p (k + 1) <> Bar && not (isOperatorText p (min (i + 1) p.eof) && ahead p (k + 2) = RParen)
+  | LBrace -> true
+  | Id -> textIs p i "_"
+  | _ -> false
+
+// let pattern = expr at the top level: a value for each of the pattern's variables (0006)
+let private patternDecl (p: P) (ln: int) : Ast.Decl =
+  advance p
+  if peek p = Rec then
+    failAt p p.pos.Value "'let rec' defines functions, and a pattern binds values: write 'let'"
+    advance p
+  let isPrivate = peek p = Private
+  if isPrivate then
+    advance p
+  let q = pattern p
+  let ann = optTy p
+  expect p Equals "'='"
+  let d = Ast.decl (Ast.Pattern(q, ann, block p)) ln
+  if isPrivate then Ast.decl (Ast.Private d) ln else d
+
 // let at the top level: a value, a function (and the functions joined to it with `and`), an
 // operator or an active pattern
 let private letDecl (p: P) (ln: int) : Ast.Decl =
@@ -3010,6 +3040,7 @@ and private declOf (p: P) : Ast.Decl =
         failAt p ln "expected a header name: import c \"header.h\""
         Ast.decl (Ast.ImportC "") ln
   | Extern -> externDecl p ln
+  | Let when patternAhead p -> patternDecl p ln
   | Let -> letDecl p ln
   | _ ->
     err p "'let', 'type' or 'extern'"

@@ -250,11 +250,17 @@ let rec private useful (rows: list<list<Space>>) (q: list<Space>) : option<list<
         | None -> SWild
       Option.map (fun w -> missing :: w) (useful (defaults rows) rest)
 
-/// Fails if a clause can never match or if some value matches no clause. clauses: each pattern,
-/// and whether it has a guard (guarded clauses don't count toward coverage). cases: a union's
-/// cases and their field counts. bare: constructors whose payload is optional (active pattern
-/// cases), shown without it.
-let check (cases: string -> list<string * int> / <>) (bare: string -> bool / <>) (clauses: list<CPat * bool>) : unit / Fails =
+/// A match's error for a value no clause matches, shown as `missing`.
+let matchMissing (missing: string) = $"match is not exhaustive; missing case: {missing}"
+
+/// A let's error for a value its pattern doesn't match.
+let letMissing (missing: string) = $"a let's pattern must match every value, and this one misses {missing}: write a match with a case for it"
+
+/// Fails if a clause can never match or if some value matches no clause, worded by `missing`.
+/// clauses: each pattern, and whether it has a guard (guarded clauses don't count toward
+/// coverage). cases: a union's cases and their field counts. bare: constructors whose payload is
+/// optional (active pattern cases), shown without it.
+let checkWith (missing: string -> string) (cases: string -> list<string * int> / <>) (bare: string -> bool / <>) (clauses: list<CPat * bool>) : unit / Fails =
   let rows = ref []
   for (p, guarded) in clauses do
     let ps = spaces cases p
@@ -263,5 +269,9 @@ let check (cases: string -> list<string * int> / <>) (bare: string -> bool / <>)
     if not guarded then
       rows.Value <- List.append rows.Value (List.map (fun s -> [ s ]) ps)
   match useful rows.Value [ SWild ] with
-  | Some w -> fail $"match is not exhaustive; missing case: {render bare (List.head w)}"
+  | Some w -> fail (missing (render bare (List.head w)))
   | None -> ()
+
+/// checkWith, worded for a match.
+let check (cases: string -> list<string * int> / <>) (bare: string -> bool / <>) (clauses: list<CPat * bool>) : unit / Fails =
+  checkWith matchMissing cases bare clauses

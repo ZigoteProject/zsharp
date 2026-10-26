@@ -1,0 +1,3 @@
+tests/err_top_pattern.zs:2: error: a let's pattern must match every value, and this one misses None: write a match with a case for it
+tests/err_top_pattern.zs:5:3: error: a let's pattern must match every value, and this one misses []: write a match with a case for it
+2 errors

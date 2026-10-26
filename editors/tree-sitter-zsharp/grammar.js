@@ -97,17 +97,23 @@ module.exports = grammar({
     module_declaration: $ => seq('module', field('name', choice($.identifier, $.qualified_identifier)),
       optional(seq('=', $._indent, sep1($._declaration, $._newline), optional($._newline), $._dedent))), // module Inner = …
 
-    let_declaration: $ => seq(
-      'let',
-      optional('rec'),
-      optional('private'),
-      field('name', choice($.identifier, $.qualified_identifier, $.active_pattern_name, $.operator_name)),
-      repeat($._parameter),
-      optional($.type_annotation),
-      '=',
-      field('body', $._body),
-      repeat(seq($._newline, $.and_definition)), // let rec f … and g …
+    let_declaration: $ => choice(
+      seq(
+        'let',
+        optional('rec'),
+        optional('private'),
+        field('name', choice($.identifier, $.qualified_identifier, $.active_pattern_name, $.operator_name)),
+        repeat($._parameter),
+        optional($.type_annotation),
+        '=',
+        field('body', $._body),
+        repeat(seq($._newline, $.and_definition)), // let rec f … and g …
+      ),
+      // let (a, b) = …: a value for each of the pattern's variables
+      seq('let', optional('private'), field('pattern', $._top_pattern), optional($.type_annotation), '=', field('body', $._body)),
     ),
+    _top_pattern: $ => choice($.parenthesized_pattern, $.unit, $.record_pattern, $.wildcard, alias($.top_as_pattern, $.as_pattern)),
+    top_as_pattern: $ => seq(choice($.parenthesized_pattern, $.record_pattern), 'as', $.identifier),
 
     and_definition: $ => seq('and', optional('private'), field('name', $.identifier), repeat1($._parameter), optional($.type_annotation), '=', field('body', $._body)),
 

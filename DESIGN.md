@@ -78,6 +78,7 @@ let sumTo n =                            // imperative code is fine; mutation st
     - **Constants:** built from literals, operators, conditionals, constructors, records, tuples, conversions and other constants. They're inlined at each use, and an unannotated number constant takes the type each use needs, like a literal. Their names resolve where they're defined.
       - **Generic:** a constant whose type has type variables is generalized, as F# generalizes values, so `let empty : Map<'k, 'v> = MapLeaf` is a `Map` of any type. The library's empty collections become values (`Map.empty`, `Set.empty`), with no `()`.
     - **Other values:** these are computed once at startup, before `main`, in module order then declaration order, and freed at exit.
+    - **Patterns:** `let (a, b) = e` binds each variable as a top-level value, with a pattern that must match every value, as a local `let`'s ([proposal 0006](docs/proposals/0006-anonymous-records.md)). A tuple against a tuple (or a constant that is one) splits into a value per part, so the parts that are constants stay constants; anything else is a hidden value computed at startup, and each variable is taken from it.
     - **Order:** declarations are in order, so nothing can read a value before it's initialized.
     - **Libraries:** a library (`--lib`) has no startup, so it can only have constants.
 - **Numbers:**

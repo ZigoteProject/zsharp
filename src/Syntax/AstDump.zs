@@ -265,6 +265,9 @@ let dump (src: Source.Source) (toks: array<Token.Token>) (decls: list<Decl>) : l
     | Value(n, t, v) ->
       head ("Value " + n + " : " + ann t + named x)
       expr (d + 1) v
+    | Pattern(q, t, v) ->
+      head ("Pattern " + pat q + " : " + ann t)
+      expr (d + 1) v
     | FunGroup items ->
       head "FunGroup"
       for m in items do

@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Language
+- Patterns at the top level: `let (width, height) = (800, 600)` declares both names. A tuple of
+  constants stays constants; anything else is computed once at startup. A local `let`'s pattern
+  takes an annotation (`let (a, b): int * string = …`), and a `let` whose pattern can fail says
+  so: `a let's pattern must match every value, and this one misses None`.
+- A public constant that uses a private one of its module works from other modules (it was
+  `'x' is private to module M` at the use).
 - A `type private` record's fields are private too: outside its module, code can't read, set,
   build or match them, even on a value it reached through a public record's field.
 - A task cancelled at a wait no longer leaks a value it took apart with a tuple pattern

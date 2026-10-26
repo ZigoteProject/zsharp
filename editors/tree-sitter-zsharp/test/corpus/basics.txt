@@ -193,3 +193,22 @@ and Shape =
       (union_type
         (union_case name: (identifier) (case_field (type_name (identifier))))
         (union_case name: (identifier) (case_field (type_name (identifier))) (case_field (type_name (identifier))))))))
+
+==================
+patterns at the top level
+==================
+
+let (width, height) = (800, 600)
+let private { x = px } as p = origin
+
+---
+
+(source_file
+  (let_declaration
+    pattern: (parenthesized_pattern (tuple_pattern (identifier) (identifier)))
+    body: (tuple (number) (number)))
+  (let_declaration
+    pattern: (as_pattern
+      (record_pattern (field_pattern name: (identifier) (identifier)))
+      (identifier))
+    body: (identifier)))

@@ -428,9 +428,16 @@ and inferNode (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>)
       let cr = inferWith cx (Map.add x l env) depth hint rest
       mk (CLet(l.u, cv, cr)) cr.ty
     | None ->
-      if Option.isSome ann then
-        fail "type annotations on patterns are not supported yet"
-      inferWith cx env depth hint (plain (Match(value0, [ { pattern = p; guard = None; body = rest } ])))
+      // let (a, b): int * string = …: the annotation is the value's
+      let value =
+        match ann with
+        | Some t -> plain (Typed(value0, t))
+        | None -> value0
+      let clause = { pattern = p; guard = None; body = rest }
+      if not (isActiveCall cx value) && Option.isSome (activeOf cx p) then
+        inferWith cx env depth hint (desugarActive cx value [ clause ])
+      else
+        matchWith Patterns.letMissing cx env depth hint value [ clause ]
   | LetMut(x, ann, value0, rest) ->
     let declared =
       match ann with
@@ -646,6 +653,10 @@ and inferNode (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>)
 /// A match: the scrutinee, then each clause's pattern, guard and body (the bodies get the type
 /// expected of the match), then its exhaustiveness.
 and matchExpr (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>) (s: Expr) (cases: list<Clause>) : CExpr =
+  matchWith Patterns.matchMissing cx env depth hint s cases
+
+/// A match whose missing case is worded by `missing` (a match's, or a let's pattern's).
+and matchWith (missing: string -> string) (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>) (s: Expr) (cases: list<Clause>) : CExpr =
     let v = cx.v
     let cs = infer cx env depth s
     let resTy = fresh v kAny
@@ -669,7 +680,7 @@ and matchExpr (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>)
       expect cx "match case" resTy cb.ty
       (cp, cg, cb)
     let ccases = List.map one cases
-    Patterns.check (unionCases cx) (fun c -> Set.contains c cx.apCtors.Value) (List.map (fun (p, g, _) -> (p, Option.isSome g)) ccases)
+    Patterns.checkWith missing (unionCases cx) (fun c -> Set.contains c cx.apCtors.Value) (List.map (fun (p, g, _) -> (p, Option.isSome g)) ccases)
     mk (CMatch(cs, ccases)) resTy
 
 /// task { }: a Task whose work is the body, in direct style ($cancel is the task's cancellation,

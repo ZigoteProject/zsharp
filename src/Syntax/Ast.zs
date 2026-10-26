@@ -192,6 +192,8 @@ and DeclShape =
   | Const of string * Expr
   /// let name = expr at the top level
   | Value of string * option<SType> * Expr
+  /// let (a, b) = expr at the top level: a value for each of the pattern's variables (0006)
+  | Pattern of Pat * option<SType> * Expr
 
 /// A node of each kind at a place.
 let expr (shape: ExprShape) (at: int) : Expr = { e = shape; at = at }

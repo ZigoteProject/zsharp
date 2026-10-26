@@ -10,7 +10,7 @@
 
 - [x] Declined (anonymous records); approved in principle (top-level patterns)
 - [ ] Discussion
-- [ ] Implementation
+- [x] Implementation (top-level patterns, phase 12)
 
 ## Summary
 
@@ -47,7 +47,7 @@ find. The third design review weighs this; the proposal gives it the full design
 
 - **Forms:** `let (a, b) = e`, `let { x = x; y = y } = e`, nested tuples and records, `_`, and `as`. Irrefutable patterns only: a union case of a union with several cases, a list pattern or a literal is an error, as a `let` with an incomplete pattern is inside a function.
 - **Constants:** when `e` is a constant and the pattern takes constructors the constant has, each bound name is a constant (inlined at use, DESIGN §2.1). Otherwise `e` is a hidden startup value and each name a startup value projecting from it, in declaration order.
-- **`private`** applies to each name as `let private` does; type annotations go in the pattern (`let (a: int, b) = …`).
+- **`private`** applies to each name as `let private` does; a type annotation goes after the pattern (`let (a, b): int * string = …`), as a local `let`'s does.
 
 ## Drawbacks
 
@@ -75,7 +75,7 @@ find. The third design review weighs this; the proposal gives it the full design
 |---|---|
 | a field missing in `.f` | `{\| name: string; x: int \|} has no field 'y'` |
 | `.f` on an unannotated parameter | `annotate p: its type isn't known here (an anonymous record is named by its fields)` |
-| a refutable top-level pattern | `a top-level let needs a pattern that always matches: Some x can be None` |
+| a refutable top-level pattern | `a let's pattern must match every value, and this one misses None: write a match with a case for it` |
 | a pattern on an anonymous record | `anonymous records have no patterns: read the fields with .x` |
 
 ### Tooling
@@ -104,3 +104,4 @@ None.
 ## History
 
 - **2026-10-22:** drafted from phase 12's deferred items and F#'s anonymous records (F# 4.6).
+- **2026-10-26:** top-level patterns built (`tests/top_pattern.zs`): a tuple against a tuple, or a constant that is one, splits into a value per part; any other value is a hidden one computed at startup. The annotation goes after the pattern, as a local `let`'s (patterns have no annotations inside), and a local `let` with a pattern takes one now too. A pattern that can fail is `a let's pattern must match every value, and this one misses None: …`, at the top level and inside functions.

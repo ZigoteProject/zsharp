@@ -32,6 +32,7 @@ let main () =
 A `let` without parameters at the top of a file is a value.
 - **Constants:** built from literals, operators, constructors (`[]` too), records, tuples and other constants. They're inlined where used, so they cost nothing. A number constant without an annotation takes the type each use needs, like a literal, and one whose type has type variables is generic, as F#'s values are: `Map.empty` is an empty map of any type, at each use its own.
 - **Other values:** anything that allocates or calls a function, such as an array, a list of elements or `Map.ofList …`. These are computed once when the program starts, in the order they're declared (dependencies' modules first), so each has one type; a generic one is an error that says to make it a function.
+- **Patterns:** `let (rows, cols) = …` binds each name in the pattern, as a `let` inside a function does, and the pattern must match every value. A tuple against a tuple splits, so each part that's a constant stays one; anything else is computed once at startup and the names are taken from it.
 - **Order:** declarations are in order, as in F#, so a value can only use what's declared above it.
 
 ```zsharp
@@ -40,15 +41,16 @@ let area = width * width
 let mask = 0xFF
 let banner = "== report =="
 let squares = Array.init 5 (fun i -> i * i)   // computed once, at startup
+let (rows, cols) = (2, width / 2)             // two constants
 
 let main () =
   let low: u8 = mask
-  println $"{banner} {area} {low} {mask * 1000} {squares.[3]} {(mask: int) + 1}"
+  println $"{banner} {area} {low} {mask * 1000} {squares.[3]} {(mask: int) + 1} {rows}x{cols}"
   0
 ```
 
 ```text
-== report == 64 255 255000 9 256
+== report == 64 255 255000 9 256 2x4
 ```
 
 `(e: T)` gives an expression a type, here making `mask` an `int` for the addition.

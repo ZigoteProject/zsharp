@@ -499,6 +499,91 @@ let rec private qualifyNames (cx: Cx) (e: Expr) : Expr =
   | Call(f, args) -> { e with e = Call(Option.defaultValue f (Exprs.resolveName cx f), List.map (qualifyNames cx) args) }
   | _ -> mapExpr (qualifyNames cx) e
 
+// ------------------------------------------------------------ top-level patterns
+
+/// The variables a pattern binds, in its order, with their tokens (a name that is a constructor
+/// binds nothing).
+let rec private patternVars (cx: Cx) (q: Pat) : list<string * int> / Fails =
+  match q.pat with
+  | PIdent(x, None) -> if isCtor cx x then [] else [ (x, q.patAt) ]
+  | PIdent(_, Some a)
+  | POr(a, _) -> patternVars cx a
+  | PAs(a, x) -> List.append (patternVars cx a) [ (x, -1) ]
+  | PTuple ps
+  | PArgs ps -> List.collect (patternVars cx) ps
+  | PNamed fs -> List.collect (fun (_, a) -> patternVars cx a) fs
+  | PRecord fs -> List.collect (fun (_, _, a) -> patternVars cx a) fs
+  | _ -> []
+
+/// The values a top-level `let pattern = e` declares (0006). A tuple pattern against a tuple, or a
+/// constant that is one, splits into a value per part, so a part that is a constant stays one;
+/// otherwise the value is computed once at startup, as a hidden value whose pattern is checked as
+/// a let's, and each variable is taken from it.
+let private patternValues (cx: Cx) (d: Decl) (q0: Pat) (ann0: option<SType>) (e0: Expr) : list<Decl> =
+  let made = ref 0
+  // a hidden value's name, unique in the module ($ can't be written)
+  let hidden () =
+    made.Value <- made.Value + 1
+    $"$let{d.dat}_{made.Value}"
+  let value (n: string) (at: int) (ann: option<SType>) (e: Expr) = { decl (Value(n, ann, e)) d.dat with named = at }
+  // the tuple a constant is, to split against
+  let rec literal (e: Expr) : Expr =
+    match e.e with
+    | At a -> literal a
+    | Var x ->
+      match Option.bind (fun q -> Map.tryFind q cx.consts.Value) (Exprs.resolveName cx x) with
+      | Some body -> literal body
+      | None -> e
+    | _ -> e
+  let rec split (q: Pat) (ann: option<SType>) (e: Expr) : list<Decl> =
+    let variable =
+      match q.pat with
+      | PIdent(x, None) -> not (isCtor cx x)
+      | _ -> false
+    match q.pat with
+    | PIdent(x, None) when variable -> [ value x q.patAt ann e ]
+    | PWild -> [ value (hidden ()) -1 ann e ]
+    | PTuple ps ->
+      let parts =
+        match ((literal e).e, ann) with
+        | (Tuple es, None) when List.length es = List.length ps -> Some(List.map (fun x -> (x, None)) es)
+        | (Tuple es, Some(STTuple ts)) when List.length es = List.length ps && List.length ts = List.length ps -> Some(List.zip es (List.map Some ts))
+        | _ -> None
+      match parts with
+      | Some xs -> List.collect (fun (p, (x, t)) -> split p t x) (List.zip ps xs)
+      | None -> whole q ann e
+    | _ -> whole q ann e
+  and whole (q: Pat) (ann: option<SType>) (e: Expr) : list<Decl> =
+    let vars = patternVars cx q
+    // the pattern without its places: its variables are the values' (defined at their tokens),
+    // not the hidden value's locals
+    let rec bare (q: Pat) : Pat =
+      let shape =
+        match q.pat with
+        | PIdent(x, Some a) -> PIdent(x, Some(bare a))
+        | PTuple ps -> PTuple(List.map bare ps)
+        | PArgs ps -> PArgs(List.map bare ps)
+        | POr(a, b) -> POr(bare a, bare b)
+        | PAs(a, x) -> PAs(bare a, x)
+        | PNamed fs -> PNamed(List.map (fun (f, a) -> (f, bare a)) fs)
+        | PRecord fs -> PRecord(List.map (fun (f, _, a) -> (f, -1, bare a)) fs)
+        | s -> s
+      plainPat shape
+    let bound (body: Expr) = plain (Let(bare q, ann, e, body))
+    match vars with
+    | [ (x, at) ] -> [ value x at None (bound (plain (Var x))) ]
+    | [] -> [ value (hidden ()) -1 None (bound (plain UnitLit)) ]
+    | _ ->
+      let h = hidden ()
+      let all = value h -1 None (bound (plain (Tuple(List.map (fun (x, _) -> plain (Var x)) vars))))
+      let n = List.length vars
+      let take (i: int) (var: string * int) =
+        let (x, at) = var
+        let slots = List.init n (fun j -> plainPat (if j = i then PIdent(x, None) else PWild))
+        value x at None (plain (Let(plainPat (PTuple slots), None, plain (Var h), plain (Var x))))
+      all :: List.mapi take vars
+  split q0 ann0 e0
+
 // ------------------------------------------------------------ declarations
 
 // the name of a function declaration
@@ -520,11 +605,24 @@ let private valueName (d: Decl) : option<string> =
   | _ -> None
 
 let rec private declaredNames (d: Decl) : list<string> =
+  // a pattern's variables (not upper case: a constructor's name is a case's)
+  let rec vars (q: Pat) : list<string> =
+    match q.pat with
+    | PIdent(x, None) -> if String.byte x 0 >= u8 65 && String.byte x 0 <= u8 90 then [] else [ x ]
+    | PIdent(_, Some a)
+    | POr(a, _) -> vars a
+    | PAs(a, x) -> x :: vars a
+    | PTuple ps
+    | PArgs ps -> List.collect vars ps
+    | PNamed fs -> List.collect (fun (_, a) -> vars a) fs
+    | PRecord fs -> List.collect (fun (_, _, a) -> vars a) fs
+    | _ -> []
   match d.d with
   | Value(n, _, _)
   | Fun(n, _, _, _, _)
   | TypeDecl(n, _, _, _)
   | TypeAlias(n, _, _) -> [ n ]
+  | Pattern(q, _, _) -> vars q
   | FunGroup items
   | TypeGroup items -> List.collect declaredNames items
   | Attrs(_, x)
@@ -783,6 +881,9 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
     match inner.d with
     | Fun(n, _, _, _, _)
     | Value(n, _, _) -> own n
+    | Pattern(q, _, _) ->
+      for (n, _) in patternVars cx q do
+        own n
     | TypeDecl(n, _, body, _) ->
       own n
       match body with
@@ -899,6 +1000,9 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
       cx.globalValues.Value <- Map.add q c.ty cx.globalValues.Value
       Buffer.push (q, init) cx.valueList
       recordKey cx d.named name0 c.ty false q true
+  | Pattern(q, ann, e) ->
+    for value in patternValues cx d q ann e do
+      declare cx value
   | Open m ->
     // a module, or one nested in the current module or a module enclosing it
     match resolveWith cx (fun q -> Set.contains q cx.moduleNames.Value) m with

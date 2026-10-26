@@ -1,1 +1,3 @@
 tests/modules/err_private.zs:2:11: error: 'Geometry.pi' is private to module Geometry
+tests/modules/err_private.zs:3:11: error: 'Units.scale' is private to module Units
+2 errors

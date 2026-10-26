@@ -711,9 +711,12 @@ let recordKey (cx: Cx) (tok: int) (name: string) (t: Ty) (inlay: bool) (key: str
 
 let record (cx: Cx) (tok: int) (name: string) (t: Ty) (inlay: bool) = recordKey cx tok name t inlay "" false
 
-/// Whether code here sees what's private to owner: its module and the modules nested in it do.
+/// Whether code here sees what's private to owner: its module and the modules nested in it do, and
+/// so does an expression written elsewhere (a constant's body at a use), whose names were checked
+/// where it was written.
 let visibleTo (cx: Cx) (owner: option<string>) : bool =
   match (owner, cx.currentModule.Value) with
+  | _ when cx.foreign.Value -> true
   | (o, c) when o = c -> true
   | (Some o, Some c) -> String.startsWith (o + ".") c
   | (None, Some c) -> Set.contains c cx.mainNested.Value
