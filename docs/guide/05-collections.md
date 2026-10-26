@@ -25,6 +25,21 @@ let main () =
 [(1, a); (2, b)] ([5; 8], [3; 1]) [0; 1; 4; 9]
 ```
 
+**F#'s other list functions** are there too, and as `Array.*` over arrays (returning arrays): `groupBy` and `countBy` (in the order the keys first appear), `chunkBySize`, `windowed`, `pairwise`, `scan`, `foldBack` and `tryFindIndex`; `Array.binarySearch x a` finds `x` in a sorted array.
+
+```zsharp
+let main () =
+  let words = [ "apple"; "bob"; "avocado"; "cat" ]
+  println $"{List.groupBy String.length words} {List.countBy (fun (w: string) -> String.sub w 0 1) words}"
+  println $"{List.chunkBySize 2 [ 1; 2; 3 ]} {List.windowed 2 [ 1; 2; 3 ]} {List.pairwise [ 1; 2; 3 ]} {List.scan (+) 0 [ 1; 2; 3 ]}"
+  0
+```
+
+```text
+[(5, [apple]); (3, [bob; cat]); (7, [avocado])] [(a, 2); (b, 1); (c, 1)]
+[[1; 2]; [3]] [[1; 2]; [2; 3]] [(1, 2); (2, 3)] [0; 1; 3; 6]
+```
+
 **List expressions:** `[ for x in xs -> e ]` is the list of `e` for each `x`; inside, `if c then yield e` keeps some, nested `for`s and `let`s and `match`es may yield, and `yield! ys` adds each of `ys`. `[| … |]` is the same for an array. A range is a source too: `[ for i in 1 .. n -> i * i ]`.
 
 ```zsharp
@@ -227,4 +242,31 @@ let main () =
 ```text
 [(and, 2); (bat, 1); (cat, 1); (hat, 1); (the, 3)]
 5 Some 3 false
+```
+
+## Queue, Stack and PriorityQueue
+
+**Values, like lists:** each operation gives the changed collection, and the old one stays valid.
+- **`Queue<'a>`:** first in, first out. `Queue.enqueue x q`; `Queue.dequeue q` is `Some(x, rest)` with the oldest item, or `None`; `peek` and `count`.
+- **`Stack<'a>`:** last in, first out. `Stack.push x s`; `Stack.pop s` is `Some(x, rest)` with the newest item; `peek` and `count`.
+- **`PriorityQueue<'a, 'p>`:** lowest priority first, as .NET's. `PriorityQueue.enqueue x p q`; `dequeue q` is `Some((x, p), rest)`; `peek` and `count`. A leftist heap, so each operation takes a logarithmic number of steps, in place when nothing else refers to the old queue.
+
+```zsharp
+let main () =
+  let mutable todo = PriorityQueue.empty
+  for (task, p) in [ ("write", 3); ("plan", 1); ("test", 4); ("code", 2) ] do
+    todo <- PriorityQueue.enqueue task p todo
+  let mutable going = true
+  while going do
+    match PriorityQueue.dequeue todo with
+    | Some((task, _), rest) ->
+      print $"{task} "
+      todo <- rest
+    | None -> going <- false
+  println ""
+  0
+```
+
+```text
+plan code write test 
 ```

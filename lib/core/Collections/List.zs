@@ -366,6 +366,76 @@ let ofIter (c: 'c) : list<'a> =
   |> ignore
   rev acc.Value
 
+/// The elements grouped by `f`'s key for each: a group per key, in the order the keys first
+/// appear, its elements in the list's order (`'k` with `Hash` and `Eq`).
+let groupBy (f: 'a -> 'k) (xs: list<'a>) : list<'k * list<'a>> =
+  // a table of each key's group number, by the key's hash; the keys, newest first; each group's
+  // elements, reversed (no more groups than elements)
+  let n = if List.length xs > 8 then List.length xs else 8
+  let table = Buffer.create n []
+  let groups = Buffer.create n []
+  let rec go keys count xs =
+    match xs with
+    | [] -> List.rev keys
+    | x :: rest ->
+      let k = f x
+      let h = hash k % n
+      let b = if h < 0 then h + n else h
+      match List.tryFind (fun (key, _) -> key = k) table.[b] with
+      | Some(_, g) ->
+        groups.[g] <- x :: groups.[g]
+        go keys count rest
+      | None ->
+        table.[b] <- (k, count) :: table.[b]
+        groups.[count] <- [ x ]
+        go (k :: keys) (count + 1) rest
+  List.mapi (fun i k -> (k, List.rev groups.[i])) (go [] 0 xs)
+
+/// How many elements have each of `f`'s keys, in the order the keys first appear.
+let countBy (f: 'a -> 'k) (xs: list<'a>) : list<'k * int> = List.map (fun (k, g) -> (k, List.length g)) (List.groupBy f xs)
+
+/// The elements in lists of `size` (the last one shorter when they don't divide evenly).
+let chunkBySize (size: int) (xs: list<'a>) : list<list<'a>> =
+  if size <= 0 then
+    panic $"List.chunkBySize: the size must be positive, not {size}"
+  let rec go acc chunk n xs =
+    match xs with
+    | [] -> List.rev (if n = 0 then acc else List.rev chunk :: acc)
+    | x :: rest -> if n = size then go (List.rev chunk :: acc) [ x ] 1 rest else go acc (x :: chunk) (n + 1) rest
+  go [] [] 0 xs
+
+/// Every run of `size` neighbors, sliding by one: `windowed 2 [ 1; 2; 3 ]` is
+/// `[ [ 1; 2 ]; [ 2; 3 ] ]` (none when the list is shorter).
+let windowed (size: int) (xs: list<'a>) : list<list<'a>> =
+  if size <= 0 then
+    panic $"List.windowed: the size must be positive, not {size}"
+  let rec go acc xs left =
+    if left < size then List.rev acc else go (List.take size xs :: acc) (List.tail xs) (left - 1)
+  go [] xs (List.length xs)
+
+/// Each element with the next: `pairwise [ 1; 2; 3 ]` is `[ (1, 2); (2, 3) ]`.
+let pairwise (xs: list<'a>) : list<'a * 'a> =
+  let rec go acc xs =
+    match xs with
+    | a :: rest ->
+      match rest with
+      | b :: _ -> go ((a, b) :: acc) rest
+      | [] -> List.rev acc
+    | [] -> List.rev acc
+  go [] xs
+
+/// `fold`'s states, the first one and the one after each element: `scan (+) 0 [ 1; 2 ]` is
+/// `[ 0; 1; 3 ]`.
+let scan (f: 's -> 'a -> 's) (state: 's) (xs: list<'a>) : list<'s> =
+  let rec go acc s xs =
+    match xs with
+    | [] -> List.rev (s :: acc)
+    | x :: rest -> go (s :: acc) (f s x) rest
+  go [] state xs
+
+/// `fold` from the back: `f x0 (f x1 (… (f xn state)))`.
+let foldBack (f: 'a -> 's -> 's) (xs: list<'a>) (state: 's) : 's = List.fold (fun acc x -> f x acc) state (List.rev xs)
+
 /// A list's elements, front to back.
 impl Iter<list<'a>, 'a> =
   let forEach xs f =

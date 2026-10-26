@@ -50,6 +50,12 @@ module Set =
   let difference (a: Set<'a>) (b: Set<'a>) =
     Set.ofList (List.filter (fun x -> not (Set.contains x b)) (Set.toList a))
 
+  /// Whether every element of `a` is in `b`.
+  let isSubset (a: Set<'a>) (b: Set<'a>) = Set.count a <= Set.count b && List.forall (fun x -> Set.contains x b) (Set.toList a)
+
+  /// Whether every element of `b` is in `a`.
+  let isSuperset (a: Set<'a>) (b: Set<'a>) = Set.isSubset b a
+
 /// By their elements: two sets with the same elements are equal whatever order they were added in.
 impl Eq<Set<'a>> =
   let equal (a: Set<'a>) (b: Set<'a>) = Set.toList a = Set.toList b

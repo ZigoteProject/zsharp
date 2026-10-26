@@ -71,6 +71,15 @@
 - A chip's and WebAssembly's runtime has `pow`, `atan2` and `roundeven` (fdlibm's, weak), which
   compiler-rt lacks; `tests/libm.sh` checks them against the host's libm.
 - `List.init` calls its function in index order, as F#'s (it went from the last index down).
+- F#'s other collection functions (S2): `groupBy`, `countBy`, `chunkBySize`, `windowed`,
+  `pairwise`, `scan` and `foldBack` on lists and arrays, `Array.tryFindIndex` and
+  `Array.binarySearch`, `Map.change`, `Set.isSubset` and `isSuperset`; and `Queue`, `Stack` and
+  `PriorityQueue` (lowest priority first, a leftist heap), values like lists.
+- A function that takes an array from a record parameter into a `let mutable` and writes it in
+  place owns the record, so a unique array is changed in place (the record was borrowed, the
+  caller's reference stayed, and every call copied the array: quadratic once inside a `while`).
+- The runtime's threads (the pool's workers, the event loop, helpers) have 8 MB stacks, as Linux
+  gives and as the main thread has: on macOS they had 512 KB, which deep recursion ran out of.
 
 ### Editor
 - A VS Code extension (`editors/vscode`) and a Rider plugin (`editors/rider`, any JetBrains IDE

@@ -11,7 +11,8 @@ open Core.Program
 let rec private rootLocal (e: CExpr) : option<string> =
   match e.k with
   | CLocal x -> Some x
-  | CField(r, _) -> rootLocal r
+  | CField(r, _)
+  | CLine(_, r) -> rootLocal r
   | _ -> None
 
 // whether e is the variable x
@@ -25,6 +26,12 @@ let private reads : Set<string> = Set.ofList [ "array.get"; "Array.length"; "Str
 
 // the reads that borrow the array (or string) they read from, a variable or a field of one
 let private lends : Set<string> = Set.ofList [ "array.get"; "Array.length"; "String.length"; "String.byte"; "vec.load"; "fixed.get"; "fixed.length" ]
+
+// whether e writes the mutable array x in place
+let rec private inPlace (x: string) (e: CExpr) : bool =
+  match e.k with
+  | CArraySet(y, _, _) when y = x -> true
+  | k -> List.exists (inPlace x) (children k)
 
 /// A function's body with the parameters of its join points that are its own parameters gone:
 /// where every jump to a join point passes the same parameter of the function from `keep` (one it
@@ -134,6 +141,14 @@ let borrowingWith (types: Map<string, TypeInfo>) (entries: Set<string>) (externa
         | CAssign(x, _)
         | CArraySet(x, _, _) when Map.containsKey x index ->
           bad.Value <- Set.add (Map.find x index) bad.Value
+          List.iter walk (children e.k)
+        // a field taken into a mutable array that's written in place (`let mutable a = q.items`,
+        // then a.[i] <- x): owned, so the field moves out unique; borrowed, the caller's
+        // reference would make every write a copy (Lean 4's rule for consumed projections)
+        | CLetMut(x, init, body) when inPlace x body ->
+          match rootLocal init with
+          | Some p when Map.containsKey p index -> bad.Value <- Set.add (Map.find p index) bad.Value
+          | _ -> ()
           List.iter walk (children e.k)
         | k -> List.iter walk (children k)
       if not (Set.isEmpty set) then

@@ -103,6 +103,66 @@ let sort (a: span<'a>) = Array.ofList (List.sort (Array.toList a))
 /// A new array sorted with `f` (like `compare`). Stable.
 let sortWith f (a: span<'a>) = Array.ofList (List.sortWith f (Array.toList a))
 
+/// The elements grouped by `f`'s key for each, in the order the keys first appear (`'k` with
+/// `Hash` and `Eq`).
+let groupBy (f: 'a -> 'k) (a: span<'a>) : array<'k * array<'a>> =
+  Array.ofList (List.map (fun (k, g) -> (k, Array.ofList g)) (List.groupBy f (Array.toList a)))
+
+/// How many elements have each of `f`'s keys, in the order the keys first appear.
+let countBy (f: 'a -> 'k) (a: span<'a>) : array<'k * int> = Array.ofList (List.countBy f (Array.toList a))
+
+/// The elements in arrays of `size` (the last one shorter when they don't divide evenly).
+let chunkBySize (size: int) (a: span<'a>) : array<array<'a>> =
+  if size <= 0 then
+    panic $"Array.chunkBySize: the size must be positive, not {size}"
+  let n = Array.length a
+  Array.init ((n + size - 1) / size) (fun c -> Array.init (min size (n - c * size)) (fun i -> a.[c * size + i]))
+
+/// Every run of `size` neighbors, sliding by one (none when the array is shorter).
+let windowed (size: int) (a: span<'a>) : array<array<'a>> =
+  if size <= 0 then
+    panic $"Array.windowed: the size must be positive, not {size}"
+  Array.init (max 0 (Array.length a - size + 1)) (fun w -> Array.init size (fun i -> a.[w + i]))
+
+/// Each element with the next.
+let pairwise (a: span<'a>) : array<'a * 'a> = Array.init (max 0 (Array.length a - 1)) (fun i -> (a.[i], a.[i + 1]))
+
+/// `fold`'s states, the first one and the one after each element.
+let scan (f: 's -> 'a -> 's) (state: 's) (a: span<'a>) : array<'s> = Array.ofList (List.scan f state (Array.toList a))
+
+/// `fold` from the back: `f a.[0] (f a.[1] (… (f a.[n - 1] state)))`.
+let foldBack (f: 'a -> 's -> 's) (a: span<'a>) (state: 's) : 's =
+  let mutable acc = state
+  for k in 0 .. Array.length a - 1 do
+    acc <- f a.[Array.length a - 1 - k] acc
+  acc
+
+/// The index of the first element for which `f` is true, or `None`.
+let tryFindIndex (f: 'a -> bool) (a: span<'a>) : option<int> =
+  let mutable i = 0
+  let mutable found = None
+  while Option.isNone found && i < Array.length a do
+    if f a.[i] then
+      found <- Some i
+    i <- i + 1
+  found
+
+/// The index of an element equal to `x` in a sorted array, or `None`: halving the range each step.
+let binarySearch (x: 'a) (a: span<'a>) : option<int> =
+  let mutable lo = 0
+  let mutable hi = Array.length a
+  let mutable found = None
+  while Option.isNone found && lo < hi do
+    let mid = lo + (hi - lo) / 2
+    let c = compare a.[mid] x
+    if c = 0 then
+      found <- Some mid
+    else if c < 0 then
+      lo <- mid + 1
+    else
+      hi <- mid
+  found
+
 type array<'a> with
   /// The number of elements.
   member a.Length = Array.length a

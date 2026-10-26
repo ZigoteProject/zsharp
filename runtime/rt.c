@@ -47,6 +47,18 @@ double roundeven(double x) { return nearbyint(x); }
 float roundevenf(float x) { return nearbyintf(x); }
 #endif
 
+#include <pthread.h>
+// a thread with the main thread's usual stack, 8 MB: macOS gives a new thread 512 KB, which deep
+// recursion (a compiler's passes over a long list literal) runs out of where Linux's 8 MB doesn't
+static int spawn(pthread_t *t, void *(*body)(void *), void *arg) {
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, (size_t)8 << 20);
+    int r = pthread_create(t, &attr, body, arg);
+    pthread_attr_destroy(&attr);
+    return r;
+}
+
 // the processors online (ZS_WORKERS overrides it where threads are started)
 static long cpu_count(void) {
 #ifdef _WIN32
@@ -2304,7 +2316,7 @@ void zs_loop_blocking(void *work, void *done) {
     pthread_mutex_lock(&b->mu);
     if (!b->helping) {
         b->helping = true;
-        if (pthread_create(&b->helper, NULL, helper_main, b) != 0) zs_panic_c("pthread_create failed");
+        if (spawn(&b->helper, helper_main, b) != 0) zs_panic_c("pthread_create failed");
     }
     if (b->todo) b->todo_last->next = j;
     else b->todo = j;
@@ -2467,7 +2479,7 @@ static void loops_start(void) {
     T.threads = calloc((size_t)n, sizeof(pthread_t));
     if (!T.boxes || !T.threads) zs_panic_c("out of memory");
     for (int k = 0; k < T.n; k++)
-        if (pthread_create(&T.threads[k], NULL, loop_main, (void *)(intptr_t)k) != 0) zs_panic_c("pthread_create failed");
+        if (spawn(&T.threads[k], loop_main, (void *)(intptr_t)k) != 0) zs_panic_c("pthread_create failed");
     pthread_mutex_lock(&T.mu);
     while (T.ready < T.n) pthread_cond_wait(&T.cv, &T.mu);
     pthread_mutex_unlock(&T.mu);
@@ -3028,7 +3040,7 @@ static void par_block(void) {
         pthread_t *t = realloc(P.spareThreads, (size_t)(P.nspare + 1) * sizeof(pthread_t));
         if (!t) zs_panic_c("out of memory");
         P.spareThreads = t;
-        if (pthread_create(&P.spareThreads[P.nspare], NULL, spare_main, NULL) != 0) zs_panic_c("pthread_create failed");
+        if (spawn(&P.spareThreads[P.nspare], spare_main, NULL) != 0) zs_panic_c("pthread_create failed");
         P.nspare++;
     }
     pthread_mutex_unlock(&P.mu);
@@ -3130,7 +3142,7 @@ static void pool_start(void) {
     pthread_key_create(&slotKey, slot_give);
     me = P.n - 1; // the thread starting the pool runs jobs with the last deque
     for (int k = 0; k < P.n - 1; k++)
-        if (pthread_create(&P.threads[k], NULL, worker_main, (void *)(intptr_t)k) != 0) zs_panic_c("pthread_create failed");
+        if (spawn(&P.threads[k], worker_main, (void *)(intptr_t)k) != 0) zs_panic_c("pthread_create failed");
     atexit(pool_stop);
 }
 

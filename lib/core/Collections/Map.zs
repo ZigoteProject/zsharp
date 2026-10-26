@@ -162,6 +162,13 @@ module Map =
   /// A map with the pairs' bindings (a later pair wins over an earlier one with the same key).
   let ofList (pairs: list<'k * 'v>) = List.fold (fun m (k, v) -> Map.add k v m) Map.empty pairs
 
+  /// The map with `key`'s binding changed by `f`, given the value or `None`: a value from it binds
+  /// the key, `None` removes it.
+  let change (key: 'k) (f: option<'v> -> option<'v>) (m: Map<'k, 'v>) : Map<'k, 'v> =
+    match f (Map.tryFind key m) with
+    | Some v -> Map.add key v m
+    | None -> Map.remove key m
+
   /// The keys in ascending order.
   let keys (m: Map<'k, 'v>) =
     let mutable acc = []
