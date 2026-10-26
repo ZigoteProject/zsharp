@@ -211,6 +211,43 @@ if command -v qemu-system-arm >/dev/null && bin/zs build tests/mcu/layout.zs --t
   echo "ok   tests/mcu/layout.zs (layout facts on a Cortex-M4, under qemu)"
 else echo "FAIL tests/mcu/layout.zs"; cat "$tmp/layout.log"; fail=1; fi
 
+# C interop on a chip, both ways, under qemu: Z# calling C with structs by value in every shape
+# (AAPCS, hard and soft float), and a C firmware with its own startup calling a Z# library built
+# with --lib (tests/cexport/bare.c, no C library), against the host's expected output
+if command -v qemu-system-arm >/dev/null; then
+  for chip in cortex-m4 cortex-m0plus; do
+    case $chip in
+      cortex-m4) board=mps2-an386; zt=thumb-freestanding-eabihf; zc=cortex_m4+vfp4d16sp ;;
+      *) board=microbit; zt=thumb-freestanding-eabi; zc=cortex_m0plus ;;
+    esac
+    qsys=(timeout 60 qemu-system-arm -M $board -nographic -semihosting-config enable=on,target=native -kernel)
+    if bin/zs build tests/cimport/abi.zs --target $chip -o "$tmp/abi.elf" 2>"$tmp/abi.log" \
+       && [ "$("${qsys[@]}" "$tmp/abi.elf" 2>&1 | grep -v '^#zs')" = "$(cat tests/cimport/abi.out)" ]; then echo "ok   tests/cimport/abi.zs on $chip (under qemu)"
+    else echo "FAIL tests/cimport/abi.zs on $chip"; cat "$tmp/abi.log"; fail=1; fi
+    fw="$tmp/fw"; rm -rf "$fw"; mkdir -p "$fw"
+    # the board's script with the shared Cortex-M layout in place of its INCLUDE
+    awk -v b=runtime/boards/cortex-m.ld '/INCLUDE cortex-m.ld/ { while ((getline l < b) > 0) print l; next } { print }' "runtime/boards/$board.ld" > "$fw/fw.ld"
+    if bin/zs build tests/cexport/lib.zs --lib --target $chip -o "$fw/lib.a" 2>"$fw/log" \
+       && zig cc -target $zt -mcpu=$zc -O2 -ffunction-sections -fdata-sections -I"$fw" tests/cexport/bare.c "$fw/lib.a" -T"$fw/fw.ld" -Wl,--gc-sections -Wl,--entry=Reset_Handler -o "$fw/fw.elf" 2>>"$fw/log" \
+       && [ "$("${qsys[@]}" "$fw/fw.elf" 2>&1)" = "$(cat tests/cexport/main.out)" ]; then echo "ok   tests/cexport/bare.c on $chip (a C firmware calling a Z# library, under qemu)"
+    else echo "FAIL tests/cexport/bare.c on $chip"; cat "$fw/log"; fail=1; fi
+  done
+fi
+
+# C interop on freestanding WebAssembly, both ways, under node: structs by value (its C ABI), and
+# a C program linked with a Z# library archive (--lib -o lib.a), the runtime's _start running its
+# main
+if command -v node >/dev/null; then
+  if bin/zs build tests/cimport/abi.zs --target wasm32 -o "$tmp/abi.wasm" 2>"$tmp/abi.log" \
+     && [ "$(node bin/run-wasm.mjs "$tmp/abi.wasm" 2>&1)" = "$(cat tests/cimport/abi.out)" ]; then echo "ok   tests/cimport/abi.zs on wasm32 (under node)"
+  else echo "FAIL tests/cimport/abi.zs on wasm32"; cat "$tmp/abi.log"; fail=1; fi
+  wf="$tmp/wf"; rm -rf "$wf"; mkdir -p "$wf"
+  if bin/zs build tests/cexport/lib.zs --lib --target wasm32 -o "$wf/lib.a" 2>"$wf/log" \
+     && zig cc -target wasm32-freestanding -O2 -I"$wf" tests/cexport/bare.c "$wf/lib.a" -o "$wf/prog.wasm" 2>>"$wf/log" \
+     && [ "$(node bin/run-wasm.mjs "$wf/prog.wasm" 2>&1)" = "$(cat tests/cexport/main.out)" ]; then echo "ok   tests/cexport/bare.c on wasm32 (a C program calling a Z# library, under node)"
+  else echo "FAIL tests/cexport/bare.c on wasm32"; cat "$wf/log"; fail=1; fi
+fi
+
 # freestanding WebAssembly: the same effects test, run by the Node host
 if command -v node >/dev/null && bin/zs build tests/mcu/effects.zs --target wasm32 -o "$tmp/effects.wasm" 2>"$tmp/effects.log" \
    && [ "$(node bin/run-wasm.mjs "$tmp/effects.wasm" 2>&1)" = "$(cat tests/mcu/effects.expected)" ]; then

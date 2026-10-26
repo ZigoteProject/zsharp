@@ -671,7 +671,9 @@ import c "raylib.h"                              // like Zig's @cImport
     - The header is found next to the importing file, then on the system path.
     - The result is cached in memory, and saved with a copy of the header in `.zs-cache/cimport/`, so editors without clang or the header still get it.
     - In the editor, hover shows the C declaration and the header's comment.
+- **Every target's convention:** x86-64 System V, AAPCS64 (Apple's on macOS), Microsoft x64, AAPCS on a Cortex-M (the VFP variant on the hard-float M4: float aggregates of up to four in float registers) and WebAssembly's, both for externs and exports.
 - **Exporting:** `[<Export "name">]` functions must be monomorphic, with C types only. `zs build --lib` produces a static library (`.a`) and a header (`.h`).
+  - **On a chip** the archive has the embedded runtime without its startup (a firmware has the vector table, the reset handler and `main`), and the firmware gives the library's output, its stop after a panic and its ticks by defining `zs_write`, `zs_stop` and `zs_ticks` (weak defaults: dropped, a trap, the DWT cycle counter). For WebAssembly, `--lib -o x.a` is an archive for a C program, whose `main` the runtime's `_start` runs.
   - **Shared libraries:** an output ending in `.so` is one. The archive's code is position-independent too, so a C shared library can link it whole (`--whole-archive`).
 - **Panics in a C host:** a library reports the errors its caller can handle as `result`. A panic is a bug in the library, and it ends the host process, as Rust's `panic = "abort"` does.
   - **The hook:** `zs_set_panic_hook(void (*hook)(const char *message))`, declared in every generated header, runs after the message is printed. It can log, flush or save the host's state, or end the process its own way (`exit`). If it returns, the process stops as before.

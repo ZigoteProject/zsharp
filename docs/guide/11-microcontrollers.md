@@ -72,6 +72,18 @@ println $"took {Runtime.ticks () - t0} ticks"
 
 `bench/mcu/run.sh` builds each benchmark program in both Z# and C, runs them under QEMU, and prints a table of instructions, flash, heap and stack.
 
+## C on a chip
+
+C interop works on a chip as on a host, with the chip's calling convention (AAPCS: structs by value
+in core registers and on the stack, and on the hard-float Cortex-M4 floats and small float structs
+in float registers).
+- **Calling C:** `import c` and `[<Link "driver.c">]` work as on a host; the C sources are compiled for the chip and linked into the image. C on a chip has no C library, as is usual for firmware: vendor drivers, CMSIS and DSP code are fine, `printf` and `malloc` aren't there.
+- **A Z# library in a C firmware:** `zs build lib.zs --lib --target cortex-m4 -o libsensor.a` makes an archive and its header (`libsensor.h`), with the runtime but no startup: the firmware has its vector table, reset handler and `main`, and links the archive with its own toolchain. A library's `[<Export>]` functions can't use top-level values computed at startup, since there is none.
+- **What the library asks of the firmware:** three functions, each with a default the firmware replaces by defining its own: `void zs_write(const char *p, size_t n)` takes the library's output (dropped by default: a debugger's semihosting isn't always there), `void zs_stop(int code)` stops after a panic (by default a trap, into the firmware's HardFault handler; `zs_set_panic_hook` runs before it) and `int64_t zs_ticks(void)` is `Runtime.ticks ()` (the DWT cycle counter on a Cortex-M4, 0 on a Cortex-M0+).
+- **Callbacks:** a `callback<F>` C calls only where it was passed, in the main code or in the same interrupt handler, as on a host it's called only on the thread that passed it; a `callback<share<F>>` C may call anywhere.
+
+`tests/cexport/bare.c` is such a firmware, run under QEMU on both chips.
+
 ## Freestanding WebAssembly
 
 `--target wasm32` is the same bare-metal build for a WebAssembly host (a browser, Node, an engine
@@ -84,3 +96,4 @@ node run-wasm.mjs hello.wasm                    # beside zs; runtime/ in a check
 
 - **Imports:** output, exit and `Runtime.ticks ()` come from the host as `zs.write (ptr, len)` (bytes in the module's memory), `zs.exit (code)` (it must not return: throw) and `zs.ticks ()`. A module imports only those it uses. `run-wasm.mjs` is the whole host, about twenty lines.
 - **Exports:** `memory`, `_start` (runs `main`, then calls `zs.exit`) and each `[<Export>]` function, with WebAssembly's C ABI: a `[<CLayout>]` record by a pointer into memory, returned through a pointer the caller passes first. `--lib` builds a module with no `main` and no `_start`.
+- **With C:** `[<Link "lib.c">]` sources are compiled for WebAssembly and linked in, and `--lib -o lib.a` makes an archive and its header for a C program built for WebAssembly (`zig cc -target wasm32-freestanding`), whose `main` the runtime's `_start` runs.

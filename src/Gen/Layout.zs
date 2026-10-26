@@ -433,6 +433,30 @@ let abiArm64 (g: G) (t: Ty) (isResult: bool) : Abi =
     else if isResult then Pieces [ $"i{8 * size}" ]
     else Pieces [ "i64" ]
 
+/// 32-bit Arm (a Cortex-M: thumb…), whose C ABI is AAPCS.
+let isArm32 (g: G) : bool = String.startsWith "thumb" g.opts.target || String.startsWith "arm" g.opts.target
+
+/// AAPCS, as clang lowers it: on a hard-float chip (eabihf, the VFP variant) a homogeneous
+/// aggregate of 1-4 floats or doubles is passed and returned as itself, in float registers;
+/// otherwise a struct is passed as words (i32s, or i64s when it's 8-byte aligned) in core
+/// registers and then on the stack, one over 64 bytes as a copy (byval), and returned in r0 when
+/// it fits in 4 bytes, else through an sret pointer.
+let abiArm32 (g: G) (t: Ty) (isResult: bool) : Abi =
+  let (size, align, scalars) = cLayout g t
+  let hfa =
+    match List.distinct (List.map snd scalars) with
+    | [ k ] -> (k = "float" || k = "double") && List.length scalars <= 4 && String.endsWith "hf" g.opts.target
+    | _ -> false
+  if hfa then Pieces [ llty g t ]
+  else if isResult then
+    if size = 1 then Pieces [ "i8" ]
+    else if size = 2 then Pieces [ "i16" ]
+    else if size <= 4 then Pieces [ "i32" ]
+    else Memory
+  else if size > 64 then Memory
+  else if align = 8 then Pieces [ $"[{(size + 7) / 8} x i64]" ]
+  else Pieces [ $"[{(size + 3) / 4} x i32]" ]
+
 /// Microsoft x64: a struct of 1, 2, 4 or 8 bytes as an integer that size, any other by a pointer
 /// to a copy (or returned through an sret pointer).
 let abiWin64 (g: G) (t: Ty) : Abi =
@@ -445,6 +469,8 @@ let abiFor (g: G) (t: Ty) (isResult: bool) : Abi =
     Scalar
   else if isArm64 g then
     abiArm64 g t isResult
+  else if isArm32 g then
+    abiArm32 g t isResult
   else if isWindows g then
     abiWin64 g t
   else if isWasm g then
@@ -474,8 +500,9 @@ let cParam (g: G) (t: Ty) : string = if llty g t = "i1" then "i1 zeroext" else l
 /// How each parameter of a C function is passed. x86-64 System V: a struct goes in registers only
 /// when all its eightbytes fit in the ones left (6 for integers, less one for an sret pointer, and
 /// 8 for floating point); otherwise it goes on the stack whole, as a struct in memory does. A
-/// scalar past the registers goes on the stack by itself, which LLVM does. AAPCS64's rules for the
-/// arrays it is given are LLVM's own, as Microsoft x64's four slots by position are.
+/// scalar past the registers goes on the stack by itself, which LLVM does. AAPCS64's and AAPCS's
+/// rules for the arrays they're given are LLVM's own (AAPCS splits one between the last core
+/// registers and the stack), as Microsoft x64's four slots by position are.
 let cModes (g: G) (pars: list<Ty>) (sret: bool) : list<Abi> =
   let ints = ref (if sret then 5 else 6)
   let sses = ref 8
@@ -492,7 +519,7 @@ let cModes (g: G) (pars: list<Ty>) (sret: bool) : list<Abi> =
         if llty g t = "double" || llty g t = "float" then sses.Value <- sses.Value - 1 else ints.Value <- ints.Value - 1
         Scalar
       | Pieces ps ->
-        if isArm64 g || isWindows g || isWasm g then
+        if isArm64 g || isArm32 g || isWindows g || isWasm g then
           Pieces ps
         else
           let ni = List.length (List.filter (fun (p: string) -> String.startsWith "i" p) ps)
@@ -510,7 +537,8 @@ let cModes (g: G) (pars: list<Ty>) (sret: bool) : list<Abi> =
 /// Microsoft x64 pass a pointer to a copy the caller made.
 let byval (g: G) (t: Ty) : string =
   let (_, a, _) = cLayout g t
-  if isArm64 g || isWindows g then "ptr" else $"ptr byval({llty g t}) align {a}"
+  // AAPCS's stack slots are words: a copy is aligned to 4 at least
+  if isArm64 g || isWindows g then "ptr" else $"ptr byval({llty g t}) align {(if isArm32 g then max 4 a else a)}"
 
 /// LLVM return type for a C result, and whether it is returned through an sret pointer.
 let cRet (g: G) (t: Ty) : string * bool =

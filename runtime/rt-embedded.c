@@ -4,6 +4,12 @@
 // through semihosting, and the vector table and reset handler are here too; on WebAssembly they
 // are the host's imports. What needs an OS (files, processes, environment) isn't provided, so a
 // program that uses it fails to link, naming the function.
+//
+// ZS_LIB (zs build --lib for a chip): a library a C firmware links. The firmware has the vector
+// table, the reset handler, SysTick and maybe a C library, so none of those is here and the C
+// library's functions are weak; output, stopping and Runtime.ticks go through zs_write, zs_stop
+// and zs_ticks, weak defaults a firmware defines its own of (output is dropped, a stop traps into
+// the firmware's HardFault handler, ticks are the DWT cycle counter where the core has one).
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -23,14 +29,14 @@ typedef struct {
 
 // ---- C library pieces the compiler may call
 
-void *memcpy(void *d, const void *s, size_t n) {
+__attribute__((weak)) void *memcpy(void *d, const void *s, size_t n) {
     uint8_t *dp = d;
     const uint8_t *sp = s;
     while (n--) *dp++ = *sp++;
     return d;
 }
 
-void *memmove(void *d, const void *s, size_t n) {
+__attribute__((weak)) void *memmove(void *d, const void *s, size_t n) {
     uint8_t *dp = d;
     const uint8_t *sp = s;
     if (dp < sp)
@@ -40,20 +46,20 @@ void *memmove(void *d, const void *s, size_t n) {
     return d;
 }
 
-void *memset(void *d, int c, size_t n) {
+__attribute__((weak)) void *memset(void *d, int c, size_t n) {
     uint8_t *dp = d;
     while (n--) *dp++ = (uint8_t)c;
     return d;
 }
 
-int memcmp(const void *a, const void *b, size_t n) {
+__attribute__((weak)) int memcmp(const void *a, const void *b, size_t n) {
     const uint8_t *x = a, *y = b;
     for (; n; n--, x++, y++)
         if (*x != *y) return *x < *y ? -1 : 1;
     return 0;
 }
 
-size_t strlen(const char *s) {
+__attribute__((weak)) size_t strlen(const char *s) {
     size_t n = 0;
     while (s[n]) n++;
     return n;
@@ -72,6 +78,25 @@ static void write_bytes(const char *p, int64_t n) { host_write(p, (zs_int)n); }
 _Noreturn static void stop(int code) {
     host_exit(code);
     __builtin_trap(); // a host whose exit returns
+}
+#elif defined(ZS_LIB)
+// ---- a library in a C firmware: output, stopping and ticks are the firmware's
+
+__attribute__((weak)) void zs_write(const char *p, size_t n) {
+    (void)p;
+    (void)n;
+}
+
+__attribute__((weak, noreturn)) void zs_stop(int code) {
+    (void)code;
+    __builtin_trap();
+}
+
+static void write_bytes(const char *p, int64_t n) { zs_write(p, (size_t)n); }
+
+_Noreturn static void stop(int code) {
+    zs_stop(code);
+    __builtin_trap(); // a firmware's stop that returns
 }
 #else
 // ---- semihosting (ARM's debug channel; QEMU: -semihosting-config enable=on)
@@ -567,6 +592,32 @@ _Noreturn void zs_panic(zs_str *msg) { zs_panic_c(msg->data); }
 
 _Noreturn void zs_exit(zs_int code) { stop((int)code); }
 
+// ---- callbacks: a callback<F> C calls only where it was passed, as a host's on its own thread
+// (rt.c); on a chip the place is thread mode or one interrupt handler (IPSR's exception number)
+
+static uint32_t context(void) {
+#if defined(__wasm__)
+    return 0;
+#else
+    uint32_t ipsr;
+    __asm__ volatile("mrs %0, ipsr" : "=r"(ipsr));
+    return ipsr & 0x1FFu;
+#endif
+}
+
+void zs_callback_owner(uint64_t *owner) { *owner = context(); }
+
+void zs_callback_thread(uint64_t *owner, const char *type) {
+    if (*owner == context()) return;
+    char msg[512];
+    size_t n = 0;
+    const char *parts[] = {"a callback<", type, "> called from another interrupt handler than the code that passed it (declare the parameter callback<share<", type, ">>, and pass a share<", type, ">, for one C may call anywhere)"};
+    for (size_t i = 0; i < sizeof parts / sizeof parts[0]; i++)
+        for (const char *c = parts[i]; *c && n < sizeof msg - 1; c++) msg[n++] = *c;
+    msg[n] = 0;
+    zs_panic_c(msg);
+}
+
 void zs_set_args(int32_t argc, char **argv) {
     (void)argc;
     (void)argv;
@@ -583,6 +634,29 @@ void _start(void) { stop(main(0, 0)); }
 
 /// Runtime.ticks (): the host's count.
 int64_t zs_ticks(void) { return host_ticks(); }
+#elif defined(ZS_LIB)
+// ---- a library: no startup. Runtime.ticks (): the DWT's cycle counter on a core with one
+// (Cortex-M3 and up), started at the first call; a firmware with its own time base defines
+// zs_ticks
+
+__attribute__((weak)) int64_t zs_ticks(void) {
+#if defined(__ARM_ARCH_7M__) || defined(__ARM_ARCH_7EM__)
+    static uint32_t started, high, last;
+    volatile uint32_t *demcr = (volatile uint32_t *)0xE000EDFC, *ctrl = (volatile uint32_t *)0xE0001000, *cyccnt = (volatile uint32_t *)0xE0001004;
+    if (!started) {
+        *demcr |= 1u << 24; // TRCENA: the DWT on
+        *cyccnt = 0;
+        *ctrl |= 1u;        // CYCCNTENA
+        started = 1;
+    }
+    uint32_t now = *cyccnt;
+    if (now < last) high++; // wrapped: called at least once a wrap (about 4 minutes at 16 MHz)
+    last = now;
+    return (int64_t)high << 32 | now;
+#else
+    return 0;
+#endif
+}
 #else
 // ---- startup: vector table, reset handler, stack painting, the exit report
 

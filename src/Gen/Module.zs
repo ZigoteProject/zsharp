@@ -220,7 +220,10 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
     let (rt, sret) = cRet g e.ret
     let cps = Buffer.empty
     if sret then
-      Buffer.push $"ptr sret({llty g e.ret}) align 8 %ret" cps
+      // aligned as the struct is, as C's caller aligns it (8 would let LLVM store a word pair
+      // where a Cortex-M faults)
+      let (_, align, _) = cLayout g e.ret
+      Buffer.push $"ptr sret({llty g e.ret}) align {align} %ret" cps
     let modes = cModes g (List.map snd fd.pars) sret
     let argOf (i: int) (pt: string * Ty) : Ty * string =
       let t = snd pt

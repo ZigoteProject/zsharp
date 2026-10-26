@@ -19,6 +19,17 @@
 - A task cancelled at a wait no longer leaks a value it took apart with a tuple pattern
   (`let! (x, reply, nack) = …`) before that wait.
 
+### Platforms
+- C interop on a microcontroller, both ways: structs by value follow AAPCS (they were passed
+  with x86-64's rules), hard and soft float; `[<Link>]` C sources are compiled for the chip; C
+  callbacks work there. `zs build --lib --target cortex-m4` makes an archive and its header for a
+  C firmware, which takes the library's output, stop and ticks by defining `zs_write`,
+  `zs_stop` and `zs_ticks`.
+- WebAssembly: `[<Link>]` C sources are linked in, and `--lib -o lib.a` makes an archive for a C
+  program built for WebAssembly.
+- An exported function that returns a struct through memory declares the struct's own alignment
+  for the pointer it's given (it said 8, which lets a Cortex-M fault on a 4-aligned struct).
+
 ### Editor
 - A VS Code extension (`editors/vscode`) and a Rider plugin (`editors/rider`, any JetBrains IDE
   2025.2 or later): highlighting, the language server and, in VS Code, the MCP server for the

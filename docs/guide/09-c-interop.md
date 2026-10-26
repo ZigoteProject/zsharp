@@ -254,3 +254,7 @@ int main(void) {
 zs build app.zs --target aarch64-linux-musl -o app-arm64
 qemu-aarch64 ./app-arm64     # or copy it to the machine
 ```
+
+Everything in this chapter works on every target: Linux, macOS and Windows on x86-64 and arm64 with
+their own conventions, a microcontroller with AAPCS, and WebAssembly. A Z# library on a chip is an
+archive a C firmware links ([C on a chip](11-microcontrollers.md#c-on-a-chip)).

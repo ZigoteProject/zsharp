@@ -37,18 +37,17 @@ Rust, Swift and OCaml for the host benchmarks).
 - **Concurrency:** `Task` on an event loop per thread, compiled to state machines (a wait allocates nothing), with structured concurrency, cancellation that disposes `use` values (on other threads too, for spawned tasks), timers, TCP sockets, `Task.spawn` to run tasks on every core, and `Task.blocking` for C calls that block.
 - **Parallelism:** a work-stealing thread pool (`Parallel.both`, `for`, `reduce`, `Array.Parallel`) any thread forks onto, with spare workers for jobs waiting in a channel or a mutex; `Atomic`, `Mutex` and `Channel` (capacity 0 is a rendezvous); what crosses threads is checked at compile time (`Share`, `share<F>`), and only shared objects have atomic reference counts.
 - **SIMD:** portable vectors of every number type at 128, 256 and 512 bits (`f32x8`, `u8x16`, …) with masks and shuffles, `[<FastMath>]`, `--cpu`, `[<Target>]` and `[<Multiversion>]`, and x86-64 and aarch64 intrinsics; within 10% of C with intrinsics on both.
-- **C:** C import and export (static and shared libraries), structs with array fields (`fixed<u8, 16>`), spans passed as a pointer and a length, C function pointers, Z# objects held by C as handles (a Share value's on any of the host's threads, any other checked to stay on its own), callbacks C may call on any thread (`callback<share<F>>`), and a panic hook for C hosts.
+- **C:** C import and export (static and shared libraries), structs with array fields (`fixed<u8, 16>`), spans passed as a pointer and a length, C function pointers, Z# objects held by C as handles (a Share value's on any of the host's threads, any other checked to stay on its own), callbacks C may call on any thread (`callback<share<F>>`), and a panic hook for C hosts; on every target, a chip's (AAPCS) and WebAssembly's included, where `--lib` makes an archive a C firmware or program links.
 - **Targets:** Linux on x86-64 and aarch64, Windows on x64 (its suite under Wine) and arm64, macOS on arm64 and x86-64 (built, not yet run on a Mac), Cortex-M4 and M0+ (bare metal); the compiler builds for each.
 - **Tooling:** projects with path and git dependencies, debug and release builds, builds and editor checks incremental by module (one cache for the CLI, LSP, MCP and `zs doc`, and a build server that keeps the compiler warm), `zs test`/`fmt`/`doc`, gdb debug info (strings, records and unions as values), and an LSP, MCP server and Zed extension.
 - **The compiler:** Z# (`src/`), built by the previous release and building itself to the same bytes; its passes and code generation run on every core, and it reports every mistake of a declaration, in the editor too.
 
 **Known gaps** (in priority order, each with the phase or track that closes it):
-1. **C ABI (track M):** 32-bit ARM passes structs by value with the x86-64 rules.
-2. **Weak references and arenas on microcontrollers (track M):** they're hosted-only so far; the embedded runtime lacks their functions.
-3. **Debug info (track D):** lists and other boxed unions aren't shown as gdb values (plain unions are).
-4. **Targets (phase 11.5):** macOS and Windows programs and compilers build (`--target`), and Windows's suite passes under Wine, but nothing has run on a Mac or a Windows machine yet: the suite on each in CI, and their release archives on clean machines, close the phase.
-5. **`use` under effects (track S):** a throw, or a clause that doesn't resume, passes over a `use` without disposing what it bound (it's freed). Item 10 of track S disposes it.
-6. **Generators (track S):** a pipeline of `Seq` functions allocates nothing per element but isn't one loop yet, as a list pipeline is: each stage is an indirect call per element (4.8× a fused list pipeline's time). Item 9 of track S fuses it.
+1. **Weak references and arenas on microcontrollers (track M):** they're hosted-only so far; the embedded runtime lacks their functions.
+2. **Debug info (track D):** lists and other boxed unions aren't shown as gdb values (plain unions are).
+3. **Targets (phase 11.5):** macOS and Windows programs and compilers build (`--target`), and Windows's suite passes under Wine, but nothing has run on a Mac or a Windows machine yet: the suite on each in CI, and their release archives on clean machines, close the phase.
+4. **`use` under effects (track S):** a throw, or a clause that doesn't resume, passes over a `use` without disposing what it bound (it's freed). Item 10 of track S disposes it.
+5. **Generators (track S):** a pipeline of `Seq` functions allocates nothing per element but isn't one loop yet, as a list pipeline is: each stage is an indirect call per element (4.8× a fused list pipeline's time). Item 9 of track S fuses it.
 
 ## Next
 
@@ -98,7 +97,7 @@ real programs.
     - **Kept before phase 11:** compound assignment, `function`, list expressions, slices and `span`, tests as values, assertions, inline expect tests, the iteration trait, and rename and code actions. They change how code and tests are written, or break an API, so they're cheaper before the compiler is rewritten in Z# and before 0.1 has users.
     - **From the tracks:** the items marked *after phase 11* in E, D, M, S and K, and track P whole.
   - **Launch:** the guide, the "Z# for F# programmers" page, the flagship project as the example, and a post for each of the strongest results (Perceus on a Cortex-M, atomic counts only on shared objects, SIMD next to C).
-- **Status (2026-10-26):** the flagship is a microcontroller, an ST Nucleo-F401RE, so M4, M9, M11 and async on bare metal are on the list; impls across packages take Rust's orphan rule (K9). Done: top-level patterns (`tests/top_pattern.zs`); layout facts and compile-time asserts (`tests/layout.zs`).
+- **Status (2026-10-26):** the flagship is a microcontroller, an ST Nucleo-F401RE, so M4, M9, M11 and async on bare metal are on the list; impls across packages take Rust's orphan rule (K9). Done: top-level patterns (`tests/top_pattern.zs`); layout facts and compile-time asserts (`tests/layout.zs`); C interop on every target, the chips' AAPCS and WebAssembly included, both ways (M6).
 - **Exit tests:**
   - On clean Fedora, Ubuntu, macOS and Windows machines, a newcomer gets from the release archive to a running hello world in five minutes, following only the guide.
   - The flagship project builds from its repository with `zs build` alone, and runs on its hardware.
@@ -121,7 +120,7 @@ Tier 2 (DESIGN §10): every phase keeps `bench/mcu` working and within its ratio
   3. **Constants in flash:** constant arrays placed in flash, instead of startup values copied to RAM.
   4. **More boards:** *(after phase 11)* linker scripts for STM32F4 and RP2040, flashing through `probe-rs` or OpenOCD, and RTT output as an alternative to semihosting.
   5. **RISC-V:** *(after phase 11)* ESP32-C3, under QEMU first.
-  6. **32-bit ARM C ABI:** AAPCS for structs by value.
+  6. **32-bit ARM C ABI:** *(done in phase 12)* AAPCS for structs by value, hard and soft float, both ways; `--lib` for a chip makes an archive a C firmware links, `[<Link>]` C is compiled for the chip, and callbacks work there (`tests/cimport/abi.zs` and `tests/cexport/bare.c` under QEMU on both chips).
   7. **Heap:** reusing blocks larger than 256 bytes, and a heap size set in `zs.toml`.
   8. **Weak references and arenas:** the embedded runtime's versions of their functions (the host's use the C library's allocator).
   9. **Bit fields:** *(after phase 11)* a `[<Bits>]` record packs its fields into one integer, each field's width given by `[<Width n>]` or taken from its type: a `bool` is one bit, and a union of cases without fields (an enum) as many as its cases need. So `mode: Mode` reads as `Mode.Fast`, not as a number. The shifts and masks are generated, `{ r with mode = Fast }` is a masked write, and a number too wide for its field panics as an overflow does. No new integer types (`u2`, `u5`) are needed.
