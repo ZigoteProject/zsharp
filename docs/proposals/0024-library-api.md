@@ -10,7 +10,7 @@
 
 - [x] Approved in principle
 - [ ] Discussion
-- [ ] Implementation (phase 11's list done; `Math`, `Random` and the collections in phase 12: `Random` in a namespace of its own, `Numerics`, as `DateTime` is in `Time`; `PriorityQueue` a leftist heap, not an array's, since `match dequeue q with Some(x, rest) -> q <- rest` keeps the old queue alive through the call and an array heap would copy at every step; the rest after phase 11)
+- [ ] Implementation (phase 11's list done; `Math`, `Random`, the collections and `Text.Utf8` in phase 12: `Random` in a namespace of its own, `Numerics`, as `DateTime` is in `Time`; `PriorityQueue` a leftist heap, not an array's, since `match dequeue q with Some(x, rest) -> q <- rest` keeps the old queue alive through the call and an array heap would copy at every step; the rest after phase 11)
 
 ## Summary
 

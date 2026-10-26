@@ -75,6 +75,8 @@
   `pairwise`, `scan` and `foldBack` on lists and arrays, `Array.tryFindIndex` and
   `Array.binarySearch`, `Map.change`, `Set.isSubset` and `isSuperset`; and `Queue`, `Stack` and
   `PriorityQueue` (lowest priority first, a leftist heap), values like lists.
+- `Text.Utf8` (S4): `validate` (the offset of the first malformed byte), `decode` (malformed
+  bytes as U+FFFD), `tryDecode` and `encodeChar`, Z# over spans, so on a chip too.
 - A function that takes an array from a record parameter into a `let mutable` and writes it in
   place owns the record, so a unique array is changed in place (the record was borrowed, the
   caller's reference stayed, and every call copied the array: quadratic once inside a `while`).

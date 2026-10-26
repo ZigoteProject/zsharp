@@ -135,7 +135,7 @@ A span, `span<'a>`, is a window into an array, a string's bytes or a Buffer, wit
 - **Slices:** `a.[1..3]` is elements 1 to 3 (inclusive, as in F#), and `a.[..n]` and `a.[i..]` run from the start and to the end. A slice of an array or a span is a span; a slice of a Buffer is a Buffer sharing its storage, so a write through either is seen through both; a slice of a string is a string (a copy), at byte offsets that must fall between characters.
 - **Where a span is expected,** an array or a Buffer becomes one with nothing written, so `Array.sum`, `Array.fold`, `Array.map` and the other functions that read arrays take all three.
 - **Read-only:** `s.[i]` reads, and nothing writes through a span. A span holds a reference to what it windows, which lives as long as the span; while it does, a change to the array copies it, as arrays are values.
-- **Bytes:** `String.bytes s` is a string's bytes (its UTF-8) as a `span<u8>`, for parsers; `String.ofBytes` copies bytes into a string.
+- **Bytes:** `String.bytes s` is a string's bytes (its UTF-8) as a `span<u8>`, for parsers; `String.ofBytes` copies bytes into a string. `Utf8.validate` says whether bytes are well-formed UTF-8 (`Error` with the first bad byte's offset), `Utf8.tryDecode` is `Some` text only when they are, `Utf8.decode` replaces each malformed byte with U+FFFD, and `Utf8.encodeChar c buf` adds a character's bytes to a `Buffer<u8>`.
 
 ```zsharp
 let main () =
