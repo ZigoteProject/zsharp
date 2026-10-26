@@ -83,7 +83,7 @@ real programs.
     - Everything else marked *after phase 11* follows 0.1.
   - **A flagship project:** one real program in the niche Z# is best at, built alongside the release, so it decides what the library and the first packages need. The niche is picked at the start of the phase; microcontrollers are the strongest case (SVD registers, bit fields, `[<NoAlloc>]`, interrupt handlers). Picking them moves track M's async on bare metal into the "before 0.1" list.
   - **Every platform (phase 11.5):** the release's archives for the six, built and tested in CI.
-  - **Installing:** phase 11.5's release archive per platform, with `zs`, the runtime and the library. `zs doctor` checks for clang or zig, and libclang for `import c`, and says how to get what's missing.
+  - **Installing:** phase 11.5's release archive per platform, with `zs`, the runtime and the library. `zs doctor` checks for clang or zig, and libclang for `import c`, and says how to get what's missing *(built in phase 12, with git, QEMU, probe-rs, Node and the debugger too)*.
   - **Deferred here:** features that aren't needed before phase 11, moved out of earlier phases so those stay small. The third design review checked them against "Simple" (anonymous records were cut) and put the rest on the list above.
     - **From phase 9.5, cycle warnings:** a type that can reach itself through a `ref` or `Buffer` field, not through `weak`, is warned about where it's declared. The warning names the path (`Node.next: ref<option<Node>>`) and suggests `weak`, and `[<Cyclic>]` on the type silences it.
       - **The warning:** the severity, `--strict`, `[<NoWarn>]` and the editor's side came with `unused-value` before phase 11 (0021); this adds the kind `cycle` and `[<Cyclic>]`.

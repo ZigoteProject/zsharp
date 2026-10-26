@@ -5,7 +5,7 @@ open Syntax
 open Diag
 
 let usage () =
-  eprintln "usage: zs fmt [--check] <files…> | zs fmt --stdin | zs tokens <file.zs> | zs tree <file.zs>"
+  eprintln "usage: zs <command>: new <name>, build, run, test, check, fmt, doc, fetch, update, doctor (what builds need, and how to get it), lsp, mcp; docs/guide/10-tools.md lists them"
   2
 
 // a diagnostic as the terminal shows it: where, what, and the line with a caret under the place
@@ -175,6 +175,7 @@ let command (args: list<string>) : int =
   | "run" :: args -> Commands.run args
   | "test" :: args -> Commands.test args
   | [ "new"; name ] -> if Build.Project.newProject name then 0 else 1
+  | [ "doctor" ] -> Commands.doctor ()
   | [ "fetch" ] -> Commands.fetch false
   | [ "update" ] -> Commands.fetch true
   | [ "check-syntax"; path ] -> check path

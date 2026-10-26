@@ -436,3 +436,49 @@ let test (args: list<string>) : int =
           let broken = List.length (List.filter Option.isNone results)
           println (summaryLine passed failed skipped broken)
           if failed = 0 && broken = 0 then 0 else 1
+
+/// zs doctor: what builds need, found here or not, with how to get what's missing: the library
+/// and runtime zs uses, clang (this machine's builds), zig (other targets', a chip's and
+/// WebAssembly's) and libclang (import c), then what some commands need. 1 when a build for this
+/// machine can't work.
+let doctor () : int =
+  let os = Tools.hostOs ()
+  let pick (mac: string) (linux: string) (windows: string) = if os = "macos" then mac else if os = "windows" then windows else linux
+  // a tool's first line of output, when it runs
+  let version (program: string) (args: list<string>) : option<string> =
+    match Tools.runSplit program args with
+    | Ok r when r.code = 0 ->
+      let out = if String.trim r.out = "" then r.err else r.out
+      Some(List.head (String.split "\n" (String.trim out)))
+    | _ -> None
+  let report (found: option<string>) (name: string) (what: string) (get: string) =
+    match found with
+    | Some v -> println $"ok   {name,-16} {v} ({what})"
+    | None -> println $"--   {name,-16} not found ({what}): {get}"
+  let lib = Modules.libraryDir ()
+  let rt = Options.runtimeDir ()
+  let libOk = File.exists (Path.combine lib "prelude.zs")
+  let rtOk = File.exists (Path.combine rt "rt.c")
+  report (if libOk then Some lib else None) "library" "Core and Std" "reinstall zs, or set ZS_LIB to its lib/"
+  report (if rtOk then Some rt else None) "runtime" "rt.c and the boards" "reinstall zs, or set ZS_RUNTIME"
+  let clang = version "clang" [ "--version" ]
+  let getClang = pick "brew install llvm, with $(brew --prefix llvm)/bin first on PATH" "LLVM's release (apt's clang may be older), first on PATH" "winget install LLVM.LLVM"
+  // the IR is LLVM 23's (its coroutine intrinsics): an older clang builds some programs, not tasks
+  let major =
+    match Option.bind (fun (v: string) -> Option.map (fun (at: int) -> String.sub v (at + 14) (String.length v - at - 14)) (String.indexOf "clang version " v)) clang with
+    | Some rest -> Int.parse (List.head (String.split "." rest))
+    | None -> None
+  let recent = Option.defaultValue 0 major >= 23
+  match clang with
+  | Some v when not recent -> println $"--   {"clang",-16} {v}: too old, LLVM 23 or later is needed (a task's code uses its coroutines): {getClang}"
+  | _ -> report clang "clang" "builds for this machine" getClang
+  report (version "zig" [ "version" ]) "zig" "builds for other targets, chips and WebAssembly" (pick "brew install zig" "your distribution's zig, or ziglang.org/download" "winget install zig.zig")
+  report (if Libclang.available () then Some "found" else None) "libclang" "import c" (pick "brew install llvm, or set ZS_LIBCLANG to a libclang.dylib" "apt install libclang-dev, or set ZS_LIBCLANG" "LLVM's release has libclang.dll beside clang.exe")
+  report (version "git" [ "--version" ]) "git" "git dependencies" (pick "xcode-select --install, or brew install git" "apt install git" "winget install Git.Git")
+  report (version "qemu-system-arm" [ "--version" ]) "qemu-system-arm" "zs run on a chip's QEMU board" (pick "brew install qemu" "apt install qemu-system-arm" "winget install SoftwareFreedomConservancy.QEMU")
+  report (version "probe-rs" [ "--version" ]) "probe-rs" "zs run on a real board" "https://probe.rs/docs/getting-started/installation"
+  report (version "node" [ "--version" ]) "node" "zs run for WebAssembly" (pick "brew install node" "apt install nodejs" "winget install OpenJS.NodeJS")
+  let debugger = if os = "macos" then "lldb" else "gdb"
+  report (version debugger [ "--version" ]) debugger "zs build -g's debugger" (pick "xcode-select --install" "apt install gdb" "LLVM's release has lldb")
+  if libOk && rtOk && recent then 0 else 1
+

@@ -151,6 +151,8 @@
   in one program.
 
 ### Editor
+- `zs doctor`: what builds need, found here or not, with how to get what's missing (clang,
+  zig, libclang, git, QEMU, probe-rs, Node, lldb or gdb). `zs` alone lists the commands.
 - Doc tests: a fenced `zsharp` block in a `///` comment is an example that `zs test --doc` builds
   and runs, its `// => text` lines checked against what it prints, and `zs test --doc --update`
   rewrites them. The library's first examples (`List.groupBy`, `chunkBySize`, `Map.change`,

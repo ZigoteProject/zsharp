@@ -12,10 +12,19 @@ builds itself with the previous release of the compiler (stage 0).
 ./dev bin/zs run hello.zs        # use the freshly built compiler
 ```
 
-**Without the container:** you need clang, and a `zs` from a release (or from the container) to build `src/` with:
+**Without the container:** you need clang from LLVM 23 or later (on macOS, Homebrew's `llvm` first on `PATH`: Apple's clang is older), and a `zs` from a release (or from the container) to build `src/` with:
 
 ```sh
 zs build src/Main.zs --release -o zs-new && src/install.sh zs-new bin   # bin/zs, its library and runtime beside it
+```
+
+**What's missing:** `zs doctor` lists what builds need and whether it's here: clang 23 or later (programs for this machine), zig (for other targets, a microcontroller and WebAssembly), libclang (`import c`), then git, QEMU, probe-rs, Node and a debugger for the commands that use them, with how to get each one that's missing.
+
+```text
+ok   clang            Homebrew clang version 23.1.4 (builds for this machine)
+ok   zig              0.17.0 (builds for other targets, chips and WebAssembly)
+ok   libclang         found (import c)
+--   probe-rs         not found (zs run on a real board): https://probe.rs/docs/getting-started/installation
 ```
 
 ## Hello, world

@@ -118,6 +118,14 @@ if bin/zs build examples/simple.zs --target arm-linux-musleabihf --emit-llvm -o 
    && grep -q '@zs_alloc(i32)' "$tmp/armlinux.ll"; then echo "ok   examples/simple.zs for arm-linux-musleabihf (32-bit words)"
 else echo "FAIL examples/simple.zs for arm-linux-musleabihf"; cat "$tmp/armlinux.log"; fail=1; fi
 
+# zs doctor: here, what builds need is all present; a clang older than LLVM 23 (a script that
+# says it's Apple's 21) is too old, and the doctor says so and fails
+if bin/zs doctor >"$tmp/doctor.log" 2>&1 && grep -q '^ok   clang' "$tmp/doctor.log"; then echo "ok   zs doctor"
+else echo "FAIL zs doctor"; cat "$tmp/doctor.log"; fail=1; fi
+mkdir -p "$tmp/oldclang" && printf '#!/bin/sh\necho "Apple clang version 21.0.0 (clang-2100.3.34.2)"\n' >"$tmp/oldclang/clang" && chmod +x "$tmp/oldclang/clang"
+if ! PATH="$tmp/oldclang:$PATH" bin/zs doctor >"$tmp/doctor-old.log" 2>&1 && grep -q '^--   clang .*: too old, LLVM 23 or later is needed' "$tmp/doctor-old.log"; then echo "ok   zs doctor (an old clang)"
+else echo "FAIL zs doctor (an old clang)"; cat "$tmp/doctor-old.log"; fail=1; fi
+
 # doc tests (0009, D8): the library's examples in its /// comments, and zs test --doc --update
 # rewriting a block's expectations
 if out=$(bin/zs test --doc $(grep -rl '/// ```zsharp' lib) 2>&1); then echo "ok   the library's doc tests ($(echo "$out" | tail -1))"

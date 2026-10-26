@@ -300,8 +300,9 @@ One `zs` binary holds the compiler and its tools.
 |---|---|
 | `zs new`, `zs build`, `zs run` | projects in a `zs.toml`, with path and git dependencies; builds cached by module |
 | `zs build --release` | optimized, with ThinLTO; `--profile-generate` and `--profile-use` for PGO |
-| `zs build -g` | DWARF for gdb: breakpoints on lines; strings, records and plain unions shown as values |
-| `zs test` | tests as values, each in its own process; expect tests that `zs test --update` rewrites |
+| `zs build -g` | DWARF for gdb and lldb: breakpoints on lines; strings, records and plain unions shown as values |
+| `zs test` | tests as values, each in its own process; expect tests that `zs test --update` rewrites; `--doc` runs the examples in `///` comments |
+| `zs doctor` | what builds need (clang 23 or later, zig, libclang, …), found or not, and how to get what's missing |
 | `zs fmt`, `zs doc` | one canonical format; Markdown docs from `///` comments |
 | `zs lsp`, `zs mcp` | a language server (types on hover, rename, code actions) and an MCP server for AI agents |
 
@@ -322,6 +323,7 @@ and valgrind. It needs [podman](https://podman.io).
 With `zs` on your PATH (in the container, it's `bin/zs`):
 
 ```sh
+zs doctor                              # what builds need: clang 23 or later, zig, libclang, …
 zs run hello.zs                        # build and run a debug build
 zs build hello.zs --release            # optimized
 zs new greeter                         # a project: zs.toml, src/main.zs and a test

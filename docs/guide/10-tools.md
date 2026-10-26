@@ -13,6 +13,7 @@
 | `zs fmt [--check] <files…>` | format files in place (`--check`: list unformatted ones; `--stdin`: standard input to standard output) |
 | `zs doc <file.zs>` | print a Markdown reference of a file's documented items |
 | `zs fetch` / `zs update` | check out / update git dependencies |
+| `zs doctor` | what builds need (clang, zig, libclang, and the tools some commands run), found or not, and how to get what's missing |
 | `zs lsp` | the language server (stdio) |
 | `zs mcp` | the MCP server for AI agents (stdio) |
 
