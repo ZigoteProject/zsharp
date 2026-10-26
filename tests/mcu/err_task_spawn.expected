@@ -1,0 +1,1 @@
+tests/mcu/err_task_spawn.zs:2: error: Task.spawn needs a thread, and cortex-m4 has none: run the task on this loop with let! (main -> serve -> Task.spawn)

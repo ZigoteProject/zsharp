@@ -117,11 +117,49 @@ let main () =
   0
 ```
 
-- **Which line:** a number, a device's name from the board's table (`runtime/boards/mps2-an386.irq`, `microbit.irq`), or a core exception: `HardFault`, `NMI`, `SVCall`, `PendSV`, … (CMSIS's names) and `SysTick`, which runs at the runtime's period (the runtime keeps SysTick for `Runtime.ticks`). A handler takes and returns `unit`, performs nothing, and is only for a chip.
+- **Which line:** a number, a device's name from the board's table (`runtime/boards/mps2-an386.irq`, `microbit.irq`), or a core exception: `HardFault`, `NMI`, `SVCall`, `PendSV`, … (CMSIS's names) and `SysTick`, which runs at the end of each of SysTick's periods (2^24 cycles, or until a sleeping task's deadline: the runtime keeps SysTick for `Runtime.ticks` and the tasks' timers). A handler takes and returns `unit`, performs nothing, and is only for a chip.
 - **Lines:** `Irq.enable n` and `Irq.disable n` turn a line on and off in the interrupt controller; `Irq.pend n` sets it pending, as its device would, so a handler can be tested with no device. A line without a handler is disabled the first time it fires.
 - **The processor's instructions:** `Cpu.wfi ()` sleeps until an interrupt (a loop with nothing to do waits there), `Cpu.dmb`, `dsb` and `isb` are barriers, `Cpu.wfe` and `sev` wait for and signal events, and `Cpu.disableInterrupts` and `enableInterrupts` mask and unmask them. `Cpu.critical (fun () -> …)` runs its body with interrupts masked and gives its value, for a change a handler mustn't see halfway; one inside another is fine.
 - **No heap in a handler:** a handler is `[<NoAlloc>]` (below), since the allocator isn't reentrant, and so is `Cpu.critical`'s body.
 - **Sharing with the program:** a handler interrupts the program as another thread would, so what it reaches must be `Share`, checked when compiling: `interrupt handler 'tick' uses the top-level value 'count' : ref<int>, which a handler can't share with the program`. It shares through an `Atomic` (a number, a bool or a char) or an `Spsc<'a>`, a queue of fixed capacity with one producer and one consumer: `Spsc.push` and `Spsc.pop` copy a value and move an index, neither waiting nor locking. On a Cortex-M0, which has no atomic instructions, an `Atomic`'s operations mask interrupts around them.
+
+## Tasks
+
+The same `task { }` and `Task` functions as on a computer run on a chip, on the runtime's event loop. A task waits for a timer, an interrupt or another task; with nothing to run, the core sleeps (`wfi`) until the next deadline or interrupt.
+
+```fsharp
+let blink (ms: int) =
+  task {
+    while true do
+      toggleLed ()
+      do! Task.sleep ms                              // SysTick wakes the core at the deadline
+  }
+
+/// The next byte received, waiting for the receive interrupt when none is there.
+let rec getByte () : Task<u8> =
+  task {
+    if Mmio.read32 uartState &&& rxFull = u32 0 then
+      do! Irq.wait 0                                 // UARTRX0: asleep until a byte comes
+      return! getByte ()
+    else
+      Mmio.write32 uartIntClear (u32 2)              // this byte's interrupt is done
+      return u8 (Mmio.read32 uartData)
+  }
+
+let main () =
+  Task.run (Task.both (blink 500) (echo ())) |> ignore
+  0
+```
+
+`examples/mcu/uart.zs` is such a driver, run under QEMU with its serial as the input.
+
+- **Time:** `Task.sleep ms` counts SysTick's cycles at the board's clock: 25 MHz on QEMU's `mps2-an386`, 16 MHz on the micro:bit and on the Nucleo-F401RE after reset. Firmware that changes the clock (its PLL) calls `Runtime.setClock hz`. `Task.timeout`, `race`, `both`, `all` and `Task.scope` work as on a computer.
+- **Interrupts:** `Irq.wait n` enables line `n` and goes on once it fires. The runtime's handler disables the line again, so the task goes on with it quiet: clear the device's flag before waiting again. One task waits on a line at a time.
+- **A handler of the program's** owns its line, so no task waits for it: it hands what it read to an `Spsc` and calls `Signal.set`, which never waits or allocates, and a task waits with `do! Signal.wait s`. A set with nobody waiting stays set.
+- **No Z# code runs in the runtime's handlers:** they mark the line or the signal, and the loop runs the waiting task in the program's context, where the heap is consistent.
+- **Memory:** a task's frame (what lives across its waits) is allocated when the task starts. Waiting allocates nothing that stays (`live=0` in the exit report after thousands of waits), and a `--no-heap` program can't have tasks.
+- **Not on a chip:** `Task.spawn` and `Task.blocking` need threads and `Task.waitFor` file descriptors, so reaching one is a compile error naming the chain: `Task.spawn needs a thread, and cortex-m4 has none: run the task on this loop with let! (main -> serve -> Task.spawn)`.
+- **Cooperative:** a task runs until it waits, so one that computes for 10 ms delays the others by 10 ms; handlers still run. What must answer in microseconds is a handler.
 
 ## Code that doesn't touch the heap
 
@@ -136,7 +174,7 @@ let reply (n: int) : int = report n + 1
 main.zs:2: error: reply is [<NoAlloc>], but reply -> describe builds a string
 ```
 
-- **What passes:** numbers, records, tuples and small unions, `option<int>`, parameters it only reads (strings, arrays and lists it borrows), `Mmio`, `Cpu`, `Irq`, `Atomic`, `Spsc.push` and `pop`, C functions, a fused pipeline, a literal string, a panic.
+- **What passes:** numbers, records, tuples and small unions, `option<int>`, parameters it only reads (strings, arrays and lists it borrows), `Mmio`, `Cpu`, `Irq`, `Atomic`, `Spsc.push` and `pop`, `Signal.set`, C functions, a fused pipeline, a literal string, a panic.
 - **What doesn't:** building an object (a string, a list's cell, an array, a closure that captures), dropping a reference that may be the last (a parameter it owns), writing an array something else may hold (it's copied first), and calling a function value, whose code the check can't see.
 - **Where:** checked on the code after Z#'s optimizations, so the verdict is the same at `-Os` and `-O2`; inlining can change it, and the chain says what changed.
 - **Interrupt handlers** and `Cpu.critical`'s bodies are checked the same way, without the attribute.

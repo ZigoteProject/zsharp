@@ -29,6 +29,14 @@ Runtime.marks : unit -> int
 
 The number of objects marked shared so far, at crossings to other threads: what a value moved to another thread holds alone stays unmarked (`ZS_STATS=1` prints it at exit).
 
+### `Runtime.setClock`
+
+```zsharp
+Runtime.setClock : u32 -> unit
+```
+
+On a microcontroller, the core's clock in Hz, after firmware changes it (its PLL): `Task.sleep` counts SysTick's cycles at this rate (the board's clock at reset unless set).
+
 ### `Runtime.ticks`
 
 ```zsharp

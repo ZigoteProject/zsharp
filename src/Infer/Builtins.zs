@@ -87,7 +87,7 @@ let mathFunctions : list<string> = [ "floor"; "ceil"; "round"; "trunc"; "exp"; "
 let cpuInstructions : list<string> = [ "nop"; "wfi"; "wfe"; "sev"; "dmb"; "dsb"; "isb"; "enableInterrupts"; "disableInterrupts" ]
 
 /// The ones only a microcontroller has: masking its interrupts.
-let chipOnly : Set<string> = Set.ofList [ "Cpu.enableInterrupts"; "Cpu.disableInterrupts"; "Cpu.critical" ]
+let chipOnly : Set<string> = Set.ofList [ "Cpu.enableInterrupts"; "Cpu.disableInterrupts"; "Cpu.critical"; "Runtime.setClock" ]
 
 /// Every built-in function, by full name.
 let builtins : Map<string, Builtin> =
@@ -170,6 +170,7 @@ let builtins : Map<string, Builtin> =
       b "Mmio.read8" "mmio.read.u8" [] (f (tcon "usize") (tcon "u8")) 1
       b "Mmio.write8" "mmio.write.u8" [] (f (tcon "usize") (f (tcon "u8") tUnit)) 2
       b "Runtime.ticks" "Runtime.ticks" [] (f tUnit (tcon "u64")) 1
+      b "Runtime.setClock" "Runtime.setClock" [] (f (tcon "u32") tUnit) 1
       b "Math.sqrt" "Math.sqrt" [ kFloat ] (f a a) 1
       b "Math.pow" "Math.pow" [ kFloat ] (f a (f a a)) 2
       b "Math.atan2" "Math.atan2" [ kFloat ] (f a (f a a)) 2
@@ -231,6 +232,15 @@ let builtins : Map<string, Builtin> =
       b "Native.loopSpawn" "Loop.spawn" [] (f (TCon("share", [ f tUnit tUnit ])) tUnit) 1
       b "Native.loopExpect" "Loop.expect" [] (f (f tUnit tUnit) tInt) 1
       b "Native.loopFulfill" "Loop.fulfill" [] (f tInt tUnit) 1
+      // a microcontroller's loop (rt-embedded.c, 0016): a task waiting for an interrupt line, and
+      // signals from handlers
+      b "Native.irqWait" "Loop.irqWait" [] (f tInt (f (f tUnit tUnit) tUnit)) 2
+      b "Native.irqUnwait" "Loop.irqUnwait" [] (f tInt tUnit) 1
+      b "Native.signalNew" "Signal.new" [] (f tUnit tInt) 1
+      b "Native.signalSet" "Signal.set" [] (f tInt tUnit) 1
+      b "Native.signalTake" "Signal.take" [] (f tInt tBool) 1
+      b "Native.signalWait" "Signal.wait" [] (f tInt (f (f tUnit tUnit) tUnit)) 2
+      b "Native.signalUnwait" "Signal.unwait" [] (f tInt tUnit) 1
       b "Native.tcpListen" "Tcp.listen" [] (f tStr (f tInt tInt)) 2
       b "Native.tcpAccept" "Tcp.accept" [] (f tInt tInt) 1
       b "Native.tcpConnect" "Tcp.connect" [] (f tStr (f tInt tInt)) 2

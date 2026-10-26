@@ -10,7 +10,7 @@
 
 - [x] Approved in principle
 - [ ] Discussion
-- [ ] Implementation
+- [x] Implementation (phase 12: steps 1 to 4. Handlers wake tasks through bitmasks, not an `Spsc` of tokens (*Unresolved questions*, 3), at most 32 signals; `Task.fromCallback` is what `Irq.wait` and `Signal.wait` are written with; on a computer `Irq.wait` and `Signal` panic instead of failing the build, since host programs are compiled per module; the `clock` key in `zs.toml` and step 5, `zs test --target`, aren't done)
 
 ## Summary
 

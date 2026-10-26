@@ -1,0 +1,13 @@
+slept 10
+slept 20
+slept 30
+all: [30; 10; 20]
+slept 5
+race: 5
+timeout: None
+50 ms: true
+pending line 5
+line 5 fired
+signal
+set before the wait
+waits: [300; 300; 300]

@@ -1413,23 +1413,62 @@ __attribute__((weak, alias("nothing"))) void SVC_Handler(void);
 __attribute__((weak, alias("nothing"))) void DebugMon_Handler(void);
 __attribute__((weak, alias("nothing"))) void PendSV_Handler(void);
 
-static volatile uint32_t systick_wraps;
+// Runtime.ticks is the cycles before SysTick's current period plus what it has run of it; a
+// period is 2^24 cycles, or until the loop's next deadline while it sleeps (0016)
+static volatile uint64_t systick_base;
+static volatile uint32_t systick_len = 0x1000000;
 
-// a program's [<Interrupt "SysTick">], at the runtime's period: SysTick is the runtime's, for
-// Runtime.ticks
+#define SYST_RVR (*(volatile uint32_t *)0xE000E014)
+#define SYST_CVR (*(volatile uint32_t *)0xE000E018)
+#define ICSR (*(volatile uint32_t *)0xE000ED04)
+
+// a program's [<Interrupt "SysTick">], at the end of each period: SysTick is the runtime's, for
+// Runtime.ticks and the loop's timers
 __attribute__((weak)) void zs_systick_user(void) {}
 
 void SysTick_Handler(void) {
-    systick_wraps++;
+    uint32_t m = masked(); // whole, for a handler above this one reading the time
+    systick_base += systick_len;
+    unmasked(m);
     zs_systick_user();
 }
 
-// a device line nobody handles: disabled in the NVIC, so it doesn't fire again
+// SysTick's next interrupt in `cycles` (65 to 2^24), what the current period has run counted
+// first. ponytail: the few cycles between reading the count and restarting it are lost, each
+// time the loop sleeps; a free-running timer of the board's if a clock mustn't drift
+static void systick_period(uint32_t cycles) {
+    uint32_t m = masked();
+    uint32_t v = SYST_CVR;
+    if (ICSR & (1u << 26)) { // a wrap its handler hasn't counted (PENDSTSET): counted here
+        ICSR = 1u << 25;     // PENDSTCLR
+        v = SYST_CVR;
+        systick_base += systick_len;
+    }
+    systick_base += systick_len - 1 - v;
+    systick_len = cycles;
+    SYST_RVR = cycles - 1;
+    SYST_CVR = 0; // the period starts over, from the new reload
+    unmasked(m);
+}
+
+// the board's lines (runtime/boards/<board>.irq), a multiple of ten
+#ifndef ZS_IRQ_COUNT
+#define ZS_IRQ_COUNT 0
+#endif
+
+// the lines that fired since the loop last looked, for the tasks waiting for them (Irq.wait)
+static volatile uint32_t lines_fired[(ZS_IRQ_COUNT + 31) / 32 + 1];
+
+// a device line no handler of the program's has: disabled in the NVIC, so it doesn't fire again
+// until a task waits for it, and marked for the loop
 static void irq_default(void) {
     uint32_t n;
     __asm__ volatile("mrs %0, ipsr" : "=r"(n));
     n -= 16;
     ((volatile uint32_t *)0xE000E180)[n / 32] = 1u << (n % 32); // ICER
+    uint32_t m = masked(); // a handler above this one may mark a line in the same word
+    lines_fired[n / 32] |= 1u << (n % 32);
+    unmasked(m);
 }
 
 // the device lines' handlers, IRQ0_Handler up: weak, so a program's [<Interrupt 38>] (or
@@ -1442,35 +1481,26 @@ ZS_IRQ_TEN(9) ZS_IRQ_TEN(10) ZS_IRQ_TEN(11) ZS_IRQ_TEN(12) ZS_IRQ_TEN(13) ZS_IRQ
 ZS_IRQ_TEN(16) ZS_IRQ_TEN(17) ZS_IRQ_TEN(18) ZS_IRQ_TEN(19) ZS_IRQ_TEN(20) ZS_IRQ_TEN(21) ZS_IRQ_TEN(22)
 ZS_IRQ_TEN(23)
 
-/// Runtime.ticks (): SysTick counts since reset (it counts down from 0xFFFFFF and wraps).
+/// Runtime.ticks (): the cycles SysTick has counted since reset (down from its reload, and over).
 int64_t zs_ticks(void) {
-    uint32_t before, w, v;
-    do {
-        before = systick_wraps;
-        w = before;
-        v = *(volatile uint32_t *)0xE000E018;
-        // a wrap the handler hasn't counted yet (ICSR's PENDSTSET): the value may be from either
-        // side of it, so it's read again, now after it, and the wrap counted
-        if (*(volatile uint32_t *)0xE000ED04 & (1u << 26)) {
-            v = *(volatile uint32_t *)0xE000E018;
-            w++;
-        }
-    } while (before != systick_wraps);
-    int64_t t = (int64_t)w * 0x1000000 + (0xFFFFFF - v);
+    uint32_t m = masked();
+    uint64_t base = systick_base;
+    uint32_t len = systick_len, v = SYST_CVR;
+    // a wrap its handler hasn't counted yet (ICSR's PENDSTSET): the value may be from either side
+    // of it, so it's read again, now after it, and the wrap counted
+    if (ICSR & (1u << 26)) {
+        v = SYST_CVR;
+        base += len;
+    }
+    int64_t t = (int64_t)(base + (len - 1 - v));
     // and never behind a value already given: QEMU can show the count reloaded before its timer
     // sets PENDSTSET, which hardware does in the same cycle
     static int64_t given;
-    uint32_t m = masked();
     if (t < given) t = given;
     else given = t;
     unmasked(m);
     return t;
 }
-
-// the board's lines (runtime/boards/<board>.irq), a multiple of ten
-#ifndef ZS_IRQ_COUNT
-#define ZS_IRQ_COUNT 0
-#endif
 #define ZS_VEC(n) IRQ##n##_Handler,
 #define ZS_VEC_TEN(d) ZS_VEC(d##0) ZS_VEC(d##1) ZS_VEC(d##2) ZS_VEC(d##3) ZS_VEC(d##4) ZS_VEC(d##5) ZS_VEC(d##6) ZS_VEC(d##7) ZS_VEC(d##8) ZS_VEC(d##9)
 
@@ -1519,9 +1549,291 @@ __attribute__((section(".vectors"), used)) static void *const vectors[] = {
 };
 #endif
 
+// ---- the event loop (0016): Task's, on one core with no threads. Ready callbacks in a ring and
+// timers in a heap by deadline (Runtime.ticks), both on the heap, so a program without tasks
+// links none of it. On a chip with the runtime's startup, a task waits for an interrupt line
+// (Irq.wait) or a Signal too: handlers mark them in bitmasks the loop drains, so no Z# code runs
+// in a handler. With nothing to run, the core sleeps until the next deadline or interrupt
+// (WebAssembly and a library spin until the deadline).
+
+void zs_clo_run(void *c);
+void zs_clo_drop(void *c);
+
+#ifndef ZS_CLOCK_HZ
+#define ZS_CLOCK_HZ 16000000
+#endif
+
+// Runtime.ticks per second: the board's clock at reset, or Runtime.setClock's
+static uint32_t clock_hz = ZS_CLOCK_HZ;
+
+void zs_set_clock(uint32_t hz) { clock_hz = hz; }
+
+typedef struct {
+    int64_t at; // Runtime.ticks
+    zs_int id;
+    void *cb;
+} loop_timer;
+
+static struct {
+    bool stepping; // inside zs_loop_step: a callback can't run Task.run itself
+    int depth;     // continuations called inside others (zs_loop_enter)
+    void **queue;  // ready callbacks, a ring
+    uint32_t qhead, qlen, qcap;
+    loop_timer *timers; // a min-heap by deadline
+    uint32_t ntimers, tcap;
+    zs_int next_timer;
+    uint32_t waits; // interrupt lines and signals tasks wait for
+} L;
+
+void zs_loop_post(void *cb) {
+    if (L.qlen == L.qcap) {
+        uint32_t cap = L.qcap ? 2 * L.qcap : 16;
+        void **q = zs_alloc((zs_int)(cap * sizeof(void *)));
+        for (uint32_t i = 0; i < L.qlen; i++) q[i] = L.queue[(L.qhead + i) % L.qcap];
+        if (L.queue) zs_free(L.queue);
+        L.queue = q;
+        L.qhead = 0;
+        L.qcap = cap;
+    }
+    L.queue[(L.qhead + L.qlen++) % L.qcap] = cb;
+}
+
+static void *queue_pop(void) {
+    void *cb = L.queue[L.qhead];
+    L.qhead = (L.qhead + 1) % L.qcap;
+    L.qlen--;
+    return cb;
+}
+
+// a continuation may be called inside the current one (true: the caller calls zs_loop_leave
+// after it), or should go through the queue, so a run of awaits that complete at once doesn't
+// grow the stack without end
+bool zs_loop_enter(void) {
+    if (L.depth >= 64) return false;
+    L.depth++;
+    return true;
+}
+
+void zs_loop_leave(void) { L.depth--; }
+
+// no threads: nothing of this loop's runs elsewhere
+zs_int zs_loop_jobs(void) { return 0; }
+
+static void timer_swap(uint32_t i, uint32_t j) {
+    loop_timer t = L.timers[i];
+    L.timers[i] = L.timers[j];
+    L.timers[j] = t;
+}
+
+static void timer_up(uint32_t i) {
+    for (; i > 0 && L.timers[(i - 1) / 2].at > L.timers[i].at; i = (i - 1) / 2) timer_swap(i, (i - 1) / 2);
+}
+
+static void timer_down(uint32_t i) {
+    for (;;) {
+        uint32_t c = 2 * i + 1;
+        if (c >= L.ntimers) return;
+        if (c + 1 < L.ntimers && L.timers[c + 1].at < L.timers[c].at) c++;
+        if (L.timers[c].at >= L.timers[i].at) return;
+        timer_swap(i, c);
+        i = c;
+    }
+}
+
+// the timer at i taken out of the heap: its callback
+static void *timer_remove(uint32_t i) {
+    void *cb = L.timers[i].cb;
+    L.timers[i] = L.timers[--L.ntimers];
+    if (i < L.ntimers) {
+        timer_up(i);
+        timer_down(i);
+    }
+    return cb;
+}
+
+// cb runs in ms milliseconds; the result names the timer for zs_loop_untimer
+zs_int zs_loop_timer(zs_int ms, void *cb) {
+    if (L.ntimers == L.tcap) {
+        uint32_t cap = L.tcap ? 2 * L.tcap : 8;
+        loop_timer *t = zs_alloc((zs_int)(cap * sizeof(loop_timer)));
+        if (L.ntimers) memcpy(t, L.timers, L.ntimers * sizeof(loop_timer));
+        if (L.timers) zs_free(L.timers);
+        L.timers = t;
+        L.tcap = cap;
+    }
+    int64_t at = zs_ticks() + (ms > 0 ? (int64_t)ms * clock_hz / 1000 : 0);
+    L.timers[L.ntimers] = (loop_timer){at, ++L.next_timer, cb};
+    timer_up(L.ntimers++);
+    return L.next_timer;
+}
+
+// the timer goes, its callback uncalled (its task was cancelled). ponytail: found by a scan,
+// fine for the few a chip has pending; an index by id for hundreds
+void zs_loop_untimer(zs_int id) {
+    for (uint32_t i = 0; i < L.ntimers; i++)
+        if (L.timers[i].id == id) {
+            zs_clo_drop(timer_remove(i));
+            return;
+        }
+}
+
+#if !defined(__wasm__) && !defined(ZS_LIB)
+// ---- waiting for interrupts: a task per line (Irq.wait), and Signals, which a program's own
+// handlers set (at most 32: a word of bits)
+
+static void *line_waiter[ZS_IRQ_COUNT + 1];
+static volatile uint32_t signals_set;
+static uint32_t signal_count;
+static void *signal_waiter[32];
+
+void zs_loop_irq_wait(zs_int n, void *cb) {
+    if (n < 0 || n >= ZS_IRQ_COUNT) zs_panic_c("Irq.wait: the line is past the board's table");
+    if (vectors[16 + n] != (void *)irq_default) zs_panic_c("Irq.wait: the line has a handler of its own, which wakes no task: set a Signal from it");
+    if (line_waiter[n]) zs_panic_c("two tasks wait for one interrupt line (one Irq.wait per line at a time)");
+    line_waiter[n] = cb;
+    L.waits++;
+    uint32_t m = masked();
+    lines_fired[n / 32] &= ~(1u << (n % 32)); // a fire from before the wait isn't its
+    unmasked(m);
+    ((volatile uint32_t *)0xE000E100)[n / 32] = 1u << (n % 32); // ISER
+}
+
+// the task waiting for line n was cancelled: the line quiet again
+void zs_loop_irq_unwait(zs_int n) {
+    void *cb = line_waiter[n];
+    if (!cb) return;
+    line_waiter[n] = NULL;
+    L.waits--;
+    ((volatile uint32_t *)0xE000E180)[n / 32] = 1u << (n % 32); // ICER
+    zs_clo_drop(cb);
+}
+
+zs_int zs_signal_new(void) {
+    if (signal_count == 32) zs_panic_c("more than 32 Signals");
+    return (zs_int)signal_count++;
+}
+
+void zs_signal_set(zs_int s) {
+    uint32_t m = masked();
+    signals_set |= 1u << s;
+    unmasked(m);
+}
+
+// whether the signal was set, clearing it
+bool zs_signal_take(zs_int s) {
+    uint32_t m = masked();
+    bool was = signals_set >> s & 1;
+    signals_set &= ~(1u << s);
+    unmasked(m);
+    return was;
+}
+
+void zs_signal_wait(zs_int s, void *cb) {
+    if (signal_waiter[s]) zs_panic_c("two tasks wait on one Signal");
+    signal_waiter[s] = cb;
+    L.waits++;
+}
+
+void zs_signal_unwait(zs_int s) {
+    void *cb = signal_waiter[s];
+    if (!cb) return;
+    signal_waiter[s] = NULL;
+    L.waits--;
+    zs_clo_drop(cb);
+}
+
+// the tasks waiting for the lines that fired and the signals that were set, to the ready queue
+static void drain(void) {
+    for (uint32_t w = 0; w < sizeof lines_fired / sizeof lines_fired[0]; w++) {
+        if (!lines_fired[w]) continue;
+        uint32_t m = masked();
+        uint32_t bits = lines_fired[w];
+        lines_fired[w] = 0;
+        unmasked(m);
+        for (; bits; bits &= bits - 1) {
+            uint32_t n = w * 32 + (uint32_t)__builtin_ctz(bits);
+            if (n < ZS_IRQ_COUNT && line_waiter[n]) {
+                zs_loop_post(line_waiter[n]);
+                line_waiter[n] = NULL;
+                L.waits--;
+            }
+        }
+    }
+    for (uint32_t s = 0; s < signal_count; s++)
+        if (signal_waiter[s] && zs_signal_take((zs_int)s)) {
+            zs_loop_post(signal_waiter[s]);
+            signal_waiter[s] = NULL;
+            L.waits--;
+        }
+}
+
+// whether a line fired or a signal was set since the drain (looked at with interrupts masked)
+static bool marked(void) {
+    for (uint32_t w = 0; w < sizeof lines_fired / sizeof lines_fired[0]; w++)
+        if (lines_fired[w]) return true;
+    return signals_set != 0;
+}
+#endif
+
+// nothing to run until `at` (Runtime.ticks; -1 for no timer): the core sleeps until then, or
+// until an interrupt
+static void sleep_until(int64_t at) {
+#if defined(__wasm__) || defined(ZS_LIB)
+    while (zs_ticks() < at) {}
+#else
+    // masked: an interrupt between the look and the wfi still wakes it (a pending interrupt does,
+    // masked or not), and its handler runs after
+    uint32_t m = masked();
+    if (!marked()) {
+        int64_t d = at < 0 ? 0x1000000 : at - zs_ticks();
+        if (d > 64) {
+            systick_period(d < 0x1000000 ? (uint32_t)d : 0x1000000);
+            __asm__ volatile("wfi");
+            systick_period(0x1000000);
+        }
+    }
+    unmasked(m);
+#endif
+}
+
+bool zs_loop_step(void) {
+    if (L.stepping) zs_panic_c("Task.run inside a task: use let! there instead");
+    L.stepping = true;
+    for (uint32_t n = L.qlen; n > 0 && L.qlen; n--) zs_clo_run(queue_pop());
+    L.stepping = false;
+    int64_t now = zs_ticks();
+    while (L.ntimers && L.timers[0].at <= now) zs_loop_post(timer_remove(0));
+#if !defined(__wasm__) && !defined(ZS_LIB)
+    drain();
+#endif
+    if (L.qlen) return true;
+    if (!L.ntimers && !L.waits) return false;
+    sleep_until(L.ntimers ? L.timers[0].at : -1);
+    return true;
+}
+
+// Task.run has finished: what still waits goes, uncalled, and the loop's memory is freed (a later
+// Task.run starts afresh)
+void zs_loop_close(void) {
+    while (L.qlen) zs_clo_drop(queue_pop());
+    while (L.ntimers) zs_clo_drop(timer_remove(L.ntimers - 1));
+#if !defined(__wasm__) && !defined(ZS_LIB)
+    for (zs_int n = 0; n < ZS_IRQ_COUNT; n++) zs_loop_irq_unwait(n);
+    for (zs_int s = 0; s < (zs_int)signal_count; s++) zs_signal_unwait(s);
+#endif
+    if (L.queue) zs_free(L.queue);
+    if (L.timers) zs_free(L.timers);
+    L.queue = NULL;
+    L.timers = NULL;
+    L.qhead = L.qcap = L.tcap = 0;
+}
+
 // SIMD on a microcontroller: LLVM does a vector's operations lane by lane (with what DSP
 // instructions the chip has), so a wide vector needs no more than a word's alignment
 void *zs_alloc_wide(zs_int size) { return zs_alloc(size); }
+
+// a task's coroutine frame (its locals across waits), freed through zs_free
+void *zs_coro_alloc(zs_int size) { return zs_alloc(size); }
 
 // [<Multiversion>]: a microcontroller runs the baseline version
 bool zs_cpu_supports(const char *features) {

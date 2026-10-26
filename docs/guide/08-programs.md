@@ -84,7 +84,7 @@ mug 2 Emma 9
 | `Text` | `String`, `Char`, `Utf8` | |
 | `IO` | | `File`, `Directory`, `Path` |
 | `Diagnostics` | | `Process`, `Stopwatch` |
-| `Threading` | `Atomic`, `Spsc` | `Task`, `Mutex`, `Channel` |
+| `Threading` | `Task`, `Atomic`, `Spsc`, `Signal` | `Mutex`, `Channel`, `Alt`, `Parallel` |
 | `Net` | | `Tcp` |
 | `Numerics` | `Random` | `Random.shared` |
 | `Time` | `DateTime`, `Duration` | `DateTime.utcNow` |

@@ -1,6 +1,10 @@
 /// Tasks: work that may wait (for input, a timer, other tasks) without blocking the program,
 /// run by an event loop. `task { }` writes one, and `Task.run` runs it from `main`. Each thread
-/// has a loop of its own: `Task.spawn` starts a task on another thread's, to use every core.
+/// has a loop of its own: `Task.spawn` starts a task on another thread's, to use every core. On a
+/// microcontroller the loop is the runtime's, its timers on SysTick, its idle a `wfi`; a task
+/// waits for an interrupt with `Irq.wait`, or for a handler's `Signal`. Threads and file
+/// descriptors aren't there: `Task.spawn`, `Task.blocking` and `Task.waitFor` are errors on a
+/// chip.
 namespace Threading
 
 // where a Callbacks is: the number the next one gets, and how many have been taken back
@@ -225,6 +229,16 @@ module Task =
         forget c id
         resume k ()))
 
+  /// A task that goes on once something else calls it back: `start` is given the callback, and
+  /// `stop` takes it back when the task is cancelled first. `Irq.wait` and `Signal.wait` are
+  /// this over the runtime's waiters, and a driver's own wait can be.
+  let fromCallback (start: (unit -> unit) -> unit) (stop: unit -> unit) : Task<unit> =
+    pending (fun c k ->
+      let id = onCancel c stop
+      start (fun () ->
+        forget c id
+        resume k ()))
+
   /// Waits until the file descriptor can be read (or, with write, written) without blocking:
   /// for libraries over non-blocking system calls, as `Tcp` is.
   let waitFor (fd: int) (write: bool) : Task<unit> =
@@ -379,9 +393,10 @@ module Task =
   /// loop goes on. `f` crosses threads, so what it captures must be Share, as its result must.
   let blocking (f: share<unit -> 'a>) : Task<'a> =
     pending (fun c k ->
-      let result = Mutex.make None
-      Native.loopBlocking (fun () -> Mutex.set result (Some (f ()))) (fun () ->
-        match Mutex.get result with
+      // the result crosses back through a ring of one
+      let result = Spsc.create 1
+      Native.loopBlocking (fun () -> Spsc.push result (f ()) |> ignore) (fun () ->
+        match Spsc.pop result with
         | Some x when not c.cancelled.Value -> resume k x
         | _ -> ()))
 
@@ -391,26 +406,24 @@ module Task =
   /// this one cancels it there (its `use` values are disposed on its thread).
   let spawn (f: share<unit -> Task<'a>>) : Task<'a> =
     pending (fun c k ->
-      let result = Mutex.make None
+      // the result crosses back through a ring of one
+      let result = Spsc.create 1
       // where the spawned task is: 0 not started, -1 cancelled before it started, -2 done (or
       // cancelled), else the token of its loop's that cancels it there
-      let state = Mutex.make 0
+      let state = Atomic.make 0
 
       let link =
         onCancel c (fun () ->
-          Mutex.update state (fun s ->
-            match s with
-            | 0 -> -1
-            | s when s > 0 ->
-              Native.loopFulfill s
-              -2
-            | s -> s)
-          |> ignore)
+          // not started: it won't; running: whichever of this and its end moves the state on
+          // from its token fulfills it
+          let s = Atomic.compareExchange state 0 (-1)
+          if s > 0 && Atomic.compareExchange state s (-2) = s then
+            Native.loopFulfill s)
 
       // what this loop runs once the spawned task is done or cancelled
       let token = Native.loopExpect (fun () ->
         forget c link
-        match Mutex.get result with
+        match Spsc.pop result with
         | Some x when not c.cancelled.Value -> resume k x
         | _ -> ())
 
@@ -429,20 +442,13 @@ module Task =
             cancelNow cc
             finish ())
 
-        if Mutex.update state (fun s -> if s = 0 then here else s) = -1 then
+        if Atomic.compareExchange state 0 here = -1 then
           Native.loopFulfill here
         else
           runIn (f ()) cc (fun x ->
-            Mutex.set result (Some x)
-
-            Mutex.update state (fun s ->
-              match s with
-              | s when s > 0 ->
-                Native.loopFulfill s
-                -2
-              | s -> s)
-            |> ignore
-
+            Spsc.push result x |> ignore
+            let s = Atomic.exchange state (-2)
+            if s > 0 then Native.loopFulfill s
             finish ())))
 
   /// `return! t` at the end of a task's body: `t` runs with the task's cancellation, and its

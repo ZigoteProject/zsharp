@@ -222,14 +222,17 @@ if command -v qemu-system-arm >/dev/null && bin/zs build tests/mcu/layout.zs --t
 else echo "FAIL tests/mcu/layout.zs"; cat "$tmp/layout.log"; fail=1; fi
 
 # interrupt handlers (0012) on both chips under qemu: a pended line's handler counting in an
-# Atomic and pushing to an Spsc, SysTick's handler with Runtime.ticks counting up; and what a
-# handler can't be, with the board's lines
+# Atomic and pushing to an Spsc, SysTick's handler with Runtime.ticks counting up; tasks on the
+# runtime's loop (0016), freeing what they allocated (live=0 at exit); and what a handler can't
+# be, with the board's lines
 if command -v qemu-system-arm >/dev/null; then
   for chip in cortex-m4 cortex-m0plus; do
     board=$([ $chip = cortex-m4 ] && echo mps2-an386 || echo microbit)
-    for t in isr systick cpu bits; do
+    for t in isr systick cpu bits task; do
       if bin/zs build tests/mcu/$t.zs --target $chip -o "$tmp/$t.elf" 2>"$tmp/$t.log" \
-         && [ "$(timeout 60 qemu-system-arm -M $board -nographic -semihosting-config enable=on,target=native -kernel "$tmp/$t.elf" 2>&1 | grep -v '^#zs')" = "$(cat tests/mcu/$t.expected)" ]; then
+         && out=$(timeout 60 qemu-system-arm -M $board -nographic -semihosting-config enable=on,target=native -kernel "$tmp/$t.elf" 2>&1) \
+         && [ "$(echo "$out" | grep -v '^#zs')" = "$(cat tests/mcu/$t.expected)" ] \
+         && { [ $t != task ] || echo "$out" | grep -q ' live=0 '; }; then
         echo "ok   tests/mcu/$t.zs on $chip (under qemu)"
       else echo "FAIL tests/mcu/$t.zs on $chip"; cat "$tmp/$t.log"; fail=1; fi
     done
@@ -249,7 +252,14 @@ if command -v qemu-system-arm >/dev/null && command -v node >/dev/null; then
     echo "ok   tests/mcu/bits.zs on nucleo-f401 (under qemu's STM32F405, output over RTT)"
   else echo "FAIL tests/mcu/bits.zs on nucleo-f401"; cat "$tmp/bits.log"; fail=1; fi
 fi
-for t in err_isr err_isr_share err_isr_heap err_critical_heap; do
+# a driver's receive side as a task (0016): it waits for the UART's receive interrupt
+# (Irq.wait); qemu's serial is fed once the program has turned its receiver on (input before
+# that, qemu's UART refuses and never asks for again)
+if command -v qemu-system-arm >/dev/null && bin/zs build examples/mcu/uart.zs --target cortex-m4 -o "$tmp/uart.elf" 2>"$tmp/uart.log" \
+   && [ "$( (sleep 1; printf 'hello there\n') | timeout 60 qemu-system-arm -M mps2-an386 -nographic -semihosting-config enable=on,target=native -kernel "$tmp/uart.elf" 2>/dev/null)" = "$(printf 'Hello from a Z# UART driver: type a line\nhello there\nyou typed 11 bytes: hello there')" ]; then
+  echo "ok   examples/mcu/uart.zs (a task waiting for the UART's interrupt, under qemu)"
+else echo "FAIL examples/mcu/uart.zs"; cat "$tmp/uart.log"; fail=1; fi
+for t in err_isr err_isr_share err_isr_heap err_critical_heap err_task_spawn; do
   if [ "$(bin/zs build --strict tests/mcu/$t.zs --target cortex-m4 -o "$tmp/err.elf" 2>&1 | grep -v '^ [ 0-9]* | ')" = "$(cat tests/mcu/$t.expected)" ]; then echo "ok   tests/mcu/$t.zs"
   else echo "FAIL tests/mcu/$t.zs"; fail=1; fi
 done

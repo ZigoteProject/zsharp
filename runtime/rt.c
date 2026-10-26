@@ -2506,6 +2506,29 @@ void zs_loop_spawn(void *work) {
 // cancelled spawned task has disposed what it holds before the program goes on)
 zs_int zs_loop_jobs(void) { return (zs_int)L.jobs; }
 
+// a microcontroller's waits (rt-embedded.c, 0016): a computer's program has no interrupt lines
+// to wait for, nor handlers to set a Signal
+void zs_loop_irq_wait(zs_int n, void *cb) {
+    (void)n;
+    zs_clo_drop(cb);
+    zs_panic_c("Irq.wait needs a microcontroller's interrupt controller: build with --target cortex-m4");
+}
+
+void zs_loop_irq_unwait(zs_int n) { (void)n; }
+
+zs_int zs_signal_new(void) { zs_panic_c("a Signal needs a microcontroller's interrupt handlers: build with --target cortex-m4"); }
+
+void zs_signal_set(zs_int s) { (void)s; }
+
+bool zs_signal_take(zs_int s) { return (void)s, false; }
+
+void zs_signal_wait(zs_int s, void *cb) {
+    (void)s;
+    zs_clo_drop(cb);
+}
+
+void zs_signal_unwait(zs_int s) { (void)s; }
+
 bool zs_loop_step(void) {
     if (L.stepping) zs_panic_c("Task.run inside a task: use let! there instead");
     L.stepping = true;

@@ -2,7 +2,11 @@
 
 Tasks: work that may wait (for input, a timer, other tasks) without blocking the program,
 run by an event loop. `task { }` writes one, and `Task.run` runs it from `main`. Each thread
-has a loop of its own: `Task.spawn` starts a task on another thread's, to use every core.
+has a loop of its own: `Task.spawn` starts a task on another thread's, to use every core. On a
+microcontroller the loop is the runtime's, its timers on SysTick, its idle a `wfi`; a task
+waits for an interrupt with `Irq.wait`, or for a handler's `Signal`. Threads and file
+descriptors aren't there: `Task.spawn`, `Task.blocking` and `Task.waitFor` are errors on a
+chip.
 
 ## Types
 
@@ -130,6 +134,17 @@ Task.sleep : int -> Task<unit>
 ```
 
 Waits `ms` milliseconds.
+
+### `Task.fromCallback`
+
+```zsharp
+Task.fromCallback : ((unit -> unit / 'e) -> unit / <>) -> (unit -> unit / <>) -> Task<unit>
+  start must perform nothing, stop must perform nothing
+```
+
+A task that goes on once something else calls it back: `start` is given the callback, and
+`stop` takes it back when the task is cancelled first. `Irq.wait` and `Signal.wait` are
+this over the runtime's waiters, and a driver's own wait can be.
 
 ### `Task.waitFor`
 

@@ -70,11 +70,46 @@ let private noAllocRoots (prog: Program) (funs: list<MFun>) (noHeap: bool) : lis
   let byNoHeap = List.map (fun n -> (n, "noheap")) (List.filter present entries)
   List.concat [ byAttribute; byHandler; byCritical; byNoHeap ]
 
+/// What a bare-metal target can't run (0016): the library's function, its name as written and
+/// why. Threads and file descriptors aren't on a chip; an interrupt controller isn't on
+/// WebAssembly.
+let unrunnable (m: Options.Mcu) : Map<string, string * string> =
+  let hosted =
+    [ ("Threading.Task.spawn", ("Task.spawn", $"needs a thread, and {m.name} has none: run the task on this loop with let!"))
+      ("Threading.Task.blocking", ("Task.blocking", $"needs a helper thread, and {m.name} has none: call the function, or wait for its interrupt with Irq.wait"))
+      ("Threading.Task.waitFor", ("Task.waitFor", $"needs file descriptors, and {m.name} has none")) ]
+  let interrupts (f: string) = (f, (String.replace f "Threading." "", $"needs an interrupt controller, and {m.name} has none"))
+  let lines = List.map interrupts [ "Irq.wait"; "Threading.Signal.create"; "Threading.Signal.set"; "Threading.Signal.wait" ]
+  Map.ofList (if m.board = "" then List.append hosted lines else hosted)
+
+// the first function the program reaches (from its entries) that the target can't run stops the
+// build, at the call, naming the functions on the way; walked before inlining, which hides calls
+let private reachable (cant: Map<string, string * string>) (roots: list<string>) (funs: list<MFun>) : unit / Stops =
+  let byName = Map.ofList (List.map (fun (f: MFun) -> (f.name, f)) funs)
+  let seen = ref Set.empty
+  let rec inFun (chain: list<string>) (name: string) =
+    if not (Set.contains name seen.Value) then
+      seen.Value <- Set.add name seen.Value
+      match Map.tryFind name byName with
+      | Some f -> walk (Core.Ir.baseFunName name :: chain) f f.line f.body
+      | None -> ()
+  and walk (chain: list<string>) (f: MFun) (line: int) (e: Core.Ir.CExpr) =
+    match e.k with
+    | Core.Ir.CLine(l, a) -> walk chain f l a
+    | Core.Ir.CGlobal(g, _) ->
+      match Map.tryFind (Core.Ir.baseFunName g) cant with
+      | Some(shown, why) ->
+        let path = String.join " -> " (List.rev (shown :: chain))
+        Stops.stop { file = f.file; line = line; message = $"{shown} {why} ({path})" }
+      | None -> inFun chain g
+    | k -> List.iter (walk chain f line) (Core.Ir.children k)
+  List.iter (inFun []) roots
+
 /// A checked program's functions monomorphic, closure-converted and reference counted, with the
 /// types the passes added (effects' frames); Error where a pass can't go on. A debug build keeps
 /// every function whole (no inlining), so breakpoints on them hit. noHeap: the whole program
-/// checked as [<NoAlloc>] (--no-heap).
-let lower (prog0: Program) (debugInfo: bool) (time: bool) (checkIr: bool) (noHeap: bool) : result<Map<string, TypeInfo> * list<MFun>, PassError> =
+/// checked as [<NoAlloc>] (--no-heap); cant: the functions the target can't run (unrunnable).
+let lower (prog0: Program) (debugInfo: bool) (time: bool) (checkIr: bool) (noHeap: bool) (cant: Map<string, string * string>) : result<Map<string, TypeInfo> * list<MFun>, PassError> =
   let prog = Opt.Mono.lowered prog0
   // functions called from outside keep their signatures (main, the tests, C exports)
   let fixedNames = Set.ofList ("main" :: List.append prog.tests (List.map (fun (e: Core.Ir.Export) -> e.fname) prog.exports))
@@ -84,6 +119,8 @@ let lower (prog0: Program) (debugInfo: bool) (time: bool) (checkIr: bool) (noHea
   let passes () : result<Map<string, TypeInfo> * list<MFun>, PassError> / Stops =
     let check (pass: string) (funs: list<MFun>) = checkedAfter checkIr pass funs
     let mono = check "monomorphize" (stage "mono" (timed time "monomorphize" (fun () -> Opt.Mono.fuse (Opt.Mono.checkShared prog (Opt.Mono.run prog)))))
+    if not (Map.isEmpty cant) then
+      reachable cant (List.append (Set.toList fixedNames) (List.map snd prog.values)) mono
     let inlined = check "inline" (stage "inline" (timed time "inline" (fun () -> if debugInfo then mono else Opt.Inline.run kept (Opt.Inline.uncurry fixedNames mono))))
     // ZS_NO_SIMPLIFY=1: no simplification, to compare with the F# compiler's passes
     let simple = Option.isSome (Environment.getVariable "ZS_NO_SIMPLIFY") || debugInfo
@@ -204,7 +241,11 @@ let generate (o: Options.Options) (prog0: Program) (testBuild: bool) : result<Pr
     Error(InPass { file = ""; line = 0; message = "a top-level assert whose condition isn't a constant is checked at startup, which a library doesn't have; assert on constants (sizeof<T> = 20), or check it in a function" })
   | (value, _) :: _ -> Error(InPass { file = ""; line = 0; message = $"top-level value '{value}' is computed at startup, which a library doesn't have; make it a constant or a function" })
   | [] ->
-    match lower prog o.debugInfo o.time o.checkIr o.noHeap with
+    let cant =
+      match o.mcu with
+      | Some m -> unrunnable m
+      | None -> Map.empty
+    match lower prog o.debugInfo o.time o.checkIr o.noHeap cant with
     | Error e -> Error(InPass e)
     | Ok(types, funs) ->
       // a library's handles may be used on any thread of its C host
@@ -276,7 +317,7 @@ let make (o: Options.Options) (prog0: Program) (linked: Modules.Linked) (testBui
           let rto = Path.changeExtension ll ".rt.o"
           let flags = [ "-ffunction-sections"; "-fdata-sections" ]
           let r1 = timed o.time "clang" (fun () -> Tools.run "clang" (List.concat [ opt; [ "--target=" + m.triple ]; m.cflags; flags; [ "-c"; "-Wno-override-module"; ll; "-o"; obj ] ]))
-          let r2 = andThen (fun () -> timed o.time "zig cc" (fun () -> Tools.run "zig" (List.concat [ [ "cc"; "-target"; m.zigTarget; "-mcpu=" + m.zigCpu ]; opt; flags; [ "-DZS_LIB"; $"-DZS_HEAP_SIZE={Option.defaultValue m.heap o.heap}"; "-c"; runtimeFile "rt-embedded.c"; "-o"; rto ] ]))) r1
+          let r2 = andThen (fun () -> timed o.time "zig cc" (fun () -> Tools.run "zig" (List.concat [ [ "cc"; "-target"; m.zigTarget; "-mcpu=" + m.zigCpu ]; opt; flags; [ "-DZS_LIB"; $"-DZS_HEAP_SIZE={Option.defaultValue m.heap o.heap}"; $"-DZS_CLOCK_HZ={m.clock}"; "-c"; runtimeFile "rt-embedded.c"; "-o"; rto ] ]))) r1
           let archive () =
             File.delete o.out |> ignore
             Tools.run "llvm-ar" [ "rcs"; o.out; obj; rto ]
@@ -292,7 +333,7 @@ let make (o: Options.Options) (prog0: Program) (linked: Modules.Linked) (testBui
           let entry = if o.isLib then [ "-Wl,--no-entry" ] else []
           let exports = List.map (fun (e: Core.Ir.Export) -> "-Wl,--export=" + e.cname) prog.exports
           let compiled = timed o.time "clang" (fun () -> Tools.run "clang" (List.concat [ opt; [ "--target=" + m.triple ]; Options.sectionFlags o; [ "-c"; "-Wno-override-module"; ll; "-o"; obj ] ]))
-          let r = andThen (fun () -> timed o.time "zig cc" (fun () -> Tools.run "zig" (List.concat [ [ "cc"; "-target"; m.zigTarget ]; opt; Options.sectionFlags o; [ $"-DZS_HEAP_SIZE={Option.defaultValue m.heap o.heap}" ]; entry; exports; [ obj; runtimeFile "rt-embedded.c" ]; linkArgs linked; [ "-o"; o.out ] ]))) compiled
+          let r = andThen (fun () -> timed o.time "zig cc" (fun () -> Tools.run "zig" (List.concat [ [ "cc"; "-target"; m.zigTarget ]; opt; Options.sectionFlags o; [ $"-DZS_HEAP_SIZE={Option.defaultValue m.heap o.heap}"; $"-DZS_CLOCK_HZ={m.clock}" ]; entry; exports; [ obj; runtimeFile "rt-embedded.c" ]; linkArgs linked; [ "-o"; o.out ] ]))) compiled
           File.delete obj |> ignore
           r
         | Some m ->
@@ -316,7 +357,7 @@ let make (o: Options.Options) (prog0: Program) (linked: Modules.Linked) (testBui
           // info (which isn't flashed): probe-rs finds the RTT block by its symbol, a debugger the
           // functions by theirs; and its entry, which a debugger's load jumps to
           let symbols = [ "-g"; "-Wl,--entry=Reset_Handler" ]
-          let r = andThen (fun () -> timed o.time "zig cc" (fun () -> Tools.run "zig" (List.concat [ [ "cc"; "-target"; m.zigTarget; "-mcpu=" + m.zigCpu ]; opt; flags; symbols; [ $"-DZS_HEAP_SIZE={Option.defaultValue m.heap o.heap}"; $"-DZS_IRQ_COUNT={lines}"; (if o.noHeap then "-DZS_NO_HEAP" else "-DZS_HEAP"); (if m.rtt then "-DZS_RTT" else "-DZS_SEMIHOSTING"); "-T" + script; "-Wl,--gc-sections"; obj; runtimeFile "rt-embedded.c" ]; linkArgs linked; [ "-o"; o.out ] ]))) compiled
+          let r = andThen (fun () -> timed o.time "zig cc" (fun () -> Tools.run "zig" (List.concat [ [ "cc"; "-target"; m.zigTarget; "-mcpu=" + m.zigCpu ]; opt; flags; symbols; [ $"-DZS_HEAP_SIZE={Option.defaultValue m.heap o.heap}"; $"-DZS_CLOCK_HZ={m.clock}"; $"-DZS_IRQ_COUNT={lines}"; (if o.noHeap then "-DZS_NO_HEAP" else "-DZS_HEAP"); (if m.rtt then "-DZS_RTT" else "-DZS_SEMIHOSTING"); "-T" + script; "-Wl,--gc-sections"; obj; runtimeFile "rt-embedded.c" ]; linkArgs linked; [ "-o"; o.out ] ]))) compiled
           File.delete obj |> ignore
           File.delete script |> ignore
           r

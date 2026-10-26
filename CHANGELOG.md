@@ -30,6 +30,15 @@
   (`let! (x, reply, nack) = …`) before that wait.
 
 ### Platforms
+- Tasks on a microcontroller (0016): the same `task { }`, `Task.run`, `sleep`, `both`, `all`,
+  `race`, `timeout` and `scope` as on a computer, on the embedded runtime's event loop: timers on
+  SysTick, the core asleep (`wfi`) when nothing runs. `Irq.wait n` is a task that goes on once
+  line `n` fires; `Signal.set` from a program's own handler wakes the task in `Signal.wait`.
+  `Runtime.setClock hz` after changing the core's clock. `Task` moved from Std to Core (the same
+  namespace, so nothing changes on a computer); on a chip, reaching `Task.spawn`,
+  `Task.blocking` or `Task.waitFor` is a compile error naming the chain. `examples/mcu/uart.zs`
+  receives a line in a task waiting for the UART's interrupt. `Task.fromCallback` makes a task
+  of a callback, for a driver's own waits.
 - A real board, the ST Nucleo-F401RE (`--target nucleo-f401`, 0027): linked for its STM32F401RE
   (512 KB of flash at `0x08000000`, 96 KB of RAM), with its interrupt lines by name
   (`[<Interrupt "USART2">]`), and output over RTT, a ring in RAM the debug probe reads while the

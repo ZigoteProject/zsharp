@@ -4,7 +4,8 @@
 /// zig cc are told about it), its board's memory map and interrupt lines
 /// (runtime/boards/<board>.ld and .irq; "" for WebAssembly), whether output goes over RTT (a real
 /// board, where semihosting without a debugger faults) instead of semihosting, the command that
-/// runs an image, and the heap size. The program uses runtime/rt-embedded.c instead of the OS
+/// runs an image, the heap size, and Runtime.ticks per second at reset (the core's clock, what
+/// Task.sleep counts in). The program uses runtime/rt-embedded.c instead of the OS
 /// runtime. A core's name means its QEMU board; a real board is a core's row with its own (0027).
 type Mcu =
   { name: string
@@ -15,7 +16,8 @@ type Mcu =
     board: string
     rtt: bool
     runner: list<string>
-    heap: int }
+    heap: int
+    clock: int }
 
 let private qemu (machine: string) = [ "qemu-system-arm"; "-M"; machine; "-nographic"; "-semihosting-config"; "enable=on,target=native"; "-kernel" ]
 
@@ -28,7 +30,8 @@ let private cortexM4 =
     board = "mps2-an386"
     rtt = false
     runner = qemu "mps2-an386"
-    heap = 64 * 1024 }
+    heap = 64 * 1024
+    clock = 25000000 }
 
 /// The targets --target knows by name.
 let mcus : list<Mcu> =
@@ -41,10 +44,11 @@ let mcus : list<Mcu> =
       board = "microbit"
       rtt = false
       runner = qemu "microbit"
-      heap = 8 * 1024 }
+      heap = 8 * 1024
+      clock = 16000000 }
     // an ST Nucleo-F401RE: its STM32F401RE's flash and RAM, flashed and run by probe-rs
     // (https://probe.rs), which shows the output
-    { cortexM4 with name = "nucleo-f401"; board = "stm32f401re"; rtt = true; runner = [ "probe-rs"; "run"; "--chip"; "STM32F401RETx" ] }
+    { cortexM4 with name = "nucleo-f401"; board = "stm32f401re"; rtt = true; runner = [ "probe-rs"; "run"; "--chip"; "STM32F401RETx" ]; clock = 16000000 }
     // freestanding WebAssembly: no OS, the host gives output and exit as imports
     { name = "wasm32"
       triple = "wasm32-unknown-unknown"
@@ -54,7 +58,9 @@ let mcus : list<Mcu> =
       board = ""
       rtt = false
       runner = []
-      heap = 1024 * 1024 } ]
+      heap = 1024 * 1024
+      // the host's ticks are microseconds
+      clock = 1000000 } ]
 
 /// The runtime's sources: $ZS_RUNTIME, else beside the compiler (an installed one), else the
 /// runtime/ of the checkout the compiler was built in.
