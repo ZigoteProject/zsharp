@@ -1,0 +1,26 @@
+frame #0: ADDR prog`square(n=1) at prog.zs:9:1
+-> 9   	  let result = n * n
+frame #0: ADDR prog`square(n=1) at prog.zs:9:1
+frame #1: ADDR prog`main at prog.zs:17:1
+(long) n = 1
+(long) result = 0
+frame #0: ADDR prog`square(n=1) at prog.zs:10:1
+-> 10  	  result
+(long) result = 1
+frame #0: ADDR prog`main at prog.zs:17:1
+-> 17  	    let sq = square i
+frame #0: ADDR prog`main at prog.zs:18:1
+-> 18  	    total <- total + sq
+(Range) range = (lo = 1, hi = 3)
+(long) total = 0
+(long) i = 1
+(double) ratio = 0
+(bool) ok = false
+(Summary) summary = (case = Small, Small = 0, Large.0 = 0, Large.1 = 0)
+(long) sq = 1
+(char *) name = ADDR "squares"
+frame #0: ADDR prog`main at prog.zs:22:1
+-> 22  	  println $"{name}: total {total} ratio {ratio} ok {ok} {summary}"
+(char *) name = ADDR "squares"
+(Range) range = (lo = 1, hi = 3)
+(Summary) summary = (case = Large, Small = 0, Large.0 = 14, Large.1 = 7)

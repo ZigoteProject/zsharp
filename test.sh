@@ -197,6 +197,11 @@ if command -v gdb >/dev/null && [ $windows = 0 ]; then
   if diff <(tests/debug/gdb.sh) tests/debug/gdb.expected >"$tmp/gdb.diff"; then echo "ok   tests/debug/gdb.sh"
   else echo "FAIL tests/debug/gdb.sh"; cat "$tmp/gdb.diff"; fail=1; fi
 else echo "skip tests/debug/gdb.sh (no gdb)"; fi
+# the same under lldb, the debugger on macOS
+if command -v lldb >/dev/null && [ $windows = 0 ]; then
+  if diff <(tests/debug/lldb.sh) tests/debug/lldb.expected >"$tmp/lldb.diff"; then echo "ok   tests/debug/lldb.sh"
+  else echo "FAIL tests/debug/lldb.sh"; cat "$tmp/lldb.diff"; fail=1; fi
+else echo "skip tests/debug/lldb.sh (no lldb)"; fi
 
 # the guide's examples build and print what the guide says (docs/guide)
 if tests/docs.sh >"$tmp/docs.log" 2>&1; then echo "ok   docs/guide examples ($(tail -1 "$tmp/docs.log"))"

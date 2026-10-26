@@ -135,6 +135,9 @@
   gives and as the main thread has: on macOS they had 512 KB, which deep recursion ran out of.
 
 ### Editor
+- lldb, the debugger on macOS, works on `zs build -g` programs as gdb does: breakpoints on Z#
+  functions and lines, stepping, backtraces with Z# files and lines, and strings, records and
+  unions as values (`tests/debug/lldb.sh`). It names the types as C's: a 64-bit `int` is a `long`.
 - A VS Code extension (`editors/vscode`) and a Rider plugin (`editors/rider`, any JetBrains IDE
   2025.2 or later): highlighting, the language server and, in VS Code, the MCP server for the
   agent, as the Zed extension gives. Both share one TextMate grammar.

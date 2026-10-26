@@ -132,7 +132,7 @@ let main () =
 
 ## Debugging
 
-`zs build -g` builds without optimization and with DWARF debug info, so gdb works with the Z# source:
+`zs build -g` builds without optimization and with DWARF debug info, so gdb, and lldb (the debugger on macOS), work with the Z# source:
 - **Breakpoints and stepping:** break on a function (`break square`) or a line (`break prog.zs:12`), then step with `next` and `step`.
 - **Backtraces:** `bt` shows Z# files and lines.
 - **Values:** arguments and local variables are shown when they are numbers, bools or chars, strings (as their text), or tuples, records and unions of those. A union shows its case and every case's fields; a string inside a record is a pointer to its object, which `print *r.name` shows.
@@ -149,6 +149,15 @@ $1 = 0x405260 "squares"
 $2 = {lo = 1, hi = 3}
 (gdb) print summary
 $3 = {case = Large, Small = 0, Large.0 = 14, Large.1 = 7}
+```
+
+lldb shows the same, with its commands (`breakpoint set -n square`, `breakpoint set -f prog.zs -l 22`, `frame variable`, `finish`) and C's names for the types, since it reads DWARF through clang: a 64-bit `int` is a `long`, an `f64` a `double`.
+
+```
+(lldb) frame variable name range summary
+(char *) name = 0x000000010000dfb0 "squares"
+(Range) range = (lo = 1, hi = 3)
+(Summary) summary = (case = Large, Small = 0, Large.0 = 14, Large.1 = 7)
 ```
 
 **Memory checking:** `--sanitize` builds with AddressSanitizer and UndefinedBehaviorSanitizer, and valgrind works on any build. `--sanitize=thread` builds with ThreadSanitizer instead, which finds data races (in C code: code without `unsafe` has none).

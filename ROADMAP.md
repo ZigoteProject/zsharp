@@ -221,7 +221,7 @@ attributed functions, so they compose with ordinary code.
 
 **Debugging, next:**
 1. **Every value, from DWARF:** unions are described with DWARF's variant parts (as Rust's are) and cells as pointers to their layout, so gdb and lldb show lists, boxed unions, records, `ref`, `weak`, `span` and arrays with no scripts. Pretty-printers that ship with `zs` and load automatically cover only what DWARF can't say: `Map`, `Set` and `HashMap` as their entries rather than their trees, and closures as their function and captures.
-2. **lldb:** *(after phase 11)* the same as gdb, since lldb is the debugger on macOS (phase 12).
+2. **lldb:** *(done in phase 12)* the same as gdb, since lldb is the debugger on macOS: `tests/debug/lldb.sh` checks what `gdb.sh` does; lldb names the types as C's (a 64-bit `int` is a `long`), since it reads DWARF through clang.
 3. **Optimized builds:** `-g` at `-O1` and `-O2`, with lines and locals where LLVM keeps them, so a release build's crash can be debugged.
 4. **Editors:** *(after phase 11)* debugging from Zed through the Debug Adapter Protocol, using gdb's and lldb's own adapters with a launch configuration `zs` writes, not an adapter of its own.
 5. **Panics:** a panic's backtrace shows Z# names and source lines on every target with an OS. `ZS_ABORT=1` already makes a panic a real `abort()`, so a debugger or a core dump catches it; no other switch is needed.
