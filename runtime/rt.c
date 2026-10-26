@@ -1,5 +1,6 @@
 // Z# runtime: allocation, panics, strings. Linked into every Z# program.
 #define _GNU_SOURCE
+#define _CRT_RAND_S // Windows's rand_s, the system's randomness (Random.shared)
 #include <inttypes.h>
 #include <sched.h>
 #include <stdatomic.h>
@@ -271,6 +272,23 @@ int64_t zs_clock_realtime(void) {
     struct timespec t;
     clock_gettime(CLOCK_REALTIME, &t);
     return (int64_t)t.tv_sec * 1000000000 + t.tv_nsec;
+}
+
+// Random.shared's seed: 8 bytes of the operating system's randomness
+#ifdef __APPLE__
+#include <sys/random.h>
+#endif
+uint64_t zs_random_seed(void) {
+    uint64_t s = 0;
+#ifdef _WIN32
+    unsigned int a = 0, b = 0;
+    rand_s(&a);
+    rand_s(&b);
+    s = (uint64_t)a << 32 | b;
+#else
+    if (getentropy(&s, sizeof s) != 0) s = (uint64_t)zs_clock_realtime() ^ (uint64_t)getpid() << 32;
+#endif
+    return s;
 }
 
 int64_t zs_ticks(void) {

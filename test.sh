@@ -216,6 +216,23 @@ if command -v qemu-system-arm >/dev/null && bin/zs build tests/mcu/layout.zs --t
   echo "ok   tests/mcu/layout.zs (layout facts on a Cortex-M4, under qemu)"
 else echo "FAIL tests/mcu/layout.zs"; cat "$tmp/layout.log"; fail=1; fi
 
+# Math where libm is compiler-rt's and the runtime's (pow, atan2, round: fdlibm's, checked against
+# the host's libm by tests/libm.sh), with a host's results: both chips under qemu, and wasm32
+if out=$(tests/libm.sh 2>&1); then echo "ok   tests/libm.sh (the runtime's pow, atan2 and round against the host's libm)"
+else echo "FAIL tests/libm.sh"; echo "$out"; fail=1; fi
+if command -v qemu-system-arm >/dev/null; then
+  for chip in cortex-m4 cortex-m0plus; do
+    board=$([ $chip = cortex-m4 ] && echo mps2-an386 || echo microbit)
+    if bin/zs build tests/mcu/math.zs --target $chip -o "$tmp/math.elf" 2>"$tmp/math.log" \
+       && [ "$(timeout 60 qemu-system-arm -M $board -nographic -semihosting-config enable=on,target=native -kernel "$tmp/math.elf" 2>&1 | grep -v '^#zs')" = "$(cat tests/mcu/math.expected)" ]; then
+      echo "ok   tests/mcu/math.zs on $chip (under qemu)"
+    else echo "FAIL tests/mcu/math.zs on $chip"; cat "$tmp/math.log"; fail=1; fi
+  done
+fi
+if command -v node >/dev/null && bin/zs build tests/mcu/math.zs --target wasm32 -o "$tmp/math.wasm" 2>"$tmp/math.log" \
+   && [ "$(node bin/run-wasm.mjs "$tmp/math.wasm" 2>&1)" = "$(cat tests/mcu/math.expected)" ]; then echo "ok   tests/mcu/math.zs on wasm32 (under node)"
+elif command -v node >/dev/null; then echo "FAIL tests/mcu/math.zs on wasm32"; cat "$tmp/math.log"; fail=1; fi
+
 # C interop on a chip, both ways, under qemu: Z# calling C with structs by value in every shape
 # (AAPCS, hard and soft float), and a C firmware with its own startup calling a Z# library built
 # with --lib (tests/cexport/bare.c, no C library), against the host's expected output

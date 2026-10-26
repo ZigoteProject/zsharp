@@ -34,10 +34,10 @@ type Loaded =
 /// (core/Collections/List.zs is Collections.List). Core needs no operating system, so every
 /// target has it; Std is for targets that have one.
 let coreFiles : list<string> =
-  [ "Option"; "Result"; "Math"; "Int"; "Float"; "Runtime"; "Mmio"; "Ptr"; "Weak"; "Arena"; "Simd"; "Simd/X86"; "Simd/Arm"; "Collections/List"; "Collections/Span"; "Collections/Array"; "Collections/Buffer"; "Collections/Fixed"; "Text/String"; "Text/Char"; "Collections/Map"; "Collections/Set"; "Collections/HashMap"; "Collections/HashSet"; "Iter"; "Testing"; "Binary"; "Throw"; "Collections/Seq"; "Text/Json"; "Time/DateTime" ]
+  [ "Option"; "Result"; "Math"; "Int"; "Float"; "Runtime"; "Mmio"; "Ptr"; "Weak"; "Arena"; "Simd"; "Simd/X86"; "Simd/Arm"; "Collections/List"; "Collections/Span"; "Collections/Array"; "Collections/Buffer"; "Collections/Fixed"; "Text/String"; "Text/Char"; "Collections/Map"; "Collections/Set"; "Collections/HashMap"; "Collections/HashSet"; "Iter"; "Testing"; "Binary"; "Throw"; "Collections/Seq"; "Text/Json"; "Time/DateTime"; "Numerics/Random" ]
 
 let stdFiles : list<string> =
-  [ "IO/Stream"; "Console"; "Environment"; "Threading/Atomic"; "Threading/Mutex"; "Threading/Channel"; "Threading/Task"; "Threading/Alt"; "Threading/Parallel"; "Collections/Array/Parallel"; "IO/File"; "IO/Directory"; "IO/Path"; "Diagnostics/Process"; "Diagnostics/Stopwatch"; "Net/Tcp"; "Net/Unix"; "Time/Clock"; "Testing/Runner" ]
+  [ "IO/Stream"; "Console"; "Environment"; "Threading/Atomic"; "Threading/Mutex"; "Threading/Channel"; "Threading/Task"; "Threading/Alt"; "Threading/Parallel"; "Collections/Array/Parallel"; "IO/File"; "IO/Directory"; "IO/Path"; "Diagnostics/Process"; "Diagnostics/Stopwatch"; "Net/Tcp"; "Net/Unix"; "Time/Clock"; "Numerics/Random"; "Testing/Runner" ]
 
 /// The library: $ZS_LIB, else lib/ beside the compiler (an installed one), else the lib/ of the
 /// checkout the compiler was built in (the first directory up from it with lib/prelude.zs).

@@ -79,6 +79,10 @@ let private conversions () : list<string * Builtin> =
     | None -> t
   List.append (List.map (fun (t: string) -> b t "conv" [ kConvertible ] (f a (tcon (target t))) 1) names) [ b "char" "conv" [ kIntOrChar ] (f a tChar) 1 ]
 
+/// Math's functions of one float besides sqrt, each LLVM's intrinsic of its name (round's is
+/// roundeven: half to even, as F#'s).
+let mathFunctions : list<string> = [ "floor"; "ceil"; "round"; "trunc"; "exp"; "log"; "log2"; "log10"; "sin"; "cos"; "tan" ]
+
 /// Every built-in function, by full name.
 let builtins : Map<string, Builtin> =
   let table =
@@ -104,6 +108,7 @@ let builtins : Map<string, Builtin> =
       b "Float.toBits" "float.toBits" [] (f (tcon "f64") (tcon "u64")) 1
       b "Float.ofBits" "float.ofBits" [] (f (tcon "u64") (tcon "f64")) 1
       b "Native.clockRealtime" "Clock.realtime" [] (f tUnit (tcon "i64")) 1
+      b "Native.randomSeed" "Random.seed" [] (f tUnit (tcon "u64")) 1
       b "Native.fileOpen" "File.open" [] (f tStr (f tInt tInt)) 2
       b "Native.fileModified" "File.mtime" [] (f tStr (tcon "i64")) 1
       b "Native.fileSize" "File.size" [] (f tStr (tcon "i64")) 1
@@ -160,6 +165,8 @@ let builtins : Map<string, Builtin> =
       b "Mmio.write8" "mmio.write.u8" [] (f (tcon "usize") (f (tcon "u8") tUnit)) 2
       b "Runtime.ticks" "Runtime.ticks" [] (f tUnit (tcon "u64")) 1
       b "Math.sqrt" "Math.sqrt" [ kFloat ] (f a a) 1
+      b "Math.pow" "Math.pow" [ kFloat ] (f a (f a a)) 2
+      b "Math.atan2" "Math.atan2" [ kFloat ] (f a (f a a)) 2
       b "Ptr.read" "ptr.read" [ kAny ] (f (TCon("ptr", [ a ])) a) 1
       b "Ptr.write" "ptr.write" [ kAny ] (f (TCon("ptr", [ a ])) (f a tUnit)) 2
       b "Ptr.add" "ptr.add" [ kAny ] (f (TCon("ptr", [ a ])) (f tInt (TCon("ptr", [ a ])))) 2
@@ -238,7 +245,9 @@ let builtins : Map<string, Builtin> =
       b "Native.runProcess" "Process.runRaw" [] (f tStr (f tStr tStr)) 2
       b "Native.exitCode" "Process.code" [] (f tUnit tInt) 1
       b "Collections.Array.length" "Array.length" [ kAny ] (f (TCon("span", [ a ])) tInt) 1      ]
-  Map.ofList (List.concat [ table; conversions (); simdBuiltins () ])
+  // libm's functions of one float, as LLVM intrinsics
+  let math = List.map (fun (g: string) -> b ("Math." + g) ("Math." + g) [ kFloat ] (f a a) 1) mathFunctions
+  Map.ofList (List.concat [ table; math; conversions (); simdBuiltins () ])
 
 /// The built-in functions only `unsafe` code may call: raw memory through ptr<T>.
 let unsafeBuiltins : Set<string> =

@@ -86,6 +86,8 @@ mug 2 Emma 9
 | `Diagnostics` | | `Process`, `Stopwatch` |
 | `Threading` | | `Task` |
 | `Net` | | `Tcp` |
+| `Numerics` | `Random` | `Random.shared` |
+| `Time` | `DateTime`, `Duration` | `DateTime.utcNow` |
 | none | `Option`, `Result`, `Math`, `Int`, `Runtime`, `Mmio`, `Ptr`, `Weak`, `Arena` | `Console`, `Environment` |
 
 - **Opened everywhere:** these namespaces are open in every module, so `List.map` is `Collections.List.map` and `File.readAllText` is `IO.File.readAllText`.

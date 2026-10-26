@@ -61,6 +61,17 @@
 - An exported function that returns a struct through memory declares the struct's own alignment
   for the pointer it's given (it said 8, which lets a Cortex-M fault on a 4-aligned struct).
 
+### Library
+- `Math`: `floor`, `ceil`, `round` (half to even, as F#'s), `trunc`, `exp`, `log`, `log2`,
+  `log10`, `sin`, `cos`, `tan`, `pow` and `atan2` for `f64` and `f32`, as LLVM's intrinsics (an
+  instruction where the target has one, else libm's function); `clamp`, `pi` and `e`.
+- `Random` (`Numerics`, a new namespace open everywhere): PCG32, so a seed gives the same numbers
+  on every target, a chip's included: `create`, `nextU32`, `nextInt` (unbiased), `nextFloat`,
+  `nextBytes` and `shuffle`; `Random.shared ()`, seeded from the operating system (Std).
+- A chip's and WebAssembly's runtime has `pow`, `atan2` and `roundeven` (fdlibm's, weak), which
+  compiler-rt lacks; `tests/libm.sh` checks them against the host's libm.
+- `List.init` calls its function in index order, as F#'s (it went from the last index down).
+
 ### Editor
 - A VS Code extension (`editors/vscode`) and a Rider plugin (`editors/rider`, any JetBrains IDE
   2025.2 or later): highlighting, the language server and, in VS Code, the MCP server for the

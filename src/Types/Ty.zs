@@ -233,7 +233,7 @@ let measOne : Ty = TMeas([], [])
 
 /// The library's namespaces, open in every module at the lowest precedence: `List.map` is
 /// Collections.List.map and `File.exists` IO.File.exists, unless the program defines its own.
-let autoOpens : list<string> = [ "Collections"; "Text"; "IO"; "Diagnostics"; "Threading"; "Net"; "Time" ]
+let autoOpens : list<string> = [ "Collections"; "Text"; "IO"; "Diagnostics"; "Threading"; "Net"; "Time"; "Numerics" ]
 
 /// A name as programs write it: without an auto-opened namespace (Collections.Map: Map).
 let shortName (q: string) : string =

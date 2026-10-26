@@ -563,9 +563,9 @@ There are three levels, from free to manual.
   - **No IR format:** there's no binary format to version. Closed-source code ships as an `[<Export>]` C library.
 - **The library** (`lib/`) is Z#, in three layers:
   - **Prelude** (`lib/prelude.zs`): the global names: the operator traits and their derives, `option`, `result`, `id`, `fst`, `min`, ….
-  - **Core** (`lib/core`): what needs no operating system, so every target has it: collections, text, options, results, `Math`, `Mmio`.
+  - **Core** (`lib/core`): what needs no operating system, so every target has it: collections, text, options, results, `Math`, `Random` (PCG32: a seed's numbers are the same on every target), `Mmio`. `Math`'s functions are LLVM's intrinsics, libm calls where a target has no instruction: on a chip and on WebAssembly compiler-rt's, and the runtime's fdlibm `pow`, `atan2` and `roundeven`, which compiler-rt lacks.
   - **Std** (`lib/std`): what needs one: `Console`, `Environment`, `IO`, `Diagnostics`, `Threading` and `Net`. A microcontroller build doesn't load it, and a name from it is a compile error that says why.
-  - **Namespaces, as in .NET:** `Collections` (`List`, `Array`, `Buffer`, `Map`, `Set`, `HashMap`), `Text` (`String`, `Char`), `IO` (`File`, `Directory`, `Path`), `Diagnostics` (`Process`, `Stopwatch`), `Threading` (`Task`) and `Net` (`Tcp`). They are open in every module at the lowest precedence, so `List.map` is `Collections.List.map` unless a program defines its own, and full names work too.
+  - **Namespaces, as in .NET:** `Collections` (`List`, `Array`, `Buffer`, `Map`, `Set`, `HashMap`), `Text` (`String`, `Char`), `IO` (`File`, `Directory`, `Path`), `Diagnostics` (`Process`, `Stopwatch`), `Threading` (`Task`), `Net` (`Tcp`), `Time` (`DateTime`) and `Numerics` (`Random`). They are open in every module at the lowest precedence, so `List.map` is `Collections.List.map` unless a program defines its own, and full names work too.
   - **Names:** modules have .NET's names (`Directory`, `Environment`, `Stopwatch`) and functions F#'s style (`File.readAllText`, `Directory.list`, `Environment.getVariable`).
   - **Built-in functions:** what the runtime provides is built into the compiler under its full name (`Text.String.length`, `IO.File.exists`). The operating-system calls the library wraps are under `Native`, which programs don't use.
 

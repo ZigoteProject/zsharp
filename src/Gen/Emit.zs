@@ -231,6 +231,7 @@ let private runtimeList : list<string * (string * string * list<string>)> =
     ("eprintln", ("zs_eprintln", "void", [ "ptr" ]))
     ("Env.argc", ("zs_argc", "i_W", []))
     ("Clock.realtime", ("zs_clock_realtime", "i64", []))
+    ("Random.seed", ("zs_random_seed", "i64", []))
     ("File.open", ("zs_file_open", "i_W", [ "ptr"; "i_W" ]))
     ("File.mtime", ("zs_file_mtime", "i64", [ "ptr" ]))
     ("File.size", ("zs_file_size", "i64", [ "ptr" ]))

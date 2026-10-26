@@ -65,6 +65,340 @@ __attribute__((weak)) size_t strlen(const char *s) {
     return n;
 }
 
+// ---- libm's functions compiler-rt lacks (it has floor, exp, log, sin and the others Math
+// uses): pow, atan and atan2 are fdlibm's (Sun Microsystems, 1993-2004: "Permission to use,
+// copy, modify, and distribute this software is freely granted, provided that this notice is
+// preserved."); the float ones go through double
+// ZS_LIBM_BEGIN (tests/libm.sh compiles this section on the host against its libm)
+
+static uint32_t hi_word(double x) {
+    uint64_t u;
+    __builtin_memcpy(&u, &x, 8);
+    return (uint32_t)(u >> 32);
+}
+
+static uint32_t lo_word(double x) {
+    uint64_t u;
+    __builtin_memcpy(&u, &x, 8);
+    return (uint32_t)u;
+}
+
+static double of_words(uint32_t hi, uint32_t lo) {
+    uint64_t u = (uint64_t)hi << 32 | lo;
+    double x;
+    __builtin_memcpy(&x, &u, 8);
+    return x;
+}
+
+// x * 2^n, rounded once (musl's scalbn)
+static double scaled(double x, int n) {
+    if (n > 1023) {
+        x *= 0x1p1023;
+        n -= 1023;
+        if (n > 1023) {
+            x *= 0x1p1023;
+            n -= 1023;
+            if (n > 1023) n = 1023;
+        }
+    } else if (n < -1022) {
+        x *= 0x1p-1022 * 0x1p53;
+        n += 1022 - 53;
+        if (n < -1022) {
+            x *= 0x1p-1022 * 0x1p53;
+            n += 1022 - 53;
+            if (n < -1022) n = -1022;
+        }
+    }
+    return x * of_words((uint32_t)(0x3ff + n) << 20, 0);
+}
+
+// Math.round: to the nearest, halves to the even one
+__attribute__((weak)) double roundeven(double x) {
+    double f = __builtin_floor(x), d = x - f;
+    if (d > 0.5 || (d == 0.5 && f != 2.0 * __builtin_floor(f * 0.5))) f += 1.0;
+    return f;
+}
+
+__attribute__((weak)) float roundevenf(float x) {
+    float f = __builtin_floorf(x), d = x - f;
+    if (d > 0.5f || (d == 0.5f && f != 2.0f * __builtin_floorf(f * 0.5f))) f += 1.0f;
+    return f;
+}
+
+static const double atanhi[] = {
+    4.63647609000806093515e-01, // atan(0.5)hi 0x3FDDAC67, 0x0561BB4F
+    7.85398163397448278999e-01, // atan(1.0)hi 0x3FE921FB, 0x54442D18
+    9.82793723247329054082e-01, // atan(1.5)hi 0x3FEF730B, 0xD281F69B
+    1.57079632679489655800e+00, // atan(inf)hi 0x3FF921FB, 0x54442D18
+};
+
+static const double atanlo[] = {
+    2.26987774529616870924e-17, // atan(0.5)lo 0x3C7A2B7F, 0x222F65E2
+    3.06161699786838301793e-17, // atan(1.0)lo 0x3C81A626, 0x33145C07
+    1.39033110312309984516e-17, // atan(1.5)lo 0x3C700788, 0x7AF0CBBD
+    6.12323399573676603587e-17, // atan(inf)lo 0x3C91A626, 0x33145C07
+};
+
+static const double aT[] = {
+    3.33333333333329318027e-01,  // 0x3FD55555, 0x5555550D
+    -1.99999999998764832476e-01, // 0xBFC99999, 0x9998EBC4
+    1.42857142725034663711e-01,  // 0x3FC24924, 0x920083FF
+    -1.11111104054623557880e-01, // 0xBFBC71C6, 0xFE231671
+    9.09088713343650656196e-02,  // 0x3FB745CD, 0xC54C206E
+    -7.69187620504482999495e-02, // 0xBFB3B0F2, 0xAF749A6D
+    6.66107313738753120669e-02,  // 0x3FB10D66, 0xA0D03D51
+    -5.83357013379057348645e-02, // 0xBFADDE2D, 0x52DEFD9A
+    4.97687799461593236017e-02,  // 0x3FA97B4B, 0x24760DEB
+    -3.65315727442169155270e-02, // 0xBFA2B444, 0x2C6A6C2F
+    1.62858201153657823623e-02,  // 0x3F90AD3A, 0xE322DA11
+};
+
+__attribute__((weak)) double atan(double x) {
+    uint32_t hx = hi_word(x), ix = hx & 0x7fffffff;
+    int id;
+    if (ix >= 0x44100000) { // |x| >= 2^66
+        if (ix > 0x7ff00000 || (ix == 0x7ff00000 && lo_word(x) != 0)) return x + x; // NaN
+        return (hx >> 31) ? -atanhi[3] - atanlo[3] : atanhi[3] + atanlo[3];
+    }
+    if (ix < 0x3fdc0000) { // |x| < 0.4375
+        if (ix < 0x3e400000) return x; // |x| < 2^-27
+        id = -1;
+    } else {
+        x = __builtin_fabs(x);
+        if (ix < 0x3ff30000) {          // |x| < 1.1875
+            if (ix < 0x3fe60000) {      // 7/16 <= |x| < 11/16
+                id = 0;
+                x = (2.0 * x - 1.0) / (2.0 + x);
+            } else { // 11/16 <= |x| < 19/16
+                id = 1;
+                x = (x - 1.0) / (x + 1.0);
+            }
+        } else if (ix < 0x40038000) { // |x| < 2.4375
+            id = 2;
+            x = (x - 1.5) / (1.0 + 1.5 * x);
+        } else { // 2.4375 <= |x| < 2^66
+            id = 3;
+            x = -1.0 / x;
+        }
+    }
+    double z = x * x, w = z * z;
+    // the sum of aT[i] z^(i+1), its odd and even terms apart
+    double s1 = z * (aT[0] + w * (aT[2] + w * (aT[4] + w * (aT[6] + w * (aT[8] + w * aT[10])))));
+    double s2 = w * (aT[1] + w * (aT[3] + w * (aT[5] + w * (aT[7] + w * aT[9]))));
+    if (id < 0) return x - x * (s1 + s2);
+    z = atanhi[id] - ((x * (s1 + s2) - atanlo[id]) - x);
+    return (hx >> 31) ? -z : z;
+}
+
+__attribute__((weak)) double atan2(double y, double x) {
+    static const double pi_o_4 = 7.8539816339744827900e-01, pi_o_2 = 1.5707963267948965580e+00,
+                        pi = 3.1415926535897931160e+00, pi_lo = 1.2246467991473531772e-16;
+    uint32_t hx = hi_word(x), ix = hx & 0x7fffffff, lx = lo_word(x);
+    uint32_t hy = hi_word(y), iy = hy & 0x7fffffff, ly = lo_word(y);
+    if ((ix | ((lx | -lx) >> 31)) > 0x7ff00000 || (iy | ((ly | -ly) >> 31)) > 0x7ff00000) return x + y; // NaN
+    if (((hx - 0x3ff00000) | lx) == 0) return atan(y);                                                   // x = 1
+    int m = (int)(((hy >> 31) & 1) | ((hx >> 30) & 2)); // 2 * sign of x + sign of y
+    if ((iy | ly) == 0) { // y = 0
+        switch (m) {
+        case 0:
+        case 1: return y;
+        case 2: return pi;
+        default: return -pi;
+        }
+    }
+    if ((ix | lx) == 0) return (hy >> 31) ? -pi_o_2 : pi_o_2; // x = 0
+    if (ix == 0x7ff00000) { // x infinite
+        if (iy == 0x7ff00000) {
+            switch (m) {
+            case 0: return pi_o_4;
+            case 1: return -pi_o_4;
+            case 2: return 3.0 * pi_o_4;
+            default: return -3.0 * pi_o_4;
+            }
+        }
+        switch (m) {
+        case 0: return 0.0;
+        case 1: return -0.0;
+        case 2: return pi;
+        default: return -pi;
+        }
+    }
+    if (iy == 0x7ff00000) return (hy >> 31) ? -pi_o_2 : pi_o_2; // y infinite
+    int k = ((int)iy - (int)ix) >> 20;
+    double z;
+    if (k > 60) z = pi_o_2 + 0.5 * pi_lo;              // |y/x| > 2^60
+    else if ((hx >> 31) && k < -60) z = 0.0;           // |y|/x < -2^60
+    else z = atan(__builtin_fabs(y / x));
+    switch (m) {
+    case 0: return z;
+    case 1: return -z;
+    case 2: return pi - (z - pi_lo);
+    default: return (z - pi_lo) - pi;
+    }
+}
+
+__attribute__((weak)) double pow(double x, double y) {
+    static const double bp[] = {1.0, 1.5}, dp_h[] = {0.0, 5.84962487220764160156e-01},
+                        dp_l[] = {0.0, 1.35003920212974897128e-08}, two53 = 9007199254740992.0,
+                        huge = 1.0e300, tiny = 1.0e-300,
+                        // (3/2) (log x - 2s - 2/3 s^3)'s polynomial
+                        L1 = 5.99999999999994648725e-01, L2 = 4.28571428578550184252e-01,
+                        L3 = 3.33333329818377432918e-01, L4 = 2.72728123808534006489e-01,
+                        L5 = 2.30660745775561754067e-01, L6 = 2.06975017800338417784e-01,
+                        P1 = 1.66666666666666019037e-01, P2 = -2.77777777770155933842e-03,
+                        P3 = 6.61375632143793436117e-05, P4 = -1.65339022054652515390e-06,
+                        P5 = 4.13813679705723846039e-08, lg2 = 6.93147180559945286227e-01,
+                        lg2_h = 6.93147182464599609375e-01, lg2_l = -1.90465429995776804525e-09,
+                        ovt = 8.0085662595372944372e-17, // -(1024 - log2(ovfl + .5ulp))
+                        cp = 9.61796693925975554329e-01, // 2 / (3 ln2)
+                        cp_h = 9.61796700954437255859e-01, cp_l = -7.02846165095275826516e-09,
+                        ivln2 = 1.44269504088896338700e+00, ivln2_h = 1.44269502162933349609e+00,
+                        ivln2_l = 1.92596299112661746887e-08;
+    int32_t hx = (int32_t)hi_word(x), hy = (int32_t)hi_word(y);
+    uint32_t lx = lo_word(x), ly = lo_word(y);
+    int32_t ix = hx & 0x7fffffff, iy = hy & 0x7fffffff;
+    if ((iy | ly) == 0) return 1.0;            // x^0
+    if (hx == 0x3ff00000 && lx == 0) return 1.0; // 1^y, NaN y too
+    if (ix > 0x7ff00000 || (ix == 0x7ff00000 && lx != 0) || iy > 0x7ff00000 || (iy == 0x7ff00000 && ly != 0)) return x + y;
+    // when x < 0: whether y is an odd integer (1), an even one (2) or not one (0)
+    int yisint = 0;
+    if (hx < 0) {
+        if (iy >= 0x43400000) yisint = 2;
+        else if (iy >= 0x3ff00000) {
+            int k = (iy >> 20) - 0x3ff;
+            if (k > 20) {
+                uint32_t j = ly >> (52 - k);
+                if ((j << (52 - k)) == ly) yisint = 2 - (int)(j & 1);
+            } else if (ly == 0) {
+                int32_t j = iy >> (20 - k);
+                if ((j << (20 - k)) == iy) yisint = 2 - (int)(j & 1);
+            }
+        }
+    }
+    if (ly == 0) {
+        if (iy == 0x7ff00000) { // y infinite
+            if (((ix - 0x3ff00000) | lx) == 0) return 1.0; // (-1)^inf
+            if (ix >= 0x3ff00000) return hy >= 0 ? y : 0.0; // |x| > 1
+            return hy < 0 ? -y : 0.0;                       // |x| < 1
+        }
+        if (iy == 0x3ff00000) return hy < 0 ? 1.0 / x : x; // y = +-1
+        if (hy == 0x40000000) return x * x;                // y = 2
+        if (hy == 0x3fe00000 && hx >= 0) return __builtin_sqrt(x); // y = 0.5
+    }
+    double ax = __builtin_fabs(x), z;
+    if (lx == 0 && (ix == 0x7ff00000 || ix == 0 || ix == 0x3ff00000)) { // x is +-0, +-inf, -1
+        z = ax;
+        if (hy < 0) z = 1.0 / z;
+        if (hx < 0) {
+            if (((ix - 0x3ff00000) | yisint) == 0) z = (z - z) / (z - z); // (-1)^non-integer
+            else if (yisint == 1) z = -z;
+        }
+        return z;
+    }
+    if (hx < 0 && yisint == 0) return (x - x) / (x - x); // a negative to a non-integer
+    double s = (hx < 0 && yisint == 1) ? -1.0 : 1.0;      // the result's sign
+    double t1, t2;
+    if (iy > 0x41e00000) { // |y| > 2^31
+        if (iy > 0x43f00000) { // |y| > 2^64: overflows or underflows
+            if (ix <= 0x3fefffff) return hy < 0 ? huge * huge : tiny * tiny;
+            return hy > 0 ? huge * huge : tiny * tiny;
+        }
+        if (ix < 0x3fefffff) return hy < 0 ? s * huge * huge : s * tiny * tiny;
+        if (ix > 0x3ff00000) return hy > 0 ? s * huge * huge : s * tiny * tiny;
+        // |1 - x| <= 2^-20: log(x) by x - x^2/2 + x^3/3 - x^4/4
+        double t = ax - 1.0;
+        double w = (t * t) * (0.5 - t * (0.3333333333333333333333 - t * 0.25));
+        double u = ivln2_h * t, v = t * ivln2_l - w * ivln2;
+        t1 = of_words(hi_word(u + v), 0);
+        t2 = v - (t1 - u);
+    } else {
+        int n = 0;
+        if (ix < 0x00100000) { // subnormal
+            ax *= two53;
+            n -= 53;
+            ix = (int32_t)hi_word(ax);
+        }
+        n += (ix >> 20) - 0x3ff;
+        int32_t j = ix & 0x000fffff;
+        int k;
+        ix = j | 0x3ff00000; // normalized
+        if (j <= 0x3988E) k = 0;        // |x| < sqrt(3/2)
+        else if (j < 0xBB67A) k = 1;    // |x| < sqrt(3)
+        else {
+            k = 0;
+            n += 1;
+            ix -= 0x00100000;
+        }
+        ax = of_words((uint32_t)ix, lo_word(ax));
+        // ss = s_h + s_l = (x - 1) / (x + 1) or (x - 1.5) / (x + 1.5)
+        double u = ax - bp[k], v = 1.0 / (ax + bp[k]);
+        double ss = u * v, s_h = of_words(hi_word(ss), 0);
+        double t_h = of_words((uint32_t)(((ix >> 1) | 0x20000000) + 0x00080000 + (k << 18)), 0);
+        double t_l = ax - (t_h - bp[k]);
+        double s_l = v * ((u - s_h * t_h) - s_h * t_l);
+        // log(ax)
+        double s2 = ss * ss;
+        double r = s2 * s2 * (L1 + s2 * (L2 + s2 * (L3 + s2 * (L4 + s2 * (L5 + s2 * L6)))));
+        r += s_l * (s_h + ss);
+        s2 = s_h * s_h;
+        t_h = of_words(hi_word(3.0 + s2 + r), 0);
+        t_l = r - ((t_h - 3.0) - s2);
+        u = s_h * t_h;
+        v = s_l * t_h + t_l * ss;
+        double p_h = of_words(hi_word(u + v), 0);
+        double p_l = v - (p_h - u);
+        double z_h = cp_h * p_h, z_l = cp_l * p_h + p_l * cp + dp_l[k];
+        // log2(ax) = n + dp_h + z_h + z_l
+        double t = (double)n;
+        t1 = of_words(hi_word(((z_h + z_l) + dp_h[k]) + t), 0);
+        t2 = z_l - (((t1 - t) - dp_h[k]) - z_h);
+    }
+    // (y1 + y2) (t1 + t2), y split
+    double y1 = of_words(hi_word(y), 0);
+    double p_l = (y - y1) * t1 + y * t2, p_h = y1 * t1;
+    z = p_l + p_h;
+    int32_t j = (int32_t)hi_word(z);
+    int32_t i = (int32_t)lo_word(z);
+    if (j >= 0x40900000) { // z >= 1024
+        if (((j - 0x40900000) | i) != 0) return s * huge * huge;
+        if (p_l + ovt > z - p_h) return s * huge * huge;
+    } else if ((j & 0x7fffffff) >= 0x4090cc00) { // z <= -1075
+        if (((j - (int32_t)0xc090cc00) | i) != 0) return s * tiny * tiny;
+        if (p_l <= z - p_h) return s * tiny * tiny;
+    }
+    // 2^(p_h + p_l)
+    i = j & 0x7fffffff;
+    int k = (i >> 20) - 0x3ff;
+    int n = 0;
+    if (i > 0x3fe00000) { // |z| > 0.5: n = [z + 0.5]
+        n = j + (0x00100000 >> (k + 1));
+        k = ((n & 0x7fffffff) >> 20) - 0x3ff;
+        double t = of_words((uint32_t)(n & ~(0x000fffff >> k)), 0);
+        n = ((n & 0x000fffff) | 0x00100000) >> (20 - k);
+        if (j < 0) n = -n;
+        p_h -= t;
+    }
+    double t = of_words(hi_word(p_l + p_h), 0);
+    double u = t * lg2_h, v = (p_l - (t - p_h)) * lg2 + t * lg2_l;
+    z = u + v;
+    double w = v - (z - u);
+    t = z * z;
+    t1 = z - t * (P1 + t * (P2 + t * (P3 + t * (P4 + t * P5))));
+    double r = (z * t1) / (t1 - 2.0) - (w + z * w);
+    z = 1.0 - (r - z);
+    j = (int32_t)hi_word(z) + (n << 20);
+    if ((j >> 20) <= 0) z = scaled(z, n); // a subnormal result
+    else z = of_words((uint32_t)j, lo_word(z));
+    return s * z;
+}
+
+// ponytail: the float ones through double: right, but soft double on a Cortex-M4's
+// single-precision FPU; fdlibm's float versions when a loop needs them faster
+__attribute__((weak)) float atanf(float x) { return (float)atan(x); }
+__attribute__((weak)) float atan2f(float y, float x) { return (float)atan2(y, x); }
+__attribute__((weak)) float powf(float x, float y) { return (float)pow(x, y); }
+// ZS_LIBM_END
+
 #if defined(__wasm__)
 // ---- the host: output, exit and Runtime.ticks () are the imports zs.write (bytes, length),
 // zs.exit (code) and zs.ticks (); a program imports only those it uses

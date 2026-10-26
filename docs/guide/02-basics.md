@@ -70,7 +70,19 @@ let main () =
 - **Integer literals:** take whatever integer type the context needs, so `let x: u8 = 200` is fine.
 - **Float literals:** work the same way with `f64` and `f32`.
 - **Converting:** done explicitly with the type's name used as a function, e.g. `float n`, `int 3.9` (which truncates), `u8 n`, `f32 x`.
-- **Math:** `Math.sqrt` (one instruction where the hardware has it) and `Math.abs`; the C library's other functions come in with `import c "math.h"`.
+- **Math:** `Math.sqrt`, `floor`, `ceil`, `round` (halves to the even number, as F#'s), `trunc`, `exp`, `log`, `log2`, `log10`, `sin`, `cos`, `tan`, `pow` and `atan2` for `f64` and `f32` (an instruction where the target has one, else libm's function), `Math.abs`, `Math.clamp low high x`, and `Math.pi` and `Math.e`, which take the float type the use needs.
+- **Random numbers:** `Random.create seed` is a generator (PCG32) whose seed gives the same numbers on every target, a microcontroller's included; `Random.shared ()` is one seeded from the operating system. `Random.nextInt 1 7 r` is a die (each face as likely), `nextFloat` is in [0, 1), and `nextU32`, `nextBytes` and `shuffle` are there too.
+
+```zsharp
+let main () =
+  let r = Random.create (u64 42)
+  println $"{Math.round 2.5} {Math.pow 2.0 10.0} {Math.clamp 0 10 15} {Random.nextU32 r:x8}"
+  0
+```
+
+```text
+2 1024 10 a15c02b7
+```
 
 ```zsharp
 let main () =

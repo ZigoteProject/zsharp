@@ -2409,6 +2409,11 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
     // one instruction where the hardware has it (x86-64, aarch64, the M4's FPU)
     let lt = llty g (argTy 0)
     instr em $"call {lt} @llvm.sqrt.{(if lt = "double" then "f64" else "f32")}({lt} {arg 0})"
+  | _ when String.startsWith "Math." op ->
+    // libm's: an instruction where the target has one (floor on x86-64 and aarch64), else a call
+    let lt = llty g ty
+    let name = if op = "Math.round" then "roundeven" else String.sub op 5 (String.length op - 5)
+    intrinsic g em $"llvm.{name}.{(if lt = "double" then "f64" else "f32")}" lt (List.mapi (fun i _ -> (lt, arg i)) args) ""
   | "array.set" ->
     bounds g em (arg 0) (arg 1)
     let (el, ep) = elemPtr g em (argTy 0) (arg 0) (arg 1)

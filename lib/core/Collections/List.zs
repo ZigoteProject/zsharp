@@ -144,9 +144,10 @@ let sum xs = List.fold (fun acc x -> acc + x) Add.zero xs
 
 /// A list of `n` elements: `[f 0; f 1; …; f (n - 1)]`.
 let init n f =
+  // f in index order, as F#'s (it may have effects: a generator's draws)
   let rec go acc i =
-    if i < 0 then acc else go (f i :: acc) (i - 1)
-  go [] (n - 1)
+    if i >= n then List.rev acc else go (f i :: acc) (i + 1)
+  go [] 0
 
 /// A list of `n` copies of `x`.
 let replicate n x = List.init n (fun _ -> x)

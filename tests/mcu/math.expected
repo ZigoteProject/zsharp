@@ -1,0 +1,15 @@
+0.5: pow 1414214 atan2 2677945 round 0 floor 0 trunc 0
+  exp 1648721 log -693147 log2 -1000000 sin 479426 cos 877583 tan 546302
+2: pow 4000000 atan2 2034444 round 2 floor 2 trunc 2
+  exp 7389056 log 693147 log2 1000000 sin 909297 cos -416147 tan -2185040
+2.5: pow 5656854 atan2 1951303 round 2 floor 2 trunc 2
+  exp 12182494 log 916291 log2 1321928 sin 598472 cos -801144 tan -747022
+-2.5: pow 176777 atan2 -1951303 round -2 floor -3 trunc -2
+  exp 82085 log 916291 log2 1321928 sin -598472 cos -801144 tan 747022
+10: pow 1024000000 atan2 1670465 round 10 floor 10 trunc 10
+  exp 22026465795 log 2302585 log2 3321928 sin -544021 cos -839072 tan 648361
+0.5: pow 1414214 round 0 ceil 1 clamp 0.5
+2.5: pow 5656854 round 2 ceil 3 clamp 1
+-3.5: pow 88388 round -4 ceil -3 clamp 0
+a15c02b7 7b47f409 ba1d3330 83d2f293 bfa4784b cbed606e 
+[2; 3; 2; 3; 1; 2; 3; 6; 2; 4; 1; 3] 794926
