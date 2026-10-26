@@ -195,6 +195,10 @@ let rec layout (v: Vars) (types: Map<string, TypeInfo>) (word: int) (t: Ty) : op
   | TCon(n, _) when isDynName n -> pointer
   | TCon(n, args) when Map.containsKey n types ->
     match (Map.find n types).def with
+    // a [<Bits>] record: its integer (0013)
+    | RecordDef _ when Option.isSome (Map.find n types).bits ->
+      let b = (Option.get (Map.find n types).bits).width / 8
+      Some(b, b)
     | RecordDef fs -> Option.map structOf (all (List.map (fun (_, ft) -> Norm.substGen v args ft) fs))
     // a C union: its largest case, at the strictest alignment
     | CUnionDef cs ->

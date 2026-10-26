@@ -34,7 +34,7 @@ type Loaded =
 /// (core/Collections/List.zs is Collections.List). Core needs no operating system, so every
 /// target has it; Std is for targets that have one.
 let coreFiles : list<string> =
-  [ "Option"; "Result"; "Math"; "Int"; "Float"; "Runtime"; "Mmio"; "Ptr"; "Weak"; "Arena"; "Simd"; "Simd/X86"; "Simd/Arm"; "Collections/List"; "Collections/Span"; "Collections/Array"; "Collections/Buffer"; "Collections/Fixed"; "Text/String"; "Text/Char"; "Text/Utf8"; "Collections/Map"; "Collections/Set"; "Collections/HashMap"; "Collections/HashSet"; "Collections/Queue"; "Collections/Stack"; "Collections/PriorityQueue"; "Iter"; "Testing"; "Binary"; "Throw"; "Collections/Seq"; "Text/Json"; "Time/DateTime"; "Numerics/Random"; "Threading/Atomic"; "Threading/Spsc"; "Irq"; "Cpu" ]
+  [ "Option"; "Result"; "Math"; "Int"; "Float"; "Runtime"; "Mmio"; "Ptr"; "Weak"; "Arena"; "Simd"; "Simd/X86"; "Simd/Arm"; "Collections/List"; "Collections/Span"; "Collections/Array"; "Collections/Buffer"; "Collections/Fixed"; "Text/String"; "Text/Char"; "Text/Utf8"; "Collections/Map"; "Collections/Set"; "Collections/HashMap"; "Collections/HashSet"; "Collections/Queue"; "Collections/Stack"; "Collections/PriorityQueue"; "Iter"; "Testing"; "Binary"; "Throw"; "Collections/Seq"; "Text/Json"; "Time/DateTime"; "Numerics/Random"; "Threading/Atomic"; "Threading/Spsc"; "Irq"; "Cpu"; "Bits" ]
 
 let stdFiles : list<string> =
   [ "IO/Stream"; "Console"; "Environment"; "Threading/Mutex"; "Threading/Channel"; "Threading/Task"; "Threading/Alt"; "Threading/Parallel"; "Collections/Array/Parallel"; "IO/File"; "IO/Directory"; "IO/Path"; "Diagnostics/Process"; "Diagnostics/Stopwatch"; "Net/Tcp"; "Net/Unix"; "Time/Clock"; "Numerics/Entropy"; "Testing/Runner" ]

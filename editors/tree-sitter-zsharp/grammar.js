@@ -161,7 +161,8 @@ module.exports = grammar({
     _type_body: $ => choice($.record_type, $.union_type),
 
     record_type: $ => seq('{', sep1($.field_declaration, choice(';', $._newline)), optional(choice(';', $._newline)), '}'),
-    field_declaration: $ => seq(field('name', $.identifier), ':', $._type, optional(seq('=', $._expression))),
+    // [<Width 4>] on a [<Bits>] record's field
+    field_declaration: $ => seq(optional($.attributes), field('name', $.identifier), ':', $._type, optional(seq('=', $._expression))),
 
     union_type: $ => seq(optional('|'), sep1($.union_case, choice('|', seq($._newline, '|')))),
     union_case: $ => seq(field('name', $.identifier), optional(seq('of', sep1($.case_field, '*')))),

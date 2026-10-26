@@ -174,6 +174,8 @@ let rec diTypeOf (g: G) (field: bool) (t: Ty) : option<string> =
       // text
       Option.bind (pointer "char*") (basic "char" 8 "DW_ATE_signed_char")
   | TTuple ts -> structOf (showT g t) (List.mapi (fun i ft -> ($"Item{i + 1}", ft)) ts)
+  // a [<Bits>] record: its integer (0013)
+  | TCon(_, []) when Option.isSome (bitsLayoutOf g t) -> basic (showT g t) (Option.get (bitsLayoutOf g t)).width "DW_ATE_unsigned"
   | TCon(_, []) when Option.isSome (cUnion g t) ->
     // a C union, as C's is described: each case a member at offset 0
     let make () =

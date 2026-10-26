@@ -2511,6 +2511,52 @@ let private unionCase (p: P) : Ast.Case =
   finish p
   { case = c; fields = listOf fields }
 
+// [<Name; Name "s"; Name 38; Name(arg, arg)>]: before a declaration, or a record's field
+let private attributes (p: P) : list<string * list<string>> =
+  start p Tree.Attributes
+  advance p
+  let attrs = Buffer.empty
+  let mutable go = true
+  while go && peek p <> GtRBrack && peek p <> Eof do
+    let before = p.pos.Value
+    let n = name p
+    let args = Buffer.empty
+    if peek p = Str then
+      // [<Export "name">]
+      match Literal.stringValue (textOf p p.pos.Value) with
+      | Ok s -> Buffer.push s args
+      | Error e -> failAt p p.pos.Value e
+      advance p
+    else if peek p = Int then
+      // [<Interrupt 38>], [<Width 4>]: the number as written
+      Buffer.push (textOf p p.pos.Value) args
+      advance p
+    else if peek p = LParen then
+      advance p
+      while go && peek p <> RParen && peek p <> Eof do
+        if peek p = Id then
+          Buffer.push (idName p p.pos.Value) args
+          advance p
+        else if peek p = Str then
+          match Literal.stringValue (textOf p p.pos.Value) with
+          | Ok s -> Buffer.push s args
+          | Error e -> failAt p p.pos.Value e
+          advance p
+        else
+          skip p "attribute argument"
+          go <- false
+        if peek p = Comma then
+          advance p
+      expect p RParen "')'"
+    Buffer.push (n, listOf args) attrs
+    if peek p = Semi then
+      advance p
+    if p.pos.Value = before then
+      go <- false
+  expect p GtRBrack "'>]'"
+  finish p
+  listOf attrs
+
 let private typeBody (p: P) : Ast.TypeBody =
   if peek p = Member || peek p = Static then
     // only members: a type with no values
@@ -2526,6 +2572,8 @@ let private typeBody (p: P) : Ast.TypeBody =
         errAt p "record fields can't be mutable: a record is a value; change one with { r with x = … }, bind it with let mutable, or make the field a ref<T>"
         advance p
       start p Tree.Field
+      // [<Width 4>], [<Bit 15>] on a [<Bits>] record's field (0013)
+      let fieldAttrs = if peek p = LBrackLt then attributes p else []
       let fi = p.pos.Value
       let f = name p
       expect p Colon "':'"
@@ -2537,7 +2585,7 @@ let private typeBody (p: P) : Ast.TypeBody =
         else
           None
       finish p
-      Buffer.push ({ name = f; fieldAt = fi; ty = t; default = def } : Ast.RecordField) fields
+      Buffer.push ({ name = f; fieldAt = fi; ty = t; default = def; attrs = fieldAttrs } : Ast.RecordField) fields
       if peek p = Semi then
         advance p
       go <- peek p <> RBrace && peek p <> Eof && p.pos.Value <> before
@@ -2897,51 +2945,10 @@ and private declOf (p: P) : Ast.Decl =
   match peek p with
   | LBrackLt ->
     // [<Name; Name(arg, arg)>] before a declaration
-    start p Tree.Attributes
-    advance p
-    let attrs = Buffer.empty
-    let mutable go = true
-    while go && peek p <> GtRBrack && peek p <> Eof do
-      let before = p.pos.Value
-      let n = name p
-      let args = Buffer.empty
-      if peek p = Str then
-        // [<Export "name">]
-        match Literal.stringValue (textOf p p.pos.Value) with
-        | Ok s -> Buffer.push s args
-        | Error e -> failAt p p.pos.Value e
-        advance p
-      else if peek p = Int then
-        // [<Interrupt 38>]: the number as written
-        Buffer.push (textOf p p.pos.Value) args
-        advance p
-      else if peek p = LParen then
-        advance p
-        while go && peek p <> RParen && peek p <> Eof do
-          if peek p = Id then
-            Buffer.push (idName p p.pos.Value) args
-            advance p
-          else if peek p = Str then
-            match Literal.stringValue (textOf p p.pos.Value) with
-            | Ok s -> Buffer.push s args
-            | Error e -> failAt p p.pos.Value e
-            advance p
-          else
-            skip p "attribute argument"
-            go <- false
-          if peek p = Comma then
-            advance p
-        expect p RParen "')'"
-      Buffer.push (n, listOf args) attrs
-      if peek p = Semi then
-        advance p
-      if p.pos.Value = before then
-        go <- false
-    expect p GtRBrack "'>]'"
-    finish p
+    let attrs = attributes p
     if peek p = Newline then
       advance p
-    Ast.decl (Ast.Attrs(listOf attrs, decl p)) ln
+    Ast.decl (Ast.Attrs(attrs, decl p)) ln
   | Open ->
     advance p
     Ast.decl (Ast.Open(name p)) ln

@@ -1,0 +1,6 @@
+200c true false Even 4
+a20c Odd true
+4000 false true 16384
+45 4 5 { ihl = 5; version = 4; tos = 0 } 2
+IPv4
+panic: integer overflow

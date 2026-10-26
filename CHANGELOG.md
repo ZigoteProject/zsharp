@@ -41,6 +41,11 @@
   `disableInterrupts`, one instruction each, and `Cpu.critical (fun () -> …)`, its body run with
   interrupts masked (it nests). On a computer the barriers are fences and the rest nothing; masking
   is an error there.
+- `[<Bits>]` records (0013): a record that is one unsigned integer, its fields ranges of its
+  bits (`bool`, enums, `u8` to `u64`, `[<Width n>]` and `[<Bit n>]`, the first field
+  attributes): `{ ue = true; te = true }` is one constant, a read a shift and a mask,
+  `{ r with f = v }` a masked write keeping the gaps; compared as the integer, printed as the
+  record. `Bits.toU32`, `ofU32` and the other widths, `raw` and `ofRaw`.
 - `[<NoAlloc>]` and `--no-heap` (0012): a function that, or anything it calls, may allocate or
   free is an error naming the chain (`reply is [<NoAlloc>], but reply -> describe builds a
   string`); interrupt handlers and `Cpu.critical`'s bodies are checked the same way.

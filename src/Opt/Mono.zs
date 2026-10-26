@@ -220,8 +220,16 @@ let runFrom (prog: Program) (def: string -> FunDef) (roots: list<string>) (exter
       match t with
       | TTuple _ -> true
       | _ -> false
-    let byImpl = Map.containsKey (tm.owner, Types.Show.showFull v t) prog.impls || Map.containsKey (tm.owner, implHead t) prog.impls
-    if not (isPrim t || isTuple || isDyn t) || byImpl then
+    // a [<Bits>] record's equality, ordering and hashing are its integer's, gaps included (0013)
+    let asInteger =
+      match t with
+      | TCon(n, []) ->
+        match Map.tryFind n prog.types with
+        | Some { bits = Some _ } -> List.contains tm.owner [ "Eq"; "Ord"; "Hash" ]
+        | _ -> false
+      | _ -> false
+    let byImpl = not asInteger && (Map.containsKey (tm.owner, Types.Show.showFull v t) prog.impls || Map.containsKey (tm.owner, implHead t) prog.impls)
+    if not (isPrim t || isTuple || isDyn t || asInteger) || byImpl then
       let f = implFn tm.owner tm.name t headTy
       if List.isEmpty args then f else mk (CApp(f, args)) resTy
     else if List.length args = arity then
@@ -488,6 +496,35 @@ let reaching (prog: Program) (funs: list<MFun>) (external: string -> option<stri
 let checkSharedWith (prog: Program) (external: string -> option<string * list<string> * Ty>) (funs: list<MFun>) : list<MFun> / Stops =
   let v = Types.Vars.make ()
   let (reach, inExpr) = reaching prog funs external
+  // Bits.toU32 and the others (0013): a [<Bits>] record, at its width
+  let widthOf (t: Ty) =
+    match t with
+    | TCon(n, []) ->
+      match Map.tryFind n prog.types with
+      | Some { bits = Some b } -> Some b.width
+      | _ -> None
+    | _ -> None
+  let rec bitsUses (f: MFun) (e: CExpr) =
+    // fn: Bits.to or Bits.of with the integer's width named (Bits.toU16), or Bits.raw, ofRaw
+    let check (record: Ty) (integer: Ty) (fn: string) =
+      let named =
+        match integer with
+        | TCon(u, []) when fn = "Bits.to" || fn = "Bits.of" -> fn + "U" + String.sub u 1 (String.length u - 1)
+        | _ -> fn
+      match (widthOf record, integer) with
+      | (None, _) -> Stops.stop { file = f.file; line = f.line; message = $"{named} takes a [<Bits>] record, and {Types.Show.show v record} isn't one" }
+      | (Some w, TCon(u, [])) when (fn = "Bits.to" || fn = "Bits.of") && u <> $"u{w}" ->
+        Stops.stop { file = f.file; line = f.line; message = $"{named} needs a record of {String.sub u 1 (String.length u - 1)} bits, and {Types.Show.show v record} is {w}: {fn}U{w}, or Bits.raw" }
+      | _ -> ()
+    match e.k with
+    | CPrim("bits.to", [ x ]) -> check x.ty e.ty "Bits.to"
+    | CPrim("bits.of", [ x ]) -> check e.ty x.ty "Bits.of"
+    | CPrim("bits.raw", [ x ]) -> check x.ty e.ty "Bits.raw"
+    | CPrim("bits.ofRaw", [ x ]) -> check e.ty x.ty "Bits.ofRaw"
+    | _ -> ()
+    List.iter (bitsUses f) (children e.k)
+  for f in funs do
+    bitsUses f f.body
   // an interrupt handler (0012) preempts the program as a thread does: what it reaches, the
   // program may be changing
   for e in prog.exports do

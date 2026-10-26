@@ -33,8 +33,13 @@ type TypeDef =
   /// bytes (0004)
   | CUnionDef of list<string * Ty>
 
+/// A [<Bits>] record's layout (0013): the width of the unsigned integer it is, and each field's
+/// place in it (its lowest bit and how many), in declaration order.
 [<Derive(Binary)>]
-type TypeInfo = { npars: int; def: TypeDef }
+type BitsLayout = { width: int; places: list<int * int> }
+
+[<Derive(Binary)>]
+type TypeInfo = { npars: int; def: TypeDef; bits: option<BitsLayout> }
 
 // ------------------------------------------------------------ names
 
@@ -245,13 +250,15 @@ let shortName (q: string) : string =
 /// windowType's record: its owner, a pointer to its first element, and its length.
 let windowDef : TypeInfo =
   { npars = 1
-    def = RecordDef [ ("$owner", TCon("array", [ TGen 0 ])); ("$data", TCon("ptr", [ TGen 0 ])); ("$length", tInt) ] }
+    def = RecordDef [ ("$owner", TCon("array", [ TGen 0 ])); ("$data", TCon("ptr", [ TGen 0 ])); ("$length", tInt) ]
+    bits = None }
 
 /// A Buffer's record after monomorphization: a window with room (its owner's length is how many
 /// elements hold a value).
 let bufferDef : TypeInfo =
   { npars = 1
-    def = RecordDef [ ("$owner", TCon("array", [ TGen 0 ])); ("$data", TCon("ptr", [ TGen 0 ])); ("$length", tInt); ("$capacity", tInt) ] }
+    def = RecordDef [ ("$owner", TCon("array", [ TGen 0 ])); ("$data", TCon("ptr", [ TGen 0 ])); ("$length", tInt); ("$capacity", tInt) ]
+    bits = None }
 
 /// x86-64's SIMD features, each implying those before it.
 let x86Levels : list<string> = [ "sse"; "sse2"; "sse3"; "ssse3"; "sse4.1"; "sse4.2"; "avx"; "avx2" ]

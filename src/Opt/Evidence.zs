@@ -144,7 +144,7 @@ let private lowerAll (types0: Map<string, TypeInfo>) (effects: Map<string, Effec
     let name = frameName v label
     if not (Map.containsKey name types.Value) then
       let ops = opTypes label
-      types.Value <- Map.add name { npars = 0; def = UnionDef [ ("$frame", tInt :: ops) ] } types.Value
+      types.Value <- Map.add name { npars = 0; def = UnionDef [ ("$frame", tInt :: ops) ]; bits = None } types.Value
       for t in ops do
         labelsIn t
   and labelsIn (t: Ty) =

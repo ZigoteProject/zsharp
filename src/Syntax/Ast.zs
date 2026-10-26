@@ -126,7 +126,7 @@ and ExprShape =
   | AtLine of Expr
 
 /// A field of a record type: its name, its name's token, its type and its default.
-type RecordField = { name: string; fieldAt: int; ty: SType; default: option<Expr> }
+type RecordField = { name: string; fieldAt: int; ty: SType; default: option<Expr>; attrs: list<string * list<string>> }
 
 /// A union's case: its name, and its fields (a field's name when it has one, its type).
 type Case = { case: string; fields: list<option<string> * SType> }

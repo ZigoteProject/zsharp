@@ -411,7 +411,7 @@ let private declarationsOf (tu: cptr) (header: string) (llp64: bool) (at: int) :
                 // a case a member, named through the union as C names it through a value (Data.u32)
                 Ast.UnionTy(List.map (fun (f, t) -> ({ case = name + "." + f; fields = [ (None, ty t) ] } : Ast.Case)) fields)
               else
-                Ast.RecordTy(List.map (fun (f, t) -> ({ name = f; fieldAt = -1; ty = ty t; default = None } : Ast.RecordField)) fields)
+                Ast.RecordTy(List.map (fun (f, t) -> ({ name = f; fieldAt = -1; ty = ty t; default = None; attrs = [] } : Ast.RecordField)) fields)
             add (Ast.Attrs([ ("CLayout", []) ], Ast.decl (Ast.TypeDecl(name, [], body, [])) at))
             let members = String.join "\n" (List.map (fun (f: Libclang.CXCursor) -> $"    {typeText (clang_getCursorType f)} {spelling f};") raw)
             info name $"typedef {(if isUnion then "union" else "struct")} {name} {{\n{members}\n}} {name};" (lineOf n)
@@ -609,7 +609,7 @@ let private declOf (at: int) (j: Json) : option<Ast.DeclShape> =
       | JArray [ JString n; t ] ->
         match styOf t with
         | Ok ty ->
-          let f : Ast.RecordField = { name = n; fieldAt = -1; ty = ty; default = None }
+          let f : Ast.RecordField = { name = n; fieldAt = -1; ty = ty; default = None; attrs = [] }
           Some f
         | Error _ -> None
       | _ -> None

@@ -661,9 +661,22 @@ and inferNode (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>)
     expect cx "record update" rty cr.ty
     let tmp = uniq cx "$r"
     let defs = fieldsOf cx rname
-    let old (i: int) (_: Map<string, Local>) = mk (CField(mk (CLocal tmp) cr.ty, i)) (substGen v targs (snd (List.item i defs)))
-    let built = buildRecord cx env depth rname targs fields old
-    mk (CLet(tmp, cr, built)) built.ty
+    if Option.isSome (bitsLayout cx rname) then
+      // a [<Bits>] record: each field given written over its bits, the others and the gaps kept
+      // (0013)
+      let one (acc: CExpr) (fv: FieldValue) =
+        match List.tryFindIndex (fun (g, _) -> g = fv.field) defs with
+        | Some i ->
+          let ft = substGen v targs (snd (List.item i defs))
+          let cv = inferHint cx env depth ft fv.value
+          expect cx $"field '{fv.field}'" ft cv.ty
+          mk (CPrim("bits.set", [ acc; cv; mk (CInt(i64 i)) tInt ])) cr.ty
+        | None -> fail $"{show cx cr.ty} has no field '{fv.field}'"
+      mk (CLet(tmp, cr, List.fold one (mk (CLocal tmp) cr.ty) fields)) cr.ty
+    else
+      let old (i: int) (_: Map<string, Local>) = mk (CField(mk (CLocal tmp) cr.ty, i)) (substGen v targs (snd (List.item i defs)))
+      let built = buildRecord cx env depth rname targs fields old
+      mk (CLet(tmp, cr, built)) built.ty
   | Field(r, f) ->
     match caseThrough cx env r f with
     | Some c -> inf { node with e = Var c }

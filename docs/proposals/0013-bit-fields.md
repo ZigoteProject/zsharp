@@ -10,7 +10,7 @@
 
 - [x] Approved in principle
 - [ ] Discussion
-- [ ] Implementation
+- [x] Implementation (phase 12: the records, field attributes, `Bits.to`/`of` at each width and `raw`/`ofRaw`; not yet the `Bits<'r>` trait for generic code, so the `Bits` functions take a concrete record; enums widened past their cases by `[<Width n>]` are allowed up to 8 bits)
 
 ## Summary
 

@@ -256,7 +256,10 @@ let rec llty (g: G) (t: Ty) : string =
   // N elements inline
   | TCon("fixed", [ el; TCon(n, []) ]) -> $"[{n} x {llty g el}]"
   | TCon(n, args) ->
-    match (Map.find n g.types).def with
+    let info = Map.find n g.types
+    match info.def with
+    // a [<Bits>] record is the integer its fields are ranges of (0013)
+    | RecordDef _ when Option.isSome info.bits -> $"i{(Option.get info.bits).width}"
     | RecordDef fs -> structTy g (List.map (fun (_, ft) -> substGen g args ft) fs)
     | UnionDef cs ->
       if plainUnion g.v g.types t then
@@ -768,3 +771,70 @@ let checkedArith (g: G) (em: Emitter) (op: string) (uns: bool) (lt: string) (a: 
   let over = instr em $"extractvalue {{ {lt}, i1 }} {r}, 1"
   check g em (instr em $"xor i1 {over}, true") "integer overflow"
   instr em $"extractvalue {{ {lt}, i1 }} {r}, 0"
+
+// ------------------------------------------------------------ [<Bits>] records (0013)
+
+/// A [<Bits>] record's layout, when the type is one.
+let bitsLayoutOf (g: G) (t: Ty) : option<BitsLayout> =
+  match t with
+  | TCon(n, []) ->
+    match Map.tryFind n g.types with
+    | Some info -> info.bits
+    | None -> None
+  | _ -> None
+
+// an integer of one LLVM type as another: extended (unsigned) or cut
+let resize (em: Emitter) (from: string) (into: string) (x: string) : string =
+  let bits (lt: string) = toInt (String.sub lt 1 (String.length lt - 1))
+  if from = into then x
+  else if bits from < bits into then instr em $"zext {from} {x} to {into}"
+  else instr em $"trunc {from} {x} to {into}"
+
+// the low w bits of an iN, as a value LLVM folds
+let private lowBits (em: Emitter) (lt: string) (w: int) : string =
+  let n = toInt (String.sub lt 1 (String.length lt - 1))
+  if w >= n then "-1" else instr em $"lshr {lt} -1, {n - w}"
+
+/// Field i of the record v (type t): its bits shifted down and masked, as the field's type; an
+/// enum's field holding a value with no case panics.
+let bitsGet (g: G) (em: Emitter) (t: Ty) (v: string) (i: int) (ft: Ty) : string =
+  let b = Option.get (bitsLayoutOf g t)
+  let lt = $"i{b.width}"
+  let (off, w) = List.item i b.places
+  let shifted = if off = 0 then v else instr em $"lshr {lt} {v}, {off}"
+  let field = if w >= b.width then shifted else instr em $"and {lt} {shifted}, {lowBits em lt w}"
+  let ftl = llty g ft
+  if ftl = "i1" then
+    instr em $"icmp ne {lt} {field}, 0"
+  else if String.startsWith "{" ftl then
+    let (_, cases) = union g ft
+    let tag = resize em lt "i8" field
+    check g em (instr em $"icmp ult i8 {tag}, {List.length cases}") $"a field of {showT g t} holds no case of {showT g ft}"
+    instr em $"insertvalue {ftl} zeroinitializer, i8 {tag}, 0"
+  else
+    resize em lt ftl field
+
+/// The record v (type t) with field i set to x: its bits cleared and x's put there; a value wider
+/// than its field panics, as an overflow does.
+let bitsSet (g: G) (em: Emitter) (t: Ty) (v: string) (i: int) (ft: Ty) (x: string) : string =
+  let b = Option.get (bitsLayoutOf g t)
+  let lt = $"i{b.width}"
+  let (off, w) = List.item i b.places
+  let ftl = llty g ft
+  let raw =
+    if ftl = "i1" then
+      instr em $"zext i1 {x} to {lt}"
+    else if String.startsWith "{" ftl then
+      resize em "i8" lt (instr em $"extractvalue {ftl} {x}, 0")
+    else
+      // an integer field narrower than its type: the value must fit
+      let n = toInt (String.sub ftl 1 (String.length ftl - 1))
+      if w < n then
+        check g em (instr em $"icmp ule {ftl} {x}, {lowBits em ftl w}") "integer overflow"
+      resize em ftl lt x
+  let placed = if off = 0 then raw else instr em $"shl {lt} {raw}, {off}"
+  let field = instr em $"shl {lt} {lowBits em lt w}, {off}"
+  let others = instr em $"xor {lt} {field}, -1"
+  let kept = instr em $"and {lt} {v}, {others}"
+  instr em $"or {lt} {kept}, {placed}"
+

@@ -1,0 +1,7 @@
+tests/err_bits.zs:2: error: Wide's fields reach bit 8, past its 8 bits
+tests/err_bits.zs:5: error: 'b' (bits 2 to 2) overlaps a field before it
+tests/err_bits.zs:8: error: a [<Bits>] record's field is a bool, an enum or an unsigned integer (u8 to u64), and 'a' is int
+tests/err_bits.zs:11: error: 'on' is a bool, one bit: it takes no [<Width>]
+tests/err_bits.zs:14: error: field attributes are for a [<Bits>] record's fields: 'a' is in Plain, which isn't one
+tests/err_bits.zs:16: error: [<Bits n>] takes 8, 16, 32 or 64
+6 errors

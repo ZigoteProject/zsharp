@@ -58,6 +58,29 @@ let putString (s: string) =
 
 A constant like `uart` is inlined, so `Mmio.write32 ctrl …` compiles to a store to an immediate address. Values computed at startup (an `Array.init` table, say) live in RAM.
 
+**Registers as records:** a `[<Bits>]` record is one unsigned integer whose fields are ranges of its bits, so a register is written with its fields' names instead of masks:
+
+```fsharp
+[<Bits 32>]
+type Cr1 =                                        // USART control register 1
+  { sbk: bool = false                             // bit 0
+    re: bool = false                              // bit 1 (fields fill from bit 0)
+    te: bool = false
+    ps: Parity = Even                             // an enum: the bits its cases need
+    [<Width 4>] div: u8 = 0                       // four bits of a u8
+    [<Bit 13>] ue: bool = false }                 // at bit 13; the bits between are a gap
+
+let write (r: Cr1) = Mmio.write32 cr1 (Bits.toU32 r)
+let read () : Cr1 = Bits.ofU32 (Mmio.read32 cr1)
+
+write { ue = true; te = true; re = true }         // one store of a constant
+write { read () with sbk = false }                // a load, an and, a store: the gaps kept
+```
+
+- **Fields:** a `bool` is one bit, an enum the bits its cases need, `u8` to `u64` their size or `[<Width n>]` bits; `[<Bit n>]` places one, and the next follows it. Fields left out of a literal take their defaults, so a register's reset value is its defaults.
+- **Values:** reading a field is a shift and a mask; writing one too wide for its bits panics, as an overflow does; an enum field read from bits that name no case panics. Equality, ordering and hashing are the integer's (gaps included), and the record prints with its fields.
+- **The integer:** `Bits.toU32` and `Bits.ofU32` (and 8, 16 and 64) convert at the record's width, `Bits.raw` gives a `u64`. To C, a `[<Bits>]` record is its integer.
+
 ## Interrupts
 
 A function marked `[<Interrupt …>]` is the handler of an interrupt line: the hardware calls it, between two instructions of the program, when the line fires.

@@ -229,6 +229,8 @@ let rec testIn (fx: F) (known: bool) (p: CPat) (t: Ty) (v: string) (failL: strin
       let (i, ((_, q), ft)) = ix
       match q with
       | CPWild -> en
+      // a [<Bits>] record's field is its bits (0013)
+      | _ when Option.isSome (bitsLayoutOf g t) -> test q ft (bitsGet g em t v i ft) failL en
       | _ -> test q ft (instr em $"extractvalue {llty g t} {v}, {i}") failL en
     List.fold field env (List.indexed (List.zip fs ts))
   | CPCtor(_, tag, ps) when plainUnion g.v g.types t ->
@@ -1062,6 +1064,14 @@ let rec gen (fx: F) (env: Map<string, Binding>) (tail: bool) (e: CExpr) : string
     panicWith g em "match failure"
     enter em endL
     phi fx (llty g e.ty) (Array.toList (Buffer.toArray results))
+  | CTuple xs when Option.isSome (bitsLayoutOf g e.ty) ->
+    // a [<Bits>] record (0013): each field's bits put in a zero, the gaps zero
+    let vs = List.map (gen fx env false) xs
+    let put (acc: string) (ixv: int * (CExpr * string)) =
+      let (i, (x, v)) = ixv
+      bitsSet g em e.ty acc i x.ty v
+    List.fold put "0" (List.indexed (List.zip xs vs))
+  | CField(r, i) when Option.isSome (bitsLayoutOf g r.ty) -> bitsGet g em r.ty (gen fx env false r) i e.ty
   | CTuple xs ->
     let ty = llty g e.ty
     let vs = List.map (gen fx env false) xs
@@ -1863,7 +1873,8 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
           let a = instr em $"fcmp ogt {lt} {arg 0}, {arg 1}"
           (a, instr em $"fcmp olt {lt} {arg 0}, {arg 1}")
         else
-          let u = if isUnsigned t then "u" else "s"
+          // a [<Bits>] record orders as its unsigned integer
+          let u = if isUnsigned t || Option.isSome (bitsLayoutOf g t) then "u" else "s"
           let a = instr em $"icmp {u}gt {lt} {arg 0}, {arg 1}"
           (a, instr em $"icmp {u}lt {lt} {arg 0}, {arg 1}")
       let a = instr em $"zext i1 {gt} to i_W"
@@ -2346,6 +2357,22 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
     emit em $"br label %{gotL}"
     enter em gotL
     phi fx (llty g ty) [ (some, fromSome); (none, fromNone) ]
+  | "bits.set" ->
+    // { r with f = v } on a [<Bits>] record (0013): the field's bits, the rest kept
+    let i =
+      match (List.item 2 args).k with
+      | CInt n -> int n
+      | _ -> panic "bits.set's field"
+    bitsSet g em (argTy 0) (arg 0) i (argTy 1) (arg 1)
+  | "bits.to"
+  | "bits.of"
+  | "bits.raw" -> resize em (llty g (argTy 0)) (llty g ty) (arg 0)
+  | "bits.ofRaw" ->
+    // the bits above the record's width must be zero
+    let lt = llty g ty
+    if lt <> "i64" then
+      check g em (instr em $"icmp ule i64 {arg 0}, {instr em $"lshr i64 -1, {64 - toInt (String.sub lt 1 (String.length lt - 1))}"}") "integer overflow"
+    resize em "i64" lt (arg 0)
   | "cpu.critical" ->
     // f () with interrupts masked, PRIMASK saved and put back, so one inside another is fine
     let m = instr em "call i32 asm sideeffect \"mrs $0, primask\\0Acpsid i\", \"=r,~{memory}\"()"

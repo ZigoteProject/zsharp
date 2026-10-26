@@ -164,6 +164,8 @@ and CxData =
     typesHere: Buffer<string * int * Map<string, int> * bool>
     /// the types marked [<Cyclic>]: their cycles are the program's to break
     cyclic: ref<Set<string>>
+    /// declaring a [<Bits>] record, whose fields may have attributes (0013)
+    inBits: ref<bool>
     /// the values statements drop in the declaration being checked, with their places: warned
     /// about at its end, when their types are settled (unused-value)
     discarded: Buffer<Ty * Span>
@@ -390,6 +392,9 @@ type Cx with
   member c.cyclic =
     match c with
     | Cx { cyclic = x } -> x
+  member c.inBits =
+    match c with
+    | Cx { inBits = x } -> x
   member c.discarded =
     match c with
     | Cx { discarded = x } -> x
@@ -462,7 +467,7 @@ type Cx with
 
 /// The type a span is after monomorphization, and a Buffer (in a ref), built in.
 let private builtInTypes () : Map<string, TypeInfo> =
-  let list = { npars = 1; def = UnionDef [ ("[]", []); ("::", [ TGen 0; TCon("list", [ TGen 0 ]) ]) ] }
+  let list = { npars = 1; def = UnionDef [ ("[]", []); ("::", [ TGen 0; TCon("list", [ TGen 0 ]) ]) ]; bits = None }
   Map.ofList [ (windowType, windowDef); (bufferType, bufferDef); ("list", list) ]
 
 /// The module and the namespaces it's in: A.B.C, A.B, A in that order's reverse (A, A.B, A.B.C).
@@ -530,6 +535,7 @@ let create (requireMain: bool) (collect: bool) (allModules: list<string>) (manua
       silenced = ref Set.empty
       typesHere = Buffer.empty
       cyclic = ref Set.empty
+      inBits = ref false
       discarded = Buffer.empty
       dynCalls = Buffer.empty
       testValues = Buffer.empty
@@ -1437,6 +1443,12 @@ let unionCases (cx: Cx) (u: string) : list<string * int> =
   | UnionDef cs -> List.map (fun (n, ts) -> (n, List.length ts)) cs
   | CUnionDef cs -> List.map (fun (n, _) -> (n, 1)) cs
   | RecordDef _ -> []
+
+/// A [<Bits>] record's layout (0013), when the type is one.
+let bitsLayout (cx: Cx) (n: string) : option<BitsLayout> =
+  match Map.tryFind n cx.types.Value with
+  | Some info -> info.bits
+  | None -> None
 
 /// A C union's cases ([<CLayout>] union, 0004): each case's name and its one field's type.
 let cUnionCases (cx: Cx) (n: string) : option<list<string * Ty>> =

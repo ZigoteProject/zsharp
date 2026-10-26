@@ -189,6 +189,8 @@ let rec private checkCType (cx: Cx) (what: string) (t: Ty) : unit / Fails =
   match prune cx.v t with
   | TCon(n, []) when Set.contains n nums || n = "bool" || n = "cstr" || n = "cptr" || n = "unit" -> ()
   | TCon(n, []) when Set.contains n cx.clayouts.Value -> ()
+  // a [<Bits>] record crosses as its integer (0013)
+  | TCon(n, []) when Option.isSome (bitsLayout cx n) -> ()
   | TCon("ptr", [ p ]) ->
     match prune cx.v p with
     | TCon("unit", []) -> ()
@@ -415,17 +417,21 @@ let private deriveImpl (cx: Cx) (context: string) (tr: string) (tname: string) =
 /// Eq, Ord, Hash and Show come from the prelude's derives, the first time they're needed: a type's
 /// automatic impl, unless it has its own or opts out.
 let autoDerive (cx: Cx) (tr: string) (n: string) : bool / <Fails, Mismatched> =
+  // a [<Bits>] record's are its integer's (0013), which code generation compares and hashes
+  let asInteger = List.contains tr [ "Eq"; "Ord"; "Hash" ] && Option.isSome (bitsLayout cx n)
   let derivable =
     match Map.tryFind n cx.types.Value with
     | Some { def = RecordDef _ } -> true
     | Some { def = UnionDef cs } -> not (List.isEmpty cs)
     | _ -> false
   let wanted = List.contains tr [ "Eq"; "Ord"; "Hash"; "Show"; "Diff" ] && Map.containsKey tr cx.derives.Value
-  let ok = wanted && not (Set.contains (tr, n) cx.manualImpls.Value || Set.contains (tr, n) cx.optOut.Value) && derivable
+  let ok = not asInteger && wanted && not (Set.contains (tr, n) cx.manualImpls.Value || Set.contains (tr, n) cx.optOut.Value) && derivable
   if ok then
     cx.autoDerived.Value <- Set.add (tr, n) cx.autoDerived.Value
     deriveImpl cx $"automatic {tr} for {n}" tr n
-  ok
+  if asInteger then
+    cx.implRequires.Value <- Map.add (tr, n) [] cx.implRequires.Value
+  ok || asInteger
 
 // ------------------------------------------------------------ constants
 
@@ -832,10 +838,14 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
     if Set.contains name prims || Option.isSome (builtinCons name) || (defined && not wasAhead) then
       fail $"type '{name}' is already defined"
     // registered first so the body can refer to the type itself
-    cx.types.Value <- Map.add name { npars = List.length tps; def = UnionDef [] } cx.types.Value
+    cx.types.Value <- Map.add name { npars = List.length tps; def = UnionDef []; bits = None } cx.types.Value
     let tt (st: SType) = toTy cx (Some tps) st
     match body with
     | RecordTy fields ->
+      if not cx.inBits.Value then
+        match List.tryFind (fun (f: RecordField) -> not (List.isEmpty f.attrs)) fields with
+        | Some f -> fail $"field attributes are for a [<Bits>] record's fields: '{f.name}' is in {name0}, which isn't one"
+        | None -> ()
       let fs = List.map (fun (f: RecordField) -> (f.name, tt f.ty)) fields
       let rec contains (t: Ty) =
         match t with
@@ -846,13 +856,13 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
         fail $"record '{name}' cannot contain itself; use a union"
       if List.length (List.distinct (List.map fst fs)) <> List.length fs then
         fail "duplicate field name"
-      cx.types.Value <- Map.add name { npars = List.length tps; def = RecordDef fs } cx.types.Value
+      cx.types.Value <- Map.add name { npars = List.length tps; def = RecordDef fs; bits = None } cx.types.Value
       Buffer.push name cx.records
       fieldUses cx name (List.map (fun (f: RecordField) -> (f.name, f.fieldAt)) fields) true
       cx.recordDefaults.Value <- Map.add name (List.map (fun (f: RecordField) -> f.default) fields) cx.recordDefaults.Value
     | UnionTy cases ->
       let caseOf (c: Case) = (qualify cx c.case, List.map (fun (_, st) -> tt st) c.fields)
-      cx.types.Value <- Map.add name { npars = List.length tps; def = UnionDef(List.map caseOf cases) } cx.types.Value
+      cx.types.Value <- Map.add name { npars = List.length tps; def = UnionDef(List.map caseOf cases); bits = None } cx.types.Value
       let register (i: int) (c: Case) =
         let q = qualify cx c.case
         if Map.containsKey q cx.ctors.Value then
@@ -889,7 +899,7 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
     else
       let u = qualify cx ("$AP" + name0)
       let cases = List.mapi (fun i c -> (qualify cx c, [ TGen i ])) names
-      cx.types.Value <- Map.add u { npars = List.length names; def = UnionDef cases } cx.types.Value
+      cx.types.Value <- Map.add u { npars = List.length names; def = UnionDef cases; bits = None } cx.types.Value
       let register (i: int) (c: string) =
         let qc = qualify cx c
         if Map.containsKey qc cx.ctors.Value then
@@ -1046,7 +1056,7 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
     for (it, n, npars) in names do
       if Set.contains n prims || Option.isSome (builtinCons n) || Map.containsKey n cx.types.Value then
         failLine it.dat $"type '{n}' is already defined"
-      cx.types.Value <- Map.add n { npars = npars; def = UnionDef [] } cx.types.Value
+      cx.types.Value <- Map.add n { npars = npars; def = UnionDef []; bits = None } cx.types.Value
       cx.ahead.Value <- Set.add n cx.ahead.Value
     for it in items do
       located cx it.dat true (fun () -> declare cx it)
@@ -1330,6 +1340,93 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
       match prune v ft with
       | TCon("unit", []) -> fail $"[<CLayout>] field '{f}' can't be unit"
       | _ -> checkCType cx $"[<CLayout>] field '{f}'" ft
+  | Attrs([ ("Bits", width) ], inner) when Option.isSome (recordDeclOf inner) ->
+    // a record that is one unsigned integer, its fields ranges of its bits (0013)
+    cx.inBits.Value <- true
+    declare cx inner
+    cx.inBits.Value <- false
+    let (name, tps) = Option.get (recordDeclOf inner)
+    let q = qualify cx name
+    if not (List.isEmpty tps) then
+      fail "a [<Bits>] record can't be generic"
+    let info = Map.find q cx.types.Value
+    let fields =
+      match inner.d with
+      | TypeDecl(_, _, RecordTy fs, _) -> fs
+      | _ -> []
+    let types =
+      match info.def with
+      | RecordDef fs -> List.map snd fs
+      | _ -> []
+    // each field: its width from its type (a bool's one bit, an enum's what its cases need, an
+    // unsigned integer's size) or [<Width n>], at the next free bit or [<Bit n>]
+    let number (f: string) (a: string) (args: list<string>) =
+      match args with
+      | [ text ] ->
+        match (Int.parse text : option<int>) with
+        | Some n -> n
+        | None -> fail $"[<{a} n>] on '{f}' takes a number"
+      | _ -> fail $"[<{a} n>] on '{f}' takes a number"
+    let place (state: int * list<int * int>) (fd: RecordField * Ty) =
+      let (next, placed) = state
+      let (field, ft) = fd
+      let f = field.name
+      let natural =
+        match prune v ft with
+        | TCon("bool", []) -> 1
+        | TCon("u8", []) -> 8
+        | TCon("u16", []) -> 16
+        | TCon("u32", []) -> 32
+        | TCon("u64", []) -> 64
+        | TCon(n, []) when (match Map.tryFind n cx.types.Value with
+                            | Some { def = UnionDef cs } -> not (List.isEmpty cs) && List.forall (fun (_, fts) -> List.isEmpty fts) cs
+                            | _ -> false) ->
+          let cases =
+            match (Map.find n cx.types.Value).def with
+            | UnionDef cs -> List.length cs
+            | _ -> 1
+          let mutable w = 1
+          while (1 <<< w) < cases do
+            w <- w + 1
+          w
+        | _ -> fail $"a [<Bits>] record's field is a bool, an enum or an unsigned integer (u8 to u64), and '{f}' is {show cx ft}"
+      let mutable at = next
+      let mutable width = natural
+      for (a, args) in field.attrs do
+        match a with
+        | "Width" ->
+          let n = number f a args
+          let isBool = prune v ft = tBool
+          if isBool then
+            fail $"'{f}' is a bool, one bit: it takes no [<Width>]"
+          let isInt = List.contains (show cx ft) [ "u8"; "u16"; "u32"; "u64" ]
+          if n < 1 || (isInt && n > natural) || (not isInt && (n < natural || n > 8)) then
+            fail $"[<Width {n}>] doesn't fit '{f}' : {show cx ft}, which takes {(if isInt then $"1 to {natural}" else $"{natural} to 8")} bits"
+          width <- n
+        | "Bit" -> at <- number f a args
+        | _ -> fail $"unknown field attribute '{a}' (a [<Bits>] record's fields take [<Width n>] and [<Bit n>])"
+      let (lo, n) = (at, width)
+      match List.tryFind (fun (o, w) -> lo < o + w && o < lo + n) placed with
+      | Some _ -> fail $"'{f}' (bits {lo} to {lo + n - 1}) overlaps a field before it"
+      | None -> ()
+      (lo + n, List.append placed [ (lo, n) ])
+    let (_, places) = List.fold place (0, []) (List.zip fields types)
+    let highest = List.fold (fun m (o, w) -> max m (o + w)) 0 places
+    let whole =
+      match width with
+      | [] ->
+        match List.tryFind (fun n -> highest <= n) [ 8; 16; 32; 64 ] with
+        | Some n -> n
+        | None -> fail $"{name}'s fields take {highest} bits, more than 64"
+      | [ text ] ->
+        match (Int.parse text : option<int>) with
+        | Some n when List.contains n [ 8; 16; 32; 64 ] ->
+          if highest > n then
+            fail $"{name}'s fields reach bit {highest - 1}, past its {n} bits"
+          n
+        | _ -> fail "[<Bits n>] takes 8, 16, 32 or 64"
+      | _ -> fail "[<Bits n>] takes one width"
+    cx.types.Value <- Map.add q { info with bits = Some { width = whole; places = places } } cx.types.Value
   | Attrs([ ("CLayout", []) ], inner) when Option.isSome (unionDeclOf inner) ->
     // a C union (0004): no tag, one field a case, each case a view of the same bytes
     declare cx inner

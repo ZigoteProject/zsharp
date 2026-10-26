@@ -1,0 +1,1 @@
+tests/err_bits_width.zs:5: error: Bits.toU16 needs a record of 16 bits, and Reg is 32: Bits.toU32, or Bits.raw

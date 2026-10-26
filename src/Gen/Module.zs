@@ -288,6 +288,8 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
     | TCon("bool", []) -> "bool"
     | TCon("cstr", []) -> "const char*"
     | TCon("unit", []) -> "void"
+    // a [<Bits>] record: its integer (0013)
+    | TCon(n, []) when Option.isSome (bitsLayoutOf g t) -> $"uint{(Option.get (bitsLayoutOf g t)).width}_t"
     | TCon(n, []) -> String.replace n "." "_"
     | _ -> panic $"no C name for {showT g t}"
   // a C function pointer's declarator: R (*name)(A, B)

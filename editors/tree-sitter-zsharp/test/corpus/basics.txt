@@ -250,3 +250,37 @@ let onUart () = ()
     name: (identifier)
     (unit)
     body: (unit)))
+
+==================
+a bits record: attributes on its fields
+==================
+
+[<Bits 16>]
+type Head = { [<Width 4>] ihl: u8; [<Bit 8>] tos: u8 }
+
+---
+
+(source_file
+  (attributes
+    (attribute
+      name: (identifier)
+      (number)))
+  (type_declaration
+    name: (identifier)
+    (record_type
+      (field_declaration
+        (attributes
+          (attribute
+            name: (identifier)
+            (number)))
+        name: (identifier)
+        (type_name
+          (identifier)))
+      (field_declaration
+        (attributes
+          (attribute
+            name: (identifier)
+            (number)))
+        name: (identifier)
+        (type_name
+          (identifier))))))
