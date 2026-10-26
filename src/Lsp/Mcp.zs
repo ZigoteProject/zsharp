@@ -57,7 +57,7 @@ let private formatErrors (sources: list<Syntax.Source.Source>) (ds: list<Diagnos
 
 // a file checked with every module it uses, or its errors as text
 let private check (file: string) : result<Build.Check.Checked, string> =
-  match Build.Check.program file false true false "" with
+  match Build.Check.program file false true None "" with
   | Ok c -> Ok c
   | Error(ds, sources) -> Error(formatErrors sources (Array.toList ds))
 
@@ -139,7 +139,7 @@ let private call (name: string) (args: Json) : result<string, string> =
       Build.Tools.makeDirectory dir
       let probe = Path.combine dir "probe.zs"
       File.writeAllText probe "let main () = 0\n" |> ignore
-      match Build.Check.program probe true true false "" with
+      match Build.Check.program probe true true None "" with
       | Error(ds, sources) -> Error(formatErrors sources (Array.toList ds))
       | Ok c ->
         let library = Map.ofList (List.choose (fun (m: Build.Modules.Loaded) -> if Option.isSome (Build.Modules.libraryRootOf m.source.path) then Some(m.source.file, m) else None) c.modules)
@@ -188,7 +188,7 @@ let private call (name: string) (args: Json) : result<string, string> =
     match fileOf () with
     | Error e -> Error e
     | Ok file ->
-      match Build.Check.program file true true false "" with
+      match Build.Check.program file true true None "" with
       | Error(ds, sources) -> Error(formatErrors sources (Array.toList ds))
       | Ok c ->
         let sources = List.map (fun (m: Build.Modules.Loaded) -> m.source) c.modules

@@ -98,7 +98,7 @@ let private placeOf (sources: Map<int, Syntax.Source.Source>) (at: Span) : strin
 /// doesn't get to checking (a syntax error) keeps the last analysis's hovers.
 let private analyze (st: State) (path: string) =
   let (diags, sources) =
-    match Build.Check.programWith st.texts.Value path false true false "" with
+    match Build.Check.programWith st.texts.Value path false true None "" with
     | Ok c ->
       let spots = spotsOf c
       let infos = Map.ofList (List.collect (fun (m: Build.Modules.Loaded) -> m.cInfos) c.modules)

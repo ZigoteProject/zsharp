@@ -309,10 +309,14 @@ let make (o: Options.Options) (prog0: Program) (linked: Modules.Linked) (testBui
           let compiled = timed o.time "clang" (fun () -> Tools.run "clang" (List.concat [ opt; [ "--target=" + m.triple ]; m.cflags; flags; [ "-c"; "-Wno-override-module"; ll; "-o"; obj ] ]))
           // the vector table's device lines: the board's, in tens
           let lines =
-            match Options.irqTable o.target with
+            match Options.irqTable m with
             | Some(_, n, _) -> (n + 9) / 10 * 10
             | None -> 0
-          let r = andThen (fun () -> timed o.time "zig cc" (fun () -> Tools.run "zig" (List.concat [ [ "cc"; "-target"; m.zigTarget; "-mcpu=" + m.zigCpu ]; opt; flags; [ $"-DZS_HEAP_SIZE={Option.defaultValue m.heap o.heap}"; $"-DZS_IRQ_COUNT={lines}"; (if o.noHeap then "-DZS_NO_HEAP" else "-DZS_HEAP"); "-T" + script; "-Wl,--gc-sections"; obj; runtimeFile "rt-embedded.c" ]; linkArgs linked; [ "-o"; o.out ] ]))) compiled
+          // the image keeps its symbol table, which zig cc drops at -Os unless it writes debug
+          // info (which isn't flashed): probe-rs finds the RTT block by its symbol, a debugger the
+          // functions by theirs; and its entry, which a debugger's load jumps to
+          let symbols = [ "-g"; "-Wl,--entry=Reset_Handler" ]
+          let r = andThen (fun () -> timed o.time "zig cc" (fun () -> Tools.run "zig" (List.concat [ [ "cc"; "-target"; m.zigTarget; "-mcpu=" + m.zigCpu ]; opt; flags; symbols; [ $"-DZS_HEAP_SIZE={Option.defaultValue m.heap o.heap}"; $"-DZS_IRQ_COUNT={lines}"; (if o.noHeap then "-DZS_NO_HEAP" else "-DZS_HEAP"); (if m.rtt then "-DZS_RTT" else "-DZS_SEMIHOSTING"); "-T" + script; "-Wl,--gc-sections"; obj; runtimeFile "rt-embedded.c" ]; linkArgs linked; [ "-o"; o.out ] ]))) compiled
           File.delete obj |> ignore
           File.delete script |> ignore
           r

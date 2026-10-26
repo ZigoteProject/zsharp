@@ -154,15 +154,15 @@ let private checkModules (cx: Infer.Cx.Cx) (lib: list<Modules.Loaded>) (prog: li
 /// what stops it before checking (a file it can't read, an import cycle, syntax errors) is Error,
 /// with the sources the errors are in. chip: a microcontroller's build (no Std); hostBuild: a
 /// build for this machine (pkg-config's flags).
-let programWith (texts: Map<string, string>) (mainPath: string) (requireMain: bool) (collect: bool) (chip: bool) (target: string) : result<Checked, array<Diagnostic> * list<Syntax.Source.Source>> =
+let programWith (texts: Map<string, string>) (mainPath: string) (requireMain: bool) (collect: bool) (chip: option<Options.Mcu>) (target: string) : result<Checked, array<Diagnostic> * list<Syntax.Source.Source>> =
   let noPlace : Span = { file = -1; offset = -1; length = -1 }
   // a file of a library itself: that library, checked on its own
   let ownLibrary = Modules.libraryRootOf mainPath
-  match Modules.library texts (Option.defaultValue (Modules.libraryDir ()) ownLibrary) (not chip) with
+  match Modules.library texts (Option.defaultValue (Modules.libraryDir ()) ownLibrary) (Option.isNone chip) with
   | Error e -> Error([| error noPlace e |], [])
   | Ok lib ->
     let none : Modules.Linked = { cflags = []; links = [] }
-    let loaded = if Option.isSome ownLibrary then Ok([], none) else Modules.program texts (List.length lib) mainPath target
+    let loaded = if Option.isSome ownLibrary then Ok([], none) else Modules.program texts (List.length lib) mainPath target chip
     match loaded with
     | Error(d, src) -> Error([| d |], Option.toList src)
     | Ok(prog, linked) ->
@@ -176,14 +176,14 @@ let programWith (texts: Map<string, string>) (mainPath: string) (requireMain: bo
         let names (ms: list<Modules.Loaded>) = List.choose (fun (m: Modules.Loaded) -> m.modName) ms
         let impls (ms: list<Modules.Loaded>) = List.collect (fun (m: Modules.Loaded) -> m.impls) ms
         // a microcontroller has no operating system, so no Std
-        let unavailable = if chip then Set.ofList (List.map (fun (f: string) -> String.replace f "/" ".") Modules.stdFiles) else Set.empty
-        let cx = Infer.Cx.create (requireMain && Option.isNone ownLibrary) collect (names lib) (impls lib) unavailable (Types.Repr.wordBytes target) (Options.irqTable target) late (inFile (List.head lib))
+        let unavailable = if Option.isSome chip then Set.ofList (List.map (fun (f: string) -> String.replace f "/" ".") Modules.stdFiles) else Set.empty
+        let cx = Infer.Cx.create (requireMain && Option.isNone ownLibrary) collect (names lib) (impls lib) unavailable (Types.Repr.wordBytes target) (Option.bind Options.irqTable chip) late (inFile (List.head lib))
         let (units, checkedNames, checkedCount, restoreMs, checkMs) = checkModules cx lib prog
         Infer.Decls.finish cx
         Ok { modules = all; units = units; cx = cx; linked = linked; checkedNames = checkedNames; checkedCount = checkedCount; restoreMs = restoreMs; checkMs = checkMs }
 
 /// Checks the program whose main file is mainPath, from the files on disk.
-let program (mainPath: string) (requireMain: bool) (collect: bool) (chip: bool) (target: string) = programWith Map.empty mainPath requireMain collect chip target
+let program (mainPath: string) (requireMain: bool) (collect: bool) (chip: option<Options.Mcu>) (target: string) = programWith Map.empty mainPath requireMain collect chip target
 
 /// A function's checked Core with every type settled, as the passes take it (a variable bound in
 /// the context followed, a free one defaulted, rows in canonical order).
@@ -250,7 +250,7 @@ let report (sources: list<Syntax.Source.Source>) (ds: array<Diagnostic>) (strict
 
 /// zs check file: every error and warning, nothing built; 0 when it passes.
 let run (mainPath: string) (strict: bool) : int =
-  match program mainPath true true false "" with
+  match program mainPath true true None "" with
   | Error(ds, sources) -> if report sources ds strict then 0 else 1
   | Ok c ->
     let sources = List.map (fun (m: Modules.Loaded) -> m.source) c.modules

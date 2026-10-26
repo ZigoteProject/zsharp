@@ -113,6 +113,11 @@ if command -v qemu-aarch64 >/dev/null && bin/zs build tests/simd/arm.zs --target
    && [ "$(qemu-aarch64 "$tmp/arm" 2>&1)" = "$(cat tests/simd/arm.expected)" ]; then echo "ok   tests/simd/arm.zs (built for aarch64, under qemu)"
 else echo "FAIL tests/simd/arm.zs"; cat "$tmp/arm.log"; fail=1; fi
 
+# a 32-bit Arm Linux build has 32-bit words, as its runtime does (0027)
+if bin/zs build examples/simple.zs --target arm-linux-musleabihf --emit-llvm -o "$tmp/armlinux" 2>"$tmp/armlinux.log" \
+   && grep -q '@zs_alloc(i32)' "$tmp/armlinux.ll"; then echo "ok   examples/simple.zs for arm-linux-musleabihf (32-bit words)"
+else echo "FAIL examples/simple.zs for arm-linux-musleabihf"; cat "$tmp/armlinux.log"; fail=1; fi
+
 # the checked library and modules, cached between builds: the same program from the cache
 if diff <(tests/cache.sh 2>&1) tests/cache.expected >"$tmp/cache.diff"; then echo "ok   tests/cache.sh (checked library, modules and compiled modules cached)"
 else echo "FAIL tests/cache.sh"; cat "$tmp/cache.diff"; fail=1; fi
@@ -229,6 +234,20 @@ if command -v qemu-system-arm >/dev/null; then
       else echo "FAIL tests/mcu/$t.zs on $chip"; cat "$tmp/$t.log"; fail=1; fi
     done
   done
+fi
+# a real board (0027): the Nucleo-F401RE's firmware builds; an image for it (its STM32F401RE's
+# flash and RAM, output over RTT) boots on qemu's STM32F405, which has the same memory map, and its
+# output is read from its RAM, the RTT block found by its ID as a probe finds it (and by its
+# symbol, as probe-rs does)
+if bin/zs build examples/mcu/nucleo-f401.zs --target nucleo-f401 -Os -o "$tmp/nucleo.elf" 2>"$tmp/nucleo.log"; then echo "ok   examples/mcu/nucleo-f401.zs (builds for nucleo-f401)"
+else echo "FAIL examples/mcu/nucleo-f401.zs"; cat "$tmp/nucleo.log"; fail=1; fi
+if command -v qemu-system-arm >/dev/null && command -v node >/dev/null; then
+  if bin/zs build tests/mcu/bits.zs --target nucleo-f401 -o "$tmp/bits.elf" 2>"$tmp/bits.log" \
+     && llvm-nm "$tmp/bits.elf" | grep -q ' _SEGGER_RTT$' \
+     && (sleep 2; echo "pmemsave 0x20000000 0x18000 \"$tmp/ram.bin\""; sleep 1; echo quit) | timeout 30 qemu-system-arm -M netduinoplus2 -display none -monitor stdio -serial null -kernel "$tmp/bits.elf" >/dev/null 2>&1 \
+     && [ "$(node tests/mcu/rtt.mjs "$tmp/ram.bin" | grep -v '^#zs')" = "$(cat tests/mcu/bits.expected)" ]; then
+    echo "ok   tests/mcu/bits.zs on nucleo-f401 (under qemu's STM32F405, output over RTT)"
+  else echo "FAIL tests/mcu/bits.zs on nucleo-f401"; cat "$tmp/bits.log"; fail=1; fi
 fi
 for t in err_isr err_isr_share err_isr_heap err_critical_heap; do
   if [ "$(bin/zs build --strict tests/mcu/$t.zs --target cortex-m4 -o "$tmp/err.elf" 2>&1 | grep -v '^ [ 0-9]* | ')" = "$(cat tests/mcu/$t.expected)" ]; then echo "ok   tests/mcu/$t.zs"

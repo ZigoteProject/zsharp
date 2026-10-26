@@ -517,6 +517,48 @@ static int semihost(int op, void *arg) {
     return r0;
 }
 
+#ifdef ZS_RTT
+// ---- RTT (SEGGER's Real-Time Transfer), a real board's output (ZS_RTT, 0027): a ring in RAM that
+// a debug probe reads while the core runs (probe-rs run, a J-Link, OpenOCD), found by this
+// symbol or its ID; nothing to wire. One channel up; its mode is the host's to set: 0 (the
+// default, so a board with no probe never waits) drops a write that doesn't fit, 1 writes what
+// fits, 2 waits for the host to make room.
+typedef struct {
+    const char *name;
+    char *buf;
+    uint32_t size;
+    volatile uint32_t wr, rd, flags;
+} rtt_up;
+
+static char rtt_buf[1024];
+
+struct {
+    char id[16];
+    int32_t ups, downs;
+    rtt_up up;
+} _SEGGER_RTT = {"SEGGER RTT", 1, 0, {"Terminal", rtt_buf, sizeof rtt_buf, 0, 0, 0}};
+
+static void write_bytes(const char *p, int64_t n) {
+    rtt_up *u = &_SEGGER_RTT.up;
+    uint32_t m = masked(); // a handler's output doesn't land inside the program's
+    while (n > 0) {
+        uint32_t wr = u->wr, rd = u->rd;
+        uint32_t room = (rd > wr ? rd - wr : u->size - wr + rd) - 1; // a full ring isn't an empty one
+        if (room == 0 || (room < n && (u->flags & 3) == 0)) {
+            if ((u->flags & 3) != 2) break;
+            continue;
+        }
+        uint32_t k = n < room ? (uint32_t)n : room;
+        if (k > u->size - wr) k = u->size - wr; // to the end, then from the start
+        memcpy(u->buf + wr, p, k);
+        __asm__ volatile("dmb" ::: "memory"); // the bytes before the offset that shows them
+        u->wr = wr + k == u->size ? 0 : wr + k;
+        p += k;
+        n -= k;
+    }
+    unmasked(m);
+}
+#else
 static void write_bytes(const char *p, int64_t n) {
     char buf[65];
     while (n > 0) {
@@ -529,10 +571,20 @@ static void write_bytes(const char *p, int64_t n) {
     }
 }
 
+#endif
+
 static void report(void);
 
 _Noreturn static void stop(int code) {
     report();
+#ifdef ZS_RTT
+    // with no debugger attached (DHCSR's C_DEBUGEN, ARMv7-M) the bkpt below would fault, so the
+    // core sleeps; with one, it gets a moment to read the output, then the exit (probe-rs run
+    // returns it)
+    if (!(*(volatile uint32_t *)0xE000EDF0 & 1))
+        for (;;) __asm__ volatile("wfi");
+    for (uint32_t i = 0; i < 1000000 && _SEGGER_RTT.up.rd != _SEGGER_RTT.up.wr; i++) {}
+#endif
     uint32_t block[2] = {0x20026, (uint32_t)code}; // ADP_Stopped_ApplicationExit, exit code
     semihost(0x20, block);                          // SYS_EXIT_EXTENDED
     for (;;) {}

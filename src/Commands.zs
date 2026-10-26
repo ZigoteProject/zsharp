@@ -44,7 +44,7 @@ let private scratchExe () : string =
 // settings for the target built for ([target.<name>])
 let private projectTarget (m: Project.Manifest) (args: list<string>) (o0: Options.Options) : Options.Options =
   let o = if m.target <> "" && not (List.contains "--target" args) then Options.withTarget o0 m.target else o0
-  match Map.tryFind (Options.targetName o.target) m.targets with
+  match Map.tryFind (Options.targetName o.mcu o.target) m.targets with
   | Some t -> { o with heap = t.heap }
   | None -> o
 
@@ -100,10 +100,11 @@ let run (args: list<string>) : int =
       let exe = scratchExe ()
       // a project's program takes the arguments after its name too
       let programArgs = if List.isEmpty o.rest then List.filter (fun a -> not (isFile a)) files else o.rest
-      // a chip's image runs under QEMU on its board, a WebAssembly module under Node
+      // a chip's image runs by its runner (QEMU, or probe-rs flashing a board), a WebAssembly
+      // module under Node
       let (program, pargs) =
         match o.mcu with
-        | Some m when m.board <> "" -> ("qemu-system-arm", [ "-M"; m.board; "-nographic"; "-semihosting-config"; "enable=on,target=native"; "-kernel"; exe ])
+        | Some m when m.board <> "" -> (List.head m.runner, List.append (List.tail m.runner) [ exe ])
         | Some _ -> ("node", [ Path.combine (Options.runtimeDir ()) "run-wasm.mjs"; exe ])
         | None -> (exe, programArgs)
       if Make.build { o with main = file; out = exe } false = 0 then
@@ -111,7 +112,10 @@ let run (args: list<string>) : int =
           match Tools.runInherited program pargs with
           | Ok c -> c
           | Error e ->
-            let hint = if program = exe then "" else $" ({program} runs it here; on a board, flash it instead)"
+            let hint =
+              match o.mcu with
+              | Some m -> $" (zs run --target {m.name} needs {program}; zs build -o {m.name}.elf builds the image without it)"
+              | None -> ""
             eprintln $"zs: {e}{hint}"
             1
         File.delete exe |> ignore

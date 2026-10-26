@@ -82,7 +82,7 @@ let sumTo n =                            // imperative code is fine; mutation st
     - **Order:** declarations are in order, so nothing can read a value before it's initialized.
     - **Libraries:** a library (`--lib`) has no startup, so it can only have constants.
 - **Numbers:**
-  - `int` and `usize` are the machine word: 64 bits on 64-bit targets, 32 on a Cortex-M. This is as in Swift and Go, and keeps loop and index code native on 32-bit chips.
+  - `int` and `usize` are the machine word: 64 bits on 64-bit targets, 32 on a Cortex-M and other 32-bit targets. This is as in Swift and Go, and keeps loop and index code native on 32-bit chips.
   - `i8 i16 i32 i64` and `u8 u16 u32 u64` have fixed sizes. `f32` and `f64` are IEEE floats.
   - Literals: `42`, `0xFF`, `0b1010`, `0o17`, `1_000_000`, `3.14`, `1e-3`. A literal takes the type the context needs, and conversions are explicit (`float n`, `u8 x`).
   - Bitwise operators use F#'s spelling, `&&& ||| ^^^ <<< >>> ~~~`, and bind tighter than comparison (`x &&& mask = 0`).
@@ -601,7 +601,7 @@ and gives LLVM the facts it can't prove. Everything in this table is built.
 | Tier | Targets | How |
 |---|---|---|
 | 1 | Linux x86-64 and aarch64 | native, or `--target aarch64-linux-musl` (static) |
-| 2 | Bare-metal ARM Cortex-M: `cortex-m4` (M4F), `cortex-m0plus` | `--target cortex-m4`; tested under QEMU |
+| 2 | Bare-metal ARM Cortex-M: `cortex-m4` (M4F), `cortex-m0plus`; the board `nucleo-f401` | `--target cortex-m4`; tested under QEMU |
 | 3 | macOS aarch64, Windows x86-64 | through `zig cc` (planned, targets track) |
 | 4 | Freestanding WebAssembly: `wasm32` | `--target wasm32`; tested under Node |
 | 5 | WASM (WASI) | later |
@@ -610,18 +610,19 @@ and gives LLVM the facts it can't prove. Everything in this table is built.
 and `zig cc` builds the runtime and links with Zig's bundled C library, so no sysroot is
 needed. C structs by value follow the target's convention: x86-64 System V, or AAPCS64.
 
-**Bare metal (`cortex-m4`, `cortex-m0plus`):**
+**Bare metal (`cortex-m4`, `cortex-m0plus`, `nucleo-f401`):**
 - **Runtime:** `rt-embedded.c`, with no OS and no libc. It contains:
   - a vector table and a reset handler, which sets up RAM, enables the FPU and starts SysTick;
   - a static heap with size-class free lists (64 KB or 8 KB);
-  - semihosting output and exit;
+  - semihosting output and exit, or on a real board RTT (`ZS_RTT`): SEGGER's control block, one channel up with a 1 KB ring the probe reads while the core runs, in the mode the host sets (dropping a write that doesn't fit by default, so a board with no probe never waits); an exit takes semihosting's breakpoint only when DHCSR says a debugger is attached, else the core sleeps;
   - a peak heap and stack report at exit.
+- **Targets are rows, found by name** (`Options.mcus`; proposal 0027's first and third steps): a core's flags for clang and `zig cc`, its board's memory map and interrupt lines (`runtime/boards/<board>.ld` and `.irq`), whether output is RTT, the command that runs an image (QEMU's machine, or `probe-rs run --chip`, which flashes), and the heap. A core's name means its QEMU board; a real board is a core's row with its own, so `nucleo-f401` shares `cortex-m4`'s triple and `[target.<name>]`, `[c.<name>]` and the interrupt table go by the name. The image keeps its symbol table (`zig cc` drops it at `-Os` unless asked for debug info, which isn't flashed), where probe-rs finds `_SEGGER_RTT`, and its entry point. The machine word comes from the triple's architecture (32-bit Arm and Thumb, riscv32, wasm32, 32-bit x86).
 - **What's missing:** Std, the part of the library that needs an operating system (`Console`, `Environment`, `IO`, `Diagnostics`, `Threading`, `Net`). A microcontroller build doesn't load it, and using it is a compile error that says why (§9).
 - **Hardware:** `Mmio.read32/write32/read8/write8` are volatile register accesses, and `Runtime.ticks ()` counts cycles.
 - **Registers as constants:** a top-level constant such as `let uart = usize 0x40004000` is inlined, so a register access compiles to a store to an immediate address.
 - **Bit fields** ([proposal 0013](docs/proposals/0013-bit-fields.md)): a `[<Bits>]` record (`[<Bits 32>]` fixes the width) is a record to the checker and one unsigned integer to code generation, its layout (each field's lowest bit and width) in its `TypeInfo`. Fields are `bool`, enums and `u8` to `u64`, placed from bit 0 or at `[<Bit n>]`, narrowed with `[<Width n>]` (the language's first field attributes). A literal ORs the fields' shifted bits, a read shifts and masks (an enum's bits that name no case panic), `{ r with f = v }` is a masked write keeping the gaps (a value too wide panics), and a record pattern reads the fields. `Eq`, `Ord` and `Hash` are the integer's (unsigned), `Show` and other derives the fields'. `Bits.toU32`/`ofU32` and the other widths, checked against the record's after monomorphization, and `Bits.raw`/`ofRaw`; to C it's its integer.
 - **Interrupt handlers** ([proposal 0012](docs/proposals/0012-interrupts-noalloc-intrinsics.md)): `[<Interrupt 38>]`, `[<Interrupt "USART2">]` (a name from the board's `runtime/boards/<board>.irq`) or a core exception (`HardFault`, `SysTick`, …) on a `unit -> unit` function exports it under the symbol the runtime's vector table names (`IRQ38_Handler`, CMSIS's names), over the runtime's weak defaults: a fault panics, a device line nobody handles is disabled, and SysTick stays the runtime's, calling the program's `zs_systick_user` after counting the wrap. The table holds the board's lines, in tens. A handler is checked as a `share<unit -> unit>` is: what it reaches must be `Share`, and the program is built as one with threads, so the objects it can reach are marked shared at startup and counted atomically. State crosses through `Atomic` (in Core; on a Cortex-M0 the runtime's `__atomic_*` functions mask interrupts) and `Spsc<'a>`, a ring with one producer and one consumer that copies values and moves indices with release and acquire, neither waiting nor locking. `Irq.enable`, `disable` and `pend` are the NVIC's registers through `Mmio`. `Cpu`'s functions are one instruction each, inline assembly with a memory clobber (`wfi`, `wfe`, `sev`, `dmb`, `dsb`, `isb`, `nop`, `cpsie i`, `cpsid i`), and `Cpu.critical f` saves PRIMASK, masks, calls `f` and puts PRIMASK back, so it nests; on a computer the barriers are fences, the rest nothing, and masking is an error.
-- **Planned (microcontroller track):** constant arrays in flash, RISC-V (ESP32-C3) and more boards (linker scripts in `runtime/boards`).
+- **Planned (microcontroller track):** constant arrays in flash, RISC-V (ESP32-C3) and more boards (the Pico, an nRF52840; proposal 0027).
 - **No allocation** ([proposal 0012](docs/proposals/0012-interrupts-noalloc-intrinsics.md)): `[<NoAlloc>]` on a function is a compile error if it, or anything it calls, may allocate or free heap memory. Firmware needs to know where the heap is touched, and Z# allocates implicitly (strings, closures, boxed unions).
   - **The analysis** (`Opt/NoAlloc.zs`) runs on the Core after reference counting: a site builds a boxed case, reuses a cell (only when it's unique), builds a closure with captures, a string or an array (the primitives and the runtime's functions that give an object), drops a heap value that isn't a literal or a span over a reference dup'd for it, writes an array (copied when shared), calls a closure, or performs an effect. A function's verdict is its first site or a callee's, memoized over the call graph. A `[<NoAlloc>]` function isn't inlined, so the check finds it; a program with one is built as one module.
   - **Spans borrow:** making a span over a parameter is a read for borrow inference, so `Array.fold f 0 xs` borrows `xs`, and the span's drop gives back only the reference dup'd for it.

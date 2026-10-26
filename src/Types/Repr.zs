@@ -138,9 +138,12 @@ let unionRep (v: Vars) (types: Map<string, TypeInfo>) (t: Ty) : UnionRep =
     | Some(noneTag, f) when pointer f -> Niche(noneTag, f)
     | _ -> Boxed(List.length (List.filter (fun (_, fs) -> not (List.isEmpty fs)) cs) > 1)
 
-/// The machine word's bytes on a target (its triple, "" for the host): 4 on a Cortex-M and
-/// wasm32, else 8.
-let wordBytes (target: string) : int = if String.startsWith "thumb" target || String.startsWith "wasm32" target then 4 else 8
+/// The machine word's bytes on a target (its triple, "" for the host), by the triple's
+/// architecture: 4 on 32-bit Arm and Thumb, riscv32, wasm32 and 32-bit x86, else 8 (0027, B1).
+let wordBytes (target: string) : int =
+  let arch = List.head (String.split "-" target)
+  let narrow = List.exists (fun (p: string) -> String.startsWith p arch) [ "thumb"; "arm"; "riscv32"; "wasm32" ] && not (String.startsWith "arm64" arch)
+  if narrow || List.contains arch [ "x86"; "i386"; "i686" ] then 4 else 8
 
 // the size and alignment of a C struct of these parts (each a size and an alignment): each part
 // at its alignment, the whole padded to the strictest

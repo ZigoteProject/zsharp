@@ -211,7 +211,7 @@ More: [tasks](docs/guide/13-tasks.md), [parallelism](docs/guide/14-parallel.md),
 | Linux | x86-64, arm64 | native, or `--target aarch64-linux-musl` for a static binary |
 | macOS | arm64, x86-64 | native, or `--target aarch64-macos` |
 | Windows | x64, arm64 | native through mingw-w64, or `--target x86_64-windows-gnu` |
-| Bare metal | Cortex-M4F, Cortex-M0 and M0+ | `--target cortex-m4`, `--target cortex-m0plus` |
+| Bare metal | Cortex-M4F, Cortex-M0 and M0+; the Nucleo-F401RE board | `--target cortex-m4`, `--target cortex-m0plus`, `--target nucleo-f401` |
 | WebAssembly | wasm32, freestanding | `--target wasm32`, run by a 25-line Node host |
 
 Cross builds link through `zig cc`, so there's no SDK or sysroot to install.
@@ -248,18 +248,19 @@ let buttonDown () = Mmio.read32 gpiocIdr &&& bit 13 = u32 0
 
 This is part of [examples/mcu/nucleo-f401.zs](examples/mcu/nucleo-f401.zs): an LED with three
 modes, a debounced button and a serial command line, for an ST Nucleo-F401RE. Built with
-`zs build --target cortex-m4 -Os`, the whole firmware is 4,216 bytes of flash. `Mode` is a plain
+`zs build --target nucleo-f401 -Os`, the whole firmware is 5,056 bytes of flash. `Mode` is a plain
 value that never touches the heap, and in the machine code `setLed` is one store instruction and
-`buttonDown` one load. (Flashing it waits for the STM32F4 linker script: `cortex-m4` links for
-QEMU's board today.)
+`buttonDown` one load. `zs run --target nucleo-f401` flashes it through
+[probe-rs](https://probe.rs), and its `println` comes back over RTT.
 
 | Target | Chips | Heap | Tested on |
 |---|---|---|---|
 | `cortex-m4` | Cortex-M4F: STM32F4, nRF52, … | 64 KB | QEMU `mps2-an386` |
 | `cortex-m0plus` | Cortex-M0 and M0+: RP2040, nRF51, STM32G0, … | 8 KB | QEMU `microbit`, 16 KB of RAM |
+| `nucleo-f401` | the ST Nucleo-F401RE board (STM32F401RE) | 64 KB | QEMU `netduinoplus2`, the same memory map; output over RTT |
 
 ```sh
-zs build examples/mcu/uart.zs --target cortex-m4 -Os -o uart.elf     # 2,284 bytes of flash
+zs build examples/mcu/uart.zs --target cortex-m4 -Os -o uart.elf     # 2,556 bytes of flash
 qemu-system-arm -M mps2-an386 -nographic -semihosting-config enable=on -kernel uart.elf
 ```
 

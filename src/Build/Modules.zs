@@ -162,13 +162,12 @@ let problem (index: int) (p: Project.Problem) : Diagnostic * option<Source.Sourc
 /// chip or WebAssembly, its triple and flags, freestanding, with the compiler's own headers only
 /// (stdint.h, stddef.h: there's no C library), so a vendor's header sees the chip it's for; none
 /// for this machine.
-let private targetFlags (target: string) : list<string> =
+let private targetFlags (target: string) (chip: option<Options.Mcu>) : list<string> =
   if target = "" then []
   else if String.contains "-none" target || String.startsWith "wasm32" target then
-    let chip = List.tryFind (fun (c: string * Options.Mcu) -> (snd c).triple = target) Options.mcus
     let flags =
       match chip with
-      | Some(_, m) -> m.cflags
+      | Some m -> m.cflags
       | None -> []
     List.append [ "--target=" + target; "-ffreestanding"; "-nostdlibinc" ] flags
   else
@@ -199,10 +198,10 @@ let private targetFlags (target: string) : list<string> =
 /// enclosing its own, in the modules it opens, then globally; only its package's files see its
 /// dependencies. An import cycle is an error at the file that closes it. target: --target's
 /// triple, "" for this machine (where pkg-config runs).
-let program (texts: Map<string, string>) (first: int) (mainPath: string) (target: string) : result<list<Loaded> * Linked, Diagnostic * option<Source.Source>> =
+let program (texts: Map<string, string>) (first: int) (mainPath: string) (target: string) (chip: option<Options.Mcu>) : result<list<Loaded> * Linked, Diagnostic * option<Source.Source>> =
   let hosted = target = ""
-  let forTarget = targetFlags target
-  let targetName = Options.targetName target
+  let forTarget = targetFlags target chip
+  let targetName = Options.targetName chip target
   let order = Buffer.empty
   let count = ref first
   // a module: whether it's fully loaded

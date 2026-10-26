@@ -30,6 +30,18 @@
   (`let! (x, reply, nack) = …`) before that wait.
 
 ### Platforms
+- A real board, the ST Nucleo-F401RE (`--target nucleo-f401`, 0027): linked for its STM32F401RE
+  (512 KB of flash at `0x08000000`, 96 KB of RAM), with its interrupt lines by name
+  (`[<Interrupt "USART2">]`), and output over RTT, a ring in RAM the debug probe reads while the
+  chip runs. `zs run --target nucleo-f401` flashes it with probe-rs, which shows the output and
+  returns the exit status. With no probe attached, nothing waits: output that doesn't fit is
+  dropped, and an exit leaves the core asleep (semihosting's breakpoint would fault there).
+  Targets are found by name, so a board shares its core's triple: `[target.nucleo-f401]` and
+  `[c.nucleo-f401]` are its own.
+- A chip's image keeps its symbol table (`zig cc` dropped it at `-Os`) and its entry point (it
+  was 0, where a debugger's `load` jumps).
+- 32-bit Arm Linux (`--target arm-linux-musleabihf`) builds with 32-bit words, as its runtime
+  has: it built with 64-bit ones, linking against a runtime that read them as 32.
 - Interrupt handlers (0012): `[<Interrupt 38>]`, `[<Interrupt "UARTRX0">]` (the board's names,
   `runtime/boards/<board>.irq`) or `[<Interrupt "SysTick">]`/`"HardFault"`/… on a
   `unit -> unit` function make it the line's handler over the runtime's weak defaults. A handler

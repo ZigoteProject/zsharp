@@ -419,7 +419,7 @@ let docItems (text: string) : list<DocItem> =
 /// zs doc file.zs: the file's Markdown reference, every documented item, a function with its
 /// checked type, then the functions built into the compiler that belong to its module.
 let doc (src: string) : int =
-  match Check.program src false false false "" with
+  match Check.program src false false None "" with
   | Error(ds, sources) ->
     Check.report sources ds false |> ignore
     1

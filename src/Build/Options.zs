@@ -1,16 +1,60 @@
 /// What a build is asked for: zs build's flags (the F# compiler's Main and Driver settings).
 
-/// A bare-metal target (zs build --target cortex-m4, wasm32): how clang and zig cc are told about
-/// the chip, the QEMU board whose memory map the program is linked for ("" for WebAssembly), and
-/// the heap size. The program uses runtime/rt-embedded.c instead of the OS runtime.
-type Mcu = { triple: string; cflags: list<string>; zigTarget: string; zigCpu: string; board: string; heap: int }
+/// A bare-metal target (zs build --target cortex-m4, nucleo-f401, wasm32): its core (how clang and
+/// zig cc are told about it), its board's memory map and interrupt lines
+/// (runtime/boards/<board>.ld and .irq; "" for WebAssembly), whether output goes over RTT (a real
+/// board, where semihosting without a debugger faults) instead of semihosting, the command that
+/// runs an image, and the heap size. The program uses runtime/rt-embedded.c instead of the OS
+/// runtime. A core's name means its QEMU board; a real board is a core's row with its own (0027).
+type Mcu =
+  { name: string
+    triple: string
+    cflags: list<string>
+    zigTarget: string
+    zigCpu: string
+    board: string
+    rtt: bool
+    runner: list<string>
+    heap: int }
 
-/// The chips --target knows by name, and WebAssembly.
-let mcus : list<string * Mcu> =
-  [ ("cortex-m4", { triple = "thumbv7em-none-eabihf"; cflags = [ "-mcpu=cortex-m4"; "-mfpu=fpv4-sp-d16"; "-mfloat-abi=hard" ]; zigTarget = "thumb-freestanding-eabihf"; zigCpu = "cortex_m4+vfp4d16sp"; board = "mps2-an386"; heap = 64 * 1024 })
-    ("cortex-m0plus", { triple = "thumbv6m-none-eabi"; cflags = [ "-mcpu=cortex-m0plus"; "-mfloat-abi=soft" ]; zigTarget = "thumb-freestanding-eabi"; zigCpu = "cortex_m0plus"; board = "microbit"; heap = 8 * 1024 })
+let private qemu (machine: string) = [ "qemu-system-arm"; "-M"; machine; "-nographic"; "-semihosting-config"; "enable=on,target=native"; "-kernel" ]
+
+let private cortexM4 =
+  { name = "cortex-m4"
+    triple = "thumbv7em-none-eabihf"
+    cflags = [ "-mcpu=cortex-m4"; "-mfpu=fpv4-sp-d16"; "-mfloat-abi=hard" ]
+    zigTarget = "thumb-freestanding-eabihf"
+    zigCpu = "cortex_m4+vfp4d16sp"
+    board = "mps2-an386"
+    rtt = false
+    runner = qemu "mps2-an386"
+    heap = 64 * 1024 }
+
+/// The targets --target knows by name.
+let mcus : list<Mcu> =
+  [ cortexM4
+    { name = "cortex-m0plus"
+      triple = "thumbv6m-none-eabi"
+      cflags = [ "-mcpu=cortex-m0plus"; "-mfloat-abi=soft" ]
+      zigTarget = "thumb-freestanding-eabi"
+      zigCpu = "cortex_m0plus"
+      board = "microbit"
+      rtt = false
+      runner = qemu "microbit"
+      heap = 8 * 1024 }
+    // an ST Nucleo-F401RE: its STM32F401RE's flash and RAM, flashed and run by probe-rs
+    // (https://probe.rs), which shows the output
+    { cortexM4 with name = "nucleo-f401"; board = "stm32f401re"; rtt = true; runner = [ "probe-rs"; "run"; "--chip"; "STM32F401RETx" ] }
     // freestanding WebAssembly: no OS, the host gives output and exit as imports
-    ("wasm32", { triple = "wasm32-unknown-unknown"; cflags = []; zigTarget = "wasm32-freestanding"; zigCpu = "generic"; board = ""; heap = 1024 * 1024 }) ]
+    { name = "wasm32"
+      triple = "wasm32-unknown-unknown"
+      cflags = []
+      zigTarget = "wasm32-freestanding"
+      zigCpu = "generic"
+      board = ""
+      rtt = false
+      runner = []
+      heap = 1024 * 1024 } ]
 
 /// The runtime's sources: $ZS_RUNTIME, else beside the compiler (an installed one), else the
 /// runtime/ of the checkout the compiler was built in.
@@ -28,10 +72,11 @@ let runtimeDir () : string =
 
 /// A chip's interrupt lines (0012), from its board's runtime/boards/<board>.irq: the board, how
 /// many lines its vector table holds, and the lines' names; None for a target with no board.
-let irqTable (target: string) : option<string * int * Map<string, int>> =
-  match List.tryFind (fun (c: string * Mcu) -> (snd c).triple = target && (snd c).board <> "") mcus with
-  | Some(_, m) ->
-    let file = Path.combine (runtimeDir ()) $"boards/{m.board}.irq"
+let irqTable (m: Mcu) : option<string * int * Map<string, int>> =
+  match m.board with
+  | "" -> None
+  | board ->
+    let file = Path.combine (runtimeDir ()) $"boards/{board}.irq"
     let lines = Result.defaultValue [] (File.readAllLines file)
     // NAME = number, after # comments
     let pair (l: string) =
@@ -39,8 +84,7 @@ let irqTable (target: string) : option<string * int * Map<string, int>> =
       | [ k; v ] when not (String.startsWith "#" (String.trim l)) -> Option.map (fun (n: int) -> (String.trim k, n)) (Int.parse (String.trim v))
       | _ -> None
     let all = Map.ofList (List.choose pair lines)
-    Some(m.board, Option.defaultValue 0 (Map.tryFind "lines" all), Map.remove "lines" all)
-  | None -> None
+    Some(board, Option.defaultValue 0 (Map.tryFind "lines" all), Map.remove "lines" all)
 
 /// A build's options.
 type Options =
@@ -125,8 +169,8 @@ let defaults : Options =
 /// The options with --target's: a chip's name sets its triple and the chip, anything else is the
 /// triple.
 let withTarget (o: Options) (t: string) : Options =
-  match List.tryFind (fun (n, _) -> n = t) mcus with
-  | Some(_, m) -> { o with target = m.triple; mcu = Some m }
+  match List.tryFind (fun (m: Mcu) -> m.name = t) mcus with
+  | Some m -> { o with target = m.triple; mcu = Some m }
   | None -> { o with target = t }
 
 /// The options a command's arguments ask for, and the arguments that aren't flags (in order);
@@ -160,13 +204,11 @@ let parse (args: list<string>) : result<Options * list<string>, string> =
   go { defaults with target = nativeTarget () } [] args
 
 /// The target's name in a project's [c.<name>] and [target.<name>] sections: host for this
-/// machine, a chip's name for its triple (cortex-m4), else the triple --target gave.
-let targetName (target: string) : string =
-  if target = "" || target = nativeTarget () then "host"
-  else
-    match List.tryFind (fun (c: string * Mcu) -> (snd c).triple = target) mcus with
-    | Some(n, _) -> n
-    | None -> target
+/// machine, the chip's or board's name --target gave (cortex-m4, nucleo-f401), else the triple.
+let targetName (mcu: option<Mcu>) (target: string) : string =
+  match mcu with
+  | Some m -> m.name
+  | None -> if target = "" || target = nativeTarget () then "host" else target
 
 /// The architecture built for: the target triple's first part, or the host's (a native build).
 let arch (o: Options) : string =

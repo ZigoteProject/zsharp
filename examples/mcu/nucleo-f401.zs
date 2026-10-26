@@ -5,10 +5,9 @@
 //
 // The logic (parsing, the modes, debouncing, blinking) is pure functions over values. Only the
 // hardware section touches registers, and the main loop allocates nothing until a command is
-// answered.
-//   zs build examples/mcu/nucleo-f401.zs --target cortex-m4 -Os -o nucleo.elf
-// Not flashable yet: cortex-m4 links for QEMU's mps2-an386 memory map until the STM32F4 board
-// lands (ROADMAP, track M).
+// answered. println goes over RTT, to the probe.
+//   zs build examples/mcu/nucleo-f401.zs --target nucleo-f401 -Os -o nucleo.elf
+//   zs run examples/mcu/nucleo-f401.zs --target nucleo-f401 -Os   (flashed by probe-rs, which shows the println)
 
 // ---- the logic: no registers here
 
@@ -139,12 +138,16 @@ let putString (s: string) =
 
 /// A received byte, if one is waiting (RXNE).
 let tryGetByte () : option<u8> =
-  if Mmio.read32 usartSr &&& bit 5 <> u32 0 then Some (u8 (Mmio.read32 usartDr &&& u32 0xFF)) else None
+  if Mmio.read32 usartSr &&& bit 5 <> u32 0 then
+    Some (u8 (Mmio.read32 usartDr &&& u32 0xFF))
+  else
+    None
 
 // ---- the main loop: poll the button and the serial port, then drive the LED
 
 let main () =
   init ()
+  println "ready: USART2 at 115200 takes on | off | blink <ms> | status"
   putString "\r\nready\r\n> "
   let mutable line = Array.create 32 (u8 0)
   let mutable len = 0

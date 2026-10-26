@@ -9,14 +9,24 @@ RAM. On compute code, the generated code is as fast as C's
 |---|---|---|
 | `cortex-m4` | Cortex-M4F: STM32F4, nRF52, … (single-precision FPU) | QEMU `mps2-an386` |
 | `cortex-m0plus` | Cortex-M0/M0+: RP2040, nRF51, STM32G0, … | QEMU `microbit` (16 KB RAM) |
+| `nucleo-f401` | the ST Nucleo-F401RE board: an STM32F401RE, a Cortex-M4F with 512 KB of flash and 96 KB of RAM | QEMU `netduinoplus2` (an STM32F405, the same memory map) |
 
 ```sh
 zs build blink.zs --target cortex-m4 -Os -o blink.elf
 qemu-system-arm -M mps2-an386 -nographic -semihosting-config enable=on -kernel blink.elf
 ```
 
-`zs run --target cortex-m4` does both. A project for a chip says so in its `zs.toml`, and then
-`zs build` and `zs run` need no `--target`:
+`zs run --target cortex-m4` does both. A core's name builds for its QEMU board; a board's name
+(`nucleo-f401`) builds for the real board's memory map, and `zs run` flashes it with
+[probe-rs](https://probe.rs) over the board's debug probe (the Nucleo's ST-Link), shows its output
+and returns its exit status:
+
+```sh
+zs run examples/mcu/nucleo-f401.zs --target nucleo-f401 -Os
+```
+
+A project for a chip says so in its `zs.toml`, and then `zs build` and `zs run` need no
+`--target`:
 
 ```toml
 [package]
@@ -30,8 +40,9 @@ heap = "16K"
 
 **What a build contains:**
 - **Startup:** the vector table, a reset handler that sets up RAM, enables the FPU and starts SysTick, and `main`.
-- **Heap:** a fixed-size heap inside the image, 64 KB on `cortex-m4` and 8 KB on `cortex-m0plus` unless `[target.<chip>]` sets `heap`. When a program exits, it prints its heap peak and stack use. C's `malloc`, `free`, `calloc` and `realloc` are there too, over the same heap, for C, Rust or Zig code linked in.
+- **Heap:** a fixed-size heap inside the image, 64 KB on `cortex-m4` and `nucleo-f401` and 8 KB on `cortex-m0plus` unless `[target.<chip>]` sets `heap`. When a program exits, it prints its heap peak and stack use. C's `malloc`, `free`, `calloc` and `realloc` are there too, over the same heap, for C, Rust or Zig code linked in.
 - **Output:** `println` and panics go through semihosting, the debug channel to a debugger or QEMU. A panic stops the chip and reports exit status 134.
+- **Output on a real board:** RTT, a ring in RAM that the probe reads while the chip runs (probe-rs, a J-Link or OpenOCD find it by its symbol, `_SEGGER_RTT`); nothing to wire, no pins or clocks taken. A board with no probe attached never waits: output that doesn't fit in the ring (1 KB) is dropped, and an exit or a panic leaves the core asleep, since semihosting's breakpoint without a debugger would fault.
 - **Not available:** Std, the part of the library that needs an operating system: `Console`, `Environment`, `IO` (`File`, `Directory`, `Path`) and `Diagnostics`. Using it is a compile error that says so. Core (lists, arrays, maps, strings, `Mmio`, …) is all there.
 
 ## Hardware registers
