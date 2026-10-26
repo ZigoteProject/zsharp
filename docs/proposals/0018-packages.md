@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Approved in principle. Items 1 (namespaced dependencies, `tests/project/two`), 2 (versions, phase 12: `tests/project/git.sh`; a second major in a `v2/` directory isn't read yet, only tags at the root) and 4 (the `[c]` section, `tests/project/cwords`; `[target.<name>.c]` with 0022) are built; internal modules, targets, integrity, commands and workspaces (items 3, 5–8) after it. Draft for the index |
-| **Decided at** | track K's plan ([ROADMAP](../../ROADMAP.md#packages-k)); phase 12's "before 0.1" list takes item 2 ([ROADMAP](../../ROADMAP.md#phase-12-release-01)); the index at a later design review |
+| **Decided at** | track K's plan ([ROADMAP](../../ROADMAP.md#packages-k)); phase 12's "before 0.1" list takes item 2 ([ROADMAP](../../ROADMAP.md#phase-12-release-062)); the index at a later design review |
 | **Builds** | track K: packages |
 | **Rests on** | decisions 26 (`zig cc`), 27 (source packages, `zs.lock`), 37 (Core and Std) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §12](../../DESIGN.md#12-tooling) Projects |
 | **Related** | [0001 type providers](0001-type-providers.md) (provider packages), [0020 the compiler in Z#](0020-self-hosting.md) (`libclang` and `xxhash`), [0022 macOS and Windows](0022-targets-macos-windows.md) (C flags per target), [0024 the library](0024-library-api.md) (what stays a package), [0014 placement](0014-placement.md) (`[target.<name>]`), [0007 incremental builds](0007-incremental-builds.md) (the cache a dependency's modules share) |

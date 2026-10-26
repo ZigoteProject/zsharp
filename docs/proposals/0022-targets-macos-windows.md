@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Approved in principle (decision 29). Reordered on 2026-10-24: macOS arm64 and x86-64, Windows x64 and arm64, and the compiler on Linux arm64 are phase 11.5, before 0.1; this proposal's decisions carry to the three it doesn't name |
-| **Decided at** | decision 29 ([DESIGN §13](../../DESIGN.md#13-decisions)); track T's plan ([ROADMAP](../../ROADMAP.md#more-targets-t)); phase 12's "macOS arm64" item ([ROADMAP](../../ROADMAP.md#phase-12-release-01)). The unresolved questions are settled as each target's implementation starts |
+| **Decided at** | decision 29 ([DESIGN §13](../../DESIGN.md#13-decisions)); track T's plan ([ROADMAP](../../ROADMAP.md#more-targets-t)); phase 12's "macOS arm64" item ([ROADMAP](../../ROADMAP.md#phase-12-release-062)). The unresolved questions are settled as each target's implementation starts |
 | **Builds** | track T, items 1 (macOS) and 2 (Windows) |
 | **Rests on** | decisions 5 (panics), 26 (cross-compilation through `zig cc`), 29 (target order), 48 (a loop per thread) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §6](../../DESIGN.md#6-concurrency-task) (the loop), [§10](../../DESIGN.md#10-targets) (tiers), [§11](../../DESIGN.md#11-c-interop) (the C ABI) |
 | **Related** | [0011 debug info, profiles and traces](0011-debug-info-profiles-traces.md) (lldb, DAP), [0008 threads](0008-threads.md) (the pool on other OSes), [0024 library API](0024-library-api.md) (`Path` on POSIX, processes), [0018 packages](0018-packages.md) (C dependencies per target), [0014 placement](0014-placement.md) (the per-target manifest table) |
@@ -30,7 +30,7 @@ No syntax changes, nothing in Core changes, and Std's surface is the same on eve
 
 ## Motivation
 
-- **Many programmers' machine is a Mac** (phase 12's words). Without the target, a newcomer's five-minute hello world ([ROADMAP](../../ROADMAP.md#phase-12-release-01)'s first exit test) is impossible on macOS, and the release archive per target has one target.
+- **Many programmers' machine is a Mac** (phase 12's words). Without the target, a newcomer's five-minute hello world ([ROADMAP](../../ROADMAP.md#phase-12-release-062)'s first exit test) is impossible on macOS, and the release archive per target has one target.
 - **A library used from C** (decision 30: the first audience) is used from C on whatever OS the host program runs on. `zs build --lib` that gives a `.a` for Linux only is a Linux library.
 - **Microcontroller firmware** (the likely flagship niche) is written on Macs and Windows machines as much as on Linux: the host compiler must run there, and the chip builds already go through `zig cc`.
 - **What the alternative looks like without this:** WSL or a Linux VM for Windows users, and Docker on Macs. Both work for a Linux binary and neither gives a native one, so a CLI tool written in Z# can't be shipped to the two desktops most people use.

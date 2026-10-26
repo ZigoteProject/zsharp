@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | **Status** | Approved in principle |
-| **Decided at** | phase 12's list of deferred features ([ROADMAP](../../ROADMAP.md#phase-12-release-01), "From phase 9.5, cycle warnings"), under decision 40 |
-| **Builds** | phase 12 ([ROADMAP](../../ROADMAP.md#phase-12-release-01)) |
+| **Decided at** | phase 12's list of deferred features ([ROADMAP](../../ROADMAP.md#phase-12-release-062), "From phase 9.5, cycle warnings"), under decision 40 |
+| **Builds** | phase 12 ([ROADMAP](../../ROADMAP.md#phase-12-release-062)) |
 | **Rests on** | decisions 40 (cycles aren't collected: `weak` for back-pointers, `ZS_LEAKCHECK=1` to find leaks), 32 (editor support through `zs lsp` and `zs mcp`) and 6 (an unreachable match case is an error) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §5.2](../../DESIGN.md#52-perceus-reference-counting) (cycles) and [§12](../../DESIGN.md#12-tooling) (diagnostics) |
 | **Related** | [0011 debug info, profiles and traces](0011-debug-info-profiles-traces.md) (hints are not warnings), [0001 type providers](0001-type-providers.md) (the stale-input diagnostic becomes a warning), [0019 the syntax tree](0019-syntax-tree.md) (a code action adding `[<Cyclic>]` or `weak`), [0012 interrupts, `[<NoAlloc>]` and intrinsics](0012-interrupts-noalloc-intrinsics.md) (`[<NoAlloc>]` stays an error), [0020 self-hosting](0020-self-hosting.md) (carries the diagnostic record over), [0024 the library API](0024-library-api.md) (`[<Deprecated>]`) |
 | **Changes** | DESIGN §5.2's "Warning about them (planned, phase 12)" becomes design text; §12 gains the severity; §13 gains a new decision row, numbered by the coordinator |

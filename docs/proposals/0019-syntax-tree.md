@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Approved in principle |
-| **Decided at** | decision 33 and track E's plan ([ROADMAP](../../ROADMAP.md#editor-tooling-e)): F2 first, then the rest of E2b; kept before phase 11 by phase 12's list ([ROADMAP](../../ROADMAP.md#phase-12-release-01)) |
+| **Decided at** | decision 33 and track E's plan ([ROADMAP](../../ROADMAP.md#editor-tooling-e)): F2 first, then the rest of E2b; kept before phase 11 by phase 12's list ([ROADMAP](../../ROADMAP.md#phase-12-release-062)) |
 | **Builds** | track E: F2 (the tree, reflow, `zs fmt --stdin`, range formatting) and E2b's rest (rename, code actions, signature help); the parser of phase 11 ([ROADMAP](../../ROADMAP.md#phase-11-self-hosting)) builds the same tree |
 | **Rests on** | decisions 32 (editor support: tree-sitter, `zs lsp`, `zs mcp`, Zed first) and 33 (`zs fmt`: one style, no configuration; a lossless syntax tree for reflow) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §12](../../DESIGN.md#12-tooling) |
 | **Related** | [0009 tests as values](0009-tests-as-values.md) (`zs test --update` edits literals), [0007 incremental builds](0007-incremental-builds.md) (the per-module cache keeps hovers, not trees), [0020 the compiler in Z#](0020-self-hosting.md) (phase 11's parser builds it), [0005 ergonomics](0005-ergonomics.md) (the `?` code action), [0021 warnings](0021-warnings.md) (the `[<Cyclic>]` code action), [0001 type providers](0001-type-providers.md) (rename refused on provided names) |

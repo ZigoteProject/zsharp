@@ -4,7 +4,7 @@
 |---|---|
 | **Status** | Implemented: `fixed` (decision 53, phase 9.6); C unions and layout facts (decision 70, phase 12) |
 | **Decided at** | the phase 9.6 design review (`fixed`); the third design review ([ROADMAP](../../ROADMAP.md#third-design-review-)) (the rest: by case with no zeroed form yet, `sizeof<'a>` in expressions only, no C bit-fields) |
-| **Builds** | phase 9.6 and phase 12 ([ROADMAP](../../ROADMAP.md#phase-12-release-01)) |
+| **Builds** | phase 9.6 and phase 12 ([ROADMAP](../../ROADMAP.md#phase-12-release-062)) |
 | **Rests on** | decisions 20 (no compile-time evaluation beyond derive), 53 (`fixed`) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §11](../../DESIGN.md#11-c-interop) |
 | **Related** | [0003 spans](0003-spans-and-slices.md), [0013 bit fields](0013-bit-fields.md), [0001 type providers](0001-type-providers.md) (`import c` is the compiler's own provider) |
 

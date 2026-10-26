@@ -15,17 +15,17 @@ Rust, Swift and OCaml for the host benchmarks).
  v1, single-threaded:  0 ─ 1 ─ 2 ─ 3 ─ 4 ─ L ─ 5 optimizer I ─ V v1 completion ─ 6 CE + Task
  v2, threads:          7 parallelism ─ 8 SIMD ─ 9 optimizer II ─ 9.5 incremental, threads
                        ─ 9.6 ergonomics, systems ─ third design review
- v3:                   10 effect handlers ─ (11 self-hosting) ─ 12 release 0.1
+ v3:                   10 effect handlers ─ (11 self-hosting) ─ 12 release 0.6.2
  alongside:            E editors, D testing, profiling and debugging, M microcontrollers,
                        T more targets, P type providers, S library, K packages
 
- done: 0–11, L, V and the third design review      now: phase 11.5
+ done: 0–11, L, V and the third design review      now: phase 12, release 0.6.2
 ```
 
 - **v1 (phases 0–6, L and V):** the complete single-threaded language. It is fast, memory-safe, has C interop, and runs async on one event loop.
 - **v2 (phases 7–9.6, done):** threads and parallelism, SIMD and the final performance work, incremental builds, and what F#, systems and C programmers miss first.
-- **v3 (phases 10 and 11, done):** effect handlers, then the compiler in Z#, which builds itself. The F# compiler as phase 10 left it is tagged `v0.5`, and `v0.6` is the last version with both compilers: its release is stage 0 now (tags of the repository, not the public release 0.1 below).
-- **v1, v2 and v3 are stages of the language, not release numbers.** The first public release is 0.1 (phase 12); 1.0 is the release that freezes the language and the library's names.
+- **v3 (phases 10 and 11, done):** effect handlers, then the compiler in Z#, which builds itself. The F# compiler as phase 10 left it is tagged `v0.5`, and `v0.6` is the last version with both compilers: its release is stage 0 now (tags of the repository; the first public release, 0.6.2, is below).
+- **v1, v2 and v3 are stages of the language, not release numbers.** The first public release is 0.6.2 (phase 12, numbered on from the tags before it); 1.0 is the release that freezes the language and the library's names.
 - **Tracks:** editor tooling (E), testing, profiling and debugging (D), microcontrollers (M), more targets (T), type providers (P), the library (S) and packages (K) run alongside the main line.
 
 ## Where things stand
@@ -53,9 +53,9 @@ Rust, Swift and OCaml for the host benchmarks).
 
 ### Phase 11.5: cross-platform: macOS, Windows and Linux on arm64 and x86-64
 Z# builds programs for, and runs its compiler on, the platforms people develop on: macOS arm64
-and x86-64, Windows x64 and arm64, and Linux arm64 beside Linux x86-64. It comes before 0.1, so the
+and x86-64, Windows x64 and arm64, and Linux arm64 beside Linux x86-64. It comes before 0.6.2, so the
 release ships on all of them, and because each port (a calling convention, the runtime off POSIX,
-a loop on kqueue and on IOCP, the compiler's own processes and paths) costs less before 0.1 has
+a loop on kqueue and on IOCP, the compiler's own processes and paths) costs less before 0.6.2 has
 users than after. **Design:** [proposal 0022](docs/proposals/0022-targets-macos-windows.md) for
 macOS arm64 and Windows x64; its decisions carry to the other three, settled as each starts.
 - **Programs for each** (`zs build --target`, through `zig cc` as the Linux cross builds are, so no SDK is installed):
@@ -67,21 +67,21 @@ macOS arm64 and Windows x64; its decisions carry to the other three, settled as 
 - **Exit tests:** `./test.sh` green on the five in CI, `tests/bootstrap.sh` included (each builds its own compiler to the same bytes); a release archive per platform, six with Linux x86-64; on a clean machine of each, the archive to a running hello world, following the guide.
 - **Status (2026-10-24):** built, waiting on machines. Every target builds programs and the compiler (decision 82): the host architecture from the compiler's own `host.c`, so a native aarch64 build uses AAPCS64; Microsoft x64's struct rules; `rt.c` on kqueue and `__ulock_wait` for macOS, on wepoll, winpthreads, Winsock and `WaitOnAddress` for Windows; `Path` and `Directory.temp` by the OS; UTF-8 file names on Windows through each program's manifest; `import c` reading zig's headers for the target. Here, `./test.sh` passes on Linux x86-64, under qemu for aarch64, under Wine for Windows x64 (`--target x86_64-windows-gnu`, which runs the programs there), and `--target aarch64-macos --build-only` builds every program; the Windows compiler runs under Wine up to clang; the Linux arm64 compiler, under qemu, builds itself to the same bytes (gen 1 = gen 2 = gen 3); and every target's build of the compiler is the same bytes twice from empty caches. `src/release.sh <zs> <version> <target>…` makes each platform's archive, and `.github/workflows/test.yml` runs the suite on each platform's runner with its archive's compiler. Left: a remote for that workflow to run on, and so the five green in CI and the clean-machine checks; lldb (phase 12).
 
-### Phase 12: release 0.1
+### Phase 12: release 0.6.2
 The first public release: the language works for people other than its author, in one niche
 first. It isn't 1.0: the language and the library's names may still change in 0.x releases,
 each change listed in `CHANGELOG.md` with what to rewrite. Optimization waits for profiles of
 real programs.
 **Design** of the deferred features: [proposal 0004](docs/proposals/0004-c-layout.md) (C unions, layout facts), [0006](docs/proposals/0006-anonymous-records.md) (top-level patterns) and [0021](docs/proposals/0021-warnings.md) (warnings).
 - **Scope:**
-  - **The "before 0.1" list,** sorted by the third design review from the deferred features and the tracks' *after phase 11* items, and nothing else:
-    - **K2 (versions):** packages written against 0.1 must survive 0.2.
+  - **The "before 0.6.2" list,** sorted by the third design review from the deferred features and the tracks' *after phase 11* items, and nothing else:
+    - **K2 (versions):** packages written against 0.6.2 must survive 0.7.
     - **Track S, what an F# programmer reaches for on the first day:** the rest of `List`/`Array`/`Map`/`Set` (S2), `Math` and `Random` (S3), UTF-8 (S4).
-    - **Track D:** lldb (debugging 2), since macOS is in 0.1; doc tests (D8), so the guide can't go stale at launch.
+    - **Track D:** lldb (debugging 2), since macOS is in 0.6.2; doc tests (D8), so the guide can't go stale at launch.
     - **The deferred features below,** anonymous records excepted (cut).
     - **If the flagship is a microcontroller:** M4 (one real board), M9 (bit fields), M11 (`Cpu`) and async on bare metal (0016).
     - Everything else marked *after phase 11* follows 0.1.
-  - **A flagship project:** one real program in the niche Z# is best at, built alongside the release, so it decides what the library and the first packages need. The niche is picked at the start of the phase; microcontrollers are the strongest case (SVD registers, bit fields, `[<NoAlloc>]`, interrupt handlers). Picking them moves track M's async on bare metal into the "before 0.1" list.
+  - **A flagship project:** one real program in the niche Z# is best at, built alongside the release, so it decides what the library and the first packages need. The niche is picked at the start of the phase; microcontrollers are the strongest case (SVD registers, bit fields, `[<NoAlloc>]`, interrupt handlers). Picking them moves track M's async on bare metal into the "before 0.6.2" list.
   - **Every platform (phase 11.5):** the release's archives for the six, built and tested in CI.
   - **Installing:** phase 11.5's release archive per platform, with `zs`, the runtime and the library. `zs doctor` checks for clang or zig, and libclang for `import c`, and says how to get what's missing *(built in phase 12, with git, QEMU, probe-rs, Node and the debugger too)*.
   - **Deferred here:** features that aren't needed before phase 11, moved out of earlier phases so those stay small. The third design review checked them against "Simple" (anonymous records were cut) and put the rest on the list above.
@@ -94,22 +94,22 @@ real programs.
     - **From phase 9.6, layout:**
       - **Layout facts:** `sizeof<T>`, `alignof<T>` and `offsetof<T> "field"` as constants. A top-level `assert` on constants is checked at compile time, so a record's layout is checked against C's with the `assert` the language already has, not a new `static assert`.
       - **C unions:** `import c` brings them in as `[<CLayout>]` unions, read only in `unsafe`.
-    - **Kept before phase 11:** compound assignment, `function`, list expressions, slices and `span`, tests as values, assertions, inline expect tests, the iteration trait, and rename and code actions. They change how code and tests are written, or break an API, so they're cheaper before the compiler is rewritten in Z# and before 0.1 has users.
+    - **Kept before phase 11:** compound assignment, `function`, list expressions, slices and `span`, tests as values, assertions, inline expect tests, the iteration trait, and rename and code actions. They change how code and tests are written, or break an API, so they're cheaper before the compiler is rewritten in Z# and before 0.6.2 has users.
     - **From the tracks:** the items marked *after phase 11* in E, D, M, S and K, and track P whole.
   - **Launch:** the guide, the "Z# for F# programmers" page, the flagship project as the example, and a post for each of the strongest results (Perceus on a Cortex-M, atomic counts only on shared objects, SIMD next to C). *(Written in phase 12: [docs/posts](docs/posts), from the reports' measurements.)*
-- **Status (2026-10-27):** the flagship is a microcontroller, an ST Nucleo-F401RE, so M4, M9, M11 and async on bare metal are on the list; impls across packages take Rust's orphan rule (K9). The flagship is `examples/nucleo`: three tasks (the LED, the button's `Irq.wait`, a shell fed by USART2's handler through an `Spsc` and a `Signal`), `[<Bits>]` registers, its log over RTT; built by `zs build` alone, its shell tested by `zs test`, run by `./test.sh` on QEMU's STM32F405 (52 KB of flash at `-Os`, against 5 KB for the polling `examples/mcu/nucleo-f401.zs`: the task combinators' size is the first thing it says the library needs). Done: top-level patterns (`tests/top_pattern.zs`); layout facts and compile-time asserts (`tests/layout.zs`); C unions, `import c` of them, and bit-field structs left out (`tests/cunion.zs`, `tests/cimport/abi.zs`); the `cycle` warning and `[<Cyclic>]` (`tests/err_cycle.zs`, `tests/cyclic.zs`); `Math` and `Random` (S3: `tests/math.zs`, `tests/random.zs`, and on both chips and WebAssembly `tests/mcu/math.zs`); the rest of F#'s collection functions, `Queue`, `Stack` and `PriorityQueue` (S2: `tests/collections_more.zs`); `Text.Utf8` (S4: `tests/utf8.zs`); interrupt handlers with `Atomic` in Core, `Spsc` and `Irq` (M1: `tests/mcu/isr.zs`, `systick.zs` on both chips); the `Cpu` intrinsics and `Cpu.critical` (M11: `tests/mcu/cpu.zs`); `[<NoAlloc>]` and `--no-heap` (M2: `tests/noalloc.zs`, `tests/err_noalloc.zs`, `tests/mcu/noheap.zs`); `[<Bits>]` records (M9: `tests/bits.zs`, on both chips `tests/mcu/bits.zs`); async on bare metal (0016: `Task` in Core, the embedded runtime's loop with SysTick timers and `wfi`, `Irq.wait`, `Signal`, `Runtime.setClock`, `Task.spawn` and its kind errors on a chip; `tests/mcu/task.zs` on both chips, `examples/mcu/uart.zs` receiving in a task under QEMU; not `zs test --target`); the Nucleo-F401RE (M4: `--target nucleo-f401`, its memory map and interrupt lines, output over RTT, `zs run` through probe-rs; targets found by name, the word from the triple's architecture; its image run under QEMU's STM32F405 with its RTT ring read from RAM, `tests/mcu/rtt.mjs`; not yet run on the board itself); C interop on every target, the chips' AAPCS and WebAssembly included, both ways (M6); `zs.toml`'s `target`, `[c.<target>]` and `[target.<name>] heap` (M7), `zs run` under QEMU; `examples/rust` and `examples/zig` (Rust's and Zig's code and packages through the C ABI, on an OS and on a Cortex-M4).
+- **Status (2026-10-27):** the flagship is a microcontroller, an ST Nucleo-F401RE, so M4, M9, M11 and async on bare metal are on the list; impls across packages take Rust's orphan rule (K9). The flagship is `examples/nucleo`: three tasks (the LED, the button's `Irq.wait`, a shell fed by USART2's handler through an `Spsc` and a `Signal`), `[<Bits>]` registers, its log over RTT; built by `zs build` alone, its shell tested by `zs test`, run by `./test.sh` on QEMU's STM32F405 (52 KB of flash at `-Os`, against 5 KB for the polling `examples/mcu/nucleo-f401.zs`: the task combinators' size is the first thing it says the library needs). Done: top-level patterns (`tests/top_pattern.zs`); layout facts and compile-time asserts (`tests/layout.zs`); C unions, `import c` of them, and bit-field structs left out (`tests/cunion.zs`, `tests/cimport/abi.zs`); the `cycle` warning and `[<Cyclic>]` (`tests/err_cycle.zs`, `tests/cyclic.zs`); `Math` and `Random` (S3: `tests/math.zs`, `tests/random.zs`, and on both chips and WebAssembly `tests/mcu/math.zs`); the rest of F#'s collection functions, `Queue`, `Stack` and `PriorityQueue` (S2: `tests/collections_more.zs`); `Text.Utf8` (S4: `tests/utf8.zs`); interrupt handlers with `Atomic` in Core, `Spsc` and `Irq` (M1: `tests/mcu/isr.zs`, `systick.zs` on both chips); the `Cpu` intrinsics and `Cpu.critical` (M11: `tests/mcu/cpu.zs`); `[<NoAlloc>]` and `--no-heap` (M2: `tests/noalloc.zs`, `tests/err_noalloc.zs`, `tests/mcu/noheap.zs`); `[<Bits>]` records (M9: `tests/bits.zs`, on both chips `tests/mcu/bits.zs`); async on bare metal (0016: `Task` in Core, the embedded runtime's loop with SysTick timers and `wfi`, `Irq.wait`, `Signal`, `Runtime.setClock`, `Task.spawn` and its kind errors on a chip; `tests/mcu/task.zs` on both chips, `examples/mcu/uart.zs` receiving in a task under QEMU; not `zs test --target`); the Nucleo-F401RE (M4: `--target nucleo-f401`, its memory map and interrupt lines, output over RTT, `zs run` through probe-rs; targets found by name, the word from the triple's architecture; its image run under QEMU's STM32F405 with its RTT ring read from RAM, `tests/mcu/rtt.mjs`; not yet run on the board itself); C interop on every target, the chips' AAPCS and WebAssembly included, both ways (M6); `zs.toml`'s `target`, `[c.<target>]` and `[target.<name>] heap` (M7), `zs run` under QEMU; `examples/rust` and `examples/zig` (Rust's and Zig's code and packages through the C ABI, on an OS and on a Cortex-M4). And: lldb (D2: `tests/debug/lldb.sh`); doc tests (D8: `zs test --doc`, `tests/doctest.sh` and the library's examples); package versions by minimal version selection (K2: `tests/project/git.sh`); the orphan rule (K9: `tests/err_orphan.zs`, `tests/project/orphan`); `zs doctor`; the guide's page for F# programmers and the launch posts (`docs/posts`). **Left:** phase 11.5's CI on the five runners and the release archives (set aside for now: no machines), the clean-machine checks, running the flagship on the board itself (it runs under QEMU's STM32F405), and cutting the release: `CHANGELOG.md`'s 0.6.2 section is written.
 - **Exit tests:**
   - On clean Fedora, Ubuntu, macOS and Windows machines, a newcomer gets from the release archive to a running hello world in five minutes, following only the guide.
   - The flagship project builds from its repository with `zs build` alone, and runs on its hardware.
-  - The "before 0.1" list is empty, and `CHANGELOG.md` has its first entry.
-  - Each deferred feature taken into 0.1 passes its exit test:
+  - The "before 0.6.2" list is empty, and `CHANGELOG.md` has its first entry.
+  - Each deferred feature taken into 0.6.2 passes its exit test:
     - Top-level patterns have a test.
     - `import c` of a header with a union imports it, and a top-level `assert (sizeof<Packet> = 20)` fails to compile when a field changes.
     - A doubly linked list with `ref` back-pointers gets the warning; with `weak`, or `[<Cyclic>]`, it doesn't. The repository's own code has no warnings.
 
 ## Tracks
 Before phase 11, a track does what the self-hosted compiler needs, what closes a known gap, and what would cost more later: a change to how code or tests are written, or to an API.
-Items marked *after phase 11* wait for phase 12, which picks what 0.1 needs from them.
+Items marked *after phase 11* wait for phase 12, which picks what 0.6.2 needs from them.
 
 ### Microcontrollers (M)
 Tier 2 (DESIGN §10): every phase keeps `bench/mcu` working and within its ratios.
@@ -127,7 +127,7 @@ Tier 2 (DESIGN §10): every phase keeps `bench/mcu` working and within its ratio
   10. **Fixed-point numbers:** *(after phase 11; a Core library, approved at the third design review with decision 66 as its one language change)* `q7`, `q15` and `q31`, the formats CMSIS-DSP and the chips' saturating instructions use, as library types with `Add`, `Num` and `Show`, for DSP on chips without an FPU (Cortex-M0+). A general `fix<i, f>` would need numbers as type arguments beyond `fixed`'s size, for formats no hardware has.
   11. **Core intrinsics:** *(done in phase 12)* `Cpu.wfi`, `wfe`, `dsb`, `dmb`, `isb`, `nop`, and `Cpu.critical (fun () -> …)` with interrupts masked for its body, instead of inline assembly. The rules for state shared with interrupt handlers (item 1) build on `critical` and `Atomic`.
   12. **Placement:** *(after phase 11)* `[<Section ".noinit">]` on a top-level value (memory kept across a reset, or a DMA region a linker script names) and `[<Align 32>]` on a value or a type (DMA buffers, cache lines).
-- **Later:** async on bare metal (phase 6 `Task` over interrupts, with no OS; [proposal 0016](docs/proposals/0016-async-bare-metal.md), approved at the third design review, decision 71; before 0.1 if the flagship is a microcontroller).
+- **Later:** async on bare metal (phase 6 `Task` over interrupts, with no OS; [proposal 0016](docs/proposals/0016-async-bare-metal.md), approved at the third design review, decision 71; before 0.6.2 if the flagship is a microcontroller).
 
 ### Editor tooling (E)
 Zed first. Everything is plain tree-sitter, LSP and MCP, so other editors and agents get the
@@ -154,13 +154,13 @@ same support through a thin extension each.
   - Given a file with a type error, Zed's agent fixes it using only the MCP tools.
 
 ### More targets (T)
-Phase 11.5 takes this track whole, before 0.1: macOS arm64 and x86-64, Windows x64 and arm64, and
-the compiler on Linux arm64 (reordered on 2026-10-24; proposal 0022 had macOS in 0.1 and Windows
+Phase 11.5 takes this track whole, before 0.6.2: macOS arm64 and x86-64, Windows x64 and arm64, and
+the compiler on Linux arm64 (reordered on 2026-10-24; proposal 0022 had macOS in 0.6.2 and Windows
 after it). Tier 3 (DESIGN §10), through `zig cc` as the Linux cross builds are.
 **Design:** [proposal 0022](docs/proposals/0022-targets-macos-windows.md).
 
 ### Type providers (P)
-*After 0.1*, the whole track. **Design:** [proposal 0001](docs/proposals/0001-type-providers.md), approved in principle at the third design review (decision 56).
+*After 0.6.2*, the whole track. **Design:** [proposal 0001](docs/proposals/0001-type-providers.md), approved in principle at the third design review (decision 56).
 F#'s type providers, built on what `import c` already does for C headers: the compiler reads a
 data source at compile time and declares the types (and functions) for it, so code against a
 JSON API, a CSV file or a database is checked against its shape.
@@ -321,7 +321,7 @@ and modules found transitively. Packages stay source (decision 27).
 - **Phases 9.5 and 9.6 split infrastructure from language.** Incremental builds and threads come first, so the language features that follow are tested on fast builds.
 - **The third design review comes before phase 10.** Effect handlers add effect rows to every function type, the biggest change to the language left, so what the language already has is settled and pruned first.
 - **Phase 10 comes last** of the language phases. It needs Task's API stable and opaque, and Perceus; DESIGN §6.1 lists what must stay true until then.
-- **Phase 11.5, the platforms, comes before the release:** 0.1 ships where people develop, and each port changes code 0.1's users would otherwise wait on: a calling convention, the runtime off POSIX, the compiler's own processes and paths.
+- **Phase 11.5, the platforms, comes before the release:** 0.6.2 ships where people develop, and each port changes code 0.6.2's users would otherwise wait on: a calling convention, the runtime off POSIX, the compiler's own processes and paths.
 - **Phase 12 comes after 11 and 11.5** (or after 10 if 11 is skipped): a release is worth making once the language is settled, self-hosting has shaken out the bugs a large program finds, and it runs where its users are.
 - **The tracks (E, D, M, T, P, S, K) run alongside.** Each phase keeps their tests passing.
 - **K1 (namespaced dependencies) comes before anything else in S or K:** it's the only change that would break packages people have already written. The first-party packages come after K2, so they can have versions.
@@ -643,9 +643,9 @@ Before phase 10, with phases 9–9.6 built:
 - **"Simple" again:** every feature since the second review was checked against decision 39. Built: all pass (each replaced code written by hand, and none added a runtime). Planned: anonymous records are cut (they replace a one-line declaration, not code, and give a record two spellings); fixed-point numbers stay as a Core library whose one language change is decision 66; bit fields, layout facts, C unions, `[<Section>]` and `[<Align>]`, the `Cpu` intrinsics, async on bare metal and type providers pass.
 - **How many kinds:** the five references (`ref`, `Buffer`, `weak`, `span`, `ptr`) and four functions (plain, `share<F>`, `callback<F>`, `fnptr<F>`) stay, and none merge: each differs in what it holds or where it may go, and the newcomer errors name the right one. No fifth function kind: 0012's `noalloc<F>` is declined, a call through a closure counts as allocating. Phase 10's effect rows go on the function type inside each kind, so they add none. The guide's memory chapter has the table of when to use which (decision 67).
 - **Errors a newcomer meets:** `tests/newcomer/`, 34 programs with the first mistakes of F# and C programmers. About 25 messages were added or extended so each names the problem, points at it and says what to write: F#'s `printfn`, `sprintf`, `null`, `try`, `raise`, classes, `mutable` fields, `.Value`, `.ToString()`, `async`, `seq` and a function that calls itself without `rec`; C's `=`, `++`, braces, `return`, `!`, an int as a condition, an int where a float is, a tuple passed to a curried function; and what to use instead of a `ref` or `Buffer` that crosses threads.
-- **Scope:** phase 12's "before 0.1" list is written out there; everything else marked *after phase 11* follows 0.1. A non-unit value discarded in statement position (F#'s warning 20) becomes a warning kind in 0021, `unused-value`.
-- **Proposals:** approved in principle: 0001 (after 0.1), 0013, 0015 (as a library), 0016, 0017 (before phase 11), 0020, and the draft parts of 0004, 0012 (without `noalloc<F>`) and 0014. Declined: 0006's anonymous records; its top-level patterns stay. 0002's open questions: named handler instances wait for a program that needs them; rows are written after the result type, as proposed; polymorphic operations are allowed; interrupt handlers have empty rows; `Task` on `Async` is phase 10's measurement.
-- **Phase 11, go:** 0020's first criterion holds (every replacement is scheduled before phase 11, 0017 now among them), and the "before 0.1" list is short enough for the third. The second (a 1,000-line Z# program of the compiler's shape within 1.5× of F#) is phase 11's first step; a miss sends 0.1 out on the .NET compiler, with the rewrite after it.
+- **Scope:** phase 12's "before 0.6.2" list is written out there; everything else marked *after phase 11* follows 0.1. A non-unit value discarded in statement position (F#'s warning 20) becomes a warning kind in 0021, `unused-value`.
+- **Proposals:** approved in principle: 0001 (after 0.6.2), 0013, 0015 (as a library), 0016, 0017 (before phase 11), 0020, and the draft parts of 0004, 0012 (without `noalloc<F>`) and 0014. Declined: 0006's anonymous records; its top-level patterns stay. 0002's open questions: named handler instances wait for a program that needs them; rows are written after the result type, as proposed; polymorphic operations are allowed; interrupt handlers have empty rows; `Task` on `Async` is phase 10's measurement.
+- **Phase 11, go:** 0020's first criterion holds (every replacement is scheduled before phase 11, 0017 now among them), and the "before 0.6.2" list is short enough for the third. The second (a 1,000-line Z# program of the compiler's shape within 1.5× of F#) is phase 11's first step; a miss sends 0.6.2 out on the .NET compiler, with the rewrite after it.
 
 **Exit tests:**
 - `tests/newcomer/`: 34 programs, each with its expected error, checked by `./test.sh`.

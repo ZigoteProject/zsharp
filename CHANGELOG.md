@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.6.2 (unreleased)
+
+The first public release, for microcontrollers: firmware for a real board, the ST Nucleo-F401RE,
+written as tasks on the runtime's loop, with interrupt handlers, registers as `[<Bits>]` records,
+code checked not to touch the heap, and its log over RTT (`examples/nucleo`). Beside it: package
+versions and the orphan rule for impls, lldb, doc tests, `zs doctor`, and the guide's page for F#
+programmers.
 
 ### Language
 - The orphan rule (K9): an impl written lives in its trait's package or its type's, so two
@@ -150,7 +156,7 @@
   to the newest. A major of 2 or more is another package with its own key (`json2`), so both build
   in one program.
 
-### Editor
+### Tools and docs
 - The guide's "Z# for F# programmers" page (`docs/guide/17-from-fsharp.md`), and posts on the
   strongest results (`docs/posts`: Perceus on a Cortex-M, atomic counts only where threads meet,
   SIMD next to C).
@@ -158,8 +164,8 @@
   zig, libclang, git, QEMU, probe-rs, Node, lldb or gdb). `zs` alone lists the commands.
 - Doc tests: a fenced `zsharp` block in a `///` comment is an example that `zs test --doc` builds
   and runs, its `// => text` lines checked against what it prints, and `zs test --doc --update`
-  rewrites them. The library's first examples (`List.groupBy`, `chunkBySize`, `Map.change`,
-  `Utf8.validate`, `Math.clamp`) run in `./test.sh`.
+  rewrites them. The library's first examples (`List.groupBy`, `chunkBySize`, `maxBy`,
+  `Array.maxBy`, `Map.change`, `Utf8.validate`, `Math.clamp`) run in `./test.sh`.
 - lldb, the debugger on macOS, works on `zs build -g` programs as gdb does: breakpoints on Z#
   functions and lines, stepping, backtraces with Z# files and lines, and strings, records and
   unions as values (`tests/debug/lldb.sh`). It names the types as C's: a 64-bit `int` is a `long`.
