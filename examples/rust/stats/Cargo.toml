@@ -1,0 +1,9 @@
+[package]
+name = "stats"
+version = "0.1.0"
+edition = "2024"
+description = "Rust calling a Z# library through the C ABI (examples/rust)"
+publish = false
+
+# build.rs builds stats.zs with zs build --lib (zs on PATH, or the compiler in $ZS)
+build = "build.rs"

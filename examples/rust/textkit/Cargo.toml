@@ -1,0 +1,28 @@
+[package]
+name = "textkit"
+version = "0.1.0"
+edition = "2024"
+description = "Two crates.io packages, regex and sha2, behind a C ABI for Z# (examples/rust)"
+publish = false
+
+[lib]
+# a static library, linked into the Z# program by its zs.toml
+crate-type = ["staticlib"]
+
+[features]
+# the standard library, on an OS. Without it (--no-default-features, for a chip) the crate is
+# no_std: it allocates with C's malloc and free, which the Z# runtime gives a chip, and a panic
+# calls C's abort, a Z# panic there
+default = ["std"]
+std = ["regex/std", "regex/perf", "sha2/std"]
+
+[dependencies]
+regex = { version = "1", default-features = false, features = ["unicode"] }
+sha2 = { version = "0.10", default-features = false }
+
+[profile.release]
+# a Rust panic must not unwind into Z#'s frames: it aborts instead
+panic = "abort"
+
+[profile.dev]
+panic = "abort"

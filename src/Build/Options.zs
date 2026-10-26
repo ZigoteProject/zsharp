@@ -48,6 +48,8 @@ type Options =
     served: bool
     /// --check-ir: the IR checked after each pass (Core.Check), as ./test.sh does
     checkIr: bool
+    /// a chip's heap in bytes, from the project's [target.<name>] (the chip's default when None)
+    heap: option<int>
     /// the arguments after the file (zs run's, for the program)
     rest: list<string> }
 
@@ -84,7 +86,15 @@ let defaults : Options =
     time = false
     served = false
     checkIr = false
+    heap = None
     rest = [] }
+
+/// The options with --target's: a chip's name sets its triple and the chip, anything else is the
+/// triple.
+let withTarget (o: Options) (t: string) : Options =
+  match List.tryFind (fun (n, _) -> n = t) mcus with
+  | Some(_, m) -> { o with target = m.triple; mcu = Some m }
+  | None -> { o with target = t }
 
 /// The options a command's arguments ask for, and the arguments that aren't flags (in order);
 /// Error names a flag that lacks its value.
@@ -98,10 +108,7 @@ let parse (args: list<string>) : result<Options * list<string>, string> =
     | "--release" :: more -> go { o with release = true } others more
     | "-g" :: more -> go { o with debugInfo = true } others more
     | "--emit-llvm" :: more -> go { o with emitLlvm = true } others more
-    | "--target" :: t :: more ->
-      match List.tryFind (fun (n, _) -> n = t) mcus with
-      | Some(_, m) -> go { o with target = m.triple; mcu = Some m } others more
-      | None -> go { o with target = t } others more
+    | "--target" :: t :: more -> go (withTarget o t) others more
     | "--cpu" :: c :: more -> go { o with cpu = Some c } others more
     | "--lib" :: more -> go { o with isLib = true } others more
     | "--strict" :: more -> go { o with strict = true } others more
@@ -117,6 +124,15 @@ let parse (args: list<string>) : result<Options * list<string>, string> =
       else if List.contains a [ "-o"; "--target"; "--cpu"; "--profile-use" ] then Error $"zs: {a} needs a value"
       else go o (a :: others) more
   go { defaults with target = nativeTarget () } [] args
+
+/// The target's name in a project's [c.<name>] and [target.<name>] sections: host for this
+/// machine, a chip's name for its triple (cortex-m4), else the triple --target gave.
+let targetName (target: string) : string =
+  if target = "" || target = nativeTarget () then "host"
+  else
+    match List.tryFind (fun (c: string * Mcu) -> (snd c).triple = target) mcus with
+    | Some(n, _) -> n
+    | None -> target
 
 /// The architecture built for: the target triple's first part, or the host's (a native build).
 let arch (o: Options) : string =

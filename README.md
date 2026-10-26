@@ -187,8 +187,12 @@ type Vec2 = { x: f32; y: f32 }
 let add (a: Vec2) (b: Vec2) : Vec2 = { x = a.x + b.x; y = a.y + b.y }
 ```
 
-Structs pass by value as C passes them on each desktop platform, C can call back into Z#
-closures, and C can hold Z# values as counted handles. More:
+Structs pass by value as C passes them on every target, a microcontroller's included, C can call
+back into Z# closures, and C can hold Z# values as counted handles. A Z# library for a chip is an
+archive a C firmware links. Rust and Zig come through the same door:
+[examples/rust](examples/rust/README.md) uses crates.io's `regex` and `sha2` from Z# and a Z#
+library from Rust, and [examples/zig](examples/zig/README.md) Zig's cryptography from Z# and a Z#
+library from Zig, each on an OS and on a Cortex-M4. More:
 [the guide's chapter](docs/guide/09-c-interop.md).
 
 ### Tasks, threads and SIMD

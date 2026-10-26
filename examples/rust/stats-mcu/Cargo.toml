@@ -1,0 +1,21 @@
+[package]
+name = "stats-mcu"
+version = "0.1.0"
+edition = "2024"
+description = "A Rust firmware for a Cortex-M4 calling a Z# library through the C ABI (examples/rust)"
+publish = false
+
+# build.rs builds ../stats/stats.zs with zs build --lib --target cortex-m4 (zs on PATH, or $ZS)
+build = "build.rs"
+
+[dependencies]
+# the startup (vector table, reset handler) and the debugger's console: crates.io packages
+cortex-m-rt = "0.7"
+cortex-m-semihosting = "0.5"
+
+[profile.release]
+panic = "abort"
+debug = false
+
+[profile.dev]
+panic = "abort"

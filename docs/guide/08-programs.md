@@ -113,13 +113,24 @@ sources = ["c/shim.c"]               # compiled and linked with the program
 include = ["c"]                      # where its `import c` and its sources find headers
 link = ["m"]                         # libraries, as [<Link>] takes them
 pkg-config = ["sqlite3"]             # a library's flags and libraries, from pkg-config
+
+[c.cortex-m4]                        # added to [c] for one target: host, a chip, a triple
+link = ["rust/target/thumbv7em-none-eabihf/release/libkit.a"]
 ```
+
+A project for a chip names it: `target = "cortex-m4"` under `[package]` makes `zs build` and `zs run`
+build for it without `--target`, and `[target.cortex-m4]` sets what the chip's build takes, its
+heap (`heap = "16K"`).
+
+**Other languages:** a Rust crate or a Zig package built as a static library, with a C header for
+it, is C to Z#: `examples/rust` and `examples/zig` use each both ways, on an OS and on a
+microcontroller.
 
 | Command | Does |
 |---|---|
 | `zs new <name>` | creates a project: `zs.toml`, `src/main.zs`, `.gitignore` |
 | `zs build` | builds `build/<name>` (`--release` for an optimized one) |
-| `zs run [args…]` | builds and runs, passing the arguments |
+| `zs run [args…]` | builds and runs, passing the arguments (a chip's image under QEMU, a WebAssembly module under Node) |
 | `zs test [paths…]` | runs the `[<Tests>]` values in `src/` and `tests/` |
 | `zs fetch` | checks out the git dependencies |
 | `zs update` | moves git dependencies to the newest commit of their `rev` |

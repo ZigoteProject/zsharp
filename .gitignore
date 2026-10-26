@@ -22,3 +22,7 @@ editors/rider/.gradle/
 editors/rider/.intellijPlatform/
 editors/rider/build/
 editors/vscode/.vscode-test/
+# the examples' Rust and Zig builds
+examples/rust/*/target/
+examples/zig/**/zig-out/
+examples/zig/**/.zig-cache/

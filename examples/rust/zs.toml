@@ -1,0 +1,19 @@
+# Rust from Z# through the C ABI (README.md): textkit/ is a Rust crate that cargo builds as a
+# static library for each target; Textkit.zs reads its header with import c, and the archive for
+# the target being built is linked
+[package]
+name = "rust-textkit"
+main = "main.zs"
+
+# cargo build --release
+[c.host]
+link = ["textkit/target/release/libtextkit.a"]
+
+# cargo build --release --no-default-features --target thumbv7em-none-eabihf
+[c.cortex-m4]
+link = ["textkit/target/thumbv7em-none-eabihf/release/libtextkit.a"]
+
+# the heap on the chip, Rust's allocations included: the runtime's default is 64K, and compiling
+# a Unicode-aware pattern takes about 300K (QEMU's mps2-an386 has 4 MB of RAM)
+[target.cortex-m4]
+heap = "512K"

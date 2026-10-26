@@ -242,6 +242,14 @@ if command -v qemu-system-arm >/dev/null; then
   done
 fi
 
+# a project for a chip (tests/project/chip): zs run builds it for its zs.toml's target, with its
+# [c.<target>] source and its [target.<name>] heap, and runs it under qemu
+if command -v qemu-system-arm >/dev/null; then
+  actual=$( (cd tests/project/chip && "$OLDPWD/bin/zs" run 2>&1 | grep -v '^#zs') )
+  if [ "$actual" = "$(cat tests/project/chip/run.expected)" ]; then echo "ok   tests/project/chip (a project's target, its C for it and its heap)"
+  else echo "FAIL tests/project/chip"; diff <(echo "$actual") tests/project/chip/run.expected; fail=1; fi
+fi
+
 # C interop on freestanding WebAssembly, both ways, under node: structs by value (its C ABI), and
 # a C program linked with a Z# library archive (--lib -o lib.a), the runtime's _start running its
 # main

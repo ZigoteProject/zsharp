@@ -136,11 +136,13 @@ static void write_c(const char *s) { write_bytes(s, (int64_t)strlen(s)); }
 
 static uint8_t heap[ZS_HEAP_SIZE] __attribute__((aligned(8)));
 
-// the allocator's state in one place (one base address), with word-sized counters
+// the allocator's state in one place (one base address), with word-sized counters; blocks over
+// 256 bytes freed are on one list, reused first fit
 static struct {
     size_t top, used, peak;
     zs_int live, allocations;
     void *free_lists[33];
+    void *large;
 } H;
 
 _Noreturn void zs_panic_c(const char *msg);
@@ -154,10 +156,21 @@ void *zs_alloc(zs_int size) {
         block = (uint64_t *)H.free_lists[cls] - 1;
         H.free_lists[cls] = *(void **)H.free_lists[cls];
     } else {
-        if (H.top + need + 8 > ZS_HEAP_SIZE) zs_panic_c("out of memory");
-        block = (uint64_t *)(heap + H.top);
-        H.top += need + 8;
-        *block = need;
+        // ponytail: first fit, a block taken whole and never split or merged; a size-ordered
+        // tree if fragmentation shows
+        if (cls > 32)
+            for (void **at = &H.large; *at; at = (void **)*at)
+                if (((uint64_t *)*at)[-1] >= need) {
+                    block = (uint64_t *)*at - 1;
+                    *at = *(void **)*at;
+                    break;
+                }
+        if (!block) {
+            if (H.top + need + 8 > ZS_HEAP_SIZE) zs_panic_c("out of memory");
+            block = (uint64_t *)(heap + H.top);
+            H.top += need + 8;
+            *block = need;
+        }
     }
 
     H.used += (size_t)*block;
@@ -167,20 +180,60 @@ void *zs_alloc(zs_int size) {
     return block + 1;
 }
 
-// ponytail: blocks over 256 bytes are never reused; a first-fit list if programs need it
 void zs_free(void *p) {
     uint64_t *block = (uint64_t *)p - 1;
     size_t cls = (size_t)*block / 8;
     H.used -= (size_t)*block;
     H.live--;
 
-    if (cls <= 32) {
-        *(void **)p = H.free_lists[cls];
-        H.free_lists[cls] = p;
-    }
+    void **list = cls <= 32 ? &H.free_lists[cls] : &H.large;
+    *(void **)p = *list;
+    *list = p;
 }
 
 zs_int zs_allocations(void) { return H.allocations; }
+
+// Runtime.mallocs (): the times memory was taken for an object (no system allocator here: the
+// heap's own), and Runtime.marks (): objects marked shared, none with no threads
+zs_int zs_mallocs(void) { return H.allocations; }
+zs_int zs_marks(void) { return 0; }
+
+// ---- C's allocator, over the same heap: weak, so C, Rust or Zig code in a program or library
+// without a C library allocates where Z# does (a firmware with its own C library keeps its own).
+// Running out panics, as it does for Z#.
+
+__attribute__((weak)) void *malloc(size_t n) { return zs_alloc((zs_int)(n ? n : 1)); }
+
+__attribute__((weak)) void free(void *p) {
+    if (p) zs_free(p);
+}
+
+__attribute__((weak)) void *calloc(size_t n, size_t size) {
+    if (size && n > (size_t)-1 / size) zs_panic_c("calloc: too large");
+    uint8_t *p = malloc(n * size);
+    for (size_t i = 0; i < n * size; i++) p[i] = 0;
+    return p;
+}
+
+__attribute__((weak)) void *realloc(void *p, size_t n) {
+    if (!p) return malloc(n);
+    size_t have = (size_t)((uint64_t *)p)[-1];
+    if (n <= have) return p;
+    uint8_t *q = malloc(n), *from = p;
+    for (size_t i = 0; i < have; i++) q[i] = from[i];
+    free(p);
+    return q;
+}
+
+__attribute__((weak, noreturn)) void abort(void) { zs_panic_c("abort"); }
+
+// Ptr.alloc / Ptr.free: C memory for n elements of a size, zeroed
+void *zs_ptr_alloc(zs_int n, zs_int size) {
+    if (n < 0) zs_panic_c("Ptr.alloc: negative count");
+    return calloc((size_t)(n ? n : 1), (size_t)size);
+}
+
+void zs_ptr_free(void *p) { free(p); }
 
 // ---- strings
 
@@ -509,6 +562,18 @@ bool zs_parse_float(zs_str *s, double *out) {
     return true;
 }
 
+// String.isFloat and String.toFloat, over the same reading
+bool zs_str_is_float(zs_str *s) {
+    double x;
+    return zs_parse_float(s, &x);
+}
+
+double zs_str_to_float(zs_str *s) {
+    double x = 0;
+    zs_parse_float(s, &x);
+    return x;
+}
+
 zs_str *zs_str_of_bool(bool v) { return v ? str_of("true", 4) : str_of("false", 5); }
 
 // a char's text: its UTF-8 encoding (a value that isn't a Unicode scalar becomes U+FFFD)
@@ -560,6 +625,45 @@ zs_int zs_str_index_of(zs_str *s, zs_str *sub, zs_int from) {
     for (zs_int i = from; i + sub->len <= s->len; i++)
         if (memcmp(s->data + i, sub->data, (size_t)sub->len) == 0) return i;
     return -1;
+}
+
+static bool is_space(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; }
+
+zs_str *zs_str_trim(zs_str *s) {
+    zs_int a = 0, b = s->len;
+    while (a < b && is_space(s->data[a])) a++;
+    while (b > a && is_space(s->data[b - 1])) b--;
+    return str_of(s->data + a, b - a);
+}
+
+static zs_str *map_ascii(zs_str *s, bool upper) {
+    zs_str *r = str_of(s->data, s->len);
+    for (zs_int i = 0; i < r->len; i++) {
+        char c = r->data[i];
+        if (upper && c >= 'a' && c <= 'z') r->data[i] = (char)(c - 32);
+        if (!upper && c >= 'A' && c <= 'Z') r->data[i] = (char)(c + 32);
+    }
+    return r;
+}
+
+zs_str *zs_str_upper(zs_str *s) { return map_ascii(s, true); }
+zs_str *zs_str_lower(zs_str *s) { return map_ascii(s, false); }
+
+zs_str *zs_str_replace(zs_str *s, zs_str *old, zs_str *with) {
+    if (old->len == 0) return str_of(s->data, s->len);
+    zs_int n = 0;
+    for (zs_int i = 0; (i = zs_str_index_of(s, old, i)) >= 0; i += old->len) n++;
+    zs_str *r = str_new(s->len + n * (with->len - old->len));
+    zs_int i = 0, o = 0, j;
+    while ((j = zs_str_index_of(s, old, i)) >= 0) {
+        memcpy(r->data + o, s->data + i, (size_t)(j - i));
+        o += j - i;
+        memcpy(r->data + o, with->data, (size_t)with->len);
+        o += with->len;
+        i = j + old->len;
+    }
+    memcpy(r->data + o, s->data + i, (size_t)(s->len - i));
+    return r;
 }
 
 // ---- output, panics, exit
@@ -616,6 +720,71 @@ void zs_callback_thread(uint64_t *owner, const char *type) {
         for (const char *c = parts[i]; *c && n < sizeof msg - 1; c++) msg[n++] = *c;
     msg[n] = 0;
     zs_panic_c(msg);
+}
+
+// ---- handles: a Z# object held by C (zs_handle in a generated header), as the host's (rt.c): a
+// count of its own and one reference to the object, which the object's drop function gives up
+// when the handle's last reference goes. A Share value's handle may be used anywhere; any other
+// only where it was made, the main code or one interrupt handler.
+// ponytail: counts change without masking interrupts; with interrupt handlers (0012) a shared
+// handle's count goes through Cpu.critical
+
+typedef struct {
+    zs_int rc;
+    void (*drop)(void *);
+    void *obj;
+    const char *type;
+    uint32_t owner;
+    bool shared;
+} zs_handle;
+
+zs_handle *zs_handle_new(void *obj, void (*drop)(void *), bool shared, const char *type) {
+    zs_handle *h = zs_alloc((zs_int)sizeof(zs_handle));
+    h->rc = 1;
+    h->drop = drop;
+    h->obj = obj;
+    h->type = type;
+    h->owner = context();
+    h->shared = shared;
+    return h;
+}
+
+// a handle used elsewhere than where it was made: a panic naming what it holds
+static void handle_check(zs_handle *h, const char *what) {
+    if (h->shared || h->owner == context()) return;
+    char msg[512];
+    size_t n = 0;
+    const char *parts[] = {what, ": a handle of ", h->type, " used from another interrupt handler than the code that made it (make its type Share, or use it where it was made)"};
+    for (size_t i = 0; i < sizeof parts / sizeof parts[0]; i++)
+        for (const char *c = parts[i]; *c && n < sizeof msg - 1; c++) msg[n++] = *c;
+    msg[n] = 0;
+    zs_panic_c(msg);
+}
+
+// the object, with a new reference for Z#
+void *zs_handle_get(zs_handle *h) {
+    if (!h) zs_panic_c("a null zs_handle was passed to Z#");
+    handle_check(h, "a call into Z#");
+    int32_t *rc = h->obj;
+    if (*rc > 0) (*rc)++;
+    else if (*rc < 0) (*rc)--; // a shared object's count
+    return h->obj;
+}
+
+void zs_retain(zs_handle *h) {
+    if (!h) return;
+    handle_check(h, "zs_retain");
+    h->rc++;
+}
+
+void zs_release(zs_handle *h) {
+    if (!h) return;
+    handle_check(h, "zs_release");
+    if (--h->rc > 0) return;
+    void *obj = h->obj;
+    void (*drop)(void *) = h->drop;
+    zs_free(h);
+    drop(obj);
 }
 
 void zs_set_args(int32_t argc, char **argv) {

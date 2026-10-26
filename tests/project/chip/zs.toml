@@ -1,0 +1,12 @@
+# a project for a chip: zs build and zs run without --target build for its target, a C source
+# for that target only, and its heap's size
+[package]
+name = "chip"
+main = "main.zs"
+target = "cortex-m0plus"
+
+[c.cortex-m0plus]
+sources = ["c/answer.c"]
+
+[target.cortex-m0plus]
+heap = "4K"

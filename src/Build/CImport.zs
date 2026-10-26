@@ -68,7 +68,9 @@ let private scalars : Map<string, string> =
       ("unsigned short", "u16"); ("unsigned short int", "u16"); ("int", "i32"); ("signed int", "i32"); ("signed", "i32"); ("unsigned int", "u32"); ("unsigned", "u32")
       // the word, like C's long on Linux (LP64 and ILP32)
       ("long", "int"); ("long int", "int"); ("long long", "i64"); ("long long int", "i64"); ("unsigned long", "usize"); ("unsigned long int", "usize")
-      ("unsigned long long", "u64"); ("unsigned long long int", "u64"); ("float", "f32"); ("double", "f64") ]
+      ("unsigned long long", "u64"); ("unsigned long long int", "u64"); ("float", "f32"); ("double", "f64")
+      // the word on every target, whatever C type the target's headers make them
+      ("size_t", "usize"); ("uintptr_t", "usize"); ("ptrdiff_t", "int"); ("intptr_t", "int"); ("ssize_t", "int") ]
   Map.ofList pairs
 
 // Windows's data model (LLP64): long is 32 bits there

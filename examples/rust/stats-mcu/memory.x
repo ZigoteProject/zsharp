@@ -1,0 +1,7 @@
+/* QEMU's mps2-an386: 4 MB of code memory at 0, 4 MB of SRAM at 0x20000000 (for a Nucleo-F401RE:
+   FLASH at 0x08000000, 512K; RAM at 0x20000000, 96K) */
+MEMORY
+{
+  FLASH : ORIGIN = 0x00000000, LENGTH = 4M
+  RAM : ORIGIN = 0x20000000, LENGTH = 4M
+}

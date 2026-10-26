@@ -274,7 +274,7 @@ let make (o: Options.Options) (prog0: Program) (linked: Modules.Linked) (testBui
           let rto = Path.changeExtension ll ".rt.o"
           let flags = [ "-ffunction-sections"; "-fdata-sections" ]
           let r1 = timed o.time "clang" (fun () -> Tools.run "clang" (List.concat [ opt; [ "--target=" + m.triple ]; m.cflags; flags; [ "-c"; "-Wno-override-module"; ll; "-o"; obj ] ]))
-          let r2 = andThen (fun () -> timed o.time "zig cc" (fun () -> Tools.run "zig" (List.concat [ [ "cc"; "-target"; m.zigTarget; "-mcpu=" + m.zigCpu ]; opt; flags; [ "-DZS_LIB"; $"-DZS_HEAP_SIZE={m.heap}"; "-c"; runtimeFile "rt-embedded.c"; "-o"; rto ] ]))) r1
+          let r2 = andThen (fun () -> timed o.time "zig cc" (fun () -> Tools.run "zig" (List.concat [ [ "cc"; "-target"; m.zigTarget; "-mcpu=" + m.zigCpu ]; opt; flags; [ "-DZS_LIB"; $"-DZS_HEAP_SIZE={Option.defaultValue m.heap o.heap}"; "-c"; runtimeFile "rt-embedded.c"; "-o"; rto ] ]))) r1
           let archive () =
             File.delete o.out |> ignore
             Tools.run "llvm-ar" [ "rcs"; o.out; obj; rto ]
@@ -290,7 +290,7 @@ let make (o: Options.Options) (prog0: Program) (linked: Modules.Linked) (testBui
           let entry = if o.isLib then [ "-Wl,--no-entry" ] else []
           let exports = List.map (fun (e: Core.Ir.Export) -> "-Wl,--export=" + e.cname) prog.exports
           let compiled = timed o.time "clang" (fun () -> Tools.run "clang" (List.concat [ opt; [ "--target=" + m.triple ]; Options.sectionFlags o; [ "-c"; "-Wno-override-module"; ll; "-o"; obj ] ]))
-          let r = andThen (fun () -> timed o.time "zig cc" (fun () -> Tools.run "zig" (List.concat [ [ "cc"; "-target"; m.zigTarget ]; opt; Options.sectionFlags o; [ $"-DZS_HEAP_SIZE={m.heap}" ]; entry; exports; [ obj; runtimeFile "rt-embedded.c" ]; linkArgs linked; [ "-o"; o.out ] ]))) compiled
+          let r = andThen (fun () -> timed o.time "zig cc" (fun () -> Tools.run "zig" (List.concat [ [ "cc"; "-target"; m.zigTarget ]; opt; Options.sectionFlags o; [ $"-DZS_HEAP_SIZE={Option.defaultValue m.heap o.heap}" ]; entry; exports; [ obj; runtimeFile "rt-embedded.c" ]; linkArgs linked; [ "-o"; o.out ] ]))) compiled
           File.delete obj |> ignore
           r
         | Some m ->
@@ -305,7 +305,7 @@ let make (o: Options.Options) (prog0: Program) (linked: Modules.Linked) (testBui
           // the runtime as a separate object: as bitcode (measured in phase 9) it changes
           // nothing at -Os, and at -O2 costs flash for gains that aren't the runtime's
           let compiled = timed o.time "clang" (fun () -> Tools.run "clang" (List.concat [ opt; [ "--target=" + m.triple ]; m.cflags; flags; [ "-c"; "-Wno-override-module"; ll; "-o"; obj ] ]))
-          let r = andThen (fun () -> timed o.time "zig cc" (fun () -> Tools.run "zig" (List.concat [ [ "cc"; "-target"; m.zigTarget; "-mcpu=" + m.zigCpu ]; opt; flags; [ $"-DZS_HEAP_SIZE={m.heap}"; "-T" + script; "-Wl,--gc-sections"; obj; runtimeFile "rt-embedded.c" ]; linkArgs linked; [ "-o"; o.out ] ]))) compiled
+          let r = andThen (fun () -> timed o.time "zig cc" (fun () -> Tools.run "zig" (List.concat [ [ "cc"; "-target"; m.zigTarget; "-mcpu=" + m.zigCpu ]; opt; flags; [ $"-DZS_HEAP_SIZE={Option.defaultValue m.heap o.heap}"; "-T" + script; "-Wl,--gc-sections"; obj; runtimeFile "rt-embedded.c" ]; linkArgs linked; [ "-o"; o.out ] ]))) compiled
           File.delete obj |> ignore
           File.delete script |> ignore
           r

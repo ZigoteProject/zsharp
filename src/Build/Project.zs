@@ -2,8 +2,12 @@
 /// dependencies, its [c] section), a package as module lookup sees it, and zs fetch and zs update
 /// for git dependencies, with zs.lock.
 ///   [package]  name = "wc"  version = "0.1.0"  main = "src/main.zs" (the default)
+///              target = "cortex-m4" (what zs build builds for without --target)
 ///   [dependencies]  text = { path = "../text" }  json = { git = "https://…", rev = "v1" }
 ///   [c]  sources = ["c/xxhash.c"]  include = ["c"]  link = ["m"]  pkg-config = ["sqlite3"]
+///   [c.cortex-m4]  link = ["rust/target/thumbv7em-none-eabihf/release/libkit.a"] (for one
+///                  target, added to [c]: --target's name, or host for this machine)
+///   [target.cortex-m4]  heap = "256K" (a chip's heap: bytes, or K and M)
 
 /// A dependency: a directory (its full path), or a git repository at a rev (a tag, branch or
 /// commit; "" for the default branch).
@@ -17,8 +21,19 @@ type Dep =
 type CConfig = { sources: list<string>; includes: list<string>; link: list<string>; pkgConfig: list<string> }
 
 /// A zs.toml: the directory holding it, the package's name, version and main file (full path),
-/// its dependencies by name, and its [c] section.
-type Manifest = { root: string; name: string; version: string; main: string; deps: list<string * Dep>; c: CConfig }
+/// the target it's built for without --target ("" for this machine), its dependencies by name, its
+/// [c] section, and the [c.<target>] sections by target name.
+type Manifest = { root: string; name: string; version: string; main: string; target: string; deps: list<string * Dep>; c: CConfig; cFor: Map<string, CConfig>; targets: Map<string, TargetConfig> }
+
+/// A [target.<name>] section: a chip's heap in bytes (its default when None).
+and TargetConfig = { heap: option<int> }
+
+/// A package's C settings for a target (--target's name, "host" for this machine): its [c]
+/// section with its [c.<target>] one added.
+let cConfigFor (m: Manifest) (target: string) : CConfig =
+  match Map.tryFind target m.cFor with
+  | Some t -> { sources = List.append m.c.sources t.sources; includes = List.append m.c.includes t.includes; link = List.append m.c.link t.link; pkgConfig = List.append m.c.pkgConfig t.pkgConfig }
+  | None -> m.c
 
 /// What's wrong with a project: the file, its line (0 for the file's), and the message.
 type Problem = { file: string; line: int; message: string }
@@ -73,7 +88,16 @@ let readManifest (root: string) : result<Manifest, Problem> =
     let section = ref ""
     let package = ref Map.empty
     let deps = Buffer.empty
-    let c = ref Map.empty
+    // the [c] section's keys under "", a [c.<target>] one's under its target
+    let c : ref<Map<string, Map<string, list<string>>>> = ref Map.empty
+    let targets : ref<Map<string, TargetConfig>> = ref Map.empty
+    // 4096, 16K, 1M: bytes
+    let size (v: string) : option<int> =
+      let n = String.length v
+      let scaled (k: int) : option<int> = Option.map (fun (x: int) -> x * k) (Int.parse (String.sub v 0 (n - 1)))
+      if n > 1 && String.endsWith "K" v then scaled 1024
+      else if n > 1 && String.endsWith "M" v then scaled (1024 * 1024)
+      else Int.parse v
     let problem = ref None
     let fail (n: int) (msg: string) =
       if Option.isNone problem.Value then
@@ -114,24 +138,48 @@ let readManifest (root: string) : result<Manifest, Problem> =
                   if String.startsWith "-" rev then fail n $"dependency '{key}': rev '{rev}' starts with -"
                   else Buffer.push (key, GitDep(url, rev)) deps
                 | _ -> fail n $"dependency '{key}' needs a path or a git URL"
-            | "c" ->
+            | s when s = "c" || String.startsWith "c." s ->
+              let target = if s = "c" then "" else String.sub s 2 (String.length s - 2)
               if List.contains key cKeys then
                 match listOf value with
-                | Ok items -> c.Value <- Map.add key items c.Value
-                | Error msg -> fail n $"[c] {key}: {msg}"
+                | Ok items ->
+                  let keys = Option.defaultValue Map.empty (Map.tryFind target c.Value)
+                  c.Value <- Map.add target (Map.add key items keys) c.Value
+                | Error msg -> fail n $"[{s}] {key}: {msg}"
               else
-                fail n $"unknown key '{key}' in [c]; it takes sources, include, link and pkg-config"
+                fail n $"unknown key '{key}' in [{s}]; it takes sources, include, link and pkg-config"
+            | s when String.startsWith "target." s ->
+              let target = String.sub s 7 (String.length s - 7)
+              let known = Option.defaultValue { heap = None } (Map.tryFind target targets.Value)
+              match (key, unquote value) with
+              | ("heap", Some v) ->
+                match size v with
+                | Some bytes when bytes > 0 -> targets.Value <- Map.add target { known with heap = Some bytes } targets.Value
+                | _ -> fail n $"[{s}] heap: expected a size such as \"16K\", found {value}"
+              | ("heap", None) -> fail n $"[{s}] heap: expected a quoted size such as \"16K\", found {value}"
+              | _ -> fail n $"unknown key '{key}' in [{s}]; it takes heap"
             | s -> fail n $"unknown section [{s}]"
     List.iteri one lines
     match problem.Value with
     | Some p -> Error p
     | None ->
       let get (k: string) (d: string) = Option.defaultValue d (Map.tryFind k package.Value)
-      let items (k: string) : list<string> = Option.defaultValue [] (Map.tryFind k c.Value)
       let full (p: string) = Path.getFullPath (Path.combine root p)
       let linkItem (l: string) = if String.contains "/" l || List.contains (Path.getExtension l) [ ".a"; ".so"; ".o" ] then full l else l
-      let config : CConfig = { sources = List.map full (items "sources"); includes = List.map full (items "include"); link = List.map linkItem (items "link"); pkgConfig = items "pkg-config" }
-      let m : Manifest = { root = root; name = get "name" (Path.getFileName root); version = get "version" "0.1.0"; main = full (get "main" "src/main.zs"); deps = Array.toList (Buffer.toArray deps); c = config }
+      let config (keys: Map<string, list<string>>) : CConfig =
+        let items (k: string) : list<string> = Option.defaultValue [] (Map.tryFind k keys)
+        { sources = List.map full (items "sources"); includes = List.map full (items "include"); link = List.map linkItem (items "link"); pkgConfig = items "pkg-config" }
+      let sections = Map.map (fun _ keys -> config keys) c.Value
+      let m : Manifest =
+        { root = root
+          name = get "name" (Path.getFileName root)
+          version = get "version" "0.1.0"
+          main = full (get "main" "src/main.zs")
+          target = get "target" ""
+          deps = Array.toList (Buffer.toArray deps)
+          c = Option.defaultValue (config Map.empty) (Map.tryFind "" sections)
+          cFor = Map.remove "" sections
+          targets = targets.Value }
       Ok m
 
 /// The nearest zs.toml at or above a directory.

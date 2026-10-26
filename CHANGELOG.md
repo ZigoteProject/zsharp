@@ -29,6 +29,18 @@
   program built for WebAssembly.
 - `import c` in a build for a chip or WebAssembly reads the header as the target's compiler does
   (its triple and flags, freestanding), so a vendor's header sees the chip it's written for.
+  `size_t` and `uintptr_t` are `usize`, and `ptrdiff_t`, `intptr_t` and `ssize_t` are `int`, on
+  every target (they followed the target's C type: `u32` on a chip).
+- A chip's runtime has C's `malloc`, `free`, `calloc`, `realloc` and `abort` (weak) over the Z#
+  heap, for C, Rust or Zig code linked in; reuses freed blocks over 256 bytes (they were never
+  reused); and has what Core needed that it lacked: `String.trim`, `toUpper`, `toLower`,
+  `replace` and float parsing, `Ptr.alloc` and `Ptr.free`, handles for C, `Runtime.mallocs`.
+- `zs.toml`: `target` under `[package]` (what `zs build` and `zs run` build for without
+  `--target`), `[c.<target>]` sections added to `[c]` for one target (`host`, `cortex-m4`, a
+  triple), and `[target.<name>]` with a chip's `heap`.
+- `zs run` for a chip runs the image under QEMU on its board, and a WebAssembly module under Node.
+- `examples/rust` and `examples/zig`: Rust and Zig code and packages with Z# through the C ABI,
+  both ways, on an OS and on a Cortex-M4 under QEMU.
 - macOS and Windows: a module's file is found by its exact name. Their file systems ignore case,
   so a file could be taken for a module of another name: `fixed.zs` for the library's `Fixed`,
   or `simd/x86.zs` for `Simd.X86`.

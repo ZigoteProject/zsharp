@@ -40,6 +40,14 @@ let private scratchExe () : string =
   | Ok p -> p
   | Error _ -> Path.combine (Directory.temp ()) "zs-run"
 
+// the options with the project's target when the command line names none, and the project's
+// settings for the target built for ([target.<name>])
+let private projectTarget (m: Project.Manifest) (args: list<string>) (o0: Options.Options) : Options.Options =
+  let o = if m.target <> "" && not (List.contains "--target" args) then Options.withTarget o0 m.target else o0
+  match Map.tryFind (Options.targetName o.target) m.targets with
+  | Some t -> { o with heap = t.heap }
+  | None -> o
+
 /// zs build [file.zs] …: the file, or the project's main as build/<name>; served: by the build
 /// server.
 let build (served: bool) (args: list<string>) : int =
@@ -62,7 +70,7 @@ let build (served: bool) (args: list<string>) : int =
           let dir = Path.combine m.root "build"
           Tools.makeDirectory dir
           let out = if o.out <> "" then o.out else Path.combine dir m.name
-          let code = Make.build { o with main = m.main; out = out } false
+          let code = Make.build { (projectTarget m args o) with main = m.main; out = out } false
           if code = 0 then
             println $"built {Path.getRelativePath (Environment.currentDirectory ()) out}"
           code
@@ -75,29 +83,36 @@ let run (args: list<string>) : int =
   | Error e ->
     eprintln e
     2
-  | Ok(o, files) ->
+  | Ok(o0, files) ->
     let main =
       match List.filter isFile files with
-      | file :: _ -> if fetched (dirOf file) then Ok file else Error ""
+      | file :: _ -> if fetched (dirOf file) then Ok(file, o0) else Error ""
       | [] ->
         match project () with
         | Error msg -> Error msg
-        | Ok m -> if fetched m.root then Ok m.main else Error ""
+        | Ok m -> if fetched m.root then Ok(m.main, projectTarget m args o0) else Error ""
     match main with
     | Error msg ->
       if msg <> "" then
         eprintln $"zs: {msg}"
       1
-    | Ok file ->
+    | Ok(file, o) ->
       let exe = scratchExe ()
       // a project's program takes the arguments after its name too
       let programArgs = if List.isEmpty o.rest then List.filter (fun a -> not (isFile a)) files else o.rest
+      // a chip's image runs under QEMU on its board, a WebAssembly module under Node
+      let (program, pargs) =
+        match o.mcu with
+        | Some m when m.board <> "" -> ("qemu-system-arm", [ "-M"; m.board; "-nographic"; "-semihosting-config"; "enable=on,target=native"; "-kernel"; exe ])
+        | Some _ -> ("node", [ Path.combine (Compile.runtimeDir ()) "run-wasm.mjs"; exe ])
+        | None -> (exe, programArgs)
       if Make.build { o with main = file; out = exe } false = 0 then
         let code =
-          match Tools.runInherited exe programArgs with
+          match Tools.runInherited program pargs with
           | Ok c -> c
           | Error e ->
-            eprintln $"zs: {e}"
+            let hint = if program = exe then "" else $" ({program} runs it here; on a board, flash it instead)"
+            eprintln $"zs: {e}{hint}"
             1
         File.delete exe |> ignore
         code

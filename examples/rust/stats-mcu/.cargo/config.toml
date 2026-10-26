@@ -1,0 +1,7 @@
+# a Cortex-M4F, as QEMU's mps2-an386 has; `cargo run` runs the image there
+[build]
+target = "thumbv7em-none-eabihf"
+
+[target.thumbv7em-none-eabihf]
+rustflags = ["-C", "link-arg=-Tlink.x"]
+runner = "qemu-system-arm -M mps2-an386 -nographic -semihosting-config enable=on,target=native -kernel"

@@ -15,9 +15,22 @@ zs build blink.zs --target cortex-m4 -Os -o blink.elf
 qemu-system-arm -M mps2-an386 -nographic -semihosting-config enable=on -kernel blink.elf
 ```
 
+`zs run --target cortex-m4` does both. A project for a chip says so in its `zs.toml`, and then
+`zs build` and `zs run` need no `--target`:
+
+```toml
+[package]
+name = "blink"
+main = "src/main.zs"
+target = "cortex-m4"
+
+[target.cortex-m4]
+heap = "16K"
+```
+
 **What a build contains:**
 - **Startup:** the vector table, a reset handler that sets up RAM, enables the FPU and starts SysTick, and `main`.
-- **Heap:** a fixed-size heap inside the image, 64 KB on `cortex-m4` and 8 KB on `cortex-m0plus`. When a program exits, it prints its heap peak and stack use.
+- **Heap:** a fixed-size heap inside the image, 64 KB on `cortex-m4` and 8 KB on `cortex-m0plus` unless `[target.<chip>]` sets `heap`. When a program exits, it prints its heap peak and stack use. C's `malloc`, `free`, `calloc` and `realloc` are there too, over the same heap, for C, Rust or Zig code linked in.
 - **Output:** `println` and panics go through semihosting, the debug channel to a debugger or QEMU. A panic stops the chip and reports exit status 134.
 - **Not available:** Std, the part of the library that needs an operating system: `Console`, `Environment`, `IO` (`File`, `Directory`, `Path`) and `Diagnostics`. Using it is a compile error that says so. Core (lists, arrays, maps, strings, `Mmio`, …) is all there.
 
@@ -77,7 +90,8 @@ println $"took {Runtime.ticks () - t0} ticks"
 C interop works on a chip as on a host, with the chip's calling convention (AAPCS: structs by value
 in core registers and on the stack, and on the hard-float Cortex-M4 floats and small float structs
 in float registers).
-- **Calling C:** `import c` and `[<Link "driver.c">]` work as on a host; the C sources are compiled for the chip and linked into the image. C on a chip has no C library, as is usual for firmware: vendor drivers, CMSIS and DSP code are fine, `printf` and `malloc` aren't there.
+- **Calling C:** `import c` and `[<Link "driver.c">]` work as on a host; `import c` reads a header as the chip's compiler does (a vendor's header sees the chip it's for), and the C sources are compiled for the chip and linked into the image. C on a chip has no C library, as is usual for firmware: vendor drivers, CMSIS and DSP code are fine, and `malloc` and `free` are the runtime's (from the Z# heap), but `printf` isn't there. `size_t` is `usize` on every target.
+- **Rust and Zig:** a `no_std` Rust crate or a freestanding Zig library, built for the chip as a static library, links the same way (`[c.cortex-m4]` in `zs.toml`); `examples/rust` and `examples/zig` run under QEMU, both ways.
 - **A Z# library in a C firmware:** `zs build lib.zs --lib --target cortex-m4 -o libsensor.a` makes an archive and its header (`libsensor.h`), with the runtime but no startup: the firmware has its vector table, reset handler and `main`, and links the archive with its own toolchain. A library's `[<Export>]` functions can't use top-level values computed at startup, since there is none.
 - **What the library asks of the firmware:** three functions, each with a default the firmware replaces by defining its own: `void zs_write(const char *p, size_t n)` takes the library's output (dropped by default: a debugger's semihosting isn't always there), `void zs_stop(int code)` stops after a panic (by default a trap, into the firmware's HardFault handler; `zs_set_panic_hook` runs before it) and `int64_t zs_ticks(void)` is `Runtime.ticks ()` (the DWT cycle counter on a Cortex-M4, 0 on a Cortex-M0+).
 - **Callbacks:** a `callback<F>` C calls only where it was passed, in the main code or in the same interrupt handler, as on a host it's called only on the thread that passed it; a `callback<share<F>>` C may call anywhere.

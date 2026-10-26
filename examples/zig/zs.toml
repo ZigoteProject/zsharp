@@ -1,0 +1,15 @@
+# Zig from Z# through the C ABI (README.md): cryptokit/ is a Zig package whose zig build makes a
+# static library for each target; main.zs reads its header with import c, and the archive for the
+# target being built is linked
+[package]
+name = "zig-cryptokit"
+main = "main.zs"
+
+# zig build -Doptimize=ReleaseFast
+[c.host]
+link = ["cryptokit/zig-out/lib/libcryptokit.a"]
+
+# zig build -Doptimize=ReleaseSmall -Dtarget=thumb-freestanding-eabihf -Dcpu=cortex_m4+vfp4d16sp
+#   --prefix zig-out/cortex-m4
+[c.cortex-m4]
+link = ["cryptokit/zig-out/cortex-m4/lib/libcryptokit.a"]

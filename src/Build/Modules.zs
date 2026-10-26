@@ -202,6 +202,7 @@ let private targetFlags (target: string) : list<string> =
 let program (texts: Map<string, string>) (first: int) (mainPath: string) (target: string) : result<list<Loaded> * Linked, Diagnostic * option<Source.Source>> =
   let hosted = target = ""
   let forTarget = targetFlags target
+  let targetName = Options.targetName target
   let order = Buffer.empty
   let count = ref first
   // a module: whether it's fully loaded
@@ -291,14 +292,15 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
     match pkg.manifest with
     | None -> []
     | Some m ->
-      let pc (what: string) = if hosted then List.collect (pkgConfig m what) m.c.pkgConfig else []
-      let flags = List.append (List.map (fun i -> "-I" + i) m.c.includes) (pc "--cflags")
+      let c = Project.cConfigFor m targetName
+      let pc (what: string) = if hosted then List.collect (pkgConfig m what) c.pkgConfig else []
+      let flags = List.append (List.map (fun i -> "-I" + i) c.includes) (pc "--cflags")
       if not (Set.contains m.root used.Value) then
         used.Value <- Set.add m.root used.Value
         for f in flags do
           if not (List.contains f (Array.toList (Buffer.toArray cflags))) then
             Buffer.push f cflags
-        for l in List.concat [ m.c.sources; m.c.link; pc "--libs" ] do
+        for l in List.concat [ c.sources; c.link; pc "--libs" ] do
           if not (List.contains l (Array.toList (Buffer.toArray links))) then
             Buffer.push l links
       flags
