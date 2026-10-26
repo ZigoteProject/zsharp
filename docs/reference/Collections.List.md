@@ -213,7 +213,7 @@ The sum of the elements (`Add.zero` for an empty list).
 ### `List.init`
 
 ```zsharp
-List.init : 'a -> ('a -> 'b) -> list<'b> when 'a : Num, 'a : Ord
+List.init : 'a -> ('a -> 'b) -> list<'b> when 'a : Add, 'a : Ord
 ```
 
 A list of `n` elements: `[f 0; f 1; …; f (n - 1)]`.
@@ -221,7 +221,7 @@ A list of `n` elements: `[f 0; f 1; …; f (n - 1)]`.
 ### `List.replicate`
 
 ```zsharp
-List.replicate : 'a -> 'b -> list<'b> when 'a : Num, 'a : Ord
+List.replicate : 'a -> 'b -> list<'b> when 'a : Add, 'a : Ord
 ```
 
 A list of `n` copies of `x`.
@@ -458,4 +458,63 @@ List.ofIter : 'a -> list<'b> when 'a : Iter<'b>
 
 The elements of a collection, in its order: an array, a string's characters, a map's
 entries, …
+
+### `List.groupBy`
+
+```zsharp
+List.groupBy : ('a -> 'b) -> list<'a> -> list<'b * list<'a>> when 'b : Eq, 'b : Hash
+```
+
+The elements grouped by `f`'s key for each: a group per key, in the order the keys first
+appear, its elements in the list's order (`'k` with `Hash` and `Eq`).
+
+### `List.countBy`
+
+```zsharp
+List.countBy : ('a -> 'b) -> list<'a> -> list<'b * int> when 'b : Eq, 'b : Hash
+```
+
+How many elements have each of `f`'s keys, in the order the keys first appear.
+
+### `List.chunkBySize`
+
+```zsharp
+List.chunkBySize : int -> list<'a> -> list<list<'a>>
+```
+
+The elements in lists of `size` (the last one shorter when they don't divide evenly).
+
+### `List.windowed`
+
+```zsharp
+List.windowed : int -> list<'a> -> list<list<'a>>
+```
+
+Every run of `size` neighbors, sliding by one: `windowed 2 [ 1; 2; 3 ]` is
+`[ [ 1; 2 ]; [ 2; 3 ] ]` (none when the list is shorter).
+
+### `List.pairwise`
+
+```zsharp
+List.pairwise : list<'a> -> list<'a * 'a>
+```
+
+Each element with the next: `pairwise [ 1; 2; 3 ]` is `[ (1, 2); (2, 3) ]`.
+
+### `List.scan`
+
+```zsharp
+List.scan : ('a -> 'b -> 'a) -> 'a -> list<'b> -> list<'a>
+```
+
+`fold`'s states, the first one and the one after each element: `scan (+) 0 [ 1; 2 ]` is
+`[ 0; 1; 3 ]`.
+
+### `List.foldBack`
+
+```zsharp
+List.foldBack : ('a -> 'b -> 'b) -> list<'a> -> 'b -> 'b
+```
+
+`fold` from the back: `f x0 (f x1 (… (f xn state)))`.
 

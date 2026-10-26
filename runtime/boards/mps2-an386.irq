@@ -1,0 +1,14 @@
+# QEMU's mps2-an386 (an MPS2 board with the AN386 image, CMSDK peripherals): its interrupt lines,
+# NAME = number, for [<Interrupt "NAME">]. `lines` is how many the vector table holds.
+lines = 32
+UARTRX0 = 0
+UARTTX0 = 1
+UARTRX1 = 2
+UARTTX1 = 3
+UARTRX2 = 4
+UARTTX2 = 5
+GPIO0 = 6
+GPIO1 = 7
+TIMER0 = 8
+TIMER1 = 9
+DUALTIMER = 10

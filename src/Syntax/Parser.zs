@@ -2911,6 +2911,10 @@ and private declOf (p: P) : Ast.Decl =
         | Ok s -> Buffer.push s args
         | Error e -> failAt p p.pos.Value e
         advance p
+      else if peek p = Int then
+        // [<Interrupt 38>]: the number as written
+        Buffer.push (textOf p p.pos.Value) args
+        advance p
       else if peek p = LParen then
         advance p
         while go && peek p <> RParen && peek p <> Eof do

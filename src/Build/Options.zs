@@ -12,6 +12,36 @@ let mcus : list<string * Mcu> =
     // freestanding WebAssembly: no OS, the host gives output and exit as imports
     ("wasm32", { triple = "wasm32-unknown-unknown"; cflags = []; zigTarget = "wasm32-freestanding"; zigCpu = "generic"; board = ""; heap = 1024 * 1024 }) ]
 
+/// The runtime's sources: $ZS_RUNTIME, else beside the compiler (an installed one), else the
+/// runtime/ of the checkout the compiler was built in.
+let runtimeDir () : string =
+  match Environment.getVariable "ZS_RUNTIME" with
+  | Some d -> d
+  | None ->
+    let dir = Path.getDirectoryName (Tools.selfPath ())
+    if File.exists (Path.combine dir "rt.c") then
+      dir
+    else
+      match Tools.findUp dir "runtime/rt.c" with
+      | Some root -> Path.combine root "runtime"
+      | None -> dir
+
+/// A chip's interrupt lines (0012), from its board's runtime/boards/<board>.irq: the board, how
+/// many lines its vector table holds, and the lines' names; None for a target with no board.
+let irqTable (target: string) : option<string * int * Map<string, int>> =
+  match List.tryFind (fun (c: string * Mcu) -> (snd c).triple = target && (snd c).board <> "") mcus with
+  | Some(_, m) ->
+    let file = Path.combine (runtimeDir ()) $"boards/{m.board}.irq"
+    let lines = Result.defaultValue [] (File.readAllLines file)
+    // NAME = number, after # comments
+    let pair (l: string) =
+      match String.split "=" (String.trim l) with
+      | [ k; v ] when not (String.startsWith "#" (String.trim l)) -> Option.map (fun (n: int) -> (String.trim k, n)) (Int.parse (String.trim v))
+      | _ -> None
+    let all = Map.ofList (List.choose pair lines)
+    Some(m.board, Option.defaultValue 0 (Map.tryFind "lines" all), Map.remove "lines" all)
+  | None -> None
+
 /// A build's options.
 type Options =
   { /// the main file ("" for the project's)

@@ -175,6 +175,7 @@ let builtinCons (n: string) : option<int> =
   | "Atomic"
   | "Mutex"
   | "Channel"
+  | "Spsc"
   | "callback"
   | "ptr"
   | "fnptr" -> Some 1
@@ -182,7 +183,7 @@ let builtinCons (n: string) : option<int> =
   | _ -> None
 
 /// The types whose values are references to one object each, as `ref` is.
-let isCellType (n: string) : bool = n = "ref" || n = "Atomic" || n = "Mutex" || n = "Channel"
+let isCellType (n: string) : bool = n = "ref" || n = "Atomic" || n = "Mutex" || n = "Channel" || n = "Spsc"
 
 /// `dyn Trait`: a value of any type implementing the trait; its type is named dyn:<the trait>.
 let isDynName (n: string) : bool = String.startsWith "dyn:" n

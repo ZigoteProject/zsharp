@@ -152,3 +152,19 @@ Set.difference : Set<'a> -> Set<'a> -> Set<'a> when 'a : Ord
 
 The elements of `a` that aren't in `b`.
 
+### `Set.isSubset`
+
+```zsharp
+Set.isSubset : Set<'a> -> Set<'a> -> bool when 'a : Ord
+```
+
+Whether every element of `a` is in `b`.
+
+### `Set.isSuperset`
+
+```zsharp
+Set.isSuperset : Set<'a> -> Set<'a> -> bool when 'a : Ord
+```
+
+Whether every element of `b` is in `a`.
+

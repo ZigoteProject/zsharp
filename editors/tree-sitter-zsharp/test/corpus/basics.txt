@@ -231,3 +231,22 @@ assert (sizeof<Packet> = 16 && offsetof<Packet> "length" = 4)
         (binary_expression
           (layout_fact (type_name (identifier)) field: (string (string_content)))
           (number))))))
+
+==================
+an interrupt handler: a number as an attribute's argument
+==================
+
+[<Interrupt 38>]
+let onUart () = ()
+
+---
+
+(source_file
+  (attributes
+    (attribute
+      name: (identifier)
+      (number)))
+  (let_declaration
+    name: (identifier)
+    (unit)
+    body: (unit)))

@@ -10,7 +10,7 @@
 
 - [x] Approved in principle (`[<NoAlloc>]`, `--no-heap`, interrupt handlers)
 - [x] Approved in principle (the sharing rules, `Cpu`)
-- [ ] Implementation
+- [ ] Implementation (interrupt handlers, `Irq`, `Atomic` in Core and `Spsc` in phase 12; the core exceptions take CMSIS's symbols, `SVC_Handler` and `DebugMon_Handler`; the table holds the board's lines in tens; `Runtime.ticks` reads a wrap SysTick hasn't counted yet, and never goes back, which QEMU's timer otherwise showed)
 
 ## Summary
 

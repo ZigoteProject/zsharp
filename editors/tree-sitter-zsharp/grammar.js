@@ -89,7 +89,7 @@ module.exports = grammar({
     attributes: $ => seq('[<', sep1($.attribute, ';'), '>]'),
     attribute: $ => seq(
       field('name', $.identifier),
-      optional(choice($.string, seq('(', sep(choice($.identifier, $.string), ','), ')'))),
+      optional(choice($.string, $.number, seq('(', sep(choice($.identifier, $.string, $.number), ','), ')'))),
     ),
 
     open_declaration: $ => seq('open', field('module', choice($.identifier, $.qualified_identifier))),

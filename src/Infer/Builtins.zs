@@ -203,6 +203,9 @@ let builtins : Map<string, Builtin> =
       b "Threading.Channel.send" "chan.send" [ kShare ] (f channel (f a tUnit)) 2
       b "Threading.Channel.receive" "chan.receive" [ kShare ] (f channel (TCon("option", [ a ]))) 1
       b "Threading.Channel.close" "chan.close" [ kShare ] (f channel tUnit) 1
+      b "Threading.Spsc.create" "spsc.create" [ kShare ] (f tInt (TCon("Spsc", [ a ]))) 1
+      b "Threading.Spsc.push" "spsc.push" [ kShare ] (f (TCon("Spsc", [ a ])) (f a tBool)) 2
+      b "Threading.Spsc.pop" "spsc.pop" [ kShare ] (f (TCon("Spsc", [ a ])) (TCon("option", [ a ]))) 1
       // the event loop and sockets (runtime/rt.c), which Std's Task and Tcp wrap
       b "Native.loopPost" "Loop.post" [] (f (f tUnit tUnit) tUnit) 1
       b "Native.loopWait" "Loop.wait" [] (f tInt (f tBool (f (f tUnit tUnit) tUnit))) 3

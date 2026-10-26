@@ -7,6 +7,7 @@ namespace Collections
 /// refers to it, and an older queue kept alive (`match dequeue q with Some(x, rest) -> q <- rest`)
 /// costs no copy.
 type PriorityQueue<'a, 'p> =
+  /// no items
   | Empty
   /// a node: the length of its rightmost path, its item and priority, and the two below it, the
   /// left one's rightmost path no shorter; no priority below a node's is lower than its own

@@ -153,20 +153,6 @@ let private exportsHandles (prog: Program) : bool =
       | _ -> true
   List.exists (fun (e: Core.Ir.Export) -> handleTy e.ret || List.exists handleTy e.pars) prog.exports
 
-/// The runtime's sources: $ZS_RUNTIME, else beside the compiler (an installed one), else the
-/// runtime/ of the checkout the compiler was built in.
-let runtimeDir () : string =
-  match Environment.getVariable "ZS_RUNTIME" with
-  | Some d -> d
-  | None ->
-    let dir = Path.getDirectoryName (Tools.selfPath ())
-    if File.exists (Path.combine dir "rt.c") then
-      dir
-    else
-      match Tools.findUp dir "runtime/rt.c" with
-      | Some root -> Path.combine root "runtime"
-      | None -> dir
-
 // the processor --cpu names, as clang takes it: -march on x86-64, -mcpu elsewhere
 let cpuFlags (o: Options.Options) : list<string> =
   let x86 = Options.arch o = "x86_64"
@@ -207,7 +193,8 @@ let generate (o: Options.Options) (prog0: Program) (testBuild: bool) : result<Pr
     | Error e -> Error(InPass e)
     | Ok(types, funs) ->
       // a library's handles may be used on any thread of its C host
-      let threads = threaded prog.externs funs || (o.isLib && exportsHandles prog)
+      // an interrupt handler preempts the program as a thread does (0012)
+      let threads = threaded prog.externs funs || (o.isLib && exportsHandles prog) || List.exists (fun (e: Core.Ir.Export) -> e.interrupt) prog.exports
       let level = Options.optLevel o
       let gopts : Gen.Emit.Options =
         { debugInfo = o.debugInfo
@@ -237,7 +224,7 @@ let make (o: Options.Options) (prog0: Program) (linked: Modules.Linked) (testBui
     match File.writeAllText ll ir with
     | Error e -> Error(InTool e)
     | Ok () ->
-      let rt = runtimeDir ()
+      let rt = Options.runtimeDir ()
       let runtimeFile (name: string) = Path.combine rt name
       // ZS_NO_POOL: objects from malloc, one by one, for valgrind (a sanitized build has that too)
       let defines = List.append (if threads then [ "-DZS_THREADS" ] else []) (if Option.isSome (Environment.getVariable "ZS_NO_POOL") then [ "-DZS_NO_POOL" ] else [])
@@ -305,7 +292,12 @@ let make (o: Options.Options) (prog0: Program) (linked: Modules.Linked) (testBui
           // the runtime as a separate object: as bitcode (measured in phase 9) it changes
           // nothing at -Os, and at -O2 costs flash for gains that aren't the runtime's
           let compiled = timed o.time "clang" (fun () -> Tools.run "clang" (List.concat [ opt; [ "--target=" + m.triple ]; m.cflags; flags; [ "-c"; "-Wno-override-module"; ll; "-o"; obj ] ]))
-          let r = andThen (fun () -> timed o.time "zig cc" (fun () -> Tools.run "zig" (List.concat [ [ "cc"; "-target"; m.zigTarget; "-mcpu=" + m.zigCpu ]; opt; flags; [ $"-DZS_HEAP_SIZE={Option.defaultValue m.heap o.heap}"; "-T" + script; "-Wl,--gc-sections"; obj; runtimeFile "rt-embedded.c" ]; linkArgs linked; [ "-o"; o.out ] ]))) compiled
+          // the vector table's device lines: the board's, in tens
+          let lines =
+            match Options.irqTable o.target with
+            | Some(_, n, _) -> (n + 9) / 10 * 10
+            | None -> 0
+          let r = andThen (fun () -> timed o.time "zig cc" (fun () -> Tools.run "zig" (List.concat [ [ "cc"; "-target"; m.zigTarget; "-mcpu=" + m.zigCpu ]; opt; flags; [ $"-DZS_HEAP_SIZE={Option.defaultValue m.heap o.heap}"; $"-DZS_IRQ_COUNT={lines}"; "-T" + script; "-Wl,--gc-sections"; obj; runtimeFile "rt-embedded.c" ]; linkArgs linked; [ "-o"; o.out ] ]))) compiled
           File.delete obj |> ignore
           File.delete script |> ignore
           r

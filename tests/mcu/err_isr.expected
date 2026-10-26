@@ -1,0 +1,6 @@
+tests/mcu/err_isr.zs:5: error: no interrupt named 'USART9' on this board: the lines are in runtime/boards/mps2-an386.irq, or give the number: [<Interrupt 38>]
+tests/mcu/err_isr.zs:8: error: IRQ 40 is past this chip's 32 lines (runtime/boards/mps2-an386.irq)
+tests/mcu/err_isr.zs:11: error: an interrupt handler takes unit, returns unit and performs nothing; takesInt is int -> unit
+tests/mcu/err_isr.zs:14: error: IRQ 0 already has a handler: onReceive
+tests/mcu/err_isr.zs:17: error: the reset handler is the runtime's startup, which runs main
+5 errors

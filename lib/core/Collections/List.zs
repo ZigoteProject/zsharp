@@ -392,7 +392,8 @@ let groupBy (f: 'a -> 'k) (xs: list<'a>) : list<'k * list<'a>> =
   List.mapi (fun i k -> (k, List.rev groups.[i])) (go [] 0 xs)
 
 /// How many elements have each of `f`'s keys, in the order the keys first appear.
-let countBy (f: 'a -> 'k) (xs: list<'a>) : list<'k * int> = List.map (fun (k, g) -> (k, List.length g)) (List.groupBy f xs)
+let countBy (f: 'a -> 'k) (xs: list<'a>) : list<'k * int> =
+  List.map (fun (k, g) -> (k, List.length g)) (List.groupBy f xs)
 
 /// The elements in lists of `size` (the last one shorter when they don't divide evenly).
 let chunkBySize (size: int) (xs: list<'a>) : list<list<'a>> =
@@ -401,7 +402,8 @@ let chunkBySize (size: int) (xs: list<'a>) : list<list<'a>> =
   let rec go acc chunk n xs =
     match xs with
     | [] -> List.rev (if n = 0 then acc else List.rev chunk :: acc)
-    | x :: rest -> if n = size then go (List.rev chunk :: acc) [ x ] 1 rest else go acc (x :: chunk) (n + 1) rest
+    | x :: rest ->
+      if n = size then go (List.rev chunk :: acc) [ x ] 1 rest else go acc (x :: chunk) (n + 1) rest
   go [] [] 0 xs
 
 /// Every run of `size` neighbors, sliding by one: `windowed 2 [ 1; 2; 3 ]` is
@@ -434,7 +436,8 @@ let scan (f: 's -> 'a -> 's) (state: 's) (xs: list<'a>) : list<'s> =
   go [] state xs
 
 /// `fold` from the back: `f x0 (f x1 (… (f xn state)))`.
-let foldBack (f: 'a -> 's -> 's) (xs: list<'a>) (state: 's) : 's = List.fold (fun acc x -> f x acc) state (List.rev xs)
+let foldBack (f: 'a -> 's -> 's) (xs: list<'a>) (state: 's) : 's =
+  List.fold (fun acc x -> f x acc) state (List.rev xs)
 
 /// A list's elements, front to back.
 impl Iter<list<'a>, 'a> =

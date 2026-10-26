@@ -3352,6 +3352,53 @@ void zs_chan_free(zs_chan *c) {
     zs_free(c);
 }
 
+// ---- Spsc (0012): a ring between one producer and one consumer, an interrupt handler and the
+// program, or two threads, neither waiting or locking: the producer alone moves the tail and the
+// consumer alone the head, each after the value it wrote or read. One slot stays empty, so a full
+// ring isn't an empty one. A Z# object: the drop function it was made with drops what's still in
+// it when it's freed.
+typedef struct {
+    ZS_HEADER;
+    zs_int cap, size;
+    zs_int head, tail; // each written by its side alone, read by the other atomically
+    void (*drop)(void *slot);
+    char slots[];
+} zs_spsc;
+
+void *zs_spsc_new(zs_int cap, zs_int size, void (*drop)(void *)) {
+    if (cap < 1) zs_panic_c("an Spsc holds at least one value");
+    zs_spsc *q = zs_alloc((zs_int)sizeof(zs_spsc) + (cap + 1) * (size ? size : 1));
+    q->rc = 1;
+    q->cap = cap + 1;
+    q->size = size;
+    q->head = q->tail = 0;
+    q->drop = drop;
+    return q;
+}
+
+bool zs_spsc_push(zs_spsc *q, const void *v) {
+    zs_int t = q->tail;
+    zs_int next = (t + 1) % q->cap;
+    if (next == __atomic_load_n(&q->head, __ATOMIC_ACQUIRE)) return false; // full
+    memcpy(q->slots + t * q->size, v, (size_t)q->size);
+    __atomic_store_n(&q->tail, next, __ATOMIC_RELEASE);
+    return true;
+}
+
+bool zs_spsc_pop(zs_spsc *q, void *out) {
+    zs_int h = q->head;
+    if (h == __atomic_load_n(&q->tail, __ATOMIC_ACQUIRE)) return false; // empty
+    memcpy(out, q->slots + h * q->size, (size_t)q->size);
+    __atomic_store_n(&q->head, (h + 1) % q->cap, __ATOMIC_RELEASE);
+    return true;
+}
+
+void zs_spsc_free(zs_spsc *q) {
+    if (q->drop)
+        for (zs_int i = q->head; i != q->tail; i = (i + 1) % q->cap) q->drop(q->slots + i * q->size);
+    zs_free(q);
+}
+
 // ---- CPU features ([<Multiversion>]): whether the CPU has each of the features, named as LLVM
 // names them and separated by commas ("avx2,fma"). A name it doesn't know is a feature it
 // doesn't have.

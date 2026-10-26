@@ -297,9 +297,10 @@ type EffectInfo = { npars: int; ops: list<EffectOp> }
 [<Derive(Binary)>]
 type TraitMethod = { owner: string; name: string; ty: Ty; nparams: int; isConst: bool }
 
-/// [<Export "cname">]: a C entry point for a monomorphic function (unit parameters left out).
+/// [<Export "cname">]: a C entry point for a monomorphic function (unit parameters left out); or
+/// an interrupt handler's ([<Interrupt>], 0012), whose symbol the vector table names.
 [<Derive(Binary)>]
-type Export = { cname: string; fname: string; pars: list<Ty>; ret: Ty }
+type Export = { cname: string; fname: string; pars: list<Ty>; ret: Ty; interrupt: bool }
 
 /// A pattern with f applied to its variables' types.
 let rec mapPatTypes (f: Ty -> Ty / 'e) (p: CPat) : CPat / 'e =

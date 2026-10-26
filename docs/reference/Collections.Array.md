@@ -170,6 +170,79 @@ Array.sortWith : ('a -> 'a -> 'b) -> span<'a> -> array<'a> when 'b : Ord
 
 A new array sorted with `f` (like `compare`). Stable.
 
+### `Array.groupBy`
+
+```zsharp
+Array.groupBy : ('a -> 'b) -> span<'a> -> array<'b * array<'a>> when 'b : Eq, 'b : Hash
+```
+
+The elements grouped by `f`'s key for each, in the order the keys first appear (`'k` with
+`Hash` and `Eq`).
+
+### `Array.countBy`
+
+```zsharp
+Array.countBy : ('a -> 'b) -> span<'a> -> array<'b * int> when 'b : Eq, 'b : Hash
+```
+
+How many elements have each of `f`'s keys, in the order the keys first appear.
+
+### `Array.chunkBySize`
+
+```zsharp
+Array.chunkBySize : int -> span<'a> -> array<array<'a>>
+```
+
+The elements in arrays of `size` (the last one shorter when they don't divide evenly).
+
+### `Array.windowed`
+
+```zsharp
+Array.windowed : int -> span<'a> -> array<array<'a>>
+```
+
+Every run of `size` neighbors, sliding by one (none when the array is shorter).
+
+### `Array.pairwise`
+
+```zsharp
+Array.pairwise : span<'a> -> array<'a * 'a>
+```
+
+Each element with the next.
+
+### `Array.scan`
+
+```zsharp
+Array.scan : ('a -> 'b -> 'a) -> 'a -> span<'b> -> array<'a>
+```
+
+`fold`'s states, the first one and the one after each element.
+
+### `Array.foldBack`
+
+```zsharp
+Array.foldBack : ('a -> 'b -> 'b) -> span<'a> -> 'b -> 'b
+```
+
+`fold` from the back: `f a.[0] (f a.[1] (… (f a.[n - 1] state)))`.
+
+### `Array.tryFindIndex`
+
+```zsharp
+Array.tryFindIndex : ('a -> bool) -> span<'a> -> option<int>
+```
+
+The index of the first element for which `f` is true, or `None`.
+
+### `Array.binarySearch`
+
+```zsharp
+Array.binarySearch : 'a -> span<'a> -> option<int> when 'a : Ord
+```
+
+The index of an element equal to `x` in a sorted array, or `None`: halving the range each step.
+
 ### `Array.ofIter`
 
 ```zsharp

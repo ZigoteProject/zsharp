@@ -30,6 +30,16 @@
   (`let! (x, reply, nack) = …`) before that wait.
 
 ### Platforms
+- Interrupt handlers (0012): `[<Interrupt 38>]`, `[<Interrupt "UARTRX0">]` (the board's names,
+  `runtime/boards/<board>.irq`) or `[<Interrupt "SysTick">]`/`"HardFault"`/… on a
+  `unit -> unit` function make it the line's handler over the runtime's weak defaults. A handler
+  may reach only what's `Share` (`interrupt handler 'tick' uses the top-level value 'count' :
+  ref<int>, …`); `Atomic` is in Core now (masking interrupts on a Cortex-M0), and `Spsc<'a>` is a
+  queue of one producer and one consumer that neither waits nor locks. `Irq.enable`, `disable`
+  and `pend`.
+- `Runtime.ticks` on a chip counts a SysTick wrap its handler hasn't run for yet, and never goes
+  back (it could, by a wrap, right at one).
+- An `[<Export>]` function returning `unit` compiles (the compiler panicked in its C wrapper).
 - C interop on a microcontroller, both ways: structs by value follow AAPCS (they were passed
   with x86-64's rules), hard and soft float; `[<Link>]` C sources are compiled for the chip; C
   callbacks work there. `zs build --lib --target cortex-m4` makes an archive and its header for a

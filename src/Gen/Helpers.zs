@@ -531,6 +531,9 @@ and dropFn (g: G) (t: Ty) : string =
           // the runtime's: what's still in it goes with the drop function it was made with
           emit em "call void @zs_chan_free(ptr %p)"
           emit em "ret void"
+        | TCon("Spsc", _) ->
+          emit em "call void @zs_spsc_free(ptr %p)"
+          emit em "ret void"
         | _ ->
           let (_, cases) = union g pt
           let withRefs = List.filter (fun (_, (_, fs)) -> List.exists (heap g) fs) (List.indexed cases)

@@ -1224,8 +1224,45 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
     for t in ptys do
       checkCArg cx what t
     checkCArg cx what ret
-    let ex : Export = { cname = cname; fname = q; pars = List.filter (fun t -> prune v t <> tUnit) ptys; ret = resolve v ret }
+    let ex : Export = { cname = cname; fname = q; pars = List.filter (fun t -> prune v t <> tUnit) ptys; ret = resolve v ret; interrupt = false }
     Buffer.push ex cx.exports
+  | Attrs([ ("Interrupt", [ line ]) ], inner) when Option.isSome (funName inner) ->
+    // an interrupt handler (0012): exported under the symbol the runtime's vector table names for
+    // its line, replacing the runtime's weak default
+    declare cx inner
+    let name = Option.get (funName inner)
+    let q = qualify cx name
+    let g = Map.find q cx.globals.Value
+    match cx.irqs with
+    | None -> fail "interrupt handlers exist on microcontrollers, and this build isn't for one (zs build --target cortex-m4)"
+    | Some(board, count, names) ->
+      if not (List.isEmpty g.kinds) then
+        fail $"interrupt handler '{name}' must not be generic; add type annotations"
+      // nothing is there to handle an effect, and the hardware passes and takes nothing
+      if g.arity <> 1 || not (unifies cx (TFun(tUnit, tUnit, rowEmpty)) g.ty) then
+        fail $"an interrupt handler takes unit, returns unit and performs nothing; {name} is {show cx g.ty}"
+      // the core exceptions by CMSIS's names; SysTick is the runtime's, which calls the program's
+      let core =
+        [ ("NMI", "NMI_Handler"); ("HardFault", "HardFault_Handler"); ("MemManage", "MemManage_Handler"); ("BusFault", "BusFault_Handler"); ("UsageFault", "UsageFault_Handler")
+          ("SVCall", "SVC_Handler"); ("DebugMonitor", "DebugMon_Handler"); ("PendSV", "PendSV_Handler"); ("SysTick", "zs_systick_user") ]
+      let device (n: int) =
+        if n < 0 || n >= count then
+          fail $"IRQ {n} is past this chip's {count} lines (runtime/boards/{board}.irq)"
+        $"IRQ{n}_Handler"
+      let symbol =
+        match (Map.tryFind line (Map.ofList core), Int.parse line, Map.tryFind line names) with
+        | (Some s, _, _) -> s
+        | (_, Some n, _) -> device n
+        | (_, _, Some n) -> device n
+        | _ when line = "Reset" -> fail "the reset handler is the runtime's startup, which runs main"
+        | _ -> fail $"no interrupt named '{line}' on this board: the lines are in runtime/boards/{board}.irq, or give the number: [<Interrupt 38>]"
+      match List.tryFind (fun (e: Export) -> e.cname = symbol) (Array.toList (Buffer.toArray cx.exports)) with
+      | Some other ->
+        let shown = if Option.isSome (Int.parse line : option<int>) then $"IRQ {line}" else line
+        fail $"{shown} already has a handler: {afterLastDot other.fname}"
+      | None -> ()
+      let ex : Export = { cname = symbol; fname = q; pars = []; ret = tUnit; interrupt = true }
+      Buffer.push ex cx.exports
   | Attrs(attrs, inner) when codeAttrs ->
     // [<Wrapping>]: integer + - * in the function, its lambdas included, wrap around instead of
     // panicking on overflow (hashes, checksums). [<FastMath>]: float + - * / may be reassociated
@@ -1461,7 +1498,7 @@ let rec private reaches (cx: Cx) (here: Set<string>) (seen: Set<string>) (cell: 
   | TCon("ptr", _)
   | TFun _ -> []
   | TCon(n, _) when isDynName n -> []
-  | TCon(n, args) when n = "ref" || n = "Buffer" || n = "Mutex" || n = "Channel" -> List.collect (reaches cx here seen true) args
+  | TCon(n, args) when n = "ref" || n = "Buffer" || n = "Mutex" || n = "Channel" || n = "Spsc" -> List.collect (reaches cx here seen true) args
   | TCon(n, args) when Set.contains n here -> (n, cell) :: List.collect (reaches cx here seen cell) args
   | TCon(n, args) ->
     let key = Types.Show.showFull cx.v (TCon(n, args))

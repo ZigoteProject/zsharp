@@ -1,0 +1,1 @@
+tests/mcu/err_isr_share.zs:7: error: interrupt handler 'tick' uses the top-level value 'count' (through 'bump') : ref<int>, which a handler can't share with the program: count in an Atomic, or push through an Spsc

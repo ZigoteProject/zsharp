@@ -109,14 +109,16 @@ let groupBy (f: 'a -> 'k) (a: span<'a>) : array<'k * array<'a>> =
   Array.ofList (List.map (fun (k, g) -> (k, Array.ofList g)) (List.groupBy f (Array.toList a)))
 
 /// How many elements have each of `f`'s keys, in the order the keys first appear.
-let countBy (f: 'a -> 'k) (a: span<'a>) : array<'k * int> = Array.ofList (List.countBy f (Array.toList a))
+let countBy (f: 'a -> 'k) (a: span<'a>) : array<'k * int> =
+  Array.ofList (List.countBy f (Array.toList a))
 
 /// The elements in arrays of `size` (the last one shorter when they don't divide evenly).
 let chunkBySize (size: int) (a: span<'a>) : array<array<'a>> =
   if size <= 0 then
     panic $"Array.chunkBySize: the size must be positive, not {size}"
   let n = Array.length a
-  Array.init ((n + size - 1) / size) (fun c -> Array.init (min size (n - c * size)) (fun i -> a.[c * size + i]))
+  Array.init ((n + size - 1) / size) (fun c ->
+    Array.init (min size (n - c * size)) (fun i -> a.[c * size + i]))
 
 /// Every run of `size` neighbors, sliding by one (none when the array is shorter).
 let windowed (size: int) (a: span<'a>) : array<array<'a>> =
@@ -125,10 +127,12 @@ let windowed (size: int) (a: span<'a>) : array<array<'a>> =
   Array.init (max 0 (Array.length a - size + 1)) (fun w -> Array.init size (fun i -> a.[w + i]))
 
 /// Each element with the next.
-let pairwise (a: span<'a>) : array<'a * 'a> = Array.init (max 0 (Array.length a - 1)) (fun i -> (a.[i], a.[i + 1]))
+let pairwise (a: span<'a>) : array<'a * 'a> =
+  Array.init (max 0 (Array.length a - 1)) (fun i -> (a.[i], a.[i + 1]))
 
 /// `fold`'s states, the first one and the one after each element.
-let scan (f: 's -> 'a -> 's) (state: 's) (a: span<'a>) : array<'s> = Array.ofList (List.scan f state (Array.toList a))
+let scan (f: 's -> 'a -> 's) (state: 's) (a: span<'a>) : array<'s> =
+  Array.ofList (List.scan f state (Array.toList a))
 
 /// `fold` from the back: `f a.[0] (f a.[1] (… (f a.[n - 1] state)))`.
 let foldBack (f: 'a -> 's -> 's) (a: span<'a>) (state: 's) : 's =

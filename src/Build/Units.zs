@@ -272,7 +272,7 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
       // by name: the order the run made them in depends on what else it made
       let funs = List.map (fun (n: string) -> Map.find n byName) (Set.toList funsHere)
       let facts =
-        List.filter (fun x -> x <> "") [ (if Compile.usesPrim Compile.heapPrims funs then "weak" else ""); (if Compile.wideVectors funs then "wide" else ""); (if Compile.threaded prog.externs funs then "threads" else "") ]
+        List.filter (fun x -> x <> "") [ (if Compile.usesPrim Compile.heapPrims funs then "weak" else ""); (if Compile.wideVectors funs then "wide" else ""); (if Compile.threaded prog.externs funs || List.exists (fun (e: Core.Ir.Export) -> e.interrupt) prog.exports then "threads" else "") ]
       let deps = List.append (List.map (fun d -> (d, "check", Map.find d keyOf)) (List.sort checks)) (List.map (fun d -> (d, "abi", "")) (List.sort calls))
       let w : World = { deps = deps; abi = abi; facts = facts }
       made.Value <- Map.add u.file { mfuns = funs; calls = [] } made.Value
@@ -563,7 +563,7 @@ let link (o: Options.Options) (built: Built) (linked: Modules.Linked) : result<l
         File.writeAllText input source |> ignore
         { obj = obj; input = input; written = true; flags = fs; keep = keep; size = String.length source }
   // the runtime optimized in a debug build too (a program debugs its own code)
-  let rt = Compile.runtimeDir ()
+  let rt = Options.runtimeDir ()
   let rtFile = Path.combine rt "rt.c"
   let defines = List.append (if built.threaded then [ "-DZS_THREADS" ] else []) (if Option.isSome (Environment.getVariable "ZS_NO_POOL") then [ "-DZS_NO_POOL" ] else [])
   let rtFlags = List.append (if useLto o then flags else List.concat [ [ "-O2" ]; Compile.cpuFlags o; profile; Options.sectionFlags o ]) defines

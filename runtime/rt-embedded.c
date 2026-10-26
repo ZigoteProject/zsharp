@@ -65,6 +65,81 @@ __attribute__((weak)) size_t strlen(const char *s) {
     return n;
 }
 
+#if defined(__ARM_ARCH)
+// ---- C's atomics where the core has no instructions for them (a Cortex-M0's, of every size; a
+// Cortex-M4's, of 8 bytes), which LLVM calls: one core, so with interrupts masked each is whole.
+// For Atomic and the counts of objects a program shares with its interrupt handlers (0012)
+static uint32_t masked(void) {
+    uint32_t m;
+    __asm__ volatile("mrs %0, primask\n cpsid i" : "=r"(m) : : "memory");
+    return m;
+}
+
+static void unmasked(uint32_t m) { __asm__ volatile("msr primask, %0" : : "r"(m) : "memory"); }
+
+// named by asm labels: clang won't define its builtins' names itself
+#define ZS_ATOMICS(n, T)                                                                                       \
+    T zs_atomic_load_##n(const volatile void *p, int order) __asm__("__atomic_load_" #n);                    \
+    T zs_atomic_load_##n(const volatile void *p, int order) {                                                \
+        (void)order;                                                                                          \
+        uint32_t m = masked();                                                                                \
+        T v = *(const volatile T *)p;                                                                         \
+        unmasked(m);                                                                                          \
+        return v;                                                                                             \
+    }                                                                                                         \
+    void zs_atomic_store_##n(volatile void *p, T v, int order) __asm__("__atomic_store_" #n);               \
+    void zs_atomic_store_##n(volatile void *p, T v, int order) {                                            \
+        (void)order;                                                                                          \
+        uint32_t m = masked();                                                                                \
+        *(volatile T *)p = v;                                                                                 \
+        unmasked(m);                                                                                          \
+    }                                                                                                         \
+    T zs_atomic_exchange_##n(volatile void *p, T v, int order) __asm__("__atomic_exchange_" #n);             \
+    T zs_atomic_exchange_##n(volatile void *p, T v, int order) {                                             \
+        (void)order;                                                                                          \
+        uint32_t m = masked();                                                                                \
+        T old = *(volatile T *)p;                                                                             \
+        *(volatile T *)p = v;                                                                                 \
+        unmasked(m);                                                                                          \
+        return old;                                                                                           \
+    }                                                                                                         \
+    bool zs_atomic_compare_exchange_##n(volatile void *p, void *expected, T desired, bool weak, int ok,       \
+                                        int fail) __asm__("__atomic_compare_exchange_" #n);                   \
+    bool zs_atomic_compare_exchange_##n(volatile void *p, void *expected, T desired, bool weak, int ok,       \
+                                        int fail) {                                                           \
+        (void)weak, (void)ok, (void)fail;                                                                     \
+        uint32_t m = masked();                                                                                \
+        T now = *(volatile T *)p;                                                                             \
+        bool same = now == *(T *)expected;                                                                    \
+        if (same) *(volatile T *)p = desired;                                                                 \
+        else *(T *)expected = now;                                                                            \
+        unmasked(m);                                                                                          \
+        return same;                                                                                          \
+    }                                                                                                         \
+    T zs_atomic_fetch_add_##n(volatile void *p, T v, int order) __asm__("__atomic_fetch_add_" #n);           \
+    T zs_atomic_fetch_add_##n(volatile void *p, T v, int order) {                                            \
+        (void)order;                                                                                          \
+        uint32_t m = masked();                                                                                \
+        T old = *(volatile T *)p;                                                                             \
+        *(volatile T *)p = (T)(old + v);                                                                      \
+        unmasked(m);                                                                                          \
+        return old;                                                                                           \
+    }                                                                                                         \
+    T zs_atomic_fetch_sub_##n(volatile void *p, T v, int order) __asm__("__atomic_fetch_sub_" #n);           \
+    T zs_atomic_fetch_sub_##n(volatile void *p, T v, int order) {                                            \
+        (void)order;                                                                                          \
+        uint32_t m = masked();                                                                                \
+        T old = *(volatile T *)p;                                                                             \
+        *(volatile T *)p = (T)(old - v);                                                                      \
+        unmasked(m);                                                                                          \
+        return old;                                                                                           \
+    }
+ZS_ATOMICS(1, uint8_t)
+ZS_ATOMICS(2, uint16_t)
+ZS_ATOMICS(4, uint32_t)
+ZS_ATOMICS(8, uint64_t)
+#endif
+
 // ---- libm's functions compiler-rt lacks (it has floor, exp, log, sin and the others Math
 // uses): pow, atan and atan2 are fdlibm's (Sun Microsystems, 1993-2004: "Permission to use,
 // copy, modify, and distribute this software is freely granted, provided that this notice is
@@ -530,7 +605,9 @@ zs_int zs_allocations(void) { return H.allocations; }
 // Runtime.mallocs (): the times memory was taken for an object (no system allocator here: the
 // heap's own), and Runtime.marks (): objects marked shared, none with no threads
 zs_int zs_mallocs(void) { return H.allocations; }
-zs_int zs_marks(void) { return 0; }
+// objects marked shared: with an interrupt handler (0012), the values it can reach, at startup
+zs_int zs_marked;
+zs_int zs_marks(void) { return zs_marked; }
 
 // ---- C's allocator, over the same heap: weak, so C, Rust or Zig code in a program or library
 // without a C library allocates where Z# does (a firmware with its own C library keeps its own).
@@ -1030,6 +1107,53 @@ _Noreturn void zs_panic(zs_str *msg) { zs_panic_c(msg->data); }
 
 _Noreturn void zs_exit(zs_int code) { stop((int)code); }
 
+// ---- Spsc (0012): a ring between one producer and one consumer, an interrupt handler and the
+// program, or two threads, neither waiting or locking: the producer alone moves the tail and the
+// consumer alone the head, each after the value it wrote or read. One slot stays empty, so a full
+// ring isn't an empty one. A Z# object: the drop function it was made with drops what's still in
+// it when it's freed.
+typedef struct {
+    zs_int rc;
+    zs_int cap, size;
+    zs_int head, tail; // each written by its side alone, read by the other atomically
+    void (*drop)(void *slot);
+    char slots[];
+} zs_spsc;
+
+void *zs_spsc_new(zs_int cap, zs_int size, void (*drop)(void *)) {
+    if (cap < 1) zs_panic_c("an Spsc holds at least one value");
+    zs_spsc *q = zs_alloc((zs_int)sizeof(zs_spsc) + (cap + 1) * (size ? size : 1));
+    q->rc = 1;
+    q->cap = cap + 1;
+    q->size = size;
+    q->head = q->tail = 0;
+    q->drop = drop;
+    return q;
+}
+
+bool zs_spsc_push(zs_spsc *q, const void *v) {
+    zs_int t = q->tail;
+    zs_int next = (t + 1) % q->cap;
+    if (next == __atomic_load_n(&q->head, __ATOMIC_ACQUIRE)) return false; // full
+    memcpy(q->slots + t * q->size, v, (size_t)q->size);
+    __atomic_store_n(&q->tail, next, __ATOMIC_RELEASE);
+    return true;
+}
+
+bool zs_spsc_pop(zs_spsc *q, void *out) {
+    zs_int h = q->head;
+    if (h == __atomic_load_n(&q->tail, __ATOMIC_ACQUIRE)) return false; // empty
+    memcpy(out, q->slots + h * q->size, (size_t)q->size);
+    __atomic_store_n(&q->head, (h + 1) % q->cap, __ATOMIC_RELEASE);
+    return true;
+}
+
+void zs_spsc_free(zs_spsc *q) {
+    if (q->drop)
+        for (zs_int i = q->head; i != q->tail; i = (i + 1) % q->cap) q->drop(q->slots + i * q->size);
+    zs_free(q);
+}
+
 // ---- callbacks: a callback<F> C calls only where it was passed, as a host's on its own thread
 // (rt.c); on a chip the place is thread mode or one interrupt handler (IPSR's exception number)
 
@@ -1210,22 +1334,122 @@ __attribute__((noreturn)) void Reset_Handler(void) {
 
 static void fault(void) { zs_panic_c("hard fault"); }
 
+static void nothing(void) {}
+
+// the core exceptions' handlers, by CMSIS's names: weak, so a program's [<Interrupt "HardFault">]
+// (or a C file's) is the one the table calls (0012)
+__attribute__((weak, alias("fault"))) void NMI_Handler(void);
+__attribute__((weak, alias("fault"))) void HardFault_Handler(void);
+__attribute__((weak, alias("fault"))) void MemManage_Handler(void);
+__attribute__((weak, alias("fault"))) void BusFault_Handler(void);
+__attribute__((weak, alias("fault"))) void UsageFault_Handler(void);
+__attribute__((weak, alias("nothing"))) void SVC_Handler(void);
+__attribute__((weak, alias("nothing"))) void DebugMon_Handler(void);
+__attribute__((weak, alias("nothing"))) void PendSV_Handler(void);
+
 static volatile uint32_t systick_wraps;
 
-static void SysTick_Handler(void) { systick_wraps++; }
+// a program's [<Interrupt "SysTick">], at the runtime's period: SysTick is the runtime's, for
+// Runtime.ticks
+__attribute__((weak)) void zs_systick_user(void) {}
+
+void SysTick_Handler(void) {
+    systick_wraps++;
+    zs_systick_user();
+}
+
+// a device line nobody handles: disabled in the NVIC, so it doesn't fire again
+static void irq_default(void) {
+    uint32_t n;
+    __asm__ volatile("mrs %0, ipsr" : "=r"(n));
+    n -= 16;
+    ((volatile uint32_t *)0xE000E180)[n / 32] = 1u << (n % 32); // ICER
+}
+
+// the device lines' handlers, IRQ0_Handler up: weak, so a program's [<Interrupt 38>] (or
+// [<Interrupt "USART2">], by the board's table) replaces one; in tens, up to 240
+#define ZS_IRQ(n) __attribute__((weak, alias("irq_default"))) void IRQ##n##_Handler(void);
+#define ZS_IRQ_TEN(d) ZS_IRQ(d##0) ZS_IRQ(d##1) ZS_IRQ(d##2) ZS_IRQ(d##3) ZS_IRQ(d##4) ZS_IRQ(d##5) ZS_IRQ(d##6) ZS_IRQ(d##7) ZS_IRQ(d##8) ZS_IRQ(d##9)
+ZS_IRQ(0) ZS_IRQ(1) ZS_IRQ(2) ZS_IRQ(3) ZS_IRQ(4) ZS_IRQ(5) ZS_IRQ(6) ZS_IRQ(7) ZS_IRQ(8) ZS_IRQ(9)
+ZS_IRQ_TEN(1) ZS_IRQ_TEN(2) ZS_IRQ_TEN(3) ZS_IRQ_TEN(4) ZS_IRQ_TEN(5) ZS_IRQ_TEN(6) ZS_IRQ_TEN(7) ZS_IRQ_TEN(8)
+ZS_IRQ_TEN(9) ZS_IRQ_TEN(10) ZS_IRQ_TEN(11) ZS_IRQ_TEN(12) ZS_IRQ_TEN(13) ZS_IRQ_TEN(14) ZS_IRQ_TEN(15)
+ZS_IRQ_TEN(16) ZS_IRQ_TEN(17) ZS_IRQ_TEN(18) ZS_IRQ_TEN(19) ZS_IRQ_TEN(20) ZS_IRQ_TEN(21) ZS_IRQ_TEN(22)
+ZS_IRQ_TEN(23)
 
 /// Runtime.ticks (): SysTick counts since reset (it counts down from 0xFFFFFF and wraps).
 int64_t zs_ticks(void) {
-    uint32_t w, v;
+    uint32_t before, w, v;
     do {
-        w = systick_wraps;
+        before = systick_wraps;
+        w = before;
         v = *(volatile uint32_t *)0xE000E018;
-    } while (w != systick_wraps);
-    return (int64_t)w * 0x1000000 + (0xFFFFFF - v);
+        // a wrap the handler hasn't counted yet (ICSR's PENDSTSET): the value may be from either
+        // side of it, so it's read again, now after it, and the wrap counted
+        if (*(volatile uint32_t *)0xE000ED04 & (1u << 26)) {
+            v = *(volatile uint32_t *)0xE000E018;
+            w++;
+        }
+    } while (before != systick_wraps);
+    int64_t t = (int64_t)w * 0x1000000 + (0xFFFFFF - v);
+    // and never behind a value already given: QEMU can show the count reloaded before its timer
+    // sets PENDSTSET, which hardware does in the same cycle
+    static int64_t given;
+    uint32_t m = masked();
+    if (t < given) t = given;
+    else given = t;
+    unmasked(m);
+    return t;
 }
 
-__attribute__((section(".vectors"), used)) static void *const vectors[16] = {
-    &_estack, Reset_Handler, fault, fault, fault, fault, fault, 0, 0, 0, 0, fault, fault, 0, fault, SysTick_Handler,
+// the board's lines (runtime/boards/<board>.irq), a multiple of ten
+#ifndef ZS_IRQ_COUNT
+#define ZS_IRQ_COUNT 0
+#endif
+#define ZS_VEC(n) IRQ##n##_Handler,
+#define ZS_VEC_TEN(d) ZS_VEC(d##0) ZS_VEC(d##1) ZS_VEC(d##2) ZS_VEC(d##3) ZS_VEC(d##4) ZS_VEC(d##5) ZS_VEC(d##6) ZS_VEC(d##7) ZS_VEC(d##8) ZS_VEC(d##9)
+
+__attribute__((section(".vectors"), used)) static void *const vectors[] = {
+    &_estack, Reset_Handler, NMI_Handler, HardFault_Handler, MemManage_Handler, BusFault_Handler, UsageFault_Handler,
+    0, 0, 0, 0, SVC_Handler, DebugMon_Handler, 0, PendSV_Handler, SysTick_Handler,
+#if ZS_IRQ_COUNT >= 10
+    ZS_VEC(0) ZS_VEC(1) ZS_VEC(2) ZS_VEC(3) ZS_VEC(4) ZS_VEC(5) ZS_VEC(6) ZS_VEC(7) ZS_VEC(8) ZS_VEC(9)
+#endif
+#if ZS_IRQ_COUNT >= 20
+    ZS_VEC_TEN(1)
+#endif
+#if ZS_IRQ_COUNT >= 30
+    ZS_VEC_TEN(2)
+#endif
+#if ZS_IRQ_COUNT >= 40
+    ZS_VEC_TEN(3)
+#endif
+#if ZS_IRQ_COUNT >= 50
+    ZS_VEC_TEN(4)
+#endif
+#if ZS_IRQ_COUNT >= 60
+    ZS_VEC_TEN(5)
+#endif
+#if ZS_IRQ_COUNT >= 70
+    ZS_VEC_TEN(6)
+#endif
+#if ZS_IRQ_COUNT >= 80
+    ZS_VEC_TEN(7)
+#endif
+#if ZS_IRQ_COUNT >= 90
+    ZS_VEC_TEN(8)
+#endif
+#if ZS_IRQ_COUNT >= 100
+    ZS_VEC_TEN(9)
+#endif
+#if ZS_IRQ_COUNT >= 110
+    ZS_VEC_TEN(10)
+#endif
+#if ZS_IRQ_COUNT >= 120
+    ZS_VEC_TEN(11)
+#endif
+#if ZS_IRQ_COUNT > 120
+#error "the runtime's vector table has 120 device lines; add tens above"
+#endif
 };
 #endif
 

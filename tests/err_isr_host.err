@@ -1,0 +1,1 @@
+tests/err_isr_host.zs:2: error: interrupt handlers exist on microcontrollers, and this build isn't for one (zs build --target cortex-m4)

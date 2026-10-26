@@ -98,7 +98,7 @@ let private checkModules (cx: Infer.Cx.Cx) (lib: list<Modules.Loaded>) (prog: li
         for (n, why) in p.skippedC do
           cx.skippedC.Value <- Map.add n why cx.skippedC.Value
     let before = List.init i (fun j -> if sees j then "I" + ifaces.[j] else "G" + seens.[j])
-    let key = Tools.hashOf (List.concat [ [ compiler; "check"; $"word {cx.word}"; Path.getFullPath m.path; Option.defaultValue "" m.modName; m.source.text; m.imported; (if library then "library" else programKey) ]; before ])
+    let key = Tools.hashOf (List.concat [ [ compiler; "check"; $"word {cx.word}"; $"irqs {Option.map (fun (b, _, _) -> b) cx.irqs}"; Path.getFullPath m.path; Option.defaultValue "" m.modName; m.source.text; m.imported; (if library then "library" else programKey) ]; before ])
     let start = Diagnostics.Stopwatch.startNew ()
     match (if use && ok.Value then loadChecked key else None) with
     | Some saved ->
@@ -177,7 +177,7 @@ let programWith (texts: Map<string, string>) (mainPath: string) (requireMain: bo
         let impls (ms: list<Modules.Loaded>) = List.collect (fun (m: Modules.Loaded) -> m.impls) ms
         // a microcontroller has no operating system, so no Std
         let unavailable = if chip then Set.ofList (List.map (fun (f: string) -> String.replace f "/" ".") Modules.stdFiles) else Set.empty
-        let cx = Infer.Cx.create (requireMain && Option.isNone ownLibrary) collect (names lib) (impls lib) unavailable (Types.Repr.wordBytes target) late (inFile (List.head lib))
+        let cx = Infer.Cx.create (requireMain && Option.isNone ownLibrary) collect (names lib) (impls lib) unavailable (Types.Repr.wordBytes target) (Options.irqTable target) late (inFile (List.head lib))
         let (units, checkedNames, checkedCount, restoreMs, checkMs) = checkModules cx lib prog
         Infer.Decls.finish cx
         Ok { modules = all; units = units; cx = cx; linked = linked; checkedNames = checkedNames; checkedCount = checkedCount; restoreMs = restoreMs; checkMs = checkMs }

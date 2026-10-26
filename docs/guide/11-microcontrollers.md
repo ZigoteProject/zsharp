@@ -58,6 +58,35 @@ let putString (s: string) =
 
 A constant like `uart` is inlined, so `Mmio.write32 ctrl …` compiles to a store to an immediate address. Values computed at startup (an `Array.init` table, say) live in RAM.
 
+## Interrupts
+
+A function marked `[<Interrupt …>]` is the handler of an interrupt line: the hardware calls it, between two instructions of the program, when the line fires.
+
+```fsharp
+let presses = Atomic.make 0                       // a count both sides change
+let rx: Spsc<u8> = Spsc.create 64                 // from the handler to the program
+
+[<Interrupt "UARTRX0">]                           // by the board's name, or [<Interrupt 0>]
+let onReceive () =
+  Spsc.push rx (u8 (Mmio.read32 uartData)) |> ignore   // false when full: the byte is dropped
+
+[<Interrupt 8>]
+let onTimer () = Atomic.add presses 1 |> ignore
+
+let main () =
+  Irq.enable 0
+  Irq.enable 8
+  while true do
+    match Spsc.pop rx with
+    | Some b -> handle b
+    | None -> ()
+  0
+```
+
+- **Which line:** a number, a device's name from the board's table (`runtime/boards/mps2-an386.irq`, `microbit.irq`), or a core exception: `HardFault`, `NMI`, `SVCall`, `PendSV`, … (CMSIS's names) and `SysTick`, which runs at the runtime's period (the runtime keeps SysTick for `Runtime.ticks`). A handler takes and returns `unit`, performs nothing, and is only for a chip.
+- **Lines:** `Irq.enable n` and `Irq.disable n` turn a line on and off in the interrupt controller; `Irq.pend n` sets it pending, as its device would, so a handler can be tested with no device. A line without a handler is disabled the first time it fires.
+- **Sharing with the program:** a handler interrupts the program as another thread would, so what it reaches must be `Share`, checked when compiling: `interrupt handler 'tick' uses the top-level value 'count' : ref<int>, which a handler can't share with the program`. It shares through an `Atomic` (a number, a bool or a char) or an `Spsc<'a>`, a queue of fixed capacity with one producer and one consumer: `Spsc.push` and `Spsc.pop` copy a value and move an index, neither waiting nor locking. On a Cortex-M0, which has no atomic instructions, an `Atomic`'s operations mask interrupts around them.
+
 ## Writing fast, small code
 
 The compiler does most of the work. These habits help it:

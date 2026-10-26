@@ -2240,6 +2240,56 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
     emit em $"call void @zs_chan_close(ptr {arg 0})"
     dropValue g em (argTy 0) (arg 0)
     "zeroinitializer"
+  | "spsc.create" ->
+    let vt =
+      match ty with
+      | TCon("Spsc", [ x ]) -> x
+      | t -> panic $"spsc.create of {showT g t}"
+    instr em $"call ptr @zs_spsc_new(i_W {arg 0}, i_W {sizeOf em (llty g vt)}, ptr {slotDrop g vt})"
+  | "spsc.push" ->
+    // the value moves into the queue, for the other side; a full queue leaves it here, dropped
+    let vt = argTy 1
+    moveValue g em vt (arg 1)
+    let slot = "%" + fresh em "pushed"
+    alloca em $"{slot} = alloca {llty g vt}"
+    emit em $"store {llty g vt} {arg 1}, ptr {slot}"
+    let ok = instr em $"call i1 @zs_spsc_push(ptr {arg 0}, ptr {slot})"
+    let fullL = fresh em "full"
+    let doneL = fresh em "pushed"
+    emit em $"br i1 {ok}, label %{doneL}, label %{fullL}"
+    enter em fullL
+    dropValue g em vt (arg 1)
+    emit em $"br label %{doneL}"
+    enter em doneL
+    dropValue g em (argTy 0) (arg 0)
+    ok
+  | "spsc.pop" ->
+    let t =
+      match ty with
+      | TCon(_, [ x ]) -> x
+      | _ -> panic "spsc.pop"
+    let slot = "%" + fresh em "popped"
+    alloca em $"{slot} = alloca {llty g t}"
+    let ok = instr em $"call i1 @zs_spsc_pop(ptr {arg 0}, ptr {slot})"
+    dropValue g em (argTy 0) (arg 0)
+    let (_, cases) = union g ty
+    let tagOf (c: string) = List.findIndex (fun (n, _) -> n = c) cases
+    let gotL = fresh em "got"
+    let emptyL = fresh em "empty"
+    let doneL = fresh em "popped"
+    emit em $"br i1 {ok}, label %{gotL}, label %{emptyL}"
+    enter em gotL
+    let x = "$pop" + fresh em ""
+    let v = instr em $"load {llty g t}, ptr {slot}"
+    let some = gen fx (Map.add x (Ssa v) env) false (mk (CCtor("option", tagOf "Some", [ mk (CLocal x) t ])) ty)
+    let fromSome = current em
+    emit em $"br label %{doneL}"
+    enter em emptyL
+    let none = gen fx env false (mk (CCtor("option", tagOf "None", [])) ty)
+    let fromNone = current em
+    emit em $"br label %{doneL}"
+    enter em doneL
+    phi fx (llty g ty) [ (some, fromSome); (none, fromNone) ]
   | _ when String.startsWith "vec." op || String.startsWith "mask." op -> simdPrim fx op args vs ty borrowed0 unchecked
   | _ when String.startsWith "llvm:" op ->
     // a target intrinsic (Simd.X86, Simd.Arm): for its architecture only

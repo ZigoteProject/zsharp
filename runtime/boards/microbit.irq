@@ -1,0 +1,14 @@
+# QEMU's microbit (an nRF51822): its interrupt lines, NAME = number, for [<Interrupt "NAME">].
+# `lines` is how many the vector table holds.
+lines = 32
+POWER_CLOCK = 0
+RADIO = 1
+UART0 = 2
+GPIOTE = 6
+TIMER0 = 8
+TIMER1 = 9
+TIMER2 = 10
+RTC0 = 11
+RTC1 = 17
+SWI0 = 20
+SWI1 = 21

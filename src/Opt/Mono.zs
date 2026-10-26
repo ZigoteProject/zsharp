@@ -487,7 +487,17 @@ let reaching (prog: Program) (funs: list<MFun>) (external: string -> option<stri
 /// other modules' functions by what their code says, external); then the marks go.
 let checkSharedWith (prog: Program) (external: string -> option<string * list<string> * Ty>) (funs: list<MFun>) : list<MFun> / Stops =
   let v = Types.Vars.make ()
-  let (_, inExpr) = reaching prog funs external
+  let (reach, inExpr) = reaching prog funs external
+  // an interrupt handler (0012) preempts the program as a thread does: what it reaches, the
+  // program may be changing
+  for e in prog.exports do
+    if e.interrupt then
+      match (reach e.fname, List.tryFind (fun (f: MFun) -> f.name = e.fname) funs) with
+      | (Some(x, path, t), Some f) ->
+        let through = if List.isEmpty path then "" else " (through " + String.join ", " (List.map (fun p -> "'" + p + "'") path) + ")"
+        let message = $"interrupt handler '{f.name}' uses the top-level value '{x}'{through} : {Types.Show.show v t}, which a handler can't share with the program: count in an Atomic, or push through an Spsc"
+        Stops.stop { file = f.file; line = f.line; message = message }
+      | _ -> ()
   let check (f: MFun) (line: int) (start: CExpr) =
     match inExpr f start with
     | Some(x, path, t) ->

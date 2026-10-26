@@ -182,6 +182,15 @@ Map.ofList : list<'a * 'b> -> Map<'a, 'b> when 'a : Ord
 
 A map with the pairs' bindings (a later pair wins over an earlier one with the same key).
 
+### `Map.change`
+
+```zsharp
+Map.change : 'a -> (option<'b> -> option<'b>) -> Map<'a, 'b> -> Map<'a, 'b> when 'a : Ord
+```
+
+The map with `key`'s binding changed by `f`, given the value or `None`: a value from it binds
+the key, `None` removes it.
+
 ### `Map.keys`
 
 ```zsharp

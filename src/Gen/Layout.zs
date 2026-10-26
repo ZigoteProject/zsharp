@@ -222,7 +222,7 @@ let tagTy (cases: list<string * list<Ty>>) : string =
   if List.length cases <= 256 && List.forall (fun (_, fs) -> List.isEmpty fs) cases then "i8" else "i32"
 
 // the types whose values are pointers to objects (or C pointers)
-let private pointers : Set<string> = Set.ofList [ "cstr"; "cptr"; "string"; "array"; "ref"; "weak"; "ptr"; "fnptr"; "Atomic"; "Mutex"; "Channel" ]
+let private pointers : Set<string> = Set.ofList [ "cstr"; "cptr"; "string"; "array"; "ref"; "weak"; "ptr"; "fnptr"; "Atomic"; "Mutex"; "Channel"; "Spsc" ]
 
 // a mask's lanes
 let private maskLanes (n: string) : int = snd (List.find (fun (m, _) -> m = n) maskTypes)
@@ -494,7 +494,8 @@ let abiWin64 (g: G) (t: Ty) : Abi =
 
 let abiFor (g: G) (t: Ty) (isResult: bool) : Abi =
   let lt = llty g t
-  if not (String.startsWith "{" lt) then
+  // unit ({}) has nothing to pass
+  if not (String.startsWith "{" lt) || lt = "{}" then
     Scalar
   else if isArm64 g then
     abiArm64 g t isResult

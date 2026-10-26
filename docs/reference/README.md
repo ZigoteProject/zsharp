@@ -12,10 +12,12 @@ The names every program has without qualification: the operator traits and their
 
 | Namespace | Modules |
 |---|---|
-| `Collections` | [List](Collections.List.md), [Array](Collections.Array.md), [Buffer](Collections.Buffer.md), [Span](Collections.Span.md), [Fixed](Collections.Fixed.md), [Map](Collections.Map.md), [Set](Collections.Set.md), [HashMap](Collections.HashMap.md), [HashSet](Collections.HashSet.md), [Seq](Collections.Seq.md) |
-| `Text` | [String](Text.String.md), [Char](Text.Char.md), [Json](Text.Json.md) |
+| `Collections` | [List](Collections.List.md), [Array](Collections.Array.md), [Buffer](Collections.Buffer.md), [Span](Collections.Span.md), [Fixed](Collections.Fixed.md), [Map](Collections.Map.md), [Set](Collections.Set.md), [HashMap](Collections.HashMap.md), [HashSet](Collections.HashSet.md), [Queue](Collections.Queue.md), [Stack](Collections.Stack.md), [PriorityQueue](Collections.PriorityQueue.md), [Seq](Collections.Seq.md) |
+| `Text` | [String](Text.String.md), [Char](Text.Char.md), [Utf8](Text.Utf8.md), [Json](Text.Json.md) |
 | `Time` | [DateTime](Time.DateTime.md) |
-| none | [Iter](Iter.md), [Testing](Testing.md), [Binary](Binary.md), [Option](Option.md), [Result](Result.md), [Throw](Throw.md), [Math](Math.md), [Int](Int.md), [Float](Float.md), [Runtime](Runtime.md), [Mmio](Mmio.md), [Ptr](Ptr.md), [Weak](Weak.md), [Arena](Arena.md), [Simd](Simd.md), [Simd.X86](Simd.X86.md), [Simd.Arm](Simd.Arm.md) |
+| `Numerics` | [Random](Numerics.Random.md) |
+| `Threading` | [Atomic](Threading.Atomic.md), [Spsc](Threading.Spsc.md) |
+| none | [Iter](Iter.md), [Testing](Testing.md), [Binary](Binary.md), [Option](Option.md), [Result](Result.md), [Throw](Throw.md), [Math](Math.md), [Int](Int.md), [Float](Float.md), [Runtime](Runtime.md), [Mmio](Mmio.md), [Irq](Irq.md), [Ptr](Ptr.md), [Weak](Weak.md), [Arena](Arena.md), [Simd](Simd.md), [Simd.X86](Simd.X86.md), [Simd.Arm](Simd.Arm.md) |
 
 ## Std: targets with an operating system
 
@@ -24,8 +26,9 @@ The names every program has without qualification: the operator traits and their
 | none | [Console](Console.md), [Environment](Environment.md) |
 | `IO` | [File](IO.File.md), [Directory](IO.Directory.md), [Path](IO.Path.md), [Reader and Writer](IO.Stream.md) |
 | `Diagnostics` | [Process](Diagnostics.Process.md), [Stopwatch](Diagnostics.Stopwatch.md) |
-| `Threading` | [Task](Threading.Task.md), [Alt](Threading.Alt.md), [Parallel](Threading.Parallel.md), [Atomic](Threading.Atomic.md), [Mutex](Threading.Mutex.md), [Channel](Threading.Channel.md) |
+| `Threading` | [Task](Threading.Task.md), [Alt](Threading.Alt.md), [Parallel](Threading.Parallel.md), [Mutex](Threading.Mutex.md), [Channel](Threading.Channel.md) |
 | `Collections` | [Array.Parallel](Collections.Array.Parallel.md) |
 | `Net` | [Tcp](Net.Tcp.md), [Unix](Net.Unix.md) |
 | `Time` | [DateTime.utcNow](Time.Clock.md) |
+| `Numerics` | [Random.shared](Numerics.Entropy.md) |
 | `Testing` | [Runner](Testing.Runner.md) |

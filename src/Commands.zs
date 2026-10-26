@@ -104,7 +104,7 @@ let run (args: list<string>) : int =
       let (program, pargs) =
         match o.mcu with
         | Some m when m.board <> "" -> ("qemu-system-arm", [ "-M"; m.board; "-nographic"; "-semihosting-config"; "enable=on,target=native"; "-kernel"; exe ])
-        | Some _ -> ("node", [ Path.combine (Compile.runtimeDir ()) "run-wasm.mjs"; exe ])
+        | Some _ -> ("node", [ Path.combine (Options.runtimeDir ()) "run-wasm.mjs"; exe ])
         | None -> (exe, programArgs)
       if Make.build { o with main = file; out = exe } false = 0 then
         let code =

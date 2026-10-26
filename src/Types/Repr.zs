@@ -65,7 +65,8 @@ let rec shareBlocker (v: Vars) (onVar: Ty -> unit / 'e) (types: Map<string, Type
   | TCon("Atomic", _) -> None
   | TCon("array", [ el ])
   | TCon("Mutex", [ el ])
-  | TCon("Channel", [ el ]) -> inner visiting el
+  | TCon("Channel", [ el ])
+  | TCon("Spsc", [ el ]) -> inner visiting el
   | TCon(n, args) when not (isDynName n) && Option.isNone (builtinCons n) ->
     let key = showFull v (TCon(n, args))
     if Set.contains key visiting then

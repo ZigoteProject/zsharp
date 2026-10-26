@@ -216,6 +216,25 @@ if command -v qemu-system-arm >/dev/null && bin/zs build tests/mcu/layout.zs --t
   echo "ok   tests/mcu/layout.zs (layout facts on a Cortex-M4, under qemu)"
 else echo "FAIL tests/mcu/layout.zs"; cat "$tmp/layout.log"; fail=1; fi
 
+# interrupt handlers (0012) on both chips under qemu: a pended line's handler counting in an
+# Atomic and pushing to an Spsc, SysTick's handler with Runtime.ticks counting up; and what a
+# handler can't be, with the board's lines
+if command -v qemu-system-arm >/dev/null; then
+  for chip in cortex-m4 cortex-m0plus; do
+    board=$([ $chip = cortex-m4 ] && echo mps2-an386 || echo microbit)
+    for t in isr systick; do
+      if bin/zs build tests/mcu/$t.zs --target $chip -o "$tmp/$t.elf" 2>"$tmp/$t.log" \
+         && [ "$(timeout 60 qemu-system-arm -M $board -nographic -semihosting-config enable=on,target=native -kernel "$tmp/$t.elf" 2>&1 | grep -v '^#zs')" = "$(cat tests/mcu/$t.expected)" ]; then
+        echo "ok   tests/mcu/$t.zs on $chip (under qemu)"
+      else echo "FAIL tests/mcu/$t.zs on $chip"; cat "$tmp/$t.log"; fail=1; fi
+    done
+  done
+fi
+for t in err_isr err_isr_share; do
+  if [ "$(bin/zs build --strict tests/mcu/$t.zs --target cortex-m4 -o "$tmp/err.elf" 2>&1 | grep -v '^ [ 0-9]* | ')" = "$(cat tests/mcu/$t.expected)" ]; then echo "ok   tests/mcu/$t.zs"
+  else echo "FAIL tests/mcu/$t.zs"; fail=1; fi
+done
+
 # Math where libm is compiler-rt's and the runtime's (pow, atan2, round: fdlibm's, checked against
 # the host's libm by tests/libm.sh), with a host's results: both chips under qemu, and wasm32
 if out=$(tests/libm.sh 2>&1); then echo "ok   tests/libm.sh (the runtime's pow, atan2 and round against the host's libm)"

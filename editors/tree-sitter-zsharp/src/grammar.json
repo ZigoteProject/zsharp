@@ -221,6 +221,10 @@
                   "name": "string"
                 },
                 {
+                  "type": "SYMBOL",
+                  "name": "number"
+                },
+                {
                   "type": "SEQ",
                   "members": [
                     {
@@ -243,6 +247,10 @@
                                 {
                                   "type": "SYMBOL",
                                   "name": "string"
+                                },
+                                {
+                                  "type": "SYMBOL",
+                                  "name": "number"
                                 }
                               ]
                             },
@@ -265,6 +273,10 @@
                                       {
                                         "type": "SYMBOL",
                                         "name": "string"
+                                      },
+                                      {
+                                        "type": "SYMBOL",
+                                        "name": "number"
                                       }
                                     ]
                                   }
