@@ -37,6 +37,10 @@
   ref<int>, …`); `Atomic` is in Core now (masking interrupts on a Cortex-M0), and `Spsc<'a>` is a
   queue of one producer and one consumer that neither waits nor locks. `Irq.enable`, `disable`
   and `pend`.
+- `Cpu` (0012): `wfi`, `wfe`, `sev`, `dmb`, `dsb`, `isb`, `nop`, `enableInterrupts`,
+  `disableInterrupts`, one instruction each, and `Cpu.critical (fun () -> …)`, its body run with
+  interrupts masked (it nests). On a computer the barriers are fences and the rest nothing; masking
+  is an error there.
 - `Runtime.ticks` on a chip counts a SysTick wrap its handler hasn't run for yet, and never goes
   back (it could, by a wrap, right at one).
 - An `[<Export>]` function returning `unit` compiles (the compiler panicked in its C wrapper).

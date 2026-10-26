@@ -2346,6 +2346,29 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
     emit em $"br label %{gotL}"
     enter em gotL
     phi fx (llty g ty) [ (some, fromSome); (none, fromNone) ]
+  | "cpu.critical" ->
+    // f () with interrupts masked, PRIMASK saved and put back, so one inside another is fine
+    let m = instr em "call i32 asm sideeffect \"mrs $0, primask\\0Acpsid i\", \"=r,~{memory}\"()"
+    let cp = instr em $"getelementptr {{ i_W, ptr }}, ptr {arg 0}, i32 0, i32 1"
+    let code = instr em $"load ptr, ptr {cp}"
+    let r = instr em $"call {llty g ty} {code}(ptr {arg 0}, {{}} zeroinitializer)"
+    emit em $"call void asm sideeffect \"msr primask, $0\", \"r,~{{memory}}\"(i32 {m})"
+    dropValue g em (argTy 0) (arg 0)
+    r
+  | _ when String.startsWith "cpu." op ->
+    // one instruction on a chip, and nothing moves across it; on a computer the fences are
+    // fences and the rest are nothing (enabling and disabling interrupts are the checker's errors)
+    let name = String.sub op 4 (String.length op - 4)
+    if isArm32 g then
+      let asm =
+        match name with
+        | "enableInterrupts" -> "cpsie i"
+        | "disableInterrupts" -> "cpsid i"
+        | n -> n
+      emit em $"call void asm sideeffect \"{asm}\", \"~{{memory}}\"()"
+    else if name = "dmb" || name = "dsb" then
+      emit em "fence seq_cst"
+    "zeroinitializer"
   | "arena.with" ->
     // f () with an arena open: what it allocates comes from the arena's blocks
     emit em "call void @zs_arena_open()"

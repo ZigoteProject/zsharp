@@ -1,1 +1,4 @@
 tests/err_isr_host.zs:2: error: interrupt handlers exist on microcontrollers, and this build isn't for one (zs build --target cortex-m4)
+tests/err_isr_host.zs:7:16: error: Cpu.critical exists on microcontrollers, and this build isn't for one (zs build --target cortex-m4)
+tests/err_isr_host.zs:9:14: error: Cpu.disableInterrupts exists on microcontrollers, and this build isn't for one (zs build --target cortex-m4)
+3 errors

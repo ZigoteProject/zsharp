@@ -83,6 +83,12 @@ let private conversions () : list<string * Builtin> =
 /// roundeven: half to even, as F#'s).
 let mathFunctions : list<string> = [ "floor"; "ceil"; "round"; "trunc"; "exp"; "log"; "log2"; "log10"; "sin"; "cos"; "tan" ]
 
+/// Cpu's instructions of no arguments (0012): Cortex-M's mnemonics, and what each is on a computer.
+let cpuInstructions : list<string> = [ "nop"; "wfi"; "wfe"; "sev"; "dmb"; "dsb"; "isb"; "enableInterrupts"; "disableInterrupts" ]
+
+/// The ones only a microcontroller has: masking its interrupts.
+let chipOnly : Set<string> = Set.ofList [ "Cpu.enableInterrupts"; "Cpu.disableInterrupts"; "Cpu.critical" ]
+
 /// Every built-in function, by full name.
 let builtins : Map<string, Builtin> =
   let table =
@@ -180,6 +186,7 @@ let builtins : Map<string, Builtin> =
       b "Weak.create" "weak.new" [ kAny ] (f a (TCon("weak", [ a ]))) 1
       b "Weak.get" "weak.get" [ kAny ] (f (TCon("weak", [ a ])) (TCon("option", [ a ]))) 1
       b "Arena.with" "arena.with" [ kAny ] (f (f tUnit a) a) 1
+      b "Cpu.critical" "cpu.critical" [ kAny ] (f (f tUnit a) a) 1
       b "Runtime.mallocs" "Runtime.mallocs" [] (f tUnit tInt) 1
       b "Runtime.marks" "Runtime.marks" [] (f tUnit tInt) 1
       // the thread pool (runtime/rt.c), which Std's Parallel wraps: a job runs a function
@@ -250,7 +257,9 @@ let builtins : Map<string, Builtin> =
       b "Collections.Array.length" "Array.length" [ kAny ] (f (TCon("span", [ a ])) tInt) 1      ]
   // libm's functions of one float, as LLVM intrinsics
   let math = List.map (fun (g: string) -> b ("Math." + g) ("Math." + g) [ kFloat ] (f a a) 1) mathFunctions
-  Map.ofList (List.concat [ table; math; conversions (); simdBuiltins () ])
+  // the processor's instructions firmware needs (0012): each one instruction on a chip
+  let cpu = List.map (fun (g: string) -> b ("Cpu." + g) ("cpu." + g) [] (f tUnit tUnit) 1) cpuInstructions
+  Map.ofList (List.concat [ table; math; cpu; conversions (); simdBuiltins () ])
 
 /// The built-in functions only `unsafe` code may call: raw memory through ptr<T>.
 let unsafeBuiltins : Set<string> =

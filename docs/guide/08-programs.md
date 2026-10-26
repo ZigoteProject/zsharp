@@ -88,7 +88,7 @@ mug 2 Emma 9
 | `Net` | | `Tcp` |
 | `Numerics` | `Random` | `Random.shared` |
 | `Time` | `DateTime`, `Duration` | `DateTime.utcNow` |
-| none | `Option`, `Result`, `Math`, `Int`, `Runtime`, `Mmio`, `Irq`, `Ptr`, `Weak`, `Arena` | `Console`, `Environment` |
+| none | `Option`, `Result`, `Math`, `Int`, `Runtime`, `Mmio`, `Irq`, `Cpu`, `Ptr`, `Weak`, `Arena` | `Console`, `Environment` |
 
 - **Opened everywhere:** these namespaces are open in every module, so `List.map` is `Collections.List.map` and `File.readAllText` is `IO.File.readAllText`.
 - **Your names come first:** the library's names have the lowest precedence. A program's own `List.top` or `Text.wrap` is found before them, and `List.map` still finds the library's.

@@ -1803,6 +1803,8 @@ and fnptrCall (cx: Cx) (env: Map<string, Local>) (depth: int) (fp: CExpr) (f: Ty
 
 /// A call of a function built into the compiler.
 and builtinCall (cx: Cx) (env: Map<string, Local>) (depth: int) (name: string) (args: list<Expr>) : CExpr =
+  if Set.contains name chipOnly && Option.isNone cx.irqs then
+    fail $"{name} exists on microcontrollers, and this build isn't for one (zs build --target cortex-m4)"
   if Set.contains name unsafeBuiltins && not cx.unsafeOn.Value then
     if name = "Collections.Span.ofPtr" then
       fail "Span.ofPtr needs unsafe: the memory's lifetime isn't checked"

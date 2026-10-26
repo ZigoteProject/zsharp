@@ -3,3 +3,7 @@
 let onLine3 () = ()
 
 let main () = 0
+
+let quiet () = Cpu.critical (fun () -> 1)
+
+let off () = Cpu.disableInterrupts ()

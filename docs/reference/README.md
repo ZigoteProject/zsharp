@@ -17,7 +17,7 @@ The names every program has without qualification: the operator traits and their
 | `Time` | [DateTime](Time.DateTime.md) |
 | `Numerics` | [Random](Numerics.Random.md) |
 | `Threading` | [Atomic](Threading.Atomic.md), [Spsc](Threading.Spsc.md) |
-| none | [Iter](Iter.md), [Testing](Testing.md), [Binary](Binary.md), [Option](Option.md), [Result](Result.md), [Throw](Throw.md), [Math](Math.md), [Int](Int.md), [Float](Float.md), [Runtime](Runtime.md), [Mmio](Mmio.md), [Irq](Irq.md), [Ptr](Ptr.md), [Weak](Weak.md), [Arena](Arena.md), [Simd](Simd.md), [Simd.X86](Simd.X86.md), [Simd.Arm](Simd.Arm.md) |
+| none | [Iter](Iter.md), [Testing](Testing.md), [Binary](Binary.md), [Option](Option.md), [Result](Result.md), [Throw](Throw.md), [Math](Math.md), [Int](Int.md), [Float](Float.md), [Runtime](Runtime.md), [Mmio](Mmio.md), [Irq](Irq.md), [Cpu](Cpu.md), [Ptr](Ptr.md), [Weak](Weak.md), [Arena](Arena.md), [Simd](Simd.md), [Simd.X86](Simd.X86.md), [Simd.Arm](Simd.Arm.md) |
 
 ## Std: targets with an operating system
 
