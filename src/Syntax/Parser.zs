@@ -2024,6 +2024,8 @@ and private primary (p: P) : Ast.Expr =
       let e = computation p ti
       wrap p at Tree.Computation
       e
+    | Id when (textIs p ti "sizeof" || textIs p ti "alignof" || textIs p ti "offsetof") && peek p = Lt && adjacent p ->
+      layoutFact p at ti
     | Id -> ex (Ast.Var(idName p ti)) ti
     | True -> plain (Ast.BoolLit true)
     | False -> plain (Ast.BoolLit false)
@@ -2106,6 +2108,31 @@ and private primary (p: P) : Ast.Expr =
     | _ -> plain Ast.UnitLit
 
 // 9.58<s>: a measure right after a number literal (from `at`), if one parses there
+// sizeof<T>, alignof<T>, offsetof<T> "field": a type's layout, an int constant (0004)
+and private layoutFact (p: P) (at: int) (ti: int) : Ast.Expr =
+  let kind = textOf p ti
+  startAt p at Tree.Layout
+  advance p
+  let t = ty p
+  closeAngle p
+  let field =
+    if kind <> "offsetof" then
+      ""
+    else if peek p = Str then
+      let s =
+        match Literal.stringValue (textOf p p.pos.Value) with
+        | Ok s -> s
+        | Error e ->
+          failAt p p.pos.Value e
+          ""
+      advance p
+      s
+    else
+      failAt p p.pos.Value "offsetof names the field after the type: offsetof<Packet> \"length\""
+      ""
+  finish p
+  ex (Ast.LayoutOf(kind, t, field)) ti
+
 and private measured (p: P) (at: int) (lit: Ast.Expr) : Ast.Expr =
   if peek p = Lt && adjacent p then
     let saved = save p
@@ -2853,6 +2880,7 @@ let rec private decl (p: P) : Ast.Decl =
     | Effect -> Some Tree.Effect
     | Impl -> Some Tree.Impl
     | Id when isWord p "import" -> Some Tree.Import
+    | Id when isWord p "assert" -> Some Tree.Assert
     | Extern -> Some Tree.Extern
     | Let -> Some Tree.Let
     | _ -> None
@@ -3039,6 +3067,10 @@ and private declOf (p: P) : Ast.Decl =
       else
         failAt p ln "expected a header name: import c \"header.h\""
         Ast.decl (Ast.ImportC "") ln
+  | Id when isWord p "assert" ->
+    // assert cond: checked when compiling when cond is a constant, else at startup (0004)
+    advance p
+    Ast.decl (Ast.Assert(expr p)) ln
   | Extern -> externDecl p ln
   | Let when patternAhead p -> patternDecl p ln
   | Let -> letDecl p ln

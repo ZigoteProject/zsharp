@@ -16,6 +16,7 @@ type Kind =
   | Apply
   | Array
   | ArrayComp
+  | Assert
   | Assign
   | Attributed
   | Attributes
@@ -38,6 +39,7 @@ type Kind =
   | Index
   | Infix
   | Lambda
+  | Layout
   | Let
   | LetBang
   | List

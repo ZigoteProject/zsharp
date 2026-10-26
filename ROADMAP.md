@@ -98,7 +98,7 @@ real programs.
     - **Kept before phase 11:** compound assignment, `function`, list expressions, slices and `span`, tests as values, assertions, inline expect tests, the iteration trait, and rename and code actions. They change how code and tests are written, or break an API, so they're cheaper before the compiler is rewritten in Z# and before 0.1 has users.
     - **From the tracks:** the items marked *after phase 11* in E, D, M, S and K, and track P whole.
   - **Launch:** the guide, the "Z# for F# programmers" page, the flagship project as the example, and a post for each of the strongest results (Perceus on a Cortex-M, atomic counts only on shared objects, SIMD next to C).
-- **Status (2026-10-26):** the flagship is a microcontroller, an ST Nucleo-F401RE, so M4, M9, M11 and async on bare metal are on the list; impls across packages take Rust's orphan rule (K9). Done: top-level patterns (`tests/top_pattern.zs`).
+- **Status (2026-10-26):** the flagship is a microcontroller, an ST Nucleo-F401RE, so M4, M9, M11 and async on bare metal are on the list; impls across packages take Rust's orphan rule (K9). Done: top-level patterns (`tests/top_pattern.zs`); layout facts and compile-time asserts (`tests/layout.zs`).
 - **Exit tests:**
   - On clean Fedora, Ubuntu, macOS and Windows machines, a newcomer gets from the release archive to a running hello world in five minutes, following only the guide.
   - The flagship project builds from its repository with `zs build` alone, and runs on its hardware.

@@ -199,6 +199,8 @@ let private readText (path: string) : string =
 let generate (o: Options.Options) (prog0: Program) (testBuild: bool) : result<Program * string * string * bool, Failure> =
   let prog = if testBuild then { prog0 with funs = List.filter (fun (f: Core.Ir.FunDef) -> f.name <> "main") prog0.funs } else prog0
   match (if o.isLib then prog.values else []) with
+  | (value, _) :: _ when String.contains ".$assert" value || String.startsWith "$assert" value ->
+    Error(InPass { file = ""; line = 0; message = "a top-level assert whose condition isn't a constant is checked at startup, which a library doesn't have; assert on constants (sizeof<T> = 20), or check it in a function" })
   | (value, _) :: _ -> Error(InPass { file = ""; line = 0; message = $"top-level value '{value}' is computed at startup, which a library doesn't have; make it a constant or a function" })
   | [] ->
     match lower prog o.debugInfo o.time o.checkIr with

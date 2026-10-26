@@ -2341,6 +2341,28 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
       | _ -> panic "ptr.add"
     if llty g el = "{}" then arg 0 else instr em $"getelementptr {llty g el}, ptr {arg 0}, i_W {arg 1}"
   | "ptr.null" -> "null"
+  | "layout.sizeof"
+  | "layout.alignof"
+  | "layout.offsetof" ->
+    // a layout fact in a generic function (0004), its type settled now: the type of the null
+    // ptr<T> it carries; the field's index after it
+    let t =
+      match argTy 0 with
+      | TCon("ptr", [ x ]) -> x
+      | x -> panic $"{op} of {showT g x}"
+    let index =
+      match (List.item 1 args).k with
+      | CInt i -> int i
+      | _ -> 0
+    let word = pointerBytes g
+    let n =
+      match op with
+      | "layout.sizeof" -> Option.map fst (Types.Repr.layout g.v g.types word t)
+      | "layout.alignof" -> Option.map snd (Types.Repr.layout g.v g.types word t)
+      | _ -> Types.Repr.offsetOf g.v g.types word t index
+    match n with
+    | Some k -> $"{k}"
+    | None -> panic $"{op} of {showT g t}: its layout isn't known"
   | "ptr.isNull" -> instr em $"icmp eq ptr {arg 0}, null"
   | "ptr.cast" -> arg 0
   | "ptr.alloc" ->

@@ -142,3 +142,4 @@ None.
 ## History
 
 - **2026-10-22:** drafted from DESIGN §11, decision 53 and phase 12's deferred items.
+- **2026-10-26:** layout facts built (`tests/layout.zs`, `tests/err_layout.zs`, `tests/layout_startup.zs`). The checker knows the target's word size, so a fact about a type without variables is a constant there and a top-level `assert` on constants is checked as it's declared (in the editor too); in a generic function a fact is a primitive carrying its type, which code generation settles after monomorphization (`sizeof<'a>` in expressions, as decided). The layout is code generation's own (`Types.Repr.layout`). A failed assert names the facts it read; the generated header's `_Static_assert` checks each struct's size.

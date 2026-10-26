@@ -212,3 +212,22 @@ let private { x = px } as p = origin
       (record_pattern (field_pattern name: (identifier) (identifier)))
       (identifier))
     body: (identifier)))
+
+==================
+layout facts and a top-level assert
+==================
+
+assert (sizeof<Packet> = 16 && offsetof<Packet> "length" = 4)
+
+---
+
+(source_file
+  (assert_declaration
+    condition: (parenthesized_expression
+      (binary_expression
+        (binary_expression
+          (layout_fact (type_name (identifier)))
+          (number))
+        (binary_expression
+          (layout_fact (type_name (identifier)) field: (string (string_content)))
+          (number))))))

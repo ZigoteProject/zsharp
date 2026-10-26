@@ -320,7 +320,12 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
           held ft
         let name = String.replace n "." "_"
         let fields = String.join "\n" (List.map (fun (f, ft) -> $"    {cDecl ft f};") fs)
-        Buffer.push $"typedef struct {name} {{\n{fields}\n}} {name};\n\n" header
+        // the C compiler on the other side checks the size Z# lays the struct out with (0004)
+        let check =
+          match Types.Repr.layout g.v types (pointerBytes g) (TCon(n, [])) with
+          | Some(size, _) -> $"_Static_assert(sizeof({name}) == {size}, \"{name} is {size} bytes in Z#\");\n"
+          | None -> ""
+        Buffer.push $"typedef struct {name} {{\n{fields}\n}} {name};\n{check}\n" header
       | _ -> ()
   for n in Set.toList clayouts do
     writeStruct n

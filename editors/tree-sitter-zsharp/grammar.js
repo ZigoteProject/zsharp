@@ -76,6 +76,7 @@ module.exports = grammar({
       $.type_extension,
       $.extern_declaration,
       $.import_c_declaration,
+      $.assert_declaration,
       $.trait_declaration,
       $.effect_declaration,
       $.impl_declaration,
@@ -124,6 +125,8 @@ module.exports = grammar({
     type_annotation: $ => seq(':', $._type),
 
     import_c_declaration: $ => seq('import', 'c', field('header', $.string)),
+    // assert cond at the top level: checked when compiling when cond is a constant
+    assert_declaration: $ => seq('assert', field('condition', $._expression)),
     extern_declaration: $ => seq('extern', field('name', $.identifier), ':', $._type),
 
     type_declaration: $ => seq(
@@ -374,6 +377,13 @@ module.exports = grammar({
       $.array,
       $.record,
       $.record_update,
+      $.layout_fact,
+    ),
+
+    // sizeof<T>, alignof<T>, offsetof<T> "field": a type's layout, an int constant
+    layout_fact: $ => choice(
+      seq(field('fact', choice('sizeof', 'alignof')), token.immediate('<'), $._type, '>'),
+      seq(field('fact', 'offsetof'), token.immediate('<'), $._type, '>', field('field', $.string)),
     ),
 
     // task { … }: a builder's name, then statements, on the line or as an indented block

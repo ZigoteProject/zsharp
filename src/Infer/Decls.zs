@@ -450,6 +450,8 @@ let rec private isConstant (cx: Cx) (e: Expr) : bool =
     | None -> false
   | Bin(_, a, b) -> isConstant cx a && isConstant cx b
   | If(c, t, Some f) -> isConstant cx c && isConstant cx t && isConstant cx f
+  // sizeof<T>, alignof<T>, offsetof<T> "field" (0004)
+  | LayoutOf _ -> true
   | Tuple xs -> List.forall (isConstant cx) xs
   // an empty array (HashMap.empty's buckets)
   | ArrayLit [] -> true
@@ -498,6 +500,131 @@ let rec private qualifyNames (cx: Cx) (e: Expr) : Expr =
     | None -> e
   | Call(f, args) -> { e with e = Call(Option.defaultValue f (Exprs.resolveName cx f), List.map (qualifyNames cx) args) }
   | _ -> mapExpr (qualifyNames cx) e
+
+// ------------------------------------------------------------ top-level asserts
+
+// a constant's value when compiling (a top-level assert's): numbers, booleans, characters,
+// strings, and the parts of tuples and union cases
+type private Folded =
+  | FInt of i64
+  | FFloat of f64
+  | FBool of bool
+  | FStr of string
+  | FChar of int
+  | FParts of string * list<Folded>
+
+let private i64Max = i64 9223372036854775807
+
+// -1, 0 or 1 as a is below, at or above b
+let private signOf (a: 'a) (b: 'a) = if a < b then -1 else if a > b then 1 else 0
+
+// an operator on two values, where it can't overflow or divide by zero
+let private binary (op: string) (x: Folded) (y: Folded) : option<Folded> =
+  let small (n: i64) = n > i64 -3037000499 && n < i64 3037000499
+  let order (c: int) =
+    match op with
+    | "=" -> Some(FBool(c = 0))
+    | "<>" -> Some(FBool(c <> 0))
+    | "<" -> Some(FBool(c < 0))
+    | "<=" -> Some(FBool(c <= 0))
+    | ">" -> Some(FBool(c > 0))
+    | ">=" -> Some(FBool(c >= 0))
+    | _ -> None
+  match (x, y) with
+  | (FInt a, FInt b) ->
+    match op with
+    | "+" -> if (b > i64 0 && a > i64Max - b) || (b < i64 0 && a < -i64Max - i64 1 - b) then None else Some(FInt(a + b))
+    | "-" -> if (b < i64 0 && a > i64Max + b) || (b > i64 0 && a < -i64Max - i64 1 + b) then None else Some(FInt(a - b))
+    | "*" -> if small a && small b then Some(FInt(a * b)) else None
+    | "/" -> if b = i64 0 || (a = -i64Max - i64 1 && b = i64 -1) then None else Some(FInt(a / b))
+    | "%" -> if b = i64 0 || b = i64 -1 then None else Some(FInt(a % b))
+    | "&&&" -> Some(FInt(a &&& b))
+    | "|||" -> Some(FInt(a ||| b))
+    | "^^^" -> Some(FInt(a ^^^ b))
+    | "<<<" -> if b >= i64 0 && b < i64 63 && small a && small (a <<< b) then Some(FInt(a <<< b)) else None
+    | ">>>" -> if b >= i64 0 && b < i64 64 then Some(FInt(a >>> b)) else None
+    | _ -> order (signOf a b)
+  | (FFloat a, FFloat b) ->
+    match op with
+    | "+" -> Some(FFloat(a + b))
+    | "-" -> Some(FFloat(a - b))
+    | "*" -> Some(FFloat(a * b))
+    | "/" -> Some(FFloat(a / b))
+    | _ -> order (signOf a b)
+  | (FStr a, FStr b) -> if op = "+" then Some(FStr(a + b)) else order (signOf a b)
+  | (FChar a, FChar b) -> order (signOf a b)
+  | _ ->
+    match op with
+    | "=" -> Some(FBool(x = y))
+    | "<>" -> Some(FBool(x <> y))
+    | _ -> None
+
+/// The value of a constant expression when compiling, the layout facts it read pushed to `facts`
+/// (a failed assert's message names them); None for what isn't known before the program runs.
+let rec private fold (cx: Cx) (facts: Buffer<string>) (depth: int) (e: Expr) : option<Folded> =
+  let fd (x: Expr) = fold cx facts depth x
+  let all (xs: list<Expr>) = List.fold (fun acc x -> Option.bind (fun ys -> Option.map (fun y -> List.append ys [ y ]) (fd x)) acc) (Some []) xs
+  if depth > 64 then
+    None
+  else
+    match e.e with
+    | Lit n -> Some(FInt n)
+    | FloatLit x -> Some(FFloat x)
+    | BoolLit b -> Some(FBool b)
+    | StrLit s -> Some(FStr s)
+    | CharLit c -> Some(FChar c)
+    | UnitLit -> Some(FParts("()", []))
+    | At a
+    | AtLine a
+    | Typed(a, _)
+    | Measured(a, _) -> fd a
+    | Var x ->
+      match Exprs.resolveName cx x with
+      | Some q when Map.containsKey q cx.consts.Value -> fold cx facts (depth + 1) (Map.find q cx.consts.Value)
+      | Some q when Map.containsKey q cx.ctors.Value -> Some(FParts(q, []))
+      | _ -> None
+    | LayoutOf(kind, st, field) ->
+      let (t, index) = Exprs.layoutType cx kind st field
+      match Exprs.layoutValue cx kind t index with
+      | Some n ->
+        Buffer.push $"{Exprs.exprText e} is {n}" facts
+        Some(FInt(i64 n))
+      | None -> None
+    | Neg a ->
+      match fd a with
+      | Some(FInt n) when n > -i64Max -> Some(FInt(-n))
+      | Some(FFloat x) -> Some(FFloat(-x))
+      | _ -> None
+    | Not a ->
+      match fd a with
+      | Some(FBool b) -> Some(FBool(not b))
+      | _ -> None
+    | If(c, t, Some f) ->
+      match fd c with
+      | Some(FBool b) -> fd (if b then t else f)
+      | _ -> None
+    | Tuple xs -> Option.map (fun ys -> FParts("", ys)) (all xs)
+    | Bin("&&", a, b) ->
+      match fd a with
+      | Some(FBool false) -> Some(FBool false)
+      | Some(FBool true) -> fd b
+      | _ -> None
+    | Bin("||", a, b) ->
+      match fd a with
+      | Some(FBool true) -> Some(FBool true)
+      | Some(FBool false) -> fd b
+      | _ -> None
+    | Bin(op, a, b) ->
+      match (fd a, fd b) with
+      | (Some x, Some y) -> binary op x y
+      | _ -> None
+    | Call(f, args) ->
+      match (Exprs.resolveName cx f, all args) with
+      | (Some q, Some vs) when Map.containsKey q cx.ctors.Value && q <> "::" -> Some(FParts(q, vs))
+      | (_, Some [ FInt n ]) when f = "int" || f = "i64" || f = "usize" || f = "u64" -> Some(FInt n)
+      | (_, Some [ FChar c ]) when f = "int" -> Some(FInt(i64 c))
+      | _ -> None
+    | _ -> None
 
 // ------------------------------------------------------------ top-level patterns
 
@@ -1003,6 +1130,25 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
   | Pattern(q, ann, e) ->
     for value in patternValues cx d q ann e do
       declare cx value
+  | Assert e ->
+    // a constant condition is checked here, so a layout that changed fails the build (0004); any
+    // other is checked at startup, as a top-level value is computed
+    let facts = Buffer.empty
+    let known =
+      if isConstant cx e then
+        let c = withRowAs cx rowEmpty "a top-level assert" (fun () -> Exprs.infer cx Map.empty 0 e)
+        expect cx "assert" tBool c.ty
+        fold cx facts 0 e
+      else
+        None
+    match known with
+    | Some(FBool true) -> ()
+    | Some(FBool false) ->
+      let read = if Buffer.length facts = 0 then "" else " (" + String.join ", " (Array.toList (Buffer.toArray facts)) + ")"
+      fail $"assert fails when compiling: {Exprs.exprText e} is false{read}"
+    | _ ->
+      let check = expr (At(expr (Call("assert", [ e ])) d.dat)) d.dat
+      declare cx (decl (Value($"$assert{d.dat}", None, check)) d.dat)
   | Open m ->
     // a module, or one nested in the current module or a module enclosing it
     match resolveWith cx (fun q -> Set.contains q cx.moduleNames.Value) m with

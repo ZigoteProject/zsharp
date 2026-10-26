@@ -107,6 +107,8 @@ and ExprShape =
   | Typed of Expr * SType
   /// unsafe e: raw pointers and C function pointers allowed inside
   | Unsafe of Expr
+  /// sizeof<T>, alignof<T> or offsetof<T> "field" (the field, else ""): an int constant (0004)
+  | LayoutOf of string * SType * string
   /// [ for x in xs -> e ], [| … |]: its body yields
   | ListComp of bool * Expr
   /// yield e, in a list expression's body
@@ -194,6 +196,30 @@ and DeclShape =
   | Value of string * option<SType> * Expr
   /// let (a, b) = expr at the top level: a value for each of the pattern's variables (0006)
   | Pattern of Pat * option<SType> * Expr
+  /// assert e at the top level: checked when compiling when e is a constant, else at startup (0004)
+  | Assert of Expr
+
+/// A written type as text, near enough to how it was written: list<int>, int * string.
+let rec stypeText (t: SType) : string =
+  let inner (x: SType) =
+    match x with
+    | STTuple _
+    | STFun _
+    | STRow _ -> "(" + stypeText x + ")"
+    | _ -> stypeText x
+  match t with
+  | STName(n, []) -> n
+  | STName(n, args) -> n + "<" + String.join ", " (List.map stypeText args) + ">"
+  | STVar v -> "'" + v
+  | STTuple ts -> String.join " * " (List.map inner ts)
+  | STFun(a, b) -> inner a + " -> " + stypeText b
+  | STMeasure us -> String.join " " (List.map (fun (u, isVar, e) -> (if isVar then "'" else "") + u + (if e = 1 then "" else $"^{e}")) us)
+  | STRow(r, ls, tail) ->
+    let rest =
+      match tail with
+      | Some v -> " | '" + v
+      | None -> ""
+    stypeText r + " / <" + String.join ", " (List.map stypeText ls) + rest + ">"
 
 /// A node of each kind at a place.
 let expr (shape: ExprShape) (at: int) : Expr = { e = shape; at = at }
@@ -222,6 +248,7 @@ let mapExpr (f: Expr -> Expr / 'e) (x: Expr) : Expr / 'e =
     | BoolLit _
     | StrLit _
     | UnitLit
+    | LayoutOf _
     | Var _ -> x.e
     | Call(n, args) -> Call(n, List.map f args)
     | App(h, args) -> App(f h, List.map f args)

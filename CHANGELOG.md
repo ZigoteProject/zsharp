@@ -7,6 +7,11 @@
   constants stays constants; anything else is computed once at startup. A local `let`'s pattern
   takes an annotation (`let (a, b): int * string = …`), and a `let` whose pattern can fail says
   so: `a let's pattern must match every value, and this one misses None`.
+- Layout facts: `sizeof<T>`, `alignof<T>` and `offsetof<T> "field"` are `int` constants for the
+  target, a `[<CLayout>]` type's as C lays it out. A top-level `assert` on constants is checked
+  when compiling (`assert (sizeof<Packet> = 16)`), naming what it read when it fails; any other
+  top-level `assert` runs at startup. The header `zs build --lib` writes checks each struct's size
+  with `_Static_assert`.
 - A public constant that uses a private one of its module works from other modules (it was
   `'x' is private to module M` at the use).
 - A `type private` record's fields are private too: outside its module, code can't read, set,

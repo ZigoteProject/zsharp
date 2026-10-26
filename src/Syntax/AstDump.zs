@@ -196,6 +196,7 @@ let dump (src: Source.Source) (toks: array<Token.Token>) (decls: list<Decl>) : l
     | Unsafe a ->
       line d "Unsafe"
       kids [ a ]
+    | LayoutOf(kind, t, field) -> line d ("LayoutOf " + kind + " " + ty t + (if field = "" then "" else " " + quote field) + at e.at)
     | ListComp(isArray, b) ->
       line d ("ListComp array=" + (if isArray then "true" else "false"))
       kids [ b ]
@@ -267,6 +268,9 @@ let dump (src: Source.Source) (toks: array<Token.Token>) (decls: list<Decl>) : l
       expr (d + 1) v
     | Pattern(q, t, v) ->
       head ("Pattern " + pat q + " : " + ann t)
+      expr (d + 1) v
+    | Assert v ->
+      head "Assert"
       expr (d + 1) v
     | FunGroup items ->
       head "FunGroup"

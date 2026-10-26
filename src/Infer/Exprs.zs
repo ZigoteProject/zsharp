@@ -75,6 +75,7 @@ let rec exprText (e: Expr) : string =
     | ArrayLit _
     | RecordLit _
     | Call(_, [])
+    | LayoutOf _
     | At _
     | AtLine _ -> exprText x
     | _ -> "(" + exprText x + ")"
@@ -98,6 +99,9 @@ let rec exprText (e: Expr) : string =
   | Call(f, args) -> shownName f + " " + String.join " " (List.map atom args)
   | App(f, args) -> atom f + " " + String.join " " (List.map atom args)
   | Bin(op, a, b) -> exprText a + " " + op + " " + exprText b
+  // what the parser makes of a || b and a && b
+  | If(a, { e = BoolLit true }, Some b) -> exprText a + " || " + exprText b
+  | If(a, b, Some { e = BoolLit false }) -> exprText a + " && " + exprText b
   | Neg a -> "-" + atom a
   | Not a -> "not " + atom a
   | Tuple xs -> "(" + String.join ", " (List.map exprText xs) + ")"
@@ -105,6 +109,7 @@ let rec exprText (e: Expr) : string =
   | RecordLit fs -> "{ " + String.join "; " (List.map (fun (f: FieldValue) -> f.field + " = " + exprText f.value) fs) + " }"
   | Field(r, f) -> atom r + "." + f
   | Index(a, i) -> atom a + ".[" + exprText i + "]"
+  | LayoutOf(kind, t, field) -> kind + "<" + stypeText t + ">" + (if field = "" then "" else " \"" + field + "\"")
   | Typed(x, _)
   | At x
   | AtLine x -> exprText x
@@ -158,6 +163,33 @@ type private Prepared =
     pself: Local
     pbody: Expr
     prow: Ty }
+
+/// A layout fact's type (0004), and for offsetof its field's index among the record's fields.
+let layoutType (cx: Cx) (kind: string) (st: SType) (field: string) : Ty * int =
+  let t = toTy cx None st
+  if kind <> "offsetof" then
+    (t, 0)
+  else
+    let notRecord () = fail $"offsetof names a record's field, and {show cx t} isn't a record"
+    match prune cx.v t with
+    | TCon(n, _) ->
+      match Map.tryFind n cx.types.Value with
+      | Some { def = RecordDef fs } ->
+        match List.tryFind (fun (_, (f, _)) -> f = field) (List.mapi (fun i x -> (i, x)) fs) with
+        | Some(i, _) -> (t, i)
+        | None -> fail $"{shortName n} has no field '{field}': its fields are {String.join ", " (List.map fst fs)}"
+      | _ -> notRecord ()
+    | _ -> notRecord ()
+
+/// What a layout fact gives on this target: sizeof's size, alignof's alignment, offsetof's
+/// field's offset; None while a type variable is in the type (a generic function's, known after
+/// monomorphization).
+let layoutValue (cx: Cx) (kind: string) (t: Ty) (index: int) : option<int> =
+  let types = cx.types.Value
+  match kind with
+  | "sizeof" -> Option.map fst (Types.Repr.layout cx.v types cx.word t)
+  | "alignof" -> Option.map snd (Types.Repr.layout cx.v types cx.word t)
+  | _ -> Types.Repr.offsetOf cx.v types cx.word t index
 
 /// An expression's Core, with the type expected of it, if known.
 let rec inferWith (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>) (e: Expr) : CExpr =
@@ -515,6 +547,15 @@ and inferNode (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>)
     let c = inferHint cx env depth t x
     expect cx "annotated expression" t c.ty
     c
+  | LayoutOf(kind, st, field) ->
+    let (t, index) = layoutType cx kind st field
+    match layoutValue cx kind t index with
+    | Some n -> mk (CInt(i64 n)) tInt
+    | None ->
+      // a type variable in it: monomorphization settles the type (a null ptr<T> carries it), and
+      // code generation the number
+      let witness = mk (CPrim("ptr.null", [ mk CUnit tUnit ])) (TCon("ptr", [ t ]))
+      mk (CPrim("layout." + kind, [ witness; mk (CInt(i64 index)) tInt ])) tInt
   | Measured(x, m) ->
     let ce = inf x
     // a number with a unit is the number type expected of it (5<ns> as an i64<ns>)

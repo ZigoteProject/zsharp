@@ -205,6 +205,12 @@ if command -v qemu-system-arm >/dev/null && bin/zs build tests/mcu/effects.zs --
   echo "ok   tests/mcu/effects.zs (effect handlers on a Cortex-M0+, under qemu)"
 else echo "FAIL tests/mcu/effects.zs"; cat "$tmp/effects.log"; fail=1; fi
 
+# layout facts on a 32-bit chip: sizeof<int> is the 32-bit word there (0004), under qemu
+if command -v qemu-system-arm >/dev/null && bin/zs build tests/mcu/layout.zs --target cortex-m4 -o "$tmp/layout.elf" 2>"$tmp/layout.log" \
+   && [ "$(timeout 60 qemu-system-arm -M mps2-an386 -nographic -semihosting-config enable=on,target=native -kernel "$tmp/layout.elf" 2>&1 | grep -v '^#zs')" = "$(cat tests/mcu/layout.expected)" ]; then
+  echo "ok   tests/mcu/layout.zs (layout facts on a Cortex-M4, under qemu)"
+else echo "FAIL tests/mcu/layout.zs"; cat "$tmp/layout.log"; fail=1; fi
+
 # freestanding WebAssembly: the same effects test, run by the Node host
 if command -v node >/dev/null && bin/zs build tests/mcu/effects.zs --target wasm32 -o "$tmp/effects.wasm" 2>"$tmp/effects.log" \
    && [ "$(node bin/run-wasm.mjs "$tmp/effects.wasm" 2>&1)" = "$(cat tests/mcu/effects.expected)" ]; then

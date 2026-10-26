@@ -1,0 +1,4 @@
+tests/err_layout.zs:5: error: assert fails when compiling: sizeof<Packet> = 20 is false (sizeof<Packet> is 8)
+tests/err_layout.zs:6: error: Packet has no field 'lenght': its fields are kind, length
+tests/err_layout.zs:7: error: offsetof names a record's field, and int isn't a record
+3 errors

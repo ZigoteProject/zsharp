@@ -160,7 +160,7 @@ type Options =
     threaded: bool }
 
 /// Whether the target's machine word is 32 bits: a Cortex-M's (thumb…) or WebAssembly's (wasm32).
-let word32 (target: string) : bool = String.startsWith "thumb" target || String.startsWith "wasm32" target
+let word32 (target: string) : bool = Types.Repr.wordBytes target = 4
 
 /// One of the LLVM modules a program is split into, compiled on its own: the functions it
 /// defines, those of them the other modules call, whether it has the entry points (main, the

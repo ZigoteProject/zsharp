@@ -94,6 +94,25 @@ extern vec_length : Vec2 -> f32     // float vec_length(Vec2 v);
 
 `tests/cimport/abi.zs` checks every shape on both x86-64 and aarch64.
 
+**Checking a layout:** `sizeof<T>`, `alignof<T>` and `offsetof<T> "field"` are `int` constants for the target the build is for, a `[<CLayout>]` type's as C lays it out. A top-level `assert` on constants is checked when compiling, so a record that drifts from its C struct stops the build instead of corrupting memory at a call:
+
+```zsharp
+[<CLayout>]
+type Packet = { kind: u8; length: u32; data: fixed<u8, 6>; flags: u16 }
+
+assert (sizeof<Packet> = 16 && offsetof<Packet> "length" = 4)
+
+let main () =
+  println $"{sizeof<Packet>} {alignof<Packet>} {offsetof<Packet> "flags"}"
+  0
+```
+
+```text
+16 4 14
+```
+
+When a field changes, the build stops at the `assert` with what it read: `assert fails when compiling: sizeof<Packet> = 16 is false (sizeof<Packet> is 20)`. An `assert` whose condition isn't a constant runs at startup instead, and `zs build --lib` puts a `_Static_assert` of each struct's size in the header it writes, so the C side checks the same fact.
+
 ## Callbacks
 
 A `callback<A -> R>` parameter takes any Z# function, including a closure. C receives a function pointer and a `void *` user-data pointer that carries the closure:

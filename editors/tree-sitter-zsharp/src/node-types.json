@@ -145,6 +145,10 @@
             "named": true
           },
           {
+            "type": "layout_fact",
+            "named": true
+          },
+          {
             "type": "list",
             "named": true
           },
@@ -361,6 +365,10 @@
             "named": true
           },
           {
+            "type": "layout_fact",
+            "named": true
+          },
+          {
             "type": "list",
             "named": true
           },
@@ -448,6 +456,10 @@
           },
           {
             "type": "interpolated_string",
+            "named": true
+          },
+          {
+            "type": "layout_fact",
             "named": true
           },
           {
@@ -572,6 +584,10 @@
         },
         {
           "type": "lambda",
+          "named": true
+        },
+        {
+          "type": "layout_fact",
           "named": true
         },
         {
@@ -741,6 +757,158 @@
     }
   },
   {
+    "type": "assert_declaration",
+    "named": true,
+    "fields": {
+      "condition": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "application",
+            "named": true
+          },
+          {
+            "type": "array",
+            "named": true
+          },
+          {
+            "type": "binary_expression",
+            "named": true
+          },
+          {
+            "type": "boolean",
+            "named": true
+          },
+          {
+            "type": "char",
+            "named": true
+          },
+          {
+            "type": "computation_expression",
+            "named": true
+          },
+          {
+            "type": "for_expression",
+            "named": true
+          },
+          {
+            "type": "function_expression",
+            "named": true
+          },
+          {
+            "type": "handle_expression",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "if_expression",
+            "named": true
+          },
+          {
+            "type": "index_access",
+            "named": true
+          },
+          {
+            "type": "interpolated_string",
+            "named": true
+          },
+          {
+            "type": "lambda",
+            "named": true
+          },
+          {
+            "type": "layout_fact",
+            "named": true
+          },
+          {
+            "type": "list",
+            "named": true
+          },
+          {
+            "type": "match_expression",
+            "named": true
+          },
+          {
+            "type": "measured_number",
+            "named": true
+          },
+          {
+            "type": "member_access",
+            "named": true
+          },
+          {
+            "type": "number",
+            "named": true
+          },
+          {
+            "type": "operator_value",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "prefix_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_identifier",
+            "named": true
+          },
+          {
+            "type": "question",
+            "named": true
+          },
+          {
+            "type": "record",
+            "named": true
+          },
+          {
+            "type": "record_update",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "tuple",
+            "named": true
+          },
+          {
+            "type": "typed_expression",
+            "named": true
+          },
+          {
+            "type": "unary_expression",
+            "named": true
+          },
+          {
+            "type": "unit",
+            "named": true
+          },
+          {
+            "type": "unsafe_expression",
+            "named": true
+          },
+          {
+            "type": "while_expression",
+            "named": true
+          },
+          {
+            "type": "yield_expression",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "assignment",
     "named": true,
     "fields": {
@@ -845,6 +1013,10 @@
         },
         {
           "type": "lambda",
+          "named": true
+        },
+        {
+          "type": "layout_fact",
           "named": true
         },
         {
@@ -1155,6 +1327,10 @@
           "named": true
         },
         {
+          "type": "layout_fact",
+          "named": true
+        },
+        {
           "type": "list",
           "named": true
         },
@@ -1307,6 +1483,10 @@
         },
         {
           "type": "lambda",
+          "named": true
+        },
+        {
+          "type": "layout_fact",
           "named": true
         },
         {
@@ -1560,6 +1740,10 @@
         },
         {
           "type": "lambda",
+          "named": true
+        },
+        {
+          "type": "layout_fact",
           "named": true
         },
         {
@@ -1903,6 +2087,10 @@
             "named": true
           },
           {
+            "type": "layout_fact",
+            "named": true
+          },
+          {
             "type": "list",
             "named": true
           },
@@ -2140,6 +2328,10 @@
           },
           {
             "type": "lambda",
+            "named": true
+          },
+          {
+            "type": "layout_fact",
             "named": true
           },
           {
@@ -2495,6 +2687,10 @@
           "named": true
         },
         {
+          "type": "layout_fact",
+          "named": true
+        },
+        {
           "type": "list",
           "named": true
         },
@@ -2767,6 +2963,10 @@
           "named": true
         },
         {
+          "type": "layout_fact",
+          "named": true
+        },
+        {
           "type": "list",
           "named": true
         },
@@ -2919,6 +3119,10 @@
           },
           {
             "type": "lambda",
+            "named": true
+          },
+          {
+            "type": "layout_fact",
             "named": true
           },
           {
@@ -3140,6 +3344,10 @@
         },
         {
           "type": "lambda",
+          "named": true
+        },
+        {
+          "type": "layout_fact",
           "named": true
         },
         {
@@ -3416,6 +3624,10 @@
             "named": true
           },
           {
+            "type": "layout_fact",
+            "named": true
+          },
+          {
             "type": "list",
             "named": true
           },
@@ -3579,6 +3791,10 @@
           },
           {
             "type": "lambda",
+            "named": true
+          },
+          {
+            "type": "layout_fact",
             "named": true
           },
           {
@@ -3894,6 +4110,10 @@
             "named": true
           },
           {
+            "type": "layout_fact",
+            "named": true
+          },
+          {
             "type": "list",
             "named": true
           },
@@ -4044,6 +4264,10 @@
             "named": true
           },
           {
+            "type": "layout_fact",
+            "named": true
+          },
+          {
             "type": "list",
             "named": true
           },
@@ -4191,6 +4415,10 @@
           },
           {
             "type": "lambda",
+            "named": true
+          },
+          {
+            "type": "layout_fact",
             "named": true
           },
           {
@@ -4424,6 +4652,10 @@
           "named": true
         },
         {
+          "type": "layout_fact",
+          "named": true
+        },
+        {
           "type": "list",
           "named": true
         },
@@ -4619,6 +4851,10 @@
           "named": true
         },
         {
+          "type": "layout_fact",
+          "named": true
+        },
+        {
           "type": "list",
           "named": true
         },
@@ -4774,6 +5010,10 @@
           "named": true
         },
         {
+          "type": "layout_fact",
+          "named": true
+        },
+        {
           "type": "list",
           "named": true
         },
@@ -4871,6 +5111,82 @@
         },
         {
           "type": "yield_expression",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "layout_fact",
+    "named": true,
+    "fields": {
+      "fact": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "alignof",
+            "named": false
+          },
+          {
+            "type": "offsetof",
+            "named": false
+          },
+          {
+            "type": "sizeof",
+            "named": false
+          }
+        ]
+      },
+      "field": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "string",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "dyn_type",
+          "named": true
+        },
+        {
+          "type": "effect_type",
+          "named": true
+        },
+        {
+          "type": "function_type",
+          "named": true
+        },
+        {
+          "type": "generic_type",
+          "named": true
+        },
+        {
+          "type": "postfix_type",
+          "named": true
+        },
+        {
+          "type": "tuple_type",
+          "named": true
+        },
+        {
+          "type": "type_name",
+          "named": true
+        },
+        {
+          "type": "type_variable",
+          "named": true
+        },
+        {
+          "type": "variadic",
           "named": true
         }
       ]
@@ -5024,6 +5340,10 @@
           },
           {
             "type": "lambda",
+            "named": true
+          },
+          {
+            "type": "layout_fact",
             "named": true
           },
           {
@@ -5261,6 +5581,10 @@
             "named": true
           },
           {
+            "type": "layout_fact",
+            "named": true
+          },
+          {
             "type": "list",
             "named": true
           },
@@ -5424,6 +5748,10 @@
           },
           {
             "type": "lambda",
+            "named": true
+          },
+          {
+            "type": "layout_fact",
             "named": true
           },
           {
@@ -5673,6 +6001,10 @@
             "named": true
           },
           {
+            "type": "layout_fact",
+            "named": true
+          },
+          {
             "type": "list",
             "named": true
           },
@@ -5895,6 +6227,10 @@
             "named": true
           },
           {
+            "type": "layout_fact",
+            "named": true
+          },
+          {
             "type": "list",
             "named": true
           },
@@ -6050,6 +6386,10 @@
         },
         {
           "type": "lambda",
+          "named": true
+        },
+        {
+          "type": "layout_fact",
           "named": true
         },
         {
@@ -6283,6 +6623,10 @@
             "named": true
           },
           {
+            "type": "layout_fact",
+            "named": true
+          },
+          {
             "type": "list",
             "named": true
           },
@@ -6453,6 +6797,10 @@
             "named": true
           },
           {
+            "type": "layout_fact",
+            "named": true
+          },
+          {
             "type": "list",
             "named": true
           },
@@ -6592,6 +6940,10 @@
           },
           {
             "type": "lambda",
+            "named": true
+          },
+          {
+            "type": "layout_fact",
             "named": true
           },
           {
@@ -6842,6 +7194,10 @@
           "named": true
         },
         {
+          "type": "layout_fact",
+          "named": true
+        },
+        {
           "type": "list",
           "named": true
         },
@@ -6970,6 +7326,10 @@
           },
           {
             "type": "lambda",
+            "named": true
+          },
+          {
+            "type": "layout_fact",
             "named": true
           },
           {
@@ -7166,6 +7526,10 @@
           "named": true
         },
         {
+          "type": "layout_fact",
+          "named": true
+        },
+        {
           "type": "list",
           "named": true
         },
@@ -7275,6 +7639,10 @@
       "multiple": true,
       "required": false,
       "types": [
+        {
+          "type": "assert_declaration",
+          "named": true
+        },
         {
           "type": "attributes",
           "named": true
@@ -7686,6 +8054,10 @@
           "named": true
         },
         {
+          "type": "layout_fact",
+          "named": true
+        },
+        {
           "type": "list",
           "named": true
         },
@@ -7946,6 +8318,10 @@
           "named": true
         },
         {
+          "type": "layout_fact",
+          "named": true
+        },
+        {
           "type": "list",
           "named": true
         },
@@ -8066,6 +8442,10 @@
         },
         {
           "type": "lambda",
+          "named": true
+        },
+        {
+          "type": "layout_fact",
           "named": true
         },
         {
@@ -8265,6 +8645,10 @@
           "named": true
         },
         {
+          "type": "layout_fact",
+          "named": true
+        },
+        {
           "type": "list",
           "named": true
         },
@@ -8420,6 +8804,10 @@
           "named": true
         },
         {
+          "type": "layout_fact",
+          "named": true
+        },
+        {
           "type": "list",
           "named": true
         },
@@ -8572,6 +8960,10 @@
           },
           {
             "type": "lambda",
+            "named": true
+          },
+          {
+            "type": "layout_fact",
             "named": true
           },
           {
@@ -8801,6 +9193,10 @@
           "named": true
         },
         {
+          "type": "layout_fact",
+          "named": true
+        },
+        {
           "type": "list",
           "named": true
         },
@@ -8892,6 +9288,10 @@
       "multiple": true,
       "required": false,
       "types": [
+        {
+          "type": "assert_declaration",
+          "named": true
+        },
         {
           "type": "attributes",
           "named": true
@@ -9058,6 +9458,10 @@
         },
         {
           "type": "lambda",
+          "named": true
+        },
+        {
+          "type": "layout_fact",
           "named": true
         },
         {
@@ -9599,6 +10003,10 @@
           "named": true
         },
         {
+          "type": "layout_fact",
+          "named": true
+        },
+        {
           "type": "list",
           "named": true
         },
@@ -9757,6 +10165,10 @@
           "named": true
         },
         {
+          "type": "layout_fact",
+          "named": true
+        },
+        {
           "type": "list",
           "named": true
         },
@@ -9905,6 +10317,10 @@
         },
         {
           "type": "lambda",
+          "named": true
+        },
+        {
+          "type": "layout_fact",
           "named": true
         },
         {
@@ -10109,6 +10525,10 @@
           "named": true
         },
         {
+          "type": "layout_fact",
+          "named": true
+        },
+        {
           "type": "list",
           "named": true
         },
@@ -10274,6 +10694,10 @@
             "named": true
           },
           {
+            "type": "layout_fact",
+            "named": true
+          },
+          {
             "type": "list",
             "named": true
           },
@@ -10430,6 +10854,10 @@
             "named": true
           },
           {
+            "type": "layout_fact",
+            "named": true
+          },
+          {
             "type": "list",
             "named": true
           },
@@ -10569,6 +10997,10 @@
           },
           {
             "type": "lambda",
+            "named": true
+          },
+          {
+            "type": "layout_fact",
             "named": true
           },
           {
@@ -10722,6 +11154,10 @@
         },
         {
           "type": "lambda",
+          "named": true
+        },
+        {
+          "type": "layout_fact",
           "named": true
         },
         {
@@ -11000,11 +11436,19 @@
     "named": true
   },
   {
+    "type": "alignof",
+    "named": false
+  },
+  {
     "type": "and",
     "named": false
   },
   {
     "type": "as",
+    "named": false
+  },
+  {
+    "type": "assert",
     "named": false
   },
   {
@@ -11145,6 +11589,10 @@
     "named": false
   },
   {
+    "type": "offsetof",
+    "named": false
+  },
+  {
     "type": "open",
     "named": false
   },
@@ -11170,6 +11618,10 @@
   },
   {
     "type": "return",
+    "named": false
+  },
+  {
+    "type": "sizeof",
     "named": false
   },
   {

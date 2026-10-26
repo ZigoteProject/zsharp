@@ -147,6 +147,8 @@ and CxData =
     /// modules the target doesn't have, by full name (Std's on a microcontroller): a name in one is
     /// reported as such rather than as unknown
     unavailable: Set<string>
+    /// the target's machine word in bytes, for sizeof<int> (4 on a Cortex-M and wasm32, else 8)
+    word: int
     /// 'a in the current function's annotations
     tyvars: ref<Map<string, Ty>>
     /// errors and warnings so far, in order
@@ -354,6 +356,9 @@ type Cx with
   member c.unavailable =
     match c with
     | Cx { unavailable = x } -> x
+  member c.word =
+    match c with
+    | Cx { word = x } -> x
   member c.tyvars =
     match c with
     | Cx { tyvars = x } -> x
@@ -450,7 +455,7 @@ let withEnclosing (m: string) : list<string> =
   List.init (List.length parts) (fun k -> String.join "." (List.take (k + 1) parts))
 
 /// A context for checking a program whose file modules are allModules.
-let create (requireMain: bool) (collect: bool) (allModules: list<string>) (manualImpls: list<string * string>) (unavailable: Set<string>) (late: Late) (first: InFile) : Cx =
+let create (requireMain: bool) (collect: bool) (allModules: list<string>) (manualImpls: list<string * string>) (unavailable: Set<string>) (word: int) (late: Late) (first: InFile) : Cx =
   let moduleNames = Set.ofList (List.collect withEnclosing allModules)
   let data : CxData =
     { v = Types.Vars.make ()
@@ -500,6 +505,7 @@ let create (requireMain: bool) (collect: bool) (allModules: list<string>) (manua
       collect = collect
       manualImpls = ref (Set.ofList manualImpls)
       unavailable = unavailable
+      word = word
       tyvars = ref Map.empty
       diagnostics = Buffer.empty
       hovers = Buffer.empty

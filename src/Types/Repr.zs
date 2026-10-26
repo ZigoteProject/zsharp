@@ -136,6 +136,99 @@ let unionRep (v: Vars) (types: Map<string, TypeInfo>) (t: Ty) : UnionRep =
     | Some(noneTag, f) when pointer f -> Niche(noneTag, f)
     | _ -> Boxed(List.length (List.filter (fun (_, fs) -> not (List.isEmpty fs)) cs) > 1)
 
+/// The machine word's bytes on a target (its triple, "" for the host): 4 on a Cortex-M and
+/// wasm32, else 8.
+let wordBytes (target: string) : int = if String.startsWith "thumb" target || String.startsWith "wasm32" target then 4 else 8
+
+// the size and alignment of a C struct of these parts (each a size and an alignment): each part
+// at its alignment, the whole padded to the strictest
+let private structOf (parts: list<int * int>) : int * int =
+  let mutable size = 0
+  let mutable align = 1
+  for (s, a) in parts do
+    size <- (size + a - 1) / a * a + s
+    align <- max align a
+  ((size + align - 1) / align * align, align)
+
+/// A value's size and alignment in bytes as code generation lays it out (DESIGN §5.1), with a
+/// machine word of `word` bytes: a number its own (int and usize the word), a heap value, a
+/// function or a pointer the word, a span three words, records and tuples as C lays out a struct
+/// of their fields ([<CLayout>] ones are), a plain union its tag then every case's fields, a boxed
+/// one a pointer, fixed<T, N> N elements, a vector its size; None for a type with a variable in
+/// it (a generic function's, known after monomorphization).
+let rec layout (v: Vars) (types: Map<string, TypeInfo>) (word: int) (t: Ty) : option<int * int> =
+  let all (ts: list<Ty>) : option<list<int * int>> =
+    List.fold (fun acc x -> Option.bind (fun xs -> Option.map (fun y -> y :: xs) (layout v types word x)) acc) (Some []) (List.rev ts)
+  let pointer = Some(word, word)
+  match prune v t with
+  | TCon("int", [])
+  | TCon("usize", []) -> Some(word, word)
+  | TCon(n, [ TMeas _ ]) when Set.contains n nums -> layout v types word (TCon(n, []))
+  | TCon("i64", [])
+  | TCon("u64", [])
+  | TCon("f64", []) -> Some(8, 8)
+  | TCon("i32", [])
+  | TCon("u32", [])
+  | TCon("f32", [])
+  | TCon("char", []) -> Some(4, 4)
+  | TCon("i16", [])
+  | TCon("u16", []) -> Some(2, 2)
+  | TCon("i8", [])
+  | TCon("u8", [])
+  | TCon("bool", []) -> Some(1, 1)
+  | TCon("unit", []) -> Some(0, 1)
+  | TCon(n, []) when isVectorName n ->
+    let (e, k) = Option.get (vectorInfo n)
+    Option.map (fun (s, _) -> (s * k, s * k)) (layout v types word (TCon(e, [])))
+  | TCon(n, []) when isMaskName n ->
+    // <k x i1>: k bits, a byte at least
+    let k = snd (List.find (fun (m, _) -> m = n) maskTypes)
+    Some(max 1 (k / 8), max 1 (k / 8))
+  | TCon("span", [ _ ]) -> Some(3 * word, word)
+  | TCon("fixed", [ el; TCon(n, []) ]) ->
+    let count : option<int> = Int.parse n
+    match (layout v types word el, count) with
+    | (Some(s, a), Some k) -> Some(s * k, a)
+    | _ -> None
+  | TCon(n, _) when isDynName n -> pointer
+  | TCon(n, args) when Map.containsKey n types ->
+    match (Map.find n types).def with
+    | RecordDef fs -> Option.map structOf (all (List.map (fun (_, ft) -> Norm.substGen v args ft) fs))
+    | UnionDef cs ->
+      if List.exists (fun x -> Option.isNone (layout v types word x)) args then None
+      else if plainUnion v types t then
+        // the tag (a byte for an enum, as code generation's tagTy), then every case's fields
+        let tag = if List.length cs <= 256 && List.forall (fun (_, fs) -> List.isEmpty fs) cs then (1, 1) else (4, 4)
+        Option.map (fun ps -> structOf (tag :: ps)) (all (List.collect (fun (_, fs) -> List.map (Norm.substGen v args) fs) cs))
+      else
+        pointer
+  // string, array, ref, weak, Buffer, share, the C pointers, Atomic, Mutex, Channel: a pointer
+  // whatever their arguments
+  | TCon _
+  | TFun _ -> pointer
+  | TTuple ts -> Option.map structOf (all ts)
+  | _ -> None
+
+/// The offset in bytes of a record's field `index` (offsetof), as `layout` lays the record out;
+/// None while a type variable is in a field before it.
+let offsetOf (v: Vars) (types: Map<string, TypeInfo>) (word: int) (t: Ty) (index: int) : option<int> =
+  match prune v t with
+  | TCon(n, args) ->
+    match Map.tryFind n types with
+    | Some { def = RecordDef fs } when index < List.length fs ->
+      let before = List.map (fun (_, ft) -> layout v types word (Norm.substGen v args ft)) (List.take (index + 1) fs)
+      if List.exists Option.isNone before then
+        None
+      else
+        // where the fields before it end, each at its alignment; it starts at the next multiple
+        // of its own
+        let parts = List.map Option.get before
+        let ends = List.fold (fun (at: int) (s, a) -> (at + a - 1) / a * a + s) 0 (List.take index parts)
+        let align = snd (List.item index parts)
+        Some((ends + align - 1) / align * align)
+    | _ -> None
+  | _ -> None
+
 /// The shape of the cell a boxed union's case is built in (with a tag?, its field types), which
 /// reuse must match; None for a case that isn't a cell.
 let cellShape (v: Vars) (types: Map<string, TypeInfo>) (t: Ty) (tag: int) : option<bool * list<Ty>> =
