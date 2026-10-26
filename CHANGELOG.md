@@ -151,6 +151,9 @@
   in one program.
 
 ### Editor
+- The guide's "Z# for F# programmers" page (`docs/guide/17-from-fsharp.md`), and posts on the
+  strongest results (`docs/posts`: Perceus on a Cortex-M, atomic counts only where threads meet,
+  SIMD next to C).
 - `zs doctor`: what builds need, found here or not, with how to get what's missing (clang,
   zig, libclang, git, QEMU, probe-rs, Node, lldb or gdb). `zs` alone lists the commands.
 - Doc tests: a fenced `zsharp` block in a `///` comment is an example that `zs test --doc` builds
