@@ -1,0 +1,7 @@
+ok   area.zs:9 area
+FAIL area.zs:19 areas
+  expected: [2; 6]
+  printed:  [2; 9] | done
+1 passed, 1 failed
+updated as expected
+2 passed, 0 failed

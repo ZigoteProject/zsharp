@@ -303,11 +303,92 @@ let private runTests (o: Options.Options) (src: string) (args: list<string>) : o
 
 /// zs test [file.zs] [filters…]: a file's tests, or every file of the project's src/ and tests/
 /// that has [<Tests>].
+// zs test --doc (0009, D8): the fenced zsharp blocks in the files' /// comments, each built as a
+// program and run, what it prints checked against its // => lines; with --update, a failing
+// block's lines are rewritten to what it printed
+let private docTests (o: Options.Options) (files: list<string>) (update: bool) : int =
+  let passed = ref 0
+  let failed = ref 0
+  for file in files do
+    match File.readAllText file with
+    | Error _ -> ()
+    | Ok text ->
+      // where the program goes, and the module it opens: beside the package's main, so the file's
+      // module is named as the program names it; the library's names are global, so none there
+      let (dir, opens) =
+        match (Modules.libraryRootOf file, Project.packageOf file) with
+        | (None, Ok p) ->
+          let full = Path.getFullPath file
+          let isMain =
+            match p.manifest with
+            | Some m -> Path.getFullPath m.main = full
+            | None -> false
+          let rel = Path.getRelativePath p.root full
+          let upper (s: string) = if s = "" then s else String.toUpper (String.sub s 0 1) + String.sub s 1 (String.length s - 1)
+          let name = String.join "." (List.map upper (String.split "/" (String.sub rel 0 (String.length rel - 3))))
+          (p.root, if isMain then None else Some name)
+        | _ -> (Directory.temp (), None)
+      let shown = Path.getRelativePath (Environment.currentDirectory ()) file
+      let changed = Buffer.empty
+      for b in Build.DocTest.blocks text do
+        let src = Path.combine dir ".zs-doctest.zs"
+        let exe = scratchExe ()
+        File.writeAllText src (Build.DocTest.program opens b) |> ignore
+        let built = Make.build { o with main = src; out = exe } false = 0
+        let ran = if built then Tools.runSplit exe [] else Error "it doesn't build"
+        File.delete src |> ignore
+        File.delete exe |> ignore
+        let printed =
+          match ran with
+          | Ok r -> List.filter (fun (l: string) -> l <> "") (String.split "\n" r.out)
+          | Error _ -> []
+        let name = $"{shown}:{b.line} {b.decl}"
+        match ran with
+        | Ok r when r.code = 0 && printed = List.filter (fun (l: string) -> l <> "") b.expected ->
+          passed.Value <- passed.Value + 1
+          println $"ok   {name}"
+        | _ ->
+          failed.Value <- failed.Value + 1
+          println $"FAIL {name}"
+          match ran with
+          | Ok r ->
+            println $"  expected: {String.join " | " b.expected}"
+            println $"  printed:  {String.join " | " printed}"
+            if r.code <> 0 then
+              println $"  and exited with {r.code}: {String.trim r.err}"
+            else if update then
+              Buffer.push (b, printed) changed
+          | Error e -> println $"  {e}"
+      // bottom up, so each block's lines are where it found them
+      if Buffer.length changed > 0 then
+        let rewrite (t: string) (bp: Build.DocTest.Block * list<string>) = Build.DocTest.update t (fst bp) (snd bp)
+        File.writeAllText file (List.fold rewrite text (List.rev (Array.toList (Buffer.toArray changed)))) |> ignore
+        println $"updated {shown}"
+  println (summaryLine passed.Value failed.Value 0 0)
+  if failed.Value = 0 then 0 else 1
+
 let test (args: list<string>) : int =
   match Options.parse args with
   | Error e ->
     eprintln e
     2
+  | Ok(o, rest) when List.contains "--doc" rest ->
+    // the files named, else the project's (its main's directory down)
+    let named = List.filter isFile rest
+    let files =
+      if not (List.isEmpty named) then
+        named
+      else
+        match project () with
+        | Ok m ->
+          let dir = Path.getDirectoryName (Path.combine m.root m.main)
+          match Directory.listRecursive dir with
+          | Ok rels -> List.map (fun r -> Path.combine dir r) (List.filter isFile rels)
+          | Error _ -> []
+        | Error msg ->
+          eprintln $"zs: {msg}"
+          []
+    docTests o files (List.contains "--update" rest)
   | Ok(o, rest) ->
     // the filters, and the flags only zs test takes (--update, --summary, --fail-on-focused)
     let filters = List.filter (fun a -> not (isFile a)) rest

@@ -1,0 +1,25 @@
+// Doc tests (0009, D8): tests/doctest.sh runs this file's blocks with zs test --doc, whose second
+// expects the wrong thing; --update rewrites it to what it printed (area.updated)
+
+/// A rectangle.
+type Rect = { w: int; h: int }
+
+/// Its area.
+///
+/// ```zsharp
+/// println $"{area { w = 3; h = 4 }}"
+/// // => 12
+/// ```
+let area (r: Rect) = r.w * r.h
+
+/// Its rectangles' areas, which a block in a module shows too.
+module Many =
+  /// The areas, in order.
+  ///
+  /// ```zsharp
+  /// let rs = [ { w = 1; h = 2 }; { w = 3; h = 3 } ]
+  /// println $"{Many.areas rs}"
+  /// println "done"
+  /// // => [2; 6]
+  /// ```
+  let areas (rs: list<Rect>) = List.map area rs

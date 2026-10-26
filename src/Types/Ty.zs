@@ -135,7 +135,7 @@ let private eqImpls : Set<string> = Set.union (Set.union nums simdNames) (setOf 
 
 let private ordImpls : Set<string> = Set.union nums (setOf [ "string"; "char" ])
 
-let private showImpls : Set<string> = Set.union (Set.union nums simdNames) (setOf [ "string"; "bool"; "char" ])
+let private showImpls : Set<string> = Set.union (Set.union nums simdNames) (setOf [ "string"; "bool"; "char"; "unit" ])
 
 let private scalarImpls : Set<string> = Set.union nums (setOf [ "string"; "bool"; "char" ])
 

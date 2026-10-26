@@ -118,6 +118,13 @@ if bin/zs build examples/simple.zs --target arm-linux-musleabihf --emit-llvm -o 
    && grep -q '@zs_alloc(i32)' "$tmp/armlinux.ll"; then echo "ok   examples/simple.zs for arm-linux-musleabihf (32-bit words)"
 else echo "FAIL examples/simple.zs for arm-linux-musleabihf"; cat "$tmp/armlinux.log"; fail=1; fi
 
+# doc tests (0009, D8): the library's examples in its /// comments, and zs test --doc --update
+# rewriting a block's expectations
+if out=$(bin/zs test --doc $(grep -rl '/// ```zsharp' lib) 2>&1); then echo "ok   the library's doc tests ($(echo "$out" | tail -1))"
+else echo "FAIL the library's doc tests"; echo "$out" | grep -v '^ok'; fail=1; fi
+if diff <(tests/doctest.sh 2>&1) tests/doctest.expected >"$tmp/doctest.diff"; then echo "ok   tests/doctest.sh"
+else echo "FAIL tests/doctest.sh"; cat "$tmp/doctest.diff"; fail=1; fi
+
 # the checked library and modules, cached between builds: the same program from the cache
 if diff <(tests/cache.sh 2>&1) tests/cache.expected >"$tmp/cache.diff"; then echo "ok   tests/cache.sh (checked library, modules and compiled modules cached)"
 else echo "FAIL tests/cache.sh"; cat "$tmp/cache.diff"; fail=1; fi
@@ -261,8 +268,9 @@ fi
 # tested on this computer, then run on qemu's STM32F405 (the same memory map and USART2): commands
 # typed at USART2 reach the shell's task through its handler's Spsc and Signal, the replies come
 # back, and the log is read over RTT from a dump of its RAM (the monitor's socket, then quit)
-if (cd examples/nucleo && "$OLDPWD/bin/zs" build -Os -o "$tmp/flagship" >"$tmp/flagship.log" 2>&1 && "$OLDPWD/bin/zs" test >>"$tmp/flagship.log" 2>&1); then
-  echo "ok   examples/nucleo (zs build for the board, zs test of its shell)"
+if (cd examples/nucleo && "$OLDPWD/bin/zs" build -Os -o "$tmp/flagship" >"$tmp/flagship.log" 2>&1 && "$OLDPWD/bin/zs" test >>"$tmp/flagship.log" 2>&1 \
+    && "$OLDPWD/bin/zs" test --doc >>"$tmp/flagship.log" 2>&1); then
+  echo "ok   examples/nucleo (zs build for the board, zs test and the doc tests of its shell)"
 else echo "FAIL examples/nucleo"; cat "$tmp/flagship.log"; fail=1; fi
 if command -v qemu-system-arm >/dev/null && command -v node >/dev/null && command -v nc >/dev/null; then
   serial=$( (sleep 1; printf 'status\r'; sleep 0.3; printf 'blink 100\r'; sleep 0.3; printf 'reboot\r'; sleep 0.5

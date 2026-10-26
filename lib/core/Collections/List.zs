@@ -368,6 +368,11 @@ let ofIter (c: 'c) : list<'a> =
 
 /// The elements grouped by `f`'s key for each: a group per key, in the order the keys first
 /// appear, its elements in the list's order (`'k` with `Hash` and `Eq`).
+///
+/// ```zsharp
+/// println $"{List.groupBy (fun x -> x % 3) [ 1; 2; 3; 4; 5; 6 ]}"
+/// // => [(1, [1; 4]); (2, [2; 5]); (0, [3; 6])]
+/// ```
 let groupBy (f: 'a -> 'k) (xs: list<'a>) : list<'k * list<'a>> =
   // a table of each key's group number, by the key's hash; the keys, newest first; each group's
   // elements, reversed (no more groups than elements)
@@ -396,6 +401,11 @@ let countBy (f: 'a -> 'k) (xs: list<'a>) : list<'k * int> =
   List.map (fun (k, g) -> (k, List.length g)) (List.groupBy f xs)
 
 /// The elements in lists of `size` (the last one shorter when they don't divide evenly).
+///
+/// ```zsharp
+/// println $"{List.chunkBySize 2 [ 1; 2; 3; 4; 5 ]}"
+/// // => [[1; 2]; [3; 4]; [5]]
+/// ```
 let chunkBySize (size: int) (xs: list<'a>) : list<list<'a>> =
   if size <= 0 then
     panic $"List.chunkBySize: the size must be positive, not {size}"

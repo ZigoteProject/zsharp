@@ -9,6 +9,7 @@
 | `zs run [file.zs [--]] [args…]` | build and run |
 | `zs check <file.zs>` | type-check only, reporting every error and warning |
 | `zs test [file.zs] [paths…] [--update] [--summary]` | run `[<Tests>]` values, each test in its own process; `--update` rewrites failing `expect` literals |
+| `zs test --doc [files…] [--update]` | run the examples in `///` comments (the project's files without any); `--update` rewrites their expectations |
 | `zs fmt [--check] <files…>` | format files in place (`--check`: list unformatted ones; `--stdin`: standard input to standard output) |
 | `zs doc <file.zs>` | print a Markdown reference of a file's documented items |
 | `zs fetch` / `zs update` | check out / update git dependencies |
@@ -128,6 +129,24 @@ let main () =
 
 ```text
 7
+```
+
+**Examples are tests:** a fenced `zsharp` block in a `///` comment is a program, the body of its `main`, with the documented module opened; its `// => text` lines are what it prints, in order. `zs test --doc` builds and runs each one and checks them, so an example can't go stale, and `zs test --doc --update` rewrites a failing block's `// =>` lines to what it printed (check them before committing).
+
+````zsharp
+/// The elements in lists of `size` (the last one shorter when they don't divide evenly).
+///
+/// ```zsharp
+/// println $"{List.chunkBySize 2 [ 1; 2; 3; 4; 5 ]}"
+/// // => [[1; 2]; [3; 4]; [5]]
+/// ```
+let chunkBySize (size: int) (xs: list<'a>) : list<list<'a>> = …
+````
+
+```text
+$ zs test --doc lib/core/Collections/List.zs
+ok   lib/core/Collections/List.zs:405 chunkBySize
+1 passed, 0 failed
 ```
 
 ## Debugging

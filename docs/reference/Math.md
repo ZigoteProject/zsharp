@@ -24,6 +24,11 @@ Math.clamp : 'a -> 'a -> 'a -> 'a when 'a : Ord
 
 `x` kept within `low` and `high`: `low` when it's below, `high` when it's above.
 
+```zsharp
+println $"{Math.clamp 0 10 -5} {Math.clamp 0 10 5} {Math.clamp 0.0 1.0 1.5}"
+// => 0 5 1
+```
+
 ### `Math.pi`
 
 ```zsharp

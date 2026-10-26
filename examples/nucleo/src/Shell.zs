@@ -17,6 +17,11 @@ type Command =
   | Unknown
 
 /// The button cycles the modes: off, on, blinking twice a second, off.
+///
+/// ```zsharp
+/// println $"{pressed Off} {pressed On} {pressed (Blink 100)}"
+/// // => Shell.On Shell.Blink 500 Shell.Off
+/// ```
 let pressed (mode: Mode) =
   match mode with
   | Off -> On
@@ -30,6 +35,13 @@ let describe (mode: Mode) =
   | Blink ms -> $"blinking every {ms} ms"
 
 /// A line, without its end: on | off | blink <ms> (1 to 60000) | status.
+///
+/// ```zsharp
+/// println $"{parse "blink 250"}"
+/// println $"{parse "blink 0"}"
+/// // => Shell.BlinkEvery 250
+/// // => Shell.Unknown
+/// ```
 let parse (line: string) : Command =
   match String.trim line with
   | "on" -> TurnOn

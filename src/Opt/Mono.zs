@@ -180,6 +180,8 @@ let runFrom (prog: Program) (def: string -> FunDef) (roots: list<string>) (exter
       | "Num.neg" -> CNeg(a 0)
       | "Eq.equal" -> CBin("=", a 0, a 1)
       | "Ord.compare" -> CPrim("compare", args)
+      // unit shows as F#'s (), after its expression runs
+      | "Show.show" when t = TCon("unit", []) -> CSeq(a 0, mk (CStr "()") tStr)
       | "Show.show" -> CPrim("string", args)
       // a number, a string, a char or a bool differs as a whole: the prelude's diffShown
       | "Diff.diff" -> CApp(mk (CGlobal(request "diffShown" [ t ], Some [])) (tfun t (tfun t resTy)), args)

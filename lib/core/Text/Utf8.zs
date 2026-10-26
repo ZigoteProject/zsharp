@@ -21,6 +21,13 @@ let private sequence (b: span<u8>) (at: int) : int =
 
 /// `Ok ()` when the bytes are well-formed UTF-8, else `Error` with the offset of the first byte
 /// that isn't.
+///
+/// ```zsharp
+/// println $"{Utf8.validate [| u8 0x68; u8 0xC3; u8 0xA9 |]}"
+/// println $"{Utf8.validate [| u8 0x68; u8 0xC3; u8 0x28 |]}"
+/// // => Ok ()
+/// // => Error 1
+/// ```
 let validate (bytes: span<u8>) : result<unit, int> =
   let mutable at = 0
   let mutable bad = -1

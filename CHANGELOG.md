@@ -113,6 +113,7 @@
   for the pointer it's given (it said 8, which lets a Cortex-M fault on a 4-aligned struct).
 
 ### Library
+- `unit` has `Show`, printing `()` as F# does, so `result<unit, int>` and the like print.
 - `Math`: `floor`, `ceil`, `round` (half to even, as F#'s), `trunc`, `exp`, `log`, `log2`,
   `log10`, `sin`, `cos`, `tan`, `pow` and `atan2` for `f64` and `f32`, as LLVM's intrinsics (an
   instruction where the target has one, else libm's function); `clamp`, `pi` and `e`.
@@ -135,6 +136,10 @@
   gives and as the main thread has: on macOS they had 512 KB, which deep recursion ran out of.
 
 ### Editor
+- Doc tests: a fenced `zsharp` block in a `///` comment is an example that `zs test --doc` builds
+  and runs, its `// => text` lines checked against what it prints, and `zs test --doc --update`
+  rewrites them. The library's first examples (`List.groupBy`, `chunkBySize`, `Map.change`,
+  `Utf8.validate`, `Math.clamp`) run in `./test.sh`.
 - lldb, the debugger on macOS, works on `zs build -g` programs as gdb does: breakpoints on Z#
   functions and lines, stepping, backtraces with Z# files and lines, and strings, records and
   unions as values (`tests/debug/lldb.sh`). It names the types as C's: a 64-bit `int` is a `long`.

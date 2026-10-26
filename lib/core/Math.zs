@@ -9,6 +9,11 @@ module Math
 let abs x = if x < Add.zero then -x else x
 
 /// `x` kept within `low` and `high`: `low` when it's below, `high` when it's above.
+///
+/// ```zsharp
+/// println $"{Math.clamp 0 10 -5} {Math.clamp 0 10 5} {Math.clamp 0.0 1.0 1.5}"
+/// // => 0 5 1
+/// ```
 let clamp low high x = if x < low then low else if x > high then high else x
 
 /// π, as an `f64` or an `f32`, whichever the use needs.

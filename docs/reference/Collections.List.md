@@ -468,6 +468,11 @@ List.groupBy : ('a -> 'b) -> list<'a> -> list<'b * list<'a>> when 'b : Eq, 'b : 
 The elements grouped by `f`'s key for each: a group per key, in the order the keys first
 appear, its elements in the list's order (`'k` with `Hash` and `Eq`).
 
+```zsharp
+println $"{List.groupBy (fun x -> x % 3) [ 1; 2; 3; 4; 5; 6 ]}"
+// => [(1, [1; 4]); (2, [2; 5]); (0, [3; 6])]
+```
+
 ### `List.countBy`
 
 ```zsharp
@@ -483,6 +488,11 @@ List.chunkBySize : int -> list<'a> -> list<list<'a>>
 ```
 
 The elements in lists of `size` (the last one shorter when they don't divide evenly).
+
+```zsharp
+println $"{List.chunkBySize 2 [ 1; 2; 3; 4; 5 ]}"
+// => [[1; 2]; [3; 4]; [5]]
+```
 
 ### `List.windowed`
 

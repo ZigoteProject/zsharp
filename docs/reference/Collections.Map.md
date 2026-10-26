@@ -191,6 +191,15 @@ Map.change : 'a -> (option<'b> -> option<'b>) -> Map<'a, 'b> -> Map<'a, 'b> when
 The map with `key`'s binding changed by `f`, given the value or `None`: a value from it binds
 the key, `None` removes it.
 
+```zsharp
+let count (word: string) (m: Map<string, int>) = Map.change word (fun n -> Some (Option.defaultValue 0 n + 1)) m
+let counts = List.fold (fun m w -> count w m) Map.empty [ "a"; "b"; "a" ]
+println $"{Map.toList counts}"
+println $"{Map.toList (Map.change "a" (fun _ -> None) counts)}"
+// => [(a, 2); (b, 1)]
+// => [(b, 1)]
+```
+
 ### `Map.keys`
 
 ```zsharp

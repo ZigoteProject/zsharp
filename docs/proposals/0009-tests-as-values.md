@@ -78,9 +78,11 @@ type Test =
 - **`expect value """…"""`** compares `string value` (through `Show`) with the literal and fails with a diff. **`zs test --update`** runs the tests and rewrites each failing literal in the source through the lossless syntax tree ([0019](0019-syntax-tree.md)): the test binary reports the new text with the literal's position, which `expect` knows as `assert` knows its line.
 - **Only a literal** can be updated; an `expect` on an expression is an error.
 
-### Doc tests *(after phase 11)*
+### Doc tests *(built in phase 12)*
 
 A fenced `zsharp` block in a `///` comment is a doc test: compiled as a module that opens the documented module, run under `zs test --doc`, with lines of the form `// => text` checked against the output as inline expectations, and `--update` rewriting them. The test's path is the declaration's.
+
+Built as written, `// =>` lines settling *Unresolved questions* 3: the block is `main`'s body, its `// =>` lines the lines it prints, in order; the program is written beside the package's main (so the documented file's module is named as the program names it) and removed after; `--update` puts what was printed where the first `// =>` line was. The library's examples run in `./test.sh`.
 
 ### Benchmarks *(after phase 11)*
 

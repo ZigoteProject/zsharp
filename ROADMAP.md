@@ -207,7 +207,7 @@ attributed functions, so they compose with ordinary code.
    - **Types:** a property's parameters have concrete types, since generics are monomorphized; a generic one is a compile error that says to annotate them (FsCheck substitutes `obj`, which Z# has no equivalent of).
 6. **Fuzzing, the same properties:** *(after phase 11)* `zs fuzz name` runs a property under libFuzzer, which supplies the byte stream the generators read, guided by coverage instead of random. So a fuzz target is any property, typed (a `Packet`, a `list<Command>`), with no separate attribute; a property over `span<u8>` takes the raw bytes. Builds use the address and undefined-behavior sanitizers, a panic is a failure, and a crash's stream is shrunk by the property shrinker, saved, and replayed by `zs test`.
 7. **Expect tests, inline:** `expect value """…"""` compares a value's `Show` with the string literal next to it, and `zs test --update` rewrites the literal in the source, through track E's lossless syntax tree (F2), as OCaml's ppx_expect and Rust's insta do. The expectation sits next to the code that makes it, instead of in a file to find.
-8. **Doc tests:** *(after phase 11)* the examples in `///` comments compile and run under `zs test`, their output checked as inline expectations, so the docs can't go stale.
+8. **Doc tests:** *(done in phase 12)* the examples in `///` comments compile and run under `zs test --doc`, their output checked as inline expectations (`// => text`, rewritten by `--update`), so the docs can't go stale (`tests/doctest.sh`, and the library's examples in `./test.sh`).
 9. **Benchmarks:** *(after phase 11)* `bench "insert" (fun () -> …)` is a value too, run by `zs bench`: warm-up, then enough runs for a median and a confidence interval. A run compares with the last saved one and reports only changes beyond the noise. `testFaster "reuse beats copy" fast slow` is a test that passes when one is faster with statistical confidence (Expecto's `isFasterThan`), so a performance claim can't silently regress.
 10. **Coverage:** *(after phase 11)* `zs test --coverage` instruments with LLVM's source-based coverage (counters and a region map the compiler emits for Z#'s source), so `llvm-cov` reports lines and branches, match cases included.
 11. **Microcontrollers:** *(after phase 11)* `zs test --target cortex-m4` runs the tests under QEMU, and with `--probe` on a board through probe-rs, with results over semihosting or RTT.
@@ -233,7 +233,7 @@ attributed functions, so they compose with ordinary code.
 - A failed `assert (a = b)` on two records prints both and the field that differs.
 - A `[<Tests>]` list built with `List.map` over cases runs each case as its own test; an `ftest` runs alone, and `--fail-on-focused` fails the run.
 - `zs test` runs a `testTask`, a test that hangs (failed by its timeout), and an inline expect test that `--update` rewrites in place.
-- *After phase 11:* a doc test runs under `zs test`.
+- *Done in phase 12:* a doc test runs under `zs test --doc`.
 - *After phase 11:* `zs test --stress 1m` with `ZS_LEAKCHECK=1` finds a planted leak that one run doesn't show.
 - *After phase 11:* `zs bench` reports a planted 20% slowdown and nothing for an unchanged build; `testFaster` passes for reuse over copying an array.
 - *After phase 11:* a property with a filtered generator of even numbers finds a planted bug and shrinks it to the smallest even case; its replay file reproduces it; a stateful test against a model finds a planted `HashMap` bug and shrinks the commands.
