@@ -1,0 +1,1 @@
+tests/err_noalloc.zs:2: error: reply is [<NoAlloc>], but reply -> describe builds a string

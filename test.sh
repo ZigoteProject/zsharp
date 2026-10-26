@@ -230,10 +230,19 @@ if command -v qemu-system-arm >/dev/null; then
     done
   done
 fi
-for t in err_isr err_isr_share; do
+for t in err_isr err_isr_share err_isr_heap err_critical_heap; do
   if [ "$(bin/zs build --strict tests/mcu/$t.zs --target cortex-m4 -o "$tmp/err.elf" 2>&1 | grep -v '^ [ 0-9]* | ')" = "$(cat tests/mcu/$t.expected)" ]; then echo "ok   tests/mcu/$t.zs"
   else echo "FAIL tests/mcu/$t.zs"; fail=1; fi
 done
+# --no-heap (0012): an image with no heap (no zs_alloc in it) runs; a startup value that would
+# allocate is an error naming it
+if [ "$(bin/zs build --strict tests/mcu/err_noheap.zs --target cortex-m4 --no-heap -o "$tmp/err.elf" 2>&1 | grep -v '^ [ 0-9]* | ')" = "$(cat tests/mcu/err_noheap.expected)" ]; then echo "ok   tests/mcu/err_noheap.zs"
+else echo "FAIL tests/mcu/err_noheap.zs"; fail=1; fi
+if command -v qemu-system-arm >/dev/null && bin/zs build tests/mcu/noheap.zs --target cortex-m0plus --no-heap -o "$tmp/noheap.elf" 2>"$tmp/noheap.log" \
+   && ! llvm-nm "$tmp/noheap.elf" | grep -q zs_alloc \
+   && [ "$(timeout 60 qemu-system-arm -M microbit -nographic -semihosting-config enable=on,target=native -kernel "$tmp/noheap.elf" 2>&1 | grep -v '^#zs')" = "$(cat tests/mcu/noheap.expected)" ]; then
+  echo "ok   tests/mcu/noheap.zs (--no-heap on a Cortex-M0+, under qemu)"
+else echo "FAIL tests/mcu/noheap.zs"; cat "$tmp/noheap.log"; fail=1; fi
 
 # Math where libm is compiler-rt's and the runtime's (pow, atan2, round: fdlibm's, checked against
 # the host's libm by tests/libm.sh), with a host's results: both chips under qemu, and wasm32

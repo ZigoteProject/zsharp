@@ -57,10 +57,24 @@ let rec private waits (e: Core.Ir.CExpr) : bool =
   | Core.Ir.CPrim(op, _) -> op = "task.suspend" || op = "task.abandon" || List.exists waits (Core.Ir.children e.k)
   | k -> List.exists waits (Core.Ir.children k)
 
+// what must not touch the heap (0012), and why: the [<NoAlloc>] functions (every instance),
+// interrupt handlers, Cpu.critical's bodies, and with --no-heap the program's entries
+let private noAllocRoots (prog: Program) (funs: list<MFun>) (noHeap: bool) : list<string * string> =
+  let marked = List.filter (fun (f: MFun) -> Map.tryFind (Core.Ir.baseFunName f.name) prog.targets = Some [ "noalloc" ]) funs
+  let handlers = List.filter (fun (e: Core.Ir.Export) -> e.interrupt) prog.exports
+  let entries = if noHeap then "main" :: List.append (List.map snd prog.values) (List.map (fun (e: Core.Ir.Export) -> e.fname) prog.exports) else []
+  let present (n: string) = List.exists (fun (f: MFun) -> f.name = n) funs
+  let byAttribute = List.map (fun (f: MFun) -> (f.name, "noalloc")) marked
+  let byHandler = List.map (fun (e: Core.Ir.Export) -> (e.fname, "handler")) handlers
+  let byCritical = List.map (fun n -> (n, "critical")) (Opt.NoAlloc.criticalBodies funs)
+  let byNoHeap = List.map (fun n -> (n, "noheap")) (List.filter present entries)
+  List.concat [ byAttribute; byHandler; byCritical; byNoHeap ]
+
 /// A checked program's functions monomorphic, closure-converted and reference counted, with the
 /// types the passes added (effects' frames); Error where a pass can't go on. A debug build keeps
-/// every function whole (no inlining), so breakpoints on them hit.
-let lower (prog0: Program) (debugInfo: bool) (time: bool) (checkIr: bool) : result<Map<string, TypeInfo> * list<MFun>, PassError> =
+/// every function whole (no inlining), so breakpoints on them hit. noHeap: the whole program
+/// checked as [<NoAlloc>] (--no-heap).
+let lower (prog0: Program) (debugInfo: bool) (time: bool) (checkIr: bool) (noHeap: bool) : result<Map<string, TypeInfo> * list<MFun>, PassError> =
   let prog = Opt.Mono.lowered prog0
   // functions called from outside keep their signatures (main, the tests, C exports)
   let fixedNames = Set.ofList ("main" :: List.append prog.tests (List.map (fun (e: Core.Ir.Export) -> e.fname) prog.exports))
@@ -85,6 +99,7 @@ let lower (prog0: Program) (debugInfo: bool) (time: bool) (checkIr: bool) : resu
     let machines = Set.ofList (List.map (fun (f: MFun) -> f.name) (List.filter (fun (f: MFun) -> waits f.body) lifted))
     let entries = Set.union fixedNames machines
     let counted = check "reference counting" (stage "rc" (timed time "reference counting" (fun () -> Opt.Rc.lower types (Opt.Rc.borrowing types entries lifted) lifted)))
+    Opt.NoAlloc.check types counted (noAllocRoots prog counted noHeap)
     Ok(types, counted)
   handle passes () with
   | Stops.stop e, _ -> Error e
@@ -189,7 +204,7 @@ let generate (o: Options.Options) (prog0: Program) (testBuild: bool) : result<Pr
     Error(InPass { file = ""; line = 0; message = "a top-level assert whose condition isn't a constant is checked at startup, which a library doesn't have; assert on constants (sizeof<T> = 20), or check it in a function" })
   | (value, _) :: _ -> Error(InPass { file = ""; line = 0; message = $"top-level value '{value}' is computed at startup, which a library doesn't have; make it a constant or a function" })
   | [] ->
-    match lower prog o.debugInfo o.time o.checkIr with
+    match lower prog o.debugInfo o.time o.checkIr o.noHeap with
     | Error e -> Error(InPass e)
     | Ok(types, funs) ->
       // a library's handles may be used on any thread of its C host
@@ -297,7 +312,7 @@ let make (o: Options.Options) (prog0: Program) (linked: Modules.Linked) (testBui
             match Options.irqTable o.target with
             | Some(_, n, _) -> (n + 9) / 10 * 10
             | None -> 0
-          let r = andThen (fun () -> timed o.time "zig cc" (fun () -> Tools.run "zig" (List.concat [ [ "cc"; "-target"; m.zigTarget; "-mcpu=" + m.zigCpu ]; opt; flags; [ $"-DZS_HEAP_SIZE={Option.defaultValue m.heap o.heap}"; $"-DZS_IRQ_COUNT={lines}"; "-T" + script; "-Wl,--gc-sections"; obj; runtimeFile "rt-embedded.c" ]; linkArgs linked; [ "-o"; o.out ] ]))) compiled
+          let r = andThen (fun () -> timed o.time "zig cc" (fun () -> Tools.run "zig" (List.concat [ [ "cc"; "-target"; m.zigTarget; "-mcpu=" + m.zigCpu ]; opt; flags; [ $"-DZS_HEAP_SIZE={Option.defaultValue m.heap o.heap}"; $"-DZS_IRQ_COUNT={lines}"; (if o.noHeap then "-DZS_NO_HEAP" else "-DZS_HEAP"); "-T" + script; "-Wl,--gc-sections"; obj; runtimeFile "rt-embedded.c" ]; linkArgs linked; [ "-o"; o.out ] ]))) compiled
           File.delete obj |> ignore
           File.delete script |> ignore
           r

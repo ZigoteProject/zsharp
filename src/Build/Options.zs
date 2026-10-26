@@ -68,6 +68,8 @@ type Options =
     strict: bool
     /// --sanitize (address and undefined behaviour), --sanitize=thread (data races)
     sanitize: bool
+    /// --no-heap: the whole program checked as [<NoAlloc>], and a chip's image with no heap (0012)
+    noHeap: bool
     threadSanitizer: bool
     /// --profile-generate: a program that writes a profile; --profile-use <file>: built with one
     profileGenerate: bool
@@ -110,6 +112,7 @@ let defaults : Options =
     isLib = false
     strict = false
     sanitize = false
+    noHeap = false
     threadSanitizer = false
     profileGenerate = false
     profileUse = None
@@ -143,6 +146,7 @@ let parse (args: list<string>) : result<Options * list<string>, string> =
     | "--lib" :: more -> go { o with isLib = true } others more
     | "--strict" :: more -> go { o with strict = true } others more
     | "--sanitize" :: more -> go { o with sanitize = true } others more
+    | "--no-heap" :: more -> go { o with noHeap = true } others more
     | "--sanitize=thread" :: more -> go { o with sanitize = true; threadSanitizer = true } others more
     | "--profile-generate" :: more -> go { o with profileGenerate = true; release = true } others more
     | "--profile-use" :: file :: more -> go { o with profileUse = Some file; release = true } others more

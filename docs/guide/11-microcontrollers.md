@@ -86,7 +86,32 @@ let main () =
 - **Which line:** a number, a device's name from the board's table (`runtime/boards/mps2-an386.irq`, `microbit.irq`), or a core exception: `HardFault`, `NMI`, `SVCall`, `PendSV`, … (CMSIS's names) and `SysTick`, which runs at the runtime's period (the runtime keeps SysTick for `Runtime.ticks`). A handler takes and returns `unit`, performs nothing, and is only for a chip.
 - **Lines:** `Irq.enable n` and `Irq.disable n` turn a line on and off in the interrupt controller; `Irq.pend n` sets it pending, as its device would, so a handler can be tested with no device. A line without a handler is disabled the first time it fires.
 - **The processor's instructions:** `Cpu.wfi ()` sleeps until an interrupt (a loop with nothing to do waits there), `Cpu.dmb`, `dsb` and `isb` are barriers, `Cpu.wfe` and `sev` wait for and signal events, and `Cpu.disableInterrupts` and `enableInterrupts` mask and unmask them. `Cpu.critical (fun () -> …)` runs its body with interrupts masked and gives its value, for a change a handler mustn't see halfway; one inside another is fine.
+- **No heap in a handler:** a handler is `[<NoAlloc>]` (below), since the allocator isn't reentrant, and so is `Cpu.critical`'s body.
 - **Sharing with the program:** a handler interrupts the program as another thread would, so what it reaches must be `Share`, checked when compiling: `interrupt handler 'tick' uses the top-level value 'count' : ref<int>, which a handler can't share with the program`. It shares through an `Atomic` (a number, a bool or a char) or an `Spsc<'a>`, a queue of fixed capacity with one producer and one consumer: `Spsc.push` and `Spsc.pop` copy a value and move an index, neither waiting nor locking. On a Cortex-M0, which has no atomic instructions, an `Atomic`'s operations mask interrupts around them.
+
+## Code that doesn't touch the heap
+
+Z# allocates where it needs to (a string, a closure, a list's cells), and firmware needs to know where. `[<NoAlloc>]` on a function makes it a compile error for the function, or anything it calls, to allocate or free:
+
+```fsharp
+[<NoAlloc>]
+let reply (n: int) : int = report n + 1
+```
+
+```text
+main.zs:2: error: reply is [<NoAlloc>], but reply -> describe builds a string
+```
+
+- **What passes:** numbers, records, tuples and small unions, `option<int>`, parameters it only reads (strings, arrays and lists it borrows), `Mmio`, `Cpu`, `Irq`, `Atomic`, `Spsc.push` and `pop`, C functions, a fused pipeline, a literal string, a panic.
+- **What doesn't:** building an object (a string, a list's cell, an array, a closure that captures), dropping a reference that may be the last (a parameter it owns), writing an array something else may hold (it's copied first), and calling a function value, whose code the check can't see.
+- **Where:** checked on the code after Z#'s optimizations, so the verdict is the same at `-Os` and `-O2`; inlining can change it, and the chain says what changed.
+- **Interrupt handlers** and `Cpu.critical`'s bodies are checked the same way, without the attribute.
+
+**`--no-heap`** checks the whole program, its startup values included, and builds the image with no heap at all: the exit report has only the stack. A top-level value computed at startup into the heap is an error naming it.
+
+```sh
+zs build firmware.zs --target cortex-m0plus --no-heap -Os -o firmware.elf
+```
 
 ## Writing fast, small code
 

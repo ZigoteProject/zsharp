@@ -1,0 +1,1 @@
+tests/mcu/err_critical_heap.zs:2: error: Cpu.critical's body runs with interrupts masked and must not touch the heap, but it builds a cell of list<int>

@@ -1,0 +1,1 @@
+tests/mcu/err_noheap.zs:2: error: --no-heap: the top-level value 'table' is computed at startup, and builds an array: make it a constant, or compute it in a function

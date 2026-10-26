@@ -541,8 +541,18 @@ _Noreturn static void stop(int code) {
 
 static void write_c(const char *s) { write_bytes(s, (int64_t)strlen(s)); }
 
-// ---- heap: 8-byte header holding the block size; free lists per 8-byte class up to 256 bytes
+// ---- heap: 8-byte header holding the block size; free lists per 8-byte class up to 256 bytes.
+// With --no-heap (ZS_NO_HEAP) there's none: zs_alloc is declared and not defined, so whatever
+// would still allocate fails the link, naming its caller (0012)
 
+_Noreturn void zs_panic_c(const char *msg);
+
+#ifdef ZS_NO_HEAP
+void *zs_alloc(zs_int size);
+void zs_free(void *p);
+zs_int zs_allocations(void) { return 0; }
+zs_int zs_mallocs(void) { return 0; }
+#else
 static uint8_t heap[ZS_HEAP_SIZE] __attribute__((aligned(8)));
 
 // the allocator's state in one place (one base address), with word-sized counters; blocks over
@@ -553,8 +563,6 @@ static struct {
     void *free_lists[33];
     void *large;
 } H;
-
-_Noreturn void zs_panic_c(const char *msg);
 
 void *zs_alloc(zs_int size) {
     size_t need = ((size_t)size + 7) & ~(size_t)7;
@@ -605,6 +613,7 @@ zs_int zs_allocations(void) { return H.allocations; }
 // Runtime.mallocs (): the times memory was taken for an object (no system allocator here: the
 // heap's own), and Runtime.marks (): objects marked shared, none with no threads
 zs_int zs_mallocs(void) { return H.allocations; }
+#endif
 // objects marked shared: with an interrupt handler (0012), the values it can reach, at startup
 zs_int zs_marked;
 zs_int zs_marks(void) { return zs_marked; }
@@ -1298,14 +1307,19 @@ static void text(const char *label, uint64_t v) {
 }
 
 // one line for the benchmark harness: heap peak (bytes), allocations, objects still live, stack
+// (with no heap, the stack alone)
 static void report(void) {
     uint32_t *p = &_sstack;
     while (p < &_estack && *p == 0xCDCDCDCDu) p++;
+#ifdef ZS_NO_HEAP
+    text("#zs stack=", (uint64_t)((uint8_t *)&_estack - (uint8_t *)p));
+#else
     text("#zs heap_peak=", H.peak); // live bytes at the high-water mark
     text(" heap_reserved=", H.top);
     text(" allocations=", (uint64_t)H.allocations);
     text(" live=", (uint64_t)H.live);
     text(" stack=", (uint64_t)((uint8_t *)&_estack - (uint8_t *)p));
+#endif
     write_c("\n");
 }
 

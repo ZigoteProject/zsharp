@@ -1,0 +1,1 @@
+tests/mcu/err_isr_heap.zs:5: error: interrupt handler 'onLine3' must not touch the heap, but onLine3 builds a string

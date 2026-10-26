@@ -10,7 +10,7 @@
 
 - [x] Approved in principle (`[<NoAlloc>]`, `--no-heap`, interrupt handlers)
 - [x] Approved in principle (the sharing rules, `Cpu`)
-- [ ] Implementation (interrupt handlers, `Irq`, `Atomic` in Core, `Spsc` and `Cpu` in phase 12; the core exceptions take CMSIS's symbols, `SVC_Handler` and `DebugMon_Handler`; the table holds the board's lines in tens; `Runtime.ticks` reads a wrap SysTick hasn't counted yet, and never goes back, which QEMU's timer otherwise showed)
+- [x] Implementation (all of it in phase 12, but the runtime printing numbers without a string and a startup `Atomic` or `Spsc` under `--no-heap`, which wait for 0014's static placement; the core exceptions take CMSIS's symbols, `SVC_Handler` and `DebugMon_Handler`; the table holds the board's lines in tens; `Runtime.ticks` reads a wrap SysTick hasn't counted yet, and never goes back, which QEMU's timer otherwise showed)
 
 ## Summary
 

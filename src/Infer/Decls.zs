@@ -1226,6 +1226,10 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
     checkCArg cx what ret
     let ex : Export = { cname = cname; fname = q; pars = List.filter (fun t -> prune v t <> tUnit) ptys; ret = resolve v ret; interrupt = false }
     Buffer.push ex cx.exports
+  | Attrs([ ("NoAlloc", []) ], inner) when Option.isSome (funName inner) ->
+    // checked after reference counting (0012): kept whole, so the check finds it
+    declare cx inner
+    cx.targets.Value <- Map.add (qualify cx (Option.get (funName inner))) [ "noalloc" ] cx.targets.Value
   | Attrs([ ("Interrupt", [ line ]) ], inner) when Option.isSome (funName inner) ->
     // an interrupt handler (0012): exported under the symbol the runtime's vector table names for
     // its line, replacing the runtime's weak default

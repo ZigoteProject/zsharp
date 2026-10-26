@@ -21,8 +21,9 @@ let private isLocalNamed (x: string) (e: CExpr) : bool =
   | CLocal y -> y = x
   | _ -> false
 
-// the reads that leave a parameter the caller's (borrowing)
-let private reads : Set<string> = Set.ofList [ "array.get"; "Array.length"; "String.length"; "String.byte"; "fixed.get"; "fixed.length"; "ref.get"; "ref.set" ]
+// the reads that leave a parameter the caller's (borrowing); a span over it holds a reference of
+// its own, which the callee dups and drops, so the caller's object outlives it
+let private reads : Set<string> = Set.ofList [ "array.get"; "Array.length"; "String.length"; "String.byte"; "fixed.get"; "fixed.length"; "ref.get"; "ref.set"; "span.ofArray"; "span.ofString"; "span.ofBuffer" ]
 
 // the reads that borrow the array (or string) they read from, a variable or a field of one
 let private lends : Set<string> = Set.ofList [ "array.get"; "Array.length"; "String.length"; "String.byte"; "vec.load"; "fixed.get"; "fixed.length" ]

@@ -41,6 +41,12 @@
   `disableInterrupts`, one instruction each, and `Cpu.critical (fun () -> …)`, its body run with
   interrupts masked (it nests). On a computer the barriers are fences and the rest nothing; masking
   is an error there.
+- `[<NoAlloc>]` and `--no-heap` (0012): a function that, or anything it calls, may allocate or
+  free is an error naming the chain (`reply is [<NoAlloc>], but reply -> describe builds a
+  string`); interrupt handlers and `Cpu.critical`'s bodies are checked the same way.
+  `--no-heap` checks the whole program, startup values included, and builds a chip's image with
+  no heap.
+- A function that makes a span over a parameter (`Array.fold f 0 xs` over an array) borrows it.
 - `Runtime.ticks` on a chip counts a SysTick wrap its handler hasn't run for yet, and never goes
   back (it could, by a wrap, right at one).
 - An `[<Export>]` function returning `unit` compiles (the compiler panicked in its C wrapper).
