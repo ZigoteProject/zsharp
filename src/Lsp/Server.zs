@@ -227,14 +227,17 @@ let private hover (st: State) (path: string) (line: int) (ch: int) : Json =
       | _ -> h.name + " : " + show a h.ty + needs + words
     // a [<CLayout>] type: its size and alignment on the target, as C's (0004)
     let cx = a.checked.cx
-    let q = String.sub h.key 5 (max 0 (String.length h.key - 5))
     let layout =
-      if String.startsWith "type:" h.key && Set.contains q cx.clayouts.Value then
-        match Types.Repr.layout cx.v cx.types.Value cx.word (Types.Ty.TCon(q, [])) with
-        | Some(size, align) -> $"\n\n{size} bytes, aligned to {align}"
-        | None -> ""
-      else
+      if not (String.startsWith "type:" h.key) then
         ""
+      else
+        let q = String.sub h.key 5 (String.length h.key - 5)
+        if not (Set.contains q cx.clayouts.Value) then
+          ""
+        else
+          match Types.Repr.layout cx.v cx.types.Value cx.word (Types.Ty.TCon(q, [])) with
+          | Some(size, align) -> $"\n\n{size} bytes, aligned to {align}"
+          | None -> ""
     let value = "```zsharp\n" + head + "\n```" + layout + doc
     JObject [ ("contents", JObject [ ("kind", JString "markdown"); ("value", JString value) ]); ("range", range (s.line - 1) (s.col - 1) (s.line - 1) (s.col - 1 + s.len)) ]
   | _ -> JNull
