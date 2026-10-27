@@ -159,6 +159,17 @@ programmers.
   caller's reference stayed, and every call copied the array: quadratic once inside a `while`).
 - The runtime's threads (the pool's workers, the event loop, helpers) have 8 MB stacks, as Linux
   gives and as the main thread has: on macOS they had 512 KB, which deep recursion ran out of.
+- `Map.add` and `Map.remove` (so `Set.add` and `Set.remove`) build the new node in the cell of the
+  one they took apart when the map is unique and the node is still balanced, as it almost always
+  is: adding to a map nothing else holds allocates one node, not one for each level. A million
+  adds and lookups take 136 ms where they took 289.
+- The runtime's string search (`String.indexOf`, and through it `contains`, `split`, `replace` and
+  `lastIndexOf`) goes from one place the first byte is to the next with `memchr`, comparing the
+  rest only there: it called `memcmp` at every byte. logstat reads 2 million lines on one core in
+  1.21 s where it took 1.78.
+- An integer's text is made without `snprintf`, and `println` writes a line under 256 bytes with
+  its newline in one write, so another thread's output can't land between them: printing 5
+  million lines of two numbers takes 0.46 s where it took 0.79.
 
 ### Packages
 - Versions (0018 item 2): `json = { git = "…", version = "1.2" }` takes the repository's releases
@@ -193,6 +204,13 @@ programmers.
 - A program with threads allocates faster on macOS: what the allocator keeps for a thread (its
   counts, the pool's free lists and chunk) is one thread-local, found once per allocation; each
   was its own, and macOS finds a thread-local by a call (the compiler spent 4% of its time there).
+- Loop versioning proves more of a `for` loop once, before it runs: its writes (`a.[i] <- v`) as
+  well as its reads, indexes without the loop's variable (`x.[i]` in a loop over `j`) or any whose
+  range follows from the loop's (`r * w + c`, `(j + 3) % 5`), and its `+ - *` over the variable and
+  what the loop doesn't change, which then run without overflow checks. Each such expression's
+  range is computed before the loop; if computing it overflows, the checked copy runs
+  (`tests/versioned_loops.zs`). nbody takes 0.80 s where it took 0.91 (C's 0.76), spectralnorm
+  0.42 s where it took 0.48 (C's 0.68).
 - A build whose checked modules came from the cache, made by a build that named a file another
   way (`tests/x.zs`, then its full path), gives a pass's error its file and line: it printed
   `: error:` with neither.

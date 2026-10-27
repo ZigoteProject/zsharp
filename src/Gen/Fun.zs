@@ -308,12 +308,15 @@ let rec testIn (fx: F) (known: bool) (p: CPat) (t: Ty) (v: string) (failL: strin
 let phi (fx: F) (ty: string) (incoming: list<string * string>) : string =
   instr fx.em ("phi " + ty + " " + String.join ", " (List.map (fun (v, b) -> $"[ {v}, %{b} ]") incoming))
 
-/// The array reads of a for loop's body that versioning can prove in bounds: a.[i] and SIMD loads
-/// from a (F32x8.load a i, which read lanes elements), where i is x plus or minus constants and
-/// variables bound outside the loop (c - x too), with a and those variables not assigned in the
-/// loop: the body with those reads marked unchecked (op!, for the version that has proved them),
-/// and each one's array, coefficient of x, other terms with their signs, and lanes.
-let affineReads (env: Map<string, Binding>) (x: string) (body: CExpr) : CExpr * list<CExpr * int * list<int * CExpr> * int> =
+/// What versioning can prove of a for loop's body for the loop's whole range. The range of an
+/// integer expression over x, constants and variables bound outside the loop, with + - * (and /
+/// and % by a constant above 0), is computed before the loop; when that overflows nowhere, its
+/// + - * don't either, and a read or write with it as index is in bounds if the range is: a.[i],
+/// a.[i] <- v and SIMD loads (F32x8.load a i, which read lanes elements), with a and those
+/// variables not assigned in the loop. The body with those marked for the version that has
+/// proved them (op!, a write's index in index!, nsw+ for an operator), each access's array,
+/// index and lanes, and the other expressions whose ranges the test computes.
+let provable (env: Map<string, Binding>) (x: string) (body: CExpr) : CExpr * list<CExpr * CExpr * int> * list<CExpr> =
   let assigned = ref Set.empty
   let rec scan (e: CExpr) =
     match e.k with
@@ -321,48 +324,50 @@ let affineReads (env: Map<string, Binding>) (x: string) (body: CExpr) : CExpr * 
     | _ -> ()
     List.iter scan (children e.k)
   scan body
-  let invariant (c: CExpr) : bool =
-    match c.k with
-    | CInt _ -> true
-    | CLocal y -> y <> x && Map.containsKey y env && not (Set.contains y assigned.Value)
+  let outside (y: string) = y <> x && Map.containsKey y env && not (Set.contains y assigned.Value)
+  let signed (t: Ty) = Set.contains (tyName t) ints && not (isUnsigned t)
+  let arith (op: string) = op = "+" || op = "-" || op = "*"
+  let rec ranged (e: CExpr) : bool =
+    match e.k with
+    | CInt _ -> signed e.ty
+    | CLocal y -> (y = x || outside y) && signed e.ty
+    | CBin(op, a, b) when arith op -> signed e.ty && ranged a && ranged b
+    | CBin(op, a, { k = CInt c }) when op = "/" || op = "%" -> c > i64 0 && signed e.ty && ranged a
+    | CLine(_, a) -> ranged a
     | _ -> false
-  // i as coef * x + the sum of the signed terms, each invariant; None if it isn't
-  let rec linear (sign: int) (idx: CExpr) : option<int * list<int * CExpr>> =
-    match idx.k with
-    | CLocal y when y = x -> Some(sign, [])
-    | _ when invariant idx -> Some(0, [ (sign, idx) ])
-    | CBin(op, a, b) when op = "+" || op = "-" ->
-      match (linear sign a, linear (if op = "+" then sign else -sign) b) with
-      | (Some(ca, ta), Some(cb, tb)) -> Some(ca + cb, List.append ta tb)
-      | _ -> None
-    | CLine(_, e) -> linear sign e
-    | _ -> None
-  let affine (idx: CExpr) : option<int * list<int * CExpr>> =
-    match linear 1 idx with
-    | Some(coef, terms) -> if coef = 1 || coef = -1 then Some(coef, terms) else None
-    | None -> None
+  let rec unchecked (e: CExpr) : CExpr =
+    match e.k with
+    | CBin(op, a, b) when arith op -> { e with k = CBin("nsw" + op, unchecked a, unchecked b) }
+    | k -> { e with k = mapChildren unchecked k }
   // an array the loop doesn't assign: a variable, or a field of one
   let rec stable (a: CExpr) : bool =
     match a.k with
-    | CLocal arr -> arr <> x && Map.containsKey arr env && not (Set.contains arr assigned.Value)
+    | CLocal arr -> outside arr
     | CField(r, _) -> stable r
     | _ -> false
-  let found = Buffer.empty
+  let accesses = Buffer.empty
+  let sums = Buffer.empty
   let rec mark (e: CExpr) : CExpr =
     match e.k with
-    | CPrim(op, [ a; idx ]) when (op = "array.get#b" || op = "vec.load#b") && stable a ->
+    | CPrim(op, [ a; idx ]) when (op = "array.get#b" || op = "vec.load#b") && stable a && ranged idx ->
       let lanes = if op = "vec.load#b" then snd (Option.get (vectorInfo (tyName e.ty))) else 1
-      match affine idx with
-      | Some(coef, terms) ->
-        Buffer.push (a, coef, terms, lanes) found
-        let idx2 = mark idx
-        { e with k = CPrim(op + "!", [ a; idx2 ]) }
-      | None -> { e with k = CPrim(op, [ a; mark idx ]) }
+      Buffer.push (a, idx, lanes) accesses
+      { e with k = CPrim(op + "!", [ a; unchecked idx ]) }
+    | CArraySet(arr, idx, w) ->
+      let a = mk (CLocal arr) (TCon("array", [ w.ty ]))
+      if stable a && ranged idx then
+        Buffer.push (a, idx, 1) accesses
+        { e with k = CArraySet(arr, mk (CPrim("index!", [ unchecked idx ])) idx.ty, mark w) }
+      else
+        { e with k = CArraySet(arr, mark idx, mark w) }
+    | CBin(op, _, _) when arith op && ranged e ->
+      Buffer.push e sums
+      unchecked e
     // a closure body doesn't run in the loop
     | CLam _ -> e
     | k -> { e with k = mapChildren mark k }
   let marked = mark body
-  (marked, Array.toList (Buffer.toArray found))
+  (marked, Array.toList (Buffer.toArray accesses), Array.toList (Buffer.toArray sums))
 
 /// The `let mutable` arrays a loop writes and can keep unique for its whole run: inside it they
 /// are only borrowed (a.[i], Array.length a) or written, never shared or reassigned. Each one's
@@ -842,7 +847,12 @@ let rec gen (fx: F) (env: Map<string, Binding>) (tail: bool) (e: CExpr) : string
         | None -> ()
         "zeroinitializer"
       | Ssa _ -> panic "assignment to an immutable variable"
-  | CArraySet(x, i, w) ->
+  | CArraySet(x, i0, w) ->
+    // index!: a versioned loop proved it in bounds
+    let (i, proved) =
+      match i0.k with
+      | CPrim("index!", [ i1 ]) -> (i1, true)
+      | _ -> (i0, false)
     let vi = gen fx env false i
     let vv = gen fx env false w
     let at = snd (List.head (refs e))
@@ -861,9 +871,10 @@ let rec gen (fx: F) (env: Map<string, Binding>) (tail: bool) (e: CExpr) : string
           let u = instr em $"call ptr {uniqueFn g at false}(ptr {a})"
           emit em $"store ptr {u}, ptr {p}"
           u
-      let lp = instr em $"getelementptr {{ i_W, i_W }}, ptr {u}, i32 0, i32 1"
-      let len = loadLen g em lp
-      check g em (instr em $"icmp ult i_W {vi}, {len}") "index out of bounds"
+      if not proved then
+        let lp = instr em $"getelementptr {{ i_W, i_W }}, ptr {u}, i32 0, i32 1"
+        let len = loadLen g em lp
+        check g em (instr em $"icmp ult i_W {vi}, {len}") "index out of bounds"
       let ep = instr em $"getelementptr inbounds nuw {{ i_W, i_W, [0 x {llty g el}] }}, ptr {u}, i32 0, i32 2, i_W {vi}"
       let old = instr em $"load {llty g el}, ptr {ep}"
       emit em $"store {llty g el} {vv}, ptr {ep}"
@@ -1191,6 +1202,9 @@ let rec gen (fx: F) (env: Map<string, Binding>) (tail: bool) (e: CExpr) : string
       instr em $"{ins} {lt} {va}, {amount}"
     else if String.startsWith "wrap" op then
       instr em $"{Map.find (String.sub op 4 (String.length op - 4)) arith} {lt} {va}, {vb}"
+    else if String.startsWith "nsw" op then
+      // a versioned loop proved it doesn't overflow
+      instr em $"{Map.find (String.sub op 3 (String.length op - 3)) arith} nsw {lt} {va}, {vb}"
     else if Map.containsKey op arith then
       checkedArith g em op (isUnsigned t) lt va vb
     else if op = "/" || op = "%" then
@@ -1327,65 +1341,88 @@ and genLoop (fx: F) (env: Map<string, Binding>) (tail: bool) (e: CExpr) : string
       fx.uniqueSlots.Value <- Set.remove x fx.uniqueSlots.Value
     r
 
-// loop versioning: if every a.[x ± c] (and SIMD load) the loop reads is in bounds for the whole
-// range, a copy of the loop without those bounds checks runs; otherwise the checked one
+// loop versioning: if the loop's reads and writes (a.[x ± c], SIMD loads) are in bounds and its
+// arithmetic over x doesn't overflow for the whole range (provable), a copy of the loop without
+// those checks runs; otherwise the checked one
 and genVersioned (fx: F) (env: Map<string, Binding>) (tail: bool) (e: CExpr) : string =
   let g = fx.g
   let em = fx.em
   match e.k with
   | CFor(x, a, step, b, body) ->
     // at -Os only small bodies: duplicating them costs a few dozen bytes
-    let (marked, reads) = if hasLoop body || (g.opts.optimizeSize && nodes body > 40) then (body, []) else affineReads env x body
-    if not (positiveStep step) || List.isEmpty reads then
+    let (marked, accesses, sums) = if hasLoop body || (g.opts.optimizeSize && nodes body > 40) then (body, [], []) else provable env x body
+    if not (positiveStep step) || (List.isEmpty accesses && List.isEmpty sums) then
       genPlain fx env e
     else
-      let lt = llty g a.ty
       let va = gen fx env false a
       let vb = gen fx env false b
-      let value (c: CExpr) = gen fx env false c
-      let ovf (op: string) (p: string) (q: string) (bad: string) : string * string =
-        let name = $"llvm.s{op}.with.overflow.{lt}"
-        let decl = $"declare {{ {lt}, i1 }} @{name}({lt}, {lt})"
+      // whether computing a range overflowed
+      let bad = ref "false"
+      let ovf (t: string) (op: string) (p: string) (q: string) : string =
+        let name = $"llvm.s{op}.with.overflow.{t}"
+        let decl = $"declare {{ {t}, i1 }} @{name}({t}, {t})"
         if firstTime g decl then
           helper g (decl + "\n")
-        let r = instr em $"call {{ {lt}, i1 }} @{name}({lt} {p}, {lt} {q})"
-        let v0 = instr em $"extractvalue {{ {lt}, i1 }} {r}, 0"
-        let o = instr em $"extractvalue {{ {lt}, i1 }} {r}, 1"
-        (v0, instr em $"or i1 {bad}, {o}")
-      let readOk (ok: string) (rd: CExpr * int * list<int * CExpr> * int) : string =
-        let (arr, coef, terms, lanes) = rd
-        // the index's other terms summed (any overflow fails the test)
-        let sum (acc: string * string) (st: int * CExpr) =
-          let (cur, bad) = acc
-          let (sign, t) = st
-          let tv = value t
-          ovf (if sign > 0 then "add" else "sub") cur tv bad
-        let (cv, bad0) = List.fold sum ("0", "false") terms
-        let (lo, hi0, bad1) =
-          if coef > 0 then
-            let (lo, b1) = ovf "add" va cv bad0
-            let (hi, b2) = ovf "add" vb cv b1
-            (lo, hi, b2)
-          else
-            let (lo, b1) = ovf "sub" cv vb bad0
-            let (hi, b2) = ovf "sub" cv va b1
-            (lo, hi, b2)
+        let r = instr em $"call {{ {t}, i1 }} @{name}({t} {p}, {t} {q})"
+        let o = instr em $"extractvalue {{ {t}, i1 }} {r}, 1"
+        bad.Value <- instr em $"or i1 {bad.Value}, {o}"
+        instr em $"extractvalue {{ {t}, i1 }} {r}, 0"
+      let pick (cmp: string) (t: string) (p: string) (q: string) : string =
+        let c = instr em $"icmp {cmp} {t} {p}, {q}"
+        instr em $"select i1 {c}, {t} {p}, {t} {q}"
+      // an expression's lowest and highest value while the loop runs
+      let rec range (e: CExpr) : string * string =
+        let t = llty g e.ty
+        match e.k with
+        | CInt n -> ($"{n}", $"{n}")
+        | CLocal y when y = x -> (va, vb)
+        | CLocal _ ->
+          let v = gen fx env false e
+          (v, v)
+        | CBin("+", p, q) ->
+          let (lp, hp) = range p
+          let (lq, hq) = range q
+          (ovf t "add" lp lq, ovf t "add" hp hq)
+        | CBin("-", p, q) ->
+          let (lp, hp) = range p
+          let (lq, hq) = range q
+          (ovf t "sub" lp hq, ovf t "sub" hp lq)
+        | CBin("*", p, q) ->
+          let (lp, hp) = range p
+          let (lq, hq) = range q
+          let corners = [ ovf t "mul" lp lq; ovf t "mul" lp hq; ovf t "mul" hp lq; ovf t "mul" hp hq ]
+          (List.reduce (pick "slt" t) corners, List.reduce (pick "sgt" t) corners)
+        | CBin("/", p, { k = CInt c }) ->
+          let (lp, hp) = range p
+          (instr em $"sdiv {t} {lp}, {c}", instr em $"sdiv {t} {hp}, {c}")
+        | CBin(_, p, { k = CInt c }) ->
+          // % c: below c, and not below 0 where p isn't
+          let (lp, _) = range p
+          let nonneg = instr em $"icmp sge {t} {lp}, 0"
+          (instr em $"select i1 {nonneg}, {t} 0, {t} {i64 1 - c}", $"{c - i64 1}")
+        | CLine(_, p) -> range p
+        | _ -> panic "Codegen: an expression without a range"
+      let inBounds (ok: string) (acc: CExpr * CExpr * int) : string =
+        let (arr, idx, lanes) = acc
+        let t = llty g idx.ty
+        let (lo, hi0) = range idx
         // a SIMD load reads lanes elements from its index
-        let (hi, bad) = if lanes > 1 then ovf "add" hi0 $"{lanes - 1}" bad1 else (hi0, bad1)
+        let hi = if lanes > 1 then ovf t "add" hi0 $"{lanes - 1}" else hi0
+        let av = gen fx env false arr
         let len =
           if isWin arr.ty then
-            let av = value arr
             instr em $"extractvalue {llty g arr.ty} {av}, 2"
           else
-            let av = value arr
             loadLen g em (instr em $"getelementptr {{ i_W, i_W }}, ptr {av}, i32 0, i32 1")
-        let ge = instr em $"icmp sge {lt} {lo}, 0"
-        let below = instr em $"icmp slt {lt} {hi}, {len}"
-        let inRange = instr em $"and i1 {ge}, {below}"
-        let noOvf = instr em $"xor i1 {bad}, true"
-        let both = instr em $"and i1 {inRange}, {noOvf}"
+        let ge = instr em $"icmp sge {t} {lo}, 0"
+        let below = instr em $"icmp slt {t} {hi}, {len}"
+        let both = instr em $"and i1 {ge}, {below}"
         instr em $"and i1 {ok}, {both}"
-      let ok = List.fold readOk "true" reads
+      let inside = List.fold inBounds "true" accesses
+      for s in sums do
+        range s |> ignore
+      let fine = instr em $"xor i1 {bad.Value}, true"
+      let ok = instr em $"and i1 {inside}, {fine}"
       let fast = fresh em "vfast"
       let slow = fresh em "vslow"
       let join = fresh em "vjoin"

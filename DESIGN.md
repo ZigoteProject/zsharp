@@ -582,7 +582,7 @@ and gives LLVM the facts it can't prove. Everything in this table is built.
 | Mono | Fusion: a pipeline of `map`s and `filter`s from `List.init`, a list, `Array.init` or an array into `sum`/`sumBy`/`fold`/`length`/`iter` is one loop; one of several stages that builds a list or an array builds only that. Pure lambdas only (decision 36) |
 | Core | Uncurrying: a function whose body is a lambda takes its parameters (`let f x = fun y -> …` has two); a closure applied to several arguments calls code taking them all when it takes that many, through the closure's static description (drop function, arity, full entry), instead of building a closure per argument |
 | Perceus | Ownership, drop specialization, reuse, borrowing, moves out of mutables, borrowed reads and fields, re-matching |
-| Codegen | Copy-on-write checks hoisted out of loops; loop versioning that proves bounds once for innermost call-free loops |
+| Codegen | Copy-on-write checks hoisted out of loops; loop versioning that proves bounds, and no overflow in the arithmetic on the loop variable, once for innermost call-free loops |
 | Codegen | Overflow checks via `llvm.*.with.overflow`, which LLVM drops when ranges prove them safe |
 | Codegen | `print` of an interpolation prints the pieces, without building the string |
 | LLVM facts | `!range` on lengths, `inbounds nuw` element access, `noalias` allocator with `allockind`, `inlinehint` on higher-order functions, `optsize` at `-Os` |

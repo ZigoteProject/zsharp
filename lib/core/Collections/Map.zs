@@ -67,6 +67,13 @@ module Map =
       | MapLeaf -> mapNode l k v r
     else mapNode l k v r
 
+  // mapBalance l k v r, with the node built here when it's balanced already (as almost always):
+  // small enough to inline, so a caller that matched a unique node builds this one in its cell
+  let private mapJoin l k v r =
+    let hl = mapHeight l
+    let hr = mapHeight r
+    if hl <= hr + 1 && hr <= hl + 1 then MapNode (l, k, v, r, max hl hr + 1) else mapBalance l k v r
+
   /// The empty map.
   let empty : Map<'k, 'v> = MapLeaf
 
@@ -83,8 +90,8 @@ module Map =
     | MapNode (l, k, v, r, h) ->
       let c = compare key k
       if c = 0 then MapNode (l, key, value, r, h)
-      else if c < 0 then mapBalance (Map.add key value l) k v r
-      else mapBalance l k v (Map.add key value r)
+      else if c < 0 then mapJoin (Map.add key value l) k v r
+      else mapJoin l k v (Map.add key value r)
 
   /// The value bound to `key`, or `None`.
   let rec tryFind key (m: Map<'k, 'v>) =
@@ -112,7 +119,7 @@ module Map =
   let rec private mapRemoveMin (m: Map<'k, 'v>) =
     match m with
     | MapNode (MapLeaf, _, _, r, _) -> r
-    | MapNode (l, k, v, r, _) -> mapBalance (mapRemoveMin l) k v r
+    | MapNode (l, k, v, r, _) -> mapJoin (mapRemoveMin l) k v r
     | MapLeaf -> MapLeaf
 
   /// The map without `key` (the same map when `key` isn't bound).
@@ -127,9 +134,9 @@ module Map =
         | (_, MapLeaf) -> l
         | _ ->
           let (mk, mv) = mapMinBinding r
-          mapBalance l mk mv (mapRemoveMin r)
-      else if c < 0 then mapBalance (Map.remove key l) k v r
-      else mapBalance l k v (Map.remove key r)
+          mapJoin l mk mv (mapRemoveMin r)
+      else if c < 0 then mapJoin (Map.remove key l) k v r
+      else mapJoin l k v (Map.remove key r)
 
   /// Combines the entries in ascending key order: `f state key value`.
   let rec fold f state (m: Map<'k, 'v>) =

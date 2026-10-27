@@ -723,14 +723,29 @@ zs_int zs_str_hash(zs_str *s) {
     return sizeof(zs_int) < 8 ? (zs_int)(h ^ (h >> 32)) : (zs_int)h; // fold on a 32-bit chip
 }
 
+// digits by hand: snprintf's locale and format cost more than the number
+static int u64_text(uint64_t v, char *out) {
+    char tmp[24];
+    int n = 0;
+    do {
+        tmp[n++] = (char)('0' + v % 10);
+        v /= 10;
+    } while (v);
+    for (int i = 0; i < n; i++) out[i] = tmp[n - 1 - i];
+    return n;
+}
+
 zs_str *zs_str_of_i64(int64_t v) {
-    char buf[32];
-    return str_of(buf, snprintf(buf, sizeof buf, "%" PRId64, v));
+    char buf[24];
+    int n = 0;
+    if (v < 0) buf[n++] = '-';
+    n += u64_text(v < 0 ? (uint64_t)(-(v + 1)) + 1 : (uint64_t)v, buf + n);
+    return str_of(buf, n);
 }
 
 zs_str *zs_str_of_u64(uint64_t v) {
-    char buf[32];
-    return str_of(buf, snprintf(buf, sizeof buf, "%" PRIu64, v));
+    char buf[24];
+    return str_of(buf, u64_text(v, buf));
 }
 
 // Shortest representation that reads back as the same double; whole numbers print like ints.
@@ -852,7 +867,11 @@ zs_str *zs_str_of_byte(uint8_t b) {
     return str_of(&c, 1);
 }
 
-static int int_text(zs_int v, char *out) { return snprintf(out, 24, "%lld", (long long)v); }
+static int int_text(zs_int v, char *out) {
+    if (v >= 0) return u64_text((uint64_t)v, out);
+    out[0] = '-';
+    return 1 + u64_text((uint64_t)0 - (uint64_t)v, out + 1);
+}
 
 // ---- slices and spans
 
@@ -946,8 +965,15 @@ zs_str *zs_str_of_bytes(const uint8_t *p, zs_int n) {
 
 zs_int zs_str_index_of(zs_str *s, zs_str *sub, zs_int from) {
     if (from < 0) from = 0;
-    for (zs_int i = from; i + sub->len <= s->len; i++)
-        if (memcmp(s->data + i, sub->data, (size_t)sub->len) == 0) return i;
+    zs_int n = sub->len;
+    if (from > s->len - n) return -1;
+    if (n == 0) return from;
+    // memchr to each place the first byte is, memcmp there for the rest
+    const char *p = s->data + from, *last = s->data + s->len - n;
+    while ((p = memchr(p, sub->data[0], (size_t)(last - p + 1)))) {
+        if (memcmp(p + 1, sub->data + 1, (size_t)(n - 1)) == 0) return p - s->data;
+        if (p++ == last) break;
+    }
     return -1;
 }
 
@@ -1209,8 +1235,17 @@ void zs_eprintln(zs_str *s) {
 void zs_print(zs_str *s) { fwrite(s->data, 1, (size_t)s->len, stdout); }
 
 void zs_println(zs_str *s) {
-    fwrite(s->data, 1, (size_t)s->len, stdout);
-    fputc('\n', stdout);
+    // a short line and its newline in one write: one lock of stdout, and no other thread's
+    // text between them
+    char line[256];
+    if (s->len < (zs_int)sizeof line) {
+        memcpy(line, s->data, (size_t)s->len);
+        line[s->len] = '\n';
+        fwrite(line, 1, (size_t)s->len + 1, stdout);
+    } else {
+        fwrite(s->data, 1, (size_t)s->len, stdout);
+        fputc('\n', stdout);
+    }
 }
 
 // ---- CLI: arguments, environment, files, directories, processes
