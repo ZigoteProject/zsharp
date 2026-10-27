@@ -8,3 +8,9 @@ cp tests/doctest/area.zs "$dir/area.zs"
 diff "$dir/area.zs" tests/doctest/area.updated && echo "updated as expected"
 (cd "$dir" && "$zs" test --doc area.zs | tail -1)
 rm -rf "$dir"
+# a library file's blocks are built in this user's cache, not the shared temporary directory,
+# where another user could put .zs-doctest.zs first and change it before it's built and run
+tmp=$(mktemp -d)
+ZS_NO_SERVER=1 TMPDIR=$tmp "$zs" test --doc lib/core/Text/Utf8.zs | tail -1
+echo "left in TMPDIR: $(ls -A "$tmp" | wc -l)"; ls -A "$tmp" >&2
+rm -rf "$tmp"

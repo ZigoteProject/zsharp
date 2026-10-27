@@ -1,0 +1,8 @@
+comment_char %
+% A locale whose decimal point is a comma, for tests/security/locale.zs (LC_NUMERIC only)
+escape_char /
+LC_NUMERIC
+decimal_point "<U002C>"
+thousands_sep "<U002E>"
+grouping 3;3
+END LC_NUMERIC

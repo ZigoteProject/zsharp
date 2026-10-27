@@ -9,6 +9,9 @@ export XDG_CACHE_HOME=$t/cache
 unset ZS_NO_SERVER
 bin/zs build tests/spans.zs -o "$t/a" # none yet: built here, and one started
 for i in $(seq 100); do ls "$t"/cache/zs/servers/*.sock >/dev/null 2>&1 && break; sleep 0.1; done
+# whoever reaches the socket runs zs commands as this user: its directory is private, whatever the
+# umask it was made under
+echo "its directory: $(stat -c %a "$t"/cache/zs/servers)"
 bin/zs build tests/spans.zs -o "$t/b" --time 2>"$t/time"
 grep -q "^total (build server)" "$t/time" && echo "the server built it"
 ZS_NO_SERVER=1 XDG_CACHE_HOME=$t/ref bin/zs build tests/spans.zs -o "$t/c"

@@ -332,6 +332,11 @@ fi
 if command -v node >/dev/null && bin/zs build tests/mcu/math.zs --target wasm32 -o "$tmp/math.wasm" 2>"$tmp/math.log" \
    && [ "$(node bin/run-wasm.mjs "$tmp/math.wasm" 2>&1)" = "$(cat tests/mcu/math.expected)" ]; then echo "ok   tests/mcu/math.zs on wasm32 (under node)"
 elif command -v node >/dev/null; then echo "FAIL tests/mcu/math.zs on wasm32"; cat "$tmp/math.log"; fail=1; fi
+# 32-bit words: a string length past one panics (String.replace's wrapped to a small string it
+# wrote gigabytes into), on wasm32 under node
+if command -v node >/dev/null && bin/zs build tests/security/replace32.zs --target wasm32 -o "$tmp/replace32.wasm" 2>"$tmp/replace32.log" \
+   && [ "$(node bin/run-wasm.mjs "$tmp/replace32.wasm" 2>&1)" = "$(cat tests/security/replace32.expected)" ]; then echo "ok   tests/security/replace32.zs on wasm32 (under node)"
+elif command -v node >/dev/null; then echo "FAIL tests/security/replace32.zs on wasm32"; cat "$tmp/replace32.log"; fail=1; fi
 
 # C interop on a chip, both ways, under qemu: Z# calling C with structs by value in every shape
 # (AAPCS, hard and soft float), and a C firmware with its own startup calling a Z# library built
@@ -386,6 +391,14 @@ if command -v node >/dev/null && bin/zs build tests/mcu/effects.zs --target wasm
    && [ "$(node bin/run-wasm.mjs "$tmp/effects.wasm" 2>&1)" = "$(cat tests/mcu/effects.expected)" ]; then
   echo "ok   tests/mcu/effects.zs (effect handlers on wasm32, under node)"
 else echo "FAIL tests/mcu/effects.zs (wasm32)"; cat "$tmp/effects.log"; fail=1; fi
+
+# numbers as text whatever locale a C library sets (setlocale: GTK's, an ncurses program's): comma,
+# a locale whose decimal point is ',', made here (LC_NUMERIC alone)
+if [ "$(uname -s)" != Linux ] || ! command -v localedef >/dev/null; then echo "skip tests/security/locale.zs (it needs Linux's localedef)"
+elif mkdir -p "$tmp/loc" && { localedef -c -i tests/security/comma.locale -f tests/security/comma.charmap --no-archive "$tmp/loc/comma" >/dev/null 2>&1; [ -f "$tmp/loc/comma/LC_NUMERIC" ]; } \
+   && bin/zs build --strict tests/security/locale.zs -o "$tmp/locale" 2>"$tmp/locale.log" \
+   && [ "$(LOCPATH=$tmp/loc "$tmp/locale" 2>&1)" = "$(cat tests/security/locale.expected)" ]; then echo "ok   tests/security/locale.zs (a ',' for the decimal point)"
+else echo "FAIL tests/security/locale.zs"; cat "$tmp/locale.log"; fail=1; fi
 
 # the library checks on its own (an editor opening one of its files must not see everything
 # defined twice)

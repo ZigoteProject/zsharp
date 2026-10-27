@@ -34,11 +34,12 @@ let private fetched (dir: string) : bool =
     false
   | None -> true
 
-// a path for something made for one command (an executable run once), removed after
+// a path for something made for one command (an executable run once), removed after; not a
+// fixed name in a shared temporary directory, where another user could put one there first
 let private scratchExe () : string =
   match File.createTemp "zs-" with
   | Ok p -> p
-  | Error _ -> Path.combine (Directory.temp ()) "zs-run"
+  | Error _ -> Path.combine (Tools.cacheRoot ()) "zs-run"
 
 // the options with the project's target when the command line names none, and the project's
 // settings for the target built for ([target.<name>])
@@ -327,7 +328,10 @@ let private docTests (o: Options.Options) (files: list<string>) (update: bool) :
           let upper (s: string) = if s = "" then s else String.toUpper (String.sub s 0 1) + String.sub s 1 (String.length s - 1)
           let name = String.join "." (List.map upper (String.split "/" (String.sub rel 0 (String.length rel - 3))))
           (p.root, if isMain then None else Some name)
-        | _ -> (Directory.temp (), None)
+        // this user's cache, not the shared temporary directory: there another user could put
+        // .zs-doctest.zs first and change it between its writing and its build, which runs it
+        | _ -> (Path.combine (Tools.cacheRoot ()) "doctest", None)
+      Tools.makeDirectory dir
       let shown = Path.getRelativePath (Environment.currentDirectory ()) file
       let changed = Buffer.empty
       for b in Build.DocTest.blocks text do

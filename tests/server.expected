@@ -1,3 +1,4 @@
+its directory: 700
 the server built it
 the same binary as built in-process
 an error: exit 1, tests/err_yield.zs:2:3: error: yield belongs in [ … ], [| … |] or seq { }

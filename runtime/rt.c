@@ -672,8 +672,11 @@ __attribute__((constructor)) static void zs_init(void) {
     atexit(boxes_sweep); // before the leak report; after what's registered later (the loop threads' stop)
 }
 
-static zs_str *str_new(zs_int len) {
-    zs_str *s = zs_alloc((int64_t)sizeof(zs_str) + len + 1);
+// a string of len bytes and its NUL: a length past what a word holds (a sum or product of
+// lengths on a 32-bit target) can't be allocated, and mustn't wrap to a small object
+static zs_str *str_new(int64_t len) {
+    if (len < 0 || len > (int64_t)INTPTR_MAX - (int64_t)sizeof(zs_str) - 1) zs_panic_c("out of memory");
+    zs_str *s = zs_alloc((zs_int)sizeof(zs_str) + (zs_int)len + 1);
     s->rc = 1;
     s->len = len;
     s->data[len] = 0;
@@ -688,7 +691,7 @@ static zs_str *str_of(const char *buf, zs_int len) {
 
 // String operations borrow their arguments; the caller drops them.
 zs_str *zs_str_concat(zs_str *a, zs_str *b) {
-    zs_str *s = str_new(a->len + b->len);
+    zs_str *s = str_new((int64_t)a->len + b->len);
     memcpy(s->data, a->data, (size_t)a->len);
     memcpy(s->data + a->len, b->data, (size_t)b->len);
     return s;
@@ -697,7 +700,7 @@ zs_str *zs_str_concat(zs_str *a, zs_str *b) {
 // pieces[0] to pieces[n - 1] joined into one new string (a chain of +, an interpolation's
 // pieces): one allocation, where a + at a time makes n - 1. Borrows them; the caller drops them.
 zs_str *zs_str_concat_n(zs_str **pieces, zs_int n) {
-    zs_int len = 0;
+    int64_t len = 0;
     for (zs_int i = 0; i < n; i++) len += pieces[i]->len;
     zs_str *s = str_new(len);
     char *d = s->data;
@@ -716,10 +719,50 @@ zs_int zs_str_cmp(zs_str *a, zs_str *b) {
     return a->len < b->len ? -1 : a->len > b->len;
 }
 
-// FNV-1a
+// A string's hash is SipHash-1-3 (Rust's HashMap's) under a key drawn once a process: one the
+// same in every run (FNV-1a's was) lets whoever picks the keys (a JSON object's, from a socket)
+// put them all in one HashMap bucket, every lookup then walking all of them (HashDoS). Drawn
+// before main, so every thread hashes with the same key.
+// ponytail: ints still hash to themselves; a keyed mix in the hash primitive if their keys come
+// from outside
+static uint64_t hash_key[2];
+__attribute__((constructor)) static void hash_key_draw(void) {
+    hash_key[0] = zs_random_seed();
+    hash_key[1] = zs_random_seed();
+}
+
+#define SIP_ROTL(x, b) (((x) << (b)) | ((x) >> (64 - (b))))
+#define SIP_ROUND \
+    do { \
+        v0 += v1, v1 = SIP_ROTL(v1, 13), v1 ^= v0, v0 = SIP_ROTL(v0, 32); \
+        v2 += v3, v3 = SIP_ROTL(v3, 16), v3 ^= v2; \
+        v0 += v3, v3 = SIP_ROTL(v3, 21), v3 ^= v0; \
+        v2 += v1, v1 = SIP_ROTL(v1, 17), v1 ^= v2, v2 = SIP_ROTL(v2, 32); \
+    } while (0)
+
 zs_int zs_str_hash(zs_str *s) {
-    uint64_t h = 14695981039346656037ull;
-    for (int64_t i = 0; i < s->len; i++) h = (h ^ (uint8_t)s->data[i]) * 1099511628211ull;
+    uint64_t k0 = hash_key[0], k1 = hash_key[1];
+    uint64_t v0 = k0 ^ 0x736f6d6570736575ull, v1 = k1 ^ 0x646f72616e646f6dull;
+    uint64_t v2 = k0 ^ 0x6c7967656e657261ull, v3 = k1 ^ 0x7465646279746573ull;
+    const uint8_t *p = (const uint8_t *)s->data;
+    size_t n = (size_t)s->len, whole = n & ~(size_t)7;
+    for (size_t i = 0; i < whole; i += 8) {
+        uint64_t m;
+        memcpy(&m, p + i, 8);
+        v3 ^= m;
+        SIP_ROUND;
+        v0 ^= m;
+    }
+    uint64_t last = (uint64_t)n << 56; // the length's low byte, over the last 0 to 7 bytes
+    for (size_t i = whole; i < n; i++) last |= (uint64_t)p[i] << (8 * (i - whole));
+    v3 ^= last;
+    SIP_ROUND;
+    v0 ^= last;
+    v2 ^= 0xff;
+    SIP_ROUND;
+    SIP_ROUND;
+    SIP_ROUND;
+    uint64_t h = v0 ^ v1 ^ v2 ^ v3;
     return sizeof(zs_int) < 8 ? (zs_int)(h ^ (h >> 32)) : (zs_int)h; // fold on a 32-bit chip
 }
 
@@ -748,13 +791,56 @@ zs_str *zs_str_of_u64(uint64_t v) {
     return str_of(buf, u64_text(v, buf));
 }
 
+// Numbers are written and read with a '.': printf and strtod use the locale's decimal point,
+// which setlocale (a C library's: GTK's, ncurses programs') changes, de_DE's printing 1.5 as
+// "1,5" (invalid JSON, two CSV fields) and reading "1.5" as 1. LC_NUMERIC "C", per call.
+// ponytail: Windows keeps the CRT's locale (_vsnprintf_l isn't C99's snprintf); _create_locale
+// and the _l functions with their own truncation if a Windows library calls setlocale
+#ifdef _WIN32
+#define c_strtod strtod
+#define c_strtof strtof
+#define c_snprintf snprintf
+#else
+#include <locale.h>
+#ifdef __APPLE__
+#include <xlocale.h>
+#endif
+#include <stdarg.h>
+static locale_t c_numeric;
+__attribute__((constructor)) static void c_numeric_make(void) { c_numeric = newlocale(LC_NUMERIC_MASK, "C", (locale_t)0); }
+
+static double c_strtod(const char *s, char **end) {
+    locale_t was = uselocale(c_numeric); // (locale_t)0 if newlocale failed: no change
+    double v = strtod(s, end);
+    uselocale(was);
+    return v;
+}
+
+static float c_strtof(const char *s, char **end) {
+    locale_t was = uselocale(c_numeric);
+    float v = strtof(s, end);
+    uselocale(was);
+    return v;
+}
+
+static int c_snprintf(char *buf, size_t size, const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    locale_t was = uselocale(c_numeric);
+    int n = vsnprintf(buf, size, format, args);
+    uselocale(was);
+    va_end(args);
+    return n;
+}
+#endif
+
 // Shortest representation that reads back as the same double; whole numbers print like ints.
 zs_str *zs_str_of_f64(double v) {
     char buf[40];
     int n = 0;
     for (int prec = 15; prec <= 17; prec++) {
-        n = snprintf(buf, sizeof buf, "%.*g", prec, v);
-        if (strtod(buf, NULL) == v) break;
+        n = c_snprintf(buf, sizeof buf, "%.*g", prec, v);
+        if (c_strtod(buf, NULL) == v) break;
     }
     return str_of(buf, n);
 }
@@ -764,8 +850,8 @@ zs_str *zs_str_of_f32(float v) {
     char buf[40];
     int n = 0;
     for (int prec = 6; prec <= 9; prec++) {
-        n = snprintf(buf, sizeof buf, "%.*g", prec, (double)v);
-        if (strtof(buf, NULL) == v) break;
+        n = c_snprintf(buf, sizeof buf, "%.*g", prec, (double)v);
+        if (c_strtof(buf, NULL) == v) break;
     }
     return str_of(buf, n);
 }
@@ -927,19 +1013,25 @@ zs_str *zs_str_slice(zs_str *s, zs_int i, zs_int j) {
     return str_of(s->data + i, j - i + 1);
 }
 
-// the length of the UTF-8 sequence at p (n bytes left) as String.decodeAt reads it, or 0 when
-// it's malformed
+// the length of the well-formed UTF-8 sequence at p (n bytes left) as String.decodeAt reads it,
+// or 0 when it's malformed: RFC 3629's, as Utf8.validate's, so no overlong form (C0 AF would
+// decode to a '/' that a check of the bytes never saw), surrogate or value past U+10FFFF
 static zs_int utf8_seq(const uint8_t *p, zs_int n) {
-    zs_int k = p[0] < 0x80 ? 1 : (p[0] & 0xE0) == 0xC0 ? 2 : (p[0] & 0xF0) == 0xE0 ? 3 : (p[0] & 0xF8) == 0xF0 ? 4 : 0;
+    uint8_t b = p[0];
+    if (b < 0x80) return 1;
+    zs_int k = b >= 0xC2 && b <= 0xDF ? 2 : b >= 0xE0 && b <= 0xEF ? 3 : b >= 0xF0 && b <= 0xF4 ? 4 : 0;
     if (k == 0 || k > n) return 0;
-    for (zs_int i = 1; i < k; i++)
+    // the second byte's range: narrower after E0 and F0 (overlong), ED (surrogates) and F4 (past U+10FFFF)
+    uint8_t lo = b == 0xE0 ? 0xA0 : b == 0xF0 ? 0x90 : 0x80, hi = b == 0xED ? 0x9F : b == 0xF4 ? 0x8F : 0xBF;
+    if (p[1] < lo || p[1] > hi) return 0;
+    for (zs_int i = 2; i < k; i++)
         if ((p[i] & 0xC0) != 0x80) return 0;
     return k;
 }
 
 // String.ofBytes: a copy of the bytes, each malformed one replaced by U+FFFD (decision 28)
 zs_str *zs_str_of_bytes(const uint8_t *p, zs_int n) {
-    zs_int len = 0;
+    int64_t len = 0; // a malformed byte becomes 3
     for (zs_int i = 0; i < n;) {
         uint64_t w;
         if (i + 8 <= n && (memcpy(&w, p + i, 8), (w & 0x8080808080808080ull) == 0)) {
@@ -999,9 +1091,10 @@ zs_str *zs_str_lower(zs_str *s) { return map_ascii(s, 0); }
 
 zs_str *zs_str_replace(zs_str *s, zs_str *old, zs_str *with) {
     if (old->len == 0) return str_of(s->data, s->len);
-    int64_t n = 0;
+    int64_t n = 0, grow, len;
     for (int64_t i = 0; (i = zs_str_index_of(s, old, i)) >= 0; i += old->len) n++;
-    zs_str *r = str_new(s->len + n * (with->len - old->len));
+    if (__builtin_mul_overflow(n, (int64_t)with->len - old->len, &grow) || __builtin_add_overflow((int64_t)s->len, grow, &len)) zs_panic_c("out of memory");
+    zs_str *r = str_new(len);
     int64_t i = 0, o = 0, j;
     while ((j = zs_str_index_of(s, old, i)) >= 0) {
         memcpy(r->data + o, s->data + i, (size_t)(j - i));
@@ -1014,14 +1107,6 @@ zs_str *zs_str_replace(zs_str *s, zs_str *old, zs_str *with) {
     return r;
 }
 
-bool zs_str_is_float(zs_str *s) {
-    char *end;
-    if (s->len == 0) return false;
-    strtod(s->data, &end);
-    return end == s->data + s->len;
-}
-
-double zs_str_to_float(zs_str *s) { return strtod(s->data, NULL); }
 
 // ---- format specifiers ($"{x:F2}", 0024): .NET's standard numeric formats, invariant
 
@@ -1054,11 +1139,11 @@ static int group(const char *in, char *out) {
 // exact value, ties to even, so a tie is found in the exact expansion and rounded here
 static int fixed(double x, int d, char *out, size_t cap) {
     char exact[1500]; // on the stack: any thread formats
-    snprintf(exact, sizeof exact, "%.*f", 1100, x); // every digit of a double's expansion
+    c_snprintf(exact, sizeof exact, "%.*f", 1100, x); // every digit of a double's expansion
     char *point = strchr(exact, '.');
     bool tie = point && point[d + 1] == '5';
     for (int i = d + 2; tie && point[i]; i++) tie = point[i] == '0';
-    if (!tie) return snprintf(out, cap, "%.*f", d, x);
+    if (!tie) return c_snprintf(out, cap, "%.*f", d, x);
     // the expansion cut after d decimals, then one more in its last digit
     int n = (int)(point - exact) + (d > 0 ? d + 1 : 0);
     exact[n] = 0;
@@ -1082,7 +1167,7 @@ zs_str *zs_format_float(double x, zs_str *spec) {
     case 'N': fixed(x, d < 0 ? 2 : d, buf, sizeof buf); n = group(buf, grouped); return str_of(grouped, n);
     case 'E': {
         // 1.23E+003: the exponent with its sign and at least three digits
-        n = snprintf(buf, sizeof buf, "%.*E", d < 0 ? 6 : d, x);
+        n = c_snprintf(buf, sizeof buf, "%.*E", d < 0 ? 6 : d, x);
         char *e = strchr(buf, 'E');
         if (e) {
             int exp = atoi(e + 1);
@@ -1092,7 +1177,7 @@ zs_str *zs_format_float(double x, zs_str *spec) {
     }
     default: // G
         if (d <= 0) return zs_str_of_f64(x);
-        n = snprintf(buf, sizeof buf, "%.*G", d, x);
+        n = c_snprintf(buf, sizeof buf, "%.*G", d, x);
     }
     return str_of(buf, n);
 }
@@ -1182,10 +1267,23 @@ bool zs_parse_float(zs_str *s, double *out) {
     memcpy(buf, s->data, (size_t)s->len);
     buf[s->len] = 0;
     char *end;
-    double v = strtod(buf, &end);
+    double v = c_strtod(buf, &end);
     if (end != buf + s->len) return false;
     *out = v;
     return true;
+}
+
+// String.isFloat and String.toFloat, over the same reading (strtod alone took leading spaces
+// and hex, which Float.parse refuses)
+bool zs_str_is_float(zs_str *s) {
+    double x;
+    return zs_parse_float(s, &x);
+}
+
+double zs_str_to_float(zs_str *s) {
+    double x = 0;
+    zs_parse_float(s, &x);
+    return x;
 }
 
 // ---- console
@@ -1310,10 +1408,19 @@ zs_str *zs_io_error(void) {
     return e;
 }
 
-bool zs_env_has(zs_str *name) { return getenv(name->data) != NULL; }
+// whether the OS reads the name as given: it stops at a NUL, so one holding a NUL would name
+// something shorter ("secret\0.txt" the file secret, "evil.example\0.trusted.example" a host);
+// it fails instead, EINVAL
+static bool os_name(zs_str *s) {
+    if (!memchr(s->data, 0, (size_t)s->len)) return true;
+    errno = EINVAL;
+    return false;
+}
+
+bool zs_env_has(zs_str *name) { return os_name(name) && getenv(name->data) != NULL; }
 
 zs_str *zs_env_get(zs_str *name) {
-    const char *v = getenv(name->data);
+    const char *v = os_name(name) ? getenv(name->data) : NULL;
     return zs_str_from_c(v ? v : "");
 }
 
@@ -1325,7 +1432,7 @@ _Noreturn void zs_exit(zs_int code) {
 
 zs_str *zs_file_read(zs_str *path) {
     clear_error();
-    FILE *f = fopen(path->data, "rb");
+    FILE *f = os_name(path) ? fopen(path->data, "rb") : NULL;
     if (!f) {
         set_error("cannot open", path);
         return str_of("", 0);
@@ -1346,7 +1453,7 @@ zs_str *zs_file_read(zs_str *path) {
 
 static void file_put(zs_str *path, zs_str *text, const char *mode) {
     clear_error();
-    FILE *f = fopen(path->data, mode);
+    FILE *f = os_name(path) ? fopen(path->data, mode) : NULL;
     if (!f) {
         set_error("cannot open", path);
         return;
@@ -1360,28 +1467,28 @@ void zs_file_append(zs_str *path, zs_str *text) { file_put(path, text, "ab"); }
 
 bool zs_file_exists(zs_str *path) {
     struct stat st;
-    return stat(path->data, &st) == 0 && S_ISREG(st.st_mode);
+    return os_name(path) && stat(path->data, &st) == 0 && S_ISREG(st.st_mode);
 }
 
 bool zs_dir_exists(zs_str *path) {
     struct stat st;
-    return stat(path->data, &st) == 0 && S_ISDIR(st.st_mode);
+    return os_name(path) && stat(path->data, &st) == 0 && S_ISDIR(st.st_mode);
 }
 
 void zs_file_delete(zs_str *path) {
     clear_error();
-    if (remove(path->data) != 0) set_error("cannot delete", path);
+    if (!os_name(path) || remove(path->data) != 0) set_error("cannot delete", path);
 }
 
 void zs_dir_create(zs_str *path) {
     clear_error();
-    if (mkdir(path->data, 0777) != 0 && errno != EEXIST) set_error("cannot create", path);
+    if (!os_name(path) || (mkdir(path->data, 0777) != 0 && errno != EEXIST)) set_error("cannot create", path);
 }
 
 // entry names (without . and ..), NUL-separated, in directory order
 zs_str *zs_dir_list(zs_str *path) {
     clear_error();
-    DIR *d = opendir(path->data);
+    DIR *d = os_name(path) ? opendir(path->data) : NULL;
     if (!d) {
         set_error("cannot open", path);
         return str_of("", 0);
@@ -1410,6 +1517,10 @@ zs_str *zs_dir_list(zs_str *path) {
 // error for Native.ioError
 zs_int zs_file_open(zs_str *path, zs_int mode) {
     clear_error();
+    if (!os_name(path)) {
+        set_error("cannot open", path);
+        return -1;
+    }
 #ifdef _WIN32
     // shared for deleting too, so an open file can be deleted or renamed, as on POSIX
     HANDLE h = CreateFileA(path->data, mode == 0 ? GENERIC_READ : mode == 1 ? GENERIC_WRITE : FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
@@ -1428,7 +1539,7 @@ zs_int zs_file_open(zs_str *path, zs_int mode) {
 int64_t zs_file_mtime(zs_str *path) {
     clear_error();
     struct stat st;
-    if (stat(path->data, &st) != 0) {
+    if (!os_name(path) || stat(path->data, &st) != 0) {
         set_error("cannot read", path);
         return 0;
     }
@@ -1448,7 +1559,7 @@ int64_t zs_file_mtime(zs_str *path) {
 int64_t zs_file_size(zs_str *path) {
     clear_error();
     struct stat st;
-    if (stat(path->data, &st) != 0) {
+    if (!os_name(path) || stat(path->data, &st) != 0) {
         set_error("cannot read", path);
         return 0;
     }
@@ -1459,19 +1570,19 @@ int64_t zs_file_size(zs_str *path) {
 void zs_file_touch(zs_str *path) {
     clear_error();
 #ifdef _WIN32
-    if (_utime(path->data, NULL) != 0) set_error("cannot touch", path);
+    if (!os_name(path) || _utime(path->data, NULL) != 0) set_error("cannot touch", path);
 #else
-    if (utimensat(AT_FDCWD, path->data, NULL, 0) != 0) set_error("cannot touch", path);
+    if (!os_name(path) || utimensat(AT_FDCWD, path->data, NULL, 0) != 0) set_error("cannot touch", path);
 #endif
 }
 
 static bool copy_file(zs_str *from, zs_str *to) {
-    int in = open(from->data, O_RDONLY | O_CLOEXEC);
+    int in = os_name(from) ? open(from->data, O_RDONLY | O_CLOEXEC) : -1;
     if (in < 0) {
         set_error("cannot open", from);
         return false;
     }
-    int out = open(to->data, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666);
+    int out = os_name(to) ? open(to->data, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666) : -1;
     if (out < 0) {
         set_error("cannot create", to);
         close(in);
@@ -1499,6 +1610,10 @@ void zs_file_copy(zs_str *from, zs_str *to) {
 // a rename, or across file systems a copy and a delete
 void zs_file_move(zs_str *from, zs_str *to) {
     clear_error();
+    if (!os_name(from) || !os_name(to)) {
+        set_error("cannot move", from);
+        return;
+    }
 #ifdef _WIN32
     // rename doesn't replace an existing file on Windows
     if (!MoveFileExA(from->data, to->data, MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED)) {
@@ -1572,10 +1687,11 @@ zs_str *zs_temp_dir(zs_str *prefix) {
 
 void zs_dir_delete(zs_str *path) {
     clear_error();
-    if (rmdir(path->data) != 0) set_error("cannot delete", path);
+    if (!os_name(path) || rmdir(path->data) != 0) set_error("cannot delete", path);
 }
 
 bool zs_is_symlink(zs_str *path) {
+    if (!os_name(path)) return false;
 #ifdef _WIN32
     DWORD a = GetFileAttributesA(path->data);
     return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_REPARSE_POINT);
@@ -1590,7 +1706,7 @@ zs_str *zs_current_dir(void) {
     return zs_str_from_c(getcwd(buf, sizeof buf) ? buf : ".");
 }
 
-// Runs prog with NUL-separated args (no shell), stdout captured, stderr passed through.
+// Runs prog with args (each NUL-ended, no shell), stdout captured, stderr passed through.
 static _Thread_local int64_t process_code;
 
 zs_int zs_process_code(void) { return process_code; }
@@ -1660,7 +1776,7 @@ static _Thread_local zs_int started[4]; // the last start's process and pipes, f
 
 zs_int zs_process_pipe(zs_int k) { return k >= 0 && k < 3 ? started[k + 1] : -1; }
 
-// starts prog with args (NUL-separated), as zs_process_start's POSIX version: the process's
+// starts prog with args (each NUL-ended), as zs_process_start's POSIX version: the process's
 // handle as its "pid", or -errno. Each piped stream's end here is a CRT descriptor.
 // ponytail: the child's ends are inheritable while CreateProcess runs, so a process another
 // thread starts at that moment inherits them too; PROC_THREAD_ATTRIBUTE_HANDLE_LIST if it matters
@@ -1670,8 +1786,7 @@ zs_int zs_process_start(zs_str *prog, zs_str *args, zs_str *env, bool hasEnv, zs
     size_t len = 0, cap = 0;
     char *cmd = NULL;
     quote_arg(&cmd, &len, &cap, prog->data);
-    if (args->len)
-        for (int64_t i = 0; i <= args->len; i += (int64_t)strlen(args->data + i) + 1) quote_arg(&cmd, &len, &cap, args->data + i);
+    for (int64_t i = 0; i < args->len; i += (int64_t)strlen(args->data + i) + 1) quote_arg(&cmd, &len, &cap, args->data + i);
     SECURITY_ATTRIBUTES sa = {sizeof sa, NULL, TRUE};
     STARTUPINFOA si = {.cb = sizeof si, .dwFlags = STARTF_USESTDHANDLES};
     HANDLE *std[3] = {&si.hStdInput, &si.hStdOutput, &si.hStdError};
@@ -1730,7 +1845,7 @@ zs_int zs_process_wait(zs_int pid) {
 
 zs_int zs_process_kill(zs_int pid) { return TerminateProcess((HANDLE)(intptr_t)pid, 137) ? 0 : -EPERM; }
 
-// Runs prog with NUL-separated args (no shell), stdout captured, stderr passed through
+// Runs prog with args (each NUL-ended, no shell), stdout captured, stderr passed through
 zs_str *zs_process_run(zs_str *prog, zs_str *args) {
     clear_error();
     zs_str none = {0};
@@ -1774,6 +1889,21 @@ static bool find_program(const char *prog, char *out, size_t size) {
     return false;
 }
 
+// the strings of s as an argv-style array (with first in front, NULL after): one starts at each
+// byte that begins s or follows a NUL, so Process's arguments "a\0\0" (each NUL-ended) are "a"
+// and "", "\0" is one "", and an environment "A=1\0B=2" two
+static char **split_nul(zs_str *s, char *first) {
+    int64_t count = 0;
+    for (int64_t i = 0; i < s->len; i++) count += i == 0 || s->data[i - 1] == 0;
+    char **v = malloc(sizeof(char *) * (size_t)(count + 2));
+    int64_t k = 0;
+    if (first) v[k++] = first;
+    for (int64_t i = 0; i < s->len; i++)
+        if (i == 0 || s->data[i - 1] == 0) v[k++] = s->data + i;
+    v[k] = NULL;
+    return v;
+}
+
 zs_str *zs_process_run(zs_str *prog, zs_str *args) {
     clear_error();
     char exe[4096];
@@ -1782,17 +1912,7 @@ zs_str *zs_process_run(zs_str *prog, zs_str *args) {
         set_error("cannot run", prog);
         return str_of("", 0);
     }
-    int64_t count = args->len ? 1 : 0;
-    for (int64_t i = 0; i < args->len; i++) count += args->data[i] == 0;
-    char **argv = malloc(sizeof(char *) * (size_t)(count + 2));
-    argv[0] = prog->data;
-    int64_t k = 1;
-    if (args->len) {
-        argv[k++] = args->data;
-        for (int64_t i = 0; i < args->len; i++)
-            if (args->data[i] == 0) argv[k++] = args->data + i + 1;
-    }
-    argv[k] = NULL;
+    char **argv = split_nul(args, prog->data);
     int fds[2];
     if (pipe(fds) != 0) {
         free(argv);
@@ -1850,23 +1970,7 @@ static int pipe_cloexec(int p[2], bool nonblock) {
 
 // ---- Process.start (0024): posix_spawn with each stream inherited, piped or /dev/null
 
-// the NUL-separated strings of s as an argv-style array (with first in front, NULL after)
-static char **split_nul(zs_str *s, char *first) {
-    int64_t count = s->len ? 1 : 0;
-    for (int64_t i = 0; i < s->len; i++) count += s->data[i] == 0;
-    char **v = malloc(sizeof(char *) * (size_t)(count + 2));
-    int64_t k = 0;
-    if (first) v[k++] = first;
-    if (s->len) {
-        v[k++] = s->data;
-        for (int64_t i = 0; i < s->len - 1; i++)
-            if (s->data[i] == 0) v[k++] = s->data + i + 1;
-    }
-    v[k] = NULL;
-    return v;
-}
-
-// starts prog with args (NUL-separated); env: NUL-separated NAME=value pairs, used when hasEnv;
+// starts prog with args (each NUL-ended); env: NUL-separated NAME=value pairs, used when hasEnv;
 // dir: its working directory ("" for this one's); modes per stream (0 inherit, 1 piped, 2
 // /dev/null). The pid, or -errno; zs_process_pipe(k) gives this end of stream k's pipe (-1
 // when it isn't piped).
@@ -2757,6 +2861,10 @@ static int resolve(zs_str *host, zs_int port, bool passive, struct addrinfo **re
     struct addrinfo hints = {.ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM, .ai_flags = passive ? AI_PASSIVE : 0};
     char p[24];
     snprintf(p, sizeof p, "%lld", (long long)port);
+    if (!os_name(host)) {
+        sk_seterr(EINVAL);
+        return EAI_NONAME;
+    }
     int rc = getaddrinfo(host->len ? host->data : NULL, p, &hints, res);
 #ifdef _WIN32
     if (rc != 0) WSASetLastError(rc);
@@ -2819,6 +2927,7 @@ zs_int zs_tcp_connect(zs_str *host, zs_int port) {
 static int unix_address(zs_str *path, struct sockaddr_un *a) {
     zs_int n = path->len;
     if (n == 0 || n >= (zs_int)sizeof a->sun_path) { errno = ENAMETOOLONG; return -1; }
+    if (!os_name(path)) return -1; // a NUL: a shorter path, or first, Linux's abstract names (no permissions)
     memset(a, 0, sizeof *a);
     a->sun_family = AF_UNIX;
     memcpy(a->sun_path, path->data, (size_t)n);
@@ -3352,6 +3461,9 @@ typedef struct {
 } zs_chan;
 
 void *zs_chan_new(zs_int cap, zs_int size, void (*drop)(void *)) {
+    // the slots, past what can be allocated a panic (wrapped, a small block sends would overrun)
+    size_t bytes;
+    if (__builtin_mul_overflow((size_t)(cap == 0 ? 1 : cap), (size_t)(size ? size : 1), &bytes)) zs_panic_c("out of memory");
     zs_chan *c = zs_alloc((zs_int)sizeof(zs_chan));
     c->rc = 1;
     pthread_mutex_init(&c->mu, NULL);
@@ -3365,7 +3477,7 @@ void *zs_chan_new(zs_int cap, zs_int size, void (*drop)(void *)) {
     c->sent = c->received = 0;
     c->closed = false;
     c->drop = drop;
-    c->slots = malloc((size_t)(c->cap * (size ? size : 1)));
+    c->slots = malloc(bytes);
     if (!c->slots) zs_panic_c("out of memory");
     return c;
 }
@@ -3458,7 +3570,9 @@ typedef struct {
 
 void *zs_spsc_new(zs_int cap, zs_int size, void (*drop)(void *)) {
     if (cap < 1) zs_panic_c("an Spsc holds at least one value");
-    zs_spsc *q = zs_alloc((zs_int)sizeof(zs_spsc) + (cap + 1) * (size ? size : 1));
+    zs_int bytes; // cap + 1 slots after the header, past what can be allocated a panic
+    if (__builtin_add_overflow(cap, 1, &bytes) || __builtin_mul_overflow(bytes, size ? size : 1, &bytes) || __builtin_add_overflow(bytes, (zs_int)sizeof(zs_spsc), &bytes)) zs_panic_c("out of memory");
+    zs_spsc *q = zs_alloc(bytes);
     q->rc = 1;
     q->cap = cap + 1;
     q->size = size;

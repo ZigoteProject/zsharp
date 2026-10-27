@@ -709,8 +709,11 @@ void zs_ptr_free(void *p) { free(p); }
 
 // ---- strings
 
-static zs_str *str_new(zs_int len) {
-    zs_str *s = zs_alloc((int64_t)sizeof(zs_str) + len + 1);
+// a string of len bytes and its NUL: a length past what a word holds (a sum or product of
+// lengths, on a 32-bit chip) can't be allocated, and mustn't wrap to a small object
+static zs_str *str_new(int64_t len) {
+    if (len < 0 || len > (int64_t)INTPTR_MAX - (int64_t)sizeof(zs_str) - 1) zs_panic_c("out of memory");
+    zs_str *s = zs_alloc((zs_int)sizeof(zs_str) + (zs_int)len + 1);
     s->rc = 1;
     s->len = len;
     s->data[len] = 0;
@@ -724,7 +727,7 @@ static zs_str *str_of(const char *buf, zs_int len) {
 }
 
 zs_str *zs_str_concat(zs_str *a, zs_str *b) {
-    zs_str *s = str_new(a->len + b->len);
+    zs_str *s = str_new((int64_t)a->len + b->len);
     memcpy(s->data, a->data, (size_t)a->len);
     memcpy(s->data + a->len, b->data, (size_t)b->len);
     return s;
@@ -733,7 +736,7 @@ zs_str *zs_str_concat(zs_str *a, zs_str *b) {
 // pieces[0] to pieces[n - 1] joined into one new string (a chain of +, an interpolation's
 // pieces): one allocation, where a + at a time makes n - 1. Borrows them; the caller drops them.
 zs_str *zs_str_concat_n(zs_str **pieces, zs_int n) {
-    zs_int len = 0;
+    int64_t len = 0;
     for (zs_int i = 0; i < n; i++) len += pieces[i]->len;
     zs_str *s = str_new(len);
     char *d = s->data;
@@ -828,19 +831,25 @@ zs_str *zs_str_slice(zs_str *s, zs_int i, zs_int j) {
     return str_of(s->data + i, j - i + 1);
 }
 
-// the length of the UTF-8 sequence at p (n bytes left) as String.decodeAt reads it, or 0 when
-// it's malformed
+// the length of the well-formed UTF-8 sequence at p (n bytes left) as String.decodeAt reads it,
+// or 0 when it's malformed: RFC 3629's, as Utf8.validate's, so no overlong form (C0 AF would
+// decode to a '/' that a check of the bytes never saw), surrogate or value past U+10FFFF
 static zs_int utf8_seq(const uint8_t *p, zs_int n) {
-    zs_int k = p[0] < 0x80 ? 1 : (p[0] & 0xE0) == 0xC0 ? 2 : (p[0] & 0xF0) == 0xE0 ? 3 : (p[0] & 0xF8) == 0xF0 ? 4 : 0;
+    uint8_t b = p[0];
+    if (b < 0x80) return 1;
+    zs_int k = b >= 0xC2 && b <= 0xDF ? 2 : b >= 0xE0 && b <= 0xEF ? 3 : b >= 0xF0 && b <= 0xF4 ? 4 : 0;
     if (k == 0 || k > n) return 0;
-    for (zs_int i = 1; i < k; i++)
+    // the second byte's range: narrower after E0 and F0 (overlong), ED (surrogates) and F4 (past U+10FFFF)
+    uint8_t lo = b == 0xE0 ? 0xA0 : b == 0xF0 ? 0x90 : 0x80, hi = b == 0xED ? 0x9F : b == 0xF4 ? 0x8F : 0xBF;
+    if (p[1] < lo || p[1] > hi) return 0;
+    for (zs_int i = 2; i < k; i++)
         if ((p[i] & 0xC0) != 0x80) return 0;
     return k;
 }
 
 // String.ofBytes: a copy of the bytes, each malformed one replaced by U+FFFD (decision 28)
 zs_str *zs_str_of_bytes(const uint8_t *p, zs_int n) {
-    zs_int len = 0;
+    int64_t len = 0; // a malformed byte becomes 3
     for (zs_int i = 0; i < n;) {
         zs_int k = utf8_seq(p + i, n - i);
         len += k ? k : 3;
@@ -1092,7 +1101,7 @@ zs_str *zs_str_of_char(int32_t c) {
 zs_str *zs_str_from_c(const char *c) { return str_of(c, (int64_t)strlen(c)); }
 
 zs_str *zs_str_sub(zs_str *s, zs_int start, zs_int len) {
-    if (start < 0 || len < 0 || start + len > s->len) zs_panic_c("String.sub: out of range");
+    if (start < 0 || len < 0 || start > s->len || len > s->len - start) zs_panic_c("String.sub: out of range");
     return str_of(s->data + start, len);
 }
 
@@ -1137,9 +1146,10 @@ zs_str *zs_str_lower(zs_str *s) { return map_ascii(s, false); }
 
 zs_str *zs_str_replace(zs_str *s, zs_str *old, zs_str *with) {
     if (old->len == 0) return str_of(s->data, s->len);
-    zs_int n = 0;
+    int64_t n = 0, grow, len;
     for (zs_int i = 0; (i = zs_str_index_of(s, old, i)) >= 0; i += old->len) n++;
-    zs_str *r = str_new(s->len + n * (with->len - old->len));
+    if (__builtin_mul_overflow(n, (int64_t)with->len - old->len, &grow) || __builtin_add_overflow((int64_t)s->len, grow, &len)) zs_panic_c("out of memory");
+    zs_str *r = str_new(len);
     zs_int i = 0, o = 0, j;
     while ((j = zs_str_index_of(s, old, i)) >= 0) {
         memcpy(r->data + o, s->data + i, (size_t)(j - i));
@@ -1197,7 +1207,9 @@ typedef struct {
 
 void *zs_spsc_new(zs_int cap, zs_int size, void (*drop)(void *)) {
     if (cap < 1) zs_panic_c("an Spsc holds at least one value");
-    zs_spsc *q = zs_alloc((zs_int)sizeof(zs_spsc) + (cap + 1) * (size ? size : 1));
+    zs_int bytes; // cap + 1 slots after the header, past what can be allocated a panic
+    if (__builtin_add_overflow(cap, 1, &bytes) || __builtin_mul_overflow(bytes, size ? size : 1, &bytes) || __builtin_add_overflow(bytes, (zs_int)sizeof(zs_spsc), &bytes)) zs_panic_c("out of memory");
+    zs_spsc *q = zs_alloc(bytes);
     q->rc = 1;
     q->cap = cap + 1;
     q->size = size;

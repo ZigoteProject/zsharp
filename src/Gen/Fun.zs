@@ -590,8 +590,14 @@ let private atomicRep (g: G) (em: Emitter) (t: Ty) : string * (string -> string)
 
 let private newArray (g: G) (em: Emitter) (el: Ty) (n: string) : string =
   let es = sizeOf em (llty g el)
-  let size = instr em $"mul i_W {n}, {es}"
-  let bytes = instr em $"add i_W HDR2, {size}"
+  // the header and n elements, in bytes: a size past the word can't be allocated (wrapped, it
+  // would be a small object whose length runs past its end)
+  let w = wordTy g
+  let sized (op: string) (a: string) (b: string) : string =
+    let r = intrinsic g em $"llvm.s{op}.with.overflow.{w}" $"{{ {w}, i1 }}" [ (w, a); (w, b) ] ""
+    check g em (instr em $"xor i1 {instr em $"extractvalue {{ {w}, i1 }} {r}, 1"}, true") "out of memory"
+    instr em $"extractvalue {{ {w}, i1 }} {r}, 0"
+  let bytes = sized "add" "HDR2" (sized "mul" n es)
   let a = instr em $"call ptr @zs_alloc(i_W {bytes})"
   emit em $"store i32 1, ptr {a}"
   let lenp = instr em $"getelementptr {{ i_W, i_W }}, ptr {a}, i32 0, i32 1"
@@ -1356,6 +1362,12 @@ and genVersioned (fx: F) (env: Map<string, Binding>) (tail: bool) (e: CExpr) : s
     else
       let va = gen fx env false a
       let vb = gen fx env false b
+      // both copies run over these: evaluated again, a bound with effects would run them twice,
+      // and could differ from the range the test proved
+      let lo = "%lo." + fresh em ""
+      let hi = "%hi." + fresh em ""
+      let bounds = Map.add lo (Ssa va) (Map.add hi (Ssa vb) env)
+      let over (body: CExpr) = { e with k = CFor(x, { a with k = CLocal lo }, step, { b with k = CLocal hi }, body) }
       // whether computing a range overflowed
       let bad = ref "false"
       let ovf (t: string) (op: string) (p: string) (q: string) : string =
@@ -1428,10 +1440,10 @@ and genVersioned (fx: F) (env: Map<string, Binding>) (tail: bool) (e: CExpr) : s
       let join = fresh em "vjoin"
       emit em $"br i1 {ok}, label %{fast}, label %{slow}"
       enter em fast
-      genPlain fx env { e with k = CFor(x, a, step, b, marked) } |> ignore
+      genPlain fx bounds (over marked) |> ignore
       emit em $"br label %{join}"
       enter em slow
-      genPlain fx env e |> ignore
+      genPlain fx bounds (over body) |> ignore
       emit em $"br label %{join}"
       enter em join
       "zeroinitializer"
@@ -2640,7 +2652,9 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
     let v = arg 0
     if ls = ld && isFloat src = isFloat ty then v
     else if isFloat src && isFloat ty then instr em $"{(if ls = "float" then "fpext" else "fptrunc")} {ls} {v} to {ld}"
-    else if isFloat src then instr em $"{(if isUnsigned ty then "fptoui" else "fptosi")} {ls} {v} to {ld}"
+    // saturating, NaN as 0 (as vec.convert's lanes): LLVM's plain fptosi of a value past the
+    // type's range is poison, whatever the optimizer makes of it
+    else if isFloat src then intrinsic g em $"llvm.{(if isUnsigned ty then "fptoui" else "fptosi")}.sat.{ld}.{(if ls = "float" then "f32" else "f64")}" ld [ (ls, v) ] ""
     else if isFloat ty then instr em $"{(if isUnsigned src then "uitofp" else "sitofp")} {ls} {v} to {ld}"
     else if bitsOf ls > bitsOf ld then instr em $"trunc {ls} {v} to {ld}"
     else if bitsOf ls < bitsOf ld then instr em $"{(if isUnsigned src then "zext" else "sext")} {ls} {v} to {ld}"

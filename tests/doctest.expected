@@ -5,3 +5,5 @@ FAIL area.zs:19 areas
 1 passed, 1 failed
 updated as expected
 2 passed, 0 failed
+1 passed, 0 failed
+left in TMPDIR: 0

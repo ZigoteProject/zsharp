@@ -132,6 +132,43 @@ programmers.
 - An exported function that returns a struct through memory declares the struct's own alignment
   for the pointer it's given (it said 8, which lets a Cortex-M fault on a 4-aligned struct).
 
+### Security
+- An allocation whose size overflows the word panics `out of memory`; wrapped, it was a small
+  object that writes then ran past: `Array.create` and `Buffer.create` of more than the address
+  space (2^61 ints made a 16-byte array its fill wrote past), `Channel.make`'s and
+  `Spsc.create`'s slots, and on a 32-bit target a string's length (`String.replace` of 65,536
+  `a`s by 65,537 bytes made a 64 KB string and wrote 4 GB into it). `String.sub`'s range check on
+  a 32-bit chip no longer overflows either.
+- Loop versioning evaluates a `for` loop's bounds once. Its range test and the loop each
+  evaluated them, so a bound with an effect ran twice, and the copy without bounds checks could
+  run over values the test never saw, reading outside the array.
+- A float converted to an integer saturates, NaN to 0, as `F32x8.convert`'s lanes do
+  (`u8 300.0` is 255): out of range it was LLVM's poison, x86's answer on one machine and Arm's
+  on another.
+- A NUL byte in a path, an environment variable's name, a host or a socket's path fails with
+  `Invalid argument`: the OS read the name only up to it, so `"secret\0.txt"` opened `secret`, and
+  a leading NUL made a Linux abstract socket, which any user can reach. `Process.run` and
+  `Process.start` refuse an argument, program, directory or environment holding one (`"a\0b"`
+  reached the program as two arguments), and pass an empty argument, alone or last (`start`
+  dropped a last one, both a lone one).
+- UTF-8: `String.ofBytes` and `for c in s` (`String.decodeAt`) take only RFC 3629's sequences, as
+  `Utf8.validate` does: an overlong form, a surrogate or a value past U+10FFFF is U+FFFD.
+  `C0 AE C0 AF` decoded as `./`, past a check of the bytes for `../`.
+- A string's hash is SipHash-1-3 under a key drawn per process, as Rust's `HashMap` hashes:
+  FNV-1a's was the same in every run, so whoever picked a `HashMap`'s keys (a JSON object's, from
+  a socket) could make them all collide and every lookup walk them. A string hashes differently
+  in each run; ints still hash to themselves.
+- Numbers as text keep their `.` whatever locale a C library sets (`setlocale`: GTK's, an
+  ncurses program's), on Linux and macOS: in de_DE's, `1.5` printed `1,5` and `Float.parse "1.5"`
+  failed, so `Json.parse` read no fractions. `String.isFloat` and `String.toFloat` read as
+  `Float.parse` does, without leading spaces or hex.
+- Tools: the build server's directory is private (0700; under a umask of 0, any user could reach
+  its socket and run `zs` commands as you), and two servers no longer share their request files.
+  The MCP `docs` tool and `zs test --doc` on a library file write their scratch program in your
+  cache, not under a fixed name in the shared temporary directory, where another user's link
+  there was followed, and a `.zs-doctest.zs` they put there first could change between its
+  writing and its build, which runs it.
+
 ### Library
 - `List.collect` and `List.concat` are linear: they copied what they'd gathered for every list,
   quadratic in how many there were. `Set.union` adds the smaller set to the larger one,

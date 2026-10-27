@@ -80,12 +80,18 @@ let decodeAt (s: string) (i: int) : char * int =
     let n = String.length s
     let cont k = if i + k < n then int (String.byte s (i + k)) else 0
     let ok k = cont k &&& 0xC0 = 0x80
+    // overlong, a surrogate or past U+10FFFF is malformed too (as Utf8.validate says): decoded,
+    // C0 AF would be a '/' that a check of the bytes never saw
     if b0 &&& 0xE0 = 0xC0 && ok 1 then
-      (char (((b0 &&& 0x1F) <<< 6) ||| (cont 1 &&& 0x3F)), i + 2)
+      let c = ((b0 &&& 0x1F) <<< 6) ||| (cont 1 &&& 0x3F)
+      if c >= 0x80 then (char c, i + 2) else (char 0xFFFD, i + 1)
     else if b0 &&& 0xF0 = 0xE0 && ok 1 && ok 2 then
-      (char (((b0 &&& 0x0F) <<< 12) ||| ((cont 1 &&& 0x3F) <<< 6) ||| (cont 2 &&& 0x3F)), i + 3)
+      let c = ((b0 &&& 0x0F) <<< 12) ||| ((cont 1 &&& 0x3F) <<< 6) ||| (cont 2 &&& 0x3F)
+      if c >= 0x800 && (c < 0xD800 || c > 0xDFFF) then (char c, i + 3) else (char 0xFFFD, i + 1)
     else if b0 &&& 0xF8 = 0xF0 && ok 1 && ok 2 && ok 3 then
-      (char (((b0 &&& 0x07) <<< 18) ||| ((cont 1 &&& 0x3F) <<< 12) ||| ((cont 2 &&& 0x3F) <<< 6) ||| (cont 3 &&& 0x3F)), i + 4)
+      let c =
+        ((b0 &&& 0x07) <<< 18) ||| ((cont 1 &&& 0x3F) <<< 12) ||| ((cont 2 &&& 0x3F) <<< 6) ||| (cont 3 &&& 0x3F)
+      if c >= 0x10000 && c <= 0x10FFFF then (char c, i + 4) else (char 0xFFFD, i + 1)
     else (char 0xFFFD, i + 1)
 
 /// The characters of `s`, in order (decoded from UTF-8).

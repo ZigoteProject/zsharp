@@ -1,0 +1,10 @@
+<code_set_name> MINI
+<comment_char> %
+% the two characters tests/security/comma.locale names (the container has no charmaps)
+<escape_char> /
+<mb_cur_min> 1
+<mb_cur_max> 1
+CHARMAP
+<U002C> /x2c COMMA
+<U002E> /x2e FULL STOP
+END CHARMAP

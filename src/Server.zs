@@ -12,6 +12,7 @@ extern close : i32 -> i32
 extern creat : cstr -> u32 -> i32
 extern chdir : cstr -> i32
 extern fflush : cptr -> i32
+extern chmod : cstr -> u32 -> i32
 
 let private nul = String.ofByte (u8 0)
 
@@ -105,7 +106,11 @@ let private captured (dir: string) (out: string) (err: string) (f: unit -> int) 
 /// minutes pass with no request, running each request with `run`. A request's tasks finish before
 /// its build runs, so the build's own tasks (the processes it starts) have the loop to themselves.
 let serve (path: string) (run: list<string> -> int) : int =
-  Build.Tools.makeDirectory (Path.getDirectoryName path)
+  let dir = Path.getDirectoryName path
+  Build.Tools.makeDirectory dir
+  // whoever reaches the socket runs zs commands as this user, so its directory is this user's
+  // alone (made with the umask's permissions, it's open to every user under a umask of 0)
+  let mine = chmod dir (u32 448) = 0
   // another server started first (two builds found none): it answers, this one ends
   let ping =
     task {
@@ -117,7 +122,10 @@ let serve (path: string) (run: list<string> -> int) : int =
         return Result.isOk sent
       | Error _ -> return false
     }
-  if Task.run ping then
+  if not mine then
+    eprintln $"zs server: cannot make {dir} private"
+    1
+  else if Task.run ping then
     0
   else
     File.delete path |> ignore
@@ -127,9 +135,9 @@ let serve (path: string) (run: list<string> -> int) : int =
       1
     | Ok listener ->
       use l = listener
-      let dir = Path.getDirectoryName path
-      let out = Path.combine dir "request.out"
-      let err = Path.combine dir "request.err"
+      // beside its socket: another environment's server shares the directory
+      let out = path + ".out"
+      let err = path + ".err"
       let mutable going = true
       while going do
         match Task.run (Task.timeout 600000 (Unix.accept l)) with

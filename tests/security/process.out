@@ -1,0 +1,11 @@
+cannot run printf: an argument, the directory or the environment holds a NUL byte
+cannot run printf: an argument, the directory or the environment holds a NUL byte
+cannot run true: an argument, the directory or the environment holds a NUL byte
+cannot run true: an argument, the directory or the environment holds a NUL byte
+false
+1 Ok 1 0
+2 Ok 2 0
+2 Ok 2 0
+0 Ok 0 0
+expr 1
+Ok  1

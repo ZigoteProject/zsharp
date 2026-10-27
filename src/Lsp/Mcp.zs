@@ -135,7 +135,9 @@ let private call (name: string) (args: Json) : result<string, string> =
     | Error e -> Error e
     | Ok q ->
       let query = String.toLower (Rpc.text q)
-      let dir = Path.combine (Directory.temp ()) "zs-docs"
+      // this user's cache: in a shared /tmp another user could make zs-docs/probe.zs a link to
+      // one of this user's files, which the write would overwrite
+      let dir = Path.combine (Build.Tools.cacheRoot ()) "docs"
       Build.Tools.makeDirectory dir
       let probe = Path.combine dir "probe.zs"
       File.writeAllText probe "let main () = 0\n" |> ignore
