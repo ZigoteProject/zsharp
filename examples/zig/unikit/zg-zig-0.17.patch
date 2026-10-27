@@ -1,0 +1,22 @@
+--- a/codegen/case_prop.zig
++++ b/codegen/case_prop.zig
+@@ -90,7 +90,7 @@
+     var stage2 = std.array_list.Managed(u8).init(allocator);
+     defer stage2.deinit();
+ 
+-    var block: Block = [_]u8{0} ** block_size;
++    var block: Block = @splat(0);
+     var block_len: u16 = 0;
+ 
+     for (0..0x110000) |i| {
+--- a/codegen/hangul.zig
++++ b/codegen/hangul.zig
+@@ -105,7 +105,7 @@
+     // Jamo.txt enumerates the modern jamo used by the algorithmic Hangul
+     // composition and naming algorithms. Classify those entries with
+     // HangulSyllableType.txt and retain that membership bit.
+-    var jamo_ranges = [_]Range{.{}} ** @typeInfo(Syllable).@"enum".fields.len;
++    var jamo_ranges: [@typeInfo(Syllable).@"enum".field_names.len]Range = @splat(.{});
+     var jamo_reader = std.Io.Reader.fixed(@embedFile("Jamo.txt"));
+     while (jamo_reader.takeDelimiterInclusive('\n')) |took| {
+         const line = std.mem.trimEnd(u8, took, "\n");

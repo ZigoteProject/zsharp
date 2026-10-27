@@ -1,0 +1,13 @@
+.{
+    .name = .unikit,
+    .version = "0.1.0",
+    .fingerprint = 0x2dd40d7eef28ec34,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .zg = .{
+            .url = "https://codeberg.org/atman/zg/archive/v0.18.0.tar.gz",
+            .hash = "zg-0.18.0-oGqU3MjboAJAkIdf1n_G20BmpEZs_f30RMCacLPVlTXU",
+        },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "unikit.h" },
+}

@@ -1,7 +1,9 @@
 // Zig from Z# through the C ABI (README.md): cryptokit/ is a Zig package wrapping its standard
 // library's cryptography (BLAKE3, Ed25519, CRC-32) as a static library. Its functions take bytes
 // as a pointer and a length, which is what a span is in an extern: a string's bytes, an array or
-// a Buffer, the Buffer being where a result is written.
+// a Buffer, the Buffer being where a result is written. unikit/ is a Zig package wrapping zg, a
+// package for Unicode text; Unikit.zs is its Z# side.
+open Unikit
 extern ck_crc32 : span<u8> -> u32
 extern ck_blake3 : span<u8> -> span<u8> -> unit
 extern ck_public_key : span<u8> -> span<u8> -> unit
@@ -27,4 +29,12 @@ let main () =
   ck_sign seed image signature
   println $"signed, verifies: {ck_verify key image signature}"
   println $"tampered, verifies: {ck_verify key (String.bytes "firmware 1.2.0: blink every 50 ms") signature}"
+  // text as a reader sees it: bytes, characters and columns differ
+  let name = "Zoë 👍🏽 東京"
+  println $"\"{name}\": {String.length name} bytes, {graphemes name} characters, {width name} columns"
+  println $"upper {upper "Straße"}, lower {lower "ΟΔΟΣ"}"
+  // é written as e and a combining accent, and as one code point
+  let decomposed = "Cafe\u{301}"
+  println $"nfc: {String.length decomposed} bytes to {String.length (nfc decomposed)}, equal: {nfc decomposed = "Café"}"
+  println $"caseless: {sameCaseless "STRASSE" "straße"}"
   0

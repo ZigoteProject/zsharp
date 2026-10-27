@@ -5,7 +5,9 @@ Two programs, one each way, each on an OS and on a microcontroller (a Cortex-M4 
 - **Z# calling Zig** (this folder): `cryptokit/` is a Zig package that puts its standard
   library's cryptography (BLAKE3, Ed25519 signatures, CRC-32) behind `export fn`s and builds as a
   static library. `main.zs` declares the functions as `extern`s, and `zs.toml` links the archive
-  built for the target.
+  built for the target. `unikit/` does the same for a third-party package,
+  [zg](https://codeberg.org/atman/zg) (Unicode text: grapheme clusters, display width, case,
+  normalization), which `Unikit.zs` reads with `import c` from `unikit/unikit.h`.
 - **Zig calling Z#** (`calls-zs/`): `build.zig` builds `shapes.zs` with `zs build --lib`,
   translates its header into a Zig module and links the archive, into a program (`main.zig`) and
   into a firmware with its own startup (`firmware.zig`).
@@ -17,6 +19,12 @@ cd examples/zig/cryptokit
 zig build -Doptimize=ReleaseFast                       # the Zig library for this machine
 zig build -Doptimize=ReleaseSmall -Dtarget=thumb-freestanding-eabihf -Dcpu=cortex_m4+vfp4d16sp \
   --prefix zig-out/cortex-m4                           # and for a Cortex-M4
+cd ../unikit
+zig build --fetch                                      # zg, into zig-pkg/, then patched for Zig 0.17
+patch -d zig-pkg/zg-0.18.0-oGqU3MjboAJAkIdf1n_G20BmpEZs_f30RMCacLPVlTXU -p1 < zg-zig-0.17.patch
+zig build -Doptimize=ReleaseFast
+zig build -Doptimize=ReleaseSmall -Dtarget=thumb-freestanding-eabihf -Dcpu=cortex_m4+vfp4d16sp \
+  --prefix zig-out/cortex-m4
 cd ..
 zs run                       # the Z# program, here
 zs run --target cortex-m4    # the same program on the chip, under QEMU (qemu-system-arm)
@@ -28,6 +36,10 @@ blake3 8af58fde790b256dc00a8c7f99a39fae3d688adbd7ffd1cd9621354665440c81
 public e4030998cfd5ad1723c169f956aa0b9eb8619b5992bd612c2af428ebc79f8df0
 signed, verifies: true
 tampered, verifies: false
+"Zoë 👍🏽 東京": 20 bytes, 8 characters, 11 columns
+upper STRASSE, lower οδος
+nfc: 6 bytes to 5, equal: true
+caseless: true
 ```
 
 ```sh
@@ -48,6 +60,8 @@ middle 1 1
 | | C | Zig | Z# |
 |---|---|---|---|
 | bytes | `const uint8_t *p, size_t n` | `[*]const u8` and a length | a `span<u8>` in an `extern`: a string's bytes (`String.bytes`), an array, a `Buffer` |
+| a string | `const char *` | `[*:0]const u8`, read with `std.mem.span` | `cstr`: a Z# string passes as its bytes |
+| a string Zig made | `char *` | `[*:0]u8` from `malloc`, given back with `uk_free` | copied by `String.ofCStr`, then given back |
 | a result's bytes | `uint8_t *out, size_t out_len` | `[*]u8`, written | a `Buffer<u8>`, whose bytes C writes |
 | a struct of floats | `Point`, by value | an `extern struct` | a `[<CLayout>]` record with `[<Export>]` functions |
 | an array of structs | `Point *` and a length | `&points`, `points.len` | `ptr<Point>` and `int`, read with `unsafe Span.ofPtr` for the call |
@@ -62,4 +76,10 @@ middle 1 1
   one aligned to 4 or less as words, so a C or Z# caller and a Zig callee disagree about where it
   is. Float structs go in float registers and agree (`Point` above). Bytes as a pointer and a
   length, as C cryptography libraries take them, work everywhere.
-- **Memory:** each side frees its own; `cryptokit` writes into buffers Z# owns.
+- **Memory:** each side frees its own; `cryptokit` writes into buffers Z# owns. `unikit` allocates
+  with C's `malloc` and `free` (an `Allocator` over them, since `std.heap.c_allocator` needs a C
+  library linked), which the Z# runtime gives a chip from its heap; the chip's run ends with
+  `live=0`.
+- **zg on Zig 0.17:** zg 0.18.0 is written for Zig 0.16, and two of its table generators use what
+  0.17 changed (`**` on arrays is gone, an enum's `@typeInfo` has `field_names`).
+  `unikit/zg-zig-0.17.patch` is the three lines; drop it once zg has a release for 0.17.

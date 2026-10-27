@@ -26,3 +26,4 @@ editors/vscode/.vscode-test/
 examples/rust/*/target/
 examples/zig/**/zig-out/
 examples/zig/**/.zig-cache/
+examples/zig/**/zig-pkg/
