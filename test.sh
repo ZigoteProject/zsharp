@@ -442,6 +442,11 @@ else echo "FAIL tests/lsp/many.sh"; cat "$tmp/lspmany.diff"; fail=1; fi
 # definition and references (tests/lsp/effects.sh)
 if diff <(tests/lsp/effects.sh bin/zs 2>&1) tests/lsp/effects.expected >"$tmp/lspe.diff"; then echo "ok   tests/lsp/effects.sh"
 else echo "FAIL tests/lsp/effects.sh"; cat "$tmp/lspe.diff"; fail=1; fi
+# allocation hints (0011, 0026): what each line allocates, reuses or may copy, none in a
+# [<NoAlloc>] function, a function's summary on hover, the hints again after an edit
+# (tests/lsp/hints.sh)
+if diff <(tests/lsp/hints.sh bin/zs 2>&1) tests/lsp/hints.expected >"$tmp/lsph.diff"; then echo "ok   tests/lsp/hints.sh"
+else echo "FAIL tests/lsp/hints.sh"; cat "$tmp/lsph.diff"; fail=1; fi
 # editing through the server (0019): renaming a record field across modules, signature help,
 # code actions (tests/lsp/edits.sh)
 if diff <(tests/lsp/edits.sh bin/zs 2>&1) tests/lsp/edits.expected >"$tmp/lspx.diff"; then echo "ok   tests/lsp/edits.sh"
@@ -547,7 +552,7 @@ fi
 
 # the bootstrap (0020): the compiler builds itself to the same bytes
 if [ -z "$target" ]; then
-  if out=$(tests/bootstrap.sh bin/zs 2>&1); then echo "ok   tests/bootstrap.sh ($(echo "$out" | paste -sd ';' | sed 's/;/; /g'))"
+  if out=$(tests/bootstrap.sh bin/zs 2>&1); then echo "ok   tests/bootstrap.sh ($(echo "$out" | paste -sd ';' - | sed 's/;/; /g'))"
   else echo "FAIL tests/bootstrap.sh"; echo "$out"; fail=1; fi
 fi
 exit $fail

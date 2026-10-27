@@ -89,9 +89,15 @@ let simdIntrinsics : list<string * string * list<string> * string * string> =
 /// Masks, what comparing two vectors lane by lane gives: mask2 … mask64.
 let maskTypes : list<string * int> = List.map (fun k -> ($"mask{k}", k)) [ 2; 4; 8; 16; 32; 64 ]
 
-let isVectorName (n: string) : bool = List.exists (fun (v, _, _) -> v = n) vectorTypes
+// the vector types' element types and lanes, and the masks', by name: code generation asks of
+// every type it lays out
+let private vectorsByName : Map<string, string * int> = Map.ofList (List.map (fun (n, e, k) -> (n, (e, k))) vectorTypes)
 
-let isMaskName (n: string) : bool = List.exists (fun (m, _) -> m = n) maskTypes
+let private masksByName : Map<string, int> = Map.ofList maskTypes
+
+let isVectorName (n: string) : bool = Map.containsKey n vectorsByName
+
+let isMaskName (n: string) : bool = Map.containsKey n masksByName
 
 let simdNames : Set<string> = Set.ofList (List.append (List.map (fun (n, _, _) -> n) vectorTypes) (List.map fst maskTypes))
 
@@ -284,7 +290,4 @@ let featuresInclude (have: list<string>) (need: string) : bool =
   need = "" || List.contains need have || impliedByLevel
 
 /// A SIMD vector type's element type and lanes.
-let vectorInfo (n: string) : option<string * int> =
-  match List.tryFind (fun (m, _, _) -> m = n) vectorTypes with
-  | Some(_, e, k) -> Some(e, k)
-  | None -> None
+let vectorInfo (n: string) : option<string * int> = Map.tryFind n vectorsByName

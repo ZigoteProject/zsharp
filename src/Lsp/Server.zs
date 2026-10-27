@@ -9,17 +9,24 @@ open Diag.Diagnostic
 /// characters.
 type Spot = { path: string; line: int; col: int; len: int; h: Infer.Cx.Hover }
 
-/// An open document's last analysis: the program checked, its hovers where they are, and what the
-/// editor shows for the C names it imports.
-type Analysis = { checked: Build.Check.Checked; spots: array<Spot>; cInfos: Map<string, Build.CImport.CInfo> }
+/// What the passes after checking found in a document's program, for its allocation hints (0011,
+/// 0026): the touches on the document's lines, and its top-level functions' summaries by the
+/// lines they're defined on.
+type Heap = { lines: Map<int, list<Opt.NoAlloc.Touch>>; summaries: Map<int, string> }
+
+/// An open document's last analysis: the program checked, its hovers where they are, what the
+/// editor shows for the C names it imports, and its heap (made when allocation hints ask).
+type Analysis = { checked: Build.Check.Checked; spots: array<Spot>; cInfos: Map<string, Build.CImport.CInfo>; heap: ref<option<Heap>> }
 
 /// The server: the open documents' texts by full path, each one's last analysis, the files its
-/// program is made of, the documented items of files by their text, and where it writes.
+/// program is made of, the documented items of files by their text, whether the editor asked for
+/// allocation hints, and where it writes.
 type State =
   { texts: ref<Map<string, string>>
     results: ref<Map<string, Analysis>>
     madeOf: ref<Map<string, Set<string>>>
     docCache: ref<Map<string, string * list<Build.Doc.DocItem>>>
+    hints: ref<bool>
     out: IO.Writer }
 
 let private num (n: int) = Rpc.num n
@@ -102,7 +109,7 @@ let private analyze (st: State) (path: string) =
     | Ok c ->
       let spots = spotsOf c
       let infos = Map.ofList (List.collect (fun (m: Build.Modules.Loaded) -> m.cInfos) c.modules)
-      st.results.Value <- Map.add path { checked = c; spots = spots; cInfos = infos } st.results.Value
+      st.results.Value <- Map.add path { checked = c; spots = spots; cInfos = infos; heap = ref None } st.results.Value
       st.madeOf.Value <- Map.add path (Set.ofList (List.map (fun (s: Spot) -> s.path) (Array.toList spots))) st.madeOf.Value
       (Buffer.toArray c.cx.diagnostics, List.map (fun (m: Build.Modules.Loaded) -> m.source) c.modules)
     | Error(ds, srcs) -> (ds, srcs)
@@ -160,6 +167,101 @@ let private atPosition (line: int) (ch: int) (s: Spot) = s.line = line + 1 && ch
 let private shortest (spots: list<Spot>) : option<Spot> = List.tryHead (List.sortBy (fun (s: Spot) -> s.len) spots)
 
 let private show (a: Analysis) (t: Types.Ty.Ty) = Infer.Cx.show a.checked.cx t
+
+// ------------------------------------------------------------ allocation hints (0011, 0026)
+
+// what a function is in the source: the line it's defined on, and what it is of the function
+// there ("" itself, $lam2 a lambda's, $go.16 a local function's), so a generic function's
+// instances (f<int>, f<string>) are one
+let private origin (f: Core.Program.MFun) : int * string =
+  let k = if String.startsWith "$" f.name then 0 else String.indexOfFrom f.name "$" 1
+  (f.line, (if k < 0 then "" else String.sub f.name k (String.length f.name - k)))
+
+// a function's summary for hover: what its own code touches (on the instance touching most),
+// and whether it passes [<NoAlloc>], or the chain to what doesn't
+let private summaryOf (fs: list<Core.Program.MFun>) (touched: Core.Program.MFun -> Map<int, list<Opt.NoAlloc.Touch>>) (first: string -> option<Opt.NoAlloc.Site>) : string =
+  let count (v: Opt.NoAlloc.Verdict) (f: Core.Program.MFun) = List.sumBy (fun (_, ts) -> List.length (List.filter (fun (t: Opt.NoAlloc.Touch) -> t.verdict = v) ts)) (Map.toList (touched f))
+  let most (v: Opt.NoAlloc.Verdict) = List.fold max 0 (List.map (count v) fs)
+  let part (v: Opt.NoAlloc.Verdict) (word: string) = if most v > 0 then [ $"{word} {most v}" ] else []
+  let parts = List.concat [ part Opt.NoAlloc.Allocates "allocates"; part Opt.NoAlloc.Reuses "reuses"; part Opt.NoAlloc.Copies "copies on write" ]
+  let own = if List.isEmpty parts then "allocates nothing" else String.join " · " parts
+  match List.tryPick (fun (f: Core.Program.MFun) -> Option.map (fun s -> (f, s)) (first f.name)) fs with
+  | None -> own + " · NoAlloc ✓"
+  | Some(f, s) ->
+    let at = if s.line <= 0 then "" else if s.file = f.file || s.file = "" then $" (line {s.line})" else $" ({Path.getFileName s.file}:{s.line})"
+    own + $" · NoAlloc ✗: {String.join " -> " s.chain} {s.what}{at}"
+
+// the program a document's heap comes from: for a module of a project (a zs.toml above it naming
+// another main file), the project's, which reaches the module's code; else the document's own
+let private heapProgram (st: State) (path: string) (a: Analysis) : option<Build.Check.Checked> =
+  match Build.Project.findProject (Path.getDirectoryName path) with
+  | Some(Ok m) when Path.getFullPath m.main <> path && File.exists m.main ->
+    match Build.Check.programWith st.texts.Value m.main true true None "" with
+    | Ok c -> Some c
+    | Error _ -> None
+  | _ -> Some a.checked
+
+// the heap of a document's program, made once per analysis: the passes after checking run to
+// reference counting (no IR), and the touches on this document's lines are kept, a generic
+// function's instances merged (the most of each verdict one has). Nothing while the program has
+// errors, nor for code no entry (main, a test, an export) reaches, which the passes don't see.
+// ponytail: the passes run on the loop thread, when an editor asks; on idle, on the pool,
+// cancelled by the next edit (0026) when a program takes long
+let private heapOf (st: State) (path: string) (a: Analysis) : Heap =
+  match a.heap.Value with
+  | Some h -> h
+  | None ->
+    let none = { lines = Map.empty; summaries = Map.empty }
+    let program = heapProgram st path a
+    let errors (c: Build.Check.Checked) = Array.exists (fun (d: Diagnostic) -> d.severity = Err) (Buffer.toArray c.cx.diagnostics)
+    let made =
+      match program with
+      | None -> none
+      | Some c when errors c -> none
+      | Some c ->
+        match Build.Compile.counted (Build.Check.programOf c) false false false Map.empty with
+        | Error _ -> none
+        | Ok(_, types, funs) ->
+          let mine = List.filter (fun (f: Core.Program.MFun) -> Path.getFullPath f.file = path) funs
+          let touchedAll = Map.ofList (List.map (fun (f: Core.Program.MFun) -> (f.name, Opt.NoAlloc.touches types c.cx.word f)) mine)
+          let touched (f: Core.Program.MFun) = Map.find f.name touchedAll
+          // each line's touches by what they're of, a generic function's instances merged
+          let byOrigin = ref Map.empty
+          for f in mine do
+            for (line, ts) in Map.toList (touched f) do
+              let key = (line, origin f)
+              byOrigin.Value <- Map.add key (ts :: Option.defaultValue [] (Map.tryFind key byOrigin.Value)) byOrigin.Value
+          let lines = ref Map.empty
+          for ((line, _), each) in Map.toList byOrigin.Value do
+            lines.Value <- Map.add line (List.append (Option.defaultValue [] (Map.tryFind line lines.Value)) (Opt.NoAlloc.most each)) lines.Value
+          // the top-level functions, by their lines, instances together
+          let first = Opt.NoAlloc.firstSite types funs false
+          let tops = List.filter (fun (f: Core.Program.MFun) -> snd (origin f) = "") mine
+          let defLines = List.distinct (List.map (fun (f: Core.Program.MFun) -> f.line) tops)
+          let summaries = List.map (fun l -> (l, summaryOf (List.filter (fun (f: Core.Program.MFun) -> f.line = l) tops) touched first)) defLines
+          { lines = lines.Value; summaries = Map.ofList summaries }
+    a.heap.Value <- Some made
+    made
+
+// an allocation hint at the end of a line: what its touches do, a phrase each (allocates ×2,
+// reuses t, copies on write), every touch in the tooltip; frees and calls the check can't see
+// aren't marked
+let private heapHint (text: string) (line: int) (ts: list<Opt.NoAlloc.Touch>) : option<Json> =
+  let marked = List.filter (fun (t: Opt.NoAlloc.Touch) -> t.verdict = Opt.NoAlloc.Allocates || t.verdict = Opt.NoAlloc.Reuses || t.verdict = Opt.NoAlloc.Copies) ts
+  let phrase (v: Opt.NoAlloc.Verdict) (word: string) : list<string> =
+    match List.filter (fun (t: Opt.NoAlloc.Touch) -> t.verdict = v) marked with
+    | [] -> []
+    | [ t ] when v = Opt.NoAlloc.Reuses && t.subject <> "" -> [ $"reuses {t.subject}" ]
+    | [ _ ] -> [ word ]
+    | xs -> [ $"{word} ×{List.length xs}" ]
+  match List.concat [ phrase Opt.NoAlloc.Allocates "allocates"; phrase Opt.NoAlloc.Reuses "reuses"; phrase Opt.NoAlloc.Copies "copies on write" ] with
+  | [] -> None
+  | phrases ->
+    // the same words once, with how many times
+    let notes = List.map (fun (t: Opt.NoAlloc.Touch) -> t.note) marked
+    let times (n: string) = List.length (List.filter (fun (o: string) -> o = n) notes)
+    let tooltip = String.join "\n" (List.map (fun (n: string) -> if times n > 1 then $"{n} ×{times n}" else n) (List.distinct notes))
+    Some(JObject [ ("position", pos (line - 1) (chars text)); ("label", JString(String.join ", " phrases)); ("tooltip", JString tooltip); ("paddingLeft", JBool true) ])
 
 // the documented items of a file, recomputed when its text changes
 let private docIndex (st: State) (file: string) : list<Build.Doc.DocItem> =
@@ -238,7 +340,15 @@ let private hover (st: State) (path: string) (line: int) (ch: int) : Json =
           match Types.Repr.layout cx.v cx.types.Value cx.word (Types.Ty.TCon(q, [])) with
           | Some(size, align) -> $"\n\n{size} bytes, aligned to {align}"
           | None -> ""
-    let value = "```zsharp\n" + head + "\n```" + layout + doc
+    // a top-level function of this document, with allocation hints on: what it does to the heap
+    let heap =
+      match definitionOf a s with
+      | Some d when st.hints.Value && d.h.decl && d.path = path ->
+        match Map.tryFind d.line (heapOf st path a).summaries with
+        | Some summary -> "\n\n" + summary
+        | None -> ""
+      | _ -> ""
+    let value = "```zsharp\n" + head + "\n```" + layout + heap + doc
     JObject [ ("contents", JObject [ ("kind", JString "markdown"); ("value", JString value) ]); ("range", range (s.line - 1) (s.col - 1) (s.line - 1) (s.col - 1 + s.len)) ]
   | _ -> JNull
 
@@ -687,7 +797,17 @@ let private inlayHints (st: State) (path: string) (fromLine: int) (toLine: int) 
       JObject [ ("position", pos (h.line - 1) (chars line)); ("label", JString("// " + show a h.h.ty)); ("kind", num 1); ("paddingLeft", JBool true) ]
     let funs = List.filter (fun (h: Spot) -> h.h.isDef && not h.h.inlay && h.h.key <> "" && isFun h.h.ty && defines h) spots
     let oneALine = List.fold (fun (acc: list<Spot>) (h: Spot) -> if List.exists (fun (o: Spot) -> o.line = h.line) acc then acc else List.append acc [ h ]) [] funs
-    JArray(List.concat [ types; effects; List.map sigOf oneALine ])
+    // what the lines do to the heap, when the editor asked (allocationHints)
+    let heap =
+      if st.hints.Value then
+        let texts = linesOf st path
+        let at (p: int * list<Opt.NoAlloc.Touch>) =
+          let (l, ts) = p
+          if l >= 1 && l <= Array.length texts && l - 1 >= fromLine && l - 1 <= toLine then heapHint texts.[l - 1] l ts else None
+        List.choose at (Map.toList (heapOf st path a).lines)
+      else
+        []
+    JArray(List.concat [ types; effects; List.map sigOf oneALine; heap ])
 
 // top-level declarations, with union cases and members as children
 let private symbols (st: State) (path: string) : Json =
@@ -751,6 +871,8 @@ let private answer (st: State) (msg: Json) : bool =
   let character () = Rpc.intOf (Rpc.at [ "position"; "character" ] ps)
   let mutable running = true
   if meth = "initialize" then
+    // allocation hints, when the editor's options turn them on (0011)
+    st.hints.Value <- Rpc.at [ "initializationOptions"; "allocationHints" ] ps = JBool true
     respond st id capabilities
   else if meth = "textDocument/didOpen" then
     let path = docPath ()
@@ -832,7 +954,7 @@ let private answer (st: State) (msg: Json) : bool =
 /// Serves the editor on standard input (`input`) and output until it says exit (or the input
 /// ends). `first`: a header line protocol detection already read.
 let serve (input: IO.Reader) (first: option<string>) : int =
-  let st : State = { texts = ref Map.empty; results = ref Map.empty; madeOf = ref Map.empty; docCache = ref Map.empty; out = Console.openStandardOutput () }
+  let st : State = { texts = ref Map.empty; results = ref Map.empty; madeOf = ref Map.empty; docCache = ref Map.empty; hints = ref false; out = Console.openStandardOutput () }
   let mutable pending = first
   let mutable running = true
   while running do

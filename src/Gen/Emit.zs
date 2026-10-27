@@ -27,16 +27,28 @@ module StringBuilder =
   let toString (b: StringBuilder) : string = String.ofBytes (Buffer.slice b.bytes.Value 0 b.length.Value)
 
 /// LLVM IR being written for one function: its instructions, its allocas (which go first, in the
-/// entry block), the counter its names are numbered by, the block being written, and the debug
-/// location attached to each instruction ("" for none). One heap cell, so a closure holds a
-/// pointer.
+/// entry block), the counter its names are numbered by, the block being written, the debug
+/// location attached to each instruction ("" for none), and how many pointers its array of string
+/// pieces holds (0: none). One heap cell, so a closure holds a pointer.
 type Emitter =
   | Emitter of EmitterData
 
-and EmitterData = { code: StringBuilder; allocas: StringBuilder; count: ref<int>; block: ref<string>; dbg: ref<string> }
+and EmitterData = { code: StringBuilder; allocas: StringBuilder; count: ref<int>; block: ref<string>; dbg: ref<string>; pieces: ref<int> }
 
 /// An emitter for a new function, in its entry block.
-let emitter () : Emitter = Emitter { code = StringBuilder.create (); allocas = StringBuilder.create (); count = ref 0; block = ref "entry"; dbg = ref "" }
+let emitter () : Emitter = Emitter { code = StringBuilder.create (); allocas = StringBuilder.create (); count = ref 0; block = ref "entry"; dbg = ref ""; pieces = ref 0 }
+
+/// The function's array of string pieces, n of them at least: what a string built with + is
+/// joined from. One serves every such string in the function: a string's pieces are all made
+/// before they're stored, so one built inside another's piece is done with it by then, and the
+/// frame holds one array where an array per string would grow it (a function writing many has
+/// deep recursion through it: Gen.Fun.gen).
+let piecesSlot (em: Emitter) (n: int) : string =
+  match em with
+  | Emitter { pieces = p } ->
+    if n > p.Value then
+      p.Value <- n
+    "%zs.pieces"
 
 /// The pieces of a buffer of text, joined.
 let joined (b: Buffer<string>) : string = String.concat (Array.toList (Buffer.toArray b))
@@ -112,7 +124,9 @@ let setDbg (em: Emitter) (loc: string) =
 /// The function's body: the entry block's allocas, then the code.
 let bodyOf (em: Emitter) : string =
   match em with
-  | Emitter { code = c; allocas = a } -> "entry:\n" + StringBuilder.toString a + StringBuilder.toString c
+  | Emitter { code = c; allocas = a; pieces = p } ->
+    let slot = if p.Value > 0 then $"  %zs.pieces = alloca [{p.Value} x ptr]\n" else ""
+    "entry:\n" + slot + StringBuilder.toString a + StringBuilder.toString c
 
 /// The instructions alone, for code that goes into another function's block.
 let codeOf (em: Emitter) : string =

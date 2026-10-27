@@ -106,17 +106,18 @@ let private reachable (cant: Map<string, string * string>) (roots: list<string>)
   List.iter (inFun []) roots
 
 /// A checked program's functions monomorphic, closure-converted and reference counted, with the
-/// types the passes added (effects' frames); Error where a pass can't go on. A debug build keeps
-/// every function whole (no inlining), so breakpoints on them hit. noHeap: the whole program
-/// checked as [<NoAlloc>] (--no-heap); cant: the functions the target can't run (unrunnable).
-let lower (prog0: Program) (debugInfo: bool) (time: bool) (checkIr: bool) (noHeap: bool) (cant: Map<string, string * string>) : result<Map<string, TypeInfo> * list<MFun>, PassError> =
+/// program as the passes took it and the types they added (effects' frames); Error where a pass
+/// can't go on. What must not touch the heap isn't checked (lower does it; the editor shows what
+/// does). A debug build keeps every function whole (no inlining), so breakpoints on them hit.
+/// cant: the functions the target can't run (unrunnable).
+let counted (prog0: Program) (debugInfo: bool) (time: bool) (checkIr: bool) (cant: Map<string, string * string>) : result<Program * Map<string, TypeInfo> * list<MFun>, PassError> =
   let prog = Opt.Mono.lowered prog0
   // functions called from outside keep their signatures (main, the tests, C exports)
   let fixedNames = Set.ofList ("main" :: List.append prog.tests (List.map (fun (e: Core.Ir.Export) -> e.fname) prog.exports))
   // [<Target>] and [<Multiversion>] functions stay whole: their code is for features their
   // callers may not have
   let kept (n: string) = Map.containsKey (Core.Ir.baseFunName n) prog.targets
-  let passes () : result<Map<string, TypeInfo> * list<MFun>, PassError> / Stops =
+  let passes () : result<Program * Map<string, TypeInfo> * list<MFun>, PassError> / Stops =
     let check (pass: string) (funs: list<MFun>) = checkedAfter checkIr pass funs
     let mono = check "monomorphize" (stage "mono" (timed time "monomorphize" (fun () -> Opt.Mono.fuse (Opt.Mono.checkShared prog (Opt.Mono.run prog)))))
     if not (Map.isEmpty cant) then
@@ -135,11 +136,22 @@ let lower (prog0: Program) (debugInfo: bool) (time: bool) (checkIr: bool) (noHea
     // that starts it
     let machines = Set.ofList (List.map (fun (f: MFun) -> f.name) (List.filter (fun (f: MFun) -> waits f.body) lifted))
     let entries = Set.union fixedNames machines
-    let counted = check "reference counting" (stage "rc" (timed time "reference counting" (fun () -> Opt.Rc.lower types (Opt.Rc.borrowing types entries lifted) lifted)))
-    Opt.NoAlloc.check types counted (noAllocRoots prog counted noHeap)
-    Ok(types, counted)
+    let rced = check "reference counting" (stage "rc" (timed time "reference counting" (fun () -> Opt.Rc.lower types (Opt.Rc.borrowing types entries lifted) lifted)))
+    Ok(prog, types, rced)
   handle passes () with
   | Stops.stop e, _ -> Error e
+
+/// counted, then what must not touch the heap checked (0012): the [<NoAlloc>] functions, the
+/// interrupt handlers, Cpu.critical's bodies, and with noHeap (--no-heap) the whole program.
+let lower (prog0: Program) (debugInfo: bool) (time: bool) (checkIr: bool) (noHeap: bool) (cant: Map<string, string * string>) : result<Map<string, TypeInfo> * list<MFun>, PassError> =
+  match counted prog0 debugInfo time checkIr cant with
+  | Error e -> Error e
+  | Ok(prog, types, funs) ->
+    let heapCheck () : result<Map<string, TypeInfo> * list<MFun>, PassError> / Stops =
+      Opt.NoAlloc.check types funs (noAllocRoots prog funs noHeap)
+      Ok(types, funs)
+    handle heapCheck () with
+    | Stops.stop e, _ -> Error e
 
 // whether the program uses one of these primitives
 let usesPrim (prims: Set<string>) (funs: list<MFun>) : bool =

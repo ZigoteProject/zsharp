@@ -9,7 +9,7 @@ open Core.Program
 
 let rec private size (e: CExpr) : int = 1 + List.sumBy size (children e.k)
 
-let rec private renamePat (rn: string -> string) (p: CPat) : CPat =
+let rec private renamePat (rn: string -> string / <>) (p: CPat) : CPat =
   match p with
   | CPVar(x, t) -> CPVar(rn x, t)
   | CPAs(q, x, t) -> CPAs(renamePat rn q, rn x, t)
@@ -22,7 +22,7 @@ let rec private renamePat (rn: string -> string) (p: CPat) : CPat =
 /// A copy of e for another place: what it binds gets new names (names stay unique in the function
 /// it goes into), the parameters in m their arguments' names, and line marks go (they would point
 /// into the callee's file).
-let private copy (fresh: string -> string) (m0: Map<string, string>) (e: CExpr) : CExpr =
+let private copy (fresh: string -> string / <>) (m0: Map<string, string>) (e: CExpr) : CExpr =
   let m = List.fold (fun (acc: Map<string, string>) x -> Map.add x (fresh x) acc) m0 (List.distinct (binders e))
   let rn (x: string) = Option.defaultValue x (Map.tryFind x m)
   let pars (ps: list<string * Ty>) = List.map (fun (x, t) -> (rn x, t)) ps
@@ -131,7 +131,7 @@ let uncurry (fixedNames: Set<string>) (funs: list<MFun>) : list<MFun> =
 /// module's code holds none of another module's functions, the driver says); kept: functions never
 /// inlined into others ([<Target>] and [<Multiversion>] ones, whose code is for CPU features their
 /// callers may not have).
-let runWith (kept: string -> bool) (mayInline: string -> string -> bool) (funs: list<MFun>) : list<MFun> =
+let runWith (kept: string -> bool / <>) (mayInline: string -> string -> bool / <>) (funs: list<MFun>) : list<MFun> =
   let byName = Map.ofList (List.map (fun (f: MFun) -> (f.name, f)) funs)
   let rec calls (e: CExpr) : list<string> =
     let own =
@@ -212,4 +212,4 @@ let runWith (kept: string -> bool) (mayInline: string -> string -> bool) (funs: 
     | _ -> e
   List.map (fun (f: MFun) -> { f with body = bodyOf f.name }) funs
 
-let run (kept: string -> bool) (funs: list<MFun>) : list<MFun> = runWith kept (fun _ _ -> true) funs
+let run (kept: string -> bool / <>) (funs: list<MFun>) : list<MFun> = runWith kept (fun _ _ -> true) funs

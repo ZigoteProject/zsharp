@@ -6,6 +6,8 @@ zs="$(pwd)/bin/zs"; t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 g() { git -C "$t/text" -c user.name=zs -c user.email=zs@example.invalid "$@" >/dev/null 2>&1; }
 lockCommit() { grep -o 'commit = "[0-9a-f]*"' "$t/app/zs.lock" | grep -o '[0-9a-f]\{40\}'; }
 head() { git -C "$t/text" rev-parse "$1"; }
+# an edit in place, as GNU's sed and BSD's (macOS's) both take it
+edit() { sed "$1" "$2" > "$2.new" && mv "$2.new" "$2"; }
 
 # the library: v1 (a tag), then main moves on with a new function
 mkdir -p "$t/text" && cp -r tests/project/text/. "$t/text/" && g init -b main && g add -A && g commit -m v1 && g tag v1
@@ -33,8 +35,8 @@ let shout (s: string) = String.toUpper s' >> "$t/text/src/Text.zs" && g commit -
 [ "$(lockCommit)" = "$(head v1)" ] && echo "zs.lock still pins v1"
 
 # a branch rev: resolved again (the rev changed), then pinned
-sed -i 's/rev = "v1"/rev = "main"/' zs.toml
-sed -i 's/println \$"words {Text.wordCount "a b c"}"/println $"words {Text.wordCount "a b c"} {Text.shout "hi"}"/' src/main.zs
+edit 's/rev = "v1"/rev = "main"/' zs.toml
+edit 's/println \$"words {Text.wordCount "a b c"}"/println $"words {Text.wordCount "a b c"} {Text.shout "hi"}"/' src/main.zs
 "$zs" run 2>/dev/null
 [ "$(lockCommit)" = "$(head main)" ] && echo "zs.lock pins main"
 
@@ -46,7 +48,7 @@ let twice (s: string) = s + s' >> "$t/text/src/Text.zs" && g commit -am "add twi
 
 # a fresh checkout (no .zs-cache) fetches the locked commit again
 rm -rf .zs-cache && "$zs" check src/main.zs 2>/dev/null && echo "re-fetched from zs.lock"
-sed -i 's|file://[^"]*|file:///nonexistent/text|' zs.toml && rm -rf .zs-cache
+edit 's|file://[^"]*|file:///nonexistent/text|' zs.toml && rm -rf .zs-cache
 "$zs" build 2>&1 | grep -o "zs: git dependency 'text' (file:///nonexistent/text main):" 
 
 # a dependency's name is its directory under .zs-cache/deps: one leading out of it is refused and
@@ -86,7 +88,7 @@ rm -rf .zs-cache && "$zs" run 2>/dev/null | sed 's/^/(from zs.lock) /'
 # zs update raises the program's own minimums in zs.toml to the newest releases
 "$zs" update 2>/dev/null && grep -o '^c = { git = "[^"]*", version = "[^"]*"' zs.toml | sed 's/git = "[^"]*", //'
 "$zs" run 2>/dev/null | sed 's/^/(updated) /'
-sed -i 's/c = { git = "\([^"]*\)", version = "1.4.0" }/c = { git = "\1", version = "1.5" }/' zs.toml
+edit 's/c = { git = "\([^"]*\)", version = "1.4.0" }/c = { git = "\1", version = "1.5" }/' zs.toml
 "$zs" build 2>&1 | grep -o "c: no tag v1.5.0 or later below v2.0.0 (the newest is v1.4.0)"
 printf '[package]\nname = "both"\n\n[dependencies]\nc = { git = "file:///x", rev = "main", version = "1.0" }\n' > zs.toml
 "$zs" fetch 2>&1 | grep -o "dependency 'c' has both rev and version; keep one"

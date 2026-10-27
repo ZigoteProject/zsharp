@@ -117,8 +117,8 @@ let rec exprText (e: Expr) : string =
 
 // the element type and lanes of a SIMD vector type
 let private vectorElem (n: string) : string =
-  match List.tryFind (fun (m, _, _) -> m = n) vectorTypes with
-  | Some(_, e, _) -> e
+  match vectorInfo n with
+  | Some(e, _) -> e
   | None -> ""
 
 // a lambda of one parameter

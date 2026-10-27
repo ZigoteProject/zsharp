@@ -4,13 +4,14 @@
 |---|---|
 | **Status** | Draft |
 | **Decided at** | a design review, with the flagship's first profiles (phase 12: "optimization waits for profiles of real programs") |
-| **Builds** | track D (profiling 1, 3), track E (hints, code lenses, MCP), track M (`[<NoAlloc>]`, arenas on a chip); the optimizer items only after a measurement asks for them |
+| **Builds** | track D (profiling 1, 3), track E (hints, code lenses, MCP), track M (`[<NoAlloc>]` on local functions, arenas on a chip); the optimizer items only after a measurement asks for them |
 | **Rests on** | decisions 2 (Perceus), 4 (overflow traps), 20 (no comptime), 26 (from Zig: a checked opt-in, not explicit allocators), 42 (`[<NoAlloc>]`), 44 (arenas), 61 (warnings) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §5.2](../../DESIGN.md#52-perceus-reference-counting), [§9](../../DESIGN.md#9-optimizer), [§12](../../DESIGN.md#12-tooling) |
 | **Related** | [0011 debug info, profiles and traces](0011-debug-info-profiles-traces.md) (the allocation hints, `--stats`, `--profile`), [0012 interrupts, `[<NoAlloc>]` and intrinsics](0012-interrupts-noalloc-intrinsics.md) (the allocation analysis), [0014 placement](0014-placement.md) (static objects with count 0), [0007 incremental builds](0007-incremental-builds.md) (per-module caches), [0021 warnings](0021-warnings.md) (hints aren't warnings), [0009 tests as values](0009-tests-as-values.md), [0017 iteration](0017-iteration.md) (fusion) |
 
 - [ ] Discussion
 - [ ] Approved in principle
-- [ ] Implementation
+- [ ] Implementation (begun: every site with its object and size, the per-function summary on
+  hover, and depth 2's inlay hints behind `allocationHints`; see *History*)
 
 ## Summary
 
@@ -24,9 +25,11 @@ programmer says where they mustn't be.**
 
 Four parts, in the order they're built:
 
-1. **The allocation analysis, built** (0012 designed it, nothing implements it yet), with
-   `[<NoAlloc>]` on top-level and local functions, and with a *reason* on every site: why this
-   cell wasn't reused, who else holds the array that copied, what the closure captured.
+1. **The allocation analysis, every site and why.** `[<NoAlloc>]` shipped in phase 12
+   (`src/Opt/NoAlloc.zs`), but it stops at a function's first site and says only what it does.
+   This part makes it report every site, each with a *reason* (why this cell wasn't reused, who
+   else holds the array that copied, what the closure captured), and allows `[<NoAlloc>]` on
+   local functions.
 2. **The editor, at three depths:** lints from the checker on every keystroke (a string built
    by `+` in a loop, `@` that makes a loop quadratic); verdicts from the back half on idle
    (0011's inlay hints, with the reasons, ownership on hover, inlining and fusion decisions, a
@@ -53,13 +56,13 @@ let rec insert (x: int) (t: Tree) : Tree =
   | Leaf -> Node (Leaf, x, Leaf)                  ‹allocates: Node, 32 B›
   | Node (l, y, r) ->
     if x < y then Node (insert x l, y, r)         ‹reuses t›
-    elif x > y then Node (l, y, insert x r)       ‹reuses t›
+    else if x > y then Node (l, y, insert x r)    ‹reuses t›
     else t
 
 let report (items: list<Item>) =
   let mutable out = ""
   for it in items do
-    out <- out + $"{it.name}: {it.qty}\n"         ‹allocates ×2: strings›  ┄ hint: quadratic: 'out' is copied on each iteration; build a list and String.concat it
+    out <- out + $"{it.name}: {it.qty}\n"         ‹allocates ×2›  ┄ hint: quadratic: 'out' is copied on each iteration; build a list and String.concat it
   out                                             ‹last run: 1.2M allocations here, 41% of the program's›
 
 [<NoAlloc>]
@@ -67,7 +70,9 @@ let step (s: State) (e: Event) : State = …        ⌜NoAlloc ✓ · borrows s,
 ```
 
 (`‹…›` is an inlay hint, `┄` a hint-severity diagnostic, `⌜…⌝` a code lens. The markers are this
-document's, not syntax.)
+document's, not syntax. The `×2` is what the compiler does: the line's pieces joined into one new
+string, and `string it.qty` one more; `string it.name` is the name itself. Before the hints showed
+it, each `+` of the chain made a string of its own, six on this line.)
 
 Approval adds a new decision row, numbered by the coordinator: the editor shows what the
 compiler decided about memory, with reasons, and what the last run counted; controls are
@@ -82,18 +87,20 @@ to know Perceus. Today the answer is `ZS_DUMP_CORE=name`, which prints Core afte
 counting (`src/Build/Compile.zs`), readable by the compiler's author and few others, and
 `Runtime.allocations ()`, a count with no place attached (`runtime/rt.c`, `zs_allocations`).
 
-**The analysis is designed and missing.** 0012 defines one allocation analysis after `Rc`, with a
-verdict per site, as the base of `[<NoAlloc>]` and `--no-heap`; 0011 shows its verdicts as inlay
-hints. Neither is built: `NoAlloc` appears nowhere in `src/`, and the flagship (a Nucleo-F401RE,
-ROADMAP phase 12) wants its main loop `[<NoAlloc>]`. Building it is the first item here, and the
-reasons are what turn it from a check into a tool: `reply -> describe -> String.concat allocates`
-tells what failed; "`t` is borrowed here, so its cell can't be reused" tells what to change.
+**The analysis exists and stops at the first site.** 0012's analysis runs after `Rc` and backs
+`[<NoAlloc>]`, `--no-heap`, interrupt handlers and `Cpu.critical` (phase 12, M2:
+`Opt.NoAlloc.firstSite`, memoized over the call graph). It answers one question, *does this
+function touch the heap*, with the first site it meets: `reply is [<NoAlloc>], but reply ->
+describe builds a string` (`tests/err_noalloc.err`). 0011's inlay hints need the other sites too,
+and none of it says why. The reasons are what turn the check into a tool: the chain tells what
+failed; "`t` is borrowed here, so its cell can't be reused" tells what to change.
 
 **What Perceus decided is the program's performance.** The difference between a tree insert that
 allocates nothing and one that allocates a path of cells is whether the caller passed a unique
 tree. Whether `List.map` reused its cells, whether a parameter was inferred borrowed, whether a
 pipeline fused (`Mono.fuse`), whether a small function was inlined (`Inline`, by size alone:
-`size f.body <= 60`, `src/Opt/Inline.zs`): each is decided, silently, by a pass a user doesn't see.
+`size f.body <= 60`, an `Iter`'s `forEach` whatever its size, `src/Opt/Inline.zs`): each is
+decided, silently, by a pass a user doesn't see.
 Known gap 5 in the roadmap is exactly this kind: a `Seq` pipeline is 4.8× a fused list pipeline,
 and only the roadmap says so.
 
@@ -132,9 +139,18 @@ the fact; firmware learns its heap use from the exit report's `heap_peak`.
 
 ### 1. The allocation analysis, with reasons
 
-0012's *`[<NoAlloc>]` and `--no-heap`* section is the design: one walk over Core after `Rc` and
-before IR emission, a verdict per site, memoized over the call graph, the chain in the error. Its
-verdict table stands. What this proposal adds:
+0012's *`[<NoAlloc>]` and `--no-heap`* section is the design, and `src/Opt/NoAlloc.zs` builds it:
+one walk over Core after `Rc`, memoized over the call graph, the chain in the error. Its verdict
+table stands. What this proposal adds:
+
+- **Every site, not the first.** `firstSite` returns at the first site a function reaches; the
+  walk keeps going and collects them all, each with its verdict and position. `[<NoAlloc>]`'s
+  error stays the first one's, so its messages don't change. *(Built: one walk, `stepsOf`, gives
+  both; an `if`'s branches and a match's arms are kept as paths, which the first site takes in
+  order and the hints one at a time: a line counts the path through it that touches most, so a
+  decision tree's copies of a catch-all arm count once. The walk also stopped reporting what
+  frees nothing: a value matched to a case without fields, an option's `Some s` keeping its
+  string, `string` of a string.)*
 
 - **A reason per site,** kept with the verdict (a short string and a position, so the cache
   holds it as text):
@@ -152,10 +168,15 @@ verdict table stands. What this proposal adds:
   The missed-reuse reasons come from `Rc`'s own decision: where it looks for a cell of a
   constructor's size among the variables dead at that point, it records the nearest candidate
   it turned down and why. This is the one new piece of analysis in part 1; the others are the
-  verdict's own facts.
+  verdict's own facts. *(Built: the object, its case and bytes for a cell
+  (`builds a cell of Tree (Node, 32 B)`), a closure's captures and bytes, the reused cell's
+  variable, the dropped local, the written array. Not yet: missed reuse, the other holder of a
+  copied array, atomic marks, statics.)*
 - **`[<NoAlloc>]` on a local function,** as on a top-level one: a hot loop's body is a local
-  function, and `Lift` makes it a top-level one before `Rc`, so the check is the same.
-  `let step = [<NoAlloc>] fun …` isn't proposed; a lambda is named first.
+  function. The parser takes attributes on declarations only today (`Ast.Attrs` wraps a `Decl`),
+  so a local `let` gains them; after that the check is the same, since `Lift` makes the function
+  a top-level one before `Rc`. `let step = [<NoAlloc>] fun …` isn't proposed; a lambda is named
+  first.
 - **One summary per function,** from the memo: allocation sites by verdict, `NoAlloc` or the
   first chain, each parameter's ownership (borrowed or owned, from borrow inference), and
   whether `Inline` copied it and into how many callers. It's what hover and the code lens show.
@@ -188,11 +209,16 @@ initialization options. What this proposal adds to it:
 
 - **When:** 500 ms after the last edit with no newer one, cancelled by the next edit (the request
   runs on the loop thread, its passes on the pool, `src/Lsp/Server.zs`'s loop as it is). The
-  checker's hints and diagnostics are never held back for it.
+  checker's hints and diagnostics are never held back for it. *(Built, for now: the passes run
+  once per analysis, on the loop thread, when the first inlay-hint or hover request after a
+  change asks; diagnostics go out before, on the change. `examples/complex.zs`'s take about
+  10 ms. Idle and cancellation wait for a program that's slow.)*
 - **The reasons** from part 1 in each hint's tooltip, and a missed reuse or a copy on write also
   as a hint-severity diagnostic, with the reason as its message: those are the sites a change in
   the source can fix.
-- **Hover** gains, under the type: on a parameter, `borrowed` or `owned (consumed at line 14)`;
+- **Hover** gains, under the type *(built: a top-level function's own allocates, reuses and
+  copies-on-write counts and its `NoAlloc` verdict: `allocates 1 · reuses 2 · NoAlloc ✗: insert
+  builds a cell of Tree (line 8)`)*: on a parameter, `borrowed` or `owned (consumed at line 14)`;
   on a function name, the summary of part 1 (`allocates 3 sites · frees 1 · not inlined: 84 nodes,
   over 60`); on a pipeline, `fused into one loop` or `not fused: xs is used twice`; on a type,
   its representation from the layout facts (0004): `plain, 16 B, align 8`, `boxed: a 32-byte cell
@@ -207,8 +233,9 @@ initialization options. What this proposal adds to it:
   same from the module's last `--emit-llvm`. rust-analyzer's "View MIR" and Compiler Explorer
   are the models; nothing new is computed for either.
 - **Generic functions** show their instances' verdicts merged, naming the instance where they
-  differ (0011). A module with no `main` (a library) is analyzed at the instances its own tests
-  and examples reach: *Unresolved questions* 1.
+  differ (0011). *(Built: merged, the most of each verdict one instance has; not named.)* A
+  module with no `main` (a library) is analyzed at the instances its own tests and examples
+  reach: *Unresolved questions* 1.
 
 **Depth 3: counts from the last run.** The static verdict says a line allocates; the run says how
 often, which is what decides whether it matters.
@@ -234,8 +261,9 @@ often, which is what decides whether it matters.
 
 - **`[<Inline>]`:** `Inline` copies the function into every call site whatever its size; its
   callers' reference counting then sees its constructors, which is what makes reuse across a
-  call. A function that can reach itself, a `main`, or one whose address is taken (passed as a
-  value; that copy stays) is an error at the attribute, as Zig's `inline fn` is for recursion:
+  call. A function that can reach itself, a `main`, one with local functions (`Inline` copies
+  none today: each copy would lift its own), or one whose address is taken (passed as a value;
+  that copy stays) is an error at the attribute, as Zig's `inline fn` is for recursion:
   `'walk' is [<Inline>] but calls itself through visit; a recursive function can't be inlined`.
   The default stays size alone (the ponytail note in `src/Opt/Inline.zs`): an attribute where a
   profile says so is cheaper than a cost model nobody has measured.
@@ -282,12 +310,15 @@ the function allocates nothing new, because every cell it builds reuses one it c
 
 - **The check:** the function's verdicts (part 1) have no *allocates* site and no *copies on
   write*, and no owned parameter is dup'ed (a dup would make a cell shared, and reuse would then
-  fall back to allocating at run time). `[<InPlace n>]` allows up to `n` *allocates* sites
-  executed at most once per call (not in a loop, not on a recursive path), as Koka's `fip(n)`
-  does: a tree insert's one new leaf.
+  fall back to allocating at run time). `[<InPlace n>]` allows up to `n` allocations per call, as
+  Koka's `fip(n)` does: along every path through the body, its *allocates* sites (none in a loop)
+  plus `n'` for each call to an `[<InPlace n'>]` function sum to at most `n`. A tree insert's
+  leaf path allocates one `Node` and calls nothing; its node path allocates nothing and recurses
+  once: 1 each.
 - **What it doesn't promise:** a caller passing a shared argument gets copies, as with any
   function; the guarantee is about the function, and `--stats=sites` counts its fallbacks at run
-  time. Recursive calls count as in place when the callee is `[<InPlace>]` too.
+  time. A call to a function that isn't `[<InPlace>]` is an error, as a call `NoAlloc` can't see
+  is.
 - **The error** names the site and its reason: `insert is [<InPlace 1>], but line 9 allocates a
   Node: l is used after this line, so t's cell can't be reused yet`.
 - **Why it's here and not just `[<NoAlloc>]`:** `NoAlloc` counts reuse as allocating (0012:
@@ -317,11 +348,17 @@ right numbers.
 
 ### Order of implementation
 
-1. **The analysis and `[<NoAlloc>]`** (0012's item 3), with reasons, the per-function summary, and
-   local functions. Tests: 0012's, and `tests/err_noalloc.zs` with each reason's message.
+1. **Every site, with reasons,** the per-function summary, and `[<NoAlloc>]` on local functions.
+   Tests: 0012's still pass unchanged, and a new `tests/err_noalloc_local.zs`; each reason's
+   message is checked by step 2's hints test. *(Begun: every site, the reasons above, the
+   summary; `tests/noalloc.zs` gained what now passes. Left: missed reuse, local functions.)*
 2. **Depth 2:** inlay hints, reasons, hover additions, the code lens, `Add [<NoAlloc>]`,
    `Show Core`. Test: `tests/lsp/hints.sh` on `examples/complex.zs`: the hints at fixed lines,
-   none in a `[<NoAlloc>]` function; the exit test of track D's profiling 1.
+   none in a `[<NoAlloc>]` function; the exit test of track D's profiling 1. *(Begun: the hints
+   and the hover summary, `tests/lsp/hints.sh` on its own `tests/lsp/hints.zs`, which has each
+   verdict, a `[<NoAlloc>]` function, a generic one and an edit; `zsharp.allocationHints` in
+   VS Code. Left: the code lens, the code actions, the hover's other lines, idle and
+   cancellation.)*
 3. **`Testing.allocations` and the leak check per test.** Test: a planted leak fails its test
    and only it.
 4. **Depth 1 lints.** Test: `tests/lsp/perf.sh` with each pattern and a near miss of each (a
@@ -378,7 +415,8 @@ right numbers.
 ## Compatibility
 
 - **Not breaking.** The attributes are errors today (`Decls.declare` admits `Wrapping`,
-  `FastMath`, `Target`, `Multiversion` on functions); an older compiler stops at them with that
+  `FastMath`, `Target` and `Multiversion` as code attributes, and `NoAlloc` and `Interrupt` on
+  top-level functions only); an older compiler stops at them with that
   message. `--stats=sites` and `zs check --perf` are new flags; `Testing.allocations` and
   `Arena.withLimit` are new functions in existing modules.
 - **The leak check per test** fails tests that leak today and pass. That's the point, and the
@@ -440,3 +478,23 @@ size the user asked for.
 
 - 2026-10-26: draft, from the question of what Z# should take from Zig beyond `zig cc`, with
   0011's hints and 0012's analysis brought into one plan.
+- 2026-10-27: reviewed against the code: `[<NoAlloc>]` shipped in phase 12, so part 1 extends
+  it (every site, reasons, local functions) instead of building it; `[<InPlace n>]`'s count is
+  per path; `[<Inline>]` refuses functions with local functions, as `Inline` does.
+- 2026-10-27: implementation begun (steps 1 and 2 in part): `Opt.NoAlloc.touches` gives every
+  site of a function by line, each line's count the path through it touching most; `zs lsp`
+  shows them as inlay hints with `allocationHints: true`, and a top-level function's summary on
+  hover; `Build.Compile.counted` runs the passes without the heap check, so the editor shows a
+  program `[<NoAlloc>]` rejects. The walk no longer reports drops that free nothing, nor
+  `string` of a string, and its errors name operators (`Ledger.<+`) and locals (`'o'`) as
+  written.
+- 2026-10-27: what the first hints showed fixed: a string built with `+` (an interpolation is
+  one) is joined in one allocation (`zs_str_concat_n`), not one per `+`, and a piece alone is the
+  string itself; the hints and `[<NoAlloc>]` count a chain once.
+- 2026-10-27: *Unresolved questions* 1 in part: a module of a project gets its hints from the
+  project's program (its `zs.toml`'s main file). With that, the hints and a profiler (macOS's
+  `sample`, on a build whose helpers keep their names) used on the compiler itself: a 232-byte
+  closure `Rc` made at every node, linear-time `List.collect` and set algebra, caches in code
+  generation, and in later rounds pure function parameters, merged share and move walks and one
+  thread-local for the allocator; building itself went from 23.8 s to 16.8 s, its passes from
+  8.1 s to 3.7 s, its allocations from 626 to 217 million.

@@ -134,25 +134,6 @@ typedef struct counts {
 } counts;
 static counts *all_counts; // every thread's that counted, the newest first
 static pthread_mutex_t counts_mu = PTHREAD_MUTEX_INITIALIZER;
-static _Thread_local counts *my_counts;
-
-static counts *here(void) {
-    counts *c = my_counts;
-    if (!c) {
-        c = aligned_alloc(64, 64);
-        if (!c) zs_panic_c("out of memory");
-        memset(c, 0, 64);
-        pthread_mutex_lock(&counts_mu);
-        c->next = all_counts;
-        all_counts = c;
-        pthread_mutex_unlock(&counts_mu);
-        my_counts = c;
-    }
-    return c;
-}
-
-// only the thread itself writes its counts; another reads them whole
-#define COUNT(x, d) do { counts *c_ = here(); __atomic_store_n(&c_->x, c_->x + (d), __ATOMIC_RELAXED); } while (0)
 
 static int64_t total(size_t at) {
     int64_t n = 0;
@@ -164,7 +145,6 @@ static int64_t total(size_t at) {
 #define TOTAL(x) total(offsetof(counts, x))
 #else
 static int64_t live, allocations, mallocs;
-#define COUNT(x, d) ((x) += (d))
 #define TOTAL(x) (x)
 #endif
 
@@ -183,50 +163,88 @@ static int64_t live, allocations, mallocs;
 #define POOL_CHUNK ((size_t)64 * 1024)
 #define FROM(p) (((uint8_t *)(p))[6])
 #define SYSTEM 0xFF
-#ifdef ZS_THREADS
-#define POOL_LOCAL _Thread_local
-#else
-#define POOL_LOCAL
 #endif
-static POOL_LOCAL void *pool_free[POOL_MAX / 8 + 1];
-static POOL_LOCAL char *pool_next, *pool_end;
 
-static void pool_chunk(void) {
-    pool_next = malloc(POOL_CHUNK);
-    if (!pool_next) zs_panic_c("out of memory");
-    pool_end = pool_next + POOL_CHUNK;
-    COUNT(mallocs, 1);
+// What the allocator keeps for a thread, in one thread-local: its counts (with threads) and the
+// pool's free lists and chunk. On macOS a thread-local is found by a call, so an allocation makes
+// one look-up rather than one for each variable.
+typedef struct {
+#ifdef ZS_THREADS
+    counts *counts;
+#endif
+#if ZS_POOL
+    void *free[POOL_MAX / 8 + 1];
+    char *next, *end;
+#endif
+    char unused; // a member whatever the build
+} heap_state;
+
+#ifdef ZS_THREADS
+static _Thread_local heap_state heap_here;
+
+// the thread's counts, made the first time it counts
+static counts *counts_of(heap_state *h) {
+    counts *c = h->counts;
+    if (!c) {
+        c = aligned_alloc(64, 64);
+        if (!c) zs_panic_c("out of memory");
+        memset(c, 0, 64);
+        pthread_mutex_lock(&counts_mu);
+        c->next = all_counts;
+        all_counts = c;
+        pthread_mutex_unlock(&counts_mu);
+        h->counts = c;
+    }
+    return c;
+}
+
+// only the thread itself writes its counts; another reads them whole
+#define COUNT_IN(h, x, d) do { counts *c_ = counts_of(h); __atomic_store_n(&c_->x, c_->x + (d), __ATOMIC_RELAXED); } while (0)
+#else
+static heap_state heap_here;
+#define COUNT_IN(h, x, d) ((void)(h), (x) += (d))
+#endif
+// a count changed where the thread's state isn't at hand already
+#define COUNT(x, d) COUNT_IN(&heap_here, x, d)
+
+#if ZS_POOL
+static void pool_chunk(heap_state *h) {
+    h->next = malloc(POOL_CHUNK);
+    if (!h->next) zs_panic_c("out of memory");
+    h->end = h->next + POOL_CHUNK;
+    COUNT_IN(h, mallocs, 1);
 }
 #endif
 
 void *zs_alloc(zs_int size) {
-    COUNT(live, 1);
-    COUNT(allocations, 1);
+    heap_state *h = &heap_here;
+    COUNT_IN(h, live, 1);
+    COUNT_IN(h, allocations, 1);
 #if ZS_POOL
     size_t total = ((size_t)size + 7) & ~(size_t)7;
     void *p;
     if (total <= POOL_MAX) {
         size_t c = total >> 3;
-        p = pool_free[c];
+        p = h->free[c];
         if (p) {
-            pool_free[c] = *(void **)p;
+            h->free[c] = *(void **)p;
         } else {
-            if ((size_t)(pool_end - pool_next) < total) pool_chunk();
-            p = pool_next;
-            pool_next += total;
+            if ((size_t)(h->end - h->next) < total) pool_chunk(h);
+            p = h->next;
+            h->next += total;
         }
         FROM(p) = (uint8_t)c;
         return p;
     }
     p = obj_malloc((size_t)size);
     if (!p) zs_panic_c("out of memory");
-    COUNT(mallocs, 1);
+    COUNT_IN(h, mallocs, 1);
     FROM(p) = SYSTEM;
     return p;
 #else
     void *p = obj_malloc((size_t)size);
     if (!p) zs_panic_c("out of memory");
-    COUNT(mallocs, 1);
+    COUNT_IN(h, mallocs, 1);
     return p;
 #endif
 }
@@ -310,12 +328,13 @@ int64_t zs_ticks(void) {
 }
 
 void zs_free(void *p) {
-    COUNT(live, -1);
+    heap_state *h = &heap_here;
+    COUNT_IN(h, live, -1);
 #if ZS_POOL
     size_t c = FROM(p);
     if (c - 1 < POOL_MAX / 8) {
-        *(void **)p = pool_free[c];
-        pool_free[c] = p;
+        *(void **)p = h->free[c];
+        h->free[c] = p;
     } else if (c == SYSTEM) {
         obj_free(p);
     } else {
@@ -672,6 +691,20 @@ zs_str *zs_str_concat(zs_str *a, zs_str *b) {
     zs_str *s = str_new(a->len + b->len);
     memcpy(s->data, a->data, (size_t)a->len);
     memcpy(s->data + a->len, b->data, (size_t)b->len);
+    return s;
+}
+
+// pieces[0] to pieces[n - 1] joined into one new string (a chain of +, an interpolation's
+// pieces): one allocation, where a + at a time makes n - 1. Borrows them; the caller drops them.
+zs_str *zs_str_concat_n(zs_str **pieces, zs_int n) {
+    zs_int len = 0;
+    for (zs_int i = 0; i < n; i++) len += pieces[i]->len;
+    zs_str *s = str_new(len);
+    char *d = s->data;
+    for (zs_int i = 0; i < n; i++) {
+        memcpy(d, pieces[i]->data, (size_t)pieces[i]->len);
+        d += pieces[i]->len;
+    }
     return s;
 }
 

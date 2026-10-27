@@ -27,7 +27,8 @@ open Emit
 /// What code generation keeps for a module: the program's types and C functions, the build's
 /// options, the text made so far (the declarations at the top, the helper functions, the
 /// functions), what's been generated (by name), the string constants, the functions by name, the
-/// functions it calls (in the order first called), the unions' representations, and the debug
+/// functions it calls (in the order first called), the unions' representations, the LLVM types
+/// and unions' cases made so far (asked for at nearly every instruction), and the debug
 /// metadata. One heap cell, read field by field.
 type G =
   | G of GData
@@ -48,7 +49,9 @@ and GData =
     fnTable: Map<string, MFun>
     referenced: ref<Set<string>>
     referencedOrder: Buffer<string>
-    reps: ref<Map<string, UnionRep>>
+    reps: ref<Map<Ty, UnionRep>>
+    lltys: ref<Map<Ty, string>>
+    unions: ref<Map<Ty, string * list<string * list<Ty>>>>
     md: Buffer<string>
     mdCount: ref<int>
     diFiles: ref<Map<string, string>>
@@ -108,6 +111,12 @@ type G with
   member g.reps =
     match g with
     | G { reps = x } -> x
+  member g.lltys =
+    match g with
+    | G { lltys = x } -> x
+  member g.unions =
+    match g with
+    | G { unions = x } -> x
   member g.md =
     match g with
     | G { md = x } -> x
@@ -255,6 +264,19 @@ let rec llty (g: G) (t: Ty) : string =
   | TCon(n, _) when isDynName n -> "ptr"
   // N elements inline
   | TCon("fixed", [ el; TCon(n, []) ]) -> $"[{n} x {llty g el}]"
+  | TCon _
+  | TTuple _ ->
+    match Map.tryFind t g.lltys.Value with
+    | Some s -> s
+    | None ->
+      let s = lltyOf g t
+      g.lltys.Value <- Map.add t s g.lltys.Value
+      s
+  | other -> panic $"llty: unresolved type {showT g other}"
+
+// a record's, a union's, a C union's or a tuple's LLVM type, made (llty keeps it)
+and private lltyOf (g: G) (t: Ty) : string =
+  match t with
   | TCon(n, args) ->
     let info = Map.find n g.types
     match info.def with
@@ -305,15 +327,21 @@ let isUnsigned (t: Ty) : bool = Set.contains (tyName t) unsigned
 /// A Z# object C holds as an opaque handle: reference counted, a pointer, not a string.
 let isHandle (g: G) (t: Ty) : bool = heap g t && llty g t = "ptr" && tyName t <> "string"
 
-/// A union type's name and cases (their field types instantiated).
+/// A union type's name and cases (their field types instantiated), each type's made once.
 let union (g: G) (t: Ty) : string * list<string * list<Ty>> =
-  match t with
-  | TCon(u, args) ->
-    match (Map.find u g.types).def with
-    | UnionDef cs -> (u, List.map (fun (n, fs) -> (n, List.map (substGen g args) fs)) cs)
-    | RecordDef _
-    | CUnionDef _ -> panic "not a union"
-  | _ -> panic "not a union"
+  match Map.tryFind t g.unions.Value with
+  | Some u -> u
+  | None ->
+    let made =
+      match t with
+      | TCon(u, args) ->
+        match (Map.find u g.types).def with
+        | UnionDef cs -> (u, List.map (fun (n, fs) -> (n, List.map (substGen g args) fs)) cs)
+        | RecordDef _
+        | CUnionDef _ -> panic "not a union"
+      | _ -> panic "not a union"
+    g.unions.Value <- Map.add t made g.unions.Value
+    made
 
 /// Where case `tag`'s field j sits in a plain union's struct: after the tag and the earlier cases'
 /// fields.
@@ -323,12 +351,11 @@ let plainField (g: G) (t: Ty) (tag: int) (j: int) : int =
 
 /// A union type's representation.
 let repOf (g: G) (t: Ty) : UnionRep =
-  let key = showF g t
-  match Map.tryFind key g.reps.Value with
+  match Map.tryFind t g.reps.Value with
   | Some r -> r
   | None ->
     let r = unionRep g.v g.types t
-    g.reps.Value <- Map.add key r g.reps.Value
+    g.reps.Value <- Map.add t r g.reps.Value
     r
 
 /// A union type's representation; None for other types.

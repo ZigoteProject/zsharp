@@ -36,7 +36,12 @@ let private liftOne (arities: Map<string, int>) (external: share<string -> optio
       | Some lf -> lf.caps
       | None -> [ r ]
     let kept = List.filter (fun (x, _) -> not (Set.contains x bound || Set.contains x exclude)) (List.collect expand (refs e))
-    List.fold (fun (acc: list<string * Ty>) (c: string * Ty) -> if List.exists (fun (y, _) -> y = fst c) acc then acc else List.append acc [ c ]) [] kept
+    // each once, in the order first referenced
+    let rec once (seen: Set<string>) (out: list<string * Ty>) (rs: list<string * Ty>) : list<string * Ty> =
+      match rs with
+      | [] -> List.rev out
+      | (x, t) :: rest -> if Set.contains x seen then once seen out rest else once (Set.add x seen) ((x, t) :: out) rest
+    once Set.empty [] kept
   let capExprs (caps: list<string * Ty>) = List.map (fun (x, t) -> mk (CLocal x) t) caps
   let applyChain (f: CExpr) (args: list<CExpr>) = if List.isEmpty args then f else mk (CApplyClo(f, args)) (resultAfter (List.length args) f.ty)
   let lifted (name: string) (pars: list<string * Ty>) (body: CExpr) : MFun =
@@ -122,6 +127,11 @@ let private liftOne (arities: Map<string, int>) (external: share<string -> optio
     | CAssign(y, _)
     | CArraySet(y, _, _) when y = x -> true
     | k -> List.exists (mentions x) (children k)
+  // whether the code has a lambda: without one, no variable becomes a cell
+  let rec hasLambda (e: CExpr) : bool =
+    match e.k with
+    | CLam _ -> true
+    | k -> List.exists hasLambda (children k)
   let rec lambdaMentions (x: string) (e: CExpr) : bool =
     match e.k with
     | CLam(_, b) -> mentions x b
@@ -154,7 +164,7 @@ let private liftOne (arities: Map<string, int>) (external: share<string -> optio
     count.Value <- 0
     let mine = Buffer.empty
     out.Value <- mine
-    let body = conv Map.empty f.name (cells f.body)
+    let body = conv Map.empty f.name (if hasLambda f.body then cells f.body else f.body)
     Buffer.push { f with body = body } mine
     Array.toList (Buffer.toArray mine)
   one f0

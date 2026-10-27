@@ -34,6 +34,8 @@ proposal describes a change to it, and [ROADMAP.md](../../ROADMAP.md) says when 
 | 0023 | [JSON in Core](0023-json-in-core.md) | Approved in principle | track S's plan |
 | 0024 | [The library's API](0024-library-api.md) | Approved in principle | track S's plan |
 | 0025 | [Reading effect rows](0025-reading-effects.md) | Draft | a design review with 0017, before phase 11 |
+| 0026 | [Performance you can see](0026-performance-you-can-see.md) | Draft | a design review, with the flagship's first profiles |
+| 0027 | [More microcontrollers](0027-more-microcontrollers.md) | Draft | a design review, before phase 12's M4 (one real board) |
 
 **Status:**
 - **Draft:** written, with its open questions listed.

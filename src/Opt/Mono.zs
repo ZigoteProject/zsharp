@@ -414,7 +414,7 @@ let run (prog: Program) : list<MFun> / Stops =
 /// isn't Share it uses, following its calls (and the local functions it calls), with the functions
 /// on the way there, its own first. external: what another module's code says of its functions
 /// (the driver's ABI); unknown functions reach nothing.
-let reaching (prog: Program) (funs: list<MFun>) (external: string -> option<string * list<string> * Ty>) : (string -> option<string * list<string> * Ty>) * (MFun -> CExpr -> option<string * list<string> * Ty>) =
+let reaching (prog: Program) (funs: list<MFun>) (external: string -> option<string * list<string> * Ty> / <>) : (string -> option<string * list<string> * Ty>) * (MFun -> CExpr -> option<string * list<string> * Ty>) =
   let v = Types.Vars.make ()
   let byName = Map.ofList (List.map (fun (f: MFun) -> (f.name, f)) funs)
   // the values of let-bound locals and local functions, by unique name, per function: one that

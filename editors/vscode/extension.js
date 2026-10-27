@@ -14,7 +14,12 @@ function settings() {
     const a = c.get(key);
     return Array.isArray(a) && a.length > 0 ? a : [dflt];
   };
-  return { path: c.get('path') || 'zs', lsp: args('lsp.arguments', 'lsp'), mcp: args('mcp.arguments', 'mcp') };
+  return {
+    path: c.get('path') || 'zs',
+    lsp: args('lsp.arguments', 'lsp'),
+    mcp: args('mcp.arguments', 'mcp'),
+    allocationHints: c.get('allocationHints') === true,
+  };
 }
 
 async function start() {
@@ -22,6 +27,8 @@ async function start() {
   const server = { command: s.path, args: s.lsp };
   client = new LanguageClient('zs', 'Z#', { run: server, debug: server }, {
     documentSelector: [{ scheme: 'file', language: 'zsharp' }],
+    // what each line allocates, reuses or may copy, as inlay hints (0011)
+    initializationOptions: { allocationHints: s.allocationHints },
   });
   try {
     await client.start();

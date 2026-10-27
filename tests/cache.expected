@@ -1,29 +1,29 @@
-without the cache: area: 12 9 12 area: 
+without the cache: area: 12 9 12 area: 1 40 
 from the cache: the same program
 first build:
 program: none module cache (0 of 6) clang (7 of 7 new)
-  runs: area: 12 9 12 area: 
+  runs: area: 12 9 12 area: 1 40 
 again:
 program: none module cache (6 of 6) clang (0 of 7 new)
-  runs: area: 12 9 12 area: 
+  runs: area: 12 9 12 area: 1 40 
 a body changed in geometry.zs:
 program: geometry.zs module cache (4 of 6) clang (1 of 7 new)
-  runs: area: 24 9 24 area: 
+  runs: area: 24 9 24 area: 1 40 
 an annotation in geometry.zs:
 program: geometry.zs module cache (4 of 6) clang (0 of 7 new)
-  runs: area: 24 9 24 area: 
+  runs: area: 24 9 24 area: 1 40 
 geometry.zs's interface changed:
 program: geometry.zs main.zs module cache (2 of 6) clang (1 of 7 new)
-  runs: area: 24 9 24 area: 
+  runs: area: 24 9 24 area: 1 40 
 a body changed in units.zs:
 program: units.zs module cache (0 of 6) clang (2 of 7 new)
-  runs: area => 24 9 24 area => 
+  runs: area => 24 9 24 area => 1 40 
 units.zs's interface changed:
 program: units.zs geometry.zs main.zs module cache (0 of 6) clang (3 of 7 new)
-  runs: area => 24 9 24 area => 
+  runs: area => 24 9 24 area => 1 40 
 the main file changed:
 program: main.zs module cache (4 of 6) clang (1 of 7 new)
-  runs: area => 6 9 6 area => 
+  runs: area => 6 9 6 area => 1 40 
 after the edits: the same binary as from an empty cache
-unreadable results: area => 6 9 6 area => 
+unreadable results: area => 6 9 6 area => 1 40 
 every test program from the cache: the same binary as from nothing

@@ -72,6 +72,11 @@
             "mcp"
           ],
           "description": "Arguments that start the MCP server."
+        },
+        "zsharp.allocationHints": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Show what each line does to the heap as inlay hints (`allocates ×2`, `reuses t`, `copies on write`), and a function's summary on hover. The server compiles the program's code for them, after each change."
         }
       }
     },

@@ -730,6 +730,20 @@ zs_str *zs_str_concat(zs_str *a, zs_str *b) {
     return s;
 }
 
+// pieces[0] to pieces[n - 1] joined into one new string (a chain of +, an interpolation's
+// pieces): one allocation, where a + at a time makes n - 1. Borrows them; the caller drops them.
+zs_str *zs_str_concat_n(zs_str **pieces, zs_int n) {
+    zs_int len = 0;
+    for (zs_int i = 0; i < n; i++) len += pieces[i]->len;
+    zs_str *s = str_new(len);
+    char *d = s->data;
+    for (zs_int i = 0; i < n; i++) {
+        memcpy(d, pieces[i]->data, (size_t)pieces[i]->len);
+        d += pieces[i]->len;
+    }
+    return s;
+}
+
 zs_int zs_str_cmp(zs_str *a, zs_str *b) {
     zs_int n = a->len < b->len ? a->len : b->len;
     int c = memcmp(a->data, b->data, (size_t)n);

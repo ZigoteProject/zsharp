@@ -184,8 +184,20 @@ let choose f xs =
       | None -> go acc rest
   go [] xs
 
-/// Applies `f` to every element and concatenates the resulting lists.
-let collect f xs = List.fold (fun acc x -> List.append acc (f x)) [] xs
+/// Applies `f` to every element and concatenates the resulting lists. O(n) in all the elements.
+let collect f xs =
+  // ys's elements put onto zs back to front, a cell of a list given up reused in place
+  let rec onto zs ys =
+    match ys with
+    | [] -> zs
+    | y :: rest -> onto (y :: zs) rest
+  // the lists before the last gathered back to front, then put onto the last one, which is kept
+  // as it is (appending to what's gathered would copy it for every list)
+  let rec go acc last xs =
+    match xs with
+    | [] -> onto last acc
+    | x :: rest -> go (onto acc last) (f x) rest
+  go [] [] xs
 
 /// The lists one after another, in one list.
 let concat (xss: list<list<'a>>) = List.collect id xss

@@ -5,7 +5,8 @@
 set -u
 zs=${1:-bin/zs}; t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 fn() { awk -v f="$2" '$0 ~ "^define" && index($0, "@\"zs." f "\"(") {p=1} p {print} p && /^}/ {p=0}' "$1"; }
-norm() { sed -E 's/%slot\.[A-Za-z0-9_.$]*\.([0-9]+)\b/%slot.\1/g' | sort; }
+# (no \b: BSD's sed, macOS's, has none)
+norm() { sed -E 's/%slot\.[A-Za-z0-9_.$]*\.([0-9]+)([^A-Za-z0-9_]|$)/%slot.\1\2/g' | sort; }
 "$zs" build tests/iter/map_for.zs -o "$t/a" --emit-llvm >/dev/null && "$zs" build tests/iter/map_iter.zs -o "$t/b" --emit-llvm >/dev/null || exit 1
 if diff <(fn "$t/a.ll" main | norm) <(fn "$t/b.ll" main | norm) >/dev/null; then echo "for over a Map: Map.iter's loop"
 else echo "for over a Map differs from Map.iter"; fi

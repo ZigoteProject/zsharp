@@ -11,6 +11,6 @@ cp tests/modules/parts.zs tests/modules/trees.zs "$t/" # recursive functions: no
 bin/zs build "$t/parts.zs" --profile-generate -o "$t/gen" && (cd "$t" && LLVM_PROFILE_FILE=run.profraw ./gen >/dev/null)
 llvm-profdata merge -o "$t/run.profdata" "$t/run.profraw"
 names=$(llvm-profdata show --all-functions "$t/run.profdata" | grep -E '^  [^ ]+:$')
-echo "internal functions profiled, by source file: $(echo "$names" | grep -o '^  [a-z]*\.zs;' | sort -u | tr -d ' ;' | paste -sd ' ')"
+echo "internal functions profiled, by source file: $(echo "$names" | grep -o '^  [a-z]*\.zs;' | sort -u | tr -d ' ;' | paste -sd ' ' -)"
 echo "named after a temporary file: $(echo "$names" | grep -c '\.ll;')"
 bin/zs build "$t/parts.zs" --profile-use "$t/run.profdata" -o "$t/use" && "$t/use" | diff - tests/modules/parts.out && echo "with the profile: the same output"

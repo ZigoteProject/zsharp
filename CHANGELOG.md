@@ -89,6 +89,14 @@ programmers.
   string`); interrupt handlers and `Cpu.critical`'s bodies are checked the same way.
   `--no-heap` checks the whole program, startup values included, and builds a chip's image with
   no heap.
+- A string built with `+` (an interpolation is one) is one allocation: its pieces are joined at
+  once, where each `+` made a string of its own (`$"{name}: {qty}\n"` made five, and makes one
+  beside `qty`'s text). An empty literal piece is left out, and a piece alone is the string
+  itself, so `$"{s}"` allocates nothing and passes `[<NoAlloc>]`.
+- `[<NoAlloc>]` passes code that frees nothing: dropping a value matched to a case without
+  fields (a static cell), an option's `Some s` keeping its string, and `string` of a string (its
+  own text). Its errors name an operator as written (`Ledger.<+`, which showed as `Ledger.`) and
+  a dropped local without the compiler's numbering (`'o'`, not `'o.8'`).
 - A function that makes a span over a parameter (`Array.fold f 0 xs` over an array) borrows it.
 - `Runtime.ticks` on a chip counts a SysTick wrap its handler hasn't run for yet, and never goes
   back (it could, by a wrap, right at one).
@@ -125,6 +133,10 @@ programmers.
   for the pointer it's given (it said 8, which lets a Cortex-M fault on a 4-aligned struct).
 
 ### Library
+- `List.collect` and `List.concat` are linear: they copied what they'd gathered for every list,
+  quadratic in how many there were. `Set.union` adds the smaller set to the larger one,
+  `intersect` walks the smaller one, both build their result from its sorted elements in linear
+  time, and `difference` gives back `a` itself when `b` takes nothing from it.
 - `List.maxBy` and `minBy`; `Array.max`, `min`, `maxBy`, `minBy` and `sumBy`.
 - `unit` has `Show`, printing `()` as F# does, so `result<unit, int>` and the like print.
 - `Math`: `floor`, `ceil`, `round` (half to even, as F#'s), `trunc`, `exp`, `log`, `log2`,
@@ -157,6 +169,33 @@ programmers.
   in one program.
 
 ### Tools and docs
+- Allocation hints in the editor (0011, 0026): with `allocationHints: true` in the language
+  server's initialization options (`zsharp.allocationHints` in VS Code,
+  `lsp.zs.initialization_options` in Zed), each line shows what it does to the heap, from the
+  compiler's passes after checking: `allocates ×2`, `reuses t`, `copies on write`, the objects
+  and their sizes in the tooltip (`builds a cell of Tree (Node, 32 B)`). A line counts the one
+  path through it that allocates most, so a match's arms (and a decision tree's copies of one)
+  aren't added up. Hover on a function adds what its own code allocates and whether
+  `[<NoAlloc>]` would pass, or the chain to what doesn't. A module of a project (a `zs.toml`
+  above it naming another main file) has the hints the project's program gives its code.
+- The compiler is faster, found with its own allocation hints and a profiler: building itself from
+  an empty cache takes 16.8 s where it took 23.8 s, its own passes 3.7 s where they took 8.1 s,
+  with 217 million allocations instead of 626 million and a peak of 744 MB instead of 859. A node's children are listed without copying the node, the names
+  an expression binds and uses are gathered in one walk, a type a substitution leaves as it is
+  isn't copied, code generation keeps each type's LLVM type and each union's cases, borrowed
+  parameters are worked out again only for the functions whose callees changed, and reference
+  counting no longer makes a closure of its whole state at every node. A change to the inliner
+  or closure conversion rebuilds in 0.65 s where it took 4.7 s: their functions that take
+  functions say those are pure, so a caller with effects no longer compiles its own copy of them.
+- A program with threads has less code: a type's share and move walks are one function (the mode
+  an argument), and a closure's walk and drop are one function for each list of captured types,
+  not one for each closure. The compiler's binary is 9% smaller, its IR 8%.
+- A program with threads allocates faster on macOS: what the allocator keeps for a thread (its
+  counts, the pool's free lists and chunk) is one thread-local, found once per allocation; each
+  was its own, and macOS finds a thread-local by a call (the compiler spent 4% of its time there).
+- A build whose checked modules came from the cache, made by a build that named a file another
+  way (`tests/x.zs`, then its full path), gives a pass's error its file and line: it printed
+  `: error:` with neither.
 - The guide's "Z# for F# programmers" page (`docs/guide/17-from-fsharp.md`), and posts on the
   strongest results (`docs/posts`: Perceus on a Cortex-M, atomic counts only where threads meet,
   SIMD next to C).

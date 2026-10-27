@@ -106,11 +106,27 @@ let borrowingWith (types: Map<string, TypeInfo>) (entries: Set<string>) (externa
       let heapPars = List.filter (fun (_, (_, t)) -> heap t) (List.indexed f.pars)
       borrowedOf.Value <- Map.add f.name (Set.ofList (List.map fst heapPars)) borrowedOf.Value
   let fnOf = Map.ofList (List.map (fun (f: MFun) -> (f.name, f)) funs)
-  let changed = ref true
-  // each round from the sets of the round before: they only shrink, so the rounds end at the same
-  // sets in any order. On this thread: a round reads every function's code, which another thread
-  // could read only shared, every count of it atomic
-  while changed.Value do
+  // who calls each function directly: a function's set depends on its callees' and its own, so
+  // it's looked at again only when one of those shrank
+  let callersOf = ref Map.empty
+  let rec calls (caller: string) (e: CExpr) =
+    match e.k with
+    | CCallDirect(g, _) ->
+      callersOf.Value <- Map.add g (Set.add caller (Option.defaultValue Set.empty (Map.tryFind g callersOf.Value))) callersOf.Value
+    | _ -> ()
+    List.iter (calls caller) (children e.k)
+  for f in funs do
+    if Map.containsKey f.name borrowedOf.Value then
+      calls f.name f.body
+  // each function's body with the aliases of its set's parameters elided, for the set it was made
+  // for (made again only when the set shrank)
+  let elided = ref Map.empty
+  let pending = ref (Set.ofList (List.map fst (Map.toList borrowedOf.Value)))
+  // each round, the functions whose own or callees' sets shrank in the round before, from that
+  // round's sets: they only shrink, so the rounds end at the same sets in any order. On this
+  // thread: a round reads the functions' code, which another thread could read only shared, every
+  // count of it atomic
+  while not (Set.isEmpty pending.Value) do
     let current = borrowedOf.Value
     let fewer (entry: string * Set<int>) : option<string * Set<int>> =
       // the parameters of the set the body uses in other ways, in one walk
@@ -153,31 +169,25 @@ let borrowingWith (types: Map<string, TypeInfo>) (entries: Set<string>) (externa
           List.iter walk (children e.k)
         | k -> List.iter walk (children k)
       if not (Set.isEmpty set) then
-        walk (elideAliases (fun x -> Map.containsKey x index) f.body)
+        let body =
+          match Map.tryFind name elided.Value with
+          | Some(made, b) when made = set -> b
+          | _ ->
+            let b = elideAliases (fun x -> Map.containsKey x index) f.body
+            elided.Value <- Map.add name (set, b) elided.Value
+            b
+        walk body
       if Set.isEmpty bad.Value then None else Some(name, Set.difference set bad.Value)
-    let updates = List.choose fewer (Map.toList current)
-    changed.Value <- not (List.isEmpty updates)
+    let now = List.choose (fun (n: string) -> Option.map (fun (s: Set<int>) -> (n, s)) (Map.tryFind n current)) (Set.toList pending.Value)
+    let updates = List.choose fewer now
+    pending.Value <- Set.empty
     for (name, set) in updates do
       borrowedOf.Value <- Map.add name set borrowedOf.Value
+      // looked at again: it, with its smaller set, and its callers
+      pending.Value <- Set.add name (Set.union pending.Value (Option.defaultValue Set.empty (Map.tryFind name callersOf.Value)))
   borrowedOf.Value
 
 let borrowing (types: Map<string, TypeInfo>) (entries: Set<string>) (funs: list<MFun>) : Map<string, Set<int>> = borrowingWith types entries (fun _ -> None) funs
-
-let private isString (e: CExpr) : bool =
-  match e.ty with
-  | TCon("string", []) -> true
-  | _ -> false
-
-let private isConcat (e: CExpr) : bool =
-  match e.k with
-  | CBin(op, a, _) -> (op = "+" || op = "wrap+") && isString a
-  | _ -> false
-
-// a string built with +: its pieces, in order
-let rec private flatten (e: CExpr) : list<CExpr> =
-  match e.k with
-  | CBin(_, a, b) when isConcat e -> List.append (flatten a) (flatten b)
-  | _ -> [ e ]
 
 // whether a path of e ends in a jump to a join point
 let rec private jumps (e: CExpr) : bool =
@@ -255,7 +265,7 @@ let private lowerFun (types: Map<string, TypeInfo>) (borrowedParams: Map<string,
   let rec printPieces (e: CExpr) : CExpr =
     match e.k with
     | CPrim(op, [ arg ]) when (op = "print" || op = "println") && isConcat arg ->
-      let temps = List.map (fun (p: CExpr) -> (tmp (), printPieces p)) (flatten arg)
+      let temps = List.map (fun (p: CExpr) -> (tmp (), printPieces p)) (concatPieces arg)
       let last = List.length temps - 1
       let pieces = List.mapi (fun i (t, p) -> mk (CPrim((if i = last then op else "print"), [ mk (CLocal t) p.ty ])) tUnit) temps
       let prints = List.reduce (fun a b -> mk (CSeq(a, b)) tUnit) pieces
@@ -365,12 +375,14 @@ let private lowerFun (types: Map<string, TypeInfo>) (borrowedParams: Map<string,
     // code after the current subexpression consumes; muts: the heap `mutable`s in scope
     let held = ref Set.empty
     let muts = ref Set.empty
-    let holding (extra: Set<string>) (g: unit -> CExpr) : CExpr =
+    // held from here to the release with what this gives back: around a call written in place
+    // (a thunk to run would be a closure of every variable the code it calls uses, made at
+    // every node)
+    let hold (extra: Set<string>) : Set<string> =
       let saved = held.Value
       held.Value <- Set.union saved extra
-      let r = g ()
-      held.Value <- saved
-      r
+      saved
+    let release (saved: Set<string>) = held.Value <- saved
     // the layout of the cell a constructor builds (or a matched case is): with a tag?, and the
     // field types; None when the case isn't a cell (no fields, or a niche)
     let layoutOf (t: Ty) (tag: int) (fields: list<Ty>) : option<bool * list<Ty>> =
@@ -464,7 +476,9 @@ let private lowerFun (types: Map<string, TypeInfo>) (borrowedParams: Map<string,
       // what e reaches only through borrowed fields: borrowed by e, dropped after it, so a wait
       // inside e holds it (a match's value, while its pattern's variables are used)
       let viaFields = Set.difference (Set.intersect owned lv) fv
-      let e2 = holding viaFields (fun () -> rcIn (Set.intersect owned fv) (Set.union borrowed viaFields) e)
+      let saved = hold viaFields
+      let e2 = rcIn (Set.intersect owned fv) (Set.union borrowed viaFields) e
+      release saved
       // the drops go where e ends: after its value, or before a jump (which doesn't come back),
       // after the jump's arguments
       let rec after (x: CExpr) : CExpr =
@@ -497,16 +511,24 @@ let private lowerFun (types: Map<string, TypeInfo>) (borrowedParams: Map<string,
       drops dead e3
     // ordered subexpressions: each owned variable goes to the last one that uses it
     and rcList (owned: Set<string>) (borrowed: Set<string>) (es: list<CExpr>) : list<CExpr> =
-      let rec go (rest: list<CExpr>) (fvs: list<Set<string>>) : list<CExpr> =
-        match (rest, fvs) with
-        | (ei :: more, fi :: later0) ->
-          let later = List.fold Set.union Set.empty later0
+      let fvs = List.map live es
+      // what the subexpressions after each one need alive, made from the last back (once, not
+      // once for each)
+      let rec suffixes (rs: list<Set<string>>) (acc: Set<string>) (out: list<Set<string>>) =
+        match rs with
+        | [] -> out
+        | f :: more -> suffixes more (Set.union f acc) (acc :: out)
+      let rec go (rest: list<CExpr>) (fs: list<Set<string>>) (afters: list<Set<string>>) : list<CExpr> =
+        match (rest, fs, afters) with
+        | (ei :: more, fi :: fr, later :: lr) ->
           let mine = Set.intersect owned fi
           let oi = Set.difference mine later
-          let r = holding (Set.intersect owned later) (fun () -> rc oi (Set.union borrowed (Set.difference mine oi)) ei)
-          r :: go more later0
+          let saved = hold (Set.intersect owned later)
+          let r = rc oi (Set.union borrowed (Set.difference mine oi)) ei
+          release saved
+          r :: go more fr lr
         | _ -> []
-      go es (List.map live es)
+      go es fvs (suffixes (List.rev fvs) Set.empty [])
     // let-binds a non-variable subexpression so it can be inspected by name
     and viaTemp (owned: Set<string>) (borrowed: Set<string>) (sub: CExpr) (build: CExpr -> CExpr) : CExpr =
       let t = tmp ()
@@ -557,7 +579,9 @@ let private lowerFun (types: Map<string, TypeInfo>) (borrowedParams: Map<string,
         let fb = live body
         let fvv = live w
         let ov = Set.difference (Set.intersect owned fvv) fb
-        let w2 = holding (Set.difference owned ov) (fun () -> rc ov (Set.union borrowed (Set.difference (Set.intersect owned fvv) ov)) w)
+        let saved = hold (Set.difference owned ov)
+        let w2 = rc ov (Set.union borrowed (Set.difference (Set.intersect owned fvv) ov)) w
+        release saved
         let ob0 = Set.difference owned ov
         let ob = if heap w.ty then Set.add x ob0 else ob0
         re (CLet(x, w2, rc ob borrowed body))
@@ -565,7 +589,9 @@ let private lowerFun (types: Map<string, TypeInfo>) (borrowedParams: Map<string,
         let fb = live body
         let fvv = live w
         let ov = Set.difference (Set.intersect owned fvv) fb
-        let w2 = holding (Set.difference owned ov) (fun () -> rc ov (Set.union borrowed (Set.difference (Set.intersect owned fvv) ov)) w)
+        let saved = hold (Set.difference owned ov)
+        let w2 = rc ov (Set.union borrowed (Set.difference (Set.intersect owned fvv) ov)) w
+        release saved
         let saved = muts.Value
         if heap w.ty then
           muts.Value <- Set.add x muts.Value
@@ -622,7 +648,9 @@ let private lowerFun (types: Map<string, TypeInfo>) (borrowedParams: Map<string,
         // loop parts run repeatedly, so they only borrow; owned variables die after the loop, so a
         // wait inside it holds them
         let all = Set.union owned borrowed
-        let loop = holding owned (fun () -> re (mapChildren (rc Set.empty all) e.k))
+        let saved = hold owned
+        let loop = re (mapChildren (rc Set.empty all) e.k)
+        release saved
         mk (CSeq(loop, drops owned (mk CUnit tUnit))) tUnit
       | CAssign(x, w) when heapVar x -> assignHeap owned borrowed e x w
       // the variable's own reference, moved out

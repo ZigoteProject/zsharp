@@ -134,7 +134,7 @@ A set of the list's elements.
 Set.union : Set<'a> -> Set<'a> -> Set<'a> when 'a : Ord
 ```
 
-The elements in either set.
+The elements in either set: the smaller one's added to the larger one.
 
 ### `Set.intersect`
 
@@ -142,7 +142,7 @@ The elements in either set.
 Set.intersect : Set<'a> -> Set<'a> -> Set<'a> when 'a : Ord
 ```
 
-The elements in both sets.
+The elements in both sets: the smaller one's that the larger one has.
 
 ### `Set.difference`
 
@@ -150,7 +150,7 @@ The elements in both sets.
 Set.difference : Set<'a> -> Set<'a> -> Set<'a> when 'a : Ord
 ```
 
-The elements of `a` that aren't in `b`.
+The elements of `a` that aren't in `b` (`a` itself when `b` has none of them).
 
 ### `Set.isSubset`
 

@@ -117,6 +117,8 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
       referenced = ref Set.empty
       referencedOrder = Buffer.empty
       reps = ref Map.empty
+      lltys = ref Map.empty
+      unions = ref Map.empty
       md = Buffer.empty
       mdCount = ref 0
       diFiles = ref Map.empty

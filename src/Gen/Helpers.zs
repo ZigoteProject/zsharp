@@ -23,95 +23,110 @@ and dropValue (g: G) (em: Emitter) (t: Ty) (v: string) =
   if heap g t then
     emit em $"call void {dropFn g t}({llty g t} {v})"
 
-/// dup, drop, share or move for a struct value: applied to each field that holds a count.
+// a struct value's fields: a tuple's, a fixed array's elements, a record's
+and private structFields (g: G) (t: Ty) : list<Ty> =
+  match t with
+  | TTuple ts -> ts
+  | TCon("fixed", [ el; TCon(n, []) ]) -> List.replicate (toInt n) el
+  | TCon(n, args) ->
+    match (Map.find n g.types).def with
+    | RecordDef fs -> List.map (fun (_, ft) -> substGen g args ft) fs
+    | UnionDef _
+    | CUnionDef _ -> []
+  | _ -> []
+
+/// dup or drop for a struct value: applied to each field that holds a count.
 and structHelper (g: G) (kind: string) (t: Ty) : string =
   let name = $"@\"{kind}.{showF g t}\""
   if firstTime g name then
-    let fields =
-      match t with
-      | TTuple ts -> ts
-      | TCon("fixed", [ el; TCon(n, []) ]) -> List.replicate (toInt n) el
-      | TCon(n, args) ->
-        match (Map.find n g.types).def with
-        | RecordDef fs -> List.map (fun (_, ft) -> substGen g args ft) fs
-        | UnionDef _
-        | CUnionDef _ -> []
-      | _ -> []
     let em = emitter ()
     let one (i: int) (ft: Ty) =
       if heap g ft then
         let f = instr em $"extractvalue {llty g t} %v, {i}"
-        match kind with
-        | "dup" -> dupValue g em ft f
-        | "share" -> shareValue g em ft f
-        | "move" -> moveValue g em ft f
-        | _ -> dropValue g em ft f
-    List.iteri one fields
+        if kind = "dup" then dupValue g em ft f else dropValue g em ft f
+    List.iteri one (structFields g t)
     emit em "ret void"
     helper g $"define private void {name}({llty g t} %v) {{\n{bodyOf em}}}\n\n"
+  name
+
+// walk.T for a struct value: each field that holds a count walked, sharing or moving (%move)
+and private structWalk (g: G) (t: Ty) : string =
+  let name = $"@\"walk.{showF g t}\""
+  if firstTime g name then
+    let em = emitter ()
+    let one (i: int) (ft: Ty) =
+      if heap g ft then
+        walkIn g em ft (instr em $"extractvalue {llty g t} %v, {i}") "%move"
+    List.iteri one (structFields g t)
+    emit em "ret void"
+    helper g $"define private void {name}({llty g t} %v, i1 %move) {{\n{bodyOf em}}}\n\n"
   name
 
 /// Marks a value's objects shared before it crosses to another thread (DESIGN §7.1): a
 /// thread-local count n becomes -n, which every thread then changes atomically. The walk stops at
 /// static objects and at shared ones, whose objects are shared already.
-and shareValue (g: G) (em: Emitter) (t: Ty) (v: string) = walkValue g "share" em t v
+and shareValue (g: G) (em: Emitter) (t: Ty) (v: string) = walkIn g em t v "false"
 
 /// Moves a value to another thread (decision 75): an object the moved value holds the only
 /// reference to (a count of 1) stays thread-local, the receiver's now, and what it holds moves in
 /// turn; an object another reference reaches (a count above 1) is marked shared with everything
 /// under it, as shareValue does. The crossing has consumed the value, so a count of 1 means the
 /// sender holds nothing of it.
-and moveValue (g: G) (em: Emitter) (t: Ty) (v: string) = walkValue g "move" em t v
+and moveValue (g: G) (em: Emitter) (t: Ty) (v: string) = walkIn g em t v "true"
 
-and walkValue (g: G) (kind: string) (em: Emitter) (t: Ty) (v: string) =
+// a value's walk, sharing it or moving it as `move` (an i1: true, false, or a walk's own %move)
+// says
+and walkIn (g: G) (em: Emitter) (t: Ty) (v: string) (move: string) =
   if heap g t then
     match llty g t with
-    | "ptr" -> emit em $"call void {walkFn g kind t}(ptr {v})"
-    | lt -> emit em $"call void {structHelper g kind t}({lt} {v})"
+    | "ptr" -> emit em $"call void {walkFn g t}(ptr {v}, i1 {move})"
+    | lt -> emit em $"call void {structWalk g t}({lt} {v}, i1 {move})"
 
-and shareFn (g: G) (t: Ty) : string = walkFn g "share" t
-
-/// share.T or move.T: the walk at one object, then into what it holds, the same in both modes.
-and walkFn (g: G) (kind: string) (t: Ty) : string =
-  let name = $"@\"{kind}.{showF g t}\""
+/// walk.T: the walk at one object, sharing it or moving it (%move), then into what it holds the
+/// same way. One function for both, so a type's walk is made once.
+and walkFn (g: G) (t: Ty) : string =
+  let name = $"@\"walk.{showF g t}\""
   if firstTime g name then
     let em = emitter ()
-    let inner (ft: Ty) (fv: string) = walkValue g kind em ft fv
+    let inner (ft: Ty) (fv: string) = walkIn g em ft fv "%move"
     match repOfUnion g t with
     | Some(Niche(_, payload)) ->
       // the payload itself, or the static @zs.none
-      emit em $"musttail call void {walkFn g kind payload}(ptr %p)"
+      emit em $"musttail call void {walkFn g payload}(ptr %p, i1 %move)"
       emit em "ret void"
     | _ ->
       let rc = instr em "load atomic i32, ptr %p monotonic, align 4"
-      if kind = "share" then
-        let local = instr em $"icmp sgt i32 {rc}, 0"
-        emit em $"br i1 {local}, label %mark, label %done"
-        enter em "mark"
-        let neg = instr em $"sub i32 0, {rc}"
-        emit em $"store i32 {neg}, ptr %p"
-        // ZS_STATS's count
-        instr em "atomicrmw add ptr @zs_marked, i_W 1 monotonic" |> ignore
-      else
-        // only the moved value's: it stays local; another reference's: shared
-        let only = instr em $"icmp eq i32 {rc}, 1"
-        emit em $"br i1 {only}, label %mark, label %other"
-        enter em "other"
-        let more = instr em $"icmp sgt i32 {rc}, 1"
-        emit em $"br i1 {more}, label %shared, label %done"
-        enter em "shared"
-        emit em $"musttail call void {shareFn g t}(ptr %p)"
-        emit em "ret void"
-        enter em "mark"
+      emit em "br i1 %move, label %moving, label %sharing"
+      // shared: a thread-local count n becomes -n; a static or shared object stops the walk
+      enter em "sharing"
+      let local = instr em $"icmp sgt i32 {rc}, 0"
+      emit em $"br i1 {local}, label %mark, label %done"
+      enter em "mark"
+      let neg = instr em $"sub i32 0, {rc}"
+      emit em $"store i32 {neg}, ptr %p"
+      // ZS_STATS's count
+      instr em "atomicrmw add ptr @zs_marked, i_W 1 monotonic" |> ignore
+      emit em "br label %fields"
+      // moved: only the moved value's, it stays local and what it holds moves; another
+      // reference's, it's shared with all it holds
+      enter em "moving"
+      let only = instr em $"icmp eq i32 {rc}, 1"
+      emit em $"br i1 {only}, label %fields, label %other"
+      enter em "other"
+      let more = instr em $"icmp sgt i32 {rc}, 1"
+      emit em $"br i1 {more}, label %shared, label %done"
+      enter em "shared"
+      emit em $"musttail call void {name}(ptr %p, i1 false)"
+      emit em "ret void"
+      enter em "fields"
       match t with
       | TFun _ ->
-        // what the closure captured: its description's share or move function
+        // what the closure captured: its description's walk
         let ip = instr em "getelementptr { i_W, ptr, ptr }, ptr %p, i32 0, i32 2"
         let inf = instr em $"load ptr, ptr {ip}"
-        let field = if kind = "share" then 3 else 4
-        let fp = instr em $"getelementptr {{ ptr, i32, ptr, ptr, ptr }}, ptr {inf}, i32 0, i32 {field}"
+        let fp = instr em $"getelementptr {{ ptr, i32, ptr, ptr, ptr }}, ptr {inf}, i32 0, i32 3"
         let f = instr em $"load ptr, ptr {fp}"
-        emit em $"musttail call void {f}(ptr %p)"
+        emit em $"musttail call void {f}(ptr %p, i1 %move)"
         emit em "ret void"
       | TCon("array", [ el ]) when heap g el ->
         let lp = instr em "getelementptr { i_W, i_W }, ptr %p, i32 0, i32 1"
@@ -119,7 +134,7 @@ and walkFn (g: G) (kind: string) (t: Ty) : string =
         emit em "br label %loop"
         enter em "loop"
         let i = tmp em
-        emit em $"{i} = phi i_W [ 0, %mark ], [ %next, %body ]"
+        emit em $"{i} = phi i_W [ 0, %fields ], [ %next, %body ]"
         let c = instr em $"icmp slt i_W {i}, {len}"
         emit em $"br i1 {c}, label %body, label %done"
         enter em "body"
@@ -152,7 +167,7 @@ and walkFn (g: G) (kind: string) (t: Ty) : string =
           for (ft, fv) in List.take (List.length refs - 1) refs do
             inner ft fv
           if llty g lt = "ptr" then
-            emit em $"musttail call void {walkFn g kind lt}(ptr {lv})"
+            emit em $"musttail call void {walkFn g lt}(ptr {lv}, i1 %move)"
             emit em "ret void"
           else
             inner lt lv
@@ -161,7 +176,7 @@ and walkFn (g: G) (kind: string) (t: Ty) : string =
       | _ -> emit em "br label %done"
     enter em "done"
     emit em "ret void"
-    helper g $"define private void {name}(ptr %p) {{\n{bodyOf em}}}\n\n"
+    helper g $"define private void {name}(ptr %p, i1 %move) {{\n{bodyOf em}}}\n\n"
   name
 
 /// A Buffer's functions that change its length, per element type (Core's bufferDef): push,
@@ -620,29 +635,33 @@ and stub (g: G) (f: string) (k: int) : string =
   name
 
 /// What a closure of f holding k parameters is, for its users: its drop function, the number of
-/// parameters it still takes, code taking all of them at once, and (with threads) its share and
-/// move functions.
+/// parameters it still takes, code taking all of them at once, and (with threads) the walk of
+/// what it captured; the last slot is unused.
 and info (g: G) (f: string) (k: int) : string =
   let name = $"@\"cloinfo.{f}.{k}\""
   if firstTime g name then
     let n = List.length (Map.find f g.fnTable).pars
-    let share = if g.opts.threaded then captureStub g "share" f k else "null"
-    let move = if g.opts.threaded then captureStub g "move" f k else "null"
-    let drop = dropStub g f k
+    let env = List.take k (List.map snd (Map.find f g.fnTable).pars)
+    let walk = if g.opts.threaded then captureWalk g env else "null"
+    let drop = dropStub g env
     let all = full g f k
-    topLine g $"{name} = private unnamed_addr constant {{ ptr, i32, ptr, ptr, ptr }} {{ ptr {drop}, i32 {n - k}, ptr {all}, ptr {share}, ptr {move} }}"
+    topLine g $"{name} = private unnamed_addr constant {{ ptr, i32, ptr, ptr, ptr }} {{ ptr {drop}, i32 {n - k}, ptr {all}, ptr {walk}, ptr null }}"
   name
 
-/// The objects a closure of f holding k parameters captured, marked shared or moved (kind) after
-/// the closure itself was (walkFn).
-and captureStub (g: G) (kind: string) (f: string) (k: int) : string =
-  let name = $"@\"clo{kind}.{f}.{k}\""
+// a closure environment's types, as its helpers are named: a helper of one serves every closure
+// that captured values of those types
+and private envName (g: G) (env: list<Ty>) : string = String.join ", " (List.map (showF g) env)
+
+/// The objects a closure captured, shared or moved (%move) after the closure itself was
+/// (walkFn): one function for every closure whose captures have these types.
+and captureWalk (g: G) (env: list<Ty>) : string =
+  let name = $"@\"clowalk.{envName g env}\""
   if firstTime g name then
     let em = emitter ()
-    for (t, x) in loadEnv g em (List.take k (List.map snd (Map.find f g.fnTable).pars)) do
-      walkValue g kind em t x
+    for (t, x) in loadEnv g em env do
+      walkIn g em t x "%move"
     emit em "ret void"
-    helper g $"define private void {name}(ptr %clo) {{\n{bodyOf em}}}\n\n"
+    helper g $"define private void {name}(ptr %clo, i1 %move) {{\n{bodyOf em}}}\n\n"
   name
 
 /// Code for a closure of f holding its first k parameters that takes all the others at once.
@@ -667,11 +686,13 @@ and full (g: G) (f: string) (k: int) : string =
       helper g $"define private {rt} {name}(ptr %clo, {pars}) {{\n{bodyOf em}}}\n\n"
     name
 
-and dropStub (g: G) (f: string) (k: int) : string =
-  let name = $"@\"clodrop.{f}.{k}\""
+// a closure's drop: the closure freed, what it captured dropped; one function for every closure
+// whose captures have these types
+and dropStub (g: G) (env0: list<Ty>) : string =
+  let name = $"@\"clodrop.{envName g env0}\""
   if firstTime g name then
     let em = emitter ()
-    let env = loadEnv g em (List.take k (List.map snd (Map.find f g.fnTable).pars))
+    let env = loadEnv g em env0
     emit em "call void @zs_free(ptr %clo)"
     for (t, x) in env do
       dropValue g em t x

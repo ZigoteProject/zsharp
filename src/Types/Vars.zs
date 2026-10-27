@@ -3,7 +3,12 @@
 /// trial that misses undoes what it bound.
 open Ty
 
+/// The variables: one heap cell, read field by field, so passing them on is one count, not one
+/// for each buffer (they're passed to nearly every function on types).
 type Vars =
+  | Vars of VarsData
+
+and VarsData =
   { /// each variable's binding (None: free)
     links: Buffer<option<Ty>>
     kinds: Buffer<Kind>
@@ -14,14 +19,36 @@ type Vars =
     /// how many trials are open
     trials: ref<int> }
 
+type Vars with
+  member v.links =
+    match v with
+    | Vars { links = x } -> x
+  member v.kinds =
+    match v with
+    | Vars { kinds = x } -> x
+  member v.trailVar =
+    match v with
+    | Vars { trailVar = x } -> x
+  member v.trailLink =
+    match v with
+    | Vars { trailLink = x } -> x
+  member v.trailKind =
+    match v with
+    | Vars { trailKind = x } -> x
+  member v.trials =
+    match v with
+    | Vars { trials = x } -> x
+
 /// No variables yet.
 let make () : Vars =
-  { links = Buffer.empty
-    kinds = Buffer.empty
-    trailVar = Buffer.empty
-    trailLink = Buffer.empty
-    trailKind = Buffer.empty
-    trials = ref 0 }
+  let none : VarsData =
+    { links = Buffer.empty
+      kinds = Buffer.empty
+      trailVar = Buffer.empty
+      trailLink = Buffer.empty
+      trailKind = Buffer.empty
+      trials = ref 0 }
+  Vars none
 
 /// A new free variable of a kind.
 let fresh (v: Vars) (k: Kind) : Ty =

@@ -264,7 +264,7 @@ Applies `f` to every element and keeps the values of the `Some` results.
 List.collect : ('a -> list<'b>) -> list<'a> -> list<'b>
 ```
 
-Applies `f` to every element and concatenates the resulting lists.
+Applies `f` to every element and concatenates the resulting lists. O(n) in all the elements.
 
 ### `List.concat`
 

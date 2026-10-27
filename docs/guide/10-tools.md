@@ -192,6 +192,7 @@ lldb shows the same, with its commands (`breakpoint set -n square`, `breakpoint 
 - tree-sitter highlighting and outline;
 - the `zs lsp` language server: errors as you type, hover with types (effects included) and docs, go to definition, references, completion, inlay hints (types, and a function's inferred effects before its `=`), document symbols and formatting;
 - rename (a function, a type, a case, a local or a record field, in every open file's program), signature help inside a call, and code actions: add a missing match case, `open` the module an unknown name is in (or qualify it), write a binder's type;
+- allocation hints, once turned on: what each line does to the heap (`allocates ×2`, `reuses t`, `copies on write`, with the objects and their sizes in the tooltip), and on hover what a function's own code allocates and whether `[<NoAlloc>]` would pass, or the chain to what doesn't;
 - the `zs mcp` context server, so Zed's agent can check, build and run code and look up documentation.
 
 The extension finds `zs` on your `PATH`. Or set the path in Zed's settings:
@@ -201,11 +202,13 @@ The extension finds `zs` on your `PATH`. Or set the path in Zed's settings:
 "context_servers": { "zs": { "command": "/path/to/zs", "args": ["mcp"] } }
 ```
 
+Allocation hints are off until the settings turn them on, since the server compiles the program's code for them after each change: `"lsp": { "zs": { "initialization_options": { "allocationHints": true } } }`. They come from the code the compiler makes, after inlining, so a small function's allocations show at the line that calls it too. A module of a project (a `zs.toml` above it naming another main file) gets them from the project's program, so opening any of its files shows them; code that no entry reaches (`main`, a test, an export) has none.
+
 ### VS Code
 
 `editors/vscode` is a VS Code extension (1.101 or later). Package it with `npx @vscode/vsce package` in that folder and install the `.vsix`, or open the folder and press F5. It gives what the Zed extension does: TextMate highlighting, the language server's features, and the `zs mcp` server for the agent (Copilot's agent mode).
 
-It finds `zs` on your `PATH`, or set `"zsharp.path": "/path/to/zs"`; `zsharp.lsp.arguments` and `zsharp.mcp.arguments` change the arguments. It stays off in an untrusted workspace, whose settings could point it at another program.
+It finds `zs` on your `PATH`, or set `"zsharp.path": "/path/to/zs"`; `zsharp.lsp.arguments` and `zsharp.mcp.arguments` change the arguments, and `"zsharp.allocationHints": true` turns on the allocation hints. It stays off in an untrusted workspace, whose settings could point it at another program.
 
 ### Rider
 

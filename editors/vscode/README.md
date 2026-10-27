@@ -45,6 +45,7 @@ The same grammar and language configuration give the Rider plugin (`../rider`) i
 | `zsharp.path` | `""` | `zs`, for both servers; empty: `zs` on `PATH` |
 | `zsharp.lsp.arguments` | `["lsp"]` | arguments that start the language server |
 | `zsharp.mcp.arguments` | `["mcp"]` | arguments that start the MCP server |
+| `zsharp.allocationHints` | `false` | what each line allocates, reuses or may copy, as inlay hints, and a function's summary on hover |
 
 The extension stays off in an untrusted workspace (Restricted Mode): a workspace's settings can
 set `zsharp.path`, so trusting the workspace is trusting the program it names. Highlighting still

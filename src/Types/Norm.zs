@@ -95,14 +95,30 @@ let measMul (v: Vars) (a: Ty) (b: Ty) : Ty = normal v (TMeas([], [ (a, 1); (b, 1
 let measDiv (v: Vars) (a: Ty) (b: Ty) : Ty = normal v (TMeas([], [ (a, 1); (b, -1) ]))
 
 /// Replaces TGen i with args[i].
+// whether substGen makes a type other than t: one with a type scheme's variable in it, a variable
+// bound since, or a unit of measure (made normal again)
+let rec private changes (v: Vars) (t: Ty) : bool =
+  match t with
+  | TGen _
+  | TMeas _ -> true
+  | TVar i -> Option.isSome v.links.[i]
+  | TCon(_, a)
+  | TTuple a -> List.exists (changes v) a
+  | TFun(a, b, r) -> changes v a || changes v b || changes v r
+
 let rec substGen (v: Vars) (args: list<Ty>) (t: Ty) : Ty =
-  match prune v t with
-  | TGen i -> List.item i args
-  | TMeas(us, vs) -> normal v (TMeas(us, List.map (fun (x, e) -> (substGen v args x, e)) vs))
-  | TCon(n, a) -> TCon(n, List.map (substGen v args) a)
-  | TFun(a, b, r) -> TFun(substGen v args a, substGen v args b, substGen v args r)
-  | TTuple ts -> TTuple(List.map (substGen v args) ts)
-  | x -> x
+  // a type it leaves as it is (most of the field types code generation asks about) is that type
+  // itself, not a copy
+  if not (changes v t) then
+    t
+  else
+    match prune v t with
+    | TGen i -> List.item i args
+    | TMeas(us, vs) -> normal v (TMeas(us, List.map (fun (x, e) -> (substGen v args x, e)) vs))
+    | TCon(n, a) -> TCon(n, List.map (substGen v args) a)
+    | TFun(a, b, r) -> TFun(substGen v args a, substGen v args b, substGen v args r)
+    | TTuple ts -> TTuple(List.map (substGen v args) ts)
+    | x -> x
 
 // what an unconstrained variable of a kind becomes: int, f64, string, bool or unit, the first
 // the kind allows

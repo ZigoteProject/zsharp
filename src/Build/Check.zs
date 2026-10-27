@@ -116,7 +116,10 @@ let private checkModules (cx: Infer.Cx.Cx) (lib: list<Modules.Loaded>) (prog: li
       | None -> ()
       ifaces.[i] <- saved.ifaceHash
       seens.[i] <- saved.seenHash
-      Buffer.push { file = m.path; key = key; library = library; names = saved.names; funs = (fun () -> loadFuns key); sees = sees } units
+      // the functions name their file as this build does (the key has the full path, so a build
+      // naming it another way, relative or not, finds the same result)
+      let here (f: Core.Ir.FunDef) = { f with file = m.source.path }
+      Buffer.push { file = m.path; key = key; library = library; names = saved.names; funs = (fun () -> List.map here (loadFuns key)); sees = sees } units
       restoreNs <- restoreNs + start.ElapsedNanoseconds
     | None ->
       Buffer.push m fresh

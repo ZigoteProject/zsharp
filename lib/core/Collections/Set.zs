@@ -39,16 +39,55 @@ module Set =
   /// A set of the list's elements.
   let ofList (xs: list<'a>) = List.fold (fun s x -> Set.add x s) Set.empty xs
 
-  /// The elements in either set.
-  let union (a: Set<'a>) (b: Set<'a>) = List.fold (fun s x -> Set.add x s) a (Set.toList b)
+  // a tree's height: how deep it is, known at its root
+  let private height (s: Set<'a>) =
+    match s.items with
+    | MapLeaf -> 0
+    | MapNode (_, _, _, _, h) -> h
 
-  /// The elements in both sets.
+  // the set of elements in ascending order, without repeats: a balanced tree built from the middle
+  // out, with no comparisons
+  let private ofAscending (xs: list<'a>) : Set<'a> =
+    let a = Array.ofList xs
+    let rec build (lo: int) (hi: int) : Map<'a, unit> =
+      if lo >= hi then
+        MapLeaf
+      else
+        let mid = lo + (hi - lo) / 2
+        let l = build lo mid
+        let r = build (mid + 1) hi
+        let hl =
+          match l with
+          | MapLeaf -> 0
+          | MapNode (_, _, _, _, h) -> h
+        let hr =
+          match r with
+          | MapLeaf -> 0
+          | MapNode (_, _, _, _, h) -> h
+        MapNode (l, a.[mid], (), r, max hl hr + 1)
+    { items = build 0 (Array.length a) }
+
+  /// The elements in either set: the smaller one's added to the larger one.
+  let union (a: Set<'a>) (b: Set<'a>) =
+    if Set.isEmpty b then a
+    else if Set.isEmpty a then b
+    else if height a >= height b then List.fold (fun s x -> Set.add x s) a (Set.toList b)
+    else List.fold (fun s x -> Set.add x s) b (Set.toList a)
+
+  /// The elements in both sets: the smaller one's that the larger one has.
   let intersect (a: Set<'a>) (b: Set<'a>) =
-    Set.ofList (List.filter (fun x -> Set.contains x b) (Set.toList a))
+    if Set.isEmpty a || Set.isEmpty b then Set.empty
+    else if height a <= height b then
+      ofAscending (List.filter (fun x -> Set.contains x b) (Set.toList a))
+    else ofAscending (List.filter (fun x -> Set.contains x a) (Set.toList b))
 
-  /// The elements of `a` that aren't in `b`.
+  /// The elements of `a` that aren't in `b` (`a` itself when `b` has none of them).
   let difference (a: Set<'a>) (b: Set<'a>) =
-    Set.ofList (List.filter (fun x -> not (Set.contains x b)) (Set.toList a))
+    if Set.isEmpty a || Set.isEmpty b then a
+    else
+      let all = Set.toList a
+      let kept = List.filter (fun x -> not (Set.contains x b)) all
+      if List.length kept = List.length all then a else ofAscending kept
 
   /// Whether every element of `a` is in `b`.
   let isSubset (a: Set<'a>) (b: Set<'a>) =

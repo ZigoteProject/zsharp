@@ -176,14 +176,78 @@ let mapChildren (f: CExpr -> CExpr) (k: CKind) : CKind =
     CJoin(j, ps, f b, r)
   | CJump(j, args) -> CJump(j, List.map f args)
 
-/// A node's direct child expressions, in evaluation order.
+/// A node's direct child expressions, in evaluation order (mapChildren's). Every pass walks the
+/// tree with it, so it builds no node and copies no list: a node's own list of arguments is the
+/// answer when it has one.
 let children (k: CKind) : list<CExpr> =
-  let acc = Buffer.empty
-  let push (e: CExpr) =
-    Buffer.push e acc
-    e
-  mapChildren push k |> ignore
-  Array.toList (Buffer.toArray acc)
+  match k with
+  | CInt _
+  | CFloat _
+  | CBool _
+  | CStr _
+  | CUnit
+  | CLocal _
+  | CGlobalVal _
+  | CGlobal _ -> []
+  | CExtern(_, args)
+  | CPrim(_, args)
+  | CTuple args
+  | CCtor(_, _, args)
+  | CPerform(_, _, args)
+  | CCallDirect(_, args)
+  | CMkClosure(_, args)
+  | CCtorAt(_, _, _, args)
+  | CJump(_, args) -> args
+  | CApp(h, args)
+  | CApplyClo(h, args) -> h :: args
+  | CBin(_, a, b)
+  | CLet(_, a, b)
+  | CSeq(a, b)
+  | CLetMut(_, a, b)
+  | CArraySet(_, a, b)
+  | CWhile(a, b)
+  | CLetFun(_, _, _, a, b) -> [ a; b ]
+  | CNeg a
+  | CNot a
+  | CField(a, _)
+  | CAssign(_, a)
+  | CLine(_, a)
+  | CLam(_, a)
+  | CDup(_, _, a)
+  | CDrop(_, _, a)
+  | CDropFields(_, _, _, _, _, a)
+  | CFreeToken(_, a) -> [ a ]
+  | CIf(c, t, e) -> [ c; t; e ]
+  | CFor(_, a, s, b, body) -> [ a; s; b; body ]
+  | CLetRec(fs, rest) -> List.append (List.map (fun (_, _, b) -> b) fs) [ rest ]
+  | CMatch(s, cases) ->
+    let arm (c: CPat * option<CExpr> * CExpr) =
+      match c with
+      | (_, Some g, b) -> [ g; b ]
+      | (_, None, b) -> [ b ]
+    s :: List.collect arm cases
+  | CHandle(_, b, cls, _, rb) -> b :: List.append (List.map (fun (_, _, _, c) -> c) cls) [ rb ]
+  // the rest runs first
+  | CJoin(_, _, b, r) -> [ r; b ]
+
+/// Whether e joins two strings with + (wrap+ in a [<Wrapping>] function).
+let isConcat (e: CExpr) : bool =
+  match e.k with
+  | CBin(op, a, _) ->
+    match a.ty with
+    | TCon("string", []) -> op = "+" || op = "wrap+"
+    | _ -> false
+  | _ -> false
+
+/// A string built with + (an interpolation is one): its pieces, in order, however the +s nest;
+/// e alone when it isn't one.
+let concatPieces (e: CExpr) : list<CExpr> =
+  // each piece put before the ones after it, right to left: no list copied
+  let rec go (x: CExpr) (after: list<CExpr>) : list<CExpr> =
+    match x.k with
+    | CBin(_, a, b) when isConcat x -> go a (go b after)
+    | _ -> x :: after
+  go e []
 
 /// The variables a pattern binds.
 let rec patVars (p: CPat) : list<string * Ty> =
@@ -213,8 +277,12 @@ let ownBinders (k: CKind) : list<string> =
   | CHandle(_, _, cls, (r, _), _) -> r :: List.concat (List.map (fun (_, ps, (k, _), _) -> k :: List.map fst ps) cls)
   | _ -> []
 
-/// The names bound inside an expression.
-let rec binders (e: CExpr) : list<string> = List.append (ownBinders e.k) (List.concat (List.map binders (children e.k)))
+/// The names bound inside an expression, a node's own before its children's.
+let binders (e: CExpr) : list<string> =
+  // one walk onto what's gathered (reversed at the end): a node appending its children's lists
+  // would copy each name once for every node above it
+  let rec go (acc: list<string>) (x: CExpr) : list<string> = List.fold go (List.fold (fun (a: list<string>) b -> b :: a) acc (ownBinders x.k)) (children x.k)
+  List.rev (go [] e)
 
 // the variables a node references itself (not through its children)
 let private ownRefs (e: CExpr) : list<string * Ty> =
@@ -227,8 +295,11 @@ let private ownRefs (e: CExpr) : list<string * Ty> =
   | CDropFields(x, t, _, _, _, _) -> [ (x, t) ]
   | _ -> []
 
-/// The variables an expression references.
-let rec refs (e: CExpr) : list<string * Ty> = List.append (ownRefs e) (List.concat (List.map refs (children e.k)))
+/// The variables an expression references, a node's own before its children's.
+let refs (e: CExpr) : list<string * Ty> =
+  // one walk, as binders
+  let rec go (acc: list<string * Ty>) (x: CExpr) : list<string * Ty> = List.fold go (List.fold (fun (a: list<string * Ty>) r -> r :: a) acc (ownRefs x)) (children x.k)
+  List.rev (go [] e)
 
 /// The variables free in an expression (names are unique: referenced and not bound inside).
 let freeVars (e: CExpr) : Set<string> =

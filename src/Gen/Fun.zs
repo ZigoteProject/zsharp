@@ -1121,6 +1121,33 @@ let rec gen (fx: F) (env: Map<string, Binding>) (tail: bool) (e: CExpr) : string
         emit em $"store {llty g a.ty} {v}, ptr {fp}"
       List.iteri store (List.zip args vs)
       c
+  // a string built with + (an interpolation is one): its pieces evaluated in order, then joined
+  // into one new string, where a + at a time would make one for each; an empty literal piece is
+  // left out, and a piece alone is the string itself
+  | CBin _ when isConcat e ->
+    let filled (p: CExpr) =
+      match p.k with
+      | CStr "" -> false
+      | _ -> true
+    let pieces = List.filter filled (concatPieces e)
+    let vs = List.map (gen fx env false) pieces
+    let joined =
+      match vs with
+      | [] -> strGlobal g ""
+      | [ v ] -> v
+      | [ va; vb ] -> instr em $"call ptr @zs_str_concat(ptr {va}, ptr {vb})"
+      | _ ->
+        let n = List.length vs
+        let slot = piecesSlot em n
+        let store (i: int) (v: string) =
+          let at = instr em $"getelementptr inbounds ptr, ptr {slot}, i32 {i}"
+          emit em $"store ptr {v}, ptr {at}"
+        List.iteri store vs
+        instr em $"call ptr @zs_str_concat_n(ptr {slot}, i_W {n})"
+    // the pieces are the join's to drop, a piece alone the result
+    if List.length vs > 1 then
+      List.iter (fun (pv: CExpr * string) -> dropValue g em (fst pv).ty (snd pv)) (List.zip pieces vs)
+    joined
   | CBin(op0, a, b) ->
     let va = gen fx env false a
     let vb = gen fx env false b
