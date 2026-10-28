@@ -392,6 +392,12 @@ if command -v node >/dev/null && bin/zs build tests/mcu/effects.zs --target wasm
   echo "ok   tests/mcu/effects.zs (effect handlers on wasm32, under node)"
 else echo "FAIL tests/mcu/effects.zs (wasm32)"; cat "$tmp/effects.log"; fail=1; fi
 
+# a string's hash is keyed per process (HashDoS): two runs hash the same string differently, each
+# the same way throughout
+if bin/zs build --strict tests/security/hash_key.zs -o "$tmp/hashkey" 2>"$tmp/hashkey.log" && h1=$("$tmp/hashkey") && h2=$("$tmp/hashkey") \
+   && [ "${h1%% *}" = true ] && [ "${h2%% *}" = true ] && [ "$h1" != "$h2" ]; then echo "ok   tests/security/hash_key.zs (a string's hash differs between runs)"
+else echo "FAIL tests/security/hash_key.zs"; cat "$tmp/hashkey.log"; echo "${h1:-} / ${h2:-}"; fail=1; fi
+
 # numbers as text whatever locale a C library sets (setlocale: GTK's, an ncurses program's): comma,
 # a locale whose decimal point is ',', made here (LC_NUMERIC alone)
 if [ "$(uname -s)" != Linux ] || ! command -v localedef >/dev/null; then echo "skip tests/security/locale.zs (it needs Linux's localedef)"

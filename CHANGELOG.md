@@ -167,7 +167,8 @@ programmers.
   The MCP `docs` tool and `zs test --doc` on a library file write their scratch program in your
   cache, not under a fixed name in the shared temporary directory, where another user's link
   there was followed, and a `.zs-doctest.zs` they put there first could change between its
-  writing and its build, which runs it.
+  writing and its build, which runs it. A build no longer leaves an empty file there for each
+  object it compiles.
 
 ### Library
 - `List.collect` and `List.concat` are linear: they copied what they'd gathered for every list,

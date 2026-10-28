@@ -585,7 +585,14 @@ let link (o: Options.Options) (built: Built) (linked: Modules.Linked) : result<l
   let jobs = List.concat [ [ runtime ]; List.choose ofPart built.parts; List.map ofC cSources ]
   // the biggest first: clang takes at least as long as its biggest job, which mustn't start last
   let fresh = List.sortBy (fun (j: Job) -> 0 - j.size) (List.filter (fun (j: Job) -> not (File.exists j.obj)) jobs)
-  let unique (j: Job) = j.obj + "." + Path.getFileName (Result.defaultValue "tmp" (File.createTemp "zs-")) + ".o"
+  // a name of its own beside the object, lent by a temporary file deleted at once (as writeWhole's:
+  // kept, each build left an empty one in the shared temporary directory)
+  let unique (j: Job) =
+    match File.createTemp "zs-" with
+    | Ok t ->
+      File.delete t |> ignore
+      j.obj + "." + Path.getFileName t + ".o"
+    | Error _ -> j.obj + ".tmp.o"
   let tmps = List.map unique fresh
   let cmds = List.map2 (fun (j: Job) (t: string) -> ("clang", List.concat [ j.flags; [ "-c"; "-Wno-override-module"; j.input; "-o"; t ] ])) fresh tmps
   let results = Tools.runMany cmds

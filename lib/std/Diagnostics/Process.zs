@@ -50,16 +50,17 @@ type Process =
 
 /// Functions for running programs.
 module Process =
-  let private nul = String.ofByte (u8 0)
+  // a function: a value computed at startup can't be in a library C links (zs build --lib)
+  let private nul () = String.ofByte (u8 0)
 
   // the runtime's arguments: each ended by a NUL, so "" is one too
   let private ended (args: list<string>) =
-    String.concat (List.map (fun (a: string) -> a + nul) args)
+    String.concat (List.map (fun (a: string) -> a + nul ()) args)
 
   // a NUL ends a C string: an argument "a\0b" would reach the program as two, a name or directory
   // as a shorter one, so a process given one isn't started
   let private refused (program: string) (strings: list<string>) : option<string> =
-    if List.exists (fun (x: string) -> String.contains nul x) (program :: strings) then
+    if List.exists (fun (x: string) -> String.contains (nul ()) x) (program :: strings) then
       Some $"cannot run {program}: an argument, the directory or the environment holds a NUL byte"
     else
       None
@@ -91,7 +92,7 @@ module Process =
     match refused s.program (dir :: List.append s.args vars) with
     | Some e -> Error e
     | None ->
-      let env = Option.map (fun _ -> String.join nul vars) s.environment
+      let env = Option.map (fun _ -> String.join (nul ()) vars) s.environment
       let pid =
         Native.processStart s.program (ended s.args) (Option.defaultValue "" env) (Option.isSome env) dir (mode s.stdin) (mode s.stdout) (mode s.stderr)
       if pid < 0 then
