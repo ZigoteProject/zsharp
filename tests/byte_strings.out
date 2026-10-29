@@ -4,9 +4,9 @@ Some 42
 136 17 9
 236
 202182159 Some 20
-HTTP/1.1 200 OK
-Content-Length: 72
-
+HTTP/1.1 200 OK\r
+Content-Length: 72\r
+\r
 {"msg":"tab	here , quote " and a long run of plain text past 16 bytes"}
 "{\"msg\":\"tab\there \u0001, quote \" and a long run of plain text past 16 bytes\"}"
 -9223372036854775808 7

@@ -29,7 +29,7 @@ let main () =
     |> Bytes.appendInt (String.length body)
     |> Bytes.append b"\r\n\r\n"
     |> Bytes.appendUtf8 body
-  println (String.ofBytes out)
+  println (String.replace (String.ofBytes out) "\r" "\\r")
   println (String.ofBytes (Bytes.appendJsonString body Buffer.empty))
   let ints =
     Buffer.empty
