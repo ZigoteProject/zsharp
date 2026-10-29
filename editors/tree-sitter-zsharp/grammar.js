@@ -39,7 +39,7 @@ module.exports = grammar({
 
   // _error_sentinel is never used by a rule: tree-sitter marks it valid only during error
   // recovery, which is how the scanner knows to stay out of the way
-  externals: $ => [$._newline, $._indent, $._dedent, $._error_sentinel],
+  externals: $ => [$._newline, $._indent, $._dedent, $._error_sentinel, $._record_indent],
 
   extras: $ => [/\s/, $.comment],
 
@@ -364,11 +364,11 @@ module.exports = grammar({
     question: $ => prec(PREC.question, seq($._expression, '?')),
 
     // a record may be the argument on the line after (`Some` then `{ x = 1 }` indented), as in F#
-    application: $ => prec.left(PREC.application, seq(field('function', $._primary), choice(
-      seq(repeat1(field('argument', $._primary)), optional($._next_line_record)),
-      $._next_line_record,
-    ))),
-    _next_line_record: $ => seq($._indent, field('argument', $.record), $._dedent),
+    application: $ => choice(
+      prec.left(PREC.application, seq(field('function', $._primary), repeat1(field('argument', $._primary)))),
+      prec(PREC.application, seq(field('function', choice($.identifier, $.qualified_identifier)), $._next_line_record)),
+    ),
+    _next_line_record: $ => seq($._record_indent, field('argument', $.record), $._dedent),
 
     _primary: $ => choice(
       $.computation_expression,

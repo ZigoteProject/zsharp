@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum TokenType { NEWLINE, INDENT, DEDENT, ERROR_SENTINEL };
+enum TokenType { NEWLINE, INDENT, DEDENT, ERROR_SENTINEL, RECORD_INDENT };
 
 #define MAX_DEPTH 255
 
@@ -137,6 +137,14 @@ bool tree_sitter_zsharp_external_scanner_scan(void *payload, TSLexer *lexer, con
     if ((n >= 2 && run[0] == '|' && run[1] == '>') || logic || (is_custom_operator(run) && !prefix)) return false;
 
     uint16_t current = s->indents[s->count - 1];
+
+    // a record on the line after its function (`Some` then `{ x = 1 }` indented): only a `{`
+    // opens it, so elsewhere in brackets a deeper line still separates fields and items
+    if (valid[RECORD_INDENT] && indent > current && lexer->lookahead == '{' && s->count < MAX_DEPTH) {
+        s->indents[s->count++] = (uint16_t)indent;
+        lexer->result_symbol = RECORD_INDENT;
+        return true;
+    }
 
     if (valid[INDENT] && indent > current && s->count < MAX_DEPTH) {
         s->indents[s->count++] = (uint16_t)indent;
