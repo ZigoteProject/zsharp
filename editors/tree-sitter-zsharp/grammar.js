@@ -48,6 +48,7 @@ module.exports = grammar({
   conflicts: $ => [
     [$.match_expression],
     [$.handle_expression],
+    [$.handle_expression, $._handle_name], // handle: a handler or a name, by whether `with` follows
     [$.function_expression],
     [$.if_expression],
     [$._parameter, $._pattern_atom],
@@ -103,7 +104,7 @@ module.exports = grammar({
         'let',
         optional('rec'),
         optional('private'),
-        field('name', choice($.identifier, $.qualified_identifier, $.active_pattern_name, $.operator_name)),
+        field('name', choice($.identifier, $._handle_name, $.qualified_identifier, $.active_pattern_name, $.operator_name)),
         repeat($._parameter),
         optional($.type_annotation),
         '=',
@@ -246,7 +247,7 @@ module.exports = grammar({
     do_bang: $ => seq('do', token.immediate('!'), field('value', $._body)),
     return_expression: $ => prec.right(seq('return', optional(token.immediate('!')), $._body)),
     let_binding: $ => seq('let', field('pattern', $._pattern), optional($.type_annotation), '=', field('value', $._body)),
-    let_function: $ => seq('let', optional('rec'), field('name', choice($.identifier, $.operator_name)), repeat1($._parameter), optional($.type_annotation), '=', field('body', $._body),
+    let_function: $ => seq('let', optional('rec'), field('name', choice($.identifier, $._handle_name, $.operator_name)), repeat1($._parameter), optional($.type_annotation), '=', field('body', $._body),
       repeat(seq($._newline, $.and_definition))),
     let_mutable: $ => seq('let', 'mutable', field('name', $.identifier), optional($.type_annotation), '=', field('value', $._body)),
     // x <- e, and x += e (each operator's compound: a place written once)
@@ -256,6 +257,7 @@ module.exports = grammar({
 
     _expression: $ => choice(
       $.if_expression,
+      $.let_in_expression,
       $.match_expression,
       $.handle_expression,
       $.function_expression,
@@ -278,15 +280,22 @@ module.exports = grammar({
       optional(seq(optional($._newline), 'else', field('else', $._body))),
     ),
 
+    // let y = x + 1 in y * 2, as in F#
+    let_in_expression: $ => prec.right(seq(
+      'let', field('pattern', $._pattern), optional($.type_annotation), '=', field('value', $._expression), 'in', field('body', $._body),
+    )),
+
     // like `if`: after an arm, a newline may lead to another `|` or to the next statement
     match_expression: $ => (seq(
-      'match', field('value', $._expression), 'with',
+      'match', field('value', choice($._expression, $.match_tuple)), 'with',
       choice(
         $.single_rule, // match p with (a, b) -> (b, a)
         repeat1(seq(optional($._newline), $.match_rule)),
         seq($._indent, repeat1(seq(optional($._newline), $.match_rule)), $._dedent),
       ),
     )),
+    // match a, b with: a tuple without its parentheses
+    match_tuple: $ => seq($._expression, repeat1(seq(',', $._expression))),
     single_rule: $ => prec.right(seq(field('pattern', $._pattern), '->', field('body', $._body))),
 
     // handle e with | E.op x, k -> … | return x -> …: e's operations of E given meaning
@@ -354,11 +363,17 @@ module.exports = grammar({
     unary_expression: $ => prec(PREC.unary, seq(choice('-', 'not', '~~~'), $._expression)),
     question: $ => prec(PREC.question, seq($._expression, '?')),
 
-    application: $ => prec.left(PREC.application, seq(field('function', $._primary), repeat1(field('argument', $._primary)))),
+    // a record may be the argument on the line after (`Some` then `{ x = 1 }` indented), as in F#
+    application: $ => prec.left(PREC.application, seq(field('function', $._primary), choice(
+      seq(repeat1(field('argument', $._primary)), optional($._next_line_record)),
+      $._next_line_record,
+    ))),
+    _next_line_record: $ => seq($._indent, field('argument', $.record), $._dedent),
 
     _primary: $ => choice(
       $.computation_expression,
       $.identifier,
+      $._handle_name,
       $.qualified_identifier,
       $.member_access,
       $.index_access,
@@ -455,6 +470,8 @@ module.exports = grammar({
     // ------------------------------------------------------------ tokens
 
     // ``name``: a name that may be a keyword (Parallel.for is defined as ``for``)
+    // `handle` is a keyword only where a handler starts, a name anywhere else
+    _handle_name: $ => alias('handle', $.identifier),
     identifier: $ => /[A-Za-z_][A-Za-z0-9_]*|``[^`\n]+``/,
     qualified_identifier: $ => token(seq(/[A-Z][A-Za-z0-9_]*/, repeat1(seq('.', /[A-Za-z_][A-Za-z0-9_]*/)))),
     number: $ => token(choice(/0[xX][0-9a-fA-F_]+/, /0[bB][01_]+/, /0[oO][0-7_]+/, /[0-9][0-9_]*\.[0-9][0-9_]*([eE][+-]?[0-9]+)?/, /[0-9][0-9_]*/)),
@@ -462,7 +479,8 @@ module.exports = grammar({
     boolean: $ => choice('true', 'false'),
     unit: $ => seq('(', ')'),
     string: $ => choice(
-      seq('"', repeat(choice($.string_content, $.escape_sequence)), '"'),
+      // b"…": the bytes, a span<u8>
+      seq(choice('"', 'b"'), repeat(choice($.string_content, $.escape_sequence)), '"'),
       // """…""": raw text, which may hold quotes and line breaks
       token(seq('"""', repeat(choice(/[^"]/, /"[^"]/, /""[^"]/)), '"""')),
     ),

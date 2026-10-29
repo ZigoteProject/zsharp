@@ -149,6 +149,10 @@
             "named": true
           },
           {
+            "type": "let_in_expression",
+            "named": true
+          },
+          {
             "type": "list",
             "named": true
           },
@@ -591,6 +595,10 @@
           "named": true
         },
         {
+          "type": "let_in_expression",
+          "named": true
+        },
+        {
           "type": "list",
           "named": true
         },
@@ -825,6 +833,10 @@
             "named": true
           },
           {
+            "type": "let_in_expression",
+            "named": true
+          },
+          {
             "type": "list",
             "named": true
           },
@@ -1017,6 +1029,10 @@
         },
         {
           "type": "layout_fact",
+          "named": true
+        },
+        {
+          "type": "let_in_expression",
           "named": true
         },
         {
@@ -1335,6 +1351,10 @@
           "named": true
         },
         {
+          "type": "let_in_expression",
+          "named": true
+        },
+        {
           "type": "list",
           "named": true
         },
@@ -1503,6 +1523,10 @@
         },
         {
           "type": "let_function",
+          "named": true
+        },
+        {
+          "type": "let_in_expression",
           "named": true
         },
         {
@@ -1760,6 +1784,10 @@
         },
         {
           "type": "let_function",
+          "named": true
+        },
+        {
+          "type": "let_in_expression",
           "named": true
         },
         {
@@ -2095,6 +2123,10 @@
             "named": true
           },
           {
+            "type": "let_in_expression",
+            "named": true
+          },
+          {
             "type": "list",
             "named": true
           },
@@ -2336,6 +2368,10 @@
           },
           {
             "type": "layout_fact",
+            "named": true
+          },
+          {
+            "type": "let_in_expression",
             "named": true
           },
           {
@@ -2699,6 +2735,10 @@
           "named": true
         },
         {
+          "type": "let_in_expression",
+          "named": true
+        },
+        {
           "type": "list",
           "named": true
         },
@@ -2975,6 +3015,10 @@
           "named": true
         },
         {
+          "type": "let_in_expression",
+          "named": true
+        },
+        {
           "type": "list",
           "named": true
         },
@@ -3131,6 +3175,10 @@
           },
           {
             "type": "layout_fact",
+            "named": true
+          },
+          {
+            "type": "let_in_expression",
             "named": true
           },
           {
@@ -3356,6 +3404,10 @@
         },
         {
           "type": "layout_fact",
+          "named": true
+        },
+        {
+          "type": "let_in_expression",
           "named": true
         },
         {
@@ -3636,6 +3688,10 @@
             "named": true
           },
           {
+            "type": "let_in_expression",
+            "named": true
+          },
+          {
             "type": "list",
             "named": true
           },
@@ -3803,6 +3859,10 @@
           },
           {
             "type": "layout_fact",
+            "named": true
+          },
+          {
+            "type": "let_in_expression",
             "named": true
           },
           {
@@ -4122,6 +4182,10 @@
             "named": true
           },
           {
+            "type": "let_in_expression",
+            "named": true
+          },
+          {
             "type": "list",
             "named": true
           },
@@ -4276,6 +4340,10 @@
             "named": true
           },
           {
+            "type": "let_in_expression",
+            "named": true
+          },
+          {
             "type": "list",
             "named": true
           },
@@ -4427,6 +4495,10 @@
           },
           {
             "type": "layout_fact",
+            "named": true
+          },
+          {
+            "type": "let_in_expression",
             "named": true
           },
           {
@@ -4664,6 +4736,10 @@
           "named": true
         },
         {
+          "type": "let_in_expression",
+          "named": true
+        },
+        {
           "type": "list",
           "named": true
         },
@@ -4863,6 +4939,10 @@
           "named": true
         },
         {
+          "type": "let_in_expression",
+          "named": true
+        },
+        {
           "type": "list",
           "named": true
         },
@@ -5019,6 +5099,10 @@
         },
         {
           "type": "layout_fact",
+          "named": true
+        },
+        {
+          "type": "let_in_expression",
           "named": true
         },
         {
@@ -5355,6 +5439,10 @@
             "named": true
           },
           {
+            "type": "let_in_expression",
+            "named": true
+          },
+          {
             "type": "list",
             "named": true
           },
@@ -5593,6 +5681,10 @@
             "named": true
           },
           {
+            "type": "let_in_expression",
+            "named": true
+          },
+          {
             "type": "list",
             "named": true
           },
@@ -5760,6 +5852,10 @@
           },
           {
             "type": "layout_fact",
+            "named": true
+          },
+          {
+            "type": "let_in_expression",
             "named": true
           },
           {
@@ -6013,6 +6109,10 @@
             "named": true
           },
           {
+            "type": "let_in_expression",
+            "named": true
+          },
+          {
             "type": "list",
             "named": true
           },
@@ -6153,6 +6253,408 @@
     }
   },
   {
+    "type": "let_in_expression",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "application",
+            "named": true
+          },
+          {
+            "type": "array",
+            "named": true
+          },
+          {
+            "type": "assignment",
+            "named": true
+          },
+          {
+            "type": "binary_expression",
+            "named": true
+          },
+          {
+            "type": "block",
+            "named": true
+          },
+          {
+            "type": "boolean",
+            "named": true
+          },
+          {
+            "type": "char",
+            "named": true
+          },
+          {
+            "type": "computation_expression",
+            "named": true
+          },
+          {
+            "type": "for_expression",
+            "named": true
+          },
+          {
+            "type": "function_expression",
+            "named": true
+          },
+          {
+            "type": "handle_expression",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "if_expression",
+            "named": true
+          },
+          {
+            "type": "index_access",
+            "named": true
+          },
+          {
+            "type": "interpolated_string",
+            "named": true
+          },
+          {
+            "type": "lambda",
+            "named": true
+          },
+          {
+            "type": "layout_fact",
+            "named": true
+          },
+          {
+            "type": "let_in_expression",
+            "named": true
+          },
+          {
+            "type": "list",
+            "named": true
+          },
+          {
+            "type": "match_expression",
+            "named": true
+          },
+          {
+            "type": "measured_number",
+            "named": true
+          },
+          {
+            "type": "member_access",
+            "named": true
+          },
+          {
+            "type": "number",
+            "named": true
+          },
+          {
+            "type": "operator_value",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "prefix_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_identifier",
+            "named": true
+          },
+          {
+            "type": "question",
+            "named": true
+          },
+          {
+            "type": "record",
+            "named": true
+          },
+          {
+            "type": "record_update",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "tuple",
+            "named": true
+          },
+          {
+            "type": "typed_expression",
+            "named": true
+          },
+          {
+            "type": "unary_expression",
+            "named": true
+          },
+          {
+            "type": "unit",
+            "named": true
+          },
+          {
+            "type": "unsafe_expression",
+            "named": true
+          },
+          {
+            "type": "while_expression",
+            "named": true
+          },
+          {
+            "type": "yield_expression",
+            "named": true
+          }
+        ]
+      },
+      "pattern": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "as_pattern",
+            "named": true
+          },
+          {
+            "type": "boolean",
+            "named": true
+          },
+          {
+            "type": "char",
+            "named": true
+          },
+          {
+            "type": "cons_pattern",
+            "named": true
+          },
+          {
+            "type": "constructor_pattern",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "list_pattern",
+            "named": true
+          },
+          {
+            "type": "named_fields_pattern",
+            "named": true
+          },
+          {
+            "type": "negative_pattern",
+            "named": true
+          },
+          {
+            "type": "number",
+            "named": true
+          },
+          {
+            "type": "or_pattern",
+            "named": true
+          },
+          {
+            "type": "parenthesized_pattern",
+            "named": true
+          },
+          {
+            "type": "qualified_identifier",
+            "named": true
+          },
+          {
+            "type": "record_pattern",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "tuple_pattern",
+            "named": true
+          },
+          {
+            "type": "unit",
+            "named": true
+          },
+          {
+            "type": "wildcard",
+            "named": true
+          }
+        ]
+      },
+      "value": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "application",
+            "named": true
+          },
+          {
+            "type": "array",
+            "named": true
+          },
+          {
+            "type": "binary_expression",
+            "named": true
+          },
+          {
+            "type": "boolean",
+            "named": true
+          },
+          {
+            "type": "char",
+            "named": true
+          },
+          {
+            "type": "computation_expression",
+            "named": true
+          },
+          {
+            "type": "for_expression",
+            "named": true
+          },
+          {
+            "type": "function_expression",
+            "named": true
+          },
+          {
+            "type": "handle_expression",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "if_expression",
+            "named": true
+          },
+          {
+            "type": "index_access",
+            "named": true
+          },
+          {
+            "type": "interpolated_string",
+            "named": true
+          },
+          {
+            "type": "lambda",
+            "named": true
+          },
+          {
+            "type": "layout_fact",
+            "named": true
+          },
+          {
+            "type": "let_in_expression",
+            "named": true
+          },
+          {
+            "type": "list",
+            "named": true
+          },
+          {
+            "type": "match_expression",
+            "named": true
+          },
+          {
+            "type": "measured_number",
+            "named": true
+          },
+          {
+            "type": "member_access",
+            "named": true
+          },
+          {
+            "type": "number",
+            "named": true
+          },
+          {
+            "type": "operator_value",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "prefix_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_identifier",
+            "named": true
+          },
+          {
+            "type": "question",
+            "named": true
+          },
+          {
+            "type": "record",
+            "named": true
+          },
+          {
+            "type": "record_update",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "tuple",
+            "named": true
+          },
+          {
+            "type": "typed_expression",
+            "named": true
+          },
+          {
+            "type": "unary_expression",
+            "named": true
+          },
+          {
+            "type": "unit",
+            "named": true
+          },
+          {
+            "type": "unsafe_expression",
+            "named": true
+          },
+          {
+            "type": "while_expression",
+            "named": true
+          },
+          {
+            "type": "yield_expression",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": false,
+      "required": false,
+      "types": [
+        {
+          "type": "type_annotation",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "let_mutable",
     "named": true,
     "fields": {
@@ -6236,6 +6738,10 @@
           },
           {
             "type": "layout_fact",
+            "named": true
+          },
+          {
+            "type": "let_in_expression",
             "named": true
           },
           {
@@ -6398,6 +6904,10 @@
         },
         {
           "type": "layout_fact",
+          "named": true
+        },
+        {
+          "type": "let_in_expression",
           "named": true
         },
         {
@@ -6635,11 +7145,19 @@
             "named": true
           },
           {
+            "type": "let_in_expression",
+            "named": true
+          },
+          {
             "type": "list",
             "named": true
           },
           {
             "type": "match_expression",
+            "named": true
+          },
+          {
+            "type": "match_tuple",
             "named": true
           },
           {
@@ -6809,6 +7327,10 @@
             "named": true
           },
           {
+            "type": "let_in_expression",
+            "named": true
+          },
+          {
             "type": "list",
             "named": true
           },
@@ -6952,6 +7474,10 @@
           },
           {
             "type": "layout_fact",
+            "named": true
+          },
+          {
+            "type": "let_in_expression",
             "named": true
           },
           {
@@ -7114,6 +7640,161 @@
           }
         ]
       }
+    }
+  },
+  {
+    "type": "match_tuple",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "application",
+          "named": true
+        },
+        {
+          "type": "array",
+          "named": true
+        },
+        {
+          "type": "binary_expression",
+          "named": true
+        },
+        {
+          "type": "boolean",
+          "named": true
+        },
+        {
+          "type": "char",
+          "named": true
+        },
+        {
+          "type": "computation_expression",
+          "named": true
+        },
+        {
+          "type": "for_expression",
+          "named": true
+        },
+        {
+          "type": "function_expression",
+          "named": true
+        },
+        {
+          "type": "handle_expression",
+          "named": true
+        },
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "if_expression",
+          "named": true
+        },
+        {
+          "type": "index_access",
+          "named": true
+        },
+        {
+          "type": "interpolated_string",
+          "named": true
+        },
+        {
+          "type": "lambda",
+          "named": true
+        },
+        {
+          "type": "layout_fact",
+          "named": true
+        },
+        {
+          "type": "let_in_expression",
+          "named": true
+        },
+        {
+          "type": "list",
+          "named": true
+        },
+        {
+          "type": "match_expression",
+          "named": true
+        },
+        {
+          "type": "measured_number",
+          "named": true
+        },
+        {
+          "type": "member_access",
+          "named": true
+        },
+        {
+          "type": "number",
+          "named": true
+        },
+        {
+          "type": "operator_value",
+          "named": true
+        },
+        {
+          "type": "parenthesized_expression",
+          "named": true
+        },
+        {
+          "type": "prefix_expression",
+          "named": true
+        },
+        {
+          "type": "qualified_identifier",
+          "named": true
+        },
+        {
+          "type": "question",
+          "named": true
+        },
+        {
+          "type": "record",
+          "named": true
+        },
+        {
+          "type": "record_update",
+          "named": true
+        },
+        {
+          "type": "string",
+          "named": true
+        },
+        {
+          "type": "tuple",
+          "named": true
+        },
+        {
+          "type": "typed_expression",
+          "named": true
+        },
+        {
+          "type": "unary_expression",
+          "named": true
+        },
+        {
+          "type": "unit",
+          "named": true
+        },
+        {
+          "type": "unsafe_expression",
+          "named": true
+        },
+        {
+          "type": "while_expression",
+          "named": true
+        },
+        {
+          "type": "yield_expression",
+          "named": true
+        }
+      ]
     }
   },
   {
@@ -7341,6 +8022,10 @@
             "named": true
           },
           {
+            "type": "let_in_expression",
+            "named": true
+          },
+          {
             "type": "list",
             "named": true
           },
@@ -7535,6 +8220,10 @@
         },
         {
           "type": "layout_fact",
+          "named": true
+        },
+        {
+          "type": "let_in_expression",
           "named": true
         },
         {
@@ -8066,6 +8755,10 @@
           "named": true
         },
         {
+          "type": "let_in_expression",
+          "named": true
+        },
+        {
           "type": "list",
           "named": true
         },
@@ -8457,6 +9150,10 @@
           "named": true
         },
         {
+          "type": "let_in_expression",
+          "named": true
+        },
+        {
           "type": "list",
           "named": true
         },
@@ -8657,6 +9354,10 @@
           "named": true
         },
         {
+          "type": "let_in_expression",
+          "named": true
+        },
+        {
           "type": "list",
           "named": true
         },
@@ -8816,6 +9517,10 @@
           "named": true
         },
         {
+          "type": "let_in_expression",
+          "named": true
+        },
+        {
           "type": "list",
           "named": true
         },
@@ -8972,6 +9677,10 @@
           },
           {
             "type": "layout_fact",
+            "named": true
+          },
+          {
+            "type": "let_in_expression",
             "named": true
           },
           {
@@ -9202,6 +9911,10 @@
         },
         {
           "type": "layout_fact",
+          "named": true
+        },
+        {
+          "type": "let_in_expression",
           "named": true
         },
         {
@@ -9470,6 +10183,10 @@
         },
         {
           "type": "layout_fact",
+          "named": true
+        },
+        {
+          "type": "let_in_expression",
           "named": true
         },
         {
@@ -10015,6 +10732,10 @@
           "named": true
         },
         {
+          "type": "let_in_expression",
+          "named": true
+        },
+        {
           "type": "list",
           "named": true
         },
@@ -10177,6 +10898,10 @@
           "named": true
         },
         {
+          "type": "let_in_expression",
+          "named": true
+        },
+        {
           "type": "list",
           "named": true
         },
@@ -10329,6 +11054,10 @@
         },
         {
           "type": "layout_fact",
+          "named": true
+        },
+        {
+          "type": "let_in_expression",
           "named": true
         },
         {
@@ -10537,6 +11266,10 @@
           "named": true
         },
         {
+          "type": "let_in_expression",
+          "named": true
+        },
+        {
           "type": "list",
           "named": true
         },
@@ -10706,6 +11439,10 @@
             "named": true
           },
           {
+            "type": "let_in_expression",
+            "named": true
+          },
+          {
             "type": "list",
             "named": true
           },
@@ -10866,6 +11603,10 @@
             "named": true
           },
           {
+            "type": "let_in_expression",
+            "named": true
+          },
+          {
             "type": "list",
             "named": true
           },
@@ -11009,6 +11750,10 @@
           },
           {
             "type": "layout_fact",
+            "named": true
+          },
+          {
+            "type": "let_in_expression",
             "named": true
           },
           {
@@ -11166,6 +11911,10 @@
         },
         {
           "type": "layout_fact",
+          "named": true
+        },
+        {
+          "type": "let_in_expression",
           "named": true
         },
         {
@@ -11457,6 +12206,10 @@
   },
   {
     "type": "assert",
+    "named": false
+  },
+  {
+    "type": "b\"",
     "named": false
   },
   {

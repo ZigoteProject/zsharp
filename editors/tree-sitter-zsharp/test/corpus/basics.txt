@@ -284,3 +284,63 @@ type Head = { [<Width 4>] ihl: u8; [<Bit 8>] tos: u8 }
         name: (identifier)
         (type_name
           (identifier))))))
+
+==================
+what F# writes: let … in, a continued condition, a tuple scrutinee, a record on the next line, handle as a name
+==================
+
+let handle x = let y = x + 1 in y * 2
+
+let f a b =
+  if a
+  || b then
+    match a, b with
+    | true, _ -> Some
+                   { x = handle 1 }
+    | _ -> None
+  else None
+
+---
+
+(source_file
+  (let_declaration
+    name: (identifier)
+    (identifier)
+    body: (let_in_expression
+      pattern: (identifier)
+      value: (binary_expression
+        (identifier)
+        (number))
+      body: (binary_expression
+        (identifier)
+        (number))))
+  (let_declaration
+    name: (identifier)
+    (identifier)
+    (identifier)
+    body: (block
+      (if_expression
+        condition: (binary_expression
+          (identifier)
+          (identifier))
+        then: (block
+          (match_expression
+            value: (match_tuple
+              (identifier)
+              (identifier))
+            (match_rule
+              pattern: (tuple_pattern
+                (boolean)
+                (wildcard))
+              body: (application
+                function: (identifier)
+                argument: (record
+                  (field_value
+                    name: (identifier)
+                    (application
+                      function: (identifier)
+                      argument: (number))))))
+            (match_rule
+              pattern: (wildcard)
+              body: (identifier))))
+        else: (identifier)))))

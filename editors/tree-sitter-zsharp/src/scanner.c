@@ -129,10 +129,12 @@ bool tree_sitter_zsharp_external_scanner_scan(void *payload, TSLexer *lexer, con
 
     if (!at_line_start) return false;
 
-    // a line starting with |> or an infix custom operator (>>=, <|>, .>>) continues the
-    // previous one; a prefix operator (! but not !=, or ~) starts an expression instead
+    // a line starting with |>, || && ||| &&& ^^^, or an infix custom operator (>>=, <|>, .>>)
+    // continues the previous one; a prefix operator (! but not !=, or ~) starts an expression
     bool prefix = (run[0] == '!' && run[1] != '=') || run[0] == '~';
-    if ((n >= 2 && run[0] == '|' && run[1] == '>') || (is_custom_operator(run) && !prefix)) return false;
+    bool logic = strcmp(run, "||") == 0 || strcmp(run, "&&") == 0 || strcmp(run, "|||") == 0 ||
+                 strcmp(run, "&&&") == 0 || strcmp(run, "^^^") == 0;
+    if ((n >= 2 && run[0] == '|' && run[1] == '>') || logic || (is_custom_operator(run) && !prefix)) return false;
 
     uint16_t current = s->indents[s->count - 1];
 
