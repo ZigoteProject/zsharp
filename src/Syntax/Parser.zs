@@ -46,7 +46,9 @@ type private P =
     quiet: ref<int>
     /// inside a task { }'s body, and inside a seq { }
     inTask: ref<int>
-    inSeq: ref<int> }
+    inSeq: ref<int>
+    /// a `let` where an expression is, which `in` must follow (`let y = x + 1 in y * 2`)
+    letIn: ref<bool> }
 
 // where the parser was, to go back to after a trial
 type private Saved =
@@ -88,7 +90,8 @@ let private make (src: Source.Source) (toks: Buffer<Token>) (start: int) (eof: i
     errors = ref 0
     quiet = ref (-1)
     inTask = ref 0
-    inSeq = ref 0 }
+    inSeq = ref 0
+    letIn = ref false }
 
 // ------------------------------------------------------------ reading tokens
 
@@ -840,6 +843,9 @@ and private patAtomOf (p: P) : Ast.Pat =
       | Error e ->
         failAt p ti e
         plainPat Ast.PWild
+    | Str when String.byte (textOf p ti) 0 = u8 98 ->
+      failAt p ti "a byte string isn't a pattern: compare spans with Span.startsWith or Span.equalsIgnoreCase"
+      plainPat Ast.PWild
     | Str ->
       match Literal.stringValue (textOf p ti) with
       | Ok s -> plainPat (Ast.PStr s)
@@ -1170,9 +1176,16 @@ and private assignment (p: P) (at: int) (lhs: Ast.Expr) : Ast.Expr =
   else
     lhs
 
-/// After a binding at token ln: the rest of the block, from the next line.
-and private rest (p: P) (ln: int) : Ast.Expr =
-  if peek p = Newline then
+/// After a binding at token ln: the rest of the block, from the next line, or after `in`: the
+/// expression, where a `let` is one, else the rest of the block.
+and private rest (p: P) (ln: int) (letIn: bool) : Ast.Expr =
+  if peek p = In then
+    advance p
+    if letIn then expr p else seq p
+  else if letIn then
+    failAt p ln "a 'let' inside an expression needs 'in' and the expression: let y = x + 1 in y * 2"
+    plain Ast.UnitLit
+  else if peek p = Newline then
     advance p
     seq p
   else
@@ -1182,6 +1195,8 @@ and private rest (p: P) (ln: int) : Ast.Expr =
 /// A block's statements.
 and private seq (p: P) : Ast.Expr =
   let si = p.pos.Value
+  let letIn = p.letIn.Value
+  p.letIn.Value <- false
   let stmt (e: Ast.Expr) = ex (Ast.At e) si
   if isWord p "use" && peek2 p = Id then
     // use x = e: x is disposed (Dispose.dispose) after the rest of the block; in a task, also if
@@ -1229,7 +1244,7 @@ and private seq (p: P) : Ast.Expr =
     expect p Equals "'='"
     let v = block p
     finish p
-    stmt (plain (Ast.Let(q, None, plain (Ast.Call("$await", [ v ])), rest p si)))
+    stmt (plain (Ast.Let(q, None, plain (Ast.Call("$await", [ v ])), rest p si letIn)))
   else if p.inTask.Value > 0 && (isWord p "return" || (peek p = Do && bangAt p 1)) then
     // return e: the block's (and the task's) result, last; do! t: then the rest
     let isReturn = isWord p "return"
@@ -1257,17 +1272,17 @@ and private seq (p: P) : Ast.Expr =
       expect p Equals "'='"
       let v = block p
       finish p
-      stmt (plain (Ast.LetMut(x, ann, v, rest p si)))
+      stmt (plain (Ast.LetMut(x, ann, v, rest p si letIn)))
     else if peek p = LParen && operatorAhead p then
       // a local operator: let (<+>) a b = …
       advance p
       let fi = p.pos.Value
       let f = operatorName p
-      localFun p si isRec f fi
+      localFun p si isRec f fi letIn
     else if peek p = Id && (isRec || startsLower p p.pos.Value) && not (textIs p p.pos.Value "_") && startsParam (peek2 p) then
       let fi = p.pos.Value
       let f = name p
-      localFun p si isRec f fi
+      localFun p si isRec f fi letIn
     else
       let q = pattern p
       let ann = optTy p
@@ -1276,8 +1291,8 @@ and private seq (p: P) : Ast.Expr =
       finish p
       match questioned v with
       | Some(qe, inner) when Option.isNone ann ->
-        stmt (copyPos qe (plain (Ast.TryBind(q, inner, rest p si))))
-      | _ -> stmt (plain (Ast.Let(q, ann, v, rest p si)))
+        stmt (copyPos qe (plain (Ast.TryBind(q, inner, rest p si letIn))))
+      | _ -> stmt (plain (Ast.Let(q, ann, v, rest p si letIn)))
   else
     let at = here p
     let e = assignment p at (expr p)
@@ -1327,7 +1342,7 @@ and private operatorName (p: P) : string =
   s
 
 /// A local function after its name: parameters, body, and any `and` functions joined to it.
-and private localFun (p: P) (si: int) (isRec: bool) (f: string) (fi: int) : Ast.Expr =
+and private localFun (p: P) (si: int) (isRec: bool) (f: string) (fi: int) (letIn: bool) : Ast.Expr =
   let stmt (e: Ast.Expr) = ex (Ast.At e) si
   let ps = parameters p
   let ret = optTy p
@@ -1352,10 +1367,10 @@ and private localFun (p: P) (si: int) (isRec: bool) (f: string) (fi: int) : Ast.
       let gbody = block p
       Buffer.push (ex (Ast.LetFun(g, true, gps, gret, gbody, plain Ast.UnitLit)) gi) members
     finish p
-    stmt (plain (Ast.LetRecGroup(listOf members, rest p si)))
+    stmt (plain (Ast.LetRecGroup(listOf members, rest p si letIn)))
   else
     finish p
-    stmt (ex (Ast.LetFun(f, isRec, ps, ret, body, rest p si)) fi)
+    stmt (ex (Ast.LetFun(f, isRec, ps, ret, body, rest p si letIn)) fi)
 
 and private expr (p: P) : Ast.Expr =
   let k =
@@ -1363,7 +1378,7 @@ and private expr (p: P) : Ast.Expr =
     | Id when p.inSeq.Value > 0 && isWord p "yield" -> Some Tree.Yield
     | If -> Some Tree.If
     | Match -> Some Tree.Match
-    | Handle -> Some Tree.Handle
+    | Id when handleAhead p -> Some Tree.Handle
     | Function -> Some Tree.Function
     | Fun -> Some Tree.Lambda
     | Unsafe -> Some Tree.Unsafe
@@ -1378,6 +1393,43 @@ and private expr (p: P) : Ast.Expr =
     e
   | None -> exprForm p
 
+/// At `handle`: whether a handler starts (`handle e with`, or `handle` and an indented block);
+/// elsewhere `handle` is a name.
+and private handleAhead (p: P) : bool =
+  if not (isWord p "handle") then
+    false
+  else if peek2 p = Indent then
+    true
+  else
+    // a `with` on the line, outside brackets and not a match's
+    let mutable i = p.pos.Value + 1
+    let mutable depth = 0
+    let mutable matches = 0
+    let mutable found = false
+    let mutable go = true
+    while go && i < p.eof do
+      match p.toks.[i].kind with
+      | LParen
+      | LBrack
+      | LBrackBar
+      | LBrace -> depth <- depth + 1
+      | RParen
+      | RBrack
+      | BarRBrack
+      | RBrace -> depth <- depth - 1
+      | Match when depth = 0 -> matches <- matches + 1
+      | With when depth = 0 && matches > 0 -> matches <- matches - 1
+      | With when depth = 0 ->
+        found <- true
+        go <- false
+      | Newline
+      | Indent
+      | Dedent
+      | Eof when depth = 0 -> go <- false
+      | _ -> ()
+      i <- i + 1
+    found
+
 and private exprForm (p: P) : Ast.Expr =
   let si = p.pos.Value
   match peek p with
@@ -1388,6 +1440,10 @@ and private exprForm (p: P) : Ast.Expr =
       ex (Ast.AtLine(plain (Ast.Call("$yieldAll", [ expr p ])))) si
     else
       ex (Ast.AtLine(plain (Ast.Call("$yield", [ expr p ])))) si
+  | Let ->
+    // let x = e in body, as in F#
+    p.letIn.Value <- true
+    seq p
   | Id when isWord p "try" && (peek2 p = Indent || peek2 p = Newline) ->
     errAt p "there's no try … with: a function that can fail returns a result (match on it, or use ? inside result { }), or throws a Throw effect, which Throw.catch turns into a result"
     pipe p
@@ -1405,10 +1461,10 @@ and private exprForm (p: P) : Ast.Expr =
       plain (Ast.If(c, t, None))
   | Match ->
     advance p
-    let s = expr p
+    let s = scrutinee p
     expect p With "'with'"
     plain (Ast.Match(s, cases p))
-  | Handle ->
+  | Id when handleAhead p ->
     // handle e with | E.op p…, k -> … | return p -> …: e's operations of E given meaning
     advance p
     let body =
@@ -1669,7 +1725,7 @@ and private compForm (p: P) : Ast.Expr =
       stmt (plain (Ast.If(c, t, None)))
   | Match ->
     advance p
-    let s = expr p
+    let s = scrutinee p
     expect p With "'with'"
     stmt (plain (Ast.Match(s, casesWith p 1 "")))
   | Id when isWord p "yield" ->
@@ -1917,6 +1973,15 @@ and private app (p: P) : Ast.Expr =
       let args = Buffer.empty
       while startsAtom p do
         Buffer.push (atom p) args
+      onNextLine p args
+      finish p
+      match head.e with
+      | Ast.Var f -> copyPos head (plain (Ast.Call(f, listOf args)))
+      | _ -> plain (Ast.App(head, listOf args))
+    else if peek p = Indent && peek2 p = LBrace then
+      startAt p at Tree.Apply
+      let args = Buffer.empty
+      onNextLine p args
       finish p
       match head.e with
       | Ast.Var f -> copyPos head (plain (Ast.Call(f, listOf args)))
@@ -1931,6 +1996,28 @@ and private app (p: P) : Ast.Expr =
     ex (Ast.Question e) qi // errors about it point at the `?`
   else
     e
+
+// a record argument on the line after the function (`Some` then `{ x = 1 }` indented), as in F#
+and private onNextLine (p: P) (args: Buffer<Ast.Expr>) =
+  if peek p = Indent && peek2 p = LBrace then
+    advance p
+    Buffer.push (atom p) args
+    dedent p "end of the argument"
+
+/// What `match` takes apart: an expression, or a tuple without its parentheses (`match a, b with`).
+and private scrutinee (p: P) : Ast.Expr =
+  let at = here p
+  let first = expr p
+  if peek p = Comma then
+    let xs = Buffer.empty
+    Buffer.push first xs
+    while peek p = Comma do
+      advance p
+      Buffer.push (expr p) xs
+    wrap p at Tree.Tuple
+    plain (Ast.Tuple(listOf xs))
+  else
+    first
 
 and private atom (p: P) : Ast.Expr =
   let at = here p
@@ -2014,11 +2101,16 @@ and private primary (p: P) : Ast.Expr =
         plain (Ast.CharLit 0)
     | Float -> measured p at (plain (Ast.FloatLit(Literal.floatValue (textOf p ti))))
     | Str ->
-      match Literal.stringValue (textOf p ti) with
-      | Ok s -> plain (Ast.StrLit s)
-      | Error e ->
-        failAt p ti e
-        plain (Ast.StrLit "")
+      // b"…": the string's bytes, a span<u8> of its constant (no copy, nothing at startup)
+      let text = textOf p ti
+      let bytes = String.byte text 0 = u8 98
+      let lit =
+        match Literal.stringValue (if bytes then String.sub text 1 (String.length text - 1) else text) with
+        | Ok s -> plain (Ast.StrLit s)
+        | Error e ->
+          failAt p ti e
+          plain (Ast.StrLit "")
+      if bytes then plain (Ast.Call(Ast.libraryName "Text.String.bytes", [ lit ])) else lit
     | Interp -> interpolate p ti
     | Id when ceAhead p ->
       let e = computation p ti
@@ -2407,7 +2499,7 @@ and private ceStmts (p: P) (builder: string) (many: bool) : Ast.Expr =
       thenRest p builder closed many stmt (plain (Ast.If(c, t, Some e)))
     | Match ->
       advance p
-      let s = expr p
+      let s = scrutinee p
       expect p With "'with'"
       let cs = casesWith p 2 builder
       thenRest p builder closed many stmt (plain (Ast.Match(s, cs)))

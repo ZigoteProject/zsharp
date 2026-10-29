@@ -1,0 +1,1 @@
+tests/newcomer/let_without_in.zs:3: error: a 'let' inside an expression needs 'in' and the expression: let y = x + 1 in y * 2

@@ -53,7 +53,6 @@ type Kind =
   | And
   | Unsafe
   | Effect
-  | Handle
   /// `&&&=`
   | AndBitsEq
   /// `|||=`
@@ -191,7 +190,6 @@ let keyword (w: string) : Kind =
   | "and" -> And
   | "unsafe" -> Unsafe
   | "effect" -> Effect
-  | "handle" -> Handle
   | _ -> Id
 
 /// The symbol a run of operator characters is, or Op for a custom operator (None when it isn't

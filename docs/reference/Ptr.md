@@ -31,6 +31,14 @@ Ptr.cast : ptr<'a> -> ptr<'b>
 
 The same address as a pointer to another type. Unsafe.
 
+### `Ptr.diff`
+
+```zsharp
+Ptr.diff : ptr<'a> -> ptr<'a> -> int
+```
+
+The number of elements from the second pointer to the first (`Ptr.diff end start`), as C's `end - start`. Unsafe.
+
 ### `Ptr.free`
 
 ```zsharp
@@ -71,6 +79,14 @@ Ptr.read : ptr<'a> -> 'a
 
 The value the pointer points to. Unsafe: only inside `unsafe`.
 
+### `Ptr.readUnaligned`
+
+```zsharp
+Ptr.readUnaligned : ptr<'a> -> 'a
+```
+
+The value the pointer points to, at any address (`Ptr.read` assumes the type's alignment): 8 bytes of a packet as a `u64` in one load. Unsafe.
+
 ### `Ptr.toCPtr`
 
 ```zsharp
@@ -86,4 +102,12 @@ Ptr.write : ptr<'a> -> 'a -> unit
 ```
 
 Writes the value where the pointer points. Unsafe.
+
+### `Ptr.writeUnaligned`
+
+```zsharp
+Ptr.writeUnaligned : ptr<'a> -> 'a -> unit
+```
+
+Writes the value where the pointer points, at any address. Unsafe.
 

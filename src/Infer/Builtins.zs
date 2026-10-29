@@ -176,6 +176,9 @@ let builtins : Map<string, Builtin> =
       b "Math.atan2" "Math.atan2" [ kFloat ] (f a (f a a)) 2
       b "Ptr.read" "ptr.read" [ kAny ] (f (TCon("ptr", [ a ])) a) 1
       b "Ptr.write" "ptr.write" [ kAny ] (f (TCon("ptr", [ a ])) (f a tUnit)) 2
+      b "Ptr.readUnaligned" "ptr.readUnaligned" [ kAny ] (f (TCon("ptr", [ a ])) a) 1
+      b "Ptr.writeUnaligned" "ptr.writeUnaligned" [ kAny ] (f (TCon("ptr", [ a ])) (f a tUnit)) 2
+      b "Ptr.diff" "ptr.diff" [ kAny ] (f (TCon("ptr", [ a ])) (f (TCon("ptr", [ a ])) tInt)) 2
       b "Ptr.add" "ptr.add" [ kAny ] (f (TCon("ptr", [ a ])) (f tInt (TCon("ptr", [ a ])))) 2
       b "Ptr.null" "ptr.null" [ kAny ] (f tUnit (TCon("ptr", [ a ]))) 1
       b "Ptr.isNull" "ptr.isNull" [ kAny ] (f (TCon("ptr", [ a ])) tBool) 1
@@ -278,7 +281,7 @@ let builtins : Map<string, Builtin> =
 
 /// The built-in functions only `unsafe` code may call: raw memory through ptr<T>.
 let unsafeBuiltins : Set<string> =
-  Set.ofList [ "Ptr.read"; "Ptr.write"; "Ptr.add"; "Ptr.alloc"; "Ptr.free"; "Ptr.ofCPtr"; "Ptr.cast"; "Collections.Span.ofPtr" ]
+  Set.ofList [ "Ptr.read"; "Ptr.write"; "Ptr.readUnaligned"; "Ptr.writeUnaligned"; "Ptr.diff"; "Ptr.add"; "Ptr.alloc"; "Ptr.free"; "Ptr.ofCPtr"; "Ptr.cast"; "Collections.Span.ofPtr" ]
 
 /// Builtins over arrays that take a span and read an array, a Buffer or a span alike: an argument
 /// converted to a span for them is passed as it is (Codegen reads all three).

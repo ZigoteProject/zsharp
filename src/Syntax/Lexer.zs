@@ -3,7 +3,8 @@
 /// closes blocks (Dedent), and one at the block's indentation is a Newline. Inside brackets, a
 /// line ending in `->` (or `then`, `else`, `do`, a builder's `{`) and a deeper line after it open
 /// a block too, which the closing bracket ends, and a new line inside `{ }` or `[ ]` is a `;`.
-/// A line starting with `|>` or an infix custom operator goes on with the line before.
+/// A line starting with `|>`, `||`, `&&`, `|||`, `&&&`, `^^^` or an infix custom operator goes on
+/// with the line before.
 /// `Upper.name` is one identifier. A mistake is reported and lexing goes on.
 open Token
 open Diag.Diagnostic
@@ -62,10 +63,11 @@ let isPrefixOp (op: string) =
 /// A custom operator written between its operands.
 let isInfixOp (op: string) = isCustomOp op && not (isPrefixOp op)
 
-// a line starting with |> or an infix custom operator goes on with the one before
+// a line starting with |>, a boolean or bitwise operator (`|| b`) or an infix custom operator
+// goes on with the one before
 let private continuesLine (s: string) (i: int) (stop: int) =
   let op = String.sub s i (opRunEnd s i stop - i)
-  String.startsWith "|>" op || isInfixOp op
+  String.startsWith "|>" op || List.contains op [ "||"; "&&"; "|||"; "&&&"; "^^^" ] || isInfixOp op
 
 // the digits a literal in this radix may have
 let private isDigitIn (radix: int) (c: int) =
@@ -253,7 +255,7 @@ let lex (src: Source.Source) : array<Token> =
         else
           i <- i + 2
         Buffer.push { kind = Id; offset = start; length = i - start } toks
-      else if isLetter c || c = 95 then
+      else if (isLetter c || c = 95) && not (c = 98 && at s (i + 1) = 34) then
         while i < le && isIdent (at s i) do
           i <- i + 1
         while isUpper (at s start) && i + 1 < le && at s i = 46 && isLetter (at s (i + 1)) do
@@ -262,10 +264,12 @@ let lex (src: Source.Source) : array<Token> =
             i <- i + 1
         let word = String.sub s start (i - start)
         Buffer.push { kind = keyword word; offset = start; length = i - start } toks
-      else if c = 34 || (c = 36 && at s (i + 1) = 34) then
+      else if c = 34 || ((c = 36 || c = 98) && at s (i + 1) = 34) then
+        // "…", $"…" interpolated, b"…" bytes
         let interp = c = 36
-        let triple = not interp && at s (i + 1) = 34 && at s (i + 2) = 34
-        i <- i + (if interp then 2 else if triple then 3 else 1)
+        let prefixed = c = 36 || c = 98
+        let triple = not prefixed && at s (i + 1) = 34 && at s (i + 2) = 34
+        i <- i + (if prefixed then 2 else if triple then 3 else 1)
         // the string goes on over line breaks until its closing quote
         let mutable closed = false
         while not closed && i < n do

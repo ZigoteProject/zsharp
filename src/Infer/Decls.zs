@@ -504,6 +504,27 @@ let rec private isConstant (cx: Cx) (e: Expr) : bool =
     (isCtorCall || conversion f || freshBuffer || perTarget) && List.forall (isConstant cx) args
   | _ -> false
 
+/// Whether a constant makes a Buffer, which each use would make anew: one of a single type is a
+/// top-level value computed once instead, so a push to it is seen at every use.
+let rec private makesBuffer (cx: Cx) (e: Expr) : bool =
+  match e.e with
+  | At a
+  | AtLine a
+  | Neg a
+  | Not a
+  | Measured(a, _)
+  | Typed(a, _) -> makesBuffer cx a
+  | Var x ->
+    match Exprs.resolveName cx x with
+    | Some q -> Map.tryFind q cx.consts.Value |> Option.exists (makesBuffer cx)
+    | None -> false
+  | Bin(_, a, b) -> makesBuffer cx a || makesBuffer cx b
+  | If(c, t, Some f) -> makesBuffer cx c || makesBuffer cx t || makesBuffer cx f
+  | Tuple xs -> List.exists (makesBuffer cx) xs
+  | RecordLit fs -> List.exists (fun (f: FieldValue) -> makesBuffer cx f.value) fs
+  | Call(f, args) -> Exprs.resolveName cx f = Some "Collections.Buffer.ofArray" || List.exists (makesBuffer cx) args
+  | _ -> false
+
 /// A written type with its names resolved where it is written (a constant's annotation).
 let rec private qualifyType (cx: Cx) (st: SType) : SType =
   match st with
@@ -847,6 +868,9 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
       (List.exists (fun (a, _) -> a = "NoWarn") attrs, code)
     | _ -> (false, false)
   match d.d with
+  | Attrs(attrs, { d = Private bare }) ->
+    // [<CLayout>] type private R: the attributes on the declaration, 'private' around both
+    declare cx { d with d = Private { d with d = Attrs(attrs, bare) } }
   | TypeDecl(name0, tps, body, ms) ->
     let name = qualify cx name0
     recordKey cx d.named name0 (TCon(name, [])) false ("type:" + name) true
@@ -1054,7 +1078,11 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
   | Private inner ->
     declare cx inner
     let own (n: string) = cx.privates.Value <- Map.add (qualify cx n) cx.currentModule.Value cx.privates.Value
-    match inner.d with
+    let rec bare (x: Decl) =
+      match x.d with
+      | Attrs(_, y) -> bare y
+      | _ -> x
+    match (bare inner).d with
     | Fun(n, _, _, _, _)
     | Value(n, _, _) -> own n
     | Pattern(q, _, _) ->
@@ -1137,7 +1165,17 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
       | Some t -> plain (Typed(e, t))
       | None -> e
     cx.tyvars.Value <- Map.empty
-    if isConstant cx body then
+    let rec generic (t: Ty) : bool =
+      match prune v t with
+      | TVar r -> Option.isNone (kindOf v r).allowed
+      | TCon(_, ts)
+      | TTuple ts -> List.exists generic ts
+      | TFun(a, b, _) -> generic a || generic b
+      | _ -> false
+    // a Buffer of one type (`let b: Buffer<int> = Buffer.empty`) is one Buffer; a generic one
+    // (Buffer.empty itself) is a new one at each use
+    let oneBuffer () = makesBuffer cx body && not (generic (Exprs.infer cx Map.empty 0 (qualifyNames cx body)).ty)
+    if isConstant cx body && not (oneBuffer ()) then
       // checked here, so errors point at the definition; then inlined at each use, with its names
       // resolved here (a local at the use site can't capture them)
       let qbody = qualifyNames cx body
@@ -1151,13 +1189,6 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
       // computed once at startup, in module order; it has one type, so literals settle now
       let what = "a top-level value's initializer (it runs at startup, where no handler is)"
       let c = withRowAs cx rowEmpty what (fun () -> Exprs.infer cx Map.empty 0 body)
-      let rec generic (t: Ty) : bool =
-        match prune v t with
-        | TVar r -> Option.isNone (kindOf v r).allowed
-        | TCon(_, ts)
-        | TTuple ts -> List.exists generic ts
-        | TFun(a, b, _) -> generic a || generic b
-        | _ -> false
       if generic c.ty then
         fail $"a top-level value of type {show cx (schemed cx c.ty)} must be a constant to be generic; make it a function, or give it a type"
       resolve v c.ty |> ignore

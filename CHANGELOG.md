@@ -9,6 +9,15 @@ versions and the orphan rule for impls, lldb, doc tests, `zs doctor`, and the gu
 programmers.
 
 ### Language
+- What an F# programmer writes in the first hour parses: `let y = x + 1 in y * 2`; a condition
+  continued on a line starting with `||` or `&&` (and `|||`, `&&&`, `^^^`); a record on the line
+  after its constructor (`Some` then `{ x = 1 }` indented); `match a, b with` without
+  parentheses. `handle` is a keyword only where a handler starts, so `let handle x = …` is a
+  function. `[<CLayout>]` and the other attributes apply to a `private` type.
+- A top-level `Buffer` of one type (`let private seen: Buffer<int> = Buffer.empty`, or a record
+  holding one) is one Buffer, computed once at startup, so a push to it is seen at every use; it
+  was a new Buffer at each use, and the push was lost. A generic one, `Buffer.empty` itself, is
+  still a new Buffer at each use.
 - The orphan rule (K9): an impl written lives in its trait's package or its type's, so two
   packages can't both write one that a program using both would have twice. **To rewrite:** an
   impl of the library's trait for the library's type, or for a dependency's: wrap the type in a
@@ -171,6 +180,17 @@ programmers.
   object it compiles.
 
 ### Library
+- `Bytes`: `readU16BE`, `readI32LE`, `writeU64BE` and the rest, integers at an offset in either
+  byte order. `Text.Hex` and `Text.Base64` (with the URL-safe, unpadded `encodeUrl`/`decodeUrl`
+  JWTs use), `Sha256.hash` and `Hmac.sha256`, in Core, so on chips and WebAssembly too.
+  `Span.indexOf`, `startsWith`, and on bytes `equalsIgnoreCase`, `trim` and `parseInt`, so an
+  HTTP or JSON scanner is ordinary code over spans (track S, items 12 and 13).
+- Byte strings: `b"Content-Length: "` is a `span<u8>` of the literal's constant, nothing copied
+  at startup. `Ptr.readUnaligned` and `writeUnaligned` (at any address: a `u64` or a SIMD
+  vector in one load) and `Ptr.diff` (C's `end - start`).
+- A byte writer in `Bytes`: `append`, `appendUtf8`, `appendInt` and `appendJsonString` (scanned
+  16 bytes at a time) add to a `Buffer<u8>` and return it, so a response is a pipeline:
+  `out |> Bytes.append b"Content-Length: " |> Bytes.appendInt n`.
 - `List.collect` and `List.concat` are linear: they copied what they'd gathered for every list,
   quadratic in how many there were. `Set.union` adds the smaller set to the larger one,
   `intersect` walks the smaller one, both build their result from its sorted elements in linear

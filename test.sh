@@ -316,6 +316,19 @@ if command -v qemu-system-arm >/dev/null && bin/zs build tests/mcu/noheap.zs --t
   echo "ok   tests/mcu/noheap.zs (--no-heap on a Cortex-M0+, under qemu)"
 else echo "FAIL tests/mcu/noheap.zs"; cat "$tmp/noheap.log"; fail=1; fi
 
+# Bytes, the encodings and the hashes in Core, on both chips (int is 32 bits there) and wasm32
+if command -v qemu-system-arm >/dev/null; then
+  for chip in cortex-m4 cortex-m0plus; do
+    board=$([ $chip = cortex-m4 ] && echo mps2-an386 || echo microbit)
+    if bin/zs build tests/mcu/bytes.zs --target $chip -o "$tmp/bytes.elf" 2>"$tmp/bytes.log" \
+       && [ "$(timeout 60 qemu-system-arm -M $board -nographic -semihosting-config enable=on,target=native -kernel "$tmp/bytes.elf" 2>&1 | grep -v '^#zs')" = "$(cat tests/mcu/bytes.expected)" ]; then
+      echo "ok   tests/mcu/bytes.zs on $chip (under qemu)"
+    else echo "FAIL tests/mcu/bytes.zs on $chip"; cat "$tmp/bytes.log"; fail=1; fi
+  done
+fi
+if command -v node >/dev/null && bin/zs build tests/mcu/bytes.zs --target wasm32 -o "$tmp/bytes.wasm" 2>"$tmp/bytes.log" \
+   && [ "$(node bin/run-wasm.mjs "$tmp/bytes.wasm" 2>&1)" = "$(cat tests/mcu/bytes.expected)" ]; then echo "ok   tests/mcu/bytes.zs on wasm32 (under node)"
+elif command -v node >/dev/null; then echo "FAIL tests/mcu/bytes.zs on wasm32"; cat "$tmp/bytes.log"; fail=1; fi
 # Math where libm is compiler-rt's and the runtime's (pow, atan2, round: fdlibm's, checked against
 # the host's libm by tests/libm.sh), with a host's results: both chips under qemu, and wasm32
 if out=$(tests/libm.sh 2>&1); then echo "ok   tests/libm.sh (the runtime's pow, atan2 and round against the host's libm)"
@@ -423,7 +436,7 @@ else echo "ok   library documented; docs/reference current"; fi
 
 # the repository's own Z# code is formatted (zs fmt); the tests of parse errors don't parse, so
 # they have no layout to check
-unparsed='tests/err_and.zs|tests/err_operator_builtin.zs|tests/newcomer/(try_with|class|mutable_field|increment|return_braces).zs'
+unparsed='tests/err_and.zs|tests/err_operator_builtin.zs|tests/newcomer/(let_without_in|try_with|class|mutable_field|increment|return_braces).zs'
 formatted=$(find tests lib packages -name '*.zs' | grep -Ev "^($unparsed)\$")
 if bin/zs fmt --check $formatted 2>"$tmp/fmt.log"; then echo "ok   zs fmt --check"
 else echo "FAIL zs fmt --check (run: bin/zs fmt \$(find tests lib packages -name '*.zs'))"; cat "$tmp/fmt.log"; fail=1; fi

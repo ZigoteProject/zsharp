@@ -2530,6 +2530,32 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
     if llty g vt <> "{}" then
       emit em $"store {llty g vt} {arg 1}, ptr {arg 0}"
     "zeroinitializer"
+  | "ptr.readUnaligned" ->
+    if heap g ty then
+      fail fx $"Ptr.readUnaligned: a ptr<{showT g ty}> can't be read, since {showT g ty} is reference counted" |> ignore
+    if llty g ty = "{}" then "zeroinitializer" else instr em $"load {llty g ty}, ptr {arg 0}, align 1"
+  | "ptr.writeUnaligned" ->
+    let vt = argTy 1
+    if heap g vt then
+      fail fx $"Ptr.writeUnaligned: a ptr<{showT g vt}> can't be written, since {showT g vt} is reference counted" |> ignore
+    if llty g vt <> "{}" then
+      emit em $"store {llty g vt} {arg 1}, ptr {arg 0}, align 1"
+    "zeroinitializer"
+  | "ptr.diff" ->
+    // the bytes between, over the element's size (its stride: a getelementptr from null)
+    let el =
+      match argTy 0 with
+      | TCon("ptr", [ x ]) -> x
+      | _ -> panic "ptr.diff"
+    let a = instr em $"ptrtoint ptr {arg 0} to i_W"
+    let b = instr em $"ptrtoint ptr {arg 1} to i_W"
+    let bytes = instr em $"sub i_W {a}, {b}"
+    if llty g el = "{}" then
+      "0"
+    else
+      let stride = instr em $"getelementptr {llty g el}, ptr null, i_W 1"
+      let size = instr em $"ptrtoint ptr {stride} to i_W"
+      instr em $"sdiv exact i_W {bytes}, {size}"
   | "ptr.add" ->
     let el =
       match argTy 0 with
