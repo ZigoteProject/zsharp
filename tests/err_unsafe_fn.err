@@ -1,0 +1,1 @@
+tests/err_unsafe_fn.zs:7:3: error: 'poke' is unsafe: use it inside `unsafe`

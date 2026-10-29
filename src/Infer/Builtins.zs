@@ -113,6 +113,8 @@ let builtins : Map<string, Builtin> =
       b "Native.parseFloat" "float.parse" [ kFloat ] (f tStr (TTuple [ tBool; a ])) 1
       b "Float.toBits" "float.toBits" [] (f (tcon "f64") (tcon "u64")) 1
       b "Float.ofBits" "float.ofBits" [] (f (tcon "u64") (tcon "f64")) 1
+      b "Float.toBits32" "float.toBits32" [] (f (tcon "f32") (tcon "u32")) 1
+      b "Float.ofBits32" "float.ofBits32" [] (f (tcon "u32") (tcon "f32")) 1
       b "Native.clockRealtime" "Clock.realtime" [] (f tUnit (tcon "i64")) 1
       b "Native.randomSeed" "Random.seed" [] (f tUnit (tcon "u64")) 1
       b "Native.fileOpen" "File.open" [] (f tStr (f tInt tInt)) 2

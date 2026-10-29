@@ -1,10 +1,39 @@
 # Bytes
 
-Binary formats and protocols: integers read from and written to bytes at an offset, in big-
-or little-endian order (`Bytes.readU16BE data 4`, `Bytes.writeU32LE out 0 n`); a read or
-write past the end panics, as indexing does. And a writer: the `append` functions add to a
-growing `Buffer<u8>` and return it, so a response is a pipeline:
+Binary formats and protocols: numbers read from and written to bytes at an offset, in big-
+or little-endian order (`Bytes.readU16BE data 4`, `Bytes.writeF64LE out 0 x`); a read or
+write past the end panics, as indexing does. And a `Writer`, over a growing `Buffer<u8>` or
+fixed C memory: the `append` functions add to it and return it, so a response is a pipeline:
 `out |> Bytes.append b"Content-Length: " |> Bytes.appendInt n |> Bytes.append b"\r\n"`.
+
+## Types
+
+### `Bytes.Writer`
+
+```zsharp
+type Writer
+```
+
+Where the `append` functions write: a growing `Buffer<u8>` (`Bytes.writerOf`), or fixed
+memory C owns, such as a socket's send buffer (`Bytes.writer`), where writing past the end
+panics. A value: each write gives the Writer back, longer, so writes chain,
+`w |> Bytes.append b"OK" |> Bytes.appendInt n`; `Bytes.written` is what they wrote.
+
+#### `Bytes.Growing`
+
+```zsharp
+| Growing of Buffer<u8>
+```
+
+Bytes pushed onto a Buffer, which the Buffer's other references see.
+
+#### `Bytes.Fixed`
+
+```zsharp
+| Fixed of Memory
+```
+
+Bytes written into fixed memory, from its start; only `Bytes.writer` makes one.
 
 ## Functions
 
@@ -205,41 +234,161 @@ Bytes.writeI64LE : Buffer<u8> -> int -> i64 -> unit
 
 Writes the `i64` at offset `at`, little-endian.
 
+### `Bytes.readF32BE`
+
+```zsharp
+Bytes.readF32BE : span<u8> -> int -> f32
+```
+
+The `f32` at offset `at`, big-endian (its IEEE 754 bits).
+
+### `Bytes.readF32LE`
+
+```zsharp
+Bytes.readF32LE : span<u8> -> int -> f32
+```
+
+The `f32` at offset `at`, little-endian.
+
+### `Bytes.readF64BE`
+
+```zsharp
+Bytes.readF64BE : span<u8> -> int -> f64
+```
+
+The `f64` at offset `at`, big-endian (its IEEE 754 bits).
+
+### `Bytes.readF64LE`
+
+```zsharp
+Bytes.readF64LE : span<u8> -> int -> f64
+```
+
+The `f64` at offset `at`, little-endian.
+
+### `Bytes.writeF32BE`
+
+```zsharp
+Bytes.writeF32BE : Buffer<u8> -> int -> f32 -> unit
+```
+
+Writes the `f32` at offset `at`, big-endian (its IEEE 754 bits).
+
+### `Bytes.writeF32LE`
+
+```zsharp
+Bytes.writeF32LE : Buffer<u8> -> int -> f32 -> unit
+```
+
+Writes the `f32` at offset `at`, little-endian.
+
+### `Bytes.writeF64BE`
+
+```zsharp
+Bytes.writeF64BE : Buffer<u8> -> int -> f64 -> unit
+```
+
+Writes the `f64` at offset `at`, big-endian (its IEEE 754 bits).
+
+### `Bytes.writeF64LE`
+
+```zsharp
+Bytes.writeF64LE : Buffer<u8> -> int -> f64 -> unit
+```
+
+Writes the `f64` at offset `at`, little-endian.
+
+### `Bytes.writerOf`
+
+```zsharp
+Bytes.writerOf : Buffer<u8> -> Bytes.Writer
+```
+
+A Writer that pushes onto the Buffer.
+
+```zsharp
+let w = Bytes.writerOf Buffer.empty |> Bytes.append b"n=" |> Bytes.appendInt -1205
+println (String.ofBytes (Bytes.written w))
+// => n=-1205
+```
+
+### `Bytes.writer`
+
+```zsharp
+Bytes.writer : ptr<u8> -> int -> Bytes.Writer
+```
+
+A Writer over the `capacity` bytes at `p`, empty. Unsafe: the memory must stay valid, and
+written by nothing else, while the Writer and the spans `Bytes.written` gives are used.
+
+### `Bytes.written`
+
+```zsharp
+Bytes.written : Bytes.Writer -> span<u8>
+```
+
+The bytes written so far, without a copy: a growing Writer's whole Buffer, a fixed one's
+memory up to its length.
+
+### `Bytes.remaining`
+
+```zsharp
+Bytes.remaining : Bytes.Writer -> int
+```
+
+How many more bytes fit: the most an `int` holds for a growing Writer.
+
+### `Bytes.reset`
+
+```zsharp
+Bytes.reset : Bytes.Writer -> Bytes.Writer
+```
+
+The Writer emptied (its Buffer cleared, or its memory to be written again from the start).
+
+### `Bytes.put`
+
+```zsharp
+Bytes.put : u8 -> Bytes.Writer -> Bytes.Writer
+```
+
+Adds the byte at the end of `out`, and returns it.
+
 ### `Bytes.append`
 
 ```zsharp
-Bytes.append : span<u8> -> Buffer<u8> -> Buffer<u8>
+Bytes.append : span<u8> -> Bytes.Writer -> Bytes.Writer
 ```
 
-Adds the bytes at the end of `out`, and returns `out`.
+Adds the bytes at the end of `out`, and returns it.
 
 ### `Bytes.appendUtf8`
 
 ```zsharp
-Bytes.appendUtf8 : string -> Buffer<u8> -> Buffer<u8>
+Bytes.appendUtf8 : string -> Bytes.Writer -> Bytes.Writer
 ```
 
-Adds the string's UTF-8 bytes at the end of `out`, and returns `out`.
+Adds the string's UTF-8 bytes at the end of `out`, and returns it.
 
 ### `Bytes.appendInt`
 
 ```zsharp
-Bytes.appendInt : int -> Buffer<u8> -> Buffer<u8>
+Bytes.appendInt : int -> Bytes.Writer -> Bytes.Writer
 ```
 
-Adds the integer in decimal (`-` before a negative one) at the end of `out`, and returns
-`out`; nothing is allocated but the Buffer's growth.
+Adds the integer in decimal (`-` before a negative one) at the end of `out`, and returns it;
+nothing is allocated (but a Buffer's growth).
 
 ```zsharp
-let out = Buffer.empty |> Bytes.append b"n=" |> Bytes.appendInt -1205 |> Bytes.appendInt 0
-println (String.ofBytes out)
-// => n=-12050
+let w = Bytes.writerOf Buffer.empty |> Bytes.appendInt -1205 |> Bytes.appendInt 0
+println (String.ofBytes (Bytes.written w))
+// => -12050
 ```
 
 ### `Bytes.appendJsonString`
 
 ```zsharp
-Bytes.appendJsonString : string -> Buffer<u8> -> Buffer<u8>
+Bytes.appendJsonString : string -> Bytes.Writer -> Bytes.Writer
 ```
 
 Adds the string as a JSON string, quoted and escaped (`"`, `\` and the control characters;
@@ -247,7 +396,7 @@ every other character as its UTF-8, as `Json.print` writes one), and returns `ou
 string is scanned 16 bytes at a time.
 
 ```zsharp
-println (String.ofBytes (Bytes.appendJsonString "say \"hi\"\n" Buffer.empty))
+println (String.ofBytes (Bytes.written (Bytes.appendJsonString "say \"hi\"\n" (Bytes.writerOf Buffer.empty))))
 // => "say \"hi\"\n"
 ```
 

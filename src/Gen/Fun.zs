@@ -2657,6 +2657,8 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
     instr em $"insertvalue {llty g ty} {pair}, {lt} {v}, 1"
   | "float.toBits" -> instr em $"bitcast double {arg 0} to i64"
   | "float.ofBits" -> instr em $"bitcast i64 {arg 0} to double"
+  | "float.toBits32" -> instr em $"bitcast float {arg 0} to i32"
+  | "float.ofBits32" -> instr em $"bitcast i32 {arg 0} to float"
   | "float.parse" ->
     // Float.parse's: whether the text is a number, and the number
     let el =

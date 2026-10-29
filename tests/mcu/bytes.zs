@@ -7,6 +7,13 @@ let main () =
   println (Hex.encode (Sha256.hash (String.bytes "abc")))
   println (Hex.encode (Hmac.sha256 (String.bytes "key") (String.bytes "The quick brown fox jumps over the lazy dog")))
   println $"{Span.parseInt (String.bytes "-2147483648")} {Span.parseInt (String.bytes "2147483648")}"
-  let out = Buffer.empty |> Bytes.append b"len=" |> Bytes.appendInt (1 <<< 31) |> Bytes.append b" "
-  println (String.ofBytes (Bytes.appendJsonString "a \"quoted\" line of more than sixteen bytes\n" out))
+  let mem: ptr<u8> = unsafe (Ptr.alloc 64)
+  let out =
+    unsafe (Bytes.writer mem 64)
+    |> Bytes.append b"len="
+    |> Bytes.appendInt (1 <<< 31)
+    |> Bytes.append b" "
+  println (String.ofBytes (Bytes.written (Bytes.appendJsonString "a \"quoted\" line of more than sixteen bytes\n" out)))
+  println $"{Bytes.readF64BE (Bytes.written (Bytes.writerOf Buffer.empty |> Bytes.append [| u8 0x3F; u8 0xF8; u8 0; u8 0; u8 0; u8 0; u8 0; u8 0 |])) 0} {Float.ofBits32 (u32 0x40490fdb)}"
+  unsafe (Ptr.free mem)
   0

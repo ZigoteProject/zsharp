@@ -15,6 +15,8 @@ let private plainDocs : list<string * string> =
     ("assert", "Panics with \"assertion failed\" when the condition is false; for a comparison (`assert (a = b)`), the message shows both sides and where they first differ.")
     ("Float.toBits", "The number's 64 bits, as IEEE 754 lays them out (`Float.ofBits` gives it back).")
     ("Float.ofBits", "The number whose IEEE 754 bits these are (`Float.toBits` gives them).")
+    ("Float.toBits32", "An `f32`'s 32 bits, as IEEE 754 lays them out (`Float.ofBits32` gives it back).")
+    ("Float.ofBits32", "The `f32` whose IEEE 754 bits these are (`Float.toBits32` gives them).")
     ("ignore", "Discards a value.")
     ("ref", "A mutable cell holding the value; read and write it with `r.Value`.")
     ("Collections.Array.create", "An array of `n` copies of `x`.")

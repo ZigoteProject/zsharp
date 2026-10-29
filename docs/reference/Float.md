@@ -22,6 +22,14 @@ Float.ofBits : u64 -> f64
 
 The number whose IEEE 754 bits these are (`Float.toBits` gives them).
 
+### `Float.ofBits32`
+
+```zsharp
+Float.ofBits32 : u32 -> f32
+```
+
+The `f32` whose IEEE 754 bits these are (`Float.toBits32` gives them).
+
 ### `Float.toBits`
 
 ```zsharp
@@ -29,4 +37,12 @@ Float.toBits : f64 -> u64
 ```
 
 The number's 64 bits, as IEEE 754 lays them out (`Float.ofBits` gives it back).
+
+### `Float.toBits32`
+
+```zsharp
+Float.toBits32 : f32 -> u32
+```
+
+An `f32`'s 32 bits, as IEEE 754 lays them out (`Float.ofBits32` gives it back).
 

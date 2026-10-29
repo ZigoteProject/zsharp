@@ -1291,6 +1291,11 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
     checkCArg cx what ret
     let ex : Export = { cname = cname; fname = q; pars = List.filter (fun t -> prune v t <> tUnit) ptys; ret = resolve v ret; interrupt = false }
     Buffer.push ex cx.exports
+  | Attrs([ ("Unsafe", []) ], inner) when Option.isSome (funName inner) ->
+    // an unsafe function: only `unsafe` code may name it, since it trusts what it's given (a
+    // pointer's memory); its own raw operations still go in `unsafe`
+    declare cx inner
+    cx.unsafes.Value <- Set.add (qualify cx (Option.get (funName inner))) cx.unsafes.Value
   | Attrs([ ("NoAlloc", []) ], inner) when Option.isSome (funName inner) ->
     // checked after reference counting (0012): kept whole, so the check finds it
     declare cx inner

@@ -1,7 +1,7 @@
-/// Binary formats and protocols: integers read from and written to bytes at an offset, in big-
-/// or little-endian order (`Bytes.readU16BE data 4`, `Bytes.writeU32LE out 0 n`); a read or
-/// write past the end panics, as indexing does. And a writer: the `append` functions add to a
-/// growing `Buffer<u8>` and return it, so a response is a pipeline:
+/// Binary formats and protocols: numbers read from and written to bytes at an offset, in big-
+/// or little-endian order (`Bytes.readU16BE data 4`, `Bytes.writeF64LE out 0 x`); a read or
+/// write past the end panics, as indexing does. And a `Writer`, over a growing `Buffer<u8>` or
+/// fixed C memory: the `append` functions add to it and return it, so a response is a pipeline:
 /// `out |> Bytes.append b"Content-Length: " |> Bytes.appendInt n |> Bytes.append b"\r\n"`.
 module Bytes
 
@@ -84,43 +84,125 @@ let writeI64BE (b: Buffer<u8>) (at: int) (x: i64) = putBE b at 8 (u64 x)
 /// Writes the `i64` at offset `at`, little-endian.
 let writeI64LE (b: Buffer<u8>) (at: int) (x: i64) = putLE b at 8 (u64 x)
 
-/// Adds the bytes at the end of `out`, and returns `out`.
-let append (bytes: span<u8>) (out: Buffer<u8>) : Buffer<u8> =
-  for i in 0 .. Span.length bytes - 1 do
-    Buffer.push bytes.[i] out
-  out
+/// The `f32` at offset `at`, big-endian (its IEEE 754 bits).
+let readF32BE (b: span<u8>) (at: int) : f32 = Float.ofBits32 (u32 (be b at 4))
+/// The `f32` at offset `at`, little-endian.
+let readF32LE (b: span<u8>) (at: int) : f32 = Float.ofBits32 (u32 (le b at 4))
+/// The `f64` at offset `at`, big-endian (its IEEE 754 bits).
+let readF64BE (b: span<u8>) (at: int) : f64 = Float.ofBits (be b at 8)
+/// The `f64` at offset `at`, little-endian.
+let readF64LE (b: span<u8>) (at: int) : f64 = Float.ofBits (le b at 8)
+/// Writes the `f32` at offset `at`, big-endian (its IEEE 754 bits).
+let writeF32BE (b: Buffer<u8>) (at: int) (x: f32) = putBE b at 4 (u64 (Float.toBits32 x))
+/// Writes the `f32` at offset `at`, little-endian.
+let writeF32LE (b: Buffer<u8>) (at: int) (x: f32) = putLE b at 4 (u64 (Float.toBits32 x))
+/// Writes the `f64` at offset `at`, big-endian (its IEEE 754 bits).
+let writeF64BE (b: Buffer<u8>) (at: int) (x: f64) = putBE b at 8 (Float.toBits x)
+/// Writes the `f64` at offset `at`, little-endian.
+let writeF64LE (b: Buffer<u8>) (at: int) (x: f64) = putLE b at 8 (Float.toBits x)
 
-/// Adds the string's UTF-8 bytes at the end of `out`, and returns `out`.
-let appendUtf8 (s: string) (out: Buffer<u8>) : Buffer<u8> = Bytes.append (String.bytes s) out
+// a Writer's fixed memory and how much of it is written
+type private Memory = { at: ptr<u8>; capacity: int; length: int }
 
-/// Adds the integer in decimal (`-` before a negative one) at the end of `out`, and returns
-/// `out`; nothing is allocated but the Buffer's growth.
+/// Where the `append` functions write: a growing `Buffer<u8>` (`Bytes.writerOf`), or fixed
+/// memory C owns, such as a socket's send buffer (`Bytes.writer`), where writing past the end
+/// panics. A value: each write gives the Writer back, longer, so writes chain,
+/// `w |> Bytes.append b"OK" |> Bytes.appendInt n`; `Bytes.written` is what they wrote.
+type Writer =
+  /// Bytes pushed onto a Buffer, which the Buffer's other references see.
+  | Growing of Buffer<u8>
+  /// Bytes written into fixed memory, from its start; only `Bytes.writer` makes one.
+  | Fixed of Memory
+
+/// A Writer that pushes onto the Buffer.
 ///
 /// ```zsharp
-/// let out = Buffer.empty |> Bytes.append b"n=" |> Bytes.appendInt -1205 |> Bytes.appendInt 0
-/// println (String.ofBytes out)
-/// // => n=-12050
+/// let w = Bytes.writerOf Buffer.empty |> Bytes.append b"n=" |> Bytes.appendInt -1205
+/// println (String.ofBytes (Bytes.written w))
+/// // => n=-1205
 /// ```
-let appendInt (n: int) (out: Buffer<u8>) : Buffer<u8> =
-  if n < 0 then
-    Buffer.push (u8 45) out
-  let start = Buffer.length out
-  // the digits from the last, each from a negative remainder, so the most negative int works
-  let mutable x = if n < 0 then n else -n
-  Buffer.push (u8 (48 - x % 10)) out
-  x <- x / 10
-  while x <> 0 do
-    Buffer.push (u8 (48 - x % 10)) out
-    x <- x / 10
-  let mutable i = start
-  let mutable j = Buffer.length out - 1
-  while i < j do
-    let t = out.[i]
-    out.[i] <- out.[j]
-    out.[j] <- t
-    i <- i + 1
-    j <- j - 1
-  out
+let writerOf (b: Buffer<u8>) : Writer = Growing b
+
+/// A Writer over the `capacity` bytes at `p`, empty. Unsafe: the memory must stay valid, and
+/// written by nothing else, while the Writer and the spans `Bytes.written` gives are used.
+[<Unsafe>]
+let writer (p: ptr<u8>) (capacity: int) : Writer =
+  if Ptr.isNull p || capacity < 0 then
+    panic "Bytes.writer: a null pointer or a negative capacity"
+  Fixed { at = p; capacity = capacity; length = 0 }
+
+/// The bytes written so far, without a copy: a growing Writer's whole Buffer, a fixed one's
+/// memory up to its length.
+let written (w: Writer) : span<u8> =
+  match w with
+  | Growing b -> b
+  | Fixed m -> unsafe (Span.ofPtr m.at m.length)
+
+/// How many more bytes fit: the most an `int` holds for a growing Writer.
+let remaining (w: Writer) : int =
+  match w with
+  | Growing _ -> (1 <<< (8 * sizeof<int> -1)) - 1
+  | Fixed m -> m.capacity - m.length
+
+/// The Writer emptied (its Buffer cleared, or its memory to be written again from the start).
+let reset (w: Writer) : Writer =
+  match w with
+  | Growing b ->
+    Buffer.truncate 0 b
+    w
+  | Fixed m -> Fixed { m with length = 0 }
+
+/// Adds the byte at the end of `out`, and returns it.
+let put (b: u8) (out: Writer) : Writer =
+  match out with
+  | Growing buf ->
+    Buffer.push b buf
+    out
+  | Fixed m ->
+    if m.length >= m.capacity then
+      panic "Bytes.Writer is full"
+    unsafe (Ptr.write (Ptr.add m.at m.length) b)
+    Fixed { m with length = m.length + 1 }
+
+/// Adds the bytes at the end of `out`, and returns it.
+let append (bytes: span<u8>) (out: Writer) : Writer =
+  let n = Span.length bytes
+  match out with
+  | Growing buf ->
+    for i in 0 .. n - 1 do
+      Buffer.push bytes.[i] buf
+    out
+  | Fixed m ->
+    if n > m.capacity - m.length then
+      panic "Bytes.Writer is full"
+    unsafe
+      for i in 0 .. n - 1 do
+        Ptr.write (Ptr.add m.at (m.length + i)) bytes.[i]
+    Fixed { m with length = m.length + n }
+
+/// Adds the string's UTF-8 bytes at the end of `out`, and returns it.
+let appendUtf8 (s: string) (out: Writer) : Writer = Bytes.append (String.bytes s) out
+
+/// Adds the integer in decimal (`-` before a negative one) at the end of `out`, and returns it;
+/// nothing is allocated (but a Buffer's growth).
+///
+/// ```zsharp
+/// let w = Bytes.writerOf Buffer.empty |> Bytes.appendInt -1205 |> Bytes.appendInt 0
+/// println (String.ofBytes (Bytes.written w))
+/// // => -12050
+/// ```
+let appendInt (n: int) (out: Writer) : Writer =
+  let mutable o = if n < 0 then Bytes.put (u8 45) out else out
+  // from the most significant digit, each from a negative remainder, so the most negative int
+  // works too
+  let x = if n < 0 then n else -n
+  let mutable p = 1
+  while x / p <= -10 do
+    p <- p * 10
+  while p > 0 do
+    o <- Bytes.put (u8 (48 - x / p % 10)) o
+    p <- p / 10
+  o
 
 // whether JSON needs a byte escaped: a control character, `"` or `\`
 let private needsEscape (b: u8) = b < u8 32 || b = u8 34 || b = u8 92
@@ -132,13 +214,13 @@ let private hex = "0123456789abcdef"
 /// string is scanned 16 bytes at a time.
 ///
 /// ```zsharp
-/// println (String.ofBytes (Bytes.appendJsonString "say \"hi\"\n" Buffer.empty))
+/// println (String.ofBytes (Bytes.written (Bytes.appendJsonString "say \"hi\"\n" (Bytes.writerOf Buffer.empty))))
 /// // => "say \"hi\"\n"
 /// ```
-let appendJsonString (s: string) (out: Buffer<u8>) : Buffer<u8> =
+let appendJsonString (s: string) (out: Writer) : Writer =
   let b = String.bytes s
   let n = Span.length b
-  Buffer.push (u8 34) out
+  let mutable o = Bytes.put (u8 34) out
   let mutable i = 0
   while i < n do
     // a run of bytes that need no escape, 16 at a time while they last
@@ -152,20 +234,19 @@ let appendJsonString (s: string) (out: Buffer<u8>) : Buffer<u8> =
         j <- j + 16
     while j < n && not (needsEscape b.[j]) do
       j <- j + 1
-    Bytes.append b.[i .. j - 1] out |> ignore
+    o <- Bytes.append b.[i .. j - 1] o
     if j < n then
       let c = b.[j]
-      Buffer.push (u8 92) out
-      if c = u8 34 || c = u8 92 then Buffer.push c out
-      else if c = u8 10 then Buffer.push (u8 110) out
-      else if c = u8 13 then Buffer.push (u8 114) out
-      else if c = u8 9 then Buffer.push (u8 116) out
-      else if c = u8 8 then Buffer.push (u8 98) out
-      else if c = u8 12 then Buffer.push (u8 102) out
+      o <- Bytes.put (u8 92) o
+      if c = u8 34 || c = u8 92 then o <- Bytes.put c o
+      else if c = u8 10 then o <- Bytes.put (u8 110) o
+      else if c = u8 13 then o <- Bytes.put (u8 114) o
+      else if c = u8 9 then o <- Bytes.put (u8 116) o
+      else if c = u8 8 then o <- Bytes.put (u8 98) o
+      else if c = u8 12 then o <- Bytes.put (u8 102) o
       else
-        Bytes.append b"u00" out |> ignore
-        Buffer.push (String.byte hex (int (c >>> u8 4))) out
-        Buffer.push (String.byte hex (int (c &&& u8 15))) out
+        o <- Bytes.append b"u00" o
+        o <- Bytes.put (String.byte hex (int (c >>> u8 4))) o
+        o <- Bytes.put (String.byte hex (int (c &&& u8 15))) o
     i <- j + 1
-  Buffer.push (u8 34) out
-  out
+  Bytes.put (u8 34) o

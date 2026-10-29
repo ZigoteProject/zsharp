@@ -1602,6 +1602,8 @@ and valueQ (cx: Cx) (env: Map<string, Local>) (depth: int) (x: string) : CExpr =
     match (Map.tryFind x cx.globals.Value, sm) with
     | (None, Some m) ->
       if m.isProperty then memberCall cx env depth m None [] x else fail $"static method '{x}' must be called: {x}(...)"
+    | (Some _, _) when Set.contains x cx.unsafes.Value && not cx.unsafeOn.Value ->
+      fail $"'{shortName x}' is unsafe: use it inside `unsafe`"
     | (Some g, _) when g.defining -> mk (CGlobal(x, None)) g.ty
     | (Some g, _) ->
       let (t, inst) = instantiate cx g.kinds g.ty

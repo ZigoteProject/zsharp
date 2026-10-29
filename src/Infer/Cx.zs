@@ -115,6 +115,8 @@ and CxData =
     measures: ref<Set<string>>
     /// [<CLayout>] records
     clayouts: ref<Set<string>>
+    /// [<Unsafe>] functions: only `unsafe` code may name them
+    unsafes: ref<Set<string>>
     /// [<Target>] and [<Multiversion>] functions
     targets: ref<Map<string, list<string>>>
     exports: Buffer<Export>
@@ -321,6 +323,9 @@ type Cx with
   member c.clayouts =
     match c with
     | Cx { clayouts = x } -> x
+  member c.unsafes =
+    match c with
+    | Cx { unsafes = x } -> x
   member c.targets =
     match c with
     | Cx { targets = x } -> x
@@ -520,6 +525,7 @@ let create (requireMain: bool) (collect: bool) (allModules: list<string>) (manua
       counter = ref 0
       measures = ref Set.empty
       clayouts = ref Set.empty
+      unsafes = ref Set.empty
       targets = ref Map.empty
       exports = Buffer.empty
       tests = Buffer.empty

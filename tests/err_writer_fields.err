@@ -1,0 +1,1 @@
+tests/err_writer_fields.zs:3:11: error: the fields of 'Bytes.Memory' are private to module Bytes

@@ -21,20 +21,33 @@ let main () =
     let s = Span.ofPtr p 32
     println $"{Bytes.readU32BE s 12} {Span.indexOf [| u8 20; u8 21 |] s}"
     Ptr.free p
-  // the writer: a response as a pipeline
+  // the writer: a response as a pipeline, onto a Buffer and into fixed C memory
   let body = "{\"msg\":\"tab\there \u{1}, quote \" and a long run of plain text past 16 bytes\"}"
-  let out =
-    Buffer.empty
+  let respond (w: Bytes.Writer) =
+    w
     |> Bytes.append b"HTTP/1.1 200 OK\r\nContent-Length: "
     |> Bytes.appendInt (String.length body)
     |> Bytes.append b"\r\n\r\n"
     |> Bytes.appendUtf8 body
-  println (String.replace (String.ofBytes out) "\r" "\\r")
-  println (String.ofBytes (Bytes.appendJsonString body Buffer.empty))
+  let buffer = Buffer.empty
+  respond (Bytes.writerOf buffer) |> ignore
+  println (String.replace (String.ofBytes buffer) "\r" "\\r")
+  let mem: ptr<u8> = unsafe (Ptr.alloc 128)
+  let fixed = respond (unsafe (Bytes.writer mem 128))
+  println $"{String.ofBytes (Bytes.written fixed) = String.ofBytes buffer} {Bytes.remaining fixed}"
+  let again = Bytes.reset fixed |> Bytes.appendJsonString body
+  println (String.ofBytes (Bytes.written again))
   let ints =
-    Buffer.empty
+    Bytes.writerOf Buffer.empty
     |> Bytes.appendInt (1 <<< (8 * sizeof<int> -1))
     |> Bytes.append b" "
     |> Bytes.appendInt 7
-  println (String.ofBytes ints)
+  println (String.ofBytes (Bytes.written ints))
+  unsafe (Ptr.free mem)
+  // floats by their IEEE 754 bits
+  let out = Buffer.create 12 (u8 0)
+  Bytes.writeF64BE out 0 1.5
+  Bytes.writeF32LE out 8 (f32 -2.25)
+  println $"{Hex.encode out} {Bytes.readF64BE out 0} {Bytes.readF32LE out 8} {Bytes.readF64LE out 0}"
+  println $"{Float.toBits32 (f32 1.0)} {Float.ofBits32 (u32 0x40490fdb)}"
   0

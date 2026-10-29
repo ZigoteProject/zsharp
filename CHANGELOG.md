@@ -14,6 +14,8 @@ programmers.
   after its constructor (`Some` then `{ x = 1 }` indented); `match a, b with` without
   parentheses. `handle` is a keyword only where a handler starts, so `let handle x = …` is a
   function. `[<CLayout>]` and the other attributes apply to a `private` type.
+- `[<Unsafe>]` on a function: only `unsafe` code may call it (`Bytes.writer`, which writes
+  wherever its pointer points, is one).
 - A top-level `Buffer` of one type (`let private seen: Buffer<int> = Buffer.empty`, or a record
   holding one) is one Buffer, computed once at startup, so a push to it is seen at every use; it
   was a new Buffer at each use, and the push was lost. A generic one, `Buffer.empty` itself, is
@@ -189,8 +191,12 @@ programmers.
   at startup. `Ptr.readUnaligned` and `writeUnaligned` (at any address: a `u64` or a SIMD
   vector in one load) and `Ptr.diff` (C's `end - start`).
 - A byte writer in `Bytes`: `append`, `appendUtf8`, `appendInt` and `appendJsonString` (scanned
-  16 bytes at a time) add to a `Buffer<u8>` and return it, so a response is a pipeline:
-  `out |> Bytes.append b"Content-Length: " |> Bytes.appendInt n`.
+  16 bytes at a time) add to a `Bytes.Writer` and return it, so a response is a pipeline:
+  `w |> Bytes.append b"Content-Length: " |> Bytes.appendInt n`. A Writer pushes onto a Buffer
+  (`Bytes.writerOf`) or fills fixed C memory such as a send buffer (`Bytes.writer p n`, unsafe;
+  writing past its end panics); `Bytes.written` is what it wrote, as a span.
+- `Bytes.readF64BE`, `writeF32LE` and the rest of the floats, and `Float.toBits32`/`ofBits32`
+  beside `toBits`/`ofBits`.
 - `List.collect` and `List.concat` are linear: they copied what they'd gathered for every list,
   quadratic in how many there were. `Set.union` adds the smaller set to the larger one,
   `intersect` walks the smaller one, both build their result from its sorted elements in linear
