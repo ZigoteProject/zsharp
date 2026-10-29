@@ -1,12 +1,17 @@
 # Changelog
 
-## 0.6.2 (unreleased)
+## 0.6.2 (2026-10-30)
 
 The first public release, for microcontrollers: firmware for a real board, the ST Nucleo-F401RE,
 written as tasks on the runtime's loop, with interrupt handlers, registers as `[<Bits>]` records,
 code checked not to touch the heap, and its log over RTT (`examples/nucleo`). Beside it: package
-versions and the orphan rule for impls, lldb, doc tests, `zs doctor`, and the guide's page for F#
-programmers.
+versions and the orphan rule for impls, Concurrent ML's events for tasks, lldb, doc tests,
+`zs doctor`, allocation hints in the editor, and the guide's page for F# programmers.
+
+Archives for Linux, macOS and Windows on x86-64 and arm64, each cross-built from Linux x86-64.
+Linux x86-64's suite passes natively, Linux arm64's under QEMU (its compiler builds itself to
+the same bytes), Windows x64's under Wine; the macOS builds and arm64 Windows are untested on
+a real machine. The flagship runs under QEMU's STM32F405, not yet on the board itself.
 
 ### Language
 - What an F# programmer writes in the first hour parses: `let y = x + 1 in y * 2`; a condition
@@ -182,6 +187,13 @@ programmers.
   object it compiles.
 
 ### Library
+- `Threading.Alt`: Concurrent ML's events for tasks, on one event loop, as F#'s Hopac has them.
+  `Alt.choose` commits exactly one branch and takes the others back, `withNack` tells the
+  branches that lost, `guard` builds an event at each sync, and `Ch` and `Mailbox` are its
+  channels. A cancelled sync leaves no waiter behind; deep chains of syncs and maps don't grow the
+  stack. The guide's tasks chapter says when to choose events over plain tasks.
+- The thread pool wakes a sleeping worker when work arrives: a worker woke every millisecond to
+  look for work it could have missed (`tests/parallel/wake.zs`).
 - `Bytes`: `readU16BE`, `readI32LE`, `writeU64BE` and the rest, integers at an offset in either
   byte order. `Text.Hex` and `Text.Base64` (with the URL-safe, unpadded `encodeUrl`/`decodeUrl`
   JWTs use), `Sha256.hash` and `Hmac.sha256`, in Core, so on chips and WebAssembly too.

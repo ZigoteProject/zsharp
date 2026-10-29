@@ -351,8 +351,8 @@ without the container, see [the guide](docs/guide/01-getting-started.md).
 
 Z# is pre-1.0: the language and the library still change between releases. Done: the language
 through effect handlers, the compiler in Z#, which builds itself to the same bytes, and the ports
-to macOS, Windows and Linux arm64. Now: release 0.6.2, its flagship firmware for a
-microcontroller board, with the platforms' suites in CI to come.
+to macOS, Windows and Linux arm64. Released: 0.6.2, its flagship firmware for a
+microcontroller board. Next: the platforms' suites in CI and checks on real Macs and Windows machines.
 The [roadmap](ROADMAP.md) has the details.
 
 ## License

@@ -1,5 +1,21 @@
 # 1. Getting started
 
+## Installing a release
+
+Each [release](https://github.com/ZigoteProject/zsharp/releases) has an archive per platform
+(`linux`, `macos` or `windows`, on `x86_64` or `aarch64`): the compiler, its library and its
+runtime in one folder. Unpack it and put the folder on `PATH`:
+
+```sh
+tar -xzf zs-0.6.2-linux-x86_64.tar.gz
+export PATH="$PWD/zs-0.6.2-linux-x86_64:$PATH"
+zs doctor                # what's here, and how to get what's missing
+```
+
+On Windows, `tar` unpacks it too (in PowerShell or cmd), and `zs.exe` is inside. `zs` compiles
+through clang 23 or later, or zig for other targets: `zs doctor` names each one missing and how
+to get it.
+
 ## Building the compiler
 
 The compiler is written in Z# itself (`src/`). It drives clang to produce native executables, and

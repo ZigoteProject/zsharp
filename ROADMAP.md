@@ -19,7 +19,7 @@ Rust, Swift and OCaml for the host benchmarks).
  alongside:            E editors, D testing, profiling and debugging, M microcontrollers,
                        T more targets, P type providers, S library, K packages
 
- done: 0–11, L, V and the third design review      now: phase 12, release 0.6.2
+ done: 0–11, L, V and the third design review      now: phase 12, 0.6.2 released; CI and clean machines left
 ```
 
 - **v1 (phases 0–6, L and V):** the complete single-threaded language. It is fast, memory-safe, has C interop, and runs async on one event loop.
