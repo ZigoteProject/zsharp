@@ -249,8 +249,9 @@ void *zs_alloc(zs_int size) {
 #endif
 }
 
-// zs_alloc for a program with SIMD vectors (the compiler swaps it in): each object aligned to
-// 64 bytes, so a vector field or element is aligned as LLVM expects
+// zs_alloc for a program whose objects may hold SIMD vectors (the compiler swaps it in, see
+// Compile.wideVectors): each object aligned to 64 bytes, so a vector field or element is aligned
+// as LLVM expects
 void *zs_alloc_wide(zs_int size) {
     COUNT(live, 1);
     COUNT(allocations, 1);
@@ -621,7 +622,7 @@ void zs_arena_close(void) {
 void *zs_alloc_checked(zs_int size) {
     zs_arena *a = arena;
     if (!a || (size_t)size > ARENA_BLOCK / 4) return zs_alloc(size); // a big object is malloc's
-    size_t n = ((size_t)size + 7) & ~(size_t)7; // 8-byte aligned, as the pool's (a program with vectors has no arenas: its objects are zs_alloc_wide's)
+    size_t n = ((size_t)size + 7) & ~(size_t)7; // 8-byte aligned, as the pool's (a program whose objects may hold vectors has no arenas: its objects are zs_alloc_wide's)
     HEAP_LOCK();
     if (a->next + n > a->end) {
         char *b = arena_block(a);

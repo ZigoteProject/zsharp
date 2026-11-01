@@ -272,7 +272,7 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
       // by name: the order the run made them in depends on what else it made
       let funs = List.map (fun (n: string) -> Map.find n byName) (Set.toList funsHere)
       let facts =
-        List.filter (fun x -> x <> "") [ (if Compile.usesPrim Compile.heapPrims funs then "weak" else ""); (if Compile.wideVectors funs then "wide" else ""); (if Compile.threaded prog.externs funs || List.exists (fun (e: Core.Ir.Export) -> e.interrupt) prog.exports then "threads" else "") ]
+        List.filter (fun x -> x <> "") [ (if Compile.usesPrim Compile.heapPrims funs then "weak" else ""); (if Compile.wideVectors types.Value funs then "wide" else ""); (if Compile.threaded prog.externs funs || List.exists (fun (e: Core.Ir.Export) -> e.interrupt) prog.exports then "threads" else "") ]
       let deps = List.append (List.map (fun d -> (d, "check", Map.find d keyOf)) (List.sort checks)) (List.map (fun d -> (d, "abi", "")) (List.sort calls))
       let w : World = { deps = deps; abi = abi; facts = facts }
       made.Value <- Map.add u.file { mfuns = funs; calls = [] } made.Value
