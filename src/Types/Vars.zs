@@ -69,21 +69,50 @@ let kindOf (v: Vars) (i: int) : Kind =
 /// Whether a variable is free.
 let isFree (v: Vars) (i: int) : bool = Option.isNone v.links.[i]
 
-/// A type with its outermost bound variables followed to what they're bound to.
-let rec prune (v: Vars) (t: Ty) : Ty =
-  match t with
-  | TVar i ->
-    match v.links.[i] with
-    | Some b -> prune v b
-    | None -> t
-  | _ -> t
-
 // a change, trailed when a trial is open
 let private trail (v: Vars) (i: int) =
   if v.trials.Value > 0 then
     Buffer.push i v.trailVar
     Buffer.push v.links.[i] v.trailLink
     Buffer.push v.kinds.[i] v.trailKind
+
+// what a variable is bound to (None: free, or not a variable)
+let private next (v: Vars) (t: Ty) : option<Ty> =
+  match t with
+  | TVar i -> v.links.[i]
+  | _ -> None
+
+/// A type with its outermost bound variables followed to what they're bound to. A chain of
+/// variables bound to variables (an array literal's elements, each unified with the one before)
+/// is walked once: each one on it is then bound straight to the end (trailed, so a trial that
+/// misses undoes that too), as a union-find's path compression does, and in a loop, as a chain
+/// can be as long as the program.
+let prune (v: Vars) (t: Ty) : Ty =
+  match next v t with
+  | None -> t
+  | Some b0 ->
+    match next v b0 with
+    | None -> b0
+    | Some _ ->
+      let mutable last = b0
+      let mutable more = true
+      while more do
+        match next v last with
+        | Some b -> last <- b
+        | None -> more <- false
+      let mutable c = t
+      let mutable going = true
+      while going do
+        match c with
+        | TVar i ->
+          match v.links.[i] with
+          | Some b when Option.isSome (next v b) ->
+            trail v i
+            v.links.[i] <- Some last
+            c <- b
+          | _ -> going <- false
+        | _ -> going <- false
+      last
 
 /// Binds a free variable to a type.
 let bind (v: Vars) (i: int) (t: Ty) =

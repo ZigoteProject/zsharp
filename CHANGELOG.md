@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+### Compiler
+- Long and deep programs, as generated code writes them, build: a flat list literal of 20,000
+  elements, 10,000 statements or `let`s in one function, an `else if` chain or nested parentheses
+  10,000 deep each crashed the compiler (its stack overflowed); its threads now have 256 MB of
+  stack where the system's hard limit allows, and the pool's threads the soft `ulimit -s` when
+  that's over 8 MB.
+- Nothing quadratic in what was: an array literal of 100,000 elements checked in over two minutes
+  (each element's type variable was bound to the one before, and unification walked the whole
+  chain: variables are now bound straight to the end of a chain once it's walked, trailed so a
+  trial undoes that too), 2.4 s now; a chain of 1,000 small functions, each calling the one
+  before, took over a minute to inline (each copy carried every one before it, and whether a
+  function could reach itself was a walk per function), 1 s now. A copy inlined carries at most
+  four times a small body, so twelve of the test programs compile to up to 38% less IR, running
+  the same.
+- A UTF-8 byte order mark at the start of a file is skipped, as `\r\n` is read as `\n`; it was
+  "expected 'let'".
+
+### Runtime
+- A stack overflow is a panic: `panic: stack overflow (recursion too deep)`, exit status 134, what
+  was printed before it flushed. It was a SIGSEGV with nothing said. On Linux and macOS, in
+  programs (a library leaves its C host's signals alone), not under a sanitizer, which reports
+  one itself.
+
+### Tests
+- `tests/stress.sh`: long literals, long runs of statements and lets, deep nesting and a byte
+  order mark build in time and run; deeper than any stack is the panic above, not a crash.
+- `tests/fuzz.sh`: 300 programs broken at random (seeded; `ZS_FUZZ_SEED`, `ZS_FUZZ_COUNT`) through
+  `zs check` and `zs fmt --stdin`: errors, never a crash, a panic or a hang.
+- `./test.sh --release` builds every program optimized: what LLVM may assume of the IR is tested
+  too (all 146 programs print the same at `--release` and at `-O3`).
+
 ## 0.6.2 (2026-10-30)
 
 The first public release, for microcontrollers: firmware for a real board, the ST Nucleo-F401RE,

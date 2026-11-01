@@ -13,8 +13,14 @@ type Source =
     lines: array<int> }
 
 /// A source of a file's text.
-let make (file: int) (path: string) (text: string) : Source =
-  let text = String.replace text "\r\n" "\n"
+let make (file: int) (path: string) (text0: string) : Source =
+  // a byte order mark (Windows editors write one) is no part of the program
+  let text1 =
+    if String.startsWith "\u{FEFF}" text0 then
+      String.sub text0 3 (String.length text0 - 3)
+    else
+      text0
+  let text = String.replace text1 "\r\n" "\n"
   let starts = Buffer.empty
   Buffer.push 0 starts
   for i in 0 .. String.length text - 1 do

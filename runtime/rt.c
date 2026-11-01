@@ -48,14 +48,156 @@ float roundevenf(float x) { return nearbyintf(x); }
 #endif
 
 #include <pthread.h>
-// a thread with the main thread's usual stack, 8 MB: macOS gives a new thread 512 KB, which deep
-// recursion (a compiler's passes over a long list literal) runs out of where Linux's 8 MB doesn't
+#ifndef _WIN32
+#include <signal.h>
+#include <sys/resource.h>
+#endif
+
+// A stack overflow is a panic that says so, not a bare SIGSEGV: a program's threads (the main
+// one and those spawn starts) take the fault on a stack of their own, and a fault next to the
+// thread's stack pointer ends the program as a panic does. Not under a sanitizer (it reports
+// overflows itself), and not in a library (zs_set_args is a program's: a C host's signals are
+// its own).
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+#define ZS_SANITIZED 1
+#endif
+#endif
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define ZS_SANITIZED 1
+#endif
+#if (defined(__linux__) || defined(__APPLE__)) && !defined(ZS_SANITIZED)
+#define ZS_OVERFLOW_GUARD 1
+#endif
+
+#ifdef ZS_OVERFLOW_GUARD
+#include <sys/ucontext.h>
+#define ALT_STACK_SIZE (64 << 10)
+static bool guard_on; // set once by zs_set_args, before any thread is spawned
+
+// the stack pointer of the thread that faulted (0 where it isn't known)
+static uintptr_t fault_sp(void *context) {
+    ucontext_t *uc = context;
+#if defined(__APPLE__) && defined(__x86_64__)
+    return (uintptr_t)uc->uc_mcontext->__ss.__rsp;
+#elif defined(__APPLE__) && defined(__aarch64__) && defined(__darwin_arm_thread_state64_get_sp)
+    return (uintptr_t)__darwin_arm_thread_state64_get_sp(uc->uc_mcontext->__ss);
+#elif defined(__APPLE__) && defined(__aarch64__)
+    return (uintptr_t)uc->uc_mcontext->__ss.__sp;
+#elif defined(__linux__) && defined(__x86_64__)
+    return (uintptr_t)uc->uc_mcontext.gregs[REG_RSP];
+#elif defined(__linux__) && defined(__aarch64__)
+    return (uintptr_t)uc->uc_mcontext.sp;
+#elif defined(__linux__) && defined(__arm__)
+    return (uintptr_t)uc->uc_mcontext.arm_sp;
+#else
+    (void)uc;
+    return 0;
+#endif
+}
+
+static void on_fault(int sig, siginfo_t *info, void *context) {
+    uintptr_t at = (uintptr_t)info->si_addr, sp = fault_sp(context);
+    // an access within a frame's reach of the stack pointer that faulted: the stack ran into its
+    // guard (a push, a call, or a store into a frame just made below it)
+    if (sp && at + ((uintptr_t)64 << 10) >= sp && at <= sp + ((uintptr_t)64 << 10)) {
+        // what was printed before it, as a panic flushes it; unless another thread is writing
+        // (waiting for it here could be forever), and a fault inside the flush ends the program
+        // as the overflow would have
+        if (ftrylockfile(stdout) == 0) {
+            fflush(stdout);
+            funlockfile(stdout);
+        }
+        static const char msg[] = "panic: stack overflow (recursion too deep)\n";
+        ssize_t w = write(2, msg, sizeof msg - 1);
+        (void)w;
+        if (getenv("ZS_ABORT")) {
+            signal(SIGABRT, SIG_DFL);
+            abort();
+        }
+        _exit(134);
+    }
+    // any other fault as if no one caught it: the instruction runs again, with the default action
+    signal(sig, SIG_DFL);
+}
+
+static void guard_thread(char *alt) {
+    stack_t ss;
+    memset(&ss, 0, sizeof ss);
+    ss.ss_sp = alt;
+    ss.ss_size = ALT_STACK_SIZE;
+    sigaltstack(&ss, NULL);
+}
+
+// the main thread's guard, and the handler, unless the program already has one
+static void guard_install(void) {
+    static char alt[ALT_STACK_SIZE];
+    struct sigaction old;
+    if (sigaction(SIGSEGV, NULL, &old) != 0 || (old.sa_flags & SA_SIGINFO) || old.sa_handler != SIG_DFL) return;
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = on_fault;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigemptyset(&sa.sa_mask);
+    guard_thread(alt);
+    sigaction(SIGSEGV, &sa, NULL);
+    sigaction(SIGBUS, &sa, NULL);
+    guard_on = true;
+}
+#endif
+
+// what spawn starts: the body, its own stack for a fault first
+typedef struct {
+    void *(*body)(void *);
+    void *arg;
+} spawned;
+
+static void *spawned_main(void *p) {
+    spawned s = *(spawned *)p;
+    free(p);
+#ifdef ZS_OVERFLOW_GUARD
+    // at the top of this thread's stack, which overflows at the bottom
+    char alt[ALT_STACK_SIZE];
+    if (guard_on) guard_thread(alt);
+#endif
+    void *r = s.body(s.arg);
+#ifdef ZS_OVERFLOW_GUARD
+    if (guard_on) {
+        stack_t off;
+        memset(&off, 0, sizeof off);
+        off.ss_flags = SS_DISABLE;
+        sigaltstack(&off, NULL);
+    }
+#endif
+    return r;
+}
+
+// A thread's stack: the main thread's usual 8 MB at least (macOS gives a new thread 512 KB, which
+// deep recursion, a compiler's passes over a long list literal, runs out of where Linux's 8 MB
+// doesn't), or the soft RLIMIT_STACK when that's more, as glibc sizes its threads (ulimit -s
+// raises it; the compiler raises its own, src/host.c). At most 1 GB, and 8 MB with 32-bit words.
+static size_t thread_stack_size(void) {
+    size_t size = (size_t)8 << 20;
+#ifndef _WIN32
+    size_t most = sizeof(void *) >= 8 ? (size_t)1 << 30 : size;
+    struct rlimit rl;
+    if (getrlimit(RLIMIT_STACK, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY && rl.rlim_cur > size)
+        size = rl.rlim_cur > most ? most : (size_t)rl.rlim_cur;
+#endif
+    return size;
+}
+
 static int spawn(pthread_t *t, void *(*body)(void *), void *arg) {
+    spawned *s = malloc(sizeof *s);
+    if (!s) return -1;
+    s->body = body;
+    s->arg = arg;
     pthread_attr_t attr;
     pthread_attr_init(&attr);
-    pthread_attr_setstacksize(&attr, (size_t)8 << 20);
-    int r = pthread_create(t, &attr, body, arg);
+    pthread_attr_setstacksize(&attr, thread_stack_size());
+    int r = pthread_create(t, &attr, spawned_main, s);
     pthread_attr_destroy(&attr);
+    if (r != 0) free(s);
     return r;
 }
 
@@ -1381,6 +1523,9 @@ void zs_set_args(int32_t argc, char **argv) {
 #endif
     const char *stats = getenv("ZS_STATS");
     if (stats && *stats && strcmp(stats, "0") != 0) atexit(print_stats);
+#ifdef ZS_OVERFLOW_GUARD
+    guard_install();
+#endif
 }
 
 zs_int zs_argc(void) { return g_argc; }
