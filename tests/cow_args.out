@@ -1,0 +1,3 @@
+map: 100 keys, Some 20, as many allocations as the hoisted read: true
+array: 204600, allocations 1
+kept 0, new 5

@@ -28,6 +28,12 @@ let private reads : Set<string> = Set.ofList [ "array.get"; "Array.length"; "Str
 // the reads that borrow the array (or string) they read from, a variable or a field of one
 let private lends : Set<string> = Set.ofList [ "array.get"; "Array.length"; "String.length"; "String.byte"; "vec.load"; "fixed.get"; "fixed.length" ]
 
+// whether e assigns the mutable x
+let rec private assigns (x: string) (e: CExpr) : bool =
+  match e.k with
+  | CAssign(y, _) when y = x -> true
+  | k -> List.exists (assigns x) (children k)
+
 // whether e writes the mutable array x in place
 let rec private inPlace (x: string) (e: CExpr) : bool =
   match e.k with
@@ -764,20 +770,28 @@ let private lowerFun (types: Map<string, TypeInfo>) (borrowedParams: Map<string,
           let used = Set.intersect pvars (freeVars body)
           (p, g2, dups used (rc (Set.union owned used) borrowed body))
       mk (CMatch(s, List.map one cases)) e.ty
-    // x <- f … x …: when x is a direct argument of the call (once, and nowhere else in it), the
-    // call gets x's own reference and the old value isn't dropped, so a unique value stays unique
-    // (copy-on-write updates in place)
+    // x <- f … x …: when x is a direct argument of the call (once, and only read elsewhere in it),
+    // the call gets x's own reference and the old value isn't dropped, so a unique value stays
+    // unique (copy-on-write updates in place). Taking only reads the slot, so the other arguments
+    // may read it too, in any order: what they keep is a reference of their own.
     and assignHeap (owned: Set<string>) (borrowed: Set<string>) (e: CExpr) (x: string) (w: CExpr) : CExpr =
       let isX (a: CExpr) = isLocalNamed x a
-      let direct (args: list<CExpr>) =
-        let others = List.filter (fun a -> not (isX a)) args
-        List.length (List.filter isX args) = 1 && List.forall (fun (a: CExpr) -> not (Set.contains x (freeVars a))) others
+      let direct (args: list<CExpr>) = List.length (List.filter isX args) = 1 && not (List.exists (assigns x) args)
       let take (args: list<CExpr>) = List.map (fun (a: CExpr) -> if isX a then mk (CPrim("slot.take", [ a ])) a.ty else a) args
+      // after p takes x, the lets that don't use p (an inlined call's later arguments) may still
+      // read x, as p's value is untouched until then; nothing after them may
+      let rec readsBefore (p: string) (y: CExpr) : bool =
+        if not (Set.contains x (freeVars y)) then
+          true
+        else
+          match y.k with
+          | CLet(_, qv, rest) when not (Set.contains p (freeVars qv)) && not (assigns x qv) -> readsBefore p rest
+          | _ -> false
       // x <- (let p = x in …), as an inlined call is: p gets x's own reference
       let rec viaLets (y: CExpr) : option<CExpr> =
         match y.k with
-        | CLet(p, a, body) when isX a && not (Set.contains x (freeVars body)) -> Some(mk (CLet(p, mk (CPrim("slot.take", [ a ])) a.ty, body)) y.ty)
-        | CLet(p, pv, body) when not (Set.contains x (freeVars pv)) -> Option.map (fun b -> mk (CLet(p, pv, b)) y.ty) (viaLets body)
+        | CLet(p, a, body) when isX a && readsBefore p body -> Some(mk (CLet(p, mk (CPrim("slot.take", [ a ])) a.ty, body)) y.ty)
+        | CLet(p, pv, body) when not (assigns x pv) -> Option.map (fun b -> mk (CLet(p, pv, b)) y.ty) (viaLets body)
         | _ -> None
       let moved =
         match w.k with
@@ -863,7 +877,8 @@ let private lowerFun (types: Map<string, TypeInfo>) (borrowedParams: Map<string,
           match a.k with
           | CLocal x -> if Set.contains x mutables && heapVar x && List.forall (fun c -> firstUse x c = 2) conts then Some x else None
           | _ -> None
-        let alone (x: string) = List.length (List.filter (isLocalNamed x) args) = 1 && List.forall (fun (a: CExpr) -> isLocalNamed x a || not (Set.contains x (freeVars a))) args
+        // as in assignHeap: the other arguments may read x, not assign it
+        let alone (x: string) = List.length (List.filter (isLocalNamed x) args) = 1 && not (List.exists (assigns x) args)
         let ok = List.filter alone (List.choose movable args)
         if List.isEmpty ok then
           build (moves h) (List.map moves conts)
