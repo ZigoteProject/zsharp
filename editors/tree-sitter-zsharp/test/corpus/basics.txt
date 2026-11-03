@@ -344,3 +344,31 @@ let f a b =
               pattern: (wildcard)
               body: (identifier))))
         else: (identifier)))))
+
+================================================================================
+Provider imports (0001): a named module, and a bare one with options
+================================================================================
+
+module Weather = import json "weather.json"
+import csv ("stocks.csv", separator = ";", hasHeaders = true)
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (module_declaration
+    name: (identifier)
+    (import_declaration
+      provider: (identifier)
+      source: (string
+        (string_content))))
+  (import_declaration
+    provider: (identifier)
+    source: (string
+      (string_content))
+    (import_option
+      name: (identifier)
+      value: (string
+        (string_content)))
+    (import_option
+      name: (identifier)
+      value: (boolean))))

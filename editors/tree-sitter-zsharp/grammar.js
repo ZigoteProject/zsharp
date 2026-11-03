@@ -77,6 +77,7 @@ module.exports = grammar({
       $.type_extension,
       $.extern_declaration,
       $.import_c_declaration,
+      $.import_declaration,
       $.assert_declaration,
       $.trait_declaration,
       $.effect_declaration,
@@ -97,7 +98,9 @@ module.exports = grammar({
     // namespace Collections: the file's types and modules are Collections.Name
     namespace_declaration: $ => seq('namespace', field('name', choice($.identifier, $.qualified_identifier))),
     module_declaration: $ => seq('module', field('name', choice($.identifier, $.qualified_identifier)),
-      optional(seq('=', $._indent, sep1($._declaration, $._newline), optional($._newline), $._dedent))), // module Inner = …
+      optional(choice(
+        seq('=', $._indent, sep1($._declaration, $._newline), optional($._newline), $._dedent), // module Inner = …
+        seq('=', $.import_declaration)))), // module Weather = import json "weather.json" (0001)
 
     let_declaration: $ => choice(
       seq(
@@ -126,6 +129,11 @@ module.exports = grammar({
     type_annotation: $ => seq(':', $._type),
 
     import_c_declaration: $ => seq('import', 'c', field('header', $.string)),
+    // import json "weather.json", or import csv ("stocks.csv", separator = ";"): a provider's module (0001)
+    import_declaration: $ => seq('import', field('provider', $.identifier),
+      choice(field('source', $.string),
+        seq('(', field('source', $.string), repeat(seq(',', $.import_option)), ')'))),
+    import_option: $ => seq(field('name', $.identifier), '=', field('value', choice($.string, $.number, $.boolean))),
     // assert cond at the top level: checked when compiling when cond is a constant
     assert_declaration: $ => seq('assert', field('condition', $._expression)),
     extern_declaration: $ => seq('extern', field('name', $.identifier), ':', $._type),
