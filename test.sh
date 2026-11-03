@@ -506,6 +506,10 @@ else echo "FAIL tests/lsp/effects.sh"; cat "$tmp/lspe.diff"; fail=1; fi
 # (tests/lsp/hints.sh)
 if diff <(tests/lsp/hints.sh bin/zs 2>&1) tests/lsp/hints.expected >"$tmp/lsph.diff"; then echo "ok   tests/lsp/hints.sh"
 else echo "FAIL tests/lsp/hints.sh"; cat "$tmp/lsph.diff"; fail=1; fi
+# a provided module in the editor (0001): hover and completion on its fields, a rename refused, the
+# sample watched and completion following an edit to it (tests/lsp/providers.sh)
+if diff <(tests/lsp/providers.sh bin/zs 2>&1) tests/lsp/providers.expected >"$tmp/lspp.diff"; then echo "ok   tests/lsp/providers.sh (a provided module's fields, the sample watched)"
+else echo "FAIL tests/lsp/providers.sh"; cat "$tmp/lspp.diff"; fail=1; fi
 # editing through the server (0019): renaming a record field across modules, signature help,
 # code actions (tests/lsp/edits.sh)
 if diff <(tests/lsp/edits.sh bin/zs 2>&1) tests/lsp/edits.expected >"$tmp/lspx.diff"; then echo "ok   tests/lsp/edits.sh"

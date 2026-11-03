@@ -161,6 +161,7 @@ let private analyze (st: State) (path: string) =
   let all = Array.toList diags
   let shown = List.append (List.choose mine all) (List.choose elsewhere all)
   notify st "textDocument/publishDiagnostics" (JObject [ ("uri", JString(Rpc.toUri path)); ("diagnostics", JArray shown) ])
+  watchInputs st
 
 /// A document changed: it's analyzed again, and so is every other open one whose program has it.
 let private changed (st: State) (path: string) =
@@ -170,7 +171,6 @@ let private changed (st: State) (path: string) =
       match Map.tryFind other st.madeOf.Value with
       | Some files when Set.contains path files -> analyze st other
       | _ -> ()
-  watchInputs st
 
 let private analysisOf (st: State) (path: string) : option<Analysis> = Map.tryFind path st.results.Value
 
