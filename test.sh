@@ -461,7 +461,7 @@ else echo "ok   library documented; docs/reference current"; fi
 # the repository's own Z# code is formatted (zs fmt); the tests of parse errors don't parse, so
 # they have no layout to check
 unparsed='tests/err_and.zs|tests/err_operator_builtin.zs|tests/newcomer/(let_without_in|try_with|class|mutable_field|increment|return_braces).zs'
-formatted=$(find tests lib packages -name '*.zs' | grep -Ev "^($unparsed)\$")
+formatted=$(find tests lib packages -name .zs-cache -prune -o -name '*.zs' -print | grep -Ev "^($unparsed)\$")
 if bin/zs fmt --check $formatted 2>"$tmp/fmt.log"; then echo "ok   zs fmt --check"
 else echo "FAIL zs fmt --check (run: bin/zs fmt \$(find tests lib packages -name '*.zs'))"; cat "$tmp/fmt.log"; fail=1; fi
 # the syntax tree is lossless: every file's text comes back from it (0019)

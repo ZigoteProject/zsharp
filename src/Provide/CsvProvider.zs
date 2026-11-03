@@ -55,7 +55,8 @@ let cells (separator: string) (text: string) : list<list<string>> =
       from <- i
     else if b = u8 10 then
       let piece = String.sub text from (i - from)
-      let line = if String.endsWith "\r" piece then String.sub piece 0 (String.length piece - 1) else piece
+      let line =
+        if String.endsWith "\r" piece then String.sub piece 0 (String.length piece - 1) else piece
       cell.Value <- cell.Value + line
       endCell ()
       endRow ()
@@ -174,7 +175,8 @@ let private readerText (separator: string) : list<string> =
     "      from <- i"
     "    else if b = u8 10 then"
     "      let piece = String.sub text from (i - from)"
-    "      let line = if String.endsWith \"\\r\" piece then String.sub piece 0 (String.length piece - 1) else piece"
+    "      let line ="
+    "        if String.endsWith \"\\r\" piece then String.sub piece 0 (String.length piece - 1) else piece"
     "      cell.Value <- cell.Value + line"
     "      endCell ()"
     "      endRow ()"
@@ -291,7 +293,7 @@ let provide (file: string) (text: string) (opts: list<string * string>) : result
               let value = "r." + fieldOf c
               if c.optional then
                 let inner = if c.kind = "string" then "quoted v" else "string v"
-                "(match " + value + " with\n                           | Some v -> " + inner + "\n                           | None -> \"\")"
+                "(match " + value + " with\n        | Some v -> " + inner + "\n        | None -> \"\")"
               else if c.kind = "string" then "quoted " + value
               else "string " + value
             let headerLiteral = String.join "; " (List.map (fun (c: Column) -> literal c.header) columns)
@@ -326,7 +328,8 @@ let provide (file: string) (text: string) (opts: list<string * string>) : result
                   "  match List.filter (fun (r: list<string>) -> r <> [ \"\" ]) (cells text) with"
                   "  | [] -> Error \"no header line\""
                   "  | first :: rest ->"
-                  "    if first <> header then Error (\"expected the header \" + String.join separator header + \", got \" + String.join separator first)"
+                  "    if first <> header then"
+                  "      Error (\"expected the header \" + String.join separator header + \", got \" + String.join separator first)"
                   "    else"
                   "      let rec go (n: int) (rows: list<list<string>>) (acc: list<Row>) : result<list<Row>, string> ="
                   "        match rows with"
@@ -354,7 +357,7 @@ let provide (file: string) (text: string) (opts: list<string * string>) : result
               [ (if hasHeaders = "true" then "/// Prints rows, the header line first." else "/// Prints rows, with no header line.")
                 "let print (rows: list<Row>) : string ="
                 "  let line (r: Row) ="
-                "    String.join separator [ " + String.join "\n                          " (List.map shown (index 0 columns)) + " ]"
+                "    String.join separator [ " + String.join "\n      " (List.map shown (index 0 columns)) + " ]"
                 (if hasHeaders = "true" then "  String.join \"\\n\" (String.join separator header :: List.map line rows) + \"\\n\""
                  else "  String.join \"\\n\" (List.map line rows) + \"\\n\"") ]
             Ok(String.join "\n" (List.concat [ header; declaration; readerText separator; [ "" ]; rowText; parseText; printText ]) + "\n")

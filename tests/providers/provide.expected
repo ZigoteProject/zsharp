@@ -79,7 +79,8 @@ let private cells (text: string) : list<list<string>> =
       from <- i
     else if b = u8 10 then
       let piece = String.sub text from (i - from)
-      let line = if String.endsWith "\r" piece then String.sub piece 0 (String.length piece - 1) else piece
+      let line =
+        if String.endsWith "\r" piece then String.sub piece 0 (String.length piece - 1) else piece
       cell.Value <- cell.Value + line
       endCell ()
       endRow ()
@@ -153,7 +154,8 @@ let parse (text: string) : result<list<Row>, string> =
   match List.filter (fun (r: list<string>) -> r <> [ "" ]) (cells text) with
   | [] -> Error "no header line"
   | first :: rest ->
-    if first <> header then Error ("expected the header " + String.join separator header + ", got " + String.join separator first)
+    if first <> header then
+      Error ("expected the header " + String.join separator header + ", got " + String.join separator first)
     else
       let rec go (n: int) (rows: list<list<string>>) (acc: list<Row>) : result<list<Row>, string> =
         match rows with
@@ -168,13 +170,13 @@ let parse (text: string) : result<list<Row>, string> =
 let print (rows: list<Row>) : string =
   let line (r: Row) =
     String.join separator [ quoted r.date
-                          string r.``open``
-                          string r.close
-                          string r.volume
-                          (match r.note with
-                           | Some v -> quoted v
-                           | None -> "")
-                          string r.active ]
+      string r.``open``
+      string r.close
+      string r.volume
+      (match r.note with
+        | Some v -> quoted v
+        | None -> "")
+      string r.active ]
   String.join "\n" (String.join separator header :: List.map line rows) + "\n"
 --- errors (exit codes)
 no provider 'jsn': zs has json and csv
