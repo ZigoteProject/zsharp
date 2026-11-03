@@ -264,8 +264,8 @@ let runWith (kept: string -> bool / <>) (mayInline: string -> string -> bool / <
     let e = { e0 with k = mapChildren (inlineIn caller) e0.k }
     match e.k with
     | CApp({ k = CGlobal(g, _) }, args) ->
-      if Set.contains g small && g <> caller && List.length args = List.length (Map.find g byName).pars && mayInline caller g
-         && (forEach g || inlinedSize g <= 4 * smallSize) then
+      if (Set.contains g small && g <> caller && List.length args = List.length (Map.find g byName).pars && mayInline caller g
+        && (forEach g || inlinedSize g <= 4 * smallSize)) then
         let fresh = freshIn caller
         let ps = List.map (fun (p, t) -> (p, fresh p, t)) (Map.find g byName).pars
         let body = copy fresh (Map.ofList (List.map (fun (p, p2, _) -> (p, p2)) ps)) (bodyOf g)
