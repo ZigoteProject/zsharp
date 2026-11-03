@@ -40,7 +40,9 @@ case $(uname -s) in
 esac
 if [ -z "$zsbin" ]; then
   [ -x "${ZS_STAGE0:-}" ] || { echo "no stage 0 compiler (\$ZS_STAGE0): run the tests through ./dev"; exit 1; }
-  mkdir -p build && ZS_NO_SERVER=1 "$ZS_STAGE0" build src/Main.zs --release -o build/zs || exit 1
+  # linked with this tree's runtime, not stage 0's: the suite tests both together (tests/stress.sh needs
+  # the overflow guard and the thread stacks of runtime/rt.c)
+  mkdir -p build && ZS_RUNTIME="$PWD/runtime" ZS_NO_SERVER=1 "$ZS_STAGE0" build src/Main.zs --release -o build/zs || exit 1
   zsbin=build/zs
 fi
 src/install.sh "$zsbin" bin || exit 1
