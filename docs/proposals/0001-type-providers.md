@@ -10,7 +10,7 @@
 
 - [x] Approved in principle
 - [ ] Discussion
-- [ ] Implementation: step 1, `zs provide json` and `csv`, built (2026-11-03, `src/Provide/`); the `import` form next
+- [ ] Implementation: step 1, `zs provide json` and `csv`, and step 2's `import` form (both spellings, the cache, the hidden module) built (2026-11-03, `src/Provide/`, `Build/Modules.provided`); the editor's watching of inputs, hover's provenance and rename's refusal, `svd`, `sql` and providers on PATH follow
 
 ## Summary
 

@@ -358,6 +358,73 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
     match problem.Value with
     | Some p -> Error p
     | None -> Ok { m with decls = decls; skippedC = Array.toList (Buffer.toArray skipped); cInfos = Array.toList (Buffer.toArray infos); imported = String.join "\n" (Array.toList (Buffer.toArray gave)) }
+  // import <provider> (0001): each provided module is written to the project's
+  // .zs-cache/providers/<importing module>/<Name>.zs and loaded as a dependency of the file, so
+  // its names, positions and docs are a module's. `module Name = import …` names it; a bare
+  // import opens a hidden one named after its file and the provider.
+  let provided (m: Loaded) (path: string) : result<Loaded * list<string * string>, Diagnostic> =
+    let dir = Path.getDirectoryName (Path.getFullPath path)
+    let root =
+      match Project.findProject dir with
+      | Some(Ok pm) -> pm.root
+      | _ -> dir
+    let importer =
+      match m.modName with
+      | Some n -> n
+      | None -> Path.getFileNameWithoutExtension path
+    let cacheDir = Path.combine (Path.combine (Path.combine root ".zs-cache") "providers") importer
+    let lineOf (d: Ast.Decl) : Span =
+      let offset = if d.dat >= 0 && d.dat < Array.length m.tree.tokens then m.tree.tokens.[d.dat].offset else 0
+      { file = m.source.file; offset = offset; length = -1 }
+    let problem = ref None
+    let report (d: Ast.Decl) (msg: string) =
+      if Option.isNone problem.Value then
+        problem.Value <- Some(error (lineOf d) msg)
+    let deps = Buffer.empty
+    // the module provided, written to the cache and named: given, or hidden
+    let provide (name: option<string>) (provider: string) (arg: string) (opts: list<string * string>) (d: Ast.Decl) : option<string> =
+      let modName =
+        match name with
+        | Some n -> n
+        | None -> Provide.Names.typeName (Path.getFileNameWithoutExtension arg) + Provide.Names.typeName provider
+      let written =
+        match File.readAllText (Path.combine dir arg) with
+        | Error _ -> Error $"{provider}: {arg} not found next to {Path.getFileName path}"
+        | Ok text ->
+          match Provide.Command.provide provider arg text opts with
+          | Ok s -> Ok s
+          | Error e -> Error(if String.startsWith "no provider" e then e else provider + ": " + e)
+      match written with
+      | Error msg ->
+        report d msg
+        None
+      | Ok text ->
+        let out = Path.combine cacheDir (modName + ".zs")
+        Tools.makeDirectory cacheDir
+        // written only when it changed: an editor watching the cache isn't woken for nothing
+        if Result.defaultValue "" (File.readAllText out) <> text then
+          match File.writeAllText out text with
+          | Ok _ -> ()
+          | Error e -> report d $"{provider}: can't write {out}: {e}"
+        Buffer.push (modName, out) deps
+        Some modName
+    let expand (d: Ast.Decl) : list<Ast.Decl> =
+      match d.d with
+      | Ast.Import(provider, arg, opts) ->
+        match provide None provider arg opts d with
+        | Some n -> [ { d with d = Ast.Open n } ]
+        | None -> []
+      | Ast.NestedModule(n, inner :: []) ->
+        match inner.d with
+        | Ast.Import(provider, arg, opts) ->
+          provide (Some n) provider arg opts inner |> ignore
+          []
+        | _ -> [ d ]
+      | _ -> [ d ]
+    let decls = List.collect expand m.decls
+    match problem.Value with
+    | Some p -> Error p
+    | None -> Ok({ m with decls = decls }, Array.toList (Buffer.toArray deps))
   let rec visit (path: string) (pkg: Project.Package) (modName0: option<string>) (stack: list<string>) =
     if Option.isNone failure.Value then
       count.Value <- count.Value + 1
@@ -366,9 +433,9 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
       | Ok loaded ->
         // the package's [c] is the build's; its include directories and pkg-config's flags are
         // its import c's
-        match imports loaded path (List.append (cOf pkg) forTarget) with
-        | Error d -> fail (d, Some loaded.source)
-        | Ok m ->
+        match Result.bind (fun (m0: Loaded) -> Result.mapError (fun d -> (d, Some m0.source)) (provided m0 path)) (Result.mapError (fun d -> (d, Some loaded.source)) (imports loaded path (List.append (cOf pkg) forTarget))) with
+        | Error d -> fail d
+        | Ok(m, providedDeps) ->
           // a dependency's file is named by its place in the package; a header may only agree
           let header = headerOf m.decls
           let named =
@@ -383,7 +450,12 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
             let opens = List.choose (fun (d: Ast.Decl) -> match d.d with | Ast.Open o -> Some o | _ -> None) m.decls
             let all = usedBy pkg modName opens (usesOf m.source m.tree m.decls)
             let fresh = List.filter (fun (n, f, _) -> Some n <> modName && f <> path && f <> mainFull) all
-            let deps = List.fold (fun (acc: list<string * string * Project.Package>) (n, f, p) -> if List.exists (fun (k, _, _) -> k = n) acc then acc else List.append acc [ (n, f, p) ]) [] fresh
+            let found = List.fold (fun (acc: list<string * string * Project.Package>) (n, f, p) -> if List.exists (fun (k, _, _) -> k = n) acc then acc else List.append acc [ (n, f, p) ]) [] fresh
+            // a provided module, unless a file of the package has its name
+            for (n, _) in providedDeps do
+              if List.exists (fun (k, _, _) -> k = n) found then
+                fail (error { file = m.source.file; offset = 0; length = -1 } $"module {n} is provided by an import here and is also a file of the package: name the import's module otherwise", Some m.source)
+            let deps = List.append found (List.map (fun (n, f) -> (n, f, pkg)) providedDeps)
             for (n, f, p) in deps do
               if Option.isNone failure.Value then
                 match Map.tryFind n finished.Value with

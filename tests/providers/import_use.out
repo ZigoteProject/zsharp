@@ -1,0 +1,6 @@
+Bergen 12 Florida Ida ["wet"] 1
+{"city":"Oslo","temp":3,"humidity":50,"readings":[{"at":"later","value":2.5,"note":"windy"}],"wind":null,"station":{"id":3,"name":"Blindern"},"backup":{"id":4,"name":"Ski"},"tags":[],"mixed":[],"first-name":"Ada"}
+2026-10-20 1.5 3 true None
+date;open;close;volume;note;active
+2026-10-20;1.5;2;3;;true
+

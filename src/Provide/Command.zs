@@ -26,6 +26,17 @@ let private parseOptions (known: list<string>) (args: list<string>) : result<lis
         else Error ("unknown option '" + name + "' (" + String.join ", " known + ")")
   go args []
 
+/// The module `provider` writes for `arg`, read as `text`, with `opts` checked against what it
+/// takes: Error names an unknown provider ("no provider …"), an unknown option, or what the
+/// provider found wrong (an import and `zs provide` both come here).
+let provide (provider: string) (arg: string) (text: string) (opts: list<string * string>) : result<string, string> =
+  match List.tryFind (fun (n, _, _) -> n = provider) providers with
+  | None -> Error ("no provider '" + provider + "': zs has " + names ())
+  | Some(_, _, known) ->
+    match List.tryFind (fun (n, _) -> not (List.contains n known)) opts with
+    | Some(n, _) -> Error ("unknown option '" + n + "' (" + String.join ", " known + ")")
+    | None -> if provider = "json" then Provide.JsonProvider.provide arg text opts else Provide.CsvProvider.provide arg text opts
+
 /// The arguments after `provide`: `--list`, or a provider, its file and its options; the exit code.
 let run (args: list<string>) : int =
   match args with
@@ -50,8 +61,7 @@ let run (args: list<string>) : int =
           eprintln (name + ": " + e)
           1
         | Ok text ->
-          let provided = if name = "json" then Provide.JsonProvider.provide file text options else Provide.CsvProvider.provide file text options
-          match provided with
+          match provide name file text options with
           | Ok text ->
             print text
             0

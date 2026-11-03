@@ -190,6 +190,8 @@ and DeclShape =
   | Impl of string * SType * list<SType> * list<Definition>
   /// import c "raylib.h", replaced by the header's declarations
   | ImportC of string
+  /// import <provider> "arg", or (arg, name = constant, …): a module from a data source (0001)
+  | Import of string * string * list<string * string>
   /// a C constant (an enum's value, a #define): its uses are the literal
   | Const of string * Expr
   /// let name = expr at the top level

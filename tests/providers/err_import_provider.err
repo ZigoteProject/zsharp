@@ -1,0 +1,1 @@
+tests/providers/err_import_provider.zs:2: error: no provider 'jsn': zs has json and csv

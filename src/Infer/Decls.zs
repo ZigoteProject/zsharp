@@ -1574,6 +1574,7 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
       fail $"unknown type '{name}'"
     declareMembers cx name tps ms
   | ImportC _ -> fail "import c is replaced by the header's declarations before checking"
+  | Import _ -> fail "import of a provider is replaced by the provided module before checking"
 
 // runs f for a declaration: a failure is the declaration's error (at its first token's line when
 // the failure has no place), what it changed of the context is put back, and the names it

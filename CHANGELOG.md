@@ -54,8 +54,19 @@
   `--types=temp:f64,readings.value:f32`; `csv` gives a `Row` record from the header and the rows
   (`int`, `f64`, `bool`, else `string`; an empty cell makes a column an option) with `parse` and
   `print` that read and write quoted cells, with `--separator=;`, `--hasHeaders=false` and
-  `--types=volume:f64`. `zs provide --list` names the providers. The `import` form, the cache
-  and the editor's side follow.
+  `--types=volume:f64`. `zs provide --list` names the providers.
+
+### Language
+- `module Weather = import json "weather.json"` and the bare `import csv ("stocks.csv", separator = ";")`
+  (0001): the provider's module, written to `.zs-cache/providers/<importing module>/<Name>.zs`
+  and loaded as a dependency of the file, so `Weather.Root`, `Weather.parse` and hover, definition
+  and completion on them are a module's; the bare form opens a hidden module named after the file
+  and the provider (`StocksCsv`), so `Row`, `parse` and `print` are in scope, the module's own
+  names before the prelude's. Options are constants after the string, in a member call's syntax.
+  An import of a provider zs doesn't have, a file that isn't beside the importing file, or an
+  option the provider doesn't take is an error at the import. In the editor the types follow
+  the sample on save (the file is read at each check); providers on PATH and from packages,
+  and the stale-cache diagnostic for them, follow.
 
 ### Benchmarks
 - `bench/host` has five small real programs beside its kernels, in Z#, C and Rust: `wordfreq`,

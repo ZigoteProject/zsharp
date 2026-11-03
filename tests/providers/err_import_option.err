@@ -1,0 +1,1 @@
+tests/providers/err_import_option.zs:2: error: csv: unknown option 'seperator' (separator, hasHeaders, types)

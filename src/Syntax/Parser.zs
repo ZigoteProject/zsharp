@@ -3053,19 +3053,24 @@ and private declOf (p: P) : Ast.Decl =
     advance p
     let n = name p
     if peek p = Equals then
-      // module Inner =, then its declarations, indented
       advance p
-      expect p Indent "indented declarations"
-      let decls = Buffer.empty
-      while peek p <> Dedent && peek p <> Eof do
-        let before = p.pos.Value
-        Buffer.push (decl p) decls
-        if peek p = Newline then
-          advance p
-        if p.pos.Value = before then
-          bump p
-      dedent p "end of module"
-      Ast.decl (Ast.NestedModule(n, listOf decls)) ln
+      if peek p = Id && isWord p "import" then
+        // module Weather = import json "weather.json": the provided declarations as a module (0001)
+        let d = decl p
+        Ast.decl (Ast.NestedModule(n, [ d ])) ln
+      else
+        // module Inner =, then its declarations, indented
+        expect p Indent "indented declarations"
+        let decls = Buffer.empty
+        while peek p <> Dedent && peek p <> Eof do
+          let before = p.pos.Value
+          Buffer.push (decl p) decls
+          if peek p = Newline then
+            advance p
+          if p.pos.Value = before then
+            bump p
+        dedent p "end of module"
+        Ast.decl (Ast.NestedModule(n, listOf decls)) ln
     else
       Ast.decl (Ast.ModuleHeader n) ln
   | Derive when ahead p 3 = Id ->
@@ -3153,23 +3158,63 @@ and private declOf (p: P) : Ast.Decl =
     dedent p "end of impl"
     Ast.decl (Ast.Impl(tr, head, listOf others, defs)) ln
   | Id when isWord p "import" ->
-    // import c "header.h"
+    // import c "header.h", or a provider's: import json "sample.json", import csv ("rows.csv",
+    // separator = ";") (0001)
     advance p
-    if not (isWord p "c") then
-      failAt p ln "expected 'c' after 'import': import c \"header.h\""
+    let str () =
+      match Literal.stringValue (textOf p p.pos.Value) with
+      | Ok s -> s
+      | Error _ -> ""
+    if peek p <> Id then
+      failAt p ln "expected a provider after 'import': import c \"header.h\", import json \"sample.json\""
       Ast.decl (Ast.ImportC "") ln
-    else
+    else if isWord p "c" then
       advance p
       if peek p = Str then
-        let h =
-          match Literal.stringValue (textOf p p.pos.Value) with
-          | Ok s -> s
-          | Error _ -> ""
+        let h = str ()
         advance p
         Ast.decl (Ast.ImportC h) ln
       else
         failAt p ln "expected a header name: import c \"header.h\""
         Ast.decl (Ast.ImportC "") ln
+    else
+      let provider = textOf p p.pos.Value
+      advance p
+      if peek p = Str then
+        let a = str ()
+        advance p
+        Ast.decl (Ast.Import(provider, a, [])) ln
+      else if peek p = LParen then
+        advance p
+        if peek p <> Str then
+          failAt p ln $"expected what to import first: import {provider} (\"file\", name = value)"
+          Ast.decl (Ast.Import(provider, "", [])) ln
+        else
+          let a = str ()
+          advance p
+          let opts = Buffer.empty
+          while peek p = Comma do
+            advance p
+            let n = name p
+            expect p Equals "'=' after the option's name"
+            let v =
+              match peek p with
+              | Str -> Some(str ())
+              | Int -> Some(textOf p p.pos.Value)
+              | Float -> Some(textOf p p.pos.Value)
+              | True -> Some "true"
+              | False -> Some "false"
+              | _ -> None
+            match v with
+            | Some value ->
+              advance p
+              Buffer.push (n, value) opts
+            | None -> err p "a constant: a string, a number, true or false"
+          expect p RParen "')'"
+          Ast.decl (Ast.Import(provider, a, listOf opts)) ln
+      else
+        failAt p ln $"expected what to import: import {provider} \"file\", or import {provider} (\"file\", name = value)"
+        Ast.decl (Ast.Import(provider, "", [])) ln
   | Id when isWord p "assert" ->
     // assert cond: checked when compiling when cond is a constant, else at startup (0004)
     advance p

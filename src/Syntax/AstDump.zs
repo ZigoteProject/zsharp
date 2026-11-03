@@ -333,6 +333,7 @@ let dump (src: Source.Source) (toks: array<Token.Token>) (decls: list<Decl>) : l
       head ("Impl " + tr + " " + ty h + String.concat (List.map (fun t -> " " + ty t) others))
       defs ds
     | ImportC h -> head ("ImportC " + quote h)
+    | Import(provider, arg, opts) -> head ("Import " + provider + " " + quote arg + String.concat (List.map (fun (n, v) -> " " + n + "=" + quote v) opts))
     | Const(n, v) ->
       head ("Const " + n)
       expr (d + 1) v
