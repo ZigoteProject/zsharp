@@ -1,0 +1,2 @@
+[2; 4; 6] [8; 9; 10] [12] 760
+each object its own malloc: true
