@@ -1,0 +1,214 @@
+json   a document's records with the Json derive, from a sample (options: root, types)
+csv    a file's rows as a Row record, from the header and the rows (options: separator, hasHeaders, types)
+--- json
+// provided by json 0.1 from weather.json
+// input: weather.json
+
+/// From "readings": {"at":"2026-10-22T08:00:00Z","value":20.1,"note":"calm"}
+[<Derive(Json)>]
+type Reading = { at: string; value: f64; note: option<string> = None }
+
+/// From "station": {"id":7,"name":"Blindern"}
+[<Derive(Json)>]
+type Station = { id: int; name: string }
+
+/// From "weather.json": {"city":"Oslo","temp":21.5,"humidity":64,"readings":[{"at":"2026-10-22T08:00:00Z","value":20.1,"note…
+[<Derive(Json)>]
+type Root = { city: string; temp: f64; humidity: int; readings: list<Reading>; wind: option<Json> = None; station: Station; backup: Station; tags: list<Json>; mixed: list<Json>; ``first-name``: string }
+
+/// Parses a document of Root's shape.
+let parse (text: string) : result<Root, string> = Result.bind fromJson (Json.parse text)
+
+/// Prints a Root as a document.
+let print (value: Root) : string = Json.print (toJson value)
+--- csv
+// provided by csv 0.1 from stocks.csv
+// input: stocks.csv
+
+/// From "stocks.csv": date;open;close;volume;note;active
+type Row = { date: string; ``open``: f64; close: f64; volume: int; note: option<string> = None; active: bool }
+
+let private separator = ";"
+
+/// The cells of every row: a cell in quotes may hold the separator, a quote doubled, and a line
+/// break; \r\n ends a row as \n does; a last line without a line break is a row.
+let private cells (text: string) : list<list<string>> =
+  let n = String.length text
+  let sepLen = String.length separator
+  let quote = u8 34
+  let startsAt (i: int) =
+    let mutable k = 0
+    while k < sepLen && i + k < n && String.byte text (i + k) = String.byte separator k do
+      k <- k + 1
+    k = sepLen
+  let rows: ref<list<list<string>>> = ref []
+  let row: ref<list<string>> = ref []
+  let cell = ref ""
+  let mutable from = 0
+  let mutable i = 0
+  let mutable quoted = false
+  let endCell () =
+    row.Value <- cell.Value :: row.Value
+    cell.Value <- ""
+  let endRow () =
+    rows.Value <- List.rev row.Value :: rows.Value
+    row.Value <- []
+  while i < n do
+    let b = String.byte text i
+    if quoted then
+      if b = quote then
+        if i + 1 < n && String.byte text (i + 1) = quote then
+          cell.Value <- cell.Value + String.sub text from (i + 1 - from)
+          i <- i + 2
+          from <- i
+        else
+          cell.Value <- cell.Value + String.sub text from (i - from)
+          quoted <- false
+          i <- i + 1
+          from <- i
+      else
+        i <- i + 1
+    else if b = quote && from = i && cell.Value = "" then
+      quoted <- true
+      i <- i + 1
+      from <- i
+    else if sepLen > 0 && startsAt i then
+      cell.Value <- cell.Value + String.sub text from (i - from)
+      endCell ()
+      i <- i + sepLen
+      from <- i
+    else if b = u8 10 then
+      let piece = String.sub text from (i - from)
+      let line = if String.endsWith "\r" piece then String.sub piece 0 (String.length piece - 1) else piece
+      cell.Value <- cell.Value + line
+      endCell ()
+      endRow ()
+      i <- i + 1
+      from <- i
+    else
+      i <- i + 1
+  if from < n || cell.Value <> "" || not (List.isEmpty row.Value) then
+    cell.Value <- cell.Value + String.sub text from (n - from)
+    endCell ()
+    endRow ()
+  List.rev rows.Value
+
+let private readInt (column: string) (cell: string) : result<int, string> =
+  let v: option<int> = Int.parse cell
+  match v with
+  | Some v -> Ok v
+  | None -> Error (column + ": expected an integer, got \"" + cell + "\"")
+
+let private readFloat (column: string) (cell: string) : result<f64, string> =
+  let v: option<f64> = Float.parse cell
+  match v with
+  | Some v -> Ok v
+  | None -> Error (column + ": expected a number, got \"" + cell + "\"")
+
+let private readBool (column: string) (cell: string) : result<bool, string> =
+  if cell = "true" then Ok true
+  else if cell = "false" then Ok false
+  else Error (column + ": expected true or false, got \"" + cell + "\"")
+
+let private readText (column: string) (cell: string) : result<string, string> = Ok cell
+
+// an empty cell is None
+let private readOptional (read: string -> string -> result<'a, string>) (column: string) (cell: string) : result<option<'a>, string> =
+  if cell = "" then Ok None
+  else
+    match read column cell with
+    | Ok v -> Ok(Some v)
+    | Error e -> Error e
+
+// a cell as the file writes it: in quotes when it holds the separator, a quote or a line break
+let private quoted (s: string) : string =
+  if String.contains separator s || String.contains "\"" s || String.contains "\n" s || String.contains "\r" s then
+    "\"" + String.replace s "\"" "\"\"" + "\""
+  else s
+
+let private header : list<string> = [ "date"; "open"; "close"; "volume"; "note"; "active" ]
+
+// one row's cells as a Row, a cell missing at the end empty
+let private row (n: int) (cs: list<string>) : result<Row, string> =
+  let at (i: int) = if i < List.length cs then List.item i cs else ""
+  let r =
+    if List.length cs > 6 then Error (string (List.length cs) + " cells, " + string 6 + " columns")
+    else
+      result {
+        let! f0 = readText "date" (at 0)
+        let! f1 = readFloat "open" (at 1)
+        let! f2 = readFloat "close" (at 2)
+        let! f3 = readInt "volume" (at 3)
+        let! f4 = readOptional readText "note" (at 4)
+        let! f5 = readBool "active" (at 5)
+        return { date = f0; ``open`` = f1; close = f2; volume = f3; note = f4; active = f5 }
+      }
+  match r with
+  | Ok v -> Ok v
+  | Error e -> Error ("row " + string n + ": " + e)
+
+/// Parses rows of this shape, the header line first.
+let parse (text: string) : result<list<Row>, string> =
+  // a blank line isn't a row
+  match List.filter (fun (r: list<string>) -> r <> [ "" ]) (cells text) with
+  | [] -> Error "no header line"
+  | first :: rest ->
+    if first <> header then Error ("expected the header " + String.join separator header + ", got " + String.join separator first)
+    else
+      let rec go (n: int) (rows: list<list<string>>) (acc: list<Row>) : result<list<Row>, string> =
+        match rows with
+        | [] -> Ok(List.rev acc)
+        | r :: more ->
+          match row n r with
+          | Ok v -> go (n + 1) more (v :: acc)
+          | Error e -> Error e
+      go 2 rest []
+
+/// Prints rows, the header line first.
+let print (rows: list<Row>) : string =
+  let line (r: Row) =
+    String.join separator [ quoted r.date
+                          string r.``open``
+                          string r.close
+                          string r.volume
+                          (match r.note with
+                           | Some v -> quoted v
+                           | None -> "")
+                          string r.active ]
+  String.join "\n" (String.join separator header :: List.map line rows) + "\n"
+--- errors (exit codes)
+no provider 'jsn': zs has json and csv
+exit 1
+csv: unknown option 'seperator' (separator, hasHeaders, types)
+exit 1
+csv: types: 'money' isn't a column's type (int, f64, bool or string)
+exit 1
+json: cannot open nowhere.json: No such file or directory
+exit 1
+json: broken.json: 2:1: expected ',' or ']' after a value
+exit 1
+csv: wide.csv: a row has 3 cells, the header 2
+exit 1
+usage: zs provide <provider> <file> [--option=value]…, or zs provide --list; the providers are json and csv
+exit 2
+--- options
+type Reading = { at: string; value: f32; note: option<string> = None }
+type Station = { id: int; name: string }
+type Weather = { city: string; temp: f64; humidity: f64; readings: list<Reading>; wind: option<Json> = None; station: Station; backup: Station; tags: list<Json>; mixed: list<Json>; ``first-name``: string }
+let parse (text: string) : result<Weather, string> = Result.bind fromJson (Json.parse text)
+/// From "bare.csv": col1,col2,col3
+type Row = { col1: int; col2: option<string> = None; col3: bool }
+--- the same text twice
+deterministic
+--- main.zs with the modules beside it
+Oslo 21.5 64: 3 readings, values [20.1; 21; 22], notes [calm; -; -]
+station Blindern (7), backup Fornebu, wind None, tags 0, mixed [1; "two"], Ada
+printed and read back: true
+doesn't fit: at temp: expected a number, got "warm"
+2026-10-20 101.5 -> 103.25 x12000 true None
+2026-10-21 103 -> 99.75 x8500 false Some split; "2 for 1"
+2026-10-22 100 -> 100 x0 true Some two
+lines
+printed and read back: true
+doesn't fit: row 2: volume: expected an integer, got "many"
+doesn't fit: expected the header date;open;close;volume;note;active, got date;open

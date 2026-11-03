@@ -10,7 +10,7 @@
 
 - [x] Approved in principle
 - [ ] Discussion
-- [ ] Implementation
+- [ ] Implementation: step 1, `zs provide json` and `csv`, built (2026-11-03, `src/Provide/`); the `import` form next
 
 ## Summary
 

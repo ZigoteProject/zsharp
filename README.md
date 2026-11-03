@@ -307,6 +307,7 @@ One `zs` binary holds the compiler and its tools.
 | `zs test` | tests as values, each in its own process; expect tests that `zs test --update` rewrites; `--doc` runs the examples in `///` comments |
 | `zs doctor` | what builds need (clang 23 or later, zig, libclang, …), found or not, and how to get what's missing |
 | `zs fmt`, `zs doc` | one canonical format; Markdown docs from `///` comments |
+| `zs provide` | a module from a data source, kept beside the program: records with the `Json` derive from a JSON sample, a `Row` record from a CSV file's header and rows, each with `parse` and `print` |
 | `zs lsp`, `zs mcp` | a language server (types on hover, rename, code actions, allocation hints per line) and an MCP server for AI agents |
 
 Editors: the [Zed extension](editors/zed), the [VS Code extension](editors/vscode), the

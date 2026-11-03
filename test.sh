@@ -142,6 +142,10 @@ else echo "FAIL the library's doc tests"; echo "$out" | grep -v '^ok'; fail=1; f
 if diff <(tests/doctest.sh 2>&1) tests/doctest.expected >"$tmp/doctest.diff"; then echo "ok   tests/doctest.sh"
 else echo "FAIL tests/doctest.sh"; cat "$tmp/doctest.diff"; fail=1; fi
 
+# zs provide (0001): the json and csv providers' modules, and a program built with them beside it
+if diff <(tests/providers/provide.sh bin/zs 2>&1) tests/providers/provide.expected >"$tmp/provide.diff"; then echo "ok   tests/providers/provide.sh (zs provide json and csv)"
+else echo "FAIL tests/providers/provide.sh"; cat "$tmp/provide.diff"; fail=1; fi
+
 # the checked library and modules, cached between builds: the same program from the cache
 if diff <(tests/cache.sh 2>&1) tests/cache.expected >"$tmp/cache.diff"; then echo "ok   tests/cache.sh (checked library, modules and compiled modules cached)"
 else echo "FAIL tests/cache.sh"; cat "$tmp/cache.diff"; fail=1; fi

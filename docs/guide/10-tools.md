@@ -14,6 +14,7 @@
 | `zs doc <file.zs>` | print a Markdown reference of a file's documented items |
 | `zs fetch` / `zs update` | check out / update git dependencies |
 | `zs doctor` | what builds need (clang, zig, libclang, and the tools some commands run), found or not, and how to get what's missing |
+| `zs provide <provider> <file> [--option=value]…` | a module from a data source, printed to keep beside the program ([proposal 0001](../proposals/0001-type-providers.md)): `json` gives a document's records with the `Json` derive and `parse` and `print` (`--root`, `--types=temp:f64`), `csv` a `Row` record with `parse` and `print` from the header and the rows (`--separator`, `--hasHeaders`, `--types`); `--list` names the providers |
 | `zs lsp` | the language server (stdio) |
 | `zs mcp` | the MCP server for AI agents (stdio) |
 

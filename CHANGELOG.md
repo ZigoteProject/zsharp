@@ -44,6 +44,19 @@
   `Bytes.appendJsonString` no longer costs a whole program the pool (a JSON round trip of 200k
   records: 3.5 s and 935 MB, now 1.4 s and 368 MB).
 
+### Tooling
+- `zs provide json <file>` and `zs provide csv <file>` print a module from a data source, to keep
+  beside the program ([proposal 0001](docs/proposals/0001-type-providers.md), track P's first
+  step): `json` gives a document's records with the `Json` derive and `parse` and `print`, an
+  object a record named after its key (two with the same fields share one), an array a list,
+  `null` or a key some objects lack an option, a number `int` when every occurrence is
+  integral, a key that isn't a name a ``` ``backtick`` ``` field, with `--root=Weather` and
+  `--types=temp:f64,readings.value:f32`; `csv` gives a `Row` record from the header and the rows
+  (`int`, `f64`, `bool`, else `string`; an empty cell makes a column an option) with `parse` and
+  `print` that read and write quoted cells, with `--separator=;`, `--hasHeaders=false` and
+  `--types=volume:f64`. `zs provide --list` names the providers. The `import` form, the cache
+  and the editor's side follow.
+
 ### Benchmarks
 - `bench/host` has five small real programs beside its kernels, in Z#, C and Rust: `wordfreq`,
   `json`, `interp`, `pathfind` and `sha256` ([the report](docs/reports/realworld.md)).

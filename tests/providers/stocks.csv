@@ -1,0 +1,5 @@
+date;open;close;volume;note;active
+2026-10-20;101.5;103.25;12000;;true
+2026-10-21;103;99.75;8500;"split; ""2 for 1""";false
+2026-10-22;100;100;0;"two
+lines";true
