@@ -908,6 +908,7 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
       Buffer.push name cx.records
       fieldUses cx name (List.map (fun (f: RecordField) -> (f.name, f.fieldAt)) fields) true
       cx.recordDefaults.Value <- Map.add name (List.map (fun (f: RecordField) -> f.default) fields) cx.recordDefaults.Value
+      cx.recordScopes.Value <- Map.add name (cx.currentModule.Value, cx.opens.Value) cx.recordScopes.Value
     | UnionTy cases ->
       let caseOf (c: Case) = (qualify cx c.case, List.map (fun (_, st) -> tt st) c.fields)
       cx.types.Value <- Map.add name { npars = List.length tps; def = UnionDef(List.map caseOf cases); bits = None } cx.types.Value

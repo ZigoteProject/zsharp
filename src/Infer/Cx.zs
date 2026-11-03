@@ -67,6 +67,8 @@ and CxData =
     records: Buffer<string>
     /// record: each field's default
     recordDefaults: ref<Map<string, list<option<Expr>>>>
+    /// a record's declaring scope (its module and opens), where its defaults resolve their names
+    recordScopes: ref<Map<string, option<string> * list<string>>>
     /// constructor: its fields' names
     ctorFieldNames: ref<Map<string, list<option<string>>>>
     /// type: its members, in declaration order
@@ -248,6 +250,9 @@ type Cx with
   member c.recordDefaults =
     match c with
     | Cx { recordDefaults = x } -> x
+  member c.recordScopes =
+    match c with
+    | Cx { recordScopes = x } -> x
   member c.ctorFieldNames =
     match c with
     | Cx { ctorFieldNames = x } -> x
@@ -500,6 +505,7 @@ let create (requireMain: bool) (collect: bool) (allModules: list<string>) (manua
       ctors = ref (Map.ofList [ ("[]", ("list", 0)); ("::", ("list", 1)) ])
       records = Buffer.empty
       recordDefaults = ref Map.empty
+      recordScopes = ref Map.empty
       ctorFieldNames = ref (Map.ofList [ ("[]", []); ("::", [ Some "head"; Some "tail" ]) ])
       members = ref Map.empty
       memberTypeNames = ref Set.empty

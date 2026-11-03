@@ -10,7 +10,7 @@
 
 - [x] Approved in principle
 - [ ] Discussion
-- [x] Implementation (2026-11-03): `zs provide`, the `import` form (both spellings, the cache, the hidden module), the editor's side (watched inputs, rename's refusal), `svd`, `sql` and providers on PATH with the cache fallback (`src/Provide/`, `Build/Modules.provided`, `tests/providers/`, `examples/providers`, guide chapter 18). Open: providers from packages (question 3), `import c` on the protocol (question 2), enumerated values in `svd`, typed SQL queries (question 5)
+- [x] Implementation (2026-11-03): `zs provide`, the `import` form (both spellings, the cache, the hidden module), the editor's side (watched inputs, rename's refusal), `svd`, `sql` and providers on PATH with the cache fallback (`src/Provide/`, `Build/Modules.provided`, `tests/providers/`, `examples/providers`, guide chapter 18). Then providers from packages (`[provider] main = …`, built by zs as a process; question 3) and `svd`'s enumerated values as unions. Open: `import c` on the protocol (question 2), typed SQL queries (question 5)
 
 ## Summary
 

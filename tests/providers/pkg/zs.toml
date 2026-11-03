@@ -1,0 +1,7 @@
+# a project whose dependency is a type provider (0001): import shout … runs the package's program
+[package]
+name = "pkguse"
+main = "main.zs"
+
+[dependencies]
+shout = { path = "../shout" }

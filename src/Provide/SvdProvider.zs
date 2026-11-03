@@ -4,10 +4,12 @@
 /// file allows (`read`, `write`, `modify`), as `zs provide svd <file>` prints. A field is a
 /// `bool` when one bit wide, else a `u8`, `u16` or `u32` with `[<Width n>]`; a peripheral derived
 /// from another gets its own copy of the types; a register array (`dim`) becomes numbered
-/// registers. Enumerated values are read as integers for now.
+/// registers; a field's enumerated values, when they are 0 to n-1, are a union of cases
+/// without fields, named after the list (or the field), so `mode5 = Output` reads as the manual.
 
-/// A register's field: its name, description, lowest bit and width.
-type Field = { name: string; description: string; offset: int; width: int }
+/// A register's field: its name, description, lowest bit and width, and its enumerated values
+/// when the file lists them (the list's name, and each value's name and number).
+type Field = { name: string; description: string; offset: int; width: int; values: option<string * list<string * int>> }
 
 /// A register: its name, description, offset from the peripheral's base, size in bits, access
 /// (read-only, write-only or read-write), reset value and fields.
@@ -96,7 +98,18 @@ let private fieldOf (e: Xml.Element) : option<Field> =
         let lsb = Option.defaultValue 0 (number l)
         (lsb, numberIn "msb" lsb e - lsb + 1)
       | _ -> (0, 1)
-    Some { name = name; description = oneLine (text "description" e); offset = offset; width = max 1 width }
+    // enumerated values: the list's name (or none) and each value as named and numbered
+    let values =
+      match Xml.child "enumeratedValues" e with
+      | Some vs ->
+        let one (v: Xml.Element) : option<string * int> =
+          match (Xml.childText "name" v, Option.bind number (Xml.childText "value" v)) with
+          | (Some n, Some i) when n <> "" -> Some(n, i)
+          | _ -> None
+        let listed = List.choose one (Xml.children "enumeratedValue" vs)
+        if List.isEmpty listed then None else Some(Option.defaultValue "" (Xml.childText "name" vs), listed)
+      | None -> None
+    Some { name = name; description = oneLine (text "description" e); offset = offset; width = max 1 width; values = values }
 
 // a register element, expanded by its dim when it has one; the defaults are the peripheral's
 let private registersOf (size: int) (access: string) (reset: int) (e: Xml.Element) : list<Register> =
@@ -171,9 +184,50 @@ let peripherals (root: Xml.Element) : result<list<Peripheral>, string> =
 /// The options `zs provide svd` takes.
 let options : list<string> = [ "only" ]
 
-// a register's record and module
-let private registerText (p: Peripheral) (r: Register) : list<string> =
+/// A union for a field's values: its name and its cases in value order (0 to n-1).
+type Enum = { name: string; cases: list<string> }
+
+// the field's values as a union's cases, when they are exactly 0 to n-1 with names that are
+// distinct as case names, and the field wide enough for them (at most 8 bits)
+let private casesOf (f: Field) : option<list<string>> =
+  match f.values with
+  | Some(_, listed) when List.length listed >= 2 && f.width <= 8 ->
+    let n = List.length listed
+    let sorted = List.sortBy snd listed
+    let rec numbered (i: int) (vs: list<string * int>) =
+      match vs with
+      | [] -> true
+      | (_, v) :: rest -> v = i && numbered (i + 1) rest
+    let mutable w = 1
+    while (1 <<< w) < n do
+      w <- w + 1
+    let cases = List.map (fun (nv: string * int) -> pascal (fst nv)) sorted
+    if numbered 0 sorted && w <= f.width && List.length (List.distinct cases) = n then Some cases else None
+  | _ -> None
+
+// a register's record and module; the field unions it needs are registered (by their cases, so
+// fields with the same values share one), named after the list, else the field, with Value
+// added when a register's record has the name
+let private registerText (p: Peripheral) (enums: ref<list<Enum>>) (taken: list<string>) (r: Register) : list<string> =
   let typeName = pascal r.name
+  let enumFor (f: Field) : option<string> =
+    match casesOf f with
+    | None -> None
+    | Some cases ->
+      match List.tryFind (fun (e: Enum) -> e.cases = cases) enums.Value with
+      | Some e -> Some e.name
+      | None ->
+        let listName =
+          match f.values with
+          | Some(n, _) when n <> "" -> n
+          | _ -> f.name
+        let wanted = pascal listName
+        let used (n: string) = List.contains n taken || List.exists (fun (e: Enum) -> e.name = n) enums.Value
+        let rec free (candidate: string) (i: int) : string =
+          if used candidate then free (wanted + "Value" + (if i = 1 then "" else string i)) (i + 1) else candidate
+        let name = free wanted 1
+        enums.Value <- List.append enums.Value [ { name = name; cases = cases } ]
+        Some name
   let bits = if r.size = 8 then 8 else 32
   let reads = r.access <> "write-only"
   let writes = r.access <> "read-only"
@@ -187,11 +241,24 @@ let private registerText (p: Peripheral) (r: Register) : list<string> =
     | f :: rest ->
       if f.offset < next || f.offset + f.width > bits then place rest next acc (f.name :: skipped)
       else
-        let natural = if f.width = 1 then 1 else if f.width <= 8 then 8 else if f.width <= 16 then 16 else 32
-        let ty = if f.width = 1 then "bool" else if f.width <= 8 then "u8" else if f.width <= 16 then "u16" else "u32"
         let v = valueOf f
-        let dflt = if f.width = 1 then (if v <> 0 then "true" else "false") else ty + " " + string v
-        let placed = List.append (if f.offset <> next then [ $"Bit {f.offset}" ] else []) (if f.width > 1 && f.width < natural then [ $"Width {f.width}" ] else [])
+        // the field's type, the width that type takes by itself, and its default from the reset value
+        let (ty, natural, dflt) =
+          match enumFor f with
+          | Some e ->
+            let cases = (List.find (fun (x: Enum) -> x.name = e) enums.Value).cases
+            let n = List.length cases
+            let mutable w = 1
+            while (1 <<< w) < n do
+              w <- w + 1
+            (e, w, (if v < n then List.item v cases else List.head cases))
+          | None ->
+            if f.width = 1 then ("bool", 1, (if v <> 0 then "true" else "false"))
+            else if f.width <= 8 then ("u8", 8, "u8 " + string v)
+            else if f.width <= 16 then ("u16", 16, "u16 " + string v)
+            else ("u32", 32, "u32 " + string v)
+        // an integer narrower than its type, or a union wider than its cases, says so
+        let placed = List.append (if f.offset <> next then [ $"Bit {f.offset}" ] else []) (if f.width > 1 && f.width <> natural then [ $"Width {f.width}" ] else [])
         let attrs = if List.isEmpty placed then "" else "[<" + String.join "; " placed + ">] "
         let doc = if f.description = "" then "" else "/// " + f.description + "\n      "
         place rest (f.offset + f.width) ((doc + attrs + fieldName f.name + ": " + ty + " = " + dflt) :: acc) skipped
@@ -231,13 +298,17 @@ let provide (file: string) (text: string) (opts: list<string * string>) : result
       if not (List.isEmpty missing) then Error ("only: " + String.join ", " missing + " isn't a peripheral of " + Option.defaultValue "" (Xml.childText "name" root) + " (" + String.join ", " (List.map (fun (p: Peripheral) -> p.name) ps) + ")")
       else
         let peripheral (p: Peripheral) : list<string> =
+          let enums : ref<list<Enum>> = ref []
           let registers =
             // a register of a size the runtime has no access for is left out, named
             let (ok, odd) = List.partition (fun (r: Register) -> r.size = 32 || r.size = 8) p.registers
+            let taken = List.map (fun (r: Register) -> pascal r.name) ok
             List.concat [ (if List.isEmpty odd then [] else [ "  // left out, neither 32 nor 8 bits wide: " + String.join ", " (List.map (fun (r: Register) -> r.name) odd) ])
-                List.collect (registerText p) ok ]
+                List.collect (registerText p enums taken) ok ]
+          let unions =
+            List.collect (fun (e: Enum) -> List.concat [ [ $"  /// A field's values ({e.name})."; $"  type {e.name} =" ]; List.map (fun (c: string) -> "    | " + c) e.cases; [ "" ] ]) enums.Value
           List.concat [ [ $"/// {p.description} ({p.name}, base 0x{p.baseAddress:x})"
                 $"module {pascal p.name} =" ]
-              (if List.isEmpty registers then [ "  let private baseAddress = usize 0x" + $"{p.baseAddress:x}"; "" ] else registers) ]
+              (if List.isEmpty registers then [ "  let private baseAddress = usize 0x" + $"{p.baseAddress:x}"; "" ] else List.append unions registers) ]
         let header = [ "// provided by svd 0.1 from " + file; "// input: " + file; "" ]
         Ok(String.join "\n" (List.append header (List.collect peripheral chosen)))

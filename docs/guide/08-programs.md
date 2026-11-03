@@ -119,6 +119,9 @@ pkg-config = ["sqlite3"]             # a library's flags and libraries, from pkg
 
 [c.cortex-m4]                        # added to [c] for one target: host, a chip, a triple
 link = ["rust/target/thumbv7em-none-eabihf/release/libkit.a"]
+
+[provider]                           # the package is a type provider: `import <its name> …` runs
+main = "Provider.zs"                 # this program (the guide's chapter 18)
 ```
 
 A project for a chip names it: `target = "cortex-m4"` under `[package]` makes `zs build` and `zs run`

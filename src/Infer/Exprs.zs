@@ -2235,7 +2235,17 @@ and recordLit (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>)
     let ft = substGen v targs ft0
     match List.item i defaults with
     | Some d ->
+      // the default's names are the declaring module's (a provided record's enum case), not this
+      // construction's
+      let (useModule, useOpens) = (cx.currentModule.Value, cx.opens.Value)
+      match Map.tryFind rname cx.recordScopes.Value with
+      | Some(m, opens) ->
+        cx.currentModule.Value <- m
+        cx.opens.Value <- opens
+      | None -> ()
       let ce = foreignly cx (fun () -> inferHint cx scope 0 ft d)
+      cx.currentModule.Value <- useModule
+      cx.opens.Value <- useOpens
       expect cx $"default of field '{f}'" ft ce.ty
       ce
     | None -> fail $"record '{rname}' is missing field '{f}'"

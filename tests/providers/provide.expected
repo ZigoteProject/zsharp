@@ -229,7 +229,7 @@ ALPHA BETA
 upper_use.zs:1: warning: words.txt changed since the last build, and zs-provider-upper isn't on PATH; the types shown are from that build [stale-input]
 ALPHA BETA
 --- errors (exit codes)
-no provider 'jsn': zs has json, csv, sql and svd, and no zs-provider-jsn is on PATH
+no provider 'jsn': zs has json, csv, sql and svd, no zs-provider-jsn is on PATH, and no dependency named jsn has a [provider] section
 exit 1
 csv: unknown option 'seperator' (separator, hasHeaders, types)
 exit 1

@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- a made-up device with enumerated values (0001): a field's values as a union when they are 0 to n-1 -->
+<device>
+  <name>ENUMTEST</name>
+  <size>0x20</size>
+  <resetValue>0x0</resetValue>
+  <peripherals>
+    <peripheral>
+      <name>PORT</name>
+      <description>A port with modes</description>
+      <baseAddress>0x50000000</baseAddress>
+      <registers>
+        <register>
+          <name>MODE</name>
+          <description>Pin modes</description>
+          <addressOffset>0x0</addressOffset>
+          <access>read-write</access>
+          <resetValue>0x0000000A</resetValue>
+          <fields>
+            <field><name>MODE0</name><description>Pin 0's mode</description><bitOffset>0</bitOffset><bitWidth>2</bitWidth>
+              <enumeratedValues><name>Mode</name>
+                <enumeratedValue><name>Input</name><value>0</value></enumeratedValue>
+                <enumeratedValue><name>Output</name><value>1</value></enumeratedValue>
+                <enumeratedValue><name>Alternate</name><value>0b10</value></enumeratedValue>
+                <enumeratedValue><name>Analog</name><value>0x3</value></enumeratedValue>
+              </enumeratedValues></field>
+            <field><name>MODE1</name><description>Pin 1's mode</description><bitOffset>2</bitOffset><bitWidth>2</bitWidth>
+              <enumeratedValues><name>Mode</name>
+                <enumeratedValue><name>Input</name><value>0</value></enumeratedValue>
+                <enumeratedValue><name>Output</name><value>1</value></enumeratedValue>
+                <enumeratedValue><name>Alternate</name><value>2</value></enumeratedValue>
+                <enumeratedValue><name>Analog</name><value>3</value></enumeratedValue>
+              </enumeratedValues></field>
+            <field><name>SPEED</name><description>Sparse values stay a number</description><bitOffset>4</bitOffset><bitWidth>3</bitWidth>
+              <enumeratedValues>
+                <enumeratedValue><name>Slow</name><value>0</value></enumeratedValue>
+                <enumeratedValue><name>Fast</name><value>4</value></enumeratedValue>
+              </enumeratedValues></field>
+            <field><name>EN</name><description>Enable</description><bitOffset>8</bitOffset><bitWidth>1</bitWidth></field>
+          </fields>
+        </register>
+        <register>
+          <name>STAT</name>
+          <description>Status</description>
+          <addressOffset>0x4</addressOffset>
+          <access>read-only</access>
+          <fields>
+            <field><name>READY</name><bitOffset>0</bitOffset><bitWidth>1</bitWidth></field>
+          </fields>
+        </register>
+      </registers>
+    </peripheral>
+  </peripherals>
+</device>

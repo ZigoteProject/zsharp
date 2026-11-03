@@ -1,0 +1,9 @@
+# A package that is a type provider (0001): [provider] names the program the compiler builds and
+# runs for `import shout …` in a project that depends on this package
+[package]
+name = "shout"
+version = "0.1.0"
+main = "Main.zs"
+
+[provider]
+main = "Main.zs"

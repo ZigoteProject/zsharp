@@ -3,6 +3,9 @@
 ## Unreleased
 
 ### Compiler
+- A record field's default resolves its names in the record's declaring module, not where the
+  record is built: a provided register's `mode0: ModeValue = Alternate` holds for a literal in
+  another module (it was "unknown name 'Alternate'" there).
 - Long and deep programs, as generated code writes them, build: a flat list literal of 20,000
   elements, 10,000 statements or `let`s in one function, an `else if` chain or nested parentheses
   10,000 deep each crashed the compiler (its stack overflowed); its threads now have 256 MB of
@@ -78,8 +81,13 @@
   with the string and `--name=value` options, its standard output the module (`// provided by`,
   `// input:` lines first), its standard error the errors. The output is cached with a hash of
   each input, so a machine without the provider builds from the last output, with a `stale-input`
-  warning at the import naming an input that changed since. `examples/providers` and the guide's
-  chapter 18 show all of it.
+  warning at the import naming an input that changed since. A dependency package with a
+  `[provider] main = "Main.zs"` section is the provider of its name: the compiler builds its
+  program into `.zs-cache/providers/bin` when its sources change and runs it the same way.
+  `examples/providers` and the guide's chapter 18 show all of it.
+- `svd`: a field's enumerated values that are 0 to n-1 are a union of cases, named after the list
+  (`Value` added when a register's record has the name), shared by the fields with the same
+  values; sparse values stay a number. The tree-sitter grammar (and so Zed) parses the imports.
 
 ### Benchmarks
 - `bench/host` has five small real programs beside its kernels, in Z#, C and Rust: `wordfreq`,

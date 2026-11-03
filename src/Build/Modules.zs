@@ -365,7 +365,7 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
   // .zs-cache/providers/<importing module>/<Name>.zs and loaded as a dependency of the file, so
   // its names, positions and docs are a module's. `module Name = import …` names it; a bare
   // import opens a hidden one named after its file and the provider.
-  let provided (m: Loaded) (path: string) : result<Loaded * list<string * string>, Diagnostic> =
+  let provided (m: Loaded) (path: string) (pkg: Project.Package) : result<Loaded * list<string * string>, Diagnostic> =
     let dir = Path.getDirectoryName (Path.getFullPath path)
     let root =
       match Project.findProject dir with
@@ -386,6 +386,60 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
     let deps = Buffer.empty
     let inputs = Buffer.empty
     let warnings = Buffer.empty
+    // the providers the imports name
+    let rec namedBy (ds: list<Ast.Decl>) : list<string> =
+      List.collect (fun (d: Ast.Decl) ->
+        match d.d with
+        | Ast.Import(provider, _, _) -> [ provider ]
+        | Ast.NestedModule(_, inner) -> namedBy inner
+        | _ -> []) ds
+    let named = namedBy m.decls
+    // a dependency with a [provider] section that an import names: its program, built into the
+    // project's .zs-cache/providers/bin when its sources changed (by zs itself, as a process), so
+    // a provider is a package like any other (0001)
+    let packagedProviders : list<string * result<string, string>> =
+      let binDir = Path.combine (Path.combine (Path.combine root ".zs-cache") "providers") "bin"
+      let rec zsFiles (dir: string) : list<string> =
+        match Directory.list dir with
+        | Ok names ->
+          List.collect (fun (n: string) ->
+            let full = Path.combine dir n
+            if String.startsWith "." n then []
+            else if String.endsWith ".zs" n then [ full ]
+            else
+              match Directory.list full with
+              | Ok _ -> zsFiles full
+              | Error _ -> []) names
+        | Error _ -> []
+      let build (name: string) (main: string) (pkgRoot: string) : result<string, string> =
+        let out = Path.combine binDir ("zs-provider-" + name)
+        let sources = List.sortWith (fun (a: string) (b: string) -> compare a b) (zsFiles pkgRoot)
+        let key = Tools.hashOf (Tools.compilerId () :: main :: List.map (fun (f: string) -> Result.defaultValue "" (File.readAllText f)) sources)
+        if File.exists out && Result.defaultValue "" (File.readAllText (out + ".key")) = key then Ok out
+        else
+          Tools.makeDirectory binDir
+          match Tools.runSplit (Tools.selfPath ()) [ "build"; main; "-o"; out ] with
+          | Ok r when r.code = 0 ->
+            File.writeAllText (out + ".key") key |> ignore
+            Ok out
+          | Ok r ->
+            let lines = List.filter (fun (l: string) -> String.trim l <> "") (String.split "\n" (r.err + "\n" + r.out))
+            Error $"{name}: its provider ({Path.getRelativePath pkgRoot main}) didn't build: {(if List.isEmpty lines then $"exit code {r.code}" else List.head lines)}"
+          | Error e -> Error $"{name}: its provider didn't build: {e}"
+      // a dependency is keyed by its module prefix (Shout); the import names it as the manifest
+      // does (shout)
+      List.choose (fun (pd: Project.PackageDep) ->
+        match pd with
+        | Project.PackageDep(k, d) ->
+          match List.tryFind (fun (n: string) -> Project.modulePrefix n = k) named with
+          | None -> None
+          | Some name ->
+            match d.manifest with
+            | Some mf ->
+              match mf.provider with
+              | Some main -> Some(name, build name main d.root)
+              | None -> None
+            | None -> None) pkg.deps
     // the files a provided module names as its inputs (// input: lines), beside the importer
     let inputsOf (text: string) : list<string> =
       List.choose (fun (l: string) -> if String.startsWith "// input: " l then Some(Path.combine dir (String.trim (String.sub l 10 (String.length l - 10)))) else None) (String.split "\n" text)
@@ -400,21 +454,30 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
         | Some n -> n
         | None -> Provide.Names.typeName (Path.getFileNameWithoutExtension arg) + Provide.Names.typeName provider
       let out = Path.combine cacheDir (modName + ".zs")
+      let packaged = List.choose (fun (kr: string * result<string, string>) -> match snd kr with | Ok program -> Some(fst kr, program) | Error _ -> None) packagedProviders
+      // a package's provider that didn't build is that error; else the provider's own result
+      let failedBuild =
+        match List.tryFind (fun (kr: string * result<string, string>) -> fst kr = provider && Result.isError (snd kr)) packagedProviders with
+        | Some(_, Error e) -> Some e
+        | _ -> None
       let written =
-        match Provide.Command.provide provider dir $"next to {Path.getFileName path}" arg opts with
-        | Ok s -> Ok s
-        | Error e when String.startsWith "no provider" e && File.exists out ->
-          // a provider that isn't here (an editor's sandbox, a machine without it) and the module
-          // from the last build: that one, with a word on whether its inputs changed since
-          let cached = Result.defaultValue "" (File.readAllText out)
-          let before = Result.defaultValue "" (File.readAllText (out + ".inputs"))
-          let changed = List.filter (fun (f: string) -> not (String.contains (f + "\t" + Tools.hashOf [ Result.defaultValue "" (File.readAllText f) ]) before)) (inputsOf cached)
-          let note =
-            if List.isEmpty changed then $"zs-provider-{provider} isn't on PATH; the module from the last build is used"
-            else $"{String.join ", " (List.map (fun (f: string) -> Path.getFileName f) changed)} changed since the last build, and zs-provider-{provider} isn't on PATH; the types shown are from that build"
-          Buffer.push (warning "stale-input" (lineOf d) note) warnings
-          Ok cached
-        | Error e -> Error(if String.startsWith "no provider" e then e else provider + ": " + e)
+        match failedBuild with
+        | Some e -> Error e
+        | None ->
+          match Provide.Command.provide provider dir $"next to {Path.getFileName path}" arg opts packaged with
+          | Ok s -> Ok s
+          | Error e when String.startsWith "no provider" e && File.exists out ->
+            // a provider that isn't here (an editor's sandbox, a machine without it) and the module
+            // from the last build: that one, with a word on whether its inputs changed since
+            let cached = Result.defaultValue "" (File.readAllText out)
+            let before = Result.defaultValue "" (File.readAllText (out + ".inputs"))
+            let changed = List.filter (fun (f: string) -> not (String.contains (f + "\t" + Tools.hashOf [ Result.defaultValue "" (File.readAllText f) ]) before)) (inputsOf cached)
+            let note =
+              if List.isEmpty changed then $"zs-provider-{provider} isn't on PATH; the module from the last build is used"
+              else $"{String.join ", " (List.map (fun (f: string) -> Path.getFileName f) changed)} changed since the last build, and zs-provider-{provider} isn't on PATH; the types shown are from that build"
+            Buffer.push (warning "stale-input" (lineOf d) note) warnings
+            Ok cached
+          | Error e -> Error(if String.startsWith "no provider" e then e else provider + ": " + e)
       match written with
       | Error msg ->
         report d msg
@@ -459,7 +522,7 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
       | Ok loaded ->
         // the package's [c] is the build's; its include directories and pkg-config's flags are
         // its import c's
-        match Result.bind (fun (m0: Loaded) -> Result.mapError (fun d -> (d, Some m0.source)) (provided m0 path)) (Result.mapError (fun d -> (d, Some loaded.source)) (imports loaded path (List.append (cOf pkg) forTarget))) with
+        match Result.bind (fun (m0: Loaded) -> Result.mapError (fun d -> (d, Some m0.source)) (provided m0 path pkg)) (Result.mapError (fun d -> (d, Some loaded.source)) (imports loaded path (List.append (cOf pkg) forTarget))) with
         | Error d -> fail d
         | Ok(m, providedDeps) ->
           // a dependency's file is named by its place in the package; a header may only agree

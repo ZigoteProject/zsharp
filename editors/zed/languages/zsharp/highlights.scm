@@ -2,6 +2,8 @@
 
 (comment) @comment
 (import_c_declaration "c" @keyword)
+(import_declaration provider: (identifier) @keyword)
+(import_option name: (identifier) @property)
 ((comment) @comment.doc (#match? @comment.doc "^///"))
 (string) @string
 (char) @string

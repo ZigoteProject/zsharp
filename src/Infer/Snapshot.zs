@@ -15,6 +15,7 @@ type Iface =
     ctors: list<string * (string * int)>
     records: list<string>
     recordDefaults: list<string * list<option<Expr>>>
+    recordScopes: list<string * (option<string> * list<string>)>
     ctorFieldNames: list<string * list<option<string>>>
     members: list<string * list<string * MemberInfo>>
     memberTypeNames: list<string>
@@ -84,6 +85,7 @@ type Marks =
     mctors: Map<string, string * int>
     mrecords: int
     mrecordDefaults: Map<string, list<option<Expr>>>
+    mrecordScopes: Map<string, option<string> * list<string>>
     mctorFieldNames: Map<string, list<option<string>>>
     mmembers: Map<string, list<string * MemberInfo>>
     mmemberTypeNames: Set<string>
@@ -130,6 +132,7 @@ let marks (cx: Cx) : Marks =
     mctors = cx.ctors.Value
     mrecords = Buffer.length cx.records
     mrecordDefaults = cx.recordDefaults.Value
+    mrecordScopes = cx.recordScopes.Value
     mctorFieldNames = cx.ctorFieldNames.Value
     mmembers = cx.members.Value
     mmemberTypeNames = cx.memberTypeNames.Value
@@ -245,6 +248,7 @@ let written (cx: Cx) (m: Marks) : option<Iface * list<FunDef> * list<Hover> * li
       ctors = added m.mctors cx.ctors.Value
       records = since cx.records m.mrecords
       recordDefaults = added m.mrecordDefaults cx.recordDefaults.Value
+      recordScopes = added m.mrecordScopes cx.recordScopes.Value
       ctorFieldNames = added m.mctorFieldNames cx.ctorFieldNames.Value
       members = changed m.mmembers cx.members.Value
       memberTypeNames = newIn m.mmemberTypeNames cx.memberTypeNames.Value
@@ -327,6 +331,7 @@ let restore (cx: Cx) (i: Iface) : unit =
   into cx.ctors i.ctors
   push cx.records i.records
   into cx.recordDefaults i.recordDefaults
+  into cx.recordScopes i.recordScopes
   into cx.ctorFieldNames i.ctorFieldNames
   into cx.members i.members
   union cx.memberTypeNames i.memberTypeNames

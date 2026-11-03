@@ -118,7 +118,10 @@ let insert (u: Db.Users) =
 peripheral, each register a [`[<Bits>]` record](11-microcontrollers.md) whose defaults are its
 reset value, so a literal names only the fields it sets, and a module of the register's name
 with its address and the access the file allows: `read-only` gives `read`, `write-only`
-`write`, `read-write` both and `modify`. A write to a read-only register doesn't compile.
+`write`, `read-write` both and `modify`. A write to a read-only register doesn't compile. A
+field whose enumerated values are 0 to n-1 is a union of cases without fields, named after the
+list (`Value` added when a register's record has the name), so `mode5 = Output` reads as the
+manual; sparse values stay a number.
 
 ```fsharp
 import svd ("stm32f401-part.svd", only = "GPIOA,GPIOC,RCC,USART2")
@@ -156,7 +159,21 @@ the edit, and a renamed provided name is refused with where it comes from
 
 ## A provider of your own
 
-A provider is a program named `zs-provider-<name>` on PATH, in any language. The compiler runs
+A provider is a program named `zs-provider-<name>` on PATH, in any language, or a package: a
+dependency whose `zs.toml` has a `[provider]` section naming its program is the provider of
+its name, built by the compiler into `.zs-cache/providers/bin` when its sources change and run
+the same way:
+
+```toml
+[package]
+name = "shout"
+main = "Main.zs"
+
+[provider]
+main = "Main.zs"
+```
+
+The program The compiler runs
 it in the importing file's directory with the string and each option as `--name=value`. Its
 standard output is the declarations of one module, starting with `// provided by <name>
 <version> from <string>` and one `// input: <path>` per file it read (relative to that

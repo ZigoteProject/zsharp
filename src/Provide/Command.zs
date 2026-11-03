@@ -26,13 +26,10 @@ let onPath () : list<string> =
     List.distinct (List.collect inDir (List.filter (fun (d: string) -> d <> "") (String.split ":" path)))
   | None -> []
 
-// a provider on PATH run in `dir` with the string and each option as --name=value: its standard
+// a provider program run in `dir` with the string and each option as --name=value: its standard
 // output is the module, its standard error the errors (the first line named), a non-zero exit
-// a failure; None when there's no such program
-let private external (provider: string) (dir: string) (arg: string) (opts: list<string * string>) : option<result<string, string>> =
-  let program = "zs-provider-" + provider
-  if not (List.contains provider (onPath ())) then None
-  else
+// a failure
+let private runProvider (program: string) (dir: string) (arg: string) (opts: list<string * string>) : result<string, string> =
     let s : Diagnostics.ProcessStart =
       { program = program
         args = arg :: List.map (fun (n, v) -> "--" + n + "=" + v) opts
@@ -41,7 +38,7 @@ let private external (provider: string) (dir: string) (arg: string) (opts: list<
         stdout = Diagnostics.Piped
         stderr = Diagnostics.Piped }
     match Diagnostics.Process.start s with
-    | Error e -> Some(Error $"{program}: {e}")
+    | Error e -> Error $"{Path.getFileName program}: {e}"
     | Ok p ->
       let read (r: option<IO.Reader>) : string =
         match r with
@@ -56,14 +53,20 @@ let private external (provider: string) (dir: string) (arg: string) (opts: list<
       Dispose.dispose p
       if code <> 0 then
         let lines = List.filter (fun (l: string) -> String.trim l <> "") (String.split "\n" err)
-        Some(Error(if List.isEmpty lines then $"{program} exited with {code}" else String.trim (List.head lines)))
-      else Some(Ok out)
+        Error(if List.isEmpty lines then $"{Path.getFileName program} exited with {code}" else String.trim (List.head lines))
+      else Ok out
+
+// a provider on PATH, zs-provider-<name>; None when there's no such program
+let private external (provider: string) (dir: string) (arg: string) (opts: list<string * string>) : option<result<string, string>> =
+  if List.contains provider (onPath ()) then Some(runProvider ("zs-provider-" + provider) dir arg opts) else None
 
 /// The module `provider` writes for `arg`, a file in `dir` (`where` names the place in an
 /// error: "next to main.zs"), with `opts` checked against what it takes: zs's own providers run
-/// here, else zs-provider-<name> on PATH. Error names an unknown provider ("no provider …"), an
-/// unknown option, a file not found, or what the provider found wrong.
-let provide (provider: string) (dir: string) (where: string) (arg: string) (opts: list<string * string>) : result<string, string> =
+/// here, else a program from `packaged` (the program's dependencies with a [provider] section,
+/// each by name with its built program), else zs-provider-<name> on PATH. Error names an
+/// unknown provider ("no provider …"), an unknown option, a file not found, or what the
+/// provider found wrong.
+let provide (provider: string) (dir: string) (where: string) (arg: string) (opts: list<string * string>) (packaged: list<string * string>) : result<string, string> =
   match List.tryFind (fun (n, _, _) -> n = provider) providers with
   | Some(_, _, known) ->
     match List.tryFind (fun (n, _) -> not (List.contains n known)) opts with
@@ -78,9 +81,12 @@ let provide (provider: string) (dir: string) (where: string) (arg: string) (opts
         | "sql" -> Provide.SqlProvider.provide arg text opts
         | _ -> Provide.SvdProvider.provide arg text opts
   | None ->
-    match external provider dir arg opts with
-    | Some r -> r
-    | None -> Error ("no provider '" + provider + "': zs has " + names () + ", and no zs-provider-" + provider + " is on PATH")
+    match List.tryFind (fun (n, _) -> n = provider) packaged with
+    | Some(_, program) -> runProvider program dir arg opts
+    | None ->
+      match external provider dir arg opts with
+      | Some r -> r
+      | None -> Error ("no provider '" + provider + "': zs has " + names () + ", no zs-provider-" + provider + " is on PATH, and no dependency named " + provider + " has a [provider] section")
 
 /// The options after the file: each `--name=value`.
 let private parseOptions (args: list<string>) : result<list<string * string>, string> =
@@ -110,7 +116,7 @@ let run (args: list<string>) : int =
       eprintln (name + ": " + e)
       1
     | Ok options ->
-      match provide name "." "here" file options with
+      match provide name "." "here" file options [] with
       | Ok text ->
         print text
         0

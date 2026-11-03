@@ -40,7 +40,7 @@ type CConfig = { sources: list<string>; includes: list<string>; link: list<strin
 /// A zs.toml: the directory holding it, the package's name, version and main file (full path),
 /// the target it's built for without --target ("" for this machine), its dependencies by name, its
 /// [c] section, and the [c.<target>] sections by target name.
-type Manifest = { root: string; name: string; version: string; main: string; target: string; deps: list<string * Dep>; c: CConfig; cFor: Map<string, CConfig>; targets: Map<string, TargetConfig> }
+type Manifest = { root: string; name: string; version: string; main: string; target: string; deps: list<string * Dep>; c: CConfig; cFor: Map<string, CConfig>; targets: Map<string, TargetConfig>; provider: option<string> }
 
 /// A [target.<name>] section: a chip's heap in bytes (its default when None).
 and TargetConfig = { heap: option<int> }
@@ -112,6 +112,8 @@ and parseManifest (root: string) (file: string) (lines: list<string>) : result<M
     // the [c] section's keys under "", a [c.<target>] one's under its target
     let c : ref<Map<string, Map<string, list<string>>>> = ref Map.empty
     let targets : ref<Map<string, TargetConfig>> = ref Map.empty
+    // [provider] main = "Provider.zs": the package is a type provider (0001), that program
+    let provider = ref None
     // 4096, 16K, 1M: bytes
     let size (v: string) : option<int> =
       let n = String.length v
@@ -175,6 +177,11 @@ and parseManifest (root: string) (file: string) (lines: list<string>) : result<M
                 | Error msg -> fail n $"[{s}] {key}: {msg}"
               else
                 fail n $"unknown key '{key}' in [{s}]; it takes sources, include, link and pkg-config"
+            | "provider" ->
+              match (key, unquote value) with
+              | ("main", Some v) -> provider.Value <- Some v
+              | ("main", None) -> fail n $"[provider] main: expected a quoted path such as \"Provider.zs\", found {value}"
+              | _ -> fail n $"unknown key '{key}' in [provider]; it takes main"
             | s when String.startsWith "target." s ->
               let target = String.sub s 7 (String.length s - 7)
               let known = Option.defaultValue { heap = None } (Map.tryFind target targets.Value)
@@ -206,7 +213,8 @@ and parseManifest (root: string) (file: string) (lines: list<string>) : result<M
           deps = Array.toList (Buffer.toArray deps)
           c = Option.defaultValue (config Map.empty) (Map.tryFind "" sections)
           cFor = Map.remove "" sections
-          targets = targets.Value }
+          targets = targets.Value
+          provider = Option.map full provider.Value }
       Ok m
 
 /// The nearest zs.toml at or above a directory.
