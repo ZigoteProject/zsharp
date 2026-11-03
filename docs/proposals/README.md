@@ -9,38 +9,38 @@ proposal describes a change to it, and [ROADMAP.md](../../ROADMAP.md) says when 
 
 | # | Proposal | Status | Decided at |
 |---|---|---|---|
-| 0001 | [Type providers](0001-type-providers.md) | Approved in principle, after 0.1 | the third design review |
+| 0001 | [Type providers](0001-type-providers.md) | Approved in principle, after 0.6.2 | the third design review |
 | 0002 | [Effect handlers](0002-effect-handlers.md) | Implemented (phase 10) | the phase 6 gate; open questions at the third design review |
-| 0003 | [Spans and slices](0003-spans-and-slices.md) | Approved in principle | the phase 9.6 design review |
-| 0004 | [C layout](0004-c-layout.md) | Approved in principle | phase 9.6 (`fixed`); the third design review (unions, layout facts) |
-| 0005 | [Ergonomics](0005-ergonomics.md) | Approved in principle | the phase 9.6 design review |
-| 0006 | [Anonymous records and top-level patterns](0006-anonymous-records.md) | Declined (anonymous records); approved (top-level patterns) | the third design review |
-| 0007 | [Incremental builds](0007-incremental-builds.md) | Approved in principle | the phase 9.5 plan |
-| 0008 | [Threads](0008-threads.md) | Approved in principle | the phase 9.5 plan |
-| 0009 | [Tests as values](0009-tests-as-values.md) | Approved in principle | track D's plan |
-| 0010 | [Properties and fuzzing](0010-properties-and-fuzzing.md) | Approved in principle, after phase 11 | track D's plan |
-| 0011 | [Debug info, profiles and traces](0011-debug-info-profiles-traces.md) | Approved in principle | track D's plan |
-| 0012 | [Interrupts, `[<NoAlloc>]` and intrinsics](0012-interrupts-noalloc-intrinsics.md) | Approved in principle; `noalloc<F>` declined | decision 42, track M's plan, the third design review |
-| 0013 | [Bit fields](0013-bit-fields.md) | Approved in principle, after phase 11 | the third design review |
-| 0014 | [Placement](0014-placement.md) | Approved in principle | track M's plan; the third design review (`[<Section>]`, `[<Align>]`) |
-| 0015 | [Fixed-point numbers](0015-fixed-point.md) | Approved in principle as a library, after phase 11 | the third design review |
-| 0016 | [Async on bare metal](0016-async-bare-metal.md) | Approved in principle | the third design review |
-| 0017 | [Iteration](0017-iteration.md) | Approved in principle, before phase 11 | the third design review |
-| 0018 | [Packages](0018-packages.md) | Approved in principle; the index is a draft | track K's plan |
-| 0019 | [The lossless syntax tree](0019-syntax-tree.md) | Approved in principle | decision 33, track E's plan |
-| 0020 | [The compiler in Z#](0020-self-hosting.md) | Approved in principle: go; questions settled | the third design review; the phase 11 review |
-| 0021 | [Warnings](0021-warnings.md) | Approved in principle | phase 12's deferred features |
-| 0022 | [Targets: macOS and Windows](0022-targets-macos-windows.md) | Approved in principle | decision 29, track T's plan |
-| 0023 | [JSON in Core](0023-json-in-core.md) | Approved in principle | track S's plan |
-| 0024 | [The library's API](0024-library-api.md) | Approved in principle | track S's plan |
-| 0025 | [Reading effect rows](0025-reading-effects.md) | Draft | a design review with 0017, before phase 11 |
-| 0026 | [Performance you can see](0026-performance-you-can-see.md) | Draft | a design review, with the flagship's first profiles |
-| 0027 | [More microcontrollers](0027-more-microcontrollers.md) | Draft | a design review, before phase 12's M4 (one real board) |
+| 0003 | [Spans and slices](0003-spans-and-slices.md) | Implemented (phase 9.6) | the phase 9.6 design review |
+| 0004 | [C layout](0004-c-layout.md) | Implemented: `fixed` (phase 9.6); C unions and layout facts (phase 12) | phase 9.6 (`fixed`); the third design review (unions, layout facts) |
+| 0005 | [Ergonomics](0005-ergonomics.md) | Implemented (phase 9.6) | the phase 9.6 design review |
+| 0006 | [Anonymous records and top-level patterns](0006-anonymous-records.md) | Declined (anonymous records); implemented (top-level patterns, phase 12) | the third design review |
+| 0007 | [Incremental builds](0007-incremental-builds.md) | Implemented (phase 9.5; the build server in phase 11) | the phase 9.5 plan |
+| 0008 | [Threads](0008-threads.md) | Implemented (phases 9.5 and 11) | the phase 9.5 plan |
+| 0009 | [Tests as values](0009-tests-as-values.md) | Implemented in part: items 1–3 and 7 before phase 11, doc tests (8) in phase 12; stress, properties, fuzzing, benchmarks, coverage and tests on a chip after 0.6.2 | track D's plan |
+| 0010 | [Properties and fuzzing](0010-properties-and-fuzzing.md) | Approved in principle, after 0.6.2 | track D's plan |
+| 0011 | [Debug info, profiles and traces](0011-debug-info-profiles-traces.md) | Implemented in part: gdb and lldb on strings, records and plain unions, `ZS_STATS`, the editor's allocation hints; DWARF for every value, `zs profile` and traces after 0.6.2 | track D's plan |
+| 0012 | [Interrupts, `[<NoAlloc>]` and intrinsics](0012-interrupts-noalloc-intrinsics.md) | Implemented (phase 12); `noalloc<F>` declined | decision 42, track M's plan, the third design review |
+| 0013 | [Bit fields](0013-bit-fields.md) | Implemented (phase 12) | the third design review |
+| 0014 | [Placement](0014-placement.md) | Implemented in part: the heap's size and reuse (phase 12); constants in flash, `[<Section>]` and `[<Align>]` after 0.6.2 | track M's plan; the third design review (`[<Section>]`, `[<Align>]`) |
+| 0015 | [Fixed-point numbers](0015-fixed-point.md) | Approved in principle as a library, after 0.6.2 | the third design review |
+| 0016 | [Async on bare metal](0016-async-bare-metal.md) | Implemented (phase 12) | the third design review |
+| 0017 | [Iteration](0017-iteration.md) | Implemented (before phase 11); list expressions over any `Iter` after 0.6.2 | the third design review |
+| 0018 | [Packages](0018-packages.md) | Implemented in part: namespaced dependencies, versions (phase 12), the `[c]` section, the orphan rule; internal modules, integrity, commands and workspaces after 0.6.2; the index is a draft | track K's plan |
+| 0019 | [The lossless syntax tree](0019-syntax-tree.md) | Implemented (before phase 11, and the compiler's parser in phase 11) | decision 33, track E's plan |
+| 0020 | [The compiler in Z#](0020-self-hosting.md) | Implemented (phase 11) | the third design review; the phase 11 review |
+| 0021 | [Warnings](0021-warnings.md) | Implemented: `unused-value` (before phase 11), `cycle` (phase 12); `deprecated` at the 1.0 freeze | phase 12's deferred features |
+| 0022 | [Targets: macOS and Windows](0022-targets-macos-windows.md) | Implemented (phase 11.5): every target builds, the suites in CI wait for machines | decision 29, track T's plan |
+| 0023 | [JSON in Core](0023-json-in-core.md) | Implemented (before phase 11) | track S's plan |
+| 0024 | [The library's API](0024-library-api.md) | Implemented in part: items 2–4 and 6–8 of track S; integers' checked and bit operations, ISO 8601 parsing, UDP and name lookup after 0.6.2 | track S's plan |
+| 0025 | [Reading effect rows](0025-reading-effects.md) | Implemented (before phase 11, decision 80) | a design review with 0017, before phase 11 |
+| 0026 | [Performance you can see](0026-performance-you-can-see.md) | Implemented in part (phase 12): the editor's allocation hints; atomic counts and the rest are a draft | a design review, with the flagship's first profiles |
+| 0027 | [More microcontrollers](0027-more-microcontrollers.md) | Implemented in part (phase 12): the Nucleo-F401RE, RTT and probe-rs; the other boards are a draft | a design review, before phase 12's M4 (one real board) |
 
 **Status:**
 - **Draft:** written, with its open questions listed.
 - **Approved in principle:** a design review took it. Its decision has a row in DESIGN §13, and the roadmap a phase or track item with exit tests. The unresolved questions are settled as the implementation starts.
-- **Implemented:** the design text moves into DESIGN.md, and the proposal stays as the record of the alternatives and the reasons.
+- **Implemented:** the design text moves into DESIGN.md, and the proposal stays as the record of the alternatives and the reasons. **Implemented in part** names what's built and what waits, with the roadmap's marker (*after 0.6.2*) for the rest.
 - **Declined:** stays, with the reason, so the question isn't reopened without new facts.
 
 **Sections,** in this order: a status table and checklist; Summary; Motivation (the scenarios,

@@ -5,7 +5,9 @@ decisions 65 and 73–79 in [DESIGN §13](../DESIGN.md#13-decisions)). This docu
 `src/`: its modules, what flows between them, where each piece of work runs, the passes and
 what each optimizes, and how the compiler keeps itself fast. The language it compiles is
 [DESIGN.md](../DESIGN.md); when it is built, [ROADMAP.md](../ROADMAP.md#phase-11-self-hosting).
-Line counts are estimates from the F# files they replace (`wc -l src/*.fs`: 23,700 at `v0.5`).
+The tables' line counts are the plan's estimates from the F# files each module replaced
+(`wc -l src/*.fs`: 23,700 at `v0.5`); the *As built* notes say where the code went another way,
+and §2's totals are what `src/` is today (31,250 lines of Z# on 2026-11-01, 0.6.2).
 
 ## 1. Shape
 
@@ -34,7 +36,12 @@ Line counts are estimates from the F# files they replace (`wc -l src/*.fs`: 23,7
 ## 2. Modules
 
 Z# modules form a DAG, so the directories below are in dependency order: a module uses only
-what is above it. About 20,000 lines in all.
+what is above it. As built (2026-11-01): `Diag/` 97 lines, `Syntax/` 5,606, `Types/` 1,320,
+`Infer/` 6,896, `Core/` 704, `Opt/` 4,477, `Gen/` 5,765, `Build/` 4,062, `Lsp/` 1,415, and
+`Main`, `Commands` and `Server` 908: 31,250 in all, against the plan's 20,000. Most of the
+growth is phase 12's: `Opt/NoAlloc` (360), `Gen/Debug`, `Build/DocTest`, `Infer/Snapshot` (the
+cache's interface), the layout facts, C unions, `[<Bits>]` and interrupt handlers in `Infer` and
+`Gen`.
 
 ### 2.1 `Diag/`: diagnostics
 
@@ -94,7 +101,7 @@ literal's first field name).
 
 | Module | Lines | What it is |
 |---|---|---|
-| `Modules` | 185 | the modules of a check: the library's (the prelude, Core, Std), then the program's (the main file and what it uses, dependencies first; an import cycle is an error). Packages (0018) are still the F# compiler's. |
+| `Modules` | 185 | the modules of a check: the library's (the prelude, Core, Std), then the program's (the main file and what it uses, dependencies first; an import cycle is an error). Packages (0018) come from `Build/Project`: path and git dependencies, versions, a dependency's modules behind its name, and its `[c]` sources. |
 | `Check` | 95 | `zs check`: the modules checked in order, the program's names added after the library's, and the report (with how many of each, `--strict`); `zs build` reports a failed check as F#'s does (its errors only). |
 
 ### 2.6 `Core/`: the intermediate language
@@ -300,7 +307,7 @@ itself in no more than the gen 1 build takes; peak memory at most the F# compile
 - **The compiler's own tests** are values ([0009](../docs/proposals/0009-tests-as-values.md)) in `src/tests/` (to come): a session per test, in-process, under `Parallel.for`; the lexer and parser on every `.zs` file in the repository (a parse, a print of the tree, byte-identical to the source); `Unify` on tables of pairs; `attempt`'s rollback; `Decide` against `ZS_NO_DECIDE=1`; `Binary` round trips of `Checked`.
 - **Determinism:** `tests/cache.sh` across `ZS_WORKERS=1` and the cores; `tests/bootstrap.sh` comparing gen 2 and gen 3 and naming the first differing function from `ZS_DUMP_IR` when they differ.
 - **Sanitizers and valgrind:** `./test.sh --valgrind` and `--sanitize=thread` over the parallel passes, as over the parallel tests today; `ZS_LEAKCHECK=1` on the compiler building itself.
-- **Differential:** while both compilers exist, `tests/differential.sh` builds every test program with both and compares the `.out` and `.err` results and the benchmarks' instruction counts; the IR itself is allowed to differ (the rewrite lowers differently) until the F# compiler is gone.
+- **Differential, while both compilers existed:** `tests/differential.sh` built every test program with both and compared the `.out` and `.err` results and the benchmarks' instruction counts; the IR itself was allowed to differ (the rewrite lowers differently) until the F# compiler went, with `v0.6`. Since then the contract is the suite, `tests/bootstrap.sh` and `bench/host`'s instruction counts against `baseline.txt`.
 
 ## 9. Order and what is still measured
 

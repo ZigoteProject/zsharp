@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved in principle as a Core library (decision 66 is its one language change), after phase 11 |
+| **Status** | Approved in principle as a Core library (decision 66 is its one language change, built), after 0.6.2 |
 | **Decided at** | the third design review ([ROADMAP](../../ROADMAP.md#third-design-review-)): it passes decision 39 (it replaces hand-written shifts, rounding and saturation, and needs no runtime), and nothing in the language but untagged one-case unions |
 | **Builds** | track M item 10 ([ROADMAP](../../ROADMAP.md#microcontrollers-m)), after phase 11 |
 | **Rests on** | decisions 4 (overflow traps; wrapping is explicit), 25 (the SIMD API) and 53 (no type-level numbers beyond `fixed`) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §8](../../DESIGN.md#8-simd) |

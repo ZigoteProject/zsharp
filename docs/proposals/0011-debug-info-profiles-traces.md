@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved in principle: debugging items 1, 3 and 5 and profiling items 2 and 3 before phase 11; the items the roadmap marks *after phase 11* stay so |
+| **Status** | Approved in principle. Built: gdb and lldb on strings, records and plain unions (debugging 2, phase 12), `ZS_STATS=1` (profiling 3, phase 11), the editor's allocation hints (profiling 1, phase 12, with 0026). After 0.6.2: DWARF for every value, `-g` on optimized builds, Z# names in panics and profiles (`zs profile`), traces, editors' debugging, and the microcontroller items |
 | **Decided at** | track D's plan ([ROADMAP](../../ROADMAP.md#testing-profiling-and-debugging-d)), closing known gap 3 ([where things stand](../../ROADMAP.md#where-things-stand)) |
 | **Builds** | track D: profiling and debugging |
 | **Rests on** | decisions 2 (Perceus), 5 (panics), 32 (editor support), 42 (`[<NoAlloc>]`) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §12](../../DESIGN.md#12-tooling) Debugging and Profiling |

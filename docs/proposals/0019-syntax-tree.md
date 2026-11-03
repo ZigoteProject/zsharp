@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved in principle |
+| **Status** | Implemented (decision 33): `zs fmt`'s reflow, rename and code actions before phase 11; the Z# compiler's parser builds the tree (phase 11, `src/Syntax/Tree.zs`) |
 | **Decided at** | decision 33 and track E's plan ([ROADMAP](../../ROADMAP.md#editor-tooling-e)): F2 first, then the rest of E2b; kept before phase 11 by phase 12's list ([ROADMAP](../../ROADMAP.md#phase-12-release-062)) |
 | **Builds** | track E: F2 (the tree, reflow, `zs fmt --stdin`, range formatting) and E2b's rest (rename, code actions, signature help); the parser of phase 11 ([ROADMAP](../../ROADMAP.md#phase-11-self-hosting)) builds the same tree |
 | **Rests on** | decisions 32 (editor support: tree-sitter, `zs lsp`, `zs mcp`, Zed first) and 33 (`zs fmt`: one style, no configuration; a lossless syntax tree for reflow) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §12](../../DESIGN.md#12-tooling) |

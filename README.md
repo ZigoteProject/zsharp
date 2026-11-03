@@ -99,7 +99,7 @@ tuple).
 - **A `match` that misses a case doesn't compile,** and the error names the case: `match is not exhaustive; missing case: Dot`. Neither does a case that can never match. F# warns about both.
 - **Integer overflow panics** at run time (`panic: integer overflow`), where F# wraps silently.
 - **A data race doesn't compile:** `this function crosses threads, but it captures 'hits' : ref<int>, which can't be shared between threads; share state through Atomic, Mutex or Channel, or return a result per job`.
-- **F# habits get errors that say what to write:** `there's no null: a missing value is None, of type option<'a>`. [tests/newcomer](tests/newcomer) has 33 of them, for the first mistakes of F# and C programmers.
+- **F# habits get errors that say what to write:** `there's no null: a missing value is None, of type option<'a>`. [tests/newcomer](tests/newcomer) has 34 of them, for the first mistakes of F# and C programmers.
 
 ### New in Z#
 
@@ -125,7 +125,7 @@ property tests.
 | **A server** | The [echo server](examples/echo/server.zs) held 10,000 connections for an hour: 33.1 million round trips, none failed, its memory flat at 26 MB. |
 | **A program** | [logstat](examples/logstat/README.md) counts 1 million log lines (50 MB) in 0.72 s on one thread and 0.20 s on 16, from a 394 KB binary. |
 | **Binary size** | A hello world is 17 KB on Linux x86-64, 11.7 KB stripped. |
-| **The compiler** | 27,815 lines of Z#. A debug build of itself takes 14.9 s from nothing (the F# compiler it replaced: 15.2 s), and 0.43 s after a one-function change. [Report](docs/reports/self-hosting.md) |
+| **The compiler** | 31,250 lines of Z# (`src/`, 2026-11-01). When it replaced the F# compiler (27,815 lines then), a debug build of itself took 14.9 s from nothing (the F# compiler: 15.2 s) and 0.43 s after a one-function change; its own passes have since gone from 8.1 s to 3.7 s. [Report](docs/reports/self-hosting.md) |
 
 Desktop numbers come from an AMD Ryzen 7 PRO 8840U laptop running Linux x86-64; Cortex-M numbers
 are instructions executed under QEMU, each program written in both languages. Each report gives
@@ -289,7 +289,8 @@ normally written ([bench/mcu](bench/mcu)). The ratios are instructions executed,
 - **Where the speed comes from:** `int` is the chip's 32-bit word; reading an array doesn't touch its reference count; bounds checks are proved once per loop; a pipeline of pure lambdas becomes one loop that builds no list; small unions are plain values, and an enum is one byte.
 - **Where it's slower:** every `+` and `-` the compiler can't prove safe is checked for overflow, which C doesn't do (`fib`); `[<Wrapping>]` on a function turns the checks off. The tokenizer's tuples and checked arithmetic cost the most on the M0's few registers.
 - **RAM:** the programs built on lists and unions peak at 32 bytes of heap, and stack use is within 10% of C's on all but `isort` at `-O2`. A program that allocates nothing links no heap at all.
-- **Not yet:** interrupt handlers, `[<NoAlloc>]` (a compile error for code that may allocate), constants in flash, RISC-V, and linker scripts for real boards: each target links for its QEMU machine today. They're track M of the [roadmap](ROADMAP.md).
+- **Also there:** interrupt handlers (`[<Interrupt "USART2">]`), `[<NoAlloc>]` and `--no-heap` (a compile error naming the chain that may allocate), `[<Bits>]` records for registers, `Cpu.critical` and the other intrinsics, and tasks on the runtime's loop with the core asleep between events.
+- **Not yet:** constants in flash (startup values are copied to RAM), `[<Section>]` and `[<Align>]`, fixed-point numbers, weak references and arenas on a chip, `zs test --target`, RISC-V, and boards beyond the Nucleo-F401RE. The flagship has run under QEMU's STM32F405, not yet on the board itself. They're track M of the [roadmap](ROADMAP.md).
 
 More: [the guide's chapter](docs/guide/11-microcontrollers.md),
 [the measurements](docs/reports/microcontrollers.md).
@@ -300,13 +301,13 @@ One `zs` binary holds the compiler and its tools.
 
 | Command | What it does |
 |---|---|
-| `zs new`, `zs build`, `zs run` | projects in a `zs.toml`, with path and git dependencies; builds cached by module |
+| `zs new`, `zs build`, `zs run`, `zs check` | projects in a `zs.toml`, with path and git dependencies (versions by minimal version selection, a `[c]` section for C sources); builds cached by module, and a build server that keeps the compiler warm |
 | `zs build --release` | optimized, with ThinLTO; `--profile-generate` and `--profile-use` for PGO |
 | `zs build -g` | DWARF for gdb and lldb: breakpoints on lines; strings, records and plain unions shown as values |
 | `zs test` | tests as values, each in its own process; expect tests that `zs test --update` rewrites; `--doc` runs the examples in `///` comments |
 | `zs doctor` | what builds need (clang 23 or later, zig, libclang, …), found or not, and how to get what's missing |
 | `zs fmt`, `zs doc` | one canonical format; Markdown docs from `///` comments |
-| `zs lsp`, `zs mcp` | a language server (types on hover, rename, code actions) and an MCP server for AI agents |
+| `zs lsp`, `zs mcp` | a language server (types on hover, rename, code actions, allocation hints per line) and an MCP server for AI agents |
 
 Editors: the [Zed extension](editors/zed), the [VS Code extension](editors/vscode), the
 [Rider plugin](editors/rider), and the [tree-sitter grammar](editors/tree-sitter-zsharp) for the others.
@@ -350,11 +351,15 @@ without the container, see [the guide](docs/guide/01-getting-started.md).
 
 ## Status
 
-Z# is pre-1.0: the language and the library still change between releases. Done: the language
-through effect handlers, the compiler in Z#, which builds itself to the same bytes, and the ports
-to macOS, Windows and Linux arm64. Released: 0.6.2, its flagship firmware for a
-microcontroller board. Next: the platforms' suites in CI and checks on real Macs and Windows machines.
-The [roadmap](ROADMAP.md) has the details.
+Z# is pre-1.0: the language and the library still change between releases, each change listed in
+[CHANGELOG.md](CHANGELOG.md) with what to rewrite. Done: the language through effect handlers,
+the compiler in Z#, which builds itself to the same bytes, and the ports to macOS, Windows and
+Linux arm64. Released: 0.6.2 (2026-10-30), the first public release, with firmware for a
+microcontroller board as its flagship. Of its archives, Linux x86-64's suite passes natively,
+Linux arm64's under QEMU and Windows x64's under Wine; the macOS builds and arm64 Windows haven't
+run on a real machine yet, and the flagship has run under QEMU, not on its board. Next: the
+platforms' suites in CI and on clean machines, the board itself, then what 0.7 takes from the
+tracks. The [roadmap](ROADMAP.md) has the details.
 
 ## License
 

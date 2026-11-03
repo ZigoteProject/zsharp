@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved; items 1–3 and 7 built before phase 11 (`tests/ztest/`), the rest after |
+| **Status** | Approved; items 1–3 and 7 built before phase 11 (`tests/ztest/`), doc tests (item 8) in phase 12 (`tests/doctest.sh`); stress, properties, fuzzing, benchmarks, coverage and tests on a chip after 0.6.2 |
 | **Decided at** | track D's plan ([ROADMAP](../../ROADMAP.md#testing-profiling-and-debugging-d)): items 1–3 and 7 before phase 11, the rest after |
 | **Builds** | track D: testing |
 | **Rests on** | decisions 5 (panics), 10 (structural printing), 20 (derive, no macros), 33 (the lossless syntax tree) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §12](../../DESIGN.md#12-tooling) |

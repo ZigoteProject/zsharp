@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved in principle (decision 56), after 0.1 |
+| **Status** | Approved in principle (decision 56), after 0.6.2 (the first release, numbered 0.6.2 rather than 0.1) |
 | **Decided at** | the third design review ([ROADMAP](../../ROADMAP.md#third-design-review-)): spelling as proposed; `import c` joins the protocol when phase 11's libclang work touches it |
 | **Builds** | track P ([ROADMAP](../../ROADMAP.md#type-providers-p)), after phase 11 |
 | **Rests on** | decisions 20 (no compile-time code), 27 (source packages), 34 (new syntax needs a design discussion) and 39 ("Simple") in [DESIGN §13](../../DESIGN.md#13-decisions) |

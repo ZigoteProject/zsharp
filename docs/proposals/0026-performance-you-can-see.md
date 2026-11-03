@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft |
+| **Status** | Draft; the allocation hints are built (phase 12, 0.6.2: `allocates`, `reuses`, `copies on write` per line, a function's summary on hover, `tests/lsp/hints.sh`), atomic counts and the rest are not |
 | **Decided at** | a design review, with the flagship's first profiles (phase 12: "optimization waits for profiles of real programs") |
 | **Builds** | track D (profiling 1, 3), track E (hints, code lenses, MCP), track M (`[<NoAlloc>]` on local functions, arenas on a chip); the optimizer items only after a measurement asks for them |
 | **Rests on** | decisions 2 (Perceus), 4 (overflow traps), 20 (no comptime), 26 (from Zig: a checked opt-in, not explicit allocators), 42 (`[<NoAlloc>]`), 44 (arenas), 61 (warnings) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §5.2](../../DESIGN.md#52-perceus-reference-counting), [§9](../../DESIGN.md#9-optimizer), [§12](../../DESIGN.md#12-tooling) |

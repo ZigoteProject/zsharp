@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved and built (the review before `compiler/`, with 0017): the unresolved questions as proposed |
+| **Status** | Implemented (decision 80; the review before `compiler/`, with 0017): the unresolved questions as proposed |
 | **Decided at** | a design review with 0017, before the rewrite starts: 0017's `forEach` needs the trait-method rule, the printed form is part of the suite both compilers must pass, and every signature written with a row costs more to change later |
 | **Builds** | the F# compiler first (the printer, one rule in the checker, hover and `zs doc`), then phase 11's `Types/Ty.show` and `Lsp` carry it over |
 | **Rests on** | decision 23 and [0002](0002-effect-handlers.md) (rows, scoped labels, the empty rows of `share<F>`, callbacks and trait methods); [DESIGN §6.1](../../DESIGN.md#61-effect-handlers-phase-10-v3) |

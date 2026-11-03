@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved in principle (track S items 2–4 and 6–8; the sub-items marked *after phase 11* stay so) |
+| **Status** | Implemented in part (track S items 2–4 and 6–8): collections, parsing, text functions, format specifiers, time, streams, files, processes and Unix sockets are built; integers' checked and bit operations, ISO 8601 parsing, UDP and name lookup after 0.6.2 |
 | **Decided at** | track S's plan ([ROADMAP](../../ROADMAP.md#library-s)); the names at the 1.0 freeze review |
 | **Builds** | track S: library, phase 11's "Library (track S)" list first ([ROADMAP](../../ROADMAP.md#phase-11-self-hosting)) |
 | **Rests on** | decisions 3 (`int` is the machine word), 4 (overflow: checked by default, wrapping explicit; saturating added here), 28 (UTF-8 strings), 37 (prelude, Core and Std; .NET module names, F# function names) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §9](../../DESIGN.md#9-compiler) "The library" |
