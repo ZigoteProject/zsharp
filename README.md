@@ -109,6 +109,7 @@ tuple).
 - **Record fields with defaults:** with `type Config = { host: string = "localhost"; port: int = 8080 }`, the literal `{ port = 9000 }` is a whole `Config`.
 - **Types for systems code:** `u8` to `u64`, `usize`, `f32x8`, `fixed<u8, 16>`, `[<CLayout>]` records, `span<'a>`, and `ptr<'a>` inside `unsafe`.
 - **Four kinds of function:** `'a -> 'b`; `share<'a -> 'b>`, which another thread may run; `callback<'a -> 'b>`, which C calls back; `fnptr<'a -> 'b>`, a bare C function pointer. The errors name the one you need ([the table](docs/guide/12-memory.md#which-reference-which-function)).
+- **Type providers:** `module Weather = import json "weather.json"` declares the sample's records, `import csv`, `import sql` and `import svd` a CSV file's rows, a schema's tables and a microcontroller's registers, each checked against the file at compile time and ordinary Z# underneath ([examples/providers](examples/providers), [the guide](docs/guide/18-type-providers.md)).
 
 The tour is [examples/logstat](examples/logstat/README.md): a log summary tool written for F#
 developers, with effects as dependency injection, tasks with timeouts, checked parallelism and
@@ -292,6 +293,8 @@ normally written ([bench/mcu](bench/mcu)). The ratios are instructions executed,
 - **Also there:** interrupt handlers (`[<Interrupt "USART2">]`), `[<NoAlloc>]` and `--no-heap` (a compile error naming the chain that may allocate), `[<Bits>]` records for registers, `Cpu.critical` and the other intrinsics, and tasks on the runtime's loop with the core asleep between events.
 - **Not yet:** constants in flash (startup values are copied to RAM), `[<Section>]` and `[<Align>]`, fixed-point numbers, weak references and arenas on a chip, `zs test --target`, RISC-V, and boards beyond the Nucleo-F401RE. The flagship has run under QEMU's STM32F405, not yet on the board itself. They're track M of the [roadmap](ROADMAP.md).
 
+The registers can come from the chip's SVD file: `import svd ("stm32f401-part.svd", only = "GPIOA,RCC")` gives a module per peripheral with each register a `[<Bits>]` record ([examples/mcu/nucleo-f401-svd.zs](examples/mcu/nucleo-f401-svd.zs) is the firmware written that way, compiled to the same accesses).
+
 More: [the guide's chapter](docs/guide/11-microcontrollers.md),
 [the measurements](docs/reports/microcontrollers.md).
 
@@ -307,7 +310,7 @@ One `zs` binary holds the compiler and its tools.
 | `zs test` | tests as values, each in its own process; expect tests that `zs test --update` rewrites; `--doc` runs the examples in `///` comments |
 | `zs doctor` | what builds need (clang 23 or later, zig, libclang, …), found or not, and how to get what's missing |
 | `zs fmt`, `zs doc` | one canonical format; Markdown docs from `///` comments |
-| `zs provide` | a module from a data source, kept beside the program: records with the `Json` derive from a JSON sample, a `Row` record from a CSV file's header and rows, each with `parse` and `print` |
+| `zs provide`, `import json "weather.json"` | type providers ([the guide's chapter](docs/guide/18-type-providers.md)): the types of a JSON sample, a CSV file, a SQL schema or a chip's SVD file, declared from the file when the program is compiled and checked against it; `zs provide` prints the module to keep instead; a `zs-provider-<name>` on PATH is one of your own |
 | `zs lsp`, `zs mcp` | a language server (types on hover, rename, code actions, allocation hints per line) and an MCP server for AI agents |
 
 Editors: the [Zed extension](editors/zed), the [VS Code extension](editors/vscode), the

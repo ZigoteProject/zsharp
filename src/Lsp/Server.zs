@@ -27,6 +27,8 @@ type State =
     madeOf: ref<Map<string, Set<string>>>
     docCache: ref<Map<string, string * list<Build.Doc.DocItem>>>
     hints: ref<bool>
+    /// the providers' input files the client watches for the server (0001)
+    watched: ref<Set<string>>
     out: IO.Writer }
 
 let private num (n: int) = Rpc.num n
@@ -101,6 +103,20 @@ let private placeOf (sources: Map<int, Syntax.Source.Source>) (at: Span) : strin
   | Some src -> (src.path, Path.getFullPath src.path, 0, 0)
   | None -> ("", "", 0, 0)
 
+// the client told to watch the providers' inputs of every analysis (0001): one registration,
+// replaced when the set changes, so a changed sample re-checks the documents made from it
+let private watchInputs (st: State) =
+  let inputs = Set.ofList (List.collect (fun (pa: string * Analysis) -> List.collect (fun (m: Build.Modules.Loaded) -> m.inputs) (snd pa).checked.modules) (Map.toList st.results.Value))
+  if inputs <> st.watched.Value then
+    let registration (watchers: list<Json>) =
+      JObject [ ("id", JString "zs-provider-inputs"); ("method", JString "workspace/didChangeWatchedFiles"); ("registerOptions", JObject [ ("watchers", JArray watchers) ]) ]
+    if not (Set.isEmpty st.watched.Value) then
+      Rpc.send st.out (JObject [ ("jsonrpc", JString "2.0"); ("id", JString "zs-unwatch"); ("method", JString "client/unregisterCapability"); ("params", JObject [ ("unregisterations", JArray [ JObject [ ("id", JString "zs-provider-inputs"); ("method", JString "workspace/didChangeWatchedFiles") ] ]) ]) ])
+    if not (Set.isEmpty inputs) then
+      let watchers = List.map (fun (f: string) -> JObject [ ("globPattern", JString f) ]) (Set.toList inputs)
+      Rpc.send st.out (JObject [ ("jsonrpc", JString "2.0"); ("id", JString "zs-watch"); ("method", JString "client/registerCapability"); ("params", JObject [ ("registrations", JArray [ registration watchers ]) ]) ])
+    st.watched.Value <- inputs
+
 /// Checks a document (with its modules) again and publishes its diagnostics. A program that
 /// doesn't get to checking (a syntax error) keeps the last analysis's hovers.
 let private analyze (st: State) (path: string) =
@@ -154,6 +170,7 @@ let private changed (st: State) (path: string) =
       match Map.tryFind other st.madeOf.Value with
       | Some files when Set.contains path files -> analyze st other
       | _ -> ()
+  watchInputs st
 
 let private analysisOf (st: State) (path: string) : option<Analysis> = Map.tryFind path st.results.Value
 
@@ -427,6 +444,20 @@ let private lastPart (name: string) =
 // of the open documents (a field's uses too: its key is field:Record.name), or why it can't be
 // renamed. A name's key depends on the program it's checked in, so another program's references
 // are those of the definition at the same place.
+// what a provided module's first line says it was made from: "provided by json from weather.json"
+let private provenance (file: string) : string =
+  match File.readAllText file with
+  | Ok text ->
+    let first = List.head (String.split "\n" text)
+    if String.startsWith "// provided by " first then
+      match String.split " " (String.sub first 15 (String.length first - 15)) with
+      | provider :: _ :: "from" :: rest ->
+        let source = String.join " " rest
+        $"provided by {provider} from {source}"
+      | _ -> "provided"
+    else $"defined in {Path.getFileName file}"
+  | Error _ -> $"defined in {Path.getFileName file}"
+
 let private renameTarget (st: State) (path: string) (line: int) (ch: int) : result<Spot * list<Spot>, string> =
   match related st path line ch with
   | (Some h, all) when h.h.key <> "" ->
@@ -438,6 +469,7 @@ let private renameTarget (st: State) (path: string) (line: int) (ch: int) : resu
       Error $"{h.h.name} is declared in a C header; rename it there"
     else
       match List.tryFind (fun (o: Spot) -> o.h.isDef) all with
+      | Some d when String.contains "/.zs-cache/providers/" (Path.getFullPath d.path) -> Error $"{Types.Ty.shortName h.h.name} is {provenance d.path}; change it there"
       | Some d when not (editable d.path) -> Error $"{Types.Ty.shortName h.h.name} is defined in {Path.getFileName d.path}, outside the program"
       | def ->
         let samePlace (a: Spot) (b: Spot) = a.path = b.path && a.line = b.line && a.col = b.col
@@ -887,6 +919,15 @@ let private answer (st: State) (msg: Json) : bool =
     | _ -> ()
   else if meth = "textDocument/didSave" then
     changed st (docPath ())
+  else if meth = "workspace/didChangeWatchedFiles" then
+    // a provider's input changed: the documents made from it, checked again
+    let changedFiles = List.map (fun (c: Json) -> Rpc.toPath (Rpc.text (Rpc.field "uri" c))) (Result.defaultValue [] (Json.array (Rpc.field "changes" ps)))
+    let madeFrom (a: Analysis) = List.exists (fun (m: Build.Modules.Loaded) -> List.exists (fun (i: string) -> List.contains i changedFiles || List.contains (Path.getFullPath i) changedFiles) m.inputs) a.checked.modules
+    for (doc, a) in Map.toList st.results.Value do
+      if madeFrom a then analyze st doc
+  else if meth = "" then
+    // the client's answer to a request of the server's (a registration): nothing to do
+    ()
   else if meth = "textDocument/didClose" then
     let path = docPath ()
     st.texts.Value <- Map.remove path st.texts.Value
@@ -954,7 +995,7 @@ let private answer (st: State) (msg: Json) : bool =
 /// Serves the editor on standard input (`input`) and output until it says exit (or the input
 /// ends). `first`: a header line protocol detection already read.
 let serve (input: IO.Reader) (first: option<string>) : int =
-  let st : State = { texts = ref Map.empty; results = ref Map.empty; madeOf = ref Map.empty; docCache = ref Map.empty; hints = ref false; out = Console.openStandardOutput () }
+  let st : State = { texts = ref Map.empty; results = ref Map.empty; madeOf = ref Map.empty; docCache = ref Map.empty; watched = ref Set.empty; hints = ref false; out = Console.openStandardOutput () }
   let mutable pending = first
   let mutable running = true
   while running do

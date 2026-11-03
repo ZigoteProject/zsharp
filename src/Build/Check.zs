@@ -176,14 +176,19 @@ let programWith (texts: Map<string, string>) (mainPath: string) (requireMain: bo
       let sources = List.map (fun (m: Modules.Loaded) -> m.source) all
       // a syntax error stops before checking: the first one, as the F# compiler's parser stops
       // there (the ones after it may be its consequences)
-      match List.tryFind (fun (m: Modules.Loaded) -> Array.length m.errors > 0) all with
-      | Some m -> Error([| m.errors.[0] |], sources)
+      let isError (d: Diag.Diagnostic.Diagnostic) = d.severity = Diag.Diagnostic.Err
+      match List.tryFind (fun (m: Modules.Loaded) -> Array.exists isError m.errors) all with
+      | Some m -> Error([| Option.get (List.tryFind isError (Array.toList m.errors)) |], sources)
       | None ->
         let names (ms: list<Modules.Loaded>) = List.choose (fun (m: Modules.Loaded) -> m.modName) ms
         let impls (ms: list<Modules.Loaded>) = List.collect (fun (m: Modules.Loaded) -> m.impls) ms
         // a microcontroller has no operating system, so no Std
         let unavailable = if Option.isSome chip then Set.ofList (List.map (fun (f: string) -> String.replace f "/" ".") Modules.stdFiles) else Set.empty
         let cx = Infer.Cx.create (requireMain && Option.isNone ownLibrary) collect (names lib) (impls lib) unavailable (Types.Repr.wordBytes target) (Option.bind Options.irqTable chip) late (inFile (List.head lib))
+        // a loader's warning (a provided module from the last build, 0001) is reported with the check's
+        for m in all do
+          for d in m.errors do
+            if not (isError d) then Buffer.push d cx.diagnostics
         let (units, checkedNames, checkedCount, restoreMs, checkMs) = checkModules cx lib prog
         Infer.Decls.finish cx
         Ok { modules = all; units = units; cx = cx; linked = linked; checkedNames = checkedNames; checkedCount = checkedCount; restoreMs = restoreMs; checkMs = checkMs }

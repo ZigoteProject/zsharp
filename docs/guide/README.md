@@ -25,6 +25,7 @@ its exact output.
 15. [SIMD](15-simd.md): vectors, masks and shuffles, `[<FastMath>]`, CPU targets and multiversioning, intrinsics
 16. [Effects](16-effects.md): generators (`seq { }`), typed exceptions (`Throw`), effects and handlers, effect types
 17. [Z# for F# programmers](17-from-fsharp.md): what's different, from `int`'s size to traits, errors, tasks and memory
+18. [Type providers](18-type-providers.md): types from a JSON sample, a CSV file, a SQL schema or a chip's SVD file, `import` and `zs provide`, providers of your own
 
 **Reference:**
 - [The library reference](../reference/README.md), generated from its doc comments by `zs doc`.

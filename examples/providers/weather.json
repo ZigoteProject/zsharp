@@ -1,0 +1,16 @@
+{
+  "city": "Oslo",
+  "temp": 21.5,
+  "humidity": 64,
+  "readings": [
+    { "at": "2026-10-22T08:00:00Z", "value": 20.1, "note": "calm" },
+    { "at": "2026-10-22T09:00:00Z", "value": 21, "note": null },
+    { "at": "2026-10-22T10:00:00Z", "value": 22 }
+  ],
+  "wind": null,
+  "station": { "id": 7, "name": "Blindern" },
+  "backup": { "id": 9, "name": "Fornebu" },
+  "tags": [],
+  "mixed": [1, "two"],
+  "first-name": "Ada"
+}

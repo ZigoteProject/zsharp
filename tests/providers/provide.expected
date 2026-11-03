@@ -1,5 +1,7 @@
 json   a document's records with the Json derive, from a sample (options: root, types)
 csv    a file's rows as a Row record, from the header and the rows (options: separator, hasHeaders, types)
+sql    a schema's tables as records, from its CREATE TABLEs (options: types)
+svd    a microcontroller's peripherals as modules of [<Bits>] registers, from its SVD file (options: only)
 --- json
 // provided by json 0.1 from weather.json
 // input: weather.json
@@ -178,20 +180,74 @@ let print (rows: list<Row>) : string =
         | None -> "")
       string r.active ]
   String.join "\n" (String.join separator header :: List.map line rows) + "\n"
+--- sql
+// provided by sql 0.1 from schema.sql
+// input: schema.sql
+
+/// From "schema.sql": users (id, name, email, signed-up, score, active)
+type Users = { id: int; name: string; email: option<string> = None; ``signed-up``: string; score: option<f64> = None; active: bool }
+
+module Users =
+  /// The table's name.
+  let table = "users"
+  /// Its columns, in order.
+  let columns = [ "id"; "name"; "email"; "signed-up"; "score"; "active" ]
+
+/// From "schema.sql": orders (id, user_id, total, note, payload)
+type Orders = { id: int; user_id: int; total: f64; note: option<string> = None; payload: option<array<u8>> = None }
+
+module Orders =
+  /// The table's name.
+  let table = "orders"
+  /// Its columns, in order.
+  let columns = [ "id"; "user_id"; "total"; "note"; "payload" ]
+--- svd (GPIOA only; the module's head and one register)
+exit 0, 448 lines
+// provided by svd 0.1 from ../../examples/mcu/stm32f401-part.svd
+// input: ../../examples/mcu/stm32f401-part.svd
+
+/// General-purpose I/Os (GPIOA, base 0x40020000)
+module Gpioa =
+  /// GPIO port mode register (MODER, offset 0x0, read-write, reset 0xa8000000)
+  [<Bits 32>]
+  type Moder =
+274:  type Bsrr =
+286-      bs5: bool = false
+--- a provider on PATH: zs-provider-upper, a shell script
+upper  zs-provider-upper, on PATH
+// provided by upper 1.0 from words.txt
+// input: words.txt
+
+let w_alpha = "ALPHA"
+let w_beta = "BETA"
+upper: unknown option '--prefx=w_' (prefix)
+exit 1
+ALPHA BETA
+--- the same build with the provider gone from PATH: the cached module, with a warning
+upper_use.zs:1: warning: zs-provider-upper isn't on PATH; the module from the last build is used [stale-input]
+ALPHA BETA
+upper_use.zs:1: warning: words.txt changed since the last build, and zs-provider-upper isn't on PATH; the types shown are from that build [stale-input]
+ALPHA BETA
 --- errors (exit codes)
-no provider 'jsn': zs has json and csv
+no provider 'jsn': zs has json, csv, sql and svd, and no zs-provider-jsn is on PATH
 exit 1
 csv: unknown option 'seperator' (separator, hasHeaders, types)
 exit 1
 csv: types: 'money' isn't a column's type (int, f64, bool or string)
 exit 1
-json: cannot open nowhere.json: No such file or directory
+svd: only: SPI9 isn't a peripheral of STM32F401 (GPIOA, GPIOH, GPIOC, RCC, USART1, USART2)
+exit 1
+sql: bad.sql: CREATE TABLE empty: no columns
+exit 1
+svd: bad.svd: 2: <peripherals> isn't closed
+exit 1
+json: nowhere.json not found here
 exit 1
 json: broken.json: 2:1: expected ',' or ']' after a value
 exit 1
 csv: wide.csv: a row has 3 cells, the header 2
 exit 1
-usage: zs provide <provider> <file> [--option=value]…, or zs provide --list; the providers are json and csv
+usage: zs provide <provider> <file> [--option=value]…, or zs provide --list; the providers are json, csv, sql and svd, and any zs-provider-<name> on PATH
 exit 2
 --- options
 type Reading = { at: string; value: f32; note: option<string> = None }

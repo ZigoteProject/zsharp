@@ -142,9 +142,12 @@ else echo "FAIL the library's doc tests"; echo "$out" | grep -v '^ok'; fail=1; f
 if diff <(tests/doctest.sh 2>&1) tests/doctest.expected >"$tmp/doctest.diff"; then echo "ok   tests/doctest.sh"
 else echo "FAIL tests/doctest.sh"; cat "$tmp/doctest.diff"; fail=1; fi
 
-# zs provide (0001): the json and csv providers' modules, and a program built with them beside it
-if diff <(tests/providers/provide.sh bin/zs 2>&1) tests/providers/provide.expected >"$tmp/provide.diff"; then echo "ok   tests/providers/provide.sh (zs provide json and csv)"
+# zs provide (0001): the providers' modules, and a program built with them beside it
+if diff <(tests/providers/provide.sh bin/zs 2>&1) tests/providers/provide.expected >"$tmp/provide.diff"; then echo "ok   tests/providers/provide.sh (zs provide json, csv, sql and svd, and one on PATH)"
 else echo "FAIL tests/providers/provide.sh"; cat "$tmp/provide.diff"; fail=1; fi
+# the Nucleo firmware on the chip's SVD compiles to the same register accesses as the Mmio one
+if out=$(tests/providers/svd_nucleo.sh bin/zs 2>&1); then echo "ok   tests/providers/svd_nucleo.sh ($out)"
+else echo "FAIL tests/providers/svd_nucleo.sh"; echo "$out"; fail=1; fi
 
 # the checked library and modules, cached between builds: the same program from the cache
 if diff <(tests/cache.sh 2>&1) tests/cache.expected >"$tmp/cache.diff"; then echo "ok   tests/cache.sh (checked library, modules and compiled modules cached)"

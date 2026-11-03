@@ -65,8 +65,21 @@
   names before the prelude's. Options are constants after the string, in a member call's syntax.
   An import of a provider zs doesn't have, a file that isn't beside the importing file, or an
   option the provider doesn't take is an error at the import. In the editor the types follow
-  the sample on save (the file is read at each check); providers on PATH and from packages,
-  and the stale-cache diagnostic for them, follow.
+  the sample: the language server watches the files providers read and re-checks the documents
+  made from one that changes, and a rename of a provided name says where it comes from.
+- `import sql "schema.sql"`: a record per `CREATE TABLE` (`INTEGER` `int`, `REAL` `f64`, `TEXT`
+  `string`, `BLOB` `array<u8>`, `BOOLEAN` `bool`; a column an option unless `NOT NULL` or in the
+  primary key) with `table` and `columns` in a module of its name. `import svd ("chip.svd", only =
+  "GPIOA,RCC")`: a module per peripheral, each register a `[<Bits>]` record whose defaults are
+  its reset value and a module with `read`, `write` and `modify` as the file allows;
+  `examples/mcu/nucleo-f401-svd.zs` is the Nucleo firmware on the STM32F401's SVD, compiled to the
+  same register accesses as the one with addresses by hand (`tests/providers/svd_nucleo.sh`).
+- Providers of your own: `zs-provider-<name>` on PATH, run in the importing file's directory
+  with the string and `--name=value` options, its standard output the module (`// provided by`,
+  `// input:` lines first), its standard error the errors. The output is cached with a hash of
+  each input, so a machine without the provider builds from the last output, with a `stale-input`
+  warning at the import naming an input that changed since. `examples/providers` and the guide's
+  chapter 18 show all of it.
 
 ### Benchmarks
 - `bench/host` has five small real programs beside its kernels, in Z#, C and Rust: `wordfreq`,

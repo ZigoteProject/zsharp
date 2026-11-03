@@ -9,7 +9,7 @@ proposal describes a change to it, and [ROADMAP.md](../../ROADMAP.md) says when 
 
 | # | Proposal | Status | Decided at |
 |---|---|---|---|
-| 0001 | [Type providers](0001-type-providers.md) | Approved in principle; `zs provide json` and `csv` and the `import` form built, `svd`, `sql` and providers on PATH next | the third design review |
+| 0001 | [Type providers](0001-type-providers.md) | Built: `json`, `csv`, `sql`, `svd`, the `import` form, the editor's side and providers on PATH; open: providers from packages, `import c` on the protocol, typed queries | the third design review |
 | 0002 | [Effect handlers](0002-effect-handlers.md) | Implemented (phase 10) | the phase 6 gate; open questions at the third design review |
 | 0003 | [Spans and slices](0003-spans-and-slices.md) | Implemented (phase 9.6) | the phase 9.6 design review |
 | 0004 | [C layout](0004-c-layout.md) | Implemented: `fixed` (phase 9.6); C unions and layout facts (phase 12) | phase 9.6 (`fixed`); the third design review (unions, layout facts) |

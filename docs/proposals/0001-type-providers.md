@@ -10,7 +10,7 @@
 
 - [x] Approved in principle
 - [ ] Discussion
-- [ ] Implementation: step 1, `zs provide json` and `csv`, and step 2's `import` form (both spellings, the cache, the hidden module) built (2026-11-03, `src/Provide/`, `Build/Modules.provided`); the editor's watching of inputs, hover's provenance and rename's refusal, `svd`, `sql` and providers on PATH follow
+- [x] Implementation (2026-11-03): `zs provide`, the `import` form (both spellings, the cache, the hidden module), the editor's side (watched inputs, rename's refusal), `svd`, `sql` and providers on PATH with the cache fallback (`src/Provide/`, `Build/Modules.provided`, `tests/providers/`, `examples/providers`, guide chapter 18). Open: providers from packages (question 3), `import c` on the protocol (question 2), enumerated values in `svd`, typed SQL queries (question 5)
 
 ## Summary
 

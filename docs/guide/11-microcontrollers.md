@@ -238,3 +238,23 @@ node run-wasm.mjs hello.wasm                    # beside zs; runtime/ in a check
 - **Imports:** output, exit and `Runtime.ticks ()` come from the host as `zs.write (ptr, len)` (bytes in the module's memory), `zs.exit (code)` (it must not return: throw) and `zs.ticks ()`. A module imports only those it uses. `run-wasm.mjs` is the whole host, about twenty lines.
 - **Exports:** `memory`, `_start` (runs `main`, then calls `zs.exit`) and each `[<Export>]` function, with WebAssembly's C ABI: a `[<CLayout>]` record by a pointer into memory, returned through a pointer the caller passes first. `--lib` builds a module with no `main` and no `_start`.
 - **With C:** `[<Link "lib.c">]` sources are compiled for WebAssembly and linked in, and `--lib -o lib.a` makes an archive and its header for a C program built for WebAssembly (`zig cc -target wasm32-freestanding`), whose `main` the runtime's `_start` runs.
+
+## Registers from the chip's SVD file
+
+The vendor's SVD file describes every peripheral and register; `import svd` declares them, a
+module per peripheral with each register a `[<Bits>]` record whose defaults are its reset value,
+and `read`, `write` and `modify` as the file allows ([type providers](18-type-providers.md)):
+
+```fsharp
+import svd ("stm32f401-part.svd", only = "GPIOA,GPIOC,RCC,USART2")
+
+let init () =
+  Rcc.Ahb1enr.modify (fun r -> { r with gpioaen = true; gpiocen = true })
+  Gpioa.Moder.modify (fun r -> { r with moder5 = u8 1 }) // PA5 as an output
+  Usart2.Cr1.write { ue = true; te = true; re = true }
+```
+
+A wrong field or a write to a read-only register is a compile error, and the code compiles to
+the same volatile accesses as `Mmio.write32` with the address by hand:
+[examples/mcu/nucleo-f401-svd.zs](../../examples/mcu/nucleo-f401-svd.zs) is the Nucleo firmware
+written this way.

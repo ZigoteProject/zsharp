@@ -24,6 +24,8 @@ type Loaded =
     errors: array<Diagnostic>
     /// the C names its imports left out, with why
     skippedC: list<string * string>
+    /// the files its provided modules were made from (full paths), for an editor to watch
+    inputs: list<string>
     /// what the editor shows for the C names it imports
     cInfos: list<string * CImport.CInfo>
     /// what its imports gave (each header and its saved import): what its checked result
@@ -124,6 +126,7 @@ let load (texts: Map<string, string>) (index: int) (path: string) (modName: opti
         uses = []
         errors = errors
         skippedC = []
+        inputs = []
         package = None
         cInfos = []
         imported = "" }
@@ -381,31 +384,54 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
       if Option.isNone problem.Value then
         problem.Value <- Some(error (lineOf d) msg)
     let deps = Buffer.empty
+    let inputs = Buffer.empty
+    let warnings = Buffer.empty
+    // the files a provided module names as its inputs (// input: lines), beside the importer
+    let inputsOf (text: string) : list<string> =
+      List.choose (fun (l: string) -> if String.startsWith "// input: " l then Some(Path.combine dir (String.trim (String.sub l 10 (String.length l - 10)))) else None) (String.split "\n" text)
+    // each input with a hash of its content, one per line, so a build where the provider can't
+    // run knows whether the cached module is from these inputs
+    let hashesOf (files: list<string>) : string =
+      String.join "\n" (List.map (fun (f: string) -> f + "\t" + Tools.hashOf [ Result.defaultValue "" (File.readAllText f) ]) files)
     // the module provided, written to the cache and named: given, or hidden
     let provide (name: option<string>) (provider: string) (arg: string) (opts: list<string * string>) (d: Ast.Decl) : option<string> =
       let modName =
         match name with
         | Some n -> n
         | None -> Provide.Names.typeName (Path.getFileNameWithoutExtension arg) + Provide.Names.typeName provider
+      let out = Path.combine cacheDir (modName + ".zs")
       let written =
-        match File.readAllText (Path.combine dir arg) with
-        | Error _ -> Error $"{provider}: {arg} not found next to {Path.getFileName path}"
-        | Ok text ->
-          match Provide.Command.provide provider arg text opts with
-          | Ok s -> Ok s
-          | Error e -> Error(if String.startsWith "no provider" e then e else provider + ": " + e)
+        match Provide.Command.provide provider dir $"next to {Path.getFileName path}" arg opts with
+        | Ok s -> Ok s
+        | Error e when String.startsWith "no provider" e && File.exists out ->
+          // a provider that isn't here (an editor's sandbox, a machine without it) and the module
+          // from the last build: that one, with a word on whether its inputs changed since
+          let cached = Result.defaultValue "" (File.readAllText out)
+          let before = Result.defaultValue "" (File.readAllText (out + ".inputs"))
+          let changed = List.filter (fun (f: string) -> not (String.contains (f + "\t" + Tools.hashOf [ Result.defaultValue "" (File.readAllText f) ]) before)) (inputsOf cached)
+          let note =
+            if List.isEmpty changed then $"zs-provider-{provider} isn't on PATH; the module from the last build is used"
+            else $"{String.join ", " (List.map (fun (f: string) -> Path.getFileName f) changed)} changed since the last build, and zs-provider-{provider} isn't on PATH; the types shown are from that build"
+          Buffer.push (warning "stale-input" (lineOf d) note) warnings
+          Ok cached
+        | Error e -> Error(if String.startsWith "no provider" e then e else provider + ": " + e)
       match written with
       | Error msg ->
         report d msg
         None
       | Ok text ->
-        let out = Path.combine cacheDir (modName + ".zs")
         Tools.makeDirectory cacheDir
         // written only when it changed: an editor watching the cache isn't woken for nothing
         if Result.defaultValue "" (File.readAllText out) <> text then
           match File.writeAllText out text with
           | Ok _ -> ()
           | Error e -> report d $"{provider}: can't write {out}: {e}"
+        let ins = inputsOf text
+        let hashes = hashesOf ins
+        if Result.defaultValue "" (File.readAllText (out + ".inputs")) <> hashes then
+          File.writeAllText (out + ".inputs") hashes |> ignore
+        for i in ins do
+          Buffer.push i inputs
         Buffer.push (modName, out) deps
         Some modName
     let expand (d: Ast.Decl) : list<Ast.Decl> =
@@ -424,7 +450,7 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
     let decls = List.collect expand m.decls
     match problem.Value with
     | Some p -> Error p
-    | None -> Ok({ m with decls = decls }, Array.toList (Buffer.toArray deps))
+    | None -> Ok({ m with decls = decls; inputs = Array.toList (Buffer.toArray inputs); errors = Array.append m.errors (Buffer.toArray warnings) }, Array.toList (Buffer.toArray deps))
   let rec visit (path: string) (pkg: Project.Package) (modName0: option<string>) (stack: list<string>) =
     if Option.isNone failure.Value then
       count.Value <- count.Value + 1

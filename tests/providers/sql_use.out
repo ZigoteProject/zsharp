@@ -1,0 +1,2 @@
+Ada None None true users [id; name; email; signed-up; score; active]
+7 12.5 Some gift false [id; user_id; total; note; payload]
