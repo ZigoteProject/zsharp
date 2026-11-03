@@ -597,7 +597,7 @@ and gives LLVM the facts it can't prove. Everything in this table is built.
 
 **Performance contract:**
 - **Microcontrollers:** the suite in `bench/mcu` compares each program with its C version (same clang, same chip, under QEMU) [(results)](docs/reports/microcontrollers.md).
-- **Host:** the suite in `bench/host` (fib, binary-trees, nbody, spectral-norm, the red-black tree) compares each program with C (also built with `-ftrapv`, whose overflow traps match Z#'s), Rust, Swift, Zig, OCaml and F# on .NET [(results)](docs/reports/host.md). A regression of more than 5% in instructions fails the build.
+- **Host:** the suite in `bench/host` (fib, binary-trees, nbody, spectral-norm, the red-black tree) compares each program with C (also built with `-ftrapv`, whose overflow traps match Z#'s), Rust, Swift, Zig, OCaml and F# on .NET [(results)](docs/reports/host.md); five small real programs beside them (word counts, JSON, an interpreter, shortest paths, SHA-256) compare with C and Rust [(results)](docs/reports/realworld.md). A regression of more than 5% in instructions fails the build.
 - **Compile time:** `bench/compile/run.sh` builds a generated program of modules from nothing, then after a one-function change in the main file and in a module.
 
 ## 10. Targets

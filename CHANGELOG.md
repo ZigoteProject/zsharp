@@ -34,6 +34,20 @@
 - `./test.sh --release` builds every program optimized: what LLVM may assume of the IR is tested
   too (every program prints the same at `--release` and at `-O3`).
 
+### Performance
+- `x <- f … x …` hands the call x's own reference when the other arguments only read x, so
+  `counts <- HashMap.add w (Option.defaultValue 0 (HashMap.tryFind w counts) + 1) counts`
+  updates the map in place instead of copying it on every update (a word count of 1M words: 84 s,
+  now 0.23 s); the same for arrays (`a <- Array.set a i (a.[i] + 1)`).
+- Only a program that can put a SIMD vector in a heap object has its objects 64-byte aligned by
+  the system allocator; one with vectors in locals only keeps the pool. Calling
+  `Bytes.appendJsonString` no longer costs a whole program the pool (a JSON round trip of 200k
+  records: 3.5 s and 935 MB, now 1.4 s and 368 MB).
+
+### Benchmarks
+- `bench/host` has five small real programs beside its kernels, in Z#, C and Rust: `wordfreq`,
+  `json`, `interp`, `pathfind` and `sha256` ([the report](docs/reports/realworld.md)).
+
 ## 0.6.2 (2026-10-30)
 
 The first public release, for microcontrollers: firmware for a real board, the ST Nucleo-F401RE,

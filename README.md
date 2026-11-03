@@ -121,6 +121,7 @@ property tests.
 | **Cortex-M, against C** | CRC-32 executes the same number of instructions as C. A `List.init \|> List.map \|> List.filter \|> List.sum` pipeline executes as many as C's hand-written loop (Cortex-M4, `-Os`). Flash is 0.2–0.6 KB larger. [Report](docs/reports/microcontrollers.md) |
 | **Desktop, against C** | At C's speed or faster on 4 of 5 benchmarks. `binarytrees` takes 0.31 s and 26 MB, C 1.16 s and 34 MB. [Report](docs/reports/host.md) |
 | **Against F# on .NET** | 3.9× faster on `binarytrees` and 3.7× on a red-black tree; F# uses 3.6–4.7× the memory on both. [Report](docs/reports/host.md) |
+| **Real programs** | A JSON round trip (parse, typed decode, re-encode) in 1.3× C's time with 13% less memory; word counts, an interpreter, Dijkstra and SHA-256 at 1.5–3.5× C, the gaps measured and named. [Report](docs/reports/realworld.md) |
 | **A server** | The [echo server](examples/echo/server.zs) held 10,000 connections for an hour: 33.1 million round trips, none failed, its memory flat at 26 MB. |
 | **A program** | [logstat](examples/logstat/README.md) counts 1 million log lines (50 MB) in 0.72 s on one thread and 0.20 s on 16, from a 394 KB binary. |
 | **Binary size** | A hello world is 17 KB on Linux x86-64, 11.7 KB stripped. |

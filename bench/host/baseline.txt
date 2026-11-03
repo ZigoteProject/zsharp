@@ -3,3 +3,8 @@ binarytrees 10681216
 nbody 9046475
 spectralnorm 9416315
 rbtree 28602901
+wordfreq 100974388
+json 98830253
+interp 59046269
+pathfind 25266328
+sha256 242224511

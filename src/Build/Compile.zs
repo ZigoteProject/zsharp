@@ -187,17 +187,93 @@ let threaded (externs: Map<string, Core.Ir.ExternSig>) (funs: list<MFun>) : bool
     | k -> List.exists uses (Core.Ir.children k)
   List.exists (fun (f: MFun) -> uses f.body) funs
 
-// whether a type has a SIMD vector in it (code generation's wideVectors: objects 64-byte aligned)
-let rec private wide (t: Ty) : bool =
+// whether a type has a SIMD vector anywhere in it: its arguments, its record's or union's fields
+// (each type looked through once: a recursive one ends, and one many fields share isn't walked
+// again for each)
+let private hasVector (v: Types.Vars.Vars) (types: Map<string, TypeInfo>) (t0: Ty) : bool =
+  let seen = ref Set.empty
+  let rec go (t: Ty) : bool =
+    if Set.contains t seen.Value then
+      false
+    else
+      seen.Value <- Set.add t seen.Value
+      match t with
+      | TCon(n, _) when Option.isSome (vectorInfo n) -> true
+      | TCon(n, args) ->
+        let fields =
+          match Map.tryFind n types with
+          | Some { def = RecordDef fs } -> List.map snd fs
+          | Some { def = CUnionDef fs } -> List.map snd fs
+          | Some { def = UnionDef cs } -> List.collect snd cs
+          | _ -> []
+        List.exists go args || List.exists (fun ft -> go (Types.Norm.substGen v args ft)) fields
+      | TTuple ts -> List.exists go ts
+      | TFun(a, b, _) -> go a || go b
+      | _ -> false
+  go t0
+
+// whether a value of the type, held as it is (in registers or on the stack, which LLVM aligns),
+// puts a vector in a heap object (has: hasVector): a vector, a tuple, a record or a fixed array
+// is a value whose parts are held as they are; a union may be a cell (a plain one too, when it's
+// in one), and an array, list, ref, Buffer, option and the like hold their arguments in objects;
+// a curried closure's stub keeps each argument but the last in a closure of its own
+let rec private heapVector (v: Types.Vars.Vars) (types: Map<string, TypeInfo>) (has: Ty -> bool) (t: Ty) : bool =
+  let inHeap = heapVector v types has
   match t with
-  | TCon(n, args) -> Option.isSome (vectorInfo n) || List.exists wide args
-  | TTuple ts -> List.exists wide ts
-  | TFun(a, b, _) -> wide a || wide b
+  | TCon(n, []) when Option.isSome (vectorInfo n) -> false
+  | TCon("fixed", [ el; _ ]) -> inHeap el
+  | TCon(n, args) ->
+    let value (fs: list<string * Ty>) = List.exists (fun (_, ft) -> inHeap (Types.Norm.substGen v args ft)) fs
+    match Map.tryFind n types with
+    | Some { def = RecordDef fs } -> value fs
+    | Some { def = CUnionDef fs } -> value fs
+    | _ -> has t
+  | TTuple ts -> List.exists inHeap ts
+  | TFun(a, b, _) ->
+    let curried =
+      match b with
+      | TFun _ -> has a
+      | _ -> false
+    curried || inHeap a || inHeap b
   | _ -> false
 
-let wideVectors (funs: list<MFun>) : bool =
-  let rec inExpr (e: Core.Ir.CExpr) : bool = wide e.ty || List.exists inExpr (Core.Ir.children e.k)
-  List.exists (fun (f: MFun) -> wide f.ret || List.exists (fun (_, t) -> wide t) f.pars || inExpr f.body) funs
+/// Whether a program can put a SIMD vector in a heap object (code generation's wideVectors: its
+/// objects come from zs_alloc_wide, 64-byte aligned, where the pool's are 8: LLVM loads a vector
+/// field or element at its own alignment, 16 bytes or more). A vector that only lives in locals,
+/// parameters and results doesn't count (Bytes.appendJsonString's U8x16 scan): the alignment
+/// costs every allocation of the program the pool. Its objects: a value of a type that holds one
+/// (heapVector), a closure capturing one or whose function keeps one between curried arguments,
+/// and a dyn box (whose type doesn't show what it holds); a task's frame is always aligned.
+let wideVectors (types: Map<string, TypeInfo>) (funs: list<MFun>) : bool =
+  let v = Types.Vars.make ()
+  // each type looked through once: the same few types are most expressions'
+  let memo (f: Ty -> bool) : Ty -> bool =
+    let seen = ref Map.empty
+    fun (t: Ty) ->
+      match Map.tryFind t seen.Value with
+      | Some b -> b
+      | None ->
+        let b = f t
+        seen.Value <- Map.add t b seen.Value
+        b
+  let has = memo (hasVector v types)
+  let inHeap = memo (heapVector v types has)
+  let byName = Map.ofList (List.map (fun (f: MFun) -> (f.name, f)) funs)
+  // what a closure of f keeps: the values it captured, and its function's parameters but the last
+  let kept (f: string) (args: list<Core.Ir.CExpr>) : list<Ty> =
+    let pars =
+      match Map.tryFind f byName with
+      | Some fd -> List.map snd (List.take (max 0 (List.length fd.pars - 1)) fd.pars)
+      | None -> []
+    List.append (List.map (fun (a: Core.Ir.CExpr) -> a.ty) args) pars
+  let rec inExpr (e: Core.Ir.CExpr) : bool =
+    let here =
+      match e.k with
+      | Core.Ir.CMkClosure(f, args) -> List.exists has (kept f args)
+      | Core.Ir.CPrim(op, x :: _) when String.startsWith "dyn.box:" op -> has x.ty
+      | _ -> false
+    here || inHeap e.ty || List.exists inExpr (Core.Ir.children e.k)
+  List.exists (fun (f: MFun) -> inHeap f.ret || List.exists (fun (_, t) -> inHeap t) f.pars || inExpr f.body) funs
 
 // whether a library gives C handles (Z# objects it holds: not strings, records or tuples, which
 // cross as their bytes and fields), which a C host may use on any thread
@@ -273,7 +349,7 @@ let generate (o: Options.Options) (prog0: Program) (testBuild: bool) : result<Pr
           checkedHeap = usesPrim heapPrims funs
           targets = prog.targets
           cpu = o.cpu
-          wideVectors = wideVectors funs
+          wideVectors = wideVectors types funs
           threaded = threads }
       match timed o.time "LLVM IR" (fun () -> Gen.Module.compile gopts types prog.externs prog.exports prog.tests prog.values prog.clayouts None funs) with
       | Error(line, msg) -> Error(InPass { file = ""; line = line; message = msg })

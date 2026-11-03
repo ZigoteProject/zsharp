@@ -168,7 +168,8 @@ type Options =
     targets: Map<string, list<string>>
     /// --cpu's name, for the check that an intrinsic's features are there
     cpu: option<string>
-    /// the program has SIMD vectors of 32 or 64 bytes: its objects come from zs_alloc_wide
+    /// the program may put a SIMD vector in a heap object (Compile.wideVectors): its objects come
+    /// from zs_alloc_wide, aligned for the vector
     wideVectors: bool
     /// the program runs code on more than one thread: shared objects' counts change atomically
     threaded: bool }

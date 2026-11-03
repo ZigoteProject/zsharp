@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
 # Host benchmarks: each program in Z#, C (clang -O2, and with -ftrapv: overflow traps, as in
 # Z#), Rust (-C opt-level=3), Swift (-O), Zig (ReleaseFast) and OCaml (ocamlopt), run
-# natively. All must print the same as C.
+# natively. All must print the same as C. The first five are kernels (the Benchmarks Game and a
+# red-black tree); the rest are small real programs, written in Z#, C and Rust (docs/reports/
+# realworld.md). A language without a source for a program, or whose compiler isn't installed,
+# shows "-".
 # Time is the best of 3 runs at the full size, memory the peak RSS of those runs. Z#'s
 # instructions are counted by valgrind (cachegrind) at a small size, which is deterministic
 # and so can catch regressions.
-#   bench/host/run.sh            Markdown tables of times and peak memory
-#   bench/host/run.sh --check    Z# counts only; fails when a Z# program needs more than 5% over
-#                                bench/host/baseline.txt
-#   bench/host/run.sh --update   Z# counts only, written to bench/host/baseline.txt
+#   bench/host/run.sh [names]            Markdown tables of times and peak memory
+#   bench/host/run.sh --check [names]    Z# counts only; fails when a Z# program needs more than
+#                                        5% over bench/host/baseline.txt
+#   bench/host/run.sh --update [names]   Z# counts only, written to bench/host/baseline.txt (the
+#                                        programs named, or all; the other lines are kept)
 set -u
 cd "$(dirname "$0")/../.."
-mode=${1:-}
+mode=""; case ${1:-} in --check | --update) mode=$1; shift ;; esac
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 # name, full size, counting size
 benches=$(cat <<'LIST'
@@ -20,22 +24,38 @@ binarytrees 18 10
 nbody 20000000 10000
 spectralnorm 4000 100
 rbtree 1000000 20000
+wordfreq 1000000 20000
+json 200000 2000
+interp 300000 3000
+pathfind 2000 120
+sha256 64 1
 LIST
 )
+all=$benches
+if [ $# -gt 0 ]; then
+  # the programs named, in the list's order
+  for name in "$@"; do awk -v n="$name" '$1 == n { found = 1 } END { exit !found }' <<< "$benches" || { echo "no benchmark $name"; exit 1; }; done
+  benches=$(awk -v names=" $* " 'index(names, " " $1 " ")' <<< "$benches")
+fi
+# each language: its source's extension, and the compiler it needs on the path
 langs="zs c ctrap rust swift zig ocaml"
+ext() { case $1 in zs) echo zs ;; c | ctrap) echo c ;; rust) echo rs ;; swift) echo swift ;; zig) echo zig ;; ocaml) echo ml ;; esac; }
+tool() { case $1 in zs) echo bin/zs ;; c | ctrap) echo clang ;; rust) echo rustc ;; swift) echo swiftc ;; zig) echo zig ;; ocaml) echo ocamlopt ;; esac; }
+# whether a language can be measured on a program: it has a source and its compiler is installed
+has() { [ -f "bench/host/$2.$(ext "$1")" ] && command -v "$(tool "$1")" >/dev/null; }
 
 # build <lang> <bench>: compile into $t/<bench>-<lang>; the other languages' sources are compiled
 # from copies in $t so their compilers leave no files next to them
 build() {
   local src=bench/host/$2 out=$t/$2-$1
   case $1 in
-    zs) bin/zs build "$src.zs" -o "$out" --release ;;
-    c) clang -O2 "$src.c" -o "$out" -lm ;;
-    ctrap) clang -O2 -ftrapv "$src.c" -o "$out" -lm ;;
-    rust) rustc --edition 2021 -C opt-level=3 "$t/$2.rs" -o "$out" ;;
-    swift) swiftc -O "$t/$2.swift" -o "$out" -lm ;;
-    zig) zig build-exe -O ReleaseFast --cache-dir "$t/zig-cache" "$t/$2.zig" -femit-bin="$out" ;;
-    ocaml) ocamlopt $(ocamlopt -config-var flambda | grep -q true && echo -O3) "$t/$2.ml" -o "$out" ;;
+    zs) "$(tool zs)" build "$src.zs" -o "$out" --release ;;
+    c) "$(tool c)" -O2 "$src.c" -o "$out" -lm ;;
+    ctrap) "$(tool ctrap)" -O2 -ftrapv "$src.c" -o "$out" -lm ;;
+    rust) "$(tool rust)" --edition 2021 -C opt-level=3 "$t/$2.rs" -o "$out" ;;
+    swift) "$(tool swift)" -O "$t/$2.swift" -o "$out" -lm ;;
+    zig) "$(tool zig)" build-exe -O ReleaseFast --cache-dir "$t/zig-cache" "$t/$2.zig" -femit-bin="$out" ;;
+    ocaml) "$(tool ocaml)" $(ocamlopt -config-var flambda | grep -q true && echo -O3) "$t/$2.ml" -o "$out" ;;
   esac
 }
 count() { valgrind --tool=cachegrind --cache-sim=no --cachegrind-out-file=/dev/null "$@" 2>&1 >/dev/null |
@@ -55,6 +75,9 @@ ratio() { awk -v a="$1" -v b="$2" 'BEGIN { if (b > 0) printf "%.2f", a / b; else
 
 if [ -z "$mode" ]; then
   cp bench/host/*.rs bench/host/*.swift bench/host/*.zig bench/host/*.ml "$t"
+  for l in $langs; do
+    command -v "$(tool "$l")" >/dev/null || echo "$(tool "$l") isn't installed: its column shows -" >&2
+  done
   header="| benchmark | Z# | C | C -ftrapv | Rust | Swift | Zig | OCaml |"
   times="$header"$'\n'"|---|---:|---:|---:|---:|---:|---:|---:|"
   mems=$times
@@ -83,6 +106,7 @@ while read -r b full small; do
   read -r tc kc <<< "$(best "$t/$b-c" "$full")"
   for l in $langs; do
     if [ "$l" = c ]; then s=$tc k=$kc
+    elif ! has "$l" "$b"; then trow+=" - |"; mrow+=" - |"; continue
     elif ! out=$(build "$l" "$b" 2>&1); then
       echo "$b: $l doesn't build: $(echo "$out" | head -1)" >&2; fail=1; trow+=" no build |"; mrow+=" - |"; continue
     elif [ "$("$t/$b-$l" "$small")" != "$expected" ]; then
@@ -98,5 +122,10 @@ if [ -z "$mode" ]; then
   echo "**Time, seconds** (best of 3; × C in parentheses)"; echo; echo "$times"; echo
   echo "**Peak memory, MB** (maximum resident set size)"; echo; echo "$mems"
 fi
-[ "$mode" = --update ] && cp "$t/counts" bench/host/baseline.txt && cat bench/host/baseline.txt
+if [ "$mode" = --update ]; then
+  # the counts measured replace their programs' lines; the others stay, in the list's order
+  cat "$t/counts" bench/host/baseline.txt 2>/dev/null | awk '!seen[$1]++' > "$t/merged"
+  while read -r b _; do grep "^$b " "$t/merged"; done <<< "$all" > bench/host/baseline.txt
+  cat bench/host/baseline.txt
+fi
 exit $fail
