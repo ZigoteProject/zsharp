@@ -114,7 +114,7 @@ literal's first field name).
 | `Cx` | 100 | a job's context: `Fresh`'s counter, memo tables keyed by node id, lifted functions, sizes. Returned with the job's result; never thread-local. |
 | `Mono` | 900 | `plan`: the set of instances the program needs, by reachability from its roots over signatures, on the driving thread; `instantiate`: one instance per job, a generic or effect-polymorphic function at the program's types and rows, trait dispatch resolved, units erased, and fusion of list and array pipelines. |
 | `Share` | 200 | after `Mono.plan`, on the driving thread, when every call has its target: follows each `share<F>` to the top-level values it reaches; one that isn't Share is an error. Marks the Share ones for startup. |
-| `Inline` | 250 | uncurrying; inlining of small functions, with the `keep` predicate a parameter. |
+| `Inline` | 250 | uncurrying; inlining of small functions (not one on a cycle of calls: Tarjan's components, found without recursion; a copy carrying what was inlined into it at most four times a small body), with the `keep` predicate a parameter. |
 | `Simplify` | 700 | known constructors, case of case, lambdas applied in place, `let` floating, dead `let`s, constant folding of what's safe. |
 | `Evidence` | 900 | effect handlers to evidence passing with yield bubbling: frames per effect, clauses by path (in place when a clause resumes last or stops), loops with yielding calls through a driver, one-shot resumptions. Pure code untouched. |
 | `Decide` | 600 | decision trees for matches, with join points; `ZS_NO_DECIDE=1` compiles clause by clause for comparison. |

@@ -11,9 +11,12 @@
 #   where nothing here runs them); a failed build fails the test.
 # --zs <binary>: test that compiler, installed as bin/zs with the library and runtime beside it,
 #   instead of building src/.
+# --release: build the programs optimized (zs build --release), so what LLVM's optimizer may assume
+#   of the IR the compiler writes (no overflow where it says nsw, no aliasing where it says noalias)
+#   is tested too: each program must print the same.
 set -u
 cd "$(dirname "$0")"
-valgrind=0; target=""; tgt=(); qemu=(); zsbin=""; buildonly=0; syslibs=()
+valgrind=0; target=""; tgt=(); qemu=(); zsbin=""; buildonly=0; syslibs=(); rel=()
 while [ $# -gt 0 ]; do
   case $1 in
     --valgrind) valgrind=1; export ZS_NO_POOL=1 ;; # objects from malloc, so valgrind sees each one
@@ -25,6 +28,7 @@ while [ $# -gt 0 ]; do
       esac ;;
     --build-only) buildonly=1 ;;
     --zs) zsbin=$2; shift ;;
+    --release) rel=(--release) ;;
   esac
   shift
 done
@@ -55,10 +59,13 @@ for t in $(find tests -name '*.zs' | sort); do
   # base.x86_64-only: the reason it's about x86-64 (its CPU features, its intrinsics): skipped in a
   # build for another architecture, an arm64 machine's own included
   if [ -f "$base.x86_64-only" ] && [ "$arch" != x86_64 ]; then echo "skip $t ($(cat "$base.x86_64-only"))"; continue; fi
+  # base.posix-only: the reason it's about Linux and macOS (what the runtime does there): skipped
+  # on Windows, built for it or run on it
+  if [ -f "$base.posix-only" ] && [ $windows = 1 ]; then echo "skip $t ($(cat "$base.posix-only"))"; continue; fi
   if [ -f "$base.err" ]; then
     # compare the error lines, not the source snippets under them
-    actual=$(bin/zs build --strict "$t" "${tgt[@]}" -o "$tmp/exe" 2>&1 | grep -v '^ [ 0-9]* | '); expected=$(cat "$base.err")
-  elif ! bin/zs build --strict "$t" "${tgt[@]}" -o "$tmp/exe" 2>"$tmp/build.log"; then
+    actual=$(bin/zs build --strict "$t" "${tgt[@]}" "${rel[@]}" -o "$tmp/exe" 2>&1 | grep -v '^ [ 0-9]* | '); expected=$(cat "$base.err")
+  elif ! bin/zs build --strict "$t" "${tgt[@]}" "${rel[@]}" -o "$tmp/exe" 2>"$tmp/build.log"; then
     actual=$(cat "$tmp/build.log"); expected=$(cat "$base.out")
   elif [ $buildonly = 1 ]; then
     actual=$(cat "$base.out"); expected=$actual
@@ -138,6 +145,17 @@ if diff <(tests/cache.sh 2>&1) tests/cache.expected >"$tmp/cache.diff"; then ech
 else echo "FAIL tests/cache.sh"; cat "$tmp/cache.diff"; fail=1; fi
 if diff <(tests/pgo.sh 2>&1) tests/pgo.expected >"$tmp/pgo.diff"; then echo "ok   tests/pgo.sh (profile-guided optimization finds its profile)"
 else echo "FAIL tests/pgo.sh"; cat "$tmp/pgo.diff"; fail=1; fi
+
+# programs as big and as deep as generated code makes them build in time (nothing quadratic, no
+# overflow of the compiler's stack), and one deeper than any stack is a panic naming it. Linux's:
+# the compiler's main thread has its 256 MB of stack there (src/host.c), where macOS and Windows
+# keep the stack they start it with
+if [ "$(uname -s)" != Linux ]; then echo "skip tests/stress.sh (the compiler's deep stack is Linux's)"
+elif diff <(tests/stress.sh 2>&1) tests/stress.expected >"$tmp/stress.diff"; then echo "ok   tests/stress.sh (long literals, long runs of statements, deep nesting)"
+else echo "FAIL tests/stress.sh"; cat "$tmp/stress.diff"; fail=1; fi
+# programs broken at random: errors, never a crash, a panic or a hang of zs check or zs fmt
+if out=$(tests/fuzz.sh 2>&1); then echo "ok   tests/fuzz.sh ($(echo "$out" | tail -1))"
+else echo "FAIL tests/fuzz.sh"; echo "$out" | tail -20; fail=1; fi
 
 # host benchmarks against C: a Z# program needing more than 5% more instructions than in
 # bench/host/baseline.txt fails (bench/host/run.sh shows times; --update after an improvement).

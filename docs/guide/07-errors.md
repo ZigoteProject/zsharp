@@ -70,6 +70,7 @@ A panic prints a message to standard error and ends the program with exit status
 - integer overflow;
 - `List.head` of an empty list and similar;
 - `assert` with a false condition, which names its file and line;
+- recursion too deep for the stack (`stack overflow`; on Linux and macOS);
 - `panic "message"` (or `failwith`), called explicitly.
 
 ```zsharp

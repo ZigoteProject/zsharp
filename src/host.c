@@ -50,3 +50,21 @@ const char *zs_host_exe(void) {
 #endif
     return path;
 }
+
+#ifndef _WIN32
+#include <sys/resource.h>
+// The compiler recurses as deep as the program it reads nests (a long list literal, a long run of
+// lets, a chain of calls inlined): 256 MB of stack where the hard limit allows, not the usual
+// 8 MB. Set before main, so the pool's threads have it too (the runtime sizes its threads by this
+// limit); Linux grows the main thread's stack up to it as well, within the room the kernel left
+// below the stack at exec (128 MB at least), where macOS keeps the main thread's 8 MB. The
+// processes the compiler runs inherit the limit: their threads reserve more address space, not
+// more memory.
+__attribute__((constructor(101))) static void zs_host_stack(void) {
+    struct rlimit rl;
+    rlim_t want = (rlim_t)256 << 20;
+    if (getrlimit(RLIMIT_STACK, &rl) != 0 || rl.rlim_cur == RLIM_INFINITY || rl.rlim_cur >= want) return;
+    rl.rlim_cur = rl.rlim_max == RLIM_INFINITY || rl.rlim_max >= want ? want : rl.rlim_max;
+    setrlimit(RLIMIT_STACK, &rl);
+}
+#endif

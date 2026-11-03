@@ -1,0 +1,10 @@
+list: 20000 199990000
+array: 50000 1249975000
+chain: 2000
+statements: 4999
+lets: 4999
+else-ifs: 8642
+parentheses: 1
+bom: a byte order mark
+undone: 3:3: error: value of 'n': expected string, got int: interpolate it, $"{x}"
+too deep: exit 134 panic: stack overflow (recursion too deep)
