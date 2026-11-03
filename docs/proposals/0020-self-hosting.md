@@ -2,11 +2,11 @@
 
 | | |
 |---|---|
-| **Status** | Approved in principle: go (decision 65), the rewrite before 0.1; the unresolved questions settled at the phase 11 review (decisions 73–79) |
+| **Status** | Implemented (phase 11, decision 65): the compiler is `src/`, built by the previous release and building itself to the same bytes; the unresolved questions settled at the phase 11 review (decisions 73–79); [the report](../reports/self-hosting.md) |
 | **Decided at** | the third design review ([ROADMAP](../../ROADMAP.md#third-design-review-)): criteria 1 and 3 hold; criterion 2 (the 1,000-line program within 1.5× of F#) is phase 11's first step, and a miss is the no-go path |
 | **Builds** | phase 11 ([ROADMAP](../../ROADMAP.md#phase-11-self-hosting)), after phase 10 and the tracks' *before phase 11* items |
 | **Rests on** | decisions 20 (derive, no macros), 27 (source packages, no binary IR format), 39 ("Simple"), 47 (`share<F>`), 51 (textual IR stays) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §9](../../DESIGN.md#9-compiler) |
-| **Related** | [the compiler's architecture](../../compiler/ARCHITECTURE.md) (modules, data flow, where each step runs, the passes); [0007 incremental builds](0007-incremental-builds.md) (carried over), [0019 the syntax tree](0019-syntax-tree.md), [0021 warnings](0021-warnings.md) (the diagnostic record), [0009 tests as values](0009-tests-as-values.md), [0023 JSON in Core](0023-json-in-core.md), [0018 packages](0018-packages.md), [0003 spans](0003-spans-and-slices.md), [0024 the library's API](0024-library-api.md), [0002 effect handlers](0002-effect-handlers.md) |
+| **Related** | [the compiler's architecture](../../src/ARCHITECTURE.md) (modules, data flow, where each step runs, the passes); [0007 incremental builds](0007-incremental-builds.md) (carried over), [0019 the syntax tree](0019-syntax-tree.md), [0021 warnings](0021-warnings.md) (the diagnostic record), [0009 tests as values](0009-tests-as-values.md), [0023 JSON in Core](0023-json-in-core.md), [0018 packages](0018-packages.md), [0003 spans](0003-spans-and-slices.md), [0024 the library's API](0024-library-api.md), [0002 effect handlers](0002-effect-handlers.md) |
 
 - [x] Approved in principle
 - [ ] Discussion

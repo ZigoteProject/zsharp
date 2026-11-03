@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved in principle; implementation in progress (phase 9.5) |
+| **Status** | Implemented (phase 9.5; crossings move since phase 11, decision 75) |
 | **Decided at** | the phase 9.5 plan ([ROADMAP](../../ROADMAP.md#phase-95-incremental-builds-and-threads)), closing known gap 1 |
 | **Builds** | phase 9.5 |
 | **Rests on** | decisions 22 (threads), 45 (Z# objects in C as handles), 47 (`share<F>`), 48 (a loop per thread) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §7](../../DESIGN.md#7-parallelism) and §7.1 |

@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved in principle; implementation in progress (phase 9.5) |
+| **Status** | Implemented (phase 9.5; the build server and the Z# compiler's caches in phase 11) |
 | **Decided at** | the phase 9.5 plan ([ROADMAP](../../ROADMAP.md#phase-95-incremental-builds-and-threads)) |
 | **Builds** | phase 9.5 |
 | **Rests on** | decisions 27 (source packages, checked modules cached), 32 (editor support through `zs lsp` and `zs mcp`) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §9](../../DESIGN.md#9-compiler) |

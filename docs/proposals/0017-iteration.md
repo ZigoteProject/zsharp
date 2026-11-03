@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved (decision 57) and built, steps 1 to 4: list expressions over any `Iter` (0005) and the versioning pass's `while` shape are what's left |
+| **Status** | Implemented (decision 57), steps 1 to 4, before phase 11; list expressions over any `Iter` (0005) and the versioning pass's `while` shape are what's left, after 0.6.2 |
 | **Decided at** | the third design review ([ROADMAP](../../ROADMAP.md#third-design-review-)): `forEach` returns `bool`, collecting is a function per type, ranges are a `Range` record, the dispatch rule is decision 57's text |
 | **Builds** | track S item 1 ([ROADMAP](../../ROADMAP.md#library-s)), before phase 11: phase 12's "kept before phase 11" list names the iteration trait |
 | **Rests on** | decisions 20 (derive, no macros), 43 (`dyn Trait`), 49 (SIMD: a module per vector type, since HM can't relate a vector type to its element type) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §3](../../DESIGN.md#3-traits) (traits take one type parameter; requirements are inferred), [§4](../../DESIGN.md#4-computation-expressions) (`B.forEach`), [§9.1](../../DESIGN.md#91-optimization-strategy) (inlining; a lambda applied in place) |

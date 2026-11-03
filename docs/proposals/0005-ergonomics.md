@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved in principle |
+| **Status** | Implemented (phase 9.6); list expressions over any `Iter` wait with 0017's last steps, after 0.6.2 |
 | **Decided at** | the phase 9.6 design review (decisions 54 and 55; the rest in DESIGN §2.1 as planned) |
 | **Builds** | phase 9.6 ([ROADMAP](../../ROADMAP.md#phase-96-ergonomics-spans-and-c-structs)) |
 | **Rests on** | decisions 19 (`?`), 34 (new syntax needs a discussion: compound assignment had it), 36 (evaluation order), 41 (lambda arguments typed last), 54 (generic constants), 55 (compound assignment) in [DESIGN §13](../../DESIGN.md#13-decisions) |

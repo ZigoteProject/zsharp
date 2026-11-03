@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved in principle: `[<NoAlloc>]` and `--no-heap` (decision 42), interrupt handlers (decision 60), the sharing rules and the `Cpu` intrinsics (decision 68); `noalloc<F>` declined |
+| **Status** | Implemented (phase 12): `[<NoAlloc>]` and `--no-heap` (decision 42; `tests/noalloc.zs`, `tests/mcu/noheap.zs`), interrupt handlers (decision 60; `tests/mcu/isr.zs`), the sharing rules with `Atomic` in Core and `Spsc`, and the `Cpu` intrinsics (decision 68; `tests/mcu/cpu.zs`); `noalloc<F>` declined |
 | **Decided at** | decision 42 and track M's plan ([ROADMAP](../../ROADMAP.md#microcontrollers-m)); the third design review ([ROADMAP](../../ROADMAP.md#third-design-review-)) for the sharing rules and `Cpu`, which also declined a fifth function kind (question 5: a call through a closure counts as allocating) |
 | **Builds** | track M: items 1 and 2 next, item 11 after phase 11, or before 0.1 if microcontrollers are its niche ([phase 12](../../ROADMAP.md#phase-12-release-062)) |
 | **Rests on** | decisions 26 (a checked opt-in instead of no hidden allocation), 42 (`[<NoAlloc>]`, `--no-heap`), 47 (`share<F>`) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §7](../../DESIGN.md#7-parallelism), [§7.1](../../DESIGN.md#71-how-a-value-crosses-threads) and [§10](../../DESIGN.md#10-targets) |

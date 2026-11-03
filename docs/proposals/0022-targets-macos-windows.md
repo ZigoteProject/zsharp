@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved in principle (decision 29). Reordered on 2026-10-24: macOS arm64 and x86-64, Windows x64 and arm64, and the compiler on Linux arm64 are phase 11.5, before 0.1; this proposal's decisions carry to the three it doesn't name |
+| **Status** | Implemented (decision 82, phase 11.5). Reordered on 2026-10-24: macOS arm64 and x86-64, Windows x64 and arm64, and the compiler on Linux arm64 came before 0.6.2; this proposal's decisions carried to the three it doesn't name. 0.6.2 ships an archive for each; Linux arm64's suite passes under QEMU and Windows x64's under Wine, and the suites on real Macs and Windows machines (CI) wait for machines |
 | **Decided at** | decision 29 ([DESIGN §13](../../DESIGN.md#13-decisions)); track T's plan ([ROADMAP](../../ROADMAP.md#more-targets-t)); phase 12's "macOS arm64" item ([ROADMAP](../../ROADMAP.md#phase-12-release-062)). The unresolved questions are settled as each target's implementation starts |
 | **Builds** | track T, items 1 (macOS) and 2 (Windows) |
 | **Rests on** | decisions 5 (panics), 26 (cross-compilation through `zig cc`), 29 (target order), 48 (a loop per thread) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §6](../../DESIGN.md#6-concurrency-task) (the loop), [§10](../../DESIGN.md#10-targets) (tiers), [§11](../../DESIGN.md#11-c-interop) (the C ABI) |

@@ -606,13 +606,15 @@ and gives LLVM the facts it can't prove. Everything in this table is built.
 |---|---|---|
 | 1 | Linux x86-64 and aarch64 | native, or `--target aarch64-linux-musl` (static) |
 | 2 | Bare-metal ARM Cortex-M: `cortex-m4` (M4F), `cortex-m0plus`; the board `nucleo-f401` | `--target cortex-m4`; tested under QEMU |
-| 3 | macOS aarch64, Windows x86-64 | through `zig cc` (planned, targets track) |
+| 3 | macOS arm64 and x86-64, Windows x64 and arm64, Linux arm64 with glibc | `--target aarch64-macos`, `x86_64-macos`, `x86_64-windows-gnu`, `aarch64-windows-gnu`, `aarch64-linux-gnu`, through `zig cc` (phase 11.5, decision 82); the compiler runs on each; Windows x64's suite passes under Wine, and the suites on real Macs and Windows machines wait for CI's runners |
 | 4 | Freestanding WebAssembly: `wasm32` | `--target wasm32`; tested under Node |
-| 5 | WASM (WASI) | later |
+| 5 | WASM (WASI) | later (after 0.6.2) |
 
 **Cross-compiling:** `zs build --target <triple>`. clang compiles the program for the target,
 and `zig cc` builds the runtime and links with Zig's bundled C library, so no sysroot is
-needed. C structs by value follow the target's convention: x86-64 System V, or AAPCS64.
+needed. C structs by value follow the target's convention: x86-64 System V, AAPCS64 (Apple's
+arm64 variant on macOS), Microsoft x64 and ARM64 on Windows, and AAPCS on a Cortex-M, hard and
+soft float.
 
 **Bare metal (`cortex-m4`, `cortex-m0plus`, `nucleo-f401`):**
 - **Runtime:** `rt-embedded.c`, with no OS and no libc. It contains:
@@ -715,17 +717,17 @@ checker, so tools can't drift from the compiler.
 - **Debugging:** `zs build -g` builds at `-O0` with DWARF, as one module.
   - gdb and lldb break on Z# functions and lines, step, and show backtraces (`tests/debug/gdb.sh`, `lldb.sh`); lldb names the types as C's (a 64-bit `int` is a `long`), since it reads DWARF through clang.
   - Locals and arguments are visible when they are numbers, bools, chars, strings (shown as their text), or tuples, records and plain unions of those (a union as its case and fields).
-  - **(planned, track D):** every value through DWARF (unions as variant parts), with pretty-printers only for `Map`, `Set`, `HashMap` and closures, for both debuggers, `-g` with optimizations, debugging from editors through gdb's and lldb's DAP adapters, and a command listing waiting tasks.
-- **Profiling (planned, track D):** the editor marks where code allocates, copies or counts atomically; Z# names in perf and samply profiles (`zs profile`); `ZS_STATS=1` for what reference counting costs; and one Perfetto trace for allocation sites, tasks and threads (`ZS_TRACE`).
+  - **(planned, track D, after 0.6.2):** every value through DWARF (unions as variant parts), with pretty-printers only for `Map`, `Set`, `HashMap` and closures, for both debuggers, `-g` with optimizations, debugging from editors through gdb's and lldb's DAP adapters, and a command listing waiting tasks.
+- **Profiling:** the editor marks what each line does to the heap (`allocates ×2`, `reuses t`, `copies on write`, the objects and their sizes; a function's summary on hover, and whether `[<NoAlloc>]` would pass), from the compiler's own passes, with `allocationHints` on in the language server's initialization options ([proposal 0026](docs/proposals/0026-performance-you-can-see.md)); `ZS_STATS=1` prints at exit what reference counting cost (allocations by size class, reuse hits, copy-on-write copies, atomic counts). **(planned, track D, after 0.6.2):** atomic counts in the hints; Z# names in perf and samply profiles (`zs profile`); one Perfetto trace for allocation sites, tasks and threads (`ZS_TRACE`).
 - **Documentation:** `///` comments above a declaration document it.
   - **Where they show:** hover, completion, the MCP `docs` tool, and `zs doc <file>`, which writes Markdown.
   - **The library:** fully documented, with one reference page per module in `docs/reference` (built-in functions included), which `./test.sh` keeps current.
 - **Formatting:** `zs fmt` has one canonical style and no options. It works on the lossless syntax tree ([proposal 0019](docs/proposals/0019-syntax-tree.md)): each line keeps the breaks it was written with and is re-indented and spaced, comments stay, and a line over 100 columns is broken at the tree's break points, outermost first; the result must parse to the same tree but for layout. `--stdin` and range formatting serve editors.
 - **Editors:**
   - **Grammar:** a tree-sitter grammar (`editors/tree-sitter-zsharp`), for highlighting, indentation and outlines.
-  - **`zs lsp`:** diagnostics, hover with types and docs, definition, references, completion, inlay hints, symbols and formatting. Signature help, rename and code actions are **(planned, editor track)**.
-  - **`zs mcp`:** for AI agents. Tools: `check`, `type_at`, `docs`, `build`, `run`, `emit_llvm`, `format`.
-  - **Zed:** a Zed extension (`editors/zed`) packages all three.
+  - **`zs lsp`:** diagnostics, hover with types and docs, definition, references, completion, inlay hints (parameter types, inferred effects, and the allocation hints above), symbols, formatting, signature help, rename and code actions (add missing match cases, add an `open`, add an annotation). `import c` runs libclang in the server's process, so C names have their types with no build run.
+  - **`zs mcp`:** for AI agents. Tools: `check`, `type_at`, `docs`, `build`, `run`, `emit_llvm`, `format`. `definition` and `explain` are **(planned, editor track, after 0.6.2)**.
+  - **Editors:** the Zed extension (`editors/zed`) packages all three; the VS Code extension (`editors/vscode`) and the Rider plugin (`editors/rider`, any JetBrains IDE) give highlighting from one TextMate grammar and the language server, VS Code the MCP server too. Each is installed from its folder; none is published to a registry yet.
 - **Diagnostics:** each error gives `file:line:col` and the source line with a caret, and one run reports every error.
 
 ## 13. Decisions
@@ -773,7 +775,7 @@ checker, so tools can't drift from the compiler.
 | 39 | "Simple" | a feature replaces code people would write by hand and needs no runtime; no page budget | decided |
 | 40 | Reference cycles | not collected; `weak` references for back-pointers, `ZS_LEAKCHECK=1` to find leaks | decided |
 | 41 | Lambda arguments | typed after the call's other arguments when a parameter has no annotation, with the parameter types the call expects; `x \|> fun p -> body` is `let p = x` | decided |
-| 42 | Code that must not touch the heap | `[<NoAlloc>]` functions and `--no-heap` programs, checked at compile time on Z#'s IR after its optimizations; freeing counts; externs trusted; interrupt handlers implicitly `NoAlloc` (§10) | default |
+| 42 | Code that must not touch the heap | `[<NoAlloc>]` functions and `--no-heap` programs, checked at compile time on Z#'s IR after its optimizations; freeing counts; externs trusted; interrupt handlers implicitly `NoAlloc` (§10) | decided; built in phase 12 |
 | 43 | `dyn Trait` | the value boxed with its type's impl table; made where a `dyn` is expected, with no conversion written; for traits whose methods take the value first and don't mention its type elsewhere (§3) | decided |
 | 44 | Arenas | `Arena.with (fun () -> …)`: what the function allocates comes from the arena's blocks, freed together when the arena's last object goes. An object that lives on keeps its blocks, so arenas are memory-safe without escape analysis (§5.2) | decided |
 | 45 | Z# objects in C | an opaque `zs_handle` with its own count (`zs_retain`, `zs_release`); a returned handle is the caller's, a passed one is lent for the call (§11) | decided |
@@ -792,10 +794,10 @@ checker, so tools can't drift from the compiler.
 | 58 | Anonymous records, top-level patterns | anonymous records declined: they replace a one-line declaration, not code, and give a record two spellings (decision 39); irrefutable patterns at the top level kept ([proposal 0006](docs/proposals/0006-anonymous-records.md)) | decided |
 | 59 | Bit fields | `[<Bits>]` records packed into one integer, widths from the field types or `[<Width n>]` and `[<Bit n>]`, reset values as defaults, `Bits.ofU32`/`toU32`; the field-attribute position comes with it ([proposal 0013](docs/proposals/0013-bit-fields.md)) | decided |
 | 60 | Interrupt handlers | `[<Interrupt "SysTick">]` and `[<Interrupt 38>]` exported under the vector's symbol over weak runtime defaults; a handler is checked as a `share<unit -> unit>` and is `[<NoAlloc>]`; state crosses through `Atomic` and `Spsc` ([proposal 0012](docs/proposals/0012-interrupts-noalloc-intrinsics.md)) | decided |
-| 61 | Warnings | a severity with a name per kind (`cycle`, `stale-input`, `deprecated`), `[<NoWarn "name">]`, `--strict` for CI; the cycle warning first, `unused-value` (a non-unit value discarded in statement position) with it ([proposal 0021](docs/proposals/0021-warnings.md)) | default |
-| 62 | Tests as values | `Test` values from `test` and `testList`, found by `[<Tests>]`, a process per leaf; `assert` prints both sides and the first difference; inline `expect` rewritten by `--update` ([proposal 0009](docs/proposals/0009-tests-as-values.md)) | default |
+| 61 | Warnings | a severity with a name per kind (`cycle`, `stale-input`, `deprecated`), `[<NoWarn "name">]`, `--strict` for CI; the cycle warning first, `unused-value` (a non-unit value discarded in statement position) with it ([proposal 0021](docs/proposals/0021-warnings.md)) | decided; `unused-value` built before phase 11, `cycle` in phase 12, `deprecated` at the 1.0 freeze |
+| 62 | Tests as values | `Test` values from `test` and `testList`, found by `[<Tests>]`, a process per leaf; `assert` prints both sides and the first difference; inline `expect` rewritten by `--update` ([proposal 0009](docs/proposals/0009-tests-as-values.md)) | decided; built before phase 11 |
 | 63 | Properties | generators read one byte stream and shrinking shrinks it; `Arbitrary` derived; libFuzzer supplies the stream for `zs fuzz` ([proposal 0010](docs/proposals/0010-properties-and-fuzzing.md)) | default |
-| 64 | Package versions | minimal version selection over `v1.x.y` tags, major versions as separate packages, an index as a git repository ([proposal 0018](docs/proposals/0018-packages.md)) | default |
+| 64 | Package versions | minimal version selection over `v1.x.y` tags, major versions as separate packages, an index as a git repository ([proposal 0018](docs/proposals/0018-packages.md)) | decided; versions built in phase 12 (decision 83), the index a draft |
 | 65 | Self-hosting | a redesign in Z# (diagnostics as values, a lossless tree, a session instead of globals, parallel on Z#'s pool, a `Binary` derive); go at the third design review: before 0.6.2, with 0020's performance criterion measured as the phase's first step ([proposal 0020](docs/proposals/0020-self-hosting.md)) | decided |
 | 66 | One-case unions | no tag, so `type q15 = Q15 of i16` is its field's size; `q7`, `q15` and `q31` are Core library types on it, after phase 11 ([proposal 0015](docs/proposals/0015-fixed-point.md)) | decided |
 | 67 | Kinds of references and functions | five references (`ref`, `Buffer`, `weak`, `span`, `ptr`) and four functions (plain, `share<F>`, `callback<F>`, `fnptr<F>`), kept apart: each differs in what it holds or where it may go; no `noalloc<F>` (a call through a closure counts as allocating); effect rows go inside each kind (the guide's memory chapter has the table) | decided |

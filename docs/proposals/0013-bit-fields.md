@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved in principle (decision 59), after phase 11; before 0.1 if the flagship is a microcontroller |
+| **Status** | Implemented (decision 59, phase 12: the flagship is a microcontroller; `tests/bits.zs`, `tests/mcu/bits.zs`, the registers of `examples/nucleo`) |
 | **Decided at** | the third design review ([ROADMAP](../../ROADMAP.md#third-design-review-)): the field-attribute position is part of decision 59 (question 7) |
 | **Builds** | track M item 9 ([ROADMAP](../../ROADMAP.md#microcontrollers-m)), after phase 11; the `svd` provider in [0001](0001-type-providers.md) waits for it |
 | **Rests on** | decisions 4 (overflow traps), 10 (structural equality, ordering, hashing and printing), 20 (derive, no macros or comptime) and 53 (no general type-level numbers) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §2.3](../../DESIGN.md#23-default-fields-named-and-optional-arguments) (field defaults), [§5.1](../../DESIGN.md#51-representation) (plain values, enums as bytes) and [§11](../../DESIGN.md#11-c-interop) |

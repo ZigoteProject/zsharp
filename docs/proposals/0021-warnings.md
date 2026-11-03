@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved in principle |
+| **Status** | Implemented (decision 61): the severity, `--strict`, `[<NoWarn>]` and `unused-value` before phase 11, `cycle` and `[<Cyclic>]` in phase 12; `deprecated` at the 1.0 freeze |
 | **Decided at** | phase 12's list of deferred features ([ROADMAP](../../ROADMAP.md#phase-12-release-062), "From phase 9.5, cycle warnings"), under decision 40 |
 | **Builds** | phase 12 ([ROADMAP](../../ROADMAP.md#phase-12-release-062)) |
 | **Rests on** | decisions 40 (cycles aren't collected: `weak` for back-pointers, `ZS_LEAKCHECK=1` to find leaks), 32 (editor support through `zs lsp` and `zs mcp`) and 6 (an unreachable match case is an error) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §5.2](../../DESIGN.md#52-perceus-reference-counting) (cycles) and [§12](../../DESIGN.md#12-tooling) (diagnostics) |

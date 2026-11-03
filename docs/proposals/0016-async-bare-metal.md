@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved in principle (decision 71); before 0.1 if the flagship is a microcontroller, after it otherwise |
+| **Status** | Implemented (decision 71, phase 12: the flagship is a microcontroller; `Task` in Core, the embedded runtime's loop, `Irq.wait`, `Signal`, `Runtime.setClock`; `tests/mcu/task.zs`, `examples/mcu/uart.zs`, `examples/nucleo`). `zs test --target` is still to come |
 | **Decided at** | the third design review ([ROADMAP](../../ROADMAP.md#third-design-review-)). Phase 12's note applies: picking microcontrollers as 0.1's niche moves this item into the "before 0.1" list ([ROADMAP](../../ROADMAP.md#phase-12-release-062)) |
 | **Builds** | track M, "Later" ([ROADMAP](../../ROADMAP.md#microcontrollers-m)), after [0012](0012-interrupts-noalloc-intrinsics.md)'s handlers and `Spsc` |
 | **Rests on** | decisions 21 (one cold `Task`, a state machine), 42 (`[<NoAlloc>]`), 48 (a loop per thread; tasks don't move) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §6](../../DESIGN.md#6-concurrency-task) and [§10](../../DESIGN.md#10-targets) |
