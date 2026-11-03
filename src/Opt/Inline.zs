@@ -130,45 +130,23 @@ let uncurry (fixedNames: Set<string>) (funs: list<MFun>) : list<MFun> =
       | (ps, b, row) -> { f with pars = ps; ret = b.ty; row = row; body = b }
   List.map one funs
 
-/// Inlines calls to small functions that don't call themselves. Callees are done first, so a copy
-/// carries what was inlined into it. mayInline caller callee: whether this callee may be (a
-/// module's code holds none of another module's functions, the driver says); kept: functions never
-/// inlined into others ([<Target>] and [<Multiversion>] ones, whose code is for CPU features their
-/// callers may not have).
-let runWith (kept: string -> bool / <>) (mayInline: string -> string -> bool / <>) (funs: list<MFun>) : list<MFun> =
-  let byName = Map.ofList (List.map (fun (f: MFun) -> (f.name, f)) funs)
-  let rec calls (e: CExpr) : list<string> =
-    let own =
-      match e.k with
-      | CGlobal(g, _) -> [ g ]
-      | _ -> []
-    List.append own (List.collect calls (children e.k))
-  // a local function in the body would be copied (and lifted) once per call site
-  let rec localFunctions (e: CExpr) : bool =
-    match e.k with
-    | CLetFun _
-    | CLetRec _ -> true
-    | k -> List.exists localFunctions (children k)
-  // an Iter impl's forEach is inlined whatever its size (0017): a for loop over the type is then
-  // one loop, its body applied in place by Simplify
-  let forEach (name: string) = String.startsWith "Iter<" name && String.contains ">#forEach" name
-  let candidate (f: MFun) = f.name <> "main" && not (kept f.name) && (size f.body <= smallSize || forEach f.name) && not (localFunctions f.body)
-  let candidates = Map.ofList (List.map (fun (f: MFun) -> (f.name, List.distinct (calls f.body))) (List.filter candidate funs))
-  // not one that can reach itself through others: what a copy carried would depend on which of
-  // them was done first, and a function's code must depend on its own callees only. Those are the
-  // ones on a cycle of calls among the candidates: Tarjan's strongly connected components, with a
-  // stack of its own (a chain of calls is as deep as it is long), once for all of them
-  let names = Array.ofList (List.map fst (Map.toList candidates))
+/// The functions of a call graph (each with the names it calls; calls to names outside the graph
+/// are ignored) in an order that has every function after those it calls, each with whether it
+/// is on a cycle of calls (with itself or through others). Tarjan's strongly connected
+/// components, with a stack of its own rather than recursion (a chain of calls is as deep as it
+/// is long), once for all of them.
+let private componentsOf (graph: Map<string, list<string>>) : list<string * bool> =
+  let names = Array.ofList (List.map fst (Map.toList graph))
   let n = Array.length names
   let indexOf = Map.ofList (List.mapi (fun i x -> (x, i)) (Array.toList names))
-  let succ = Array.map (fun x -> Array.ofList (List.choose (fun g -> Map.tryFind g indexOf) (Map.find x candidates))) names
+  let succ = Array.map (fun x -> Array.ofList (List.choose (fun g -> Map.tryFind g indexOf) (Map.find x graph))) names
   let order = Buffer.create n (-1)
   let low = Buffer.create n 0
   let onStack = Buffer.create n false
   let cyclic = Buffer.create n false
   let stack = Buffer.empty
-  // the candidates as their components are found: a function after those it calls
-  let calleesFirst = Buffer.empty
+  // the functions as their components are found: a function after those it calls
+  let found = Buffer.empty
   // the depth-first walk: each node on it and the next of its callees to follow
   let walk = Buffer.empty
   let counter = ref 0
@@ -207,12 +185,42 @@ let runWith (kept: string -> bool / <>) (mayInline: string -> string -> bool / <
               let w = Buffer.removeLast stack
               onStack.[w] <- false
               Buffer.push w members
-              Buffer.push w calleesFirst
               more <- w <> v
             if Buffer.length members > 1 then
               for i in 0 .. Buffer.length members - 1 do
                 cyclic.[members.[i]] <- true
-  let small = Set.ofList (List.filter (fun x -> not cyclic.[Map.find x indexOf]) (Array.toList names))
+            for i in 0 .. Buffer.length members - 1 do
+              Buffer.push members.[i] found
+  List.map (fun v -> (names.[v], cyclic.[v])) (Array.toList (Buffer.toArray found))
+
+/// Inlines calls to small functions that don't call themselves. Callees are done first, so a copy
+/// carries what was inlined into it. mayInline caller callee: whether this callee may be (a
+/// module's code holds none of another module's functions, the driver says); kept: functions never
+/// inlined into others ([<Target>] and [<Multiversion>] ones, whose code is for CPU features their
+/// callers may not have).
+let runWith (kept: string -> bool / <>) (mayInline: string -> string -> bool / <>) (funs: list<MFun>) : list<MFun> =
+  let byName = Map.ofList (List.map (fun (f: MFun) -> (f.name, f)) funs)
+  let rec calls (e: CExpr) : list<string> =
+    let own =
+      match e.k with
+      | CGlobal(g, _) -> [ g ]
+      | _ -> []
+    List.append own (List.collect calls (children e.k))
+  // a local function in the body would be copied (and lifted) once per call site
+  let rec localFunctions (e: CExpr) : bool =
+    match e.k with
+    | CLetFun _
+    | CLetRec _ -> true
+    | k -> List.exists localFunctions (children k)
+  // an Iter impl's forEach is inlined whatever its size (0017): a for loop over the type is then
+  // one loop, its body applied in place by Simplify
+  let forEach (name: string) = String.startsWith "Iter<" name && String.contains ">#forEach" name
+  let candidate (f: MFun) = f.name <> "main" && not (kept f.name) && (size f.body <= smallSize || forEach f.name) && not (localFunctions f.body)
+  let candidates = Map.ofList (List.map (fun (f: MFun) -> (f.name, List.distinct (calls f.body))) (List.filter candidate funs))
+  // not one that can reach itself through others: what a copy carried would depend on which of
+  // them was done first, and a function's code must depend on its own callees only
+  let components = componentsOf candidates
+  let small = Set.ofList (List.choose (fun (name, cyclic) -> if cyclic then None else Some name) components)
   let finished = ref Map.empty
   let visiting = ref Set.empty
   // new names numbered per function, so a function's code doesn't depend on others' (a build
@@ -271,8 +279,7 @@ let runWith (kept: string -> bool / <>) (mayInline: string -> string -> bool / <
     | _ -> e
   // the small ones first, callees before callers, so inlining one finds its callees done rather
   // than doing them on the way (a chain of calls, as deep as it is long)
-  for i in 0 .. Buffer.length calleesFirst - 1 do
-    let name = names.[calleesFirst.[i]]
+  for (name, _) in components do
     if Set.contains name small then
       bodyOf name |> ignore
   List.map (fun (f: MFun) -> { f with body = bodyOf f.name }) funs

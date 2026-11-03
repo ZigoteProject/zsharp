@@ -21,17 +21,18 @@
 
 ### Runtime
 - A stack overflow is a panic: `panic: stack overflow (recursion too deep)`, exit status 134, what
-  was printed before it flushed. It was a SIGSEGV with nothing said. On Linux and macOS, in
-  programs (a library leaves its C host's signals alone), not under a sanitizer, which reports
-  one itself.
+  was printed before it flushed, on whichever thread overflows (the pool's, a task's loop's;
+  two at once say so once). It was a SIGSEGV with nothing said. On Linux and macOS, in programs
+  (a library leaves its C host's signals alone), not under a sanitizer, which reports one itself.
 
 ### Tests
 - `tests/stress.sh`: long literals, long runs of statements and lets, deep nesting and a byte
-  order mark build in time and run; deeper than any stack is the panic above, not a crash.
+  order mark build in time and run; a statement failing after a long literal is one error, the
+  next statements checked; deeper than any stack is the panic above, not a crash.
 - `tests/fuzz.sh`: 300 programs broken at random (seeded; `ZS_FUZZ_SEED`, `ZS_FUZZ_COUNT`) through
   `zs check` and `zs fmt --stdin`: errors, never a crash, a panic or a hang.
 - `./test.sh --release` builds every program optimized: what LLVM may assume of the IR is tested
-  too (all 146 programs print the same at `--release` and at `-O3`).
+  too (every program prints the same at `--release` and at `-O3`).
 
 ## 0.6.2 (2026-10-30)
 

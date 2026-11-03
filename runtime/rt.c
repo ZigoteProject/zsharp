@@ -101,6 +101,10 @@ static void on_fault(int sig, siginfo_t *info, void *context) {
     // an access within a frame's reach of the stack pointer that faulted: the stack ran into its
     // guard (a push, a call, or a store into a frame just made below it)
     if (sp && at + ((uintptr_t)64 << 10) >= sp && at <= sp + ((uintptr_t)64 << 10)) {
+        // one thread says so and stops the program; another overflowing meanwhile waits for that
+        static atomic_flag panicking = ATOMIC_FLAG_INIT;
+        if (atomic_flag_test_and_set(&panicking))
+            for (;;) pause();
         // what was printed before it, as a panic flushes it; unless another thread is writing
         // (waiting for it here could be forever), and a fault inside the flush ends the program
         // as the overflow would have

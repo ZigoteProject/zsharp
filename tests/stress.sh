@@ -36,6 +36,12 @@ items() { seq 0 $(($1 - 1)) | paste -sd ';' -; }
   echo '  println $"{x}"'; echo '  0'; } | case_ parentheses
 printf '\xef\xbb\xbflet main () =\r\n  println "a byte order mark"\r\n  0\r\n' | case_ bom
 
+# a statement failing after a long literal: the checker undoes what the statement bound, the
+# literal's compressed chains of type variables included, and goes on with the next
+{ echo 'let main () ='; echo "  let xs = [ $(items 5000) ]"; echo '  let n: string = List.length xs'
+  echo '  println $"{n} {List.length xs}"'; echo '  0'; } > "$t/undo.zs"
+echo "undone: $(bin/zs check "$t/undo.zs" 2>&1 | grep -v '^ *[0-9]* | ' | sed 's|^.*/undo.zs:||' | paste -sd ';' -)"
+
 # deeper than any stack: the compiler's own overflow is a panic that says so (exit 134)
 { echo 'let main () ='; printf '  let x = '; printf '(%.0s' $(seq 300000); printf 1; printf ')%.0s' $(seq 300000); echo
   echo '  0'; } > "$t/deep.zs"
