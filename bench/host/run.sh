@@ -33,25 +33,29 @@ LIST
 )
 all=$benches
 if [ $# -gt 0 ]; then
-  for name in "$@"; do grep -q "^$name " <<< "$benches" || { echo "no benchmark $name"; exit 1; }; done
-  benches=$(grep -E "^($(IFS='|'; echo "$*")) " <<< "$benches")
+  # the programs named, in the list's order
+  for name in "$@"; do awk -v n="$name" '$1 == n { found = 1 } END { exit !found }' <<< "$benches" || { echo "no benchmark $name"; exit 1; }; done
+  benches=$(awk -v names=" $* " 'index(names, " " $1 " ")' <<< "$benches")
 fi
+# each language: its source's extension, and the compiler it needs on the path
 langs="zs c ctrap rust swift zig ocaml"
 ext() { case $1 in zs) echo zs ;; c | ctrap) echo c ;; rust) echo rs ;; swift) echo swift ;; zig) echo zig ;; ocaml) echo ml ;; esac; }
 tool() { case $1 in zs) echo bin/zs ;; c | ctrap) echo clang ;; rust) echo rustc ;; swift) echo swiftc ;; zig) echo zig ;; ocaml) echo ocamlopt ;; esac; }
+# whether a language can be measured on a program: it has a source and its compiler is installed
+has() { [ -f "bench/host/$2.$(ext "$1")" ] && command -v "$(tool "$1")" >/dev/null; }
 
 # build <lang> <bench>: compile into $t/<bench>-<lang>; the other languages' sources are compiled
 # from copies in $t so their compilers leave no files next to them
 build() {
   local src=bench/host/$2 out=$t/$2-$1
   case $1 in
-    zs) bin/zs build "$src.zs" -o "$out" --release ;;
-    c) clang -O2 "$src.c" -o "$out" -lm ;;
-    ctrap) clang -O2 -ftrapv "$src.c" -o "$out" -lm ;;
-    rust) rustc --edition 2021 -C opt-level=3 "$t/$2.rs" -o "$out" ;;
-    swift) swiftc -O "$t/$2.swift" -o "$out" -lm ;;
-    zig) zig build-exe -O ReleaseFast --cache-dir "$t/zig-cache" "$t/$2.zig" -femit-bin="$out" ;;
-    ocaml) ocamlopt $(ocamlopt -config-var flambda | grep -q true && echo -O3) "$t/$2.ml" -o "$out" ;;
+    zs) "$(tool zs)" build "$src.zs" -o "$out" --release ;;
+    c) "$(tool c)" -O2 "$src.c" -o "$out" -lm ;;
+    ctrap) "$(tool ctrap)" -O2 -ftrapv "$src.c" -o "$out" -lm ;;
+    rust) "$(tool rust)" --edition 2021 -C opt-level=3 "$t/$2.rs" -o "$out" ;;
+    swift) "$(tool swift)" -O "$t/$2.swift" -o "$out" -lm ;;
+    zig) "$(tool zig)" build-exe -O ReleaseFast --cache-dir "$t/zig-cache" "$t/$2.zig" -femit-bin="$out" ;;
+    ocaml) "$(tool ocaml)" $(ocamlopt -config-var flambda | grep -q true && echo -O3) "$t/$2.ml" -o "$out" ;;
   esac
 }
 count() { valgrind --tool=cachegrind --cache-sim=no --cachegrind-out-file=/dev/null "$@" 2>&1 >/dev/null |
@@ -102,8 +106,7 @@ while read -r b full small; do
   read -r tc kc <<< "$(best "$t/$b-c" "$full")"
   for l in $langs; do
     if [ "$l" = c ]; then s=$tc k=$kc
-    elif [ ! -f "bench/host/$b.$(ext "$l")" ] || ! command -v "$(tool "$l")" >/dev/null; then
-      trow+=" - |"; mrow+=" - |"; continue
+    elif ! has "$l" "$b"; then trow+=" - |"; mrow+=" - |"; continue
     elif ! out=$(build "$l" "$b" 2>&1); then
       echo "$b: $l doesn't build: $(echo "$out" | head -1)" >&2; fail=1; trow+=" no build |"; mrow+=" - |"; continue
     elif [ "$("$t/$b-$l" "$small")" != "$expected" ]; then
