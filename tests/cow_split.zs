@@ -13,24 +13,24 @@ let main () =
   // an argument that assigns the mutable: no move, and the call sets the value from before
   let mutable b = [| 1; 2; 3 |]
   b <- Array.set b 0 (if Array.length b > 0 then
-                        b <- [| 9 |]
-                        7
-                      else 0)
+    b <- [| 9 |]
+    7
+  else 0)
   println $"assigned inside: {Array.toList b}"
   let mutable m = HashMap.add 1 "one" HashMap.empty
   m <- HashMap.add 2 (match HashMap.count m with
-                      | 1 ->
-                        m <- HashMap.empty
-                        "two"
-                      | _ -> "other") m
+    | 1 ->
+      m <- HashMap.empty
+      "two"
+    | _ -> "other") m
   println $"map assigned inside: {List.sort (HashMap.toList m)}"
   // an argument that writes the array in place: through a moved reference it would write the
   // same cell the call then updates
   let mutable c = [| 0; 0 |]
   c <- Array.set c 0 (if Array.length c > 0 then
-                        c.[1] <- 7
-                        1
-                      else 0)
+    c.[1] <- 7
+    1
+  else 0)
   println $"written inside: {Array.toList c}"
   // a read, then a write in place, then the reassignment: the read can't take the array, which
   // the write still needs
