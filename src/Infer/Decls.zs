@@ -367,6 +367,27 @@ let private finishImpl (cx: Cx) (st: Started) =
 
 let private declareImpl (cx: Cx) (tr0: string) (head: SType) (others: list<SType>) (defs: list<Definition>) = finishImpl cx (startImpl cx true tr0 head others defs)
 
+// whether a value of type t can hold a value of type tname: directly, in a type argument, or
+// through the fields of the records and unions it names (an over-approximation: a phantom type
+// argument counts)
+let private holdsType (cx: Cx) (tname: string) (t: Ty) : bool =
+  let rec go (seen: Set<string>) (t: Ty) : bool =
+    match t with
+    | TCon(n, args) ->
+      if n = tname || List.exists (go seen) args then
+        true
+      else if Set.contains n seen then
+        false
+      else
+        let inside = go (Set.add n seen)
+        match Map.tryFind n cx.types.Value with
+        | Some { def = RecordDef fs } -> List.exists (fun (_, ft) -> inside ft) fs
+        | Some { def = UnionDef cs } -> List.exists (fun (_, fts) -> List.exists inside fts) cs
+        | _ -> false
+    | TTuple ts -> List.exists (go seen) ts
+    | _ -> false
+  go Set.empty t
+
 // a type's shape, as a derive sees it
 let private shapeOf (cx: Cx) (tname: string) : Derive.ShapeInfo =
   match (Map.find tname cx.types.Value).def with
@@ -383,9 +404,10 @@ let private shapeOf (cx: Cx) (tname: string) : Derive.ShapeInfo =
         | Some ns -> ns
         | None -> List.map (fun _ -> None) fts
       List.mapi (fun j (n: option<string>) -> Option.defaultValue $"item{j + 1}" n) given
-    Derive.UnionShape(List.map (fun (c, fts) -> (c, names c fts)) cs)
+    let recursive = List.filter (fun (_, fts) -> List.exists (holdsType cx tname) fts) cs
+    Derive.UnionShape(List.map (fun (c, fts) -> (c, names c fts)) cs, Set.ofList (List.map fst recursive))
   // nothing to derive from: deriveImpl refuses a C union first
-  | CUnionDef _ -> Derive.UnionShape []
+  | CUnionDef _ -> Derive.UnionShape([], Set.empty)
 
 // runs f, a failure in it said to be in the context first
 let private explained (context: string) (f: unit -> 'r / <Fails | 'e>) : 'r / <Fails | 'e> =

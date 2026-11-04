@@ -1,13 +1,15 @@
 ok   cov/positive
 ok   cov/count
 coverage:
-  cov.zs: 9 of 12 lines (75%), not run: 5, 7, 16
+  cov.zs: 11 of 14 lines (78%), not run: 5, 7, 16
 coverage written to coverage.lcov (genhtml -o coverage coverage.lcov renders it)
 2 passed, 0 failed
 lcov:
-12
+14
 SF:cov.zs
 a program that ends with Environment.exit writes its counts too:
 big
 exit 2
 ex.zscov written
+a generic function of another module counts as run where an instance of it runs:
+  stats.zs: 2 of 3 lines (66%), not run: 4

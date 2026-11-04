@@ -2,17 +2,23 @@ a planted bug: even numbers from 20 fail the assertion
 FAIL p/evens stay small
        case: 20
        panic: assertion failed at evens.zs:6
-       shrunk from 2 bytes to 2 in N runs; saved as .zs-cache/failures/p-evens-stay-small, replayed first next time
+       shrunk from 2 bytes to 2 in N runs; saved as .zs-cache/failures/evens/p-evens-stay-small-08d7e124, replayed first next time
 0 passed, 1 failed
 saved:
-p-evens-stay-small
+evens/p-evens-stay-small-08d7e124
 again: the saved case first
 FAIL p/evens stay small
        case: 20
        panic: assertion failed at evens.zs:6
-       the failing case saved last time, replayed first (delete .zs-cache/failures/p-evens-stay-small to run afresh)
+       the failing case saved last time, replayed first (delete .zs-cache/failures/evens/p-evens-stay-small-08d7e124 to run afresh)
 0 passed, 1 failed
 fixed: the saved case passes and goes
 ok   p/evens stay small
 1 passed, 0 failed
+0
+a run that gives up on its discards fails, unshrunk:
+FAIL g/never holds
+       panic: gave up: never holds: 21 cases discarded for 0 passed: generate valid values instead of filtering invalid ones (seed 2)
+0 passed, 1 failed
+exit 1
 0

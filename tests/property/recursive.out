@@ -1,0 +1,19 @@
+Leaf 0
+Rose (0, [])
+Num 0
+23
+[1; 1; 1; 9; 1; 10; 7; 1]
+[1; 1; 55; 1402; 1412; 5862; 7396; 71232]
+[1; 1; 1; 27; 1; 1; 1; 1]
+true true
+[-9223372036854775805; -9223372036854775808; -9223372036854775807; -9223372036854775806]
+[-5; -5; -5]
+surrogates 0
+above U+FFFF true
+test recursive/a tree has a leaf
+ok   recursive/a tree has a leaf
+test recursive/a rose has a root
+ok   recursive/a rose has a root
+test recursive/statements end
+ok   recursive/statements end
+3 passed, 0 skipped

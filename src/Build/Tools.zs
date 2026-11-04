@@ -21,6 +21,12 @@ let rec findUp (dir: string) (relative: string) : option<string> =
 /// two are captured apart).
 type Ran = { code: int; out: string; err: string }
 
+/// Whether a program is on PATH.
+let onPath (program: string) : bool =
+  match Environment.getVariable "PATH" with
+  | Some path -> List.exists (fun (d: string) -> d <> "" && File.exists (Path.combine d program)) (String.split ":" path)
+  | None -> false
+
 // a piped stream read to its end
 let private drain (r: option<IO.Reader>) : string =
   match r with
@@ -30,9 +36,9 @@ let private drain (r: option<IO.Reader>) : string =
     | Error _ -> ""
   | None -> ""
 
-/// Runs the program, its standard output and standard error captured apart (read one after the
-/// other: for a program that writes little to the second, as git does).
-let runSplit (program: string) (args: list<string>) : result<Ran, string> =
+// the program run with both streams piped, read one after the other: a program that writes over
+// a pipe's worth to standard error while its standard output is open blocks (Windows' way)
+let private runPiped (program: string) (args: list<string>) : result<Ran, string> =
   let s : Diagnostics.ProcessStart = { program = program; args = args; stdin = Diagnostics.Null; stdout = Diagnostics.Piped; stderr = Diagnostics.Piped }
   match Diagnostics.Process.start s with
   | Error e -> Error e
@@ -42,6 +48,38 @@ let runSplit (program: string) (args: list<string>) : result<Ran, string> =
     let code = Task.run (Diagnostics.Process.wait p)
     Dispose.dispose p
     Ok { code = code; out = out; err = err }
+
+/// Runs the program, its standard output and standard error captured apart. Standard error goes
+/// to a file while standard output is read, so neither can fill and block the program (libFuzzer
+/// and a benchmark that logs write much to it); on Windows both are piped, read in turn.
+let runSplit (program: string) (args: list<string>) : result<Ran, string> =
+  // through sh only when the program is there to run: one that isn't is an Error, as it can't start
+  if hostOs () = "windows" || not (String.contains "/" program || onPath program) then
+    runPiped program args
+  else
+    match File.createTemp "zs-err-" with
+    | Error _ -> runPiped program args
+    | Ok errFile ->
+      // sh only redirects: the file, the program and its arguments are its positional parameters
+      let s : Diagnostics.ProcessStart =
+        { program = "sh"
+          args = List.append [ "-c"; "f=$1; shift; exec \"$@\" 2>\"$f\""; "sh"; errFile; program ] args
+          stdin = Diagnostics.Null
+          stdout = Diagnostics.Piped }
+      let r =
+        match Diagnostics.Process.start s with
+        | Error e -> Error e
+        | Ok p ->
+          let out = drain p.stdout
+          let code = Task.run (Diagnostics.Process.wait p)
+          Dispose.dispose p
+          let err =
+            match File.readAllText errFile with
+            | Ok t -> t
+            | Error _ -> ""
+          Ok { code = code; out = out; err = err }
+      File.delete errFile |> ignore
+      r
 
 /// Runs the program with the arguments, its standard error into its standard output (so neither
 /// pipe fills while the other is read); Error when it can't start.
@@ -82,12 +120,6 @@ let runInherited (program: string) (args: list<string>) : result<int, string> =
   match Diagnostics.Process.start s with
   | Error e -> Error e
   | Ok p -> Ok(Task.run (Diagnostics.Process.wait p))
-
-/// Whether a program is on PATH.
-let onPath (program: string) : bool =
-  match Environment.getVariable "PATH" with
-  | Some path -> List.exists (fun (d: string) -> d <> "" && File.exists (Path.combine d program)) (String.split ":" path)
-  | None -> false
 
 /// Creates a directory and the ones above it that it needs.
 let rec makeDirectory (path: string) : unit =

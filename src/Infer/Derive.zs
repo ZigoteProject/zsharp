@@ -8,7 +8,8 @@
 ///     (f.default: Some of a record field's default, None for a field without one)
 ///   Shape.build (fun f -> e)   a record from per-field results (stops at the first Error)
 ///   Shape.buildCase name (fun f -> e)   the named union case from per-field results, or None
-///   Shape.cases   a union's cases with no value in hand: { name; index; count } each, a list
+///   Shape.cases   a union's cases with no value in hand: { name; index; count; recursive } each,
+///     a list (recursive: a field can hold a value of the type, directly or through others)
 /// The expansion has no places: the derive is written in another module, so an error in it is at
 /// the use (the type declaration) instead.
 open Types.Fail
@@ -18,8 +19,9 @@ open Syntax.Ast
 type ShapeInfo =
   /// a record: its fields' names, and their defaults
   | RecordShape of list<string * option<Expr>>
-  /// a union: its cases' names and their fields' names
-  | UnionShape of list<string * list<string>>
+  /// a union: its cases' names and their fields' names, and the cases whose fields can hold a
+  /// value of the type (a generator ends a value with the others)
+  | UnionShape of list<string * list<string>> * Set<string>
 
 type private FieldInfo =
   { fname: string
@@ -116,7 +118,7 @@ let expand (tname: string) (head: SType) (shape: ShapeInfo) (defs: list<Definiti
           let fs = List.mapi (fun i (f, _) -> field f i (Some(plain (Field(x, f)))) None None) fields
           ex (Map.add v (CaseB { cname = tname; cindex = 0; cfields = fs }) env) b
         | None -> fail "the derive has no `Record` case"
-      | UnionShape shapes ->
+      | UnionShape(shapes, _) ->
         match branch "Union" cases with
         | Some(v, _, b) ->
           let one (i: int) (c: string * list<string>) =
@@ -138,7 +140,7 @@ let expand (tname: string) (head: SType) (shape: ShapeInfo) (defs: list<Definiti
       | RecordShape fields ->
         let fs = List.mapi (fun i (f, _) -> field f i None (Some(plain (Field(a, f)))) (Some(plain (Field(b, f))))) fields
         ex (Map.add sameVar (CaseB { cname = tname; cindex = 0; cfields = fs }) env) sameBody
-      | UnionShape shapes ->
+      | UnionShape(shapes, _) ->
         let same (i: int) (c: string * list<string>) =
           let (cn, fnames) = c
           let ls = List.map (fun _ -> fresh "l") fnames
@@ -163,11 +165,11 @@ let expand (tname: string) (head: SType) (shape: ShapeInfo) (defs: list<Definiti
         plain (Match(plain (Tuple [ a; b ]), List.append sameCases different))
     | Var "Shape.cases" ->
       match shape with
-      | UnionShape shapes ->
+      | UnionShape(shapes, recursive) ->
         let info (i: int) (c: string * list<string>) =
           let (cn, fnames) = c
           let fv (f: string) (v: Expr) : FieldValue = { field = f; nameAt = -1; value = v }
-          plain (RecordLit [ fv "name" (plain (StrLit cn)); fv "index" (plain (Lit(i64 i))); fv "count" (plain (Lit(i64 (List.length fnames)))) ])
+          plain (RecordLit [ fv "name" (plain (StrLit cn)); fv "index" (plain (Lit(i64 i))); fv "count" (plain (Lit(i64 (List.length fnames)))); fv "recursive" (plain (BoolLit(Set.contains cn recursive))) ])
         let cons (acc: Expr) (item: Expr) = plain (Call("::", [ plain (Tuple [ item; acc ]) ]))
         List.fold cons (var "[]") (List.rev (List.mapi info shapes))
       | RecordShape _ -> var "[]"
@@ -176,7 +178,7 @@ let expand (tname: string) (head: SType) (shape: ShapeInfo) (defs: list<Definiti
       let want =
         match shape with
         | RecordShape _ -> "RecordKind"
-        | UnionShape _ -> "UnionKind"
+        | UnionShape(_, _) -> "UnionKind"
       let isWant (c: Clause) =
         match c.pattern.pat with
         | PIdent(n, None) -> n = want
@@ -223,10 +225,10 @@ let expand (tname: string) (head: SType) (shape: ShapeInfo) (defs: list<Definiti
           let fi = { fi0 with fdefault = def }
           bindOk (plain (DeriveCtx($"field {fname}", ex (Map.add f (FieldB fi) env) body))) w acc
         List.fold step inner (List.rev (List.indexed (List.zip fields vars)))
-      | UnionShape _ -> fail "Shape.build needs a record; use Shape.buildCase for unions"
+      | UnionShape(_, _) -> fail "Shape.build needs a record; use Shape.buildCase for unions"
     | Call("Shape.buildCase", [ nameE; { e = Lambda([ { param = { pat = PIdent(f, None) } } ], body) } ]) ->
       match shape with
-      | UnionShape shapes ->
+      | UnionShape(shapes, _) ->
         let nm = fresh "n"
         let chain (cn: string) (fnames: list<string>) =
           let vars = List.map (fun _ -> fresh "b") fnames

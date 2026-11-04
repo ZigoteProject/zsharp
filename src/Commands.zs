@@ -432,10 +432,15 @@ let private safeName (path: string) : string =
     if (c >= u8 48 && c <= u8 57) || (c >= u8 65 && c <= u8 90) || (c >= u8 97 && c <= u8 122) || c = u8 45 || c = u8 95 || c = u8 46 then String.ofByte c else "-"
   String.concat (List.init (String.length path) (fun i -> safe (String.byte path i)))
 
+// a property's key under .zs-cache: the test file's name, then its path made a file name, with a
+// short hash of the path itself (p/a b and p/a-b are two properties)
+let private cacheKey (src: string) (path: string) : string =
+  Path.combine (Path.getFileNameWithoutExtension src) $"{safeName path}-{String.sub (Tools.hashOf [ path ]) 0 8}"
+
 // where a property's shrunk failing case is saved, beside the test file, to be replayed first
-// the next time (0010): .zs-cache/failures/<path>, the path's other characters made '-'
+// the next time (0010): .zs-cache/failures/<file>/<path>
 let private failureFile (src: string) (path: string) : string =
-  Path.combine (Path.combine (Path.combine (dirOf src) ".zs-cache") "failures") (safeName path)
+  Path.combine (Path.combine (Path.combine (dirOf src) ".zs-cache") "failures") (cacheKey src path)
 
 // a replay of one case of a property: its exit code and output; the case still fails when the
 // code isn't 0 and the case wasn't discarded
@@ -517,22 +522,33 @@ let private runProperty (exe: string) (src: string) (l: Leaf) : option<int> * st
   | None ->
     let (code, output) = runLeaf exe l
     // a panic of the body (not the property's own report of a false or an Error): shrunk here
-    if code <> Some 0 && Option.isSome code && not (String.contains "panic: falsified" output) && File.exists caseFile then
+    // (and not a run that gave up on its discards, which no one case reproduces)
+    if code <> Some 0 && Option.isSome code && not (String.contains "panic: falsified" output) && not (String.contains "panic: gave up" output) && File.exists caseFile then
       match (File.readAllText caseFile, File.readAllText recordFile) with
       | (Ok caseText, Ok hex) ->
         match (String.split "\t" (String.trim caseText), unhex hex) with
         | ([ _; sizeText; _ ], Some bytes0) ->
           let size = Option.defaultValue 100 (Int.parse (String.trim sizeText) : option<int>)
           let file = recordFile + ".try"
-          let (bytes, runs) = shrinkByReplay exe l size bytes0 file
-          File.writeAllText file (hexOf bytes) |> ignore
-          let (code2, shown) = replayCase exe l file size
-          File.delete file |> ignore
-          let dir = Path.getDirectoryName saved
-          Tools.makeDirectory dir
-          File.writeAllText saved $"{size}\n{hexOf bytes}\n" |> ignore
-          let note = $"\nshrunk from {Array.length bytes0} bytes to {Array.length bytes} in {runs} runs; saved as {Path.getRelativePath (Environment.currentDirectory ()) saved}, replayed first next time"
-          (code2, shown + note)
+          // the recorded case alone first: a panic it doesn't reproduce (one that depended on
+          // the cases before it) is reported as the run gave it, not shrunk or saved
+          File.writeAllText file (hexOf bytes0) |> ignore
+          if not (replayFails (replayCase exe l file size)) then
+            File.delete file |> ignore
+            (code, output + "\n(the case that panicked passes when replayed alone, so it isn't shrunk or saved)")
+          else
+            let (bytes, runs) = shrinkByReplay exe l size bytes0 file
+            File.writeAllText file (hexOf bytes) |> ignore
+            let (code2, shown) = replayCase exe l file size
+            File.delete file |> ignore
+            if not (replayFails (code2, shown)) then
+              (code, output)
+            else
+              let dir = Path.getDirectoryName saved
+              Tools.makeDirectory dir
+              File.writeAllText saved $"{size}\n{hexOf bytes}\n" |> ignore
+              let note = $"\nshrunk from {Array.length bytes0} bytes to {Array.length bytes} in {runs} runs; saved as {Path.getRelativePath (Environment.currentDirectory ()) saved}, replayed first next time"
+              (code2, shown + note)
         | _ -> (code, output)
       | _ -> (code, output)
     else
@@ -672,8 +688,18 @@ let private runOnChip (o: Options.Options) (src: string) (m: Options.Mcu) : opti
         println $"       {why}"
       current.Value <- ""
       Buffer.clear said
+    // a panic's text may span lines (a property's message and its replay seed): they're kept
+    // with it until the run's next test, its exit line or its end
+    let panicking = ref false
+    let endPanic () =
+      if panicking.Value then
+        panicking.Value <- false
+        fail ""
     for line in String.splitLines output do
-      if String.startsWith "test " line then
+      if panicking.Value && not (String.startsWith "#zs " line || String.startsWith "test " line || String.trim line = "") then
+        Buffer.push line said
+      else if String.startsWith "test " line then
+        endPanic ()
         current.Value <- String.sub line 5 (String.length line - 5)
         Buffer.clear said
       else if String.startsWith "ok   " line && current.Value <> "" then
@@ -684,11 +710,13 @@ let private runOnChip (o: Options.Options) (src: string) (m: Options.Mcu) : opti
         skipped.Value <- skipped.Value + 1
         println line
       else if String.startsWith "panic: " line && current.Value <> "" then
-        fail line
+        Buffer.push line said
+        panicking.Value <- true
       else if String.startsWith "#zs " line || String.endsWith " skipped" line || String.trim line = "" then
-        ()
+        endPanic ()
       else if current.Value <> "" then
         Buffer.push line said
+    endPanic ()
     if current.Value <> "" then
       fail "ended without finishing (a hang, or the chip stopped)"
     Some(passed.Value, failed.Value, skipped.Value)
@@ -743,7 +771,8 @@ let private coverageReport (src: string) (exe: string) =
       for l in lines do
         Buffer.push $"DA:{l},{Option.defaultValue (i64 0) (Map.tryFind (file, l) counts)}" lcov
       Buffer.push $"LF:{total}\nLH:{List.length covered}\nend_of_record" lcov
-    match File.writeAllText "coverage.lcov" (String.join "\n" (Array.toList (Buffer.toArray lcov)) + "\n") with
+    // appended: a project's test files each add theirs (zs test empties it first)
+    match File.appendAllText "coverage.lcov" (String.join "\n" (Array.toList (Buffer.toArray lcov)) + "\n") with
     | Ok _ -> println "coverage written to coverage.lcov (genhtml -o coverage coverage.lcov renders it)"
     | Error e -> println $"coverage.lcov: {e}"
   File.delete path |> ignore
@@ -765,8 +794,8 @@ let private runTests (o: Options.Options) (src: string) (args: list<string>) (st
         match Tools.runSplit exe [ "--list" ] with
         | Ok r -> r.out
         | Error _ -> ""
-      // the tests and properties: a benchmark is zs bench's
-      let leaves = List.filter (fun (l: Leaf) -> l.kind <> "bench") (List.choose leafOf (List.filter (fun l -> l <> "") (String.split "\n" listed)))
+      // every test, property and benchmark (run once, as a test of its body; zs bench times it)
+      let leaves = List.choose leafOf (List.filter (fun l -> l <> "") (String.split "\n" listed))
       if List.isEmpty leaves then
         eprintln $"{src}: no [<Tests>] values"
         File.delete exe |> ignore
@@ -853,6 +882,12 @@ let private runTests (o: Options.Options) (src: string) (args: list<string>) (st
               println $"updated {file}:{line}"
         if o.coverage then
           coverageReport src exe
+        // each property's side files (its case and its record) go with the binary
+        for l in chosen do
+          if l.kind = "property" then
+            let (caseFile, recordFile) = propertyFiles exe l
+            File.delete caseFile |> ignore
+            File.delete recordFile |> ignore
         File.delete exe |> ignore
         if focused && List.contains "--fail-on-focused" args then
           println "focused tests are left (--fail-on-focused)"
@@ -1076,12 +1111,9 @@ let fuzz (args: list<string>) : int =
     eprintln e
     2
   | Ok(o, rest) ->
-    let rec split (xs: list<string>) (ours: list<string>) : list<string> * list<string> =
-      match xs with
-      | "--" :: theirs -> (List.rev ours, theirs)
-      | x :: more -> split more (x :: ours)
-      | [] -> (List.rev ours, [])
-    let (ours, theirs) = split rest []
+    // what follows -- is libFuzzer's (the option parser keeps it apart)
+    let ours = rest
+    let theirs = o.rest
     let rec timeIn (xs: list<string>) : result<int, string> =
       match xs with
       | "--for" :: n :: _ ->
@@ -1117,13 +1149,14 @@ let fuzz (args: list<string>) : int =
               | Ok r -> r.out
               | Error _ -> ""
             let leaves = List.filter (fun (l: Leaf) -> l.kind = "property") (List.choose leafOf (List.filter (fun l -> l <> "") (String.split "\n" listed)))
-            match List.tryFind (fun (l: Leaf) -> l.path = wanted || String.contains wanted l.path) leaves with
+            let exact = List.tryFind (fun (l: Leaf) -> l.path = wanted) leaves
+            match (if Option.isSome exact then exact else List.tryFind (fun (l: Leaf) -> String.contains wanted l.path) leaves) with
             | None ->
               println (if List.isEmpty leaves then $"{src}: no properties" else $"no property's path matches {wanted} (they are {String.join ", " (List.map (fun (l: Leaf) -> l.path) leaves)})")
               File.delete exe |> ignore
               1
             | Some l ->
-              let corpus = Path.combine (Path.combine (Path.combine (dirOf src) ".zs-cache") "fuzz") (safeName l.path)
+              let corpus = Path.combine (Path.combine (Path.combine (dirOf src) ".zs-cache") "fuzz") (cacheKey src l.path)
               Tools.makeDirectory corpus
               let crashes = exe + ".crashes"
               Tools.makeDirectory crashes
@@ -1219,6 +1252,9 @@ let test (args: list<string>) : int =
       eprintln e
       2
     | Ok(stress, rest) ->
+        // each file's tests add their lines to coverage.lcov: this run's, not an earlier one's
+        if o.coverage then
+          File.delete "coverage.lcov" |> ignore
         // the filters, and the flags only zs test takes (--update, --summary, --fail-on-focused)
         let filters = List.filter (fun a -> not (isFile a)) rest
         match List.filter isFile rest with

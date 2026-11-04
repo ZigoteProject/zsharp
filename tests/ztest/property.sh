@@ -2,6 +2,8 @@
 # properties under zs test (0010, step 2): a case that panics is recorded as drawn, shrunk by
 # replays of the test binary to a smallest case that still panics, shown, and saved beside the
 # file; the next run replays it first, and once the bug is fixed the saved case passes and goes.
+# A run that gives up on its discards fails as it is: no one case reproduces it, so nothing is
+# shrunk or saved.
 set -u
 zs="$(pwd)/${1:-bin/zs}"; t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 write() {
@@ -19,8 +21,24 @@ cd "$t"
 export ZS_BACKTRACE=0
 write 20
 echo "a planted bug: even numbers from 20 fail the assertion"; "$zs" test evens.zs | sed -E 's/in [0-9]+ runs/in N runs/'
-echo "saved:"; ls .zs-cache/failures
+echo "saved:"; (cd .zs-cache/failures && find . -type f | sed 's|^\./||')
 echo "again: the saved case first"; "$zs" test evens.zs | sed -E 's/in [0-9]+ runs/in N runs/'
 write 200
 echo "fixed: the saved case passes and goes"; "$zs" test evens.zs
-ls .zs-cache/failures 2>/dev/null | wc -l
+find .zs-cache/failures -type f 2>/dev/null | wc -l
+cat > gives.zs <<'ZS'
+open Testing
+
+[<Tests>]
+let tests =
+  testList "g" [
+    testPropertyWith { seed = Some (u64 2) } "never holds" (fun () ->
+      prop {
+        let! n = Gen.int ()
+        do! Prop.assume (n > 1000000)
+        return true
+      })
+  ]
+ZS
+echo "a run that gives up on its discards fails, unshrunk:"; "$zs" test gives.zs; echo "exit $?"
+find .zs-cache/failures -type f 2>/dev/null | wc -l

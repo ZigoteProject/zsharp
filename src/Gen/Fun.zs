@@ -31,7 +31,10 @@ and FData =
     joinBlocks: ref<Map<string, string * Buffer<list<string> * string>>>
     uniqueSlots: ref<Set<string>>
     /// --coverage: the function's file is under the covered directory, so its lines count
-    covered: bool }
+    covered: bool
+    /// --coverage: the line counted for the code being made, which a CLine inside it on the same
+    /// line doesn't count again (0 for none)
+    covLine: ref<int> }
 
 type F with
   member fx.g =
@@ -46,6 +49,9 @@ type F with
   member fx.covered =
     match fx with
     | F { covered = x } -> x
+  member fx.covLine =
+    match fx with
+    | F { covLine = x } -> x
   member fx.sp =
     match fx with
     | F { sp = x } -> x
@@ -794,6 +800,20 @@ let private simdPrim (fx: F) (op: string) (args: list<CExpr>) (vs: list<string>)
 
 // ------------------------------------------------------------ expressions
 
+// --coverage: one more on the counter of the file's line (atomic: a test may run threads)
+let private countLine (g: G) (em: Emitter) (file: string) (ln: int) =
+  let key = $"{file}\t{ln}"
+  let id =
+    match Map.tryFind key g.cov.Value with
+    | Some i -> i
+    | None ->
+      let i = Buffer.length g.covLines
+      g.cov.Value <- Map.add key i g.cov.Value
+      Buffer.push (file, ln) g.covLines
+      i
+  let counter = instr em $"getelementptr [0 x i64], ptr @zs.cov.counts, i64 0, i64 {id}"
+  emit em $"atomicrmw add ptr {counter}, i64 1 monotonic"
+
 /// The code of e: its value (an SSA name, a constant, or poison after a jump); tail: e is the
 /// function's result.
 let rec gen (fx: F) (env: Map<string, Binding>) (tail: bool) (e: CExpr) : string =
@@ -808,19 +828,12 @@ let rec gen (fx: F) (env: Map<string, Binding>) (tail: bool) (e: CExpr) : string
     let savedAt = fx.at.Value
     if ln > 0 then
       fx.at.Value <- ln
-    // --coverage: the line's counter, one more (atomic: a test may run threads)
-    if fx.covered && ln > 0 then
-      let key = $"{fx.f.file}\t{ln}"
-      let id =
-        match Map.tryFind key g.cov.Value with
-        | Some i -> i
-        | None ->
-          let i = Buffer.length g.covLines
-          g.cov.Value <- Map.add key i g.cov.Value
-          Buffer.push (fx.f.file, ln) g.covLines
-          i
-      let counter = instr em $"getelementptr [0 x i64], ptr @zs.cov.counts, i64 0, i64 {id}"
-      emit em $"atomicrmw add ptr {counter}, i64 1 monotonic"
+    // --coverage: the line's counter, one more, unless the code around this is on the same line
+    // and counted it already
+    let savedCov = fx.covLine.Value
+    if fx.covered && ln > 0 && ln <> savedCov then
+      countLine g em fx.f.file ln
+      fx.covLine.Value <- ln
     if g.opts.debugInfo && ln > 0 then
       fx.line.Value <- ln
       fx.lastLine.Value <- max fx.lastLine.Value ln
@@ -829,6 +842,7 @@ let rec gen (fx: F) (env: Map<string, Binding>) (tail: bool) (e: CExpr) : string
     setDbg em saved
     fx.line.Value <- savedLine
     fx.at.Value <- savedAt
+    fx.covLine.Value <- savedCov
     r
   | CInt k -> if isFloat e.ty then floatConst (llty g e.ty) (if llty g e.ty = "float" then f64 (f32 k) else f64 k) else $"{k}"
   | CFloat x -> floatConst (llty g e.ty) x
@@ -2818,11 +2832,19 @@ let genFunAs (g: G) (f: MFun) (name: string) (features: string) =
       featureList = featureList
       selfProto = proto g f
       joinBlocks = ref Map.empty
-      covered = g.opts.coverageRoot <> "" && f.line > 0 && String.startsWith g.opts.coverageRoot (Path.getFullPath f.file)
+      covered = f.line > 0 && covers g.opts.coverageRoot f.file
+      covLine = ref 0
       uniqueSlots = ref Set.empty }
   let fx = F data
   let env = List.fold (fun (m: Map<string, Binding>) (x, _) -> Map.add x (Ssa("%p." + x)) m) Map.empty f.pars
   List.iteri (fun i (x, t) -> declareVar fx x t ("%p." + x) None (i + 1)) f.pars
+  // --coverage: a function counts its definition's line on entry, as one no entry reaches lists
+  // it never run (Compile.coverageSeeds; neither for a lambda's or a value's, whose names have a
+  // $); so a generic one defined in another part, which makes no instance of it, counts as run
+  // where an instance runs
+  if data.covered && not (String.contains "$" f.name) then
+    countLine g em f.file f.line
+    data.covLine.Value <- f.line
   if coro then
     // the face (closure header, the coroutine's handle, the largest result slot) rounded to 64
     // bytes, then the coroutine's frame; the ramp's own reference, which the wrapper below gives

@@ -290,25 +290,35 @@ module Gen =
   /// `g`, then the generator `f` chooses from its value.
   let bind (f: 'a -> Gen<'b>) (g: Gen<'a>) : Gen<'b> = Gen(fun s -> draw (f (draw g s)) s)
 
-  // an offset from 0 to span (inclusive), from the fewest bytes that cover it, big-endian: all
-  // zeros is 0
-  let private offset (span: int) (s: Source) : int =
-    if span <= 0 then
-      0
+  // an offset from 0 to span (inclusive, unsigned), from the fewest bytes that cover it,
+  // big-endian: all zeros is 0. Unsigned, so a span past Int's max (a range across zero on a
+  // 32-bit chip, or all of u64) draws without overflowing
+  let private offsetU (span: u64) (s: Source) : u64 =
+    if span = u64 0 then
+      u64 0
     else
       let mutable n = 1
-      let mutable top = 256
-      while top <= span && n < 8 do
+      while n < 8 && (span >>> u64 (8 * n)) <> u64 0 do
         n <- n + 1
-        top <- top * 256
       let bytes = Source.draw n s
-      let mutable v = 0
+      let mutable v = u64 0
       for b in bytes do
-        v <- Int.wrappingAdd (Int.wrappingMul v 256) (int b)
-      (if v < 0 then -(v + 1) else v) % (span + 1)
+        v <- (v <<< u64 8) ||| u64 b
+      // all of u64: every value is an offset, and span + 1 would wrap to 0
+      let count = Int.wrappingAdd span (u64 1)
+      if count = u64 0 then v else v % count
+
+  // offsetU for a span from 0 to Int's max
+  let private offset (span: int) (s: Source) : int =
+    if span <= 0 then 0 else int (offsetU (u64 span) s)
 
   /// An integer from `lo` to `hi` (both in): `lo` is the simplest.
-  let range (lo: int) (hi: int) : Gen<int> = Gen(fun s -> lo + offset (hi - lo) s)
+  let range (lo: int) (hi: int) : Gen<int> =
+    if lo > hi then
+      panic $"Gen.range {lo} {hi}: the low end is above the high one"
+    // hi - lo in u64: sign extension keeps both values, so the difference is exact at any width
+    let span = Int.wrappingSub (u64 hi) (u64 lo)
+    Gen(fun s -> Int.wrappingAdd lo (int (offsetU span s)))
 
   /// One of `xs`, the first the simplest.
   let elements (xs: list<'a>) : Gen<'a> =
@@ -410,14 +420,17 @@ module Gen =
   /// `true` or `false`; `false` first.
   let bool () : Gen<bool> = Gen(fun s -> offset 1 s = 1)
 
-  /// A character: printable ASCII first (space the simplest), then any scalar value.
+  /// A character: printable ASCII first (space the simplest), then any scalar value (U+0000 the
+  /// simplest of those; the surrogates, which aren't characters, skipped).
   let char () : Gen<char> =
     Gen(fun s ->
       let kind = offset 7 s
       if kind < 6 then
         char (32 + offset 94 s)
       else
-        char (0xA1 + offset (0xD7FF - 0xA1) s))
+        // 0 .. 0x10FFFF less the 0x800 surrogates, those above them moved past the gap
+        let c = offset (0x10FFFF - 0x800) s
+        char (if c >= 0xD800 then c + 0x800 else c))
 
   /// A string of `char`s, up to the size long.
   let string () : Gen<string> = map String.ofChars (list (char ()))
@@ -581,11 +594,16 @@ impl Arbitrary<'a * 'b * 'c * 'd> =
         Gen.draw (arbitrary ()) s,
         Gen.draw (arbitrary ()) s))
 
-/// A union's case as a derive sees it (`Shape.cases`): its name, its index and how many fields.
-type CaseInfo = { name: string; index: int; count: int }
+/// A union's case as a derive sees it (`Shape.cases`): its name, its index, how many fields, and
+/// whether a field can hold a value of the type (directly, or inside a list, an option or another
+/// type that holds it).
+type CaseInfo = { name: string; index: int; count: int; recursive: bool }
 
-/// A record draws each field; a union draws a case (one without fields when the size is 0, so a
-/// recursive type ends), then its fields; a field is drawn at half the size.
+/// A record draws each field; a union draws a case, then its fields; a field is drawn at half the
+/// size. The cases that end a value (none of their fields holds the type) come first, so zero
+/// bytes make a finite value; at size 0 or past a replayed stream's end the choice is the ones of
+/// them with the fewest fields (of every case, when each holds the type), so a recursive type's
+/// values end.
 derive Arbitrary =
   let arbitrary () : Gen<'self> =
     Gen(fun src ->
@@ -594,8 +612,16 @@ derive Arbitrary =
         | RecordKind ->
           Shape.build (fun f -> Ok(Gen.draw (Gen.scale (fun n -> n / 2) (arbitrary ())) src))
         | UnionKind ->
-          let leaves = List.filter (fun (c: CaseInfo) -> c.count = 0) Shape.cases
-          let cases = if src.size = 0 && not (List.isEmpty leaves) then leaves else Shape.cases
+          let all = Shape.cases
+          let ends0 = List.filter (fun (c: CaseInfo) -> not c.recursive) all
+          let ends = if List.isEmpty ends0 then all else ends0
+          // of those, the ones with the fewest fields: the only choice at size 0 or past the end
+          let fewest = List.fold (fun m (c: CaseInfo) -> min m c.count) (List.head ends).count ends
+          let least = List.filter (fun (c: CaseInfo) -> c.count = fewest) ends
+          let others =
+            List.filter (fun (c: CaseInfo) ->
+              not (List.exists (fun (d: CaseInfo) -> d.name = c.name) ends)) all
+          let cases = if src.size = 0 || src.overrun.Value then least else List.append ends others
           let c = Gen.draw (Gen.elements cases) src
           match Shape.buildCase c.name (fun f ->
             Ok(Gen.draw (Gen.scale (fun n -> n / 2) (arbitrary ())) src)) with
@@ -835,7 +861,7 @@ let testPropertyWith (ps: PropertySettings) (name: string) (prop: 'a -> 'r) : Te
       if Source.rejected src then
         discarded <- discarded + 1
         if discarded > ps.maxDiscardRatio * max 1 passed + ps.maxDiscardRatio then
-          panic $"{name}: {discarded} cases discarded for {passed} passed: generate valid values instead of filtering invalid ones (seed {seed})"
+          panic $"gave up: {name}: {discarded} cases discarded for {passed} passed: generate valid values instead of filtering invalid ones (seed {seed})"
       else
         match result with
         | None ->

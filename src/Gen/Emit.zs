@@ -147,6 +147,12 @@ type Abi =
   /// a struct by pointer: byval for parameters, sret for results
   | Memory
 
+/// --coverage: whether file is in the covered directory root (a full path), at any depth; a
+/// directory whose name merely starts with root's (root "/a/b", file "/a/bc/x.zs") isn't
+let covers (root: string) (file: string) : bool =
+  let full = Path.getFullPath file
+  root <> "" && (String.startsWith (root + "/") full || String.startsWith (root + "\\") full)
+
 /// What code generation is told about the build (the F# compiler's Codegen settings).
 type Options =
   { /// DWARF debug info (zs build -g): line tables, functions, and the local variables gdb can show

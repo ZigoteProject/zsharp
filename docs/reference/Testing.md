@@ -160,7 +160,9 @@ the bytes it reads shrinks what it makes.
 type CaseInfo
 ```
 
-A union's case as a derive sees it (`Shape.cases`): its name, its index and how many fields.
+A union's case as a derive sees it (`Shape.cases`): its name, its index, how many fields, and
+whether a field can hold a value of the type (directly, or inside a list, an option or another
+type that holds it).
 
 ### `Testing.Verdict`
 
@@ -421,8 +423,11 @@ Four values, drawn in order.
 derive Arbitrary
 ```
 
-A record draws each field; a union draws a case (one without fields when the size is 0, so a
-recursive type ends), then its fields; a field is drawn at half the size.
+A record draws each field; a union draws a case, then its fields; a field is drawn at half the
+size. The cases that end a value (none of their fields holds the type) come first, so zero
+bytes make a finite value; at size 0 or past a replayed stream's end the choice is the ones of
+them with the fewest fields (of every case, when each holds the type), so a recursive type's
+values end.
 
 ### `impl Checks<unit>`
 
@@ -787,7 +792,8 @@ Testing.Gen.bool : unit -> Testing.Gen<bool>
 Testing.Gen.char : unit -> Testing.Gen<char>
 ```
 
-A character: printable ASCII first (space the simplest), then any scalar value.
+A character: printable ASCII first (space the simplest), then any scalar value (U+0000 the
+simplest of those; the surrogates, which aren't characters, skipped).
 
 ### `Testing.Gen.string`
 

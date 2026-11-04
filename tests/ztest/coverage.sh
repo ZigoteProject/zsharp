@@ -50,3 +50,23 @@ let main () =
 ZS
 "$zs" build --coverage ex.zs -o ex && ./ex; echo "exit $?"; [ -s ex.zscov ] && echo "ex.zscov written"
 
+echo "a generic function of another module counts as run where an instance of it runs:"
+mkdir multi && cd multi
+cat > stats.zs <<'ZS'
+let largest (xs: list<'a>) : 'a =
+  List.reduce max xs
+
+let smallest (xs: list<'a>) : 'a =
+  List.reduce min xs
+ZS
+cat > main.zs <<'ZS'
+open Testing
+open Stats
+
+[<Tests>]
+let tests =
+  testList "stats" [
+    test "largest" (fun () -> assert (largest [ 3; 9; 4 ] = 9))
+  ]
+ZS
+"$zs" test main.zs --coverage | grep "stats.zs"

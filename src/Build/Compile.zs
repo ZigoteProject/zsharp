@@ -171,7 +171,7 @@ let usesPrim (prims: Set<string>) (funs: list<MFun>) : bool =
 let coverageSeeds (defs: list<Core.Ir.FunDef>) (funs: list<MFun>) (root: string) : list<string * int> =
   let generated = Set.ofList (List.map (fun (f: MFun) -> Core.Ir.baseFunName f.name) funs)
   let seed (f: Core.Ir.FunDef) =
-    if f.line > 0 && not (String.contains "$" f.name) && not (Set.contains f.name generated) && String.startsWith root (Path.getFullPath f.file) then Some(f.file, f.line) else None
+    if f.line > 0 && not (String.contains "$" f.name) && not (Set.contains f.name generated) && Gen.Emit.covers root f.file then Some(f.file, f.line) else None
   List.distinct (List.choose seed defs)
 
 // the primitives of a program that has weak references or arenas (code generation's checkedHeap)
@@ -340,6 +340,9 @@ let generate (o: Options.Options) (prog0: Program) (testBuild: bool) : result<Pr
   match (if o.isLib then prog.values else []) with
   | (value, _) :: _ when String.contains ".$assert" value || String.startsWith "$assert" value ->
     Error(InPass { file = ""; line = 0; message = "a top-level assert whose condition isn't a constant is checked at startup, which a library doesn't have; assert on constants (sizeof<T> = 20), or check it in a function" })
+  // a chip's runtime has no file to write the counts to
+  | _ when o.coverage && Option.isSome o.mcu ->
+    Error(InPass { file = ""; line = 0; message = "--coverage counts lines into a file the program writes at exit, which a chip doesn't have: measure coverage with zs test on this machine" })
   // the other values are code generation's to judge: a static one (a table, a record of
   // constants) needs no startup, and one that isn't is an error there
   | _ ->

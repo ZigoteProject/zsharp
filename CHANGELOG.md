@@ -155,7 +155,11 @@
   `<program>.zscov` at exit, a panic's included), and the command reports the lines run and
   not run per file, with the runs of lines not run, and writes `coverage.lcov`, which `genhtml`
   renders and coverage services read. Match arms, branches and loop bodies count by their
-  lines; the counters are atomic, so threads count right (`tests/ztest/coverage.sh`).
+  lines; the counters are atomic, so threads count right. A generic function's instance counts
+  its definition's line, so one defined in another module and run isn't listed as never run;
+  code nested on a line already counted isn't counted again; `coverage.lcov` is this run's,
+  each test file of a workspace adding its own; and `--coverage` on a chip is an error, since
+  the chip has no file to write the counts to (`tests/ztest/coverage.sh`).
 - `zs bench file.zs [filters] [--runs n]` (track D, item 9): `bench "name" (fun () -> …)` is a
   `Test` value among a file's `[<Tests>]`, timed in a process of its own after three warm-up
   runs: the median of 30 runs (or `--runs`) and its 95% confidence interval from the order
@@ -483,22 +487,30 @@ a real machine. The flagship runs under QEMU's STM32F405, not yet on the board i
   `frequency`, `oneOf`, `map`, `bind`, `filter`, `list`, `array`, `listOfLength`, `option`,
   `sized`, `scale`, `constant`, the `gen { }` builder, and `Gen.sample seed n g` to look at
   one. `Arbitrary` has impls for Core's types, lists, arrays, options, results and tuples, and
-  `[<Derive(Arbitrary)>]` for records and unions (a case without fields at size 0, so a tree
-  ends; the derives gain `Shape.cases`). `prop { let! x = Gen.int … do! Prop.assume (y <> 0)
+  `[<Derive(Arbitrary)>]` for records and unions: the cases that end a value (none of their
+  fields holds the type, directly, in a list or option, or through types that hold each other)
+  come first and are the only choice at size 0 or past a replayed stream's end, so a tree whose
+  leaves carry values ends too (the derives gain `Shape.cases`, each case's `recursive` among
+  its facts). `Gen.range` spans all of `int` without overflowing, and `Gen.char` draws any
+  scalar value but a surrogate (`tests/property/recursive.zs`). `prop { let! x = Gen.int … do! Prop.assume (y <> 0)
   … return … }` draws as it goes, discards a case (`Prop.assume`) or labels it (`Prop.label`,
   `classify`, `collect`): a passing property reports how its cases were labelled, a failure
   shows the failing case's labels. `Prop.model commands { init; step }` checks a system
   against a model with a derived sequence of commands, which shrinks to the fewest with the
   smallest arguments. Under `zs test`, a case that panics is recorded as drawn (each case from
   its own seed), shrunk by replays of the test binary (`--replay`) to a smallest case that
-  still panics, shown, and saved beside the file in `.zs-cache/failures/`; the next run
-  replays it first, and once it passes it's deleted. `zs fuzz file.zs path [--for n] [--
+  still panics, shown, and saved beside the file in `.zs-cache/failures/<file>/`, keyed by
+  the test file and the property's path; the next run replays it first, and once it passes
+  it's deleted. A panic the case doesn't reproduce alone, and a run that gave up on its
+  discards, are reported as they happened, nothing shrunk or saved. `zs fuzz file.zs path [--for n] [--
   flags]` (track D, item 6) runs one property under libFuzzer (the tests built with its
   instrumentation and the sanitizers; a panic aborts, so it's a crash), each input the
   property's bytes (`Gen.bytes ()` takes an input whole, so a property over bytes fuzzes a
-  parser as it is), the corpus kept beside the file in `.zs-cache/fuzz/<path>/` so a run
-  resumes; a crash is shrunk by replays, shown, and saved as the failure `zs test` replays
-  first (`tests/property/basic.zs`, `model.zs`, `tests/ztest/property.sh`,
+  parser as it is), the corpus kept beside the file in `.zs-cache/fuzz/<file>/<path>/` so a
+  run resumes, the flags after `--` libFuzzer's (and its output read apart from the property's,
+  so neither stream blocks the other); a crash is shrunk by replays, shown, and saved as the
+  failure `zs test` replays first. `zs test --target` shows every line of a failing test's
+  panic, a property's case and replay seed included (`tests/property/basic.zs`, `model.zs`, `tests/ztest/property.sh`,
   `tests/fuzz/fuzz.sh`).
 - `Numerics.Fixed` (0015, track M item 10): `q7`, `q15` and `q31`, each a one-case union over
   its integer (its size, by decision 66), with saturating `+`, `-`, `*` (rounded half up), `/`, `%` and negation,
