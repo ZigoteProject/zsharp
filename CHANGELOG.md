@@ -47,6 +47,9 @@
   (a library leaves its C host's signals alone), not under a sanitizer, which reports one itself.
 
 ### Tests
+- `tests/lsp/providers.sh` edits its sample only once the server has answered the requests before
+  it (a pipe the script writes as the server answers), so what the first hover and completion
+  see no longer depends on who was faster; it failed one run in four under load.
 - `./test.sh --sanitize` builds every program with the address and undefined-behaviour sanitizers
   (`zs build --sanitize`) and runs it, a report failing the test as valgrind's does, beside
   `--valgrind` and `--release`. A `.plain-only` file beside a test gives the reason it runs only as
