@@ -422,6 +422,21 @@ a real machine. The flagship runs under QEMU's STM32F405, not yet on the board i
   object it compiles.
 
 ### Library
+- Properties (0010, track D item 5): `testProperty "name" (fun (xs: list<int>) -> …)` runs
+  the property on 100 cases drawn with `Arbitrary` at the parameter's type (a tuple for
+  several), growing from size 0 to 100; `unit`, `true` or `Ok` passes a case, `false` or an
+  `Error` fails it, and the failing case is shrunk to a smallest one (its bytes shorter, then
+  smaller, as Hypothesis shrinks) and shown with the seed that replays the run through
+  `testPropertyWith { seed = Some s }`; `{ runs; maxSize; maxDiscardRatio; shrink }` are the
+  other settings. A generator (`Gen<'a>`) reads a stream of bytes, so every one shrinks:
+  `Gen.int`, the sized integers, `float`, `bool`, `char`, `string`, `range`, `elements`,
+  `frequency`, `oneOf`, `map`, `bind`, `filter`, `list`, `array`, `listOfLength`, `option`,
+  `sized`, `scale`, `constant`, the `gen { }` builder, and `Gen.sample seed n g` to look at
+  one. `Arbitrary` has impls for Core's types, lists, arrays, options, results and tuples, and
+  `[<Derive(Arbitrary)>]` for records and unions (a case without fields at size 0, so a tree
+  ends; the derives gain `Shape.cases`). A case that panics ends the test with the panic; the
+  runner's record and replay protocol, `Prop`, `Prop.model` and `zs fuzz` are left
+  (`tests/property/basic.zs`).
 - `Numerics.Fixed` (0015, track M item 10): `q7`, `q15` and `q31`, each a one-case union over
   its integer (its size, by decision 66), with saturating `+`, `-`, `*` (rounded half up), `/`, `%` and negation,
   `mulAdd`, `abs`, `clamp`, `ofFloat`/`toFloat`/`toF32`, `ofInt`, `raw`/`ofRaw`, the conversions

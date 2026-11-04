@@ -1,0 +1,20 @@
+[0; -20; 21; 56; -52; 27]
+[18; 11; 10; 16]
+[[]; [false; true; false; false; true; false; true; true; true; false; false; false; false; false; true; true; false; false; true; true; false; false; false; true; true; true; true; true; false; true; false; true; true; false; false; false; true; true; true; false; true; true]; [true; false; false; true; true; true; true; true; true; true; false; false; false; true; false; true; true; true; false; true; true; false; true; true; true; true; false; true; true; true; false; false; false; true; false; false; true; true; false; true; false; false; true; true; true; false]]
+[; _x輦ᰑ㼷툂f'<5B䈽^W^t,GT_[0ࠐᕉ%!悃2I+ჸ-R籗ެuHD2Cጬ(; |4%‥!炿UF諾뮳兀bjOzr5?vS/  {3WNy䢨]
+[{ id = 0; flags = []; body = Dot }; { id = 13; flags = [true; false; false; true; false; true]; body = Circle 1 }; { id = 0; flags = [false; false; true; true; false; false; true; true; false; false; false]; body = Dot }]
+[bob72@example.com; cy12@example.com; cy27@example.com]
+test props/reverse twice
+ok   props/reverse twice
+test props/append length
+ok   props/append length
+test props/area of a circle
+ok   props/area of a circle
+test props/a packet round-trips through Binary
+ok   props/a packet round-trips through Binary
+test props/a filtered generator
+ok   props/a filtered generator
+test props/sums stay small
+panic: falsified after 8 cases (19 shrinks): [3; 7]
+  false
+  replay: testPropertyWith { seed = Some (u64 42) }

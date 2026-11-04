@@ -8,6 +8,7 @@
 ///     (f.default: Some of a record field's default, None for a field without one)
 ///   Shape.build (fun f -> e)   a record from per-field results (stops at the first Error)
 ///   Shape.buildCase name (fun f -> e)   the named union case from per-field results, or None
+///   Shape.cases   a union's cases with no value in hand: { name; index; count } each, a list
 /// The expansion has no places: the derive is written in another module, so an error in it is at
 /// the use (the type declaration) instead.
 open Types.Fail
@@ -160,6 +161,16 @@ let expand (tname: string) (head: SType) (shape: ShapeInfo) (defs: list<Definiti
               | _ -> fail "Shape.pair needs a `Different` case"
             [ clause (plainPat PWild) body ]
         plain (Match(plain (Tuple [ a; b ]), List.append sameCases different))
+    | Var "Shape.cases" ->
+      match shape with
+      | UnionShape shapes ->
+        let info (i: int) (c: string * list<string>) =
+          let (cn, fnames) = c
+          let fv (f: string) (v: Expr) : FieldValue = { field = f; nameAt = -1; value = v }
+          plain (RecordLit [ fv "name" (plain (StrLit cn)); fv "index" (plain (Lit(i64 i))); fv "count" (plain (Lit(i64 (List.length fnames)))) ])
+        let cons (acc: Expr) (item: Expr) = plain (Call("::", [ plain (Tuple [ item; acc ]) ]))
+        List.fold cons (var "[]") (List.rev (List.mapi info shapes))
+      | RecordShape _ -> var "[]"
     | Match({ e = Var "Shape.kind" }, cases)
     | Match({ e = Call("Shape.kind", _) }, cases) ->
       let want =

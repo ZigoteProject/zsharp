@@ -22,6 +22,41 @@ abstract finish : 'r -> unit
 
 Panics when the outcome is a failure.
 
+### `Testing.Arbitrary`
+
+```zsharp
+trait Arbitrary<'a>
+```
+
+A type with a default generator: what `testProperty` draws its parameters with. Core's types
+have it, and `[<Derive(Arbitrary)>]` gives it to a record or union: a record draws each field,
+a union a case (one without fields when the size is 0) and then its fields, each field at half
+the size, so a recursive type's values are finite.
+
+#### `Testing.Arbitrary.arbitrary`
+
+```zsharp
+abstract arbitrary : unit -> Gen<'a>
+```
+
+The type's generator.
+
+### `Testing.Verdict`
+
+```zsharp
+trait Verdict<'r>
+```
+
+What a property's body gives back, as a verdict: `unit` passes, `false` and an `Error` fail.
+
+#### `Testing.Verdict.verdict`
+
+```zsharp
+abstract verdict : 'r -> option<string>
+```
+
+`None` when the case passed; the failure's message otherwise.
+
 ## Types
 
 ### `Testing.Focus`
@@ -89,6 +124,42 @@ A group: its name, its tests, its focus, and whether they run one at a time.
 
 A benchmark: its name and its body, which `zs bench` times (`zs test` runs it once).
 
+### `Testing.Source`
+
+```zsharp
+type Source
+```
+
+Where a generator's bytes come from (0010): a random stream from a seed, recorded as it's
+drawn, so a failing case can be shrunk and replayed, or a stream given (a shrink candidate).
+Drawing past a given stream's end is an overrun, which discards the case. All-zero bytes mean
+the simplest value, and a shorter or smaller stream a simpler one.
+
+### `Testing.Gen`
+
+```zsharp
+type Gen<'a>
+```
+
+A generator: a function from a source of bytes to a value. Every one shrinks, since shrinking
+the bytes it reads shrinks what it makes.
+
+### `Testing.CaseInfo`
+
+```zsharp
+type CaseInfo
+```
+
+A union's case as a derive sees it (`Shape.cases`): its name, its index and how many fields.
+
+### `Testing.PropertySettings`
+
+```zsharp
+type PropertySettings
+```
+
+A property's settings: `testPropertyWith { runs = 1000 } "name" …` names what changes.
+
 ## Derives and impls
 
 ### `impl Outcome<unit>`
@@ -106,6 +177,215 @@ impl Outcome<result<'a, 'e>>
 ```
 
 An `Error` fails the test, shown.
+
+### `impl Arbitrary<unit>`
+
+```zsharp
+impl Arbitrary<unit>
+```
+
+`()`.
+
+### `impl Arbitrary<bool>`
+
+```zsharp
+impl Arbitrary<bool>
+```
+
+`Gen.bool`.
+
+### `impl Arbitrary<char>`
+
+```zsharp
+impl Arbitrary<char>
+```
+
+`Gen.char`.
+
+### `impl Arbitrary<string>`
+
+```zsharp
+impl Arbitrary<string>
+```
+
+`Gen.string`.
+
+### `impl Arbitrary<int>`
+
+```zsharp
+impl Arbitrary<int>
+```
+
+`Gen.int`: `-size .. size`.
+
+### `impl Arbitrary<i8>`
+
+```zsharp
+impl Arbitrary<i8>
+```
+
+`Gen.i8`.
+
+### `impl Arbitrary<i16>`
+
+```zsharp
+impl Arbitrary<i16>
+```
+
+`Gen.i16`.
+
+### `impl Arbitrary<i32>`
+
+```zsharp
+impl Arbitrary<i32>
+```
+
+`Gen.i32`.
+
+### `impl Arbitrary<i64>`
+
+```zsharp
+impl Arbitrary<i64>
+```
+
+`Gen.i64`.
+
+### `impl Arbitrary<u8>`
+
+```zsharp
+impl Arbitrary<u8>
+```
+
+`Gen.u8`.
+
+### `impl Arbitrary<u16>`
+
+```zsharp
+impl Arbitrary<u16>
+```
+
+`Gen.u16`.
+
+### `impl Arbitrary<u32>`
+
+```zsharp
+impl Arbitrary<u32>
+```
+
+`Gen.u32`.
+
+### `impl Arbitrary<u64>`
+
+```zsharp
+impl Arbitrary<u64>
+```
+
+`Gen.u64`.
+
+### `impl Arbitrary<f64>`
+
+```zsharp
+impl Arbitrary<f64>
+```
+
+`Gen.float`.
+
+### `impl Arbitrary<f32>`
+
+```zsharp
+impl Arbitrary<f32>
+```
+
+`Gen.f32`.
+
+### `impl Arbitrary<list<'a>>`
+
+```zsharp
+impl Arbitrary<list<'a>>
+```
+
+A list of the element's values, up to the size long.
+
+### `impl Arbitrary<array<'a>>`
+
+```zsharp
+impl Arbitrary<array<'a>>
+```
+
+An array of the element's values.
+
+### `impl Arbitrary<option<'a>>`
+
+```zsharp
+impl Arbitrary<option<'a>>
+```
+
+`None` first.
+
+### `impl Arbitrary<result<'a, 'e>>`
+
+```zsharp
+impl Arbitrary<result<'a, 'e>>
+```
+
+`Ok` first.
+
+### `impl Arbitrary<'a * 'b>`
+
+```zsharp
+impl Arbitrary<'a * 'b>
+```
+
+A pair of the parts' values, drawn in order.
+
+### `impl Arbitrary<'a * 'b * 'c>`
+
+```zsharp
+impl Arbitrary<'a * 'b * 'c>
+```
+
+A triple of the parts' values, drawn in order.
+
+### `impl Arbitrary<'a * 'b * 'c * 'd>`
+
+```zsharp
+impl Arbitrary<'a * 'b * 'c * 'd>
+```
+
+Four values, drawn in order.
+
+### `derive Arbitrary`
+
+```zsharp
+derive Arbitrary
+```
+
+A record draws each field; a union draws a case (one without fields when the size is 0, so a
+recursive type ends), then its fields; a field is drawn at half the size.
+
+### `impl Verdict<unit>`
+
+```zsharp
+impl Verdict<unit>
+```
+
+A body that returns: the case passed.
+
+### `impl Verdict<bool>`
+
+```zsharp
+impl Verdict<bool>
+```
+
+`false` fails the case.
+
+### `impl Verdict<result<'a, 'e>>`
+
+```zsharp
+impl Verdict<result<'a, 'e>>
+```
+
+An `Error` fails the case, shown.
 
 ## Functions
 
@@ -228,4 +508,314 @@ Runs every test in order, in this process: what `zs test --target <chip>` builds
 image (a chip has no processes, 0009 D11). Prints `test path` before each, `ok   path` after,
 `skip path` for a pending one (or one left out while others are focused), and the counts; a
 failure's panic ends the run after `test path`, which names it.
+
+### `Testing.Source.random`
+
+```zsharp
+Testing.Source.random : Random -> int -> Testing.Source
+```
+
+A random stream from `r`, recording what's drawn, at `size`.
+
+### `Testing.Source.ofBytes`
+
+```zsharp
+Testing.Source.ofBytes : array<u8> -> int -> Testing.Source
+```
+
+A given stream (a shrink candidate, a saved case), at `size`.
+
+### `Testing.Source.draw`
+
+```zsharp
+Testing.Source.draw : int -> Testing.Source -> array<u8>
+```
+
+`n` bytes from the stream: the next of the given or recorded ones, else drawn at random and
+recorded, else (a given stream used up) zeros, and the source has overrun.
+
+### `Testing.Source.rejected`
+
+```zsharp
+Testing.Source.rejected : Testing.Source -> bool
+```
+
+Whether the case is to be discarded: a filter that never held, or an overrun.
+
+### `Testing.Gen.draw`
+
+```zsharp
+Testing.Gen.draw : Testing.Gen<'a> -> Testing.Source -> 'a
+```
+
+Runs `g` on a source.
+
+### `Testing.Gen.constant`
+
+```zsharp
+Testing.Gen.constant : 'a -> Testing.Gen<'a>
+```
+
+Always `x`; draws nothing.
+
+### `Testing.Gen.map`
+
+```zsharp
+Testing.Gen.map : ('a -> 'b / <>) -> Testing.Gen<'a> -> Testing.Gen<'b>
+  f must perform nothing
+```
+
+`f` of what `g` makes.
+
+### `Testing.Gen.bind`
+
+```zsharp
+Testing.Gen.bind : ('a -> Testing.Gen<'b> / <>) -> Testing.Gen<'a> -> Testing.Gen<'b>
+  f must perform nothing
+```
+
+`g`, then the generator `f` chooses from its value.
+
+### `Testing.Gen.range`
+
+```zsharp
+Testing.Gen.range : int -> int -> Testing.Gen<int>
+```
+
+An integer from `lo` to `hi` (both in): `lo` is the simplest.
+
+### `Testing.Gen.elements`
+
+```zsharp
+Testing.Gen.elements : list<'a> -> Testing.Gen<'a>
+```
+
+One of `xs`, the first the simplest.
+
+### `Testing.Gen.frequency`
+
+```zsharp
+Testing.Gen.frequency : list<int * Testing.Gen<'a>> -> Testing.Gen<'a>
+```
+
+One of the generators, each as likely as its weight; the first the simplest.
+
+### `Testing.Gen.oneOf`
+
+```zsharp
+Testing.Gen.oneOf : list<Testing.Gen<'a>> -> Testing.Gen<'a>
+```
+
+One of the generators, each as likely as the others.
+
+### `Testing.Gen.filter`
+
+```zsharp
+Testing.Gen.filter : ('a -> bool / <>) -> Testing.Gen<'a> -> Testing.Gen<'a>
+  p must perform nothing
+```
+
+`g` again, up to a hundred times, until `p` holds; then the case is discarded. Generate
+valid values where you can: a filter that rejects most of them discards most cases.
+
+### `Testing.Gen.listOfLength`
+
+```zsharp
+Testing.Gen.listOfLength : int -> Testing.Gen<'a> -> Testing.Gen<list<'a>>
+```
+
+`n` of `g`.
+
+### `Testing.Gen.list`
+
+```zsharp
+Testing.Gen.list : Testing.Gen<'a> -> Testing.Gen<list<'a>>
+```
+
+A list of `g`, up to the size long: the length first, so a shorter stream is a shorter list.
+
+### `Testing.Gen.array`
+
+```zsharp
+Testing.Gen.array : Testing.Gen<'a> -> Testing.Gen<array<'a>>
+```
+
+An array of `g`, as `list`.
+
+### `Testing.Gen.option`
+
+```zsharp
+Testing.Gen.option : Testing.Gen<'a> -> Testing.Gen<option<'a>>
+```
+
+`None` first, else `g`.
+
+### `Testing.Gen.sized`
+
+```zsharp
+Testing.Gen.sized : (int -> Testing.Gen<'a> / <>) -> Testing.Gen<'a>
+  f must perform nothing
+```
+
+What `f size` draws: a generator that depends on the size.
+
+### `Testing.Gen.scale`
+
+```zsharp
+Testing.Gen.scale : (int -> int / <>) -> Testing.Gen<'a> -> Testing.Gen<'a>
+  f must perform nothing
+```
+
+`g` at the size `f size`: `Gen.scale (fun n -> n / 2) g` for a field of a recursive type.
+
+### `Testing.Gen.sample`
+
+```zsharp
+Testing.Gen.sample : u64 -> int -> Testing.Gen<'a> -> list<'a>
+```
+
+`n` values from `g`, from a seed, at sizes growing to 100: to look at what a generator makes.
+
+### `Testing.Gen.unit`
+
+```zsharp
+let unit : Gen<unit>
+```
+
+`()`; draws nothing.
+
+### `Testing.Gen.bool`
+
+```zsharp
+let bool : Gen<bool>
+```
+
+`true` or `false`; `false` first.
+
+### `Testing.Gen.char`
+
+```zsharp
+let char : Gen<char>
+```
+
+A character: printable ASCII first (space the simplest), then any scalar value.
+
+### `Testing.Gen.string`
+
+```zsharp
+let string : Gen<string>
+```
+
+A string of `char`s, up to the size long.
+
+### `Testing.Gen.int`
+
+```zsharp
+let int : Gen<int>
+```
+
+An integer in `-size .. size`: zero the simplest, then small ones.
+
+### `Testing.Gen.i8`
+
+```zsharp
+let i8 : Gen<i8>
+```
+
+An `i8` as `int`, within the width.
+
+### `Testing.Gen.i16`
+
+```zsharp
+let i16 : Gen<i16>
+```
+
+An `i16` as `int`.
+
+### `Testing.Gen.i32`
+
+```zsharp
+let i32 : Gen<i32>
+```
+
+An `i32` as `int`.
+
+### `Testing.Gen.i64`
+
+```zsharp
+let i64 : Gen<i64>
+```
+
+An `i64` as `int`.
+
+### `Testing.Gen.u8`
+
+```zsharp
+let u8 : Gen<u8>
+```
+
+A `u8` from 0 to the size (255 at most): zero the simplest.
+
+### `Testing.Gen.u16`
+
+```zsharp
+let u16 : Gen<u16>
+```
+
+A `u16` from 0 to the size.
+
+### `Testing.Gen.u32`
+
+```zsharp
+let u32 : Gen<u32>
+```
+
+A `u32` from 0 to the size.
+
+### `Testing.Gen.u64`
+
+```zsharp
+let u64 : Gen<u64>
+```
+
+A `u64` from 0 to the size.
+
+### `Testing.Gen.float`
+
+```zsharp
+let float : Gen<f64>
+```
+
+A float: integer-valued first, then with a fraction, and now and then NaN or an infinity.
+
+### `Testing.Gen.f32`
+
+```zsharp
+let f32 : Gen<f32>
+```
+
+`float`, single precision.
+
+### `Testing.testPropertyWith`
+
+```zsharp
+Testing.testPropertyWith : Testing.PropertySettings -> string -> ('a -> 'b / <>) -> Testing.Test when 'a : Show, 'a : Testing.Arbitrary, 'b : Testing.Verdict
+  prop must perform nothing
+```
+
+A property with its settings: `prop` runs on `runs` cases drawn with `Arbitrary` at its
+parameter's type (a tuple for several), the cases growing from size 0 to `maxSize`; `unit`,
+`true` or `Ok` passes a case. A case that returns `false` or an `Error` fails the property:
+it's shrunk to a smallest failing case (shorter bytes, then smaller), which the failure
+shows, with the seed to replay the run. A case that panics ends the test at once, with the
+panic: `testPropertyWith { seed = Some s }` replays it.
+
+### `Testing.testProperty`
+
+```zsharp
+Testing.testProperty : string -> ('a -> 'b / <>) -> Testing.Test when 'a : Show, 'a : Testing.Arbitrary, 'b : Testing.Verdict
+  prop must perform nothing
+```
+
+A property with the default settings: 100 cases, growing to size 100, shrunk on failure.
 
