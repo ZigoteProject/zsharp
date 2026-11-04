@@ -70,6 +70,12 @@
   prelude, Core and Std alone (track S's exit test), built and run by `tests/examples_tools.sh`.
 
 ### Packages
+- Workspaces (0018, item 8): `[workspace] members = ["app", "libs/*"]` in a root `zs.toml` (a
+  pattern ending in `/*` takes the directories under it that have a `zs.toml`). Its members
+  resolve together into one `zs.lock`, one `.zs-cache/` and one `vendor/` at the root; a lock
+  inside a member is an error naming the root. `zs build`, `zs test`, `zs fetch`, `zs update`,
+  `zs tree` and `zs vendor` at the root run over every member (a library member isn't built on
+  its own); `zs run`, `zs add` and `zs remove` there say to run them in a member.
 - `zs.lock` hashes each git dependency's files (0018, item 6): a checkout that was edited is
   restored from its commit at the next fetch, and one whose files still differ is an error
   naming it (`zs update` accepts the new files). `zs vendor` copies the dependencies into

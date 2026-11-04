@@ -1,0 +1,33 @@
+== zs build at the root
+member app
+built app/build/app
+member tool
+built tool/build/tool
+member libs/text: a library, not built on its own
+3 2
+tool
+== one lock and one cache, at the root
+zs.lock
+
+.zs-cache/deps:
+words
+ls: none
+ls: none
+== zs test at the root
+app/src/main.zs
+ok   app/counts
+libs/text/src/Text.zs
+ok   text/counts words
+ok   text/counts lines
+3 passed, 0 failed
+== zs tree at the root
+app 0.1.0 (app)
+├─ text 0.1.0 (path ../libs/text)
+└─ words 0.1.0 (git file://…/words, rev v1, commit …)
+tool 0.1.0 (tool)
+text 0.1.0 (libs/text)
+== a lock inside a member
+zs: zs.lock belongs to the workspace at ../zs.toml, which has the one lock; delete it and run zs fetch at the root
+== zs run and zs add at the root
+zs: zs run: a workspace; run a member (app, tool, libs/text), or a file
+zs add: a workspace; run it in a member (app, tool, libs/text)

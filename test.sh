@@ -249,6 +249,9 @@ else echo "FAIL tests/static.zs: static tables"; grep '^@"zs[sv]\.' "$tmp/static
 # the three small tools of examples/tools, built and run (track S's exit test)
 if diff <(tests/examples_tools.sh 2>&1) tests/examples_tools.expected >"$tmp/tools.diff"; then echo "ok   tests/examples_tools.sh (examples/tools: grep, jsonpp, tail -f)"
 else echo "FAIL tests/examples_tools.sh"; cat "$tmp/tools.diff"; fail=1; fi
+# workspaces (0018 item 8): one lock and cache at the root, the commands over every member
+if diff <(tests/project/workspace.sh 2>&1) tests/project/workspace.expected >"$tmp/ws.diff"; then echo "ok   tests/project/workspace.sh (workspaces)"
+else echo "FAIL tests/project/workspace.sh"; cat "$tmp/ws.diff"; fail=1; fi
 # the lock's hashes, zs vendor and --offline (0018 item 6)
 if diff <(tests/project/vendor.sh 2>&1) tests/project/vendor.expected >"$tmp/vendor.diff"; then echo "ok   tests/project/vendor.sh (zs.lock hashes, zs vendor, --offline)"
 else echo "FAIL tests/project/vendor.sh"; cat "$tmp/vendor.diff"; fail=1; fi

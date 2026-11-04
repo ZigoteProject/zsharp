@@ -20,6 +20,23 @@ let private project () : result<Project.Manifest, string> =
     Error "invalid zs.toml"
   | None -> Error "no file given and no zs.toml here or above (zs new <name> creates a project)"
 
+// a workspace's members, each read from its zs.toml (0018 item 8); a project on its own is its
+// one member
+let private membersOf (m: Project.Manifest) : list<Project.Manifest> =
+  if List.isEmpty m.members then
+    [ m ]
+  else
+    List.choose (fun (d: string) ->
+      match Project.readManifest d with
+      | Ok x -> Some x
+      | Error p ->
+        showProblem p
+        None) m.members
+
+// a workspace root (members, no program of its own): the members' names, for an error
+let private membersText (m: Project.Manifest) : string =
+  String.join ", " (List.map (fun (d: string) -> Path.getRelativePath m.root d) m.members)
+
 // fetches the git dependencies of the project around dir (if any) before a build; false on
 // failure, with the reasons shown
 let private fetched (offline: bool) (dir: string) : bool =
@@ -65,16 +82,32 @@ let build (served: bool) (args: list<string>) : int =
         eprintln $"zs: {msg}"
         1
       | Ok m ->
-        if not (fetched o.offline m.root) then
-          1
+        let one (p: Project.Manifest) : int =
+          if not (fetched o.offline p.root) then
+            1
+          else
+            let dir = Path.combine p.root "build"
+            Tools.makeDirectory dir
+            let out = if o.out <> "" && List.isEmpty m.members then o.out else Path.combine dir p.name
+            let code = Make.build { (projectTarget p args o) with main = p.main; out = out } false
+            if code = 0 then
+              println $"built {Path.getRelativePath (Environment.currentDirectory ()) out}"
+            code
+        if List.isEmpty m.members then
+          one m
         else
-          let dir = Path.combine m.root "build"
-          Tools.makeDirectory dir
-          let out = if o.out <> "" then o.out else Path.combine dir m.name
-          let code = Make.build { (projectTarget m args o) with main = m.main; out = out } false
-          if code = 0 then
-            println $"built {Path.getRelativePath (Environment.currentDirectory ()) out}"
-          code
+          // a workspace: every member with a main; a library member is skipped
+          let codes =
+            List.map (fun (p: Project.Manifest) ->
+              let rel = Path.getRelativePath (Environment.currentDirectory ()) p.root
+              match File.readAllText p.main with
+              | Ok text when String.contains "let main" text ->
+                println $"member {rel}"
+                one p
+              | _ ->
+                println $"member {rel}: a library, not built on its own"
+                0) (membersOf m)
+          List.fold max 0 codes
     | file :: _ ->
       if not (fetched o.offline (dirOf file)) then 1 else Make.build { o with main = file; out = (if o.out = "" then Path.getFileNameWithoutExtension file else o.out) } false
 
@@ -91,6 +124,7 @@ let run (args: list<string>) : int =
       | [] ->
         match project () with
         | Error msg -> Error msg
+        | Ok m when not (List.isEmpty m.members) -> Error $"zs run: a workspace; run a member ({membersText m}), or a file"
         | Ok m -> if fetched o0.offline m.root then Ok(m.main, projectTarget m args o0) else Error ""
     match main with
     | Error msg ->
@@ -136,7 +170,7 @@ let fetch (update: bool) : int =
     eprintln $"zs: {msg}"
     1
   | Ok m ->
-    let errors = Project.fetchDeps m update false
+    let errors = List.collect (fun (p: Project.Manifest) -> Project.fetchDeps p update false) (membersOf m)
     for e in errors do
       eprintln $"zs: {e}"
     if List.isEmpty errors then 0 else 1
@@ -221,6 +255,9 @@ let add (remove: bool) (args: list<string>) : int =
   | Error msg ->
     eprintln $"zs: {msg}"
     1
+  | Ok m when not (List.isEmpty m.members) ->
+    eprintln $"zs {(if remove then "remove" else "add")}: a workspace; run it in a member ({membersText m})"
+    1
   | Ok m ->
     let file = Path.combine m.root "zs.toml"
     let edit (name: string) (value: option<string>) : int =
@@ -273,7 +310,7 @@ let vendor () : int =
     eprintln $"zs: {msg}"
     1
   | Ok m ->
-    let errors = Project.vendor m
+    let errors = List.collect Project.vendor (membersOf m)
     for e in errors do
       eprintln $"zs: {e}"
     if List.isEmpty errors then 0 else 1
@@ -285,7 +322,9 @@ let tree () : int =
   | Error msg ->
     eprintln $"zs: {msg}"
     1
-  | Ok m ->
+  | Ok m0 ->
+    // a workspace: each member's tree
+    let codes = List.map (fun (m: Project.Manifest) ->
     if not (fetched false m.root) then
       1
     else
@@ -313,7 +352,7 @@ let tree () : int =
                 | Project.GitDep(url, rev) -> $"git {url}{(if rev = "" then "" else ", rev " + rev)}"
                 | Project.GitVersion(url, v) -> $"git {url}, at least {Project.showVersion v}"
               let commit =
-                match Project.lockedCommit m.root name with
+                match Project.lockedCommit m name with
                 | Some c -> $", commit {String.sub c 0 (min 7 (String.length c))}"
                 | None -> ""
               let again = Set.contains d.root shown.Value
@@ -323,7 +362,8 @@ let tree () : int =
                 show (indent + (if last then "   " else "│  ")) d) pkg.deps
         println $"{m.name}{(if m.version = "" then "" else " " + m.version)} ({Path.getRelativePath (Environment.currentDirectory ()) m.root})"
         show "" top
-        0
+        0) (membersOf m0)
+    List.fold max 0 codes
 
 // ------------------------------------------------------------ zs test
 
@@ -670,11 +710,13 @@ let test (args: list<string>) : int =
             eprintln $"zs: {msg}"
             1
           | Ok m ->
-            if not (fetched o.offline m.root) then
+            // a workspace: every member's tests (0018 item 8)
+            let projects = membersOf m
+            if not (List.forall (fun (p: Project.Manifest) -> fetched o.offline p.root) projects) then
               1
             else
-              let under (d: string) : list<string> =
-                let dir = Path.combine m.root d
+              let under (p: Project.Manifest) (d: string) : list<string> =
+                let dir = Path.combine p.root d
                 if Directory.exists dir then
                   match Directory.listRecursive dir with
                   | Ok rels -> List.map (fun r -> Path.combine dir r) (List.filter isFile rels)
@@ -685,7 +727,7 @@ let test (args: list<string>) : int =
                 match File.readAllText f with
                 | Ok t -> String.contains "[<Tests>]" t
                 | Error _ -> false
-              let files = List.filter hasTests (List.append (under "src") (under "tests"))
+              let files = List.collect (fun (p: Project.Manifest) -> List.filter hasTests (List.append (under p "src") (under p "tests"))) projects
               // a stress run's time shared among the files
               let each = Option.map (fun ms -> max 1000 (ms / max 1 (List.length files))) stress
               let runFile (f: string) =
