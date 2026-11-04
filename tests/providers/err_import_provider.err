@@ -1,1 +1,1 @@
-tests/providers/err_import_provider.zs:2: error: no provider 'jsn': zs has json, csv, sql and svd, no zs-provider-jsn is on PATH, and no dependency named jsn has a [provider] section
+tests/providers/err_import_provider.zs:2: error: no provider 'jsn': zs has c, json, csv, sql and svd, no zs-provider-jsn is on PATH, and no dependency named jsn has a [provider] section
