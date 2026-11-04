@@ -246,7 +246,53 @@ static void (*panic_hook)(const char *message);
 
 void zs_set_panic_hook(void (*hook)(const char *message)) { panic_hook = hook; }
 
+// ---- coverage (zs build --coverage): each module's lines, a counter each, written at exit (a
+// panic's too) to <program>.zscov, one line per line: the file, the line and the count, tabs
+// between; zs test --coverage reads them
+typedef struct {
+    const char *file;
+    int32_t line;
+} zs_cov_line;
+
+typedef struct {
+    const zs_cov_line *table;
+    int64_t *counts;
+    int64_t n;
+} cov_module;
+
+static cov_module *cov_modules;
+static int cov_count, cov_cap;
+static char **g_argv;
+
+static void coverage_dump(void) {
+    if (!cov_count) return;
+    const char *exe = g_argv && g_argv[0] ? g_argv[0] : "program";
+    size_t len = strlen(exe) + 7;
+    char *path = malloc(len);
+    if (!path) return;
+    snprintf(path, len, "%s.zscov", exe);
+    FILE *f = fopen(path, "a");
+    free(path);
+    if (!f) return;
+    for (int m = 0; m < cov_count; m++)
+        for (int64_t i = 0; i < cov_modules[m].n; i++)
+            fprintf(f, "%s\t%d\t%" PRId64 "\n", cov_modules[m].table[i].file, cov_modules[m].table[i].line, cov_modules[m].counts[i]);
+    fclose(f);
+    cov_count = 0; // written once: a panic's stop, then exit's handlers
+}
+
+void zs_coverage_register(const zs_cov_line *table, int64_t *counts, int64_t n) {
+    if (cov_count == cov_cap) {
+        cov_cap = cov_cap ? 2 * cov_cap : 8;
+        cov_modules = realloc(cov_modules, (size_t)cov_cap * sizeof *cov_modules);
+        if (!cov_modules) abort();
+    }
+    if (!cov_count) atexit(coverage_dump);
+    cov_modules[cov_count++] = (cov_module){table, counts, n};
+}
+
 _Noreturn void zs_panic_c(const char *msg) {
+    coverage_dump();
     fflush(stdout);
     fprintf(stderr, "panic: %s\n", msg);
     fflush(stderr); // the UCRT buffers it when it isn't a console

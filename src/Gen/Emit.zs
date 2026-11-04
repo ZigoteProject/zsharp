@@ -151,6 +151,10 @@ type Abi =
 type Options =
   { /// DWARF debug info (zs build -g): line tables, functions, and the local variables gdb can show
     debugInfo: bool
+    /// --coverage: the directory whose files get a counter per line run ("" for none)
+    coverageRoot: string
+    /// --coverage: the lines of the covered files' functions no entry reaches, counted never run
+    coverageSeeds: list<string * int>
     /// clang optimizes the module (not -O0): unoptimized, a call to itself in tail position must
     /// be a musttail call, for constant stack
     optimized: bool

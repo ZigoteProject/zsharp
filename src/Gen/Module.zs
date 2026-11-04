@@ -124,6 +124,8 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
       diFiles = ref Map.empty
       locs = ref Map.empty
       diTypes = ref Map.empty
+      cov = ref Map.empty
+      covLines = Buffer.empty
       lenRange = ref None
       compileUnit = ref None
       noTypes = ref None
@@ -559,6 +561,29 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
     let version = meta g "!{i32 2, !\"Debug Info Version\", i32 3}"
     Buffer.push $"!llvm.dbg.cu = !{{{cu}}}\n" g.md
     Buffer.push $"!llvm.module.flags = !{{{flags}, {version}}}\n" g.md
+  // --coverage: a counter per line, the table of the lines (file and number), and a constructor
+  // that hands them to the runtime, which writes them at exit (<program>.zscov)
+  for (file, line) in opts.coverageSeeds do
+    let key = $"{file}\t{line}"
+    if not (Map.containsKey key g.cov.Value) then
+      g.cov.Value <- Map.add key (Buffer.length g.covLines) g.cov.Value
+      Buffer.push (file, line) g.covLines
+  if Buffer.length g.covLines > 0 then
+    let n = Buffer.length g.covLines
+    let fileSyms = ref Map.empty
+    let fileSym (file: string) =
+      match Map.tryFind file fileSyms.Value with
+      | Some s -> s
+      | None ->
+        let s = $"@\"zs.covf.{Map.count fileSyms.Value}\""
+        topLine g $"{s} = private unnamed_addr constant [{String.length file + 1} x i8] c\"{encoded file}\\00\""
+        fileSyms.Value <- Map.add file s fileSyms.Value
+        s
+    let entries = List.map (fun (file, line) -> $"{{ ptr, i32 }} {{ ptr {fileSym file}, i32 {line} }}") (Array.toList (Buffer.toArray g.covLines))
+    topLine g $"@zs.cov.counts = internal global [{n} x i64] zeroinitializer"
+    topLine g $"@zs.cov.table = private unnamed_addr constant [{n} x {{ ptr, i32 }}] [{String.join ", " entries}]"
+    topLine g "@llvm.global_ctors = appending global [1 x { i32, ptr, ptr }] [{ i32, ptr, ptr } { i32 65535, ptr @zs.cov.init, ptr null }]"
+    Buffer.push $"define internal void @zs.cov.init() {{\n  call void @zs_coverage_register(ptr @zs.cov.table, ptr @zs.cov.counts, i64 {n})\n  ret void\n}}\n\n" g.funcs
   // the functions of other parts this one calls
   for f in Array.toList (Buffer.toArray g.referencedOrder) do
     if not (defined f) then

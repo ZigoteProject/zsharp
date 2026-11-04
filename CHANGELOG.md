@@ -116,11 +116,17 @@
   cortex-m4 has none, so it can't depend on this package`, instead of an error deep in its code.
 
 ### Tooling
+- `zs test --coverage` (track D, item 10): the test binary is built with a counter per line of
+  the file's directory's sources (`--coverage` on any build: the program writes the counts to
+  `<program>.zscov` at exit, a panic's included), and the command reports the lines run and
+  not run per file, with the runs of lines not run, and writes `coverage.lcov`, which `genhtml`
+  renders and coverage services read. Match arms, branches and loop bodies count by their
+  lines; the counters are atomic, so threads count right (`tests/ztest/coverage.sh`).
 - `zs bench file.zs [filters] [--runs n]` (track D, item 9): `bench "name" (fun () -> …)` is a
   `Test` value among a file's `[<Tests>]`, timed in a process of its own after three warm-up
   runs: the median of 30 runs (or `--runs`) and its 95% confidence interval from the order
   statistics. The results are saved beside the file (`.zs-cache/bench/<file>.tsv`), and a
-  benchmark whose interval doesn't overlap the saved one's by 5% or more is reported slower or
+  benchmark whose interval doesn't overlap the saved one's by 10% or more is reported slower or
   faster; `zs test` runs a benchmark once, as a test of its body. `testFaster "name" fast slow`
   is a test that passes when `fast` wins 19 of 25 paired rounds (a sign test at 1%), so a
   performance claim can't silently regress (`tests/ztest/bench.sh`).

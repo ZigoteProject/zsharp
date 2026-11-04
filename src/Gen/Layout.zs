@@ -57,6 +57,9 @@ and GData =
     diFiles: ref<Map<string, string>>
     locs: ref<Map<string, string>>
     diTypes: ref<Map<string, string>>
+    /// --coverage: a line's counter (file, tab, line: its index), and the lines in index order
+    cov: ref<Map<string, int>>
+    covLines: Buffer<string * int>
     lenRange: ref<option<string>>
     compileUnit: ref<option<string>>
     noTypes: ref<option<string>>
@@ -132,6 +135,12 @@ type G with
   member g.diTypes =
     match g with
     | G { diTypes = x } -> x
+  member g.cov =
+    match g with
+    | G { cov = x } -> x
+  member g.covLines =
+    match g with
+    | G { covLines = x } -> x
   member g.lenRange =
     match g with
     | G { lenRange = x } -> x

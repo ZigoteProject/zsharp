@@ -29,7 +29,9 @@ and FData =
     featureList: list<string>
     selfProto: string
     joinBlocks: ref<Map<string, string * Buffer<list<string> * string>>>
-    uniqueSlots: ref<Set<string>> }
+    uniqueSlots: ref<Set<string>>
+    /// --coverage: the function's file is under the covered directory, so its lines count
+    covered: bool }
 
 type F with
   member fx.g =
@@ -41,6 +43,9 @@ type F with
   member fx.f =
     match fx with
     | F { f = x } -> x
+  member fx.covered =
+    match fx with
+    | F { covered = x } -> x
   member fx.sp =
     match fx with
     | F { sp = x } -> x
@@ -803,6 +808,19 @@ let rec gen (fx: F) (env: Map<string, Binding>) (tail: bool) (e: CExpr) : string
     let savedAt = fx.at.Value
     if ln > 0 then
       fx.at.Value <- ln
+    // --coverage: the line's counter, one more (atomic: a test may run threads)
+    if fx.covered && ln > 0 then
+      let key = $"{fx.f.file}\t{ln}"
+      let id =
+        match Map.tryFind key g.cov.Value with
+        | Some i -> i
+        | None ->
+          let i = Buffer.length g.covLines
+          g.cov.Value <- Map.add key i g.cov.Value
+          Buffer.push (fx.f.file, ln) g.covLines
+          i
+      let counter = instr em $"getelementptr [0 x i64], ptr @zs.cov.counts, i64 0, i64 {id}"
+      emit em $"atomicrmw add ptr {counter}, i64 1 monotonic"
     if g.opts.debugInfo && ln > 0 then
       fx.line.Value <- ln
       fx.lastLine.Value <- max fx.lastLine.Value ln
@@ -2800,6 +2818,7 @@ let genFunAs (g: G) (f: MFun) (name: string) (features: string) =
       featureList = featureList
       selfProto = proto g f
       joinBlocks = ref Map.empty
+      covered = g.opts.coverageRoot <> "" && f.line > 0 && String.startsWith g.opts.coverageRoot (Path.getFullPath f.file)
       uniqueSlots = ref Set.empty }
   let fx = F data
   let env = List.fold (fun (m: Map<string, Binding>) (x, _) -> Map.add x (Ssa("%p." + x)) m) Map.empty f.pars

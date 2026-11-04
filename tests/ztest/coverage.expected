@@ -1,0 +1,9 @@
+ok   cov/positive
+ok   cov/count
+coverage:
+  cov.zs: 9 of 12 lines (75%), not run: 5, 7, 16
+coverage written to coverage.lcov (genhtml -o coverage coverage.lcov renders it)
+2 passed, 0 failed
+lcov:
+12
+SF:cov.zs

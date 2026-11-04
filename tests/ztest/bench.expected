@@ -2,7 +2,11 @@ first run:
 bench perf/sum  new
 bench perf/sort  new
 2 benchmarks, none changed
-same build:
+against a saved run ten times slower for sum, ten times faster for sort:
+bench perf/sum  faster
+bench perf/sort  slower
+2 benchmarks, 2 changed
+against saved intervals that cover anything:
 bench perf/sum
 bench perf/sort
 2 benchmarks, none changed

@@ -104,6 +104,9 @@ type Options =
     release: bool
     /// -g: DWARF debug info, unoptimized
     debugInfo: bool
+    /// --coverage: a counter per line of the program's own files, written at exit to
+    /// <program>.zscov; zs test --coverage reports them
+    coverage: bool
     /// --emit-llvm: the IR kept next to the output (out.ll)
     emitLlvm: bool
     /// --target: the triple ("" for the host); a chip's name sets mcu, and the chip's triple here
@@ -157,6 +160,7 @@ let defaults : Options =
     opt = None
     release = false
     debugInfo = false
+    coverage = false
     emitLlvm = false
     target = ""
     mcu = None
@@ -193,6 +197,7 @@ let parse (args: list<string>) : result<Options * list<string>, string> =
     | "-o" :: out :: more -> go { o with out = out } others more
     | "--release" :: more -> go { o with release = true } others more
     | "-g" :: more -> go { o with debugInfo = true } others more
+    | "--coverage" :: more -> go { o with coverage = true } others more
     | "--emit-llvm" :: more -> go { o with emitLlvm = true } others more
     | "--target" :: t :: more -> go (withTarget o t) others more
     | "--cpu" :: c :: more -> go { o with cpu = Some c } others more

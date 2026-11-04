@@ -546,6 +546,56 @@ let private runOnChip (o: Options.Options) (src: string) (m: Options.Mcu) : opti
 // is a prefix; else a part of the path), --summary, --fail-on-focused, --update. stress: for that
 // many milliseconds, the tests at random on every core, over and over (D4). The passed, failed
 // and skipped, or None when it didn't build.
+// zs test --coverage (D10): the test binary built with a counter per line of the test's files
+// (the test file's directory down), each test's process writing them at exit to <exe>.zscov;
+// the lines run and not run per file, and coverage.lcov for genhtml and the tools that read lcov
+let private coverageReport (src: string) (exe: string) =
+  let path = exe + ".zscov"
+  match File.readAllText path with
+  | Error _ -> println "coverage: nothing recorded (did every test fail to start?)"
+  | Ok text ->
+    let add (m: Map<string * int, i64>) (line: string) =
+      match String.split "\t" line with
+      | [ file; l; c ] ->
+        match ((Int.parse l : option<int>), (Int.parse c : option<i64>)) with
+        | (Some ln, Some n) ->
+          let key = (file, ln)
+          Map.add key (n + Option.defaultValue (i64 0) (Map.tryFind key m)) m
+        | _ -> m
+      | _ -> m
+    let counts = List.fold add Map.empty (String.split "\n" text)
+    let files = List.distinct (List.map (fun ((f, _), _) -> f) (Map.toList counts))
+    // runs of lines not run: 9, 21-23
+    let ranges (lines: list<int>) : string =
+      let rec go (acc: list<string>) (start: int) (prev: int) (rest: list<int>) =
+        match rest with
+        | l :: more when l = prev + 1 -> go acc start l more
+        | l :: more -> go ((if start = prev then $"{start}" else $"{start}-{prev}") :: acc) l l more
+        | [] -> List.rev ((if start = prev then $"{start}" else $"{start}-{prev}") :: acc)
+      match lines with
+      | first :: more -> String.join ", " (go [] first first more)
+      | [] -> ""
+    let cwd = Environment.currentDirectory ()
+    let lcov = Buffer.empty
+    println "coverage:"
+    for file in List.sort files do
+      let lines = List.sort (List.map (fun ((_, l), _) -> l) (List.filter (fun ((f, _), _) -> f = file) (Map.toList counts)))
+      let hit (l: int) = Option.defaultValue (i64 0) (Map.tryFind (file, l) counts) > i64 0
+      let covered = List.filter hit lines
+      let missed = List.filter (fun l -> not (hit l)) lines
+      let total = List.length lines
+      let pct = if total = 0 then 100 else (100 * List.length covered) / total
+      let shown = Path.getRelativePath cwd (Path.getFullPath file)
+      println $"  {shown}: {List.length covered} of {total} lines ({pct}%){(if List.isEmpty missed then "" else $", not run: {ranges missed}")}"
+      Buffer.push $"TN:\nSF:{Path.getFullPath file}" lcov
+      for l in lines do
+        Buffer.push $"DA:{l},{Option.defaultValue (i64 0) (Map.tryFind (file, l) counts)}" lcov
+      Buffer.push $"LF:{total}\nLH:{List.length covered}\nend_of_record" lcov
+    match File.writeAllText "coverage.lcov" (String.join "\n" (Array.toList (Buffer.toArray lcov)) + "\n") with
+    | Ok _ -> println "coverage written to coverage.lcov (genhtml -o coverage coverage.lcov renders it)"
+    | Error e -> println $"coverage.lcov: {e}"
+  File.delete path |> ignore
+
 let private runTests (o: Options.Options) (src: string) (args: list<string>) (stress: option<int>) : option<int * int * int> =
   match o.mcu with
   | Some m when not (List.isEmpty m.runner) -> runOnChip o src m
@@ -649,6 +699,8 @@ let private runTests (o: Options.Options) (src: string) (args: list<string>) (st
             let path = Path.combine (dirOf src) file
             if File.exists path && updateExpect path line text then
               println $"updated {file}:{line}"
+        if o.coverage then
+          coverageReport src exe
         File.delete exe |> ignore
         if focused && List.contains "--fail-on-focused" args then
           println "focused tests are left (--fail-on-focused)"
@@ -728,7 +780,8 @@ let private docTests (o: Options.Options) (files: list<string>) (update: bool) :
 // its [<Tests>]), each timed in a process of its own: three warm-up runs, then n runs (30 unless
 // --runs says), whose median and 95% confidence interval (the order statistics) are shown. The
 // results are saved beside the file (.zs-cache/bench/<file>.tsv), and a benchmark whose interval
-// doesn't overlap the saved one's, by at least 5%, is reported slower or faster.
+// doesn't overlap the saved one's, by at least 10% (a machine's load moves a median by a few
+// percent between runs), is reported slower or faster.
 type private Stat = { path: string; median: i64; lo: i64; hi: i64 }
 
 let private statOf (path: string) (samples: list<i64>) : Stat =
@@ -796,10 +849,10 @@ let private benchFile (o: Options.Options) (src: string) (filters: list<string>)
             match Map.tryFind l.path last with
             | Some was ->
               let ratio = float s.median / float (max (i64 1) was.median)
-              if s.lo > was.hi && ratio >= 1.05 then
+              if s.lo > was.hi && ratio >= 1.1 then
                 changed.Value <- changed.Value + 1
                 $"  slower by {int ((ratio - 1.0) * 100.0 + 0.5)}% (was {shownNs was.median})"
-              else if s.hi < was.lo && ratio <= 0.95 then
+              else if s.hi < was.lo && ratio <= 0.9 then
                 changed.Value <- changed.Value + 1
                 $"  faster by {int ((1.0 - ratio) * 100.0 + 0.5)}% (was {shownNs was.median})"
               else

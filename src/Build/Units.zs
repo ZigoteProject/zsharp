@@ -106,9 +106,11 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
   let keyOf = Map.ofList (List.map (fun (u: Check.Unit) -> (u.file, u.key)) c.units)
   let libKey = Tools.hashOf ("library" :: List.map (fun (u: Check.Unit) -> u.key) lib)
   let decide = Option.isNone (Environment.getVariable "ZS_NO_DECIDE")
-  let simple = Option.isSome (Environment.getVariable "ZS_NO_SIMPLIFY") || o.debugInfo
+  // --coverage keeps the code as written, as -g does: every line of every reached function counts
+  let asWritten = o.debugInfo || o.coverage
+  let simple = Option.isSome (Environment.getVariable "ZS_NO_SIMPLIFY") || asWritten
   // the settings a module's code is made with (its object's are in its key)
-  let settings = $"{o.debugInfo} {testBuild} {decide}"
+  let settings = $"{o.debugInfo} {o.coverage} {testBuild} {decide}"
   let compiler = Tools.compilerId ()
   // which module defines each function, and a module's own functions: its non-generic ones (in a
   // test build, not main)
@@ -187,7 +189,7 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
       match unitOf g with
       | None -> true
       | u -> unitOf caller = u
-    let mono1 = check "inline" (if o.debugInfo then mono0 else timedInto timedLines "inline" (fun () -> Opt.Inline.runWith kept mayInline (Opt.Inline.uncurry fixedNames mono0)))
+    let mono1 = check "inline" (if asWritten then mono0 else timedInto timedLines "inline" (fun () -> Opt.Inline.runWith kept mayInline (Opt.Inline.uncurry fixedNames mono0)))
     let mono2 = check "simplify" (timedOn timedLines "simplify" (fun (fs: list<MFun>) -> if simple then fs else Opt.Simplify.run types.Value fs) mono1)
     let (lowered, mono3a) = timedInto timedLines "effects" (fun () -> Opt.Evidence.run types.Value prog.effects mono2)
     let mono3 = check "effects" mono3a
@@ -384,6 +386,8 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
   let nameOf (file: string) : string / <> = Path.getRelativePath (Path.getDirectoryName (Path.getFullPath mainFile)) (Path.getFullPath file)
   let gopts : Gen.Emit.Options =
     { debugInfo = o.debugInfo
+      coverageRoot = (if o.coverage then Path.getFullPath (Path.getDirectoryName (Path.getFullPath mainFile)) else "")
+      coverageSeeds = []
       optimized = level <> "-O0"
       optimizeSize = level = "-Os"
       target = o.target
@@ -413,8 +417,8 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
   // file and kind (own, copies or whole), its module's own functions' names, the functions it
   // defines, the module's others by their signatures (it declares them) and the other modules'
   // it calls
-  let compileOne (p: string * string * Set<string> * list<MFun> * list<MFun> * list<AbiFun>) : result<string, PassError> / <> =
-    let (file, kind, own, defined, others, calls) = p
+  let compileOne (p: string * string * Set<string> * list<MFun> * list<MFun> * list<AbiFun> * list<string * int>) : result<string, PassError> / <> =
+    let (file, kind, own, defined, others, calls, seeds) = p
     let typesHere : Map<string, TypeInfo> =
       match Binary.ofBytes typesBytes with
       | Ok t -> t
@@ -437,6 +441,9 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
       | _ -> None
     let entries = if file <> mainFile then [] else List.choose entry (List.append (Set.toList fixedNames) (List.map snd values))
     let name = if kind = "copies" then nameOf file + "#copies" else nameOf file
+    // --coverage: the module's functions no entry reaches (so not made), counted never run, in
+    // the part that holds the module's own functions
+    let gopts = if List.isEmpty seeds then gopts else { gopts with coverageSeeds = seeds }
     // the functions it calls in the module's other part are declared, from its functions
     match Gen.Module.compile gopts typesHere externs exports tests values clayouts placements part (List.concat [ defined; others; stubs; entries ]) with
     | Ok(ir0, _) ->
@@ -459,7 +466,10 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
     let m = Map.find u.file made.Value
     let mine (f: MFun) = kind = "whole" || (kind = "own") = (unitOf f.name = Some u.file)
     let (defined, others) = List.partition mine m.mfuns
-    (u.file, kind, Set.ofList (ownOf u), defined, List.map signature others, m.calls)
+    // --coverage: the module's functions no entry reaches (so not made), counted never run, in
+    // the part that holds the module's own functions
+    let seeds = if o.coverage && kind <> "copies" then Compile.coverageSeeds (u.funs ()) defined gopts.coverageRoot else []
+    (u.file, kind, Set.ofList (ownOf u), defined, List.map signature others, m.calls, seeds)
   let jobs = Array.ofList (List.map jobOf wanted)
   // nothing else holds the modules' code now: it moves into the jobs, its counts plain
   made.Value <- Map.empty

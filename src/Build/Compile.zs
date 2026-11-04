@@ -166,6 +166,14 @@ let usesPrim (prims: Set<string>) (funs: list<MFun>) : bool =
     | k -> List.exists uses (Core.Ir.children k)
   List.exists (fun (f: MFun) -> uses f.body) funs
 
+// --coverage: the functions of the covered files no entry reaches, by their lines, which the
+// report then shows as never run (the reached ones count their own lines)
+let coverageSeeds (defs: list<Core.Ir.FunDef>) (funs: list<MFun>) (root: string) : list<string * int> =
+  let generated = Set.ofList (List.map (fun (f: MFun) -> Core.Ir.baseFunName f.name) funs)
+  let seed (f: Core.Ir.FunDef) =
+    if f.line > 0 && not (String.contains "$" f.name) && not (Set.contains f.name generated) && String.startsWith root (Path.getFullPath f.file) then Some(f.file, f.line) else None
+  List.distinct (List.choose seed defs)
+
 // the primitives of a program that has weak references or arenas (code generation's checkedHeap)
 let heapPrims : Set<string> = Set.ofList [ "weak.new"; "arena.with" ]
 
@@ -338,7 +346,8 @@ let generate (o: Options.Options) (prog0: Program) (testBuild: bool) : result<Pr
       match o.mcu with
       | Some m -> unrunnable m
       | None -> Map.empty
-    match lower prog o.debugInfo o.time o.checkIr o.noHeap cant with
+    // --coverage keeps the code as written, as -g does: every line of every reached function counts
+    match lower prog (o.debugInfo || o.coverage) o.time o.checkIr o.noHeap cant with
     | Error e -> Error(InPass e)
     | Ok(types, funs) ->
       // a library's handles may be used on any thread of its C host
@@ -347,6 +356,8 @@ let generate (o: Options.Options) (prog0: Program) (testBuild: bool) : result<Pr
       let level = Options.optLevel o
       let gopts : Gen.Emit.Options =
         { debugInfo = o.debugInfo
+          coverageRoot = (if o.coverage then Path.getFullPath (Path.getDirectoryName (Path.getFullPath o.main)) else "")
+          coverageSeeds = (if o.coverage then coverageSeeds prog.funs funs (Path.getFullPath (Path.getDirectoryName (Path.getFullPath o.main))) else [])
           optimized = level <> "-O0"
           optimizeSize = level = "-Os"
           target = o.target
