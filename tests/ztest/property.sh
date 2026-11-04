@@ -111,3 +111,18 @@ let tests =
   ]
 ZS
 echo "a shown value shrinks:"; "$zs" test flags.zs | sed -E 's/from [0-9]+ bytes to [0-9]+ in [0-9]+ runs/from N bytes to M in N runs/; s/-[0-9a-f]{8},/-HASH,/'
+cat > caps.zs <<'ZS'
+open Testing
+
+// two bugs whose messages differ by a capitalized word, which is the message's, not a value
+let probe (xs: list<int>) : unit =
+  if List.length xs >= 3 then
+    if List.item 2 xs <> 0 then panic "bad order after Insert" else panic "bad order after Remove"
+
+[<Tests>]
+let tests =
+  testList "c" [
+    testPropertyWith { seed = Some (u64 5) } "order" (fun (xs: list<int>) -> probe xs)
+  ]
+ZS
+echo "kept apart by a word of the message:"; "$zs" test caps.zs | sed -E 's/from [0-9]+ bytes to [0-9]+ in [0-9]+ runs/from N bytes to M in N runs/; s/-[0-9a-f]{8},/-HASH,/'

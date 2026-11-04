@@ -46,3 +46,9 @@ FAIL b/few flags
        panic: too many flags: [false; false; false]
        shrunk from N bytes to M in N runs; saved as .zs-cache/failures/flags/b-few-flags-HASH, replayed first next time
 0 passed, 1 failed
+kept apart by a word of the message:
+FAIL c/order
+       case: [0; 0; 1]
+       panic: bad order after Insert
+       shrunk from N bytes to M in N runs; saved as .zs-cache/failures/caps/c-order-HASH, replayed first next time
+0 passed, 1 failed

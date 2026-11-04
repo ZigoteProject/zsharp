@@ -566,7 +566,7 @@ let bssSection (sec: string) : bool = String.startsWith ".bss" sec
 
 /// [<Section>]: a section the boards' linker scripts put in flash with the code (`*(.text*)`,
 /// `*(.rodata*)`): in the image, read-only.
-let flashSection (sec: string) : bool = String.startsWith ".text" sec || String.startsWith ".rodata" sec
+let flashSection (sec: string) : bool = String.startsWith ".text" sec || String.startsWith ".rodata" sec || String.startsWith ".vectors" sec || String.startsWith ".ARM." sec
 
 /// What a top-level value with `[<Section>]` or `[<Align>]` is made of (0014 item 12): a
 /// constant table (a static object already), `Buffer.create n x` or `ref x` with constant

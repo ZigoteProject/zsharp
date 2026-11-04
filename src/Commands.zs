@@ -458,8 +458,9 @@ let private replayFails (r: option<int> * string) : bool =
 // what a failure says, without the values in it, so a shrink candidate is told from the case
 // only by the bug it trips: the first panic line, else a sanitizer's report from its kind on,
 // each run of words that look like a value made one `#` (a number, a string or char, what a
-// bracket opens up to its close, true or false, and past the first word a capitalized one, as a
-// case's name, None or Some is), a place (`evens.zs:6`) kept. So "the third is -4" and "the third
+// bracket opens up to its close, true or false, Some, None, Ok and Error; a program's own case
+// names are words like its message's), a place (`evens.zs:6`) kept, and the function it panicked
+// in when there's a backtrace. So "the third is -4" and "the third
 // is 3" are one failure, "too long, starting Some 4" and "too long, starting None" one, and "4 is
 // the third" and "3 long" two; two asserts on two lines are two, and a stack overflow, the
 // runtime's or AddressSanitizer's, is one of its own.
@@ -470,7 +471,8 @@ let private failureOf (output: string) : string =
     | Some i -> String.sub l (i + String.length marker) (String.length l - i - String.length marker)
     | None -> l
   let (kind, body) =
-    match List.tryFind (fun (l: string) -> String.startsWith "panic: " l) lines with
+    // (anywhere in its line: what the property printed before may have no newline)
+    match List.tryFind (fun (l: string) -> String.contains "panic: " l) lines with
     | Some l -> ("panic", after "panic: " l)
     | None ->
       match List.tryFind (fun (l: string) -> String.contains "AddressSanitizer: " l) lines with
@@ -484,28 +486,37 @@ let private failureOf (output: string) : string =
   // a word's bracket depth change and whether it flips a quote
   let opens (w: string) = count (u8 40) w + count (u8 91) w + count (u8 123) w - count (u8 41) w - count (u8 93) w - count (u8 125) w
   let quotes (w: string) = count (u8 34) w % 2 = 1
-  let valueLike (first: bool) (w: string) =
+  let valueLike (w: string) =
     let c = String.byte w 0
     let bare = String.trimEnd (String.replace (String.replace (String.replace w ";" "") "," "") ":" "")
     let starts = digit c || c = u8 34 || c = u8 39 || c = u8 40 || c = u8 91 || c = u8 123
     let negative = c = u8 45 && String.length w > 1 && digit (String.byte w 1)
-    let named = not first && c >= u8 65 && c <= u8 90
+    // an option's or a result's case (a program's own case names can't be told from the words
+    // of its messages, Insert from Remove, so they stay)
+    let named = List.contains (String.trimEnd (String.replace (String.replace bare "(" "") ")" "")) [ "Some"; "None"; "Ok"; "Error" ]
     not (String.contains ".zs:" w) && (starts || negative || bare = "true" || bare = "false" || named)
   // the words, each run of values (and what's inside a bracket or a quote begun by one) as #
-  let rec norm (first: bool) (depth: int) (inQuote: bool) (inValue: bool) (ws: list<string>) : list<string> =
+  let rec norm (depth: int) (inQuote: bool) (inValue: bool) (ws: list<string>) : list<string> =
     match ws with
     | [] -> []
     | w :: more ->
       let inside = depth > 0 || inQuote
-      if inside || valueLike first w then
-        let depth2 = max 0 (depth + opens w)
+      if inside || valueLike w then
+        // brackets count outside a string only
         let quote2 = if quotes w then not inQuote else inQuote
-        let rest = norm false depth2 quote2 true more
+        let depth2 = if inQuote || quote2 then depth else max 0 (depth + opens w)
+        let rest = norm depth2 quote2 true more
         if inValue then rest else "#" :: rest
       else
-        w :: norm false 0 false false more
-  let words = norm true 0 false false (List.filter (fun (w: string) -> w <> "") (String.split " " body))
-  kind + ": " + String.join " " words
+        w :: norm 0 false false more
+  let words = norm 0 false false (List.filter (fun (w: string) -> w <> "") (String.split " " body))
+  // the function it panicked in, when there's a backtrace: two bugs with like messages in two
+  // functions are two
+  let frame =
+    match List.tryFind (fun (l: string) -> String.startsWith "  at " l) lines with
+    | Some l -> " @ " + String.trim l
+    | None -> ""
+  kind + ": " + String.join " " words + frame
 
 // whether a shrink candidate's replay fails as the case did: the same failure, so a candidate
 // cut short (its values recursing on the zeros past its end into a stack overflow) or one that
@@ -1230,8 +1241,8 @@ let fuzz (args: list<string>) : int =
               let crashes = exe + ".crashes"
               Tools.makeDirectory crashes
               let flags = List.concat [ [ corpus; $"-max_total_time={seconds}"; $"-artifact_prefix={crashes}/" ]; theirs ]
-              // libFuzzer's own flags (-runs, -max_total_time) may end it sooner
-              let span = if List.isEmpty theirs then $"for {seconds} s" else $"for at most {seconds} s"
+              // libFuzzer's own flags (-runs, -max_total_time) decide how long it runs then
+              let span = if List.isEmpty theirs then $"for {seconds} s" else $"with libFuzzer's {String.join " " theirs}"
               println $"fuzzing {l.path} {span} (corpus: {Path.getRelativePath (Environment.currentDirectory ()) corpus})"
               let ran = Tools.runSplit exe (List.concat [ [ l.path; "--fuzz" ]; flags ])
               let found =

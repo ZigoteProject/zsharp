@@ -214,10 +214,21 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
     | SFloat f -> f = 0.0 && 1.0 / f > 0.0
     | SBool b -> not b
     | SStruct(_, xs) -> List.forall zeroElem xs
+    // a plain union's first case (its tag 0), or its one case, of zero fields: zero bytes (not a
+    // niche's None or a boxed case, which are pointers)
+    | SCtor(ut, tag, xs) when Types.Repr.plainUnion g.v g.types ut -> (tag = 0 || Option.isSome (oneCase g ut)) && List.forall zeroElem xs
     | _ -> false
+  // the sections a chip's script keeps for itself in flash: the vector table, which must start the
+  // image, and the unwind tables
+  let reserved (sec: string) = bareMetal && (String.startsWith ".vectors" sec || String.startsWith ".ARM." sec)
+  let refuseReserved (v: string) (sec: string) =
+    placementFails $"[<Section \"{sec}\">] '{v}': on a chip that section is the board's own (the vector table, which must start the flash image, or the unwind tables); place it elsewhere"
   let writable (v: string) (x: StaticElem) =
     let (sec, _) = placement v
-    if bareMetal && flashSection sec then
+    if reserved sec then
+      refuseReserved v sec
+      false
+    else if bareMetal && flashSection sec then
       placementFails $"[<Section \"{sec}\">] '{v}': on a chip that section is flash, which a ref or Buffer can't be written in; use .data, .noinit or a RAM section the board's script names"
       false
     else if bareMetal && bssSection sec && not (zeroElem x) then
@@ -412,6 +423,9 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
         // a constant: tables, lists and boxed cases as static objects, a record, tuple or plain
         // union written into the value's global, a number or string the same (0014 items 1, 3)
         match staticElem f.body with
+        | Some _ when isPlaced && reserved (fst (placement v)) ->
+          refuseReserved v (fst (placement v))
+          None
         | Some _ when isPlaced && unloaded (fst (placement v)) && holdsWritable (fst (placement v)) ->
           let (sec, _) = placement v
           placementFails $"[<Section \"{sec}\">] constant '{v}': on a chip, a section the board's linker script doesn't name that holds a ref or Buffer too is RAM, never loaded from the flash image, so the table would be lost; give the constant a section of its own (read-only, kept in flash), or drop the attribute"

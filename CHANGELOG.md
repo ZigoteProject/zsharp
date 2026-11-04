@@ -233,7 +233,8 @@
   flash at startup; a constant table alone in such a section is read-only and stays in flash,
   but one sharing it with a ref or Buffer (RAM, never loaded) or in `.bss…` (zeroed) is an
   error, as is a ref or Buffer in flash (`.text…`, `.rodata…`) or one in `.bss…` that doesn't
-  start at zero. A chip's library has no startup, so its placed values mustn't need that copy
+  start at zero (a plain union's first case does), and anything in the board's own `.vectors`
+  or `.ARM…`. A chip's library has no startup, so its placed values mustn't need that copy
   or a `.noinit` ref's header (a host's or wasm32's loads its sections like any other). A
   placed Buffer's slots are dropped at exit whatever it did since (written, grown into the
   heap, shortened). A program with placed values builds as one module, so they're placed
@@ -245,11 +246,16 @@
   array's copy-on-write), and the write borrows the Buffer as a read does, so writing a
   parameter's, a field's, an element's or a top-level Buffer frees nothing; the element it
   overwrites is a drop when its type is counted, and so is a Buffer a call gave or a mutable
-  moved into the write, or one taken out of a value the write frees. A Buffer (or array,
-  string or closure) reached through a pattern variable is lent to a read, a write, a call that
-  borrows it or an application only when nothing else in it takes the value it was matched
-  from, which could free it first (`tests/noalloc.zs`, `tests/buffer_lend.zs`,
-  `tests/err_noalloc_buffer.zs`, `tests/err_noalloc_buffer_call.zs`).
+  moved into the write, or one taken out of a value the write frees: a write is accepted only
+  where the Buffer is provably held elsewhere (a variable's, a top-level value's, a field's or
+  an element's), on every path of a match or an if. A Buffer (or array, string or closure)
+  reached through a pattern variable is lent to a read, a write, a call that borrows it or an
+  application only when nothing else in it takes the value it was matched from, which could
+  free it first; and a mutable passed to a call that borrows it, which another argument
+  reassigns, is read where it stands and kept alive through the call (`tests/noalloc.zs`, `tests/buffer_lend.zs`,
+  `tests/err_noalloc_buffer.zs`, `tests/err_noalloc_buffer_call.zs`,
+  `tests/err_noalloc_buffer_taken.zs`, `tests/err_noalloc_buffer_arms.zs`,
+  `tests/err_noalloc_buffer_alias.zs`).
 - A library (`--lib`) may hold top-level constants: a table, a record, a tree of union cases
   are static objects with no startup code, which a library doesn't have; only a value really
   computed at startup is an error, from the code generator, and so is a startup assert
@@ -541,14 +547,16 @@ a real machine. The flagship runs under QEMU's STM32F405, not yet on the board i
   the test file and the property's path; the next run replays it first, and once it passes
   it's deleted. A panic the case doesn't reproduce alone, and a run that gave up on its
   discards, are reported as they happened, nothing shrunk or saved; a shrink keeps the failure
-  it started with (its panic or sanitizer report up to its first value, its place kept), so a
-  candidate that trips another bug, another assert, or ends in a stack overflow, isn't taken. `zs fuzz file.zs path [--for n] [--
+  it started with (its panic or sanitizer report with its values left out, an assert's place and
+  the function it panicked in kept; a program's own case names count as the message's words, as
+  `Some`, `None`, `Ok` and `Error` don't), so a candidate that trips another bug, another assert,
+  or ends in a stack overflow, isn't taken. `zs fuzz file.zs path [--for n] [--
   flags]` (track D, item 6) runs one property under libFuzzer (the tests built with its
   instrumentation and the sanitizers; a panic aborts, so it's a crash), each input the
   property's bytes (`Gen.bytes ()` takes an input whole, so a property over bytes fuzzes a
   parser as it is), the corpus kept beside the file in `.zs-cache/fuzz/<file>/<path>/` so a
-  run resumes (for at most `--for`'s seconds), the flags after `--` libFuzzer's but for those
-  that start other processes
+  run resumes (for `--for`'s seconds, or as long as libFuzzer's own flags say), the flags after
+  `--` libFuzzer's but for those that start other processes
   (`-jobs`, `-fork`: it runs in one), its output read apart from the property's so neither
   stream blocks the other; a crash is shrunk by replays, shown, and saved as the failure `zs
   test` replays first. `zs test --target` shows every line of a failing test's panic, blank

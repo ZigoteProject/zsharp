@@ -1,7 +1,9 @@
 // a Buffer written or read through a pattern variable, passed to a function that borrows it, or a
 // closure applied, while the same expression hands the value it was matched from to a function
 // that frees it: none is lent then (it would be gone before it's used), so the write lands in the
-// Buffer, nothing else's memory, and the leak check is clean
+// Buffer, nothing else's memory, and the leak check is clean; and a mutable passed to a function
+// that borrows it, which another argument reassigns, is read where it stands (left to right) and
+// kept alive through the call
 let rec count (o: option<Buffer<string>>) (k: int) : int =
   if k = 0 then List.length [ o ] else count o (k - 1)
 
@@ -34,6 +36,14 @@ let main () =
     put b (fresh (count w 2) keep) 3
     println $"{b.[0]}"
   | None -> ()
+  let a = List.length (Environment.args ())
+  let mutable cur = Buffer.create 2 $"old{a}"
+  put cur (if a = 0 then
+    cur <- Buffer.create 2 $"new{a}"
+    $"written{a}"
+  else
+    "other") 1
+  println cur.[0]
   let n = List.length (Environment.args ())
   let f = Some(fun (k: int) -> $"t{n}{k}")
   match f with

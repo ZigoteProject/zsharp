@@ -1,0 +1,1 @@
+tests/err_noalloc_buffer_alias.zs:6: error: w is [<NoAlloc>], but w writes a Buffer it then drops, whose last reference may be the write's, which may free it

@@ -725,8 +725,6 @@ let private lowerFun (types: Map<string, TypeInfo>) (borrowedParams: Map<string,
       | CNeg a -> re (CNeg(rc owned borrowed a))
       | CNot a -> re (CNot(rc owned borrowed a))
       | _ -> panic "Rc: unexpected node"
-    // whether a read through a (a variable, or a field of one) can borrow it: the rest of the
-    // read doesn't use the variable
     // whether the other arguments of an operation (rest) may free what keeps the variable x alive:
     // a pattern variable is borrowed from the value matched (and that from its own), and an
     // argument that takes one of those this code owns (handing it to a function that frees it)
@@ -842,13 +840,34 @@ let private lowerFun (types: Map<string, TypeInfo>) (borrowedParams: Map<string,
     // its last use); anything else goes through a temporary dropped after
     and callLending (owned: Set<string>) (borrowed: Set<string>) (e: CExpr) (n: string) (xs: list<CExpr>) : CExpr =
       let bs = Map.find n borrowedParams
+      let ixs = List.indexed xs
+      // the arguments that may take a holder: those not passed as bare variables to borrowed
+      // parameters (those are lent, or bound to a temporary, and their holders outlive the call)
+      let bareBorrowed (j: int) (a: CExpr) =
+        match a.k with
+        | CLocal _ -> Set.contains j bs
+        | _ -> false
+      let taking = List.map snd (List.filter (fun (j, a) -> not (bareBorrowed j a)) ixs)
+      // a mutable another argument assigns: read where it stands, before that assignment
+      let reassigned (j: int) (a: CExpr) =
+        match a.k with
+        | CLocal x -> Set.contains j bs && Set.contains x mutables && List.exists (writes x) xs
+        | _ -> false
       let lentArg (j: int) (a: CExpr) =
         match a.k with
-        | CLocal x -> Set.contains j bs && List.length (List.filter (isLocalNamed x) xs) = 1 && not (holderTaken owned x xs)
+        | CLocal x -> Set.contains j bs && List.length (List.filter (isLocalNamed x) xs) = 1 && not (holderTaken owned x taking) && not (reassigned j a)
         | _ -> false
       let needsTemp (j: int) (a: CExpr) = Set.contains j bs && not (lentArg j a)
-      let ixs = List.indexed xs
-      if List.exists (fun (j, a) -> needsTemp j a) ixs then
+      if List.exists (fun (j, a) -> reassigned j a) ixs then
+        // every argument bound in order, each a variable then (evaluated left to right, as
+        // written), and the call made again over them
+        let temps = List.map (fun (a: CExpr) -> (tmp (), a)) xs
+        for (w, a) in temps do
+          setType w a.ty
+        let call = mk (CCallDirect(n, List.map (fun (wa: string * CExpr) -> mk (CLocal(fst wa)) (snd wa).ty) temps)) e.ty
+        let body = List.fold (fun (acc: CExpr) (w, a) -> mk (CLet(w, a, acc)) e.ty) call (List.rev temps)
+        rcIn owned borrowed body
+      else if List.exists (fun (j, a) -> needsTemp j a) ixs then
         // bind the others' temporaries first, then retry with variables in their place
         let temps = List.map (fun (j, a) -> if needsTemp j a then Some(tmp (), a) else None) ixs
         for t in temps do

@@ -12,7 +12,7 @@ FAIL parser/parses anything
        the failing case saved last time, replayed first (delete .zs-cache/failures/parse/parser-parses-anything-6aba3c26 to run afresh)
 0 passed, 1 failed
 the flags after -- are libFuzzer's (-runs=0: the corpus is run, nothing new tried):
-fuzzing parser/parses anything at most (corpus kept)
+fuzzing parser/parses anything with libFuzzer's -runs=0 (corpus kept)
 no failure; N inputs in the corpus
 and not those that start other processes:
 zs fuzz runs libFuzzer in one process, so it doesn't take -jobs=2; run several zs fuzz commands over the same corpus instead

@@ -2,6 +2,9 @@ table: built
 shared: error: [<Section ".dma">] constant 'table': on a chip, a section the board's linker script doesn't name that holds a ref or Buffer too is RAM, never loaded from the flash image, so the table would be lost; give the constant a section of its own (read-only, kept in flash), or drop the attribute
 bsstable: error: [<Section ".bss">] constant 'table': a chip's reset zeroes .bss, so the table would be lost; drop the attribute (a constant is in flash already), or use .data for a RAM copy
 bssfive: error: [<Section ".bss">] 'count': a chip's reset zeroes .bss, so what's there starts as zeros; give it a zero value, or use .data for one that starts otherwise
+bssunion: built
+vectors: error: [<Section ".vectors">] 'table': on a chip that section is the board's own (the vector table, which must start the flash image, or the unwind tables); place it elsewhere
+vectorsref: error: [<Section ".vectors">] 'count': on a chip that section is the board's own (the vector table, which must start the flash image, or the unwind tables); place it elsewhere
 bsslib: built
 flash: error: [<Section ".rodata.boot">] 'boots': on a chip that section is flash, which a ref or Buffer can't be written in; use .data, .noinit or a RAM section the board's script names
 noinitlog: error: [<Section ".noinit_log">] holds what a reset leaves in memory, so a constant there would never be loaded: drop the attribute from 'table', or make it a ref or a Buffer.create

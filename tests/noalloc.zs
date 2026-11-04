@@ -49,6 +49,15 @@ let bump (counts: Buffer<int>) (k: int) = counts.[k] <- counts.[k] + 1
 [<NoAlloc>]
 let setCell (grid: Buffer<Buffer<u8>>) (r: int) (c: int) = grid.[r].[c] <- u8 1
 
+let spare = Some(Buffer.create 2 0)
+
+// a Buffer out of a top-level option, and out of a Buffer's element: each still held there
+[<NoAlloc>]
+let markSpare () = (Option.get spare).[0] <- 3
+
+[<NoAlloc>]
+let markSlot (slots: Buffer<option<Buffer<int>>>) (i: int) = (Option.get slots.[i]).[1] <- 4
+
 let main () =
   let ring = { data = Buffer.create 2 (u8 0); head = ref 0 }
   push ring (u8 4)
@@ -59,7 +68,10 @@ let main () =
   bump counts 1
   let grid = Buffer.ofArray [| Buffer.create 2 (u8 0); Buffer.create 2 (u8 0) |]
   setCell grid 1 0
-  println $"{ring.data.[0]} {ring.data.[1]} {counts.[1]} {grid.[1].[0]}"
+  markSpare ()
+  let slots = Buffer.ofArray [| Some(Buffer.create 2 0) |]
+  markSlot slots 0
+  println $"{ring.data.[0]} {ring.data.[1]} {counts.[1]} {grid.[1].[0]} {(Option.get spare).[0]} {(Option.get slots.[0]).[1]}"
   let b = Buffer.create 2 (u8 0)
   mark b 0
   markFrame ()

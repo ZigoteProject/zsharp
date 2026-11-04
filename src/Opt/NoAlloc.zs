@@ -246,34 +246,62 @@ let private stepsOf (v: Types.Vars.Vars) (types: Map<string, TypeInfo>) (word: i
       if heap el then
         own Frees "overwrites a Buffer element, which drops the old one (it may be the last reference)" "drops the element it overwrites" "" line
       if op = "array.set" && heap buf.ty && not (neverLast statics buf) then
-        // what the Buffer expression ends in, on any of its paths: one a call gave, a mutable
-        // moved in, or one taken out of a value it frees (a match's field, Option.get inlined)
-        let rec fresh (b: CExpr) : option<string> =
+        // a Buffer the write doesn't borrow is dropped by it, which frees nothing only when that
+        // reference is provably not the last: a dup of a variable that holds its own, a
+        // top-level value's, or one read out of a container (a field, an element, a ref's value)
+        // that holds one too (where the container's own last reference goes, its drop is
+        // reported). On every path of an if or a match; anything else is taken as last
+        let reads (op: string) = op = "array.get" || op = "array.get#b" || op = "ref.get" || op = "ref.get#b"
+        // st: the locals within that are never the last (as statics), a value matched from one
+        // giving its pattern's variables too
+        let rec held (st: Set<string>) (b: CExpr) : bool =
           match b.k with
-          | CLet(x, w, { k = CLocal y }) when x = y -> fresh w
+          | CDup(y, _, { k = CLocal z }) -> y = z
+          | CLocal x -> Set.contains x st
+          | CField _ -> true
+          | CPrim(op, _) when reads op -> true
+          | CLet(x, w, body) -> held (if held st w then Set.add x st else st) body
+          // a path that panics gives no Buffer to write
+          | CPrim("panic", _) -> true
+          | CLine(_, a)
+          | CSeq(_, a)
+          | CDrop(_, _, a)
+          | CDropFields(_, _, _, _, _, a) -> held st a
+          | CIf(_, t, f) -> held st t && held st f
+          | CMatch(sc, cases) ->
+            let fromHeld = held st sc
+            let arm (c: CPat * option<CExpr> * CExpr) =
+              let (p, _, body) = c
+              held (if fromHeld then Set.union st (Set.ofList (List.map fst (patVars p))) else st) body
+            List.forall arm cases
+          | _ -> neverLast st b
+        // what the write may free, said by where the Buffer came from
+        let rec source (b: CExpr) : string =
+          match b.k with
+          | CLet(x, w, { k = CLocal y }) when x = y -> source w
           | CLine(_, a)
           | CLet(_, _, a)
-          | CSeq(_, a) -> fresh a
-          | CIf(_, t, f) ->
-            match fresh t with
-            | Some what -> Some what
-            | None -> fresh f
-          | CMatch(_, cases) -> List.tryPick (fun (_, _, body) -> fresh body) cases
-          | CDropFields(_, _, _, _, _, { k = CLocal _ }) -> Some "writes a Buffer taken out of a value it frees, then drops the Buffer, which may free it"
-          | CDropFields(_, _, _, _, _, body) -> fresh body
+          | CSeq(_, a) -> source a
           | CCallDirect _
           | CApplyClo _
-          | CExtern _ -> Some "writes a Buffer a call gave and then drops it, which may free it"
-          | CPrim("slot.take", [ { k = CLocal m } ]) -> Some $"moves the mutable '{written m}' into the write, which drops it and may free it"
-          | _ -> None
-        match buf.k with
-        | CLocal x ->
-          let what = dropping x buf.ty
-          own Frees what what (subjectOf x) line
-        | _ ->
-          match fresh buf with
-          | Some what -> own Frees what what "" line
-          | None -> ()
+          | CExtern _ -> "writes a Buffer a call gave and then drops it, which may free it"
+          | CPrim("slot.take", [ { k = CLocal m } ]) -> $"moves the mutable '{written m}' into the write, which drops it and may free it"
+          | CDropFields _ -> "writes a Buffer taken out of a value it frees, then drops the Buffer, which may free it"
+          // the path that isn't held
+          | CIf(_, t, f) -> source (if held statics t then f else t)
+          | CMatch(_, cases) ->
+            match List.tryFind (fun (_, _, body) -> not (held statics body)) cases with
+            | Some(_, _, body) -> source body
+            | None -> "writes a Buffer it then drops, whose last reference may be the write's, which may free it"
+          | _ -> "writes a Buffer it then drops, whose last reference may be the write's, which may free it"
+        if not (held statics buf) then
+          match buf.k with
+          | CLocal x ->
+            let what = dropping x buf.ty
+            own Frees what what (subjectOf x) line
+          | _ ->
+            let what = source buf
+            own Frees what what "" line
       rest ()
     | CPrim(op, args) ->
       if waits op then
