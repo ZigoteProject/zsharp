@@ -171,7 +171,7 @@ the client gave up
 
 ## Sockets
 
-`Tcp` has TCP for tasks: `Tcp.listen`, then `Tcp.accept` for each connection; `Tcp.connect`; and `Tcp.read`, `Tcp.write` and `Tcp.writeText`. Each gives a `result`, and `use` closes a connection. An echo server, with a task per connection (the whole program is `examples/echo/server.zs`):
+`Udp` has UDP: `Udp.bind host port` (port 0 for one the system picks, `Udp.port` says which), `Udp.send` and `Udp.sendText` to a host and port, and `Udp.receive`, which gives the bytes and the sender's address and port; `Dns.lookup host` gives a host's addresses, looked up off the loop's thread. `Tcp` has TCP for tasks: `Tcp.listen`, then `Tcp.accept` for each connection; `Tcp.connect`; and `Tcp.read`, `Tcp.write` and `Tcp.writeText`. Each gives a `result`, and `use` closes a connection. An echo server, with a task per connection (the whole program is `examples/echo/server.zs`):
 
 ```fsharp
 let rec echo (c: TcpStream) (buf: Buffer<u8>) : Task<unit> =

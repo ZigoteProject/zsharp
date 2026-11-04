@@ -1,0 +1,4 @@
+b got ping from 127.0.0.1, a's port true
+a got pong, b's port true
+cut to 16 bytes: 0123456789abcdef
+localhost is loopback: true, nowhere: []

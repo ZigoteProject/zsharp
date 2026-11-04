@@ -3007,8 +3007,11 @@ static zs_int failed(void) {
 static zs_int failed(void) { return errno == EAGAIN || errno == EWOULDBLOCK ? -1000 : -(zs_int)errno; }
 #endif
 
-static int resolve(zs_str *host, zs_int port, bool passive, struct addrinfo **res) {
-    struct addrinfo hints = {.ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM, .ai_flags = passive ? AI_PASSIVE : 0};
+static int resolve_as(zs_str *host, zs_int port, bool passive, int socktype, struct addrinfo **res);
+static int resolve(zs_str *host, zs_int port, bool passive, struct addrinfo **res) { return resolve_as(host, port, passive, SOCK_STREAM, res); }
+
+static int resolve_as(zs_str *host, zs_int port, bool passive, int socktype, struct addrinfo **res) {
+    struct addrinfo hints = {.ai_family = AF_UNSPEC, .ai_socktype = socktype, .ai_flags = passive ? AI_PASSIVE : 0};
     char p[24];
     snprintf(p, sizeof p, "%lld", (long long)port);
     if (!os_name(host)) {
@@ -3067,6 +3070,93 @@ zs_int zs_tcp_connect(zs_str *host, zs_int port) {
     setsockopt(S(fd), IPPROTO_TCP, TCP_NODELAY, (void *)&one, sizeof one);
     freeaddrinfo(res);
     return fd;
+}
+
+// ---- UDP (0024, track S item 8): a socket bound to a host and port, datagrams to a host and
+// port and from whoever sent them; the loop waits on the socket as on a TCP one
+
+// a UDP socket bound to the host ("" for every interface) and port (0: one the system picks)
+zs_int zs_udp_bind(zs_str *host, zs_int port) {
+    struct addrinfo *res;
+    if (resolve_as(host, port, true, SOCK_DGRAM, &res) != 0) return failed();
+    int fd = sk_new(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (fd < 0 || bind(S(fd), res->ai_addr, (int)res->ai_addrlen) != 0) {
+        int e = sk_err();
+        if (fd >= 0) sk_drop(fd);
+        freeaddrinfo(res);
+        sk_seterr(e);
+        return failed();
+    }
+    freeaddrinfo(res);
+    return fd;
+}
+
+// the port a socket is bound to (after zs_udp_bind with port 0)
+zs_int zs_socket_port(zs_int fd) {
+    struct sockaddr_storage a;
+    socklen_t n = sizeof a;
+    if (getsockname(S(fd), (struct sockaddr *)&a, &n) != 0) return failed();
+    if (a.ss_family == AF_INET6) return ntohs(((struct sockaddr_in6 *)&a)->sin6_port);
+    return ntohs(((struct sockaddr_in *)&a)->sin_port);
+}
+
+// the buffer's first n bytes as one datagram to the host and port: the bytes sent
+zs_int zs_udp_send(zs_int fd, zs_str *host, zs_int port, const uint8_t *data, zs_int len, zs_int n) {
+    if (n < 0 || n > len) zs_panic_c("Udp.send: count out of the buffer");
+    struct addrinfo *res;
+    if (resolve_as(host, port, false, SOCK_DGRAM, &res) != 0) return failed();
+    zs_int r = (zs_int)sendto(S(fd), (const char *)data, (size_t)n, 0, res->ai_addr, (int)res->ai_addrlen);
+    freeaddrinfo(res);
+    return r < 0 ? failed() : r;
+}
+
+// the sender of the last datagram this thread received: read right after zs_udp_receive
+static _Thread_local struct sockaddr_storage udp_from;
+static _Thread_local socklen_t udp_from_len;
+
+// a datagram into the buffer (cut to its length): the bytes received, or would-block
+zs_int zs_udp_receive(zs_int fd, uint8_t *data, zs_int len) {
+    udp_from_len = sizeof udp_from;
+    zs_int r = (zs_int)recvfrom(S(fd), (char *)data, (size_t)len, 0, (struct sockaddr *)&udp_from, &udp_from_len);
+    return r < 0 ? failed() : r;
+}
+
+// the last datagram's sender, as text
+zs_str *zs_udp_from(void) {
+    char h[NI_MAXHOST];
+    if (udp_from_len == 0 || getnameinfo((struct sockaddr *)&udp_from, udp_from_len, h, sizeof h, NULL, 0, NI_NUMERICHOST) != 0) return str_of("", 0);
+    return zs_str_from_c(h);
+}
+
+zs_int zs_udp_from_port(void) {
+    if (udp_from_len == 0) return 0;
+    if (udp_from.ss_family == AF_INET6) return ntohs(((struct sockaddr_in6 *)&udp_from)->sin6_port);
+    return ntohs(((struct sockaddr_in *)&udp_from)->sin_port);
+}
+
+// the addresses of a host as text, one per line (Dns.lookup, run off the loop's thread since it
+// blocks); "" when it has none
+zs_str *zs_dns_lookup(zs_str *host) {
+    struct addrinfo hints = {.ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM}, *res;
+    if (!os_name(host) || host->len == 0 || getaddrinfo(host->data, NULL, &hints, &res) != 0) return str_of("", 0);
+    char out[1024];
+    size_t used = 0;
+    for (struct addrinfo *a = res; a; a = a->ai_next) {
+        char h[NI_MAXHOST];
+        if (getnameinfo(a->ai_addr, (socklen_t)a->ai_addrlen, h, sizeof h, NULL, 0, NI_NUMERICHOST) != 0) continue;
+        size_t n = strlen(h);
+        if (used + n + 1 > sizeof out) break;
+        // each address once: getaddrinfo lists one per socket type
+        bool seen = false;
+        for (size_t i = 0, start = 0; i < used; i++)
+            if (out[i] == '\n') { if (i - start == n && memcmp(out + start, h, n) == 0) seen = true; start = i + 1; }
+        if (seen) continue;
+        memcpy(out + used, h, n);
+        used += n;
+        out[used++] = '\n';
+    }
+    freeaddrinfo(res);
+    return str_of(out, (zs_int)used);
 }
 
 #ifndef _WIN32

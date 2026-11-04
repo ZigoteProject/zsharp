@@ -353,6 +353,11 @@ a real machine. The flagship runs under QEMU's STM32F405, not yet on the board i
   object it compiles.
 
 ### Library
+- `Net.Udp` (track S, item 8): `Udp.bind host port` (0 for a port the system picks, `Udp.port`
+  says which), `Udp.send` and `sendText` to a host and port, and `Udp.receive`, which gives the
+  bytes (a longer datagram cut to the buffer) and the sender's address and port, each waiting on
+  the event loop as `Tcp` does; `use` closes the socket. `Dns.lookup host`: a host's addresses,
+  looked up off the loop's thread with `Task.blocking`, an empty list for a name that has none.
 - `DateTime.parseIso` (track S, item 6): the moment ISO 8601 writes, `2026-11-04T08:30:00Z`, with
   a fraction (`.25`, to nanoseconds), an offset (`+02:00`, taken off) or no zone (UTC), without
   the seconds, or a date alone; `None` for anything else, a day its month hasn't included. And

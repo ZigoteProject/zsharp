@@ -265,6 +265,13 @@ let builtins : Map<string, Builtin> =
       b "Native.tcpAccept" "Tcp.accept" [] (f tInt tInt) 1
       b "Native.tcpConnect" "Tcp.connect" [] (f tStr (f tInt tInt)) 2
       b "Native.socketError" "Tcp.error" [] (f tInt tInt) 1
+      b "Native.udpBind" "Udp.bind" [] (f tStr (f tInt tInt)) 2
+      b "Native.socketPort" "Udp.port" [] (f tInt tInt) 1
+      b "Native.udpSend" "Udp.send" [] (f tInt (f tStr (f tInt (f (TCon("Buffer", [ tcon "u8" ])) (f tInt tInt))))) 5
+      b "Native.udpReceive" "Udp.receive" [] (f tInt (f (TCon("Buffer", [ tcon "u8" ])) tInt)) 2
+      b "Native.udpFrom" "Udp.from" [] (f tUnit tStr) 1
+      b "Native.udpFromPort" "Udp.fromPort" [] (f tUnit tInt) 1
+      b "Native.dnsLookup" "Dns.lookup" [] (f tStr tStr) 1
       b "Native.fdRead" "Fd.read" [] (f tInt (f (TCon("Buffer", [ tcon "u8" ])) (f tInt (f tInt tInt)))) 4
       b "Native.fdWrite" "Fd.write" [] (f tInt (f (TCon("Buffer", [ tcon "u8" ])) (f tInt (f tInt tInt)))) 4
       b "Native.fdWriteText" "Fd.write" [] (f tInt (f tStr (f tInt (f tInt tInt)))) 4

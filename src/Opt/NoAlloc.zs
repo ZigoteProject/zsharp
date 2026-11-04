@@ -52,7 +52,9 @@ let private builds (op: string) (args: list<CExpr>) : option<string> =
   | "string" when ofString -> None
   | "string"
   | "format"
-  | "String.ofCStr" -> Some "builds a string"
+  | "String.ofCStr"
+  | "Udp.from"
+  | "Dns.lookup" -> Some "builds a string"
   | "Array.create"
   | "array.copy"
   | "array.update"
