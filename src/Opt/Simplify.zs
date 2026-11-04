@@ -301,7 +301,7 @@ let private substLit (x: string) (lit: CExpr) (e: CExpr) : option<CExpr> =
   else
     let rec go (a: CExpr) : CExpr =
       match a.k with
-      | CLocal y when y = x -> { lit with ty = a.ty }
+      | CLocal y when y = x -> mk lit.k a.ty
       | k -> { a with k = mapChildren go k }
     Some(go e)
 
@@ -459,9 +459,7 @@ let run (types: Map<string, TypeInfo>) (funs: list<MFun>) : list<MFun> =
       // let x = <literal>: the literal in x's place, so what's computed from it folds
       let substituted =
         match w.k with
-        | CInt _
-        | CFloat _
-        | CBool _ when not (Set.contains x mutables.Value) -> substLit x w body
+        | CFloat _ when not (Set.contains x mutables.Value) -> substLit x w body
         | _ -> None
       match substituted with
       | Some b -> simp env b

@@ -5,7 +5,7 @@
 ### Compiler
 - Constants folded (0015 step 4): arithmetic, comparisons, bit operations, conversions and
   `Math.round` and `sqrt` on literals are computed at compile time, as the code would compute
-  them, and a `let` of a literal puts the literal in its uses; an integer result that wouldn't
+  them, and a `let` of a float literal puts the literal in its uses; an integer result that wouldn't
   fit its type stays as written, to overflow at run time (`int` taken as 32 bits, a chip's).
   So `Q15.ofFloat 0.5` is a constant once inlined, and a table of them a static object
   (`tests/fold.zs`, `tests/static.zs`).
@@ -131,6 +131,11 @@
   cortex-m4 has none, so it can't depend on this package`, instead of an error deep in its code.
 
 ### Tooling
+- `zs build -g --release` (and `-g` with any `-O` level; 0011, debugging 5): the optimizer runs
+  and the DWARF lines stay, so gdb and lldb break on a line of an optimized build and show its
+  backtrace with Z# files and lines; a value the optimizer keeps is shown, an inlined call's
+  lines are its caller's frame's. `-g` alone is still `-O0` with the code as written, for
+  stepping (`tests/debug/opt.sh`).
 - `zs test --coverage` (track D, item 10): the test binary is built with a counter per line of
   the file's directory's sources (`--coverage` on any build: the program writes the counts to
   `<program>.zscov` at exit, a panic's included), and the command reports the lines run and
