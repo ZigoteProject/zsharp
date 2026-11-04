@@ -296,6 +296,12 @@ if command -v gdb >/dev/null && [ $windows = 0 ]; then
   if diff <(tests/debug/gdb.sh) tests/debug/gdb.expected >"$tmp/gdb.diff"; then echo "ok   tests/debug/gdb.sh"
   else echo "FAIL tests/debug/gdb.sh"; cat "$tmp/gdb.diff"; fail=1; fi
 else echo "skip tests/debug/gdb.sh (no gdb)"; fi
+# heap values under gdb (track D, item 1): a list's cells, an array's elements, a tree's nodes
+# with their case, an option over a string, a ref's value
+if command -v gdb >/dev/null; then
+  if diff <(tests/debug/gdb_heap.sh) tests/debug/gdb_heap.expected >"$tmp/gdb_heap.diff"; then echo "ok   tests/debug/gdb_heap.sh"
+  else echo "FAIL tests/debug/gdb_heap.sh"; cat "$tmp/gdb_heap.diff"; fail=1; fi
+fi
 # the same under lldb, the debugger on macOS
 if command -v lldb >/dev/null && [ $windows = 0 ]; then
   if diff <(tests/debug/lldb.sh) tests/debug/lldb.expected >"$tmp/lldb.diff"; then echo "ok   tests/debug/lldb.sh"

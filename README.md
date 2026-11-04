@@ -309,7 +309,7 @@ One `zs` binary holds the compiler and its tools.
 |---|---|
 | `zs new`, `zs build`, `zs run`, `zs check` | projects in a `zs.toml`, with path and git dependencies (versions by minimal version selection, a `[c]` section for C sources); builds cached by module, and a build server that keeps the compiler warm |
 | `zs build --release` | optimized, with ThinLTO; `--profile-generate` and `--profile-use` for PGO |
-| `zs build -g` | DWARF for gdb and lldb: breakpoints on lines; strings, records and plain unions shown as values |
+| `zs build -g` | DWARF for gdb and lldb: breakpoints on lines; strings, records and plain unions shown as values, lists, arrays, trees and refs through their objects (`print *xs`) |
 | `zs test` | tests as values, each in its own process; expect tests that `zs test --update` rewrites; `--doc` runs the examples in `///` comments |
 | `zs doctor` | what builds need (clang 23 or later, zig, libclang, …), found or not, and how to get what's missing |
 | `zs fmt`, `zs doc` | one canonical format; Markdown docs from `///` comments |

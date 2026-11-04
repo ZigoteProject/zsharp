@@ -1,0 +1,12 @@
+$1 = {count = 1, head = 1, tail = ADDR}
+$2 = {count = 1, head = 2, tail = ADDR}
+$3 = (list<int>) ADDR
+$4 = {count = 1, length = 2, elements = ADDR}
+$5 = {count = 0, length = 2, bytes = ADDR "cd"}
+$6 = {count = 1, Node = {0 = ADDR, 1 = 7, 2 = ADDR}}
+$7 = Word
+$8 = {0 = ADDR, 1 = 2}
+$9 = {count = 0, length = 3, bytes = ADDR "yes"}
+$10 = {count = 1, value = 5}
+type = list<int>
+type = Tree

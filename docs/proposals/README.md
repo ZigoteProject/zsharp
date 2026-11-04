@@ -19,7 +19,7 @@ proposal describes a change to it, and [ROADMAP.md](../../ROADMAP.md) says when 
 | 0008 | [Threads](0008-threads.md) | Implemented (phases 9.5 and 11) | the phase 9.5 plan |
 | 0009 | [Tests as values](0009-tests-as-values.md) | Implemented in part: items 1–3 and 7 before phase 11, doc tests (8) in phase 12, stress (4) and tests on a chip (2026-11-04); properties, fuzzing, benchmarks and coverage after 0.6.2 | track D's plan |
 | 0010 | [Properties and fuzzing](0010-properties-and-fuzzing.md) | Approved in principle, after 0.6.2 | track D's plan |
-| 0011 | [Debug info, profiles and traces](0011-debug-info-profiles-traces.md) | Implemented in part: gdb and lldb on strings, records and plain unions, `ZS_STATS`, the editor's allocation hints; DWARF for every value, `zs profile` and traces after 0.6.2 | track D's plan |
+| 0011 | [Debug info, profiles and traces](0011-debug-info-profiles-traces.md) | Implemented in part: gdb and lldb on every value (heap values through their objects, 2026-11-04), `ZS_STATS`, the editor's allocation hints; `zs profile` and traces after 0.6.2 | track D's plan |
 | 0012 | [Interrupts, `[<NoAlloc>]` and intrinsics](0012-interrupts-noalloc-intrinsics.md) | Implemented (phase 12); `noalloc<F>` declined | decision 42, track M's plan, the third design review |
 | 0013 | [Bit fields](0013-bit-fields.md) | Implemented (phase 12) | the third design review |
 | 0014 | [Placement](0014-placement.md) | Implemented in part: the heap's size and reuse (phase 12), constants in flash for arrays and lists (2026-11-04); records and unions in flash, `[<Section>]` and `[<Align>]` after 0.6.2 | track M's plan; the third design review (`[<Section>]`, `[<Align>]`) |

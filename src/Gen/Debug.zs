@@ -13,6 +13,14 @@ let meta (g: G) (s: string) : string =
   Buffer.push $"{id} = {s}\n" g.md
   id
 
+/// A node's number before its text, for a type that refers to itself (a list's tail); `define`
+/// writes it.
+let reserve (g: G) : string =
+  g.mdCount.Value <- g.mdCount.Value + 1
+  $"!{g.mdCount.Value}"
+
+let define (g: G) (id: string) (s: string) = Buffer.push $"{id} = {s}\n" g.md
+
 /// !range for array and string lengths: no array can be as long as the address space, so a length
 /// is below 2^31 on a 32-bit chip and 2^47 on a 64-bit machine. Knowing that lets LLVM drop
 /// overflow checks and bounds checks that can't fail (an index from a loop up to the length).
@@ -120,9 +128,11 @@ let private signedInts : Set<string> = Set.ofList [ "i8"; "i16"; "i32"; "i64" ]
 
 let private unsignedInts : Set<string> = Set.ofList [ "u8"; "u16"; "u32"; "u64" ]
 
-/// The DWARF type of a variable, for the types gdb can show as values: numbers, bool, char,
-/// strings (as their text), and tuples, records and plain unions of those. With field, the type of
-/// a struct's field: a string there is a pointer to its object (print *p for it).
+/// The DWARF type of a variable: numbers, bool, char, strings (as their text), tuples, records
+/// and plain unions of those as values; lists, arrays, boxed unions, refs and Buffers as the
+/// type's name over a pointer to the object (print *p shows its count and fields, a list's head
+/// and tail), an option over a pointer as the pointer, closures and the runtime's cells as
+/// pointers. With field, the type of a struct's field: a string there is a pointer to its object.
 let rec diTypeOf (g: G) (field: bool) (t: Ty) : option<string> =
   let named (key: string) (make: unit -> string) : option<string> =
     match Map.tryFind key g.diTypes.Value with
@@ -133,6 +143,28 @@ let rec diTypeOf (g: G) (field: bool) (t: Ty) : option<string> =
       Some id
   let basic (name: string) (bits: int) (enc: string) = named name (fun () -> meta g $"!DIBasicType(name: \"{name}\", size: {bits}, encoding: {enc})")
   let pointer (key: string) (target: string) = named key (fun () -> meta g $"!DIDerivedType(tag: DW_TAG_pointer_type, baseType: {target}, size: {8 * pointerBytes g})")
+  let word = 8 * pointerBytes g
+  let memberNode (name: string) (dt: string) (bits: int) (off: int) = meta g $"!DIDerivedType(tag: DW_TAG_member, name: \"{name}\", baseType: {dt}, size: {bits}, offset: {8 * off})"
+  let countMember () = memberNode "count" (Option.get (basic "i32" 32 "DW_ATE_signed")) 32 0
+  // a heap value: the type's name over a pointer to its object, whose members, from the header
+  // on, may name the type again (a list's tail), so its node is reserved before them
+  let objectOf (size: int) (members: string -> list<string>) : option<string> =
+    let key = "object " + showF g t
+    match Map.tryFind key g.diTypes.Value with
+    | Some id -> Some id
+    | None ->
+      // known by name before its members are made: a tree's node holds trees
+      let name = showT g t
+      let td = reserve g
+      g.diTypes.Value <- Map.add key td g.diTypes.Value
+      let obj = reserve g
+      let ms = members td
+      define g obj $"!DICompositeType(tag: DW_TAG_structure_type, name: \"{name} object\", size: {8 * size}, elements: !{{{String.join ", " ms}}})"
+      let p = meta g $"!DIDerivedType(tag: DW_TAG_pointer_type, baseType: {obj}, size: {word})"
+      define g td $"!DIDerivedType(tag: DW_TAG_typedef, name: \"{name}\", baseType: {p})"
+      Some td
+  // a pointer gdb shows as an address: the type's name over void*
+  let opaque () = named ("opaque " + showF g t) (fun () -> meta g $"!DIDerivedType(tag: DW_TAG_typedef, name: \"{showT g t}\", baseType: {meta g $"!DIDerivedType(tag: DW_TAG_pointer_type, size: {word})"})")
   // a member of a struct, when gdb can show its type
   let memberAt (fo: (string * Ty) * int) : option<string> =
     let ((f, ft), off) = fo
@@ -177,6 +209,49 @@ let rec diTypeOf (g: G) (field: bool) (t: Ty) : option<string> =
       // text
       Option.bind (pointer "char*") (basic "char" 8 "DW_ATE_signed_char")
   | TTuple ts -> structOf (showT g t) (List.mapi (fun i ft -> ($"Item{i + 1}", ft)) ts)
+  // a fixed-size array: inline, N elements
+  | TCon("fixed", [ el; TCon(n, []) ]) ->
+    match diTypeOf g true el with
+    | Some et -> named ("fixed " + showF g t) (fun () -> meta g $"!DICompositeType(tag: DW_TAG_array_type, baseType: {et}, size: {8 * fst (sizeAlign g t)}, elements: !{{!DISubrange(count: {toInt n})}})")
+    | None -> None
+  // an array: its object is the count, the length and the elements
+  | TCon("array", [ el ]) ->
+    match diTypeOf g true el with
+    | Some et ->
+      let (es, _) = sizeAlign g el
+      objectOf (2 * pointerBytes g) (fun _ ->
+        let elems = meta g $"!DICompositeType(tag: DW_TAG_array_type, baseType: {et}, elements: !{{!DISubrange(count: -1)}})"
+        [ countMember (); memberNode "length" (Option.get (basic "int" word "DW_ATE_signed")) word (pointerBytes g); memberNode "elements" elems (8 * es) (2 * pointerBytes g) ])
+    | None -> None
+  // a list: a cell is the header, the head and the tail, another list
+  | TCon("list", [ el ]) ->
+    match diTypeOf g true el with
+    | Some et ->
+      let (size, _, offsets) = layout g [ tcon "int"; el; t ]
+      let (es, _) = sizeAlign g el
+      objectOf size (fun td -> [ countMember (); memberNode "head" et (8 * es) (List.item 1 offsets); memberNode "tail" td word (List.item 2 offsets) ])
+    | None -> None
+  // a ref, or a Buffer (a ref to its storage record: the owner array, the data, the length and
+  // the room): the header and the value
+  | TCon("ref", [ x ]) ->
+    match diTypeOf g true x with
+    | Some xt ->
+      let (size, _, offsets) = layout g [ tcon "int"; x ]
+      let (xs, _) = sizeAlign g x
+      objectOf size (fun _ -> [ countMember (); memberNode "value" xt (8 * xs) (List.item 1 offsets) ])
+    | None -> None
+  | TCon("cstr", _)
+  | TCon("cptr", _)
+  | TCon("ptr", _)
+  | TCon("fnptr", _)
+  | TCon("weak", _)
+  | TCon("Atomic", _)
+  | TCon("Mutex", _)
+  | TCon("Channel", _)
+  | TCon("Spsc", _)
+  | TCon("share", _)
+  | TFun _ -> opaque ()
+  | TCon(n, _) when isDynName n -> opaque ()
   // a [<Bits>] record: its integer (0013)
   | TCon(_, []) when Option.isSome (bitsLayoutOf g t) -> basic (showT g t) (Option.get (bitsLayoutOf g t)).width "DW_ATE_unsigned"
   | TCon(_, []) when Option.isSome (cUnion g t) ->
@@ -222,6 +297,44 @@ let rec diTypeOf (g: G) (field: bool) (t: Ty) : option<string> =
         let members = List.choose memberAt (List.zip fields (List.tail offsets))
         meta g $"!DICompositeType(tag: DW_TAG_structure_type, name: \"{showT g t}\", size: {8 * size}, elements: !{{{String.join ", " (tagMember :: members)}}})"
       named ("struct " + showF g t) make
+  | TCon(n, _) when isUnionType g n ->
+    let (_, cases) = union g t
+    match repOf g t with
+    // the option shape over a pointer: the pointer itself (None is the static none)
+    | Types.Repr.Niche(_, payload) ->
+      match diTypeOf g true payload with
+      | Some pt -> named ("niche " + showF g t) (fun () -> meta g $"!DIDerivedType(tag: DW_TAG_typedef, name: \"{showT g t}\", baseType: {pt})")
+      | None -> None
+    | _ ->
+      // a cell: the header's count, the case (where the cells carry one), then each case with
+      // fields as a struct of them over the cell, named after the case
+      let tagged = tagged g t
+      let headerTys = tcon "int" :: (if tagWord g t then [ tcon "i32" ] else [])
+      let caseStruct (cf: string * list<Ty>) : option<string> =
+        let (c0, fs) = cf
+        let c = shortName c0
+        if List.isEmpty fs then
+          None
+        else
+          let (size, _, offsets) = layout g (List.append headerTys fs)
+          let fields = List.mapi (fun j ft -> (($"{j}", ft), List.item (List.length headerTys + j) offsets)) fs
+          let members = List.choose memberAt fields
+          let st = meta g $"!DICompositeType(tag: DW_TAG_structure_type, name: \"{showT g t}.{c}\", size: {8 * size}, elements: !{{{String.join ", " members}}})"
+          Some(memberNode c st (8 * size) 0)
+      let cellSize (fs: list<Ty>) : int =
+        let (s, _, _) = layout g (List.append headerTys fs)
+        s
+      let size = List.fold (fun (m: int) (cf: string * list<Ty>) -> max m (cellSize (snd cf))) (cellSize []) cases
+      objectOf size (fun _ ->
+        let caseMember =
+          if not tagged then
+            []
+          else
+            let items = List.mapi (fun i (c, _) -> $"!DIEnumerator(name: \"{shortName c}\", value: {i})") cases
+            let bits = if tagWord g t then 32 else 16
+            let enum = meta g $"!DICompositeType(tag: DW_TAG_enumeration_type, name: \"{showT g t} case\", size: {bits}, elements: !{{{String.join ", " items}}})"
+            [ memberNode "case" enum bits (if tagWord g t then pointerBytes g else 4) ]
+        List.concat [ [ countMember () ]; caseMember; List.choose caseStruct cases ])
   | _ -> None
 
 let diType (g: G) (t: Ty) : option<string> = diTypeOf g false t

@@ -110,6 +110,12 @@
   cortex-m4 has none, so it can't depend on this package`, instead of an error deep in its code.
 
 ### Tooling
+- Debug info for every value (track D, item 1, known gap 4): a list, array, boxed union, `ref`
+  or `Buffer` has its type's name over a pointer to its object, so gdb's `print *xs` shows a
+  cell's count, head and tail, an array's count, length and elements, a node's case (where the
+  cells carry one) and each case's fields over the cell, a ref's value; an option over a string
+  is the string's pointer, a closure or one of the runtime's cells an address, and a `fixed` an
+  array. Nothing is left out of `info locals` for its type now (`tests/debug/gdb_heap.sh`).
 - `zs test file.zs --target cortex-m4` (track D, item 11): the file's `[<Tests>]` built into one
   image and run under the chip's QEMU board (or a real board through probe-rs, as `zs run` does),
   every test in one process in order: Core's `Testing.runAll` prints `ok path` as each passes and
