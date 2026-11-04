@@ -132,6 +132,15 @@
   `--types=volume:f64`. `zs provide --list` names the providers.
 
 ### Language
+- One-case unions without a tag (decision 66, built): a plain union with one case that has
+  fields is the field itself (`type UserId = UserId of int` is an `int` in registers, arrays,
+  records and C structs; `sizeof<q15>` is 2), or a struct of its fields; matching, equality,
+  show, hash and the debug info follow (`tests/onecase.zs`). One over a heap value (`Wrap of
+  string`) stays boxed, its count in the object. A one-case union field in a `[<CLayout>]`
+  record was a struct with a tag and is now the field.
+- A negative integer literal is one constant: `i32 -2147483648` on a 32-bit `int` target (a
+  chip) was the positive literal, past the type's range, negated, and panicked with an overflow
+  (`tests/mcu/ints.zs`).
 - F#'s list and array ranges: `[ 1 .. 10 ]`, `[ 1 .. 2 .. 9 ]` (a step, negative too) and
   `[| 0 .. n |]`, the list expression over the range, so one loop and the list built once, empty
   when the range is (`tests/ranges.zs`). The README called them not there yet.
@@ -371,6 +380,12 @@ a real machine. The flagship runs under QEMU's STM32F405, not yet on the board i
   object it compiles.
 
 ### Library
+- `Numerics.Fixed` (0015, track M item 10): `q7`, `q15` and `q31`, each a one-case union over
+  its integer (its size, by decision 66), with saturating `+`, `-`, `*` (rounded half up), `/`, `%` and negation,
+  `mulAdd`, `abs`, `clamp`, `ofFloat`/`toFloat`/`toF32`, `ofInt`, `raw`/`ofRaw`, the conversions
+  between the formats, and `Show` as the decimal with the digits the format needs (`0.99997` for
+  `Q15.max`), in integer arithmetic. `List.sum` over them saturates like `+`. Folding `ofFloat`
+  on a literal and the vector forms are left.
 - `Net.Udp` (track S, item 8): `Udp.bind host port` (0 for a port the system picks, `Udp.port`
   says which), `Udp.send` and `sendText` to a host and port, and `Udp.receive`, which gives the
   bytes (a longer datagram cut to the buffer) and the sender's address and port, each waiting on

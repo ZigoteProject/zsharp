@@ -230,6 +230,18 @@ let cUnion (g: G) (t: Ty) : option<list<string * Ty>> =
 let tagTy (cases: list<string * list<Ty>>) : string =
   if List.length cases <= 256 && List.forall (fun (_, fs) -> List.isEmpty fs) cases then "i8" else "i32"
 
+/// A plain union with one case that has fields (a newtype such as `type UserId = UserId of int`,
+/// or `q15`): its fields, with no tag, since there's no other case to tell it from (decision 66).
+/// One field is the value itself (a `q15` is an `i16`); several are a struct of them.
+let oneCase (g: G) (t: Ty) : option<list<Ty>> =
+  match t with
+  | TCon(n, args) ->
+    match Map.tryFind n g.types with
+    | Some { def = UnionDef [ (_, fs) ] } when not (List.isEmpty fs) && plainUnion g.v g.types t ->
+      Some(List.map (substGen g args) fs)
+    | _ -> None
+  | _ -> None
+
 // the types whose values are pointers to objects (or C pointers)
 let private pointers : Set<string> = Set.ofList [ "cstr"; "cptr"; "string"; "array"; "ref"; "weak"; "ptr"; "fnptr"; "Atomic"; "Mutex"; "Channel"; "Spsc" ]
 
@@ -284,11 +296,15 @@ and private lltyOf (g: G) (t: Ty) : string =
     | RecordDef _ when Option.isSome info.bits -> $"i{(Option.get info.bits).width}"
     | RecordDef fs -> structTy g (List.map (fun (_, ft) -> substGen g args ft) fs)
     | UnionDef cs ->
-      if plainUnion g.v g.types t then
-        // a plain union: the tag, then every case's fields in order (cases don't overlap)
-        "{ " + tagTy cs + String.concat (List.map (fun ft -> ", " + llty g (substGen g args ft)) (List.collect snd cs)) + " }"
-      else
-        "ptr"
+      match oneCase g t with
+      | Some [ ft ] -> llty g ft
+      | Some fs -> structTy g fs
+      | None ->
+        if plainUnion g.v g.types t then
+          // a plain union: the tag, then every case's fields in order (cases don't overlap)
+          "{ " + tagTy cs + String.concat (List.map (fun ft -> ", " + llty g (substGen g args ft)) (List.collect snd cs)) + " }"
+        else
+          "ptr"
     | CUnionDef cs ->
       // as clang lays a C union out: its case aligned most strictly (the largest of those), then
       // bytes to the union's size
@@ -343,11 +359,11 @@ let union (g: G) (t: Ty) : string * list<string * list<Ty>> =
     g.unions.Value <- Map.add t made g.unions.Value
     made
 
-/// Where case `tag`'s field j sits in a plain union's struct: after the tag and the earlier cases'
-/// fields.
+/// Where case `tag`'s field j sits in a plain union's struct: after the tag (none for one case)
+/// and the earlier cases' fields.
 let plainField (g: G) (t: Ty) (tag: int) (j: int) : int =
   let (_, cs) = union g t
-  1 + List.sumBy (fun (_, fs) -> List.length fs) (List.take tag cs) + j
+  (if Option.isSome (oneCase g t) then 0 else 1) + List.sumBy (fun (_, fs) -> List.length fs) (List.take tag cs) + j
 
 /// A union type's representation.
 let repOf (g: G) (t: Ty) : UnionRep =

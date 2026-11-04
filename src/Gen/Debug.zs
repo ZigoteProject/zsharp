@@ -77,7 +77,10 @@ let structFields (g: G) (t: Ty) : list<Ty> =
   | TCon(n, args) ->
     match (Map.find n g.types).def with
     | RecordDef fs -> List.map (fun (_, ft) -> substGen g args ft) fs
-    | UnionDef cs -> tcon (if tagTy cs = "i8" then "u8" else "i32") :: List.map (substGen g args) (List.collect snd cs)
+    | UnionDef cs ->
+      match oneCase g t with
+      | Some fs -> fs
+      | None -> tcon (if tagTy cs = "i8" then "u8" else "i32") :: List.map (substGen g args) (List.collect snd cs)
     | CUnionDef _ -> []
   | _ -> []
 
@@ -187,6 +190,15 @@ let rec diTypeOf (g: G) (field: bool) (t: Ty) : option<string> =
     | RecordDef fs -> structOf (showT g t) (List.map (fun (f, ft) -> (f, substGen g args ft)) fs)
     | UnionDef _
     | CUnionDef _ -> None
+  | TCon(n, _) when isUnionType g n && Option.isSome (oneCase g t) ->
+    // one case: its field's type under the union's name, or a struct of its fields
+    let (c, _) = List.head (snd (union g t))
+    match Option.get (oneCase g t) with
+    | [ ft ] ->
+      match diTypeOf g true ft with
+      | Some dt -> named ("typedef " + showF g t) (fun () -> meta g $"!DIDerivedType(tag: DW_TAG_typedef, name: \"{showT g t}\", baseType: {dt})")
+      | None -> None
+    | fts -> structOf (showT g t) (List.mapi (fun j ft -> ($"{shortName c}.{j}", ft)) fts)
   | TCon(n, _) when isUnionType g n && Types.Repr.plainUnion g.v g.types t ->
     // the tag as an enumeration of the cases; then each case's fields, named after it
     let (_, cases) = union g t

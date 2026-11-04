@@ -236,13 +236,16 @@ let rec testIn (fx: F) (known: bool) (p: CPat) (t: Ty) (v: string) (failL: strin
   | CPCtor(_, tag, ps) when plainUnion g.v g.types t ->
     let cases = snd (union g t)
     let fields = snd (List.item tag cases)
-    if not known then
+    let one = oneCase g t
+    if not known && Option.isNone one then
       let tv = instr em $"extractvalue {llty g t} {v}, 0"
       guardOr (instr em $"icmp eq {tagTy cases} {tv}, {tag}")
     let field (en: Map<string, Binding>) (ix: int * (CPat * Ty)) =
       let (i, (q, ft)) = ix
       match q with
       | CPWild -> en
+      // one case with one field: the value is the field
+      | _ when Option.map List.length one = Some 1 -> test q ft v failL en
       | _ -> test q ft (instr em $"extractvalue {llty g t} {v}, {plainField g t tag i}") failL en
     List.fold field env (List.indexed (List.zip ps fields))
   | CPCtor(_, tag, ps) ->
@@ -1110,14 +1113,21 @@ let rec gen (fx: F) (env: Map<string, Binding>) (tail: bool) (e: CExpr) : string
     instr em $"load {lt}, ptr {slot}"
   | CCtor(_, tag, args) ->
     if plainUnion g.v g.types e.ty then
-      // a value: the tag and this case's fields, the other cases' fields zero
+      // a value: the tag and this case's fields, the other cases' fields zero; one case has no
+      // tag, and with one field is that field
       let vs = List.map (gen fx env false) args
       let lt = llty g e.ty
-      let withTag = instr em $"insertvalue {lt} zeroinitializer, {tagTy (snd (union g e.ty))} {tag}, 0"
-      let insert (agg: string) (iav: int * (CExpr * string)) =
-        let (i, (a, v)) = iav
-        instr em $"insertvalue {lt} {agg}, {llty g a.ty} {v}, {plainField g e.ty tag i}"
-      List.fold insert withTag (List.indexed (List.zip args vs))
+      let one = oneCase g e.ty
+      match (one, vs) with
+      | (Some [ _ ], [ v ]) -> v
+      | _ ->
+        let start =
+          if Option.isSome one then "zeroinitializer"
+          else instr em $"insertvalue {lt} zeroinitializer, {tagTy (snd (union g e.ty))} {tag}, 0"
+        let insert (agg: string) (iav: int * (CExpr * string)) =
+          let (i, (a, v)) = iav
+          instr em $"insertvalue {lt} {agg}, {llty g a.ty} {v}, {plainField g e.ty tag i}"
+        List.fold insert start (List.indexed (List.zip args vs))
     else if isNiche g e.ty then
       // a niche: the field itself, or @zs.none
       match args with

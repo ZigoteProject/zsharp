@@ -8,4 +8,6 @@ let main () =
   println $"{Int.saturatingAdd (i32 2147483647) (i32 1)} {Int.saturatingSub (u8 3) (u8 5)} {Int.saturatingMul (i8 -100) (i8 -2)} {Int.saturatingMul square square} {Int.saturatingAdd (-big) (i64 -2)}"
   println $"{Int.popCount nibbles} {Int.popCount (i32 -1)} {Int.leadingZeros (u64 1)} {Int.leadingZeros (u8 0)} {Int.trailingZeros square} {Int.trailingZeros (u16 0)}"
   println $"{Int.rotateLeft (u8 0b10010001) 1} {Int.rotateLeft (u32 0x80000001) 4} {Int.rotateRight (u64 1) 1} {Int.rotateLeft (u16 1) (-1)} {Int.byteSwap (u32 0x12345678):X8} {Int.byteSwap (u64 1)}"
+  // the least 32-bit value as a literal: negated as one constant, not the positive one negated
+  println $"{i32 -2147483648} {i64 -2147483648} {-2147483648 + 1}"
   0

@@ -213,9 +213,14 @@ let rec layout (v: Vars) (types: Map<string, TypeInfo>) (word: int) (t: Ty) : op
     | UnionDef cs ->
       if List.exists (fun x -> Option.isNone (layout v types word x)) args then None
       else if plainUnion v types t then
-        // the tag (a byte for an enum, as code generation's tagTy), then every case's fields
-        let tag = if List.length cs <= 256 && List.forall (fun (_, fs) -> List.isEmpty fs) cs then (1, 1) else (4, 4)
-        Option.map (fun ps -> structOf (tag :: ps)) (all (List.collect (fun (_, fs) -> List.map (Norm.substGen v args) fs) cs))
+        // the tag (a byte for an enum, as code generation's tagTy), then every case's fields;
+        // one case with fields has no tag (decision 66)
+        let fields = all (List.collect (fun (_, fs) -> List.map (Norm.substGen v args) fs) cs)
+        match cs with
+        | [ (_, _ :: _) ] -> Option.map structOf fields
+        | _ ->
+          let tag = if List.length cs <= 256 && List.forall (fun (_, fs) -> List.isEmpty fs) cs then (1, 1) else (4, 4)
+          Option.map (fun ps -> structOf (tag :: ps)) fields
       else
         pointer
   // string, array, ref, weak, Buffer, share, the C pointers, Atomic, Mutex, Channel: a pointer

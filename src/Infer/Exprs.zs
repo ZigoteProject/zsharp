@@ -582,6 +582,9 @@ and inferNode (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>)
   | Bin(op, a, b) ->
     let ca = inf a
     arith cx op ca (inferHint cx env depth ca.ty b)
+  // a negative literal is one constant: `-2147483648` as an `i32` would otherwise be the
+  // positive literal, past the type's range on a 32-bit `int`, negated
+  | Neg { e = Lit n } -> mk (CInt(i64 0 - n)) (fresh v kInt)
   | Neg a ->
     let ca = inferWith cx env depth hint a
     expect cx "operand of '-'" (fresh v (kTrait "Num")) ca.ty

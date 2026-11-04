@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved in principle as a Core library (decision 66 is its one language change, built), after 0.6.2 |
+| **Status** | Implemented (steps 1 to 3, 2026-11-04: one-case unions without a tag, decision 66, `tests/onecase.zs`; `Numerics.Fixed`, `tests/fixedpoint.zs`, `tests/mcu/fixed.zs`); folding `ofFloat` on literals, the vector functions and the `fir` benchmark (steps 4 and 5) left |
 | **Decided at** | the third design review ([ROADMAP](../../ROADMAP.md#third-design-review-)): it passes decision 39 (it replaces hand-written shifts, rounding and saturation, and needs no runtime), and nothing in the language but untagged one-case unions |
 | **Builds** | track M item 10 ([ROADMAP](../../ROADMAP.md#microcontrollers-m)), after phase 11 |
 | **Rests on** | decisions 4 (overflow traps; wrapping is explicit), 25 (the SIMD API) and 53 (no type-level numbers beyond `fixed`) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §8](../../DESIGN.md#8-simd) |
@@ -46,7 +46,7 @@ type q31 = Q31 of i32     // n / 2147483648, step 2^-31
 ```
 
 - **In Core** (`lib/core/Q7.zs`, `Q15.zs`, `Q31.zs`), so every target has them; a module per type holds the functions, as `Int` does.
-- **Representation: a one-case union has no tag.** A plain union is `{ tag, fields }` today (`llty`, src/Codegen.fs ~552 in the main tree), which would make a `q15` eight bytes. The rule becomes: a union with one case is its fields alone, so `q15` is an `i16` in registers, arrays, records and C structs (`int16_t`, CMSIS's `q15_t`, through [0004](0004-c-layout.md)'s layouts), and every newtype (`type UserId = UserId of int`) gains the same. It's a small extension of decision 8: a new decision row, numbered by the coordinator.
+- **Representation: a one-case union has no tag.** A plain union was `{ tag, fields }` (`llty` in src/Gen/Layout.zs), which made a `q15` eight bytes. The rule becomes: a union with one case is its fields alone, so `q15` is an `i16` in registers, arrays, records and C structs (`int16_t`, CMSIS's `q15_t`, through [0004](0004-c-layout.md)'s layouts), and every newtype (`type UserId = UserId of int`) gains the same. It's a small extension of decision 8: a new decision row, numbered by the coordinator.
 - **Plain values:** no allocation anywhere, so a filter over a `span<q15>` is `[<NoAlloc>]` and may run in an interrupt handler ([0012](0012-interrupts-noalloc-intrinsics.md)).
 - **Derived:** `Eq`, `Ord` and `Hash` come from the automatic derives over the integer (decision 10), and the integer's order is the value's. `Show` is written by hand and replaces the derived one, as `tests/traits.zs`'s `impl Show<Vec>` does for a record.
 - **No implicit conversions,** as between `int` and `f64`: `q15 + i16` is a type error; `Q15.ofRaw` and `Q15.raw` cross.
@@ -98,7 +98,7 @@ A general format needs numbers as type arguments beyond `fixed`'s size, where de
 
 ### Order of implementation
 
-1. **One-case unions without a tag:** `llty` and `plainField` (src/Codegen.fs ~552 and ~582 in the main tree), with the derives and debug info following. Test: an `array<q15>` of 1,024 elements has a heap peak of 2 KB plus headers under QEMU, and `sizeof<q15>` is 2 once [0004](0004-c-layout.md)'s `sizeof` exists.
+1. **One-case unions without a tag** *(built 2026-11-04: `oneCase` in src/Gen/Layout.zs, `llty`, `plainField`, construction and matching in src/Gen/Fun.zs, `layout` in src/Types/Repr.zs and the debug info, a typedef of the field; `tests/onecase.zs`, and `sizeof` in `tests/fixedpoint.zs`)*: `llty` and `plainField`, with the derives and debug info following. Test: an `array<q15>` of 1,024 elements has a heap peak of 2 KB plus headers under QEMU, and `sizeof<q15>` is 2 once [0004](0004-c-layout.md)'s `sizeof` exists.
 2. **`Int.saturatingAdd/Sub/Mul`** at every width: [0024](0024-library-api.md) owns them; they're the dependency.
 3. **The types and impls** in `lib/core/Q7.zs`, `Q15.zs` and `Q31.zs`, with `///` docs and reference pages; `tests/fixedpoint.zs` runs the same cases at each format: `-1 * -1 = max`, `min - step = min`, `-min = max`, a tie's rounding, `Show`'s round trip, and a `.out` test with the division-by-zero panic.
 4. **Folding `ofFloat` on literals,** the `raws` builtins, and the vector functions.

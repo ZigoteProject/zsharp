@@ -23,9 +23,9 @@ proposal describes a change to it, and [ROADMAP.md](../../ROADMAP.md) says when 
 | 0012 | [Interrupts, `[<NoAlloc>]` and intrinsics](0012-interrupts-noalloc-intrinsics.md) | Implemented (phase 12); `noalloc<F>` declined | decision 42, track M's plan, the third design review |
 | 0013 | [Bit fields](0013-bit-fields.md) | Implemented (phase 12) | the third design review |
 | 0014 | [Placement](0014-placement.md) | Implemented in part: the heap's size and reuse (phase 12), constants in flash for arrays and lists (2026-11-04); records and unions in flash, `[<Section>]` and `[<Align>]` after 0.6.2 | track M's plan; the third design review (`[<Section>]`, `[<Align>]`) |
-| 0015 | [Fixed-point numbers](0015-fixed-point.md) | Approved in principle as a library, after 0.6.2 | the third design review |
+| 0015 | [Fixed-point numbers](0015-fixed-point.md) | Implemented: `Numerics.Fixed`, steps 1 to 3 (2026-11-04); folding `ofFloat` on literals, the vector forms and the `fir` benchmark left | the third design review |
 | 0016 | [Async on bare metal](0016-async-bare-metal.md) | Implemented (phase 12) | the third design review |
-| 0017 | [Iteration](0017-iteration.md) | Implemented (before phase 11); list expressions over any `Iter` after 0.6.2 | the third design review |
+| 0017 | [Iteration](0017-iteration.md) | Implemented (before phase 11; list expressions over any `Iter` pinned 2026-11-04); the versioning pass's `while` shape after 0.6.2 | the third design review |
 | 0018 | [Packages](0018-packages.md) | Implemented in part: namespaced dependencies, versions (phase 12), the `[c]` section, the orphan rule; internal modules, targets, and `zs add`, `zs remove` and `zs tree`, the lock's hashes, `zs vendor`, `--offline` and workspaces (2026-11-04); `zs add` by name after 0.6.2; the index is a draft | track K's plan |
 | 0019 | [The lossless syntax tree](0019-syntax-tree.md) | Implemented (before phase 11, and the compiler's parser in phase 11) | decision 33, track E's plan |
 | 0020 | [The compiler in Z#](0020-self-hosting.md) | Implemented (phase 11) | the third design review; the phase 11 review |
