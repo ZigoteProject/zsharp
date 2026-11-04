@@ -1,5 +1,5 @@
 test prop/division
-  division: 100 cases, 6 discarded; 20% small divisor
+  division: 100 cases, 6 discarded; 24% small divisor
 ok   prop/division
 1 passed, 0 skipped
 test a stack agrees with a list

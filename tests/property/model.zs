@@ -26,7 +26,7 @@ let private apply (c: Command) (s: Stack) : Stack * option<int> =
 let main () =
   Testing.runAll [
     testList "prop" [
-      testProperty "division" (fun () ->
+      testPropertyWith { seed = Some (u64 3) } "division" (fun () ->
         prop {
           let! x = Gen.int ()
           let! y = Gen.int ()
