@@ -602,7 +602,19 @@ let rec private isPure (e: CExpr) : bool =
   | CPrim("conv", args)
   | CPrim("wrap+", args)
   | CPrim("wrap-", args)
-  | CPrim("wrap*", args) -> List.forall isPure args
+  | CPrim("wrap*", args)
+  | CPrim("checked+", args)
+  | CPrim("checked-", args)
+  | CPrim("checked*", args)
+  | CPrim("sat+", args)
+  | CPrim("sat-", args)
+  | CPrim("sat*", args)
+  | CPrim("int.popCount", args)
+  | CPrim("int.leadingZeros", args)
+  | CPrim("int.trailingZeros", args)
+  | CPrim("int.rotateLeft", args)
+  | CPrim("int.rotateRight", args)
+  | CPrim("int.byteSwap", args) -> List.forall isPure args
   | _ -> false
 
 /// Pure, and can't panic: no checked integer arithmetic (it traps on overflow), no division that

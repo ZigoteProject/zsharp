@@ -19,6 +19,11 @@
   function could reach itself was a walk per function), 1 s now. A copy inlined carries at most
   four times a small body, so twelve of the test programs compile to up to 38% less IR, running
   the same.
+- A type with a member declared twice, or a member named as one of its fields, and a call to one
+  of its members crashed the compiler (`panic: Map.find: key not found`; `tests/fuzz.sh`'s seed 1
+  found it): the member that can't be is reported and left out, and the type's other members
+  stand, so the call checks. A call to a member whose function never got defined is an error
+  naming it, never a crash.
 - A UTF-8 byte order mark at the start of a file is skipped, as `\r\n` is read as `\n`; it was
   "expected 'let'".
 
@@ -293,6 +298,11 @@ a real machine. The flagship runs under QEMU's STM32F405, not yet on the board i
   object it compiles.
 
 ### Library
+- `Int`'s checked, saturating and bit operations (track S, item 3): `Int.checkedAdd`, `checkedSub`
+  and `checkedMul` give an `option`; `saturatingAdd`, `saturatingSub` and `saturatingMul` stop at
+  the type's bounds; `popCount`, `leadingZeros`, `trailingZeros`, `rotateLeft`, `rotateRight` and `byteSwap`
+  are the bit operations, on `int` and every sized integer, an instruction each where the target
+  has one (`CLZ`, ARM's saturating `QADD`), on the chips too.
 - `Threading.Alt`: Concurrent ML's events for tasks, on one event loop, as F#'s Hopac has them.
   `Alt.choose` commits exactly one branch and takes the others back, `withNack` tells the
   branches that lost, `guard` builds an event at each sync, and `Ch` and `Mailbox` are its

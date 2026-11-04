@@ -21,6 +21,9 @@ let fail (message: string) : 'a / Fails = Fails.fail { message = message; token 
 /// Fails on the line of a token, with no column.
 let failLine (token: int) (message: string) : 'a / Fails = Fails.fail { message = message; token = token; lineOnly = true }
 
+/// Reports a failure on the line of a token, with no column, and goes on.
+let reportLine (token: int) (message: string) : unit / Fails = Fails.report { message = message; token = token; lineOnly = true }
+
 /// Why two types don't unify: they differ, or one lacks a trait's impl (the trait, the type).
 type Mismatch =
   | Differ

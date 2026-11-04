@@ -2129,6 +2129,67 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
   | "wrap+"
   | "wrap-"
   | "wrap*" -> instr em $"{Map.find (String.sub op 4 1) arith} {llty g ty} {arg 0}, {arg 1}"
+  | "checked+"
+  | "checked-"
+  | "checked*" ->
+    // Int.checkedAdd's and the others': whether a op b fits the type, and the result (wrapped
+    // when it doesn't)
+    let lt = llty g (argTy 0)
+    let name = $"llvm.{(if isUnsigned (argTy 0) then "u" else "s")}{Map.find (String.sub op 7 1) arith}.with.overflow.{lt}"
+    let r = intrinsic g em name $"{{ {lt}, i1 }}" [ (lt, arg 0); (lt, arg 1) ] ""
+    let ok = instr em $"xor i1 {instr em $"extractvalue {{ {lt}, i1 }} {r}, 1"}, true"
+    let v = instr em $"extractvalue {{ {lt}, i1 }} {r}, 0"
+    let pair = instr em $"insertvalue {llty g ty} poison, i1 {ok}, 0"
+    instr em $"insertvalue {llty g ty} {pair}, {lt} {v}, 1"
+  | "sat+"
+  | "sat-" ->
+    // the type's bound on the side the exact result lies: an instruction where the target has
+    // one (ARM's QADD and UQSUB)
+    let lt = llty g ty
+    intrinsic g em $"llvm.{(if isUnsigned ty then "u" else "s")}{(if op = "sat+" then "add" else "sub")}.sat.{lt}" lt [ (lt, arg 0); (lt, arg 1) ] ""
+  | "sat*" ->
+    // the bound on the exact product's side: unsigned, the maximum; signed, the maximum when
+    // the factors' signs agree (a positive product), else the minimum
+    let lt = llty g ty
+    let uns = isUnsigned ty
+    let r = intrinsic g em $"llvm.{(if uns then "u" else "s")}mul.with.overflow.{lt}" $"{{ {lt}, i1 }}" [ (lt, arg 0); (lt, arg 1) ] ""
+    let over = instr em $"extractvalue {{ {lt}, i1 }} {r}, 1"
+    let v = instr em $"extractvalue {{ {lt}, i1 }} {r}, 0"
+    let bound =
+      if uns then
+        "-1"
+      else
+        let half = u64 1 <<< u64 (bitsOf lt - 1)
+        let negative = instr em $"icmp slt {lt} {instr em $"xor {lt} {arg 0}, {arg 1}"}, 0"
+        instr em $"select i1 {negative}, {lt} -{half}, {lt} {half - u64 1}"
+    instr em $"select i1 {over}, {lt} {bound}, {lt} {v}"
+  | "int.popCount"
+  | "int.leadingZeros"
+  | "int.trailingZeros" ->
+    // a count as an int, whatever the argument's width; zero has all its bits leading and
+    // trailing (the second argument: zero is defined)
+    let lt = llty g (argTy 0)
+    let n =
+      match op with
+      | "int.popCount" -> intrinsic g em $"llvm.ctpop.{lt}" lt [ (lt, arg 0) ] ""
+      | "int.leadingZeros" -> intrinsic g em $"llvm.ctlz.{lt}" lt [ (lt, arg 0); ("i1", "false") ] ""
+      | _ -> intrinsic g em $"llvm.cttz.{lt}" lt [ (lt, arg 0); ("i1", "false") ] ""
+    let w = llty g tInt
+    let (wb, lb) = (bitsOf w, bitsOf lt)
+    if wb = lb then n else if wb > lb then instr em $"zext {lt} {n} to {w}" else instr em $"trunc {lt} {n} to {w}"
+  | "int.rotateLeft"
+  | "int.rotateRight" ->
+    // a funnel shift of the value with itself, by the amount modulo the width (a negative amount
+    // rotates the other way, since its low bits are the same in two's complement)
+    let lt = llty g ty
+    let w = llty g (argTy 1)
+    let (wb, lb) = (bitsOf w, bitsOf lt)
+    let amount = if wb = lb then arg 1 else if wb > lb then instr em $"trunc {w} {arg 1} to {lt}" else instr em $"zext {w} {arg 1} to {lt}"
+    intrinsic g em $"llvm.fsh{(if op = "int.rotateLeft" then "l" else "r")}.{lt}" lt [ (lt, arg 0); (lt, arg 0); (lt, amount) ] ""
+  | "int.byteSwap" ->
+    // the bytes in the other order; a byte is its own
+    let lt = llty g ty
+    if bitsOf lt = 8 then arg 0 else intrinsic g em $"llvm.bswap.{lt}" lt [ (lt, arg 0) ] ""
   | "slot.take" -> arg 0
   | "mmio.read.u32"
   | "mmio.read.u8" ->

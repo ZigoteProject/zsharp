@@ -59,15 +59,37 @@ itself from the previous release (stage 0, pinned in `dev`).
 ### After 0.6.2
 0.6.2 is out (2026-10-30). Phases 11.5 and 12 stay here until their last exit tests close, and
 each needs a machine, not code: the suite on the five CI runners and the clean-machine installs
-(11.5), and the flagship on its Nucleo-F401RE (12). 0.7 isn't planned yet; its scope is picked
-from the tracks' *after 0.6.2* items once the flagship's and the first users' profiles say what
-they need (optimization waits for profiles of real programs, as phase 12 says). The strongest
-candidates, from the known gaps and from what the twelve-dollar server and the flagship asked
-for: the board itself and the next boards (M4, 0027), constants in flash and placement (M3, M12),
-`zs test --target` (D11), properties and fuzzing (D5, D6), `use` under effects and generator
-fusion (S10, S9), completion-based I/O (S14), the first-party packages and the index (K), and
-type providers (P, the SVD provider for the flagship's registers). A change to a value's meaning
-or a library name is listed in `CHANGELOG.md` with what to rewrite, until 1.0 freezes them.
+(11.5), and the flagship on its Nucleo-F401RE (12). A change to a value's meaning or a library
+name is listed in `CHANGELOG.md` with what to rewrite, until 1.0 freezes them.
+
+### 0.7: the plan (2026-11-04)
+0.7 is the release that runs where 0.6.2 says it runs, and takes from the tracks what the
+flagship and the first users asked for, in this order. Its scope was read off the known gaps,
+the tracks' *after 0.6.2* items and the first sessions on 0.6.2 (the twelve-dollar server, the
+flagship, and a day of fuzzing the released compiler); it isn't grown past this list without a
+user asking. Optimization still waits for profiles of real programs.
+1. **Verification, before any feature** (phases 11.5 and 12's open exit tests; machines, not code):
+   - **The board:** `examples/nucleo` flashed to a Nucleo-F401RE through probe-rs, its LED, button and shell checked by hand (QEMU models none of its GPIO). The flagship's claim stands or falls here.
+   - **CI:** `.github/workflows/test.yml` green on the five runners (GitHub's hosted runners are free for a public repository; what the workflow still needs is written down when it first runs), `tests/bootstrap.sh` included.
+   - **Clean machines:** the release archive to a running hello world on clean Fedora, Ubuntu, macOS and Windows, following only the guide; `zs doctor` is what a newcomer runs first, and the page says what it says.
+2. **Hardening** (track D, and the gaps in shipped features; code, now):
+   - **The fuzzer in every run:** `tests/fuzz.sh` runs in `./test.sh` already; its seed is rotated per run (`ZS_FUZZ_SEED` from the date), and a crash it finds is a test the same day. Seed 1's first find, a type with a member declared twice crashing a later call, is fixed (`tests/err_member_twice.zs`, 2026-11-04).
+   - **`use` under effects** (S10, known gap 5): a throw or a stop passing over a `use` disposes what it bound. A correctness hole in a shipped feature comes before any new one.
+   - **Stress and sanitizers** (D4): `zs test --stress` over the pool, tasks and `Alt` under ThreadSanitizer and `ZS_LEAKCHECK=1`, so a race or a leak that one run hides is found before a user's server finds it; `./test.sh --sanitize=address` as a mode beside `--valgrind` and `--release`.
+   - **Debug info for every value** (D1, known gap 4): lists and boxed unions as gdb and lldb values, so a user's first crash is debuggable.
+3. **What the flagship asked for** (track M, from `examples/nucleo`'s build and the board):
+   - **Constants in flash** (M3) and **placement** (M12: `[<Section>]`, `[<Align>]`): the firmware's tables stop being copied to RAM at startup.
+   - **Tests on the chip** (D11): `zs test --target cortex-m4` under QEMU, and `--probe` on the board, so the shell's tests run where the shell runs.
+   - **Weak references and arenas on a chip** (M8, known gap 3).
+   - **The next board** (0027) only once the first is flashed and a user names one.
+4. **What an F# programmer reaches for next** (track S, each small, taken as it comes):
+   - *Done 2026-11-04:* `Int`'s checked, saturating and bit operations (S3).
+   - ISO 8601 parsing (S6); UDP and name lookup (S8); list expressions over any `Iter` (S1); `Seq` pipelines as one loop (S9, known gap 6).
+   - **The exit tests that say the library is enough:** ten Advent of Code puzzles with only the prelude, Core and Std; grep, a JSON pretty-printer and `tail -f` in `examples/`, each under 100 lines.
+5. **Not in 0.7 unless a user asks:** the package index and `zs add` (K7, K8: git URLs work), completion-based I/O (S14), properties and fuzzing as properties (D5, D6: the plain fuzzer covers the compiler), traces (D4 of profiling), RISC-V (T), the editor extensions in their registries (E: after CI is green, since each registry wants a release that was tested on its platform), and `import c` through the provider protocol's open questions (0001).
+
+**Exit:** 1 to 3 done and 4's exit tests met is 0.7; 4's items ship in it as they come. The release
+notes list what each change asks a 0.6.2 program to rewrite, as `CHANGELOG.md` does today.
 
 ### Phase 11.5: cross-platform: macOS, Windows and Linux on arm64 and x86-64
 Z# builds programs for, and runs its compiler on, the platforms people develop on: macOS arm64
@@ -296,7 +318,7 @@ DESIGN §9's layers.
   3. **Numbers:**
      - **Parsing:** *(done before phase 11)* `Float.parse`, `Int.parse` and `Int.parseRadix`, returning an `option`; the compiler's lexer and `import c` use them.
      - **`Math`:** *(done in phase 12)* the rest of libm as LLVM intrinsics (`floor`, `ceil`, `round`, `pow`, `exp`, `log`, trigonometry), plus `clamp`, `pi` and `e`; fdlibm's `pow` and `atan2` in the embedded runtime, where compiler-rt has none.
-     - **Integers:** *(after 0.6.2)* `Int.checkedAdd` (returning an `option`), saturating arithmetic, and the bit operations (`popCount`, `leadingZeros`, `rotateLeft`) that microcontroller code needs.
+     - **Integers:** *(done 2026-11-04: `tests/int_ops.zs`, and on both chips `tests/mcu/ints.zs`)* `Int.checkedAdd` (returning an `option`), saturating arithmetic, and the bit operations (`popCount`, `leadingZeros`, `rotateLeft`) that microcontroller code needs.
      - **`Random`:** *(done in phase 12)* a seeded PCG in Core, and `Random.shared`, seeded from the OS, in Std (namespace `Numerics`).
      - **Bytes:** *(done in phase 12, with item 12: `Bytes.readU16BE`, `writeF32LE` and the rest, a byte at a time; one unaligned load over `Ptr.readUnaligned` after 0.6.2)* `Bytes.readU16BE`, `readU32LE`, `writeI64BE`, … over a `span<u8>` (phase 9.6) at an offset, for binary formats and protocols.
   4. **Text:**

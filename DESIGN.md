@@ -90,6 +90,7 @@ let sumTo n =                            // imperative code is fine; mutation st
   - `i8 i16 i32 i64` and `u8 u16 u32 u64` have fixed sizes. `f32` and `f64` are IEEE floats.
   - Literals: `42`, `0xFF`, `0b1010`, `0o17`, `1_000_000`, `3.14`, `1e-3`. A literal takes the type the context needs, and conversions are explicit (`float n`, `u8 x`).
   - Bitwise operators use F#'s spelling, `&&& ||| ^^^ <<< >>> ~~~`, and bind tighter than comparison (`x &&& mask = 0`).
+  - `Int` does what the operators don't: `wrappingAdd`, `checkedAdd` (an `option`) and `saturatingAdd` with their `Sub` and `Mul`, and the bit operations `popCount`, `leadingZeros`, `trailingZeros`, `rotateLeft`, `rotateRight` and `byteSwap`; each is one instruction where the target has it.
 - **Other types:** `bool`, `string` (UTF-8 bytes, reference-counted, immutable), `unit`.
   - **`char`:** a Unicode scalar value (32 bits), written `'a'`, `'\n'` or `'\u{1F600}'`. It has equality, ordering, hashing and printing, and `match` on character literals, but no arithmetic. `int c` and `char n` convert.
   - **Strings and characters:** `for c in s` decodes a string's UTF-8 character by character; `String.length` stays the byte length. The `Char` functions classify ASCII.

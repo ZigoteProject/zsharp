@@ -165,6 +165,18 @@ let builtins : Map<string, Builtin> =
       b "Int.wrappingAdd" "wrap+" [ kInt ] (f a (f a a)) 2
       b "Int.wrappingSub" "wrap-" [ kInt ] (f a (f a a)) 2
       b "Int.wrappingMul" "wrap*" [ kInt ] (f a (f a a)) 2
+      b "Native.checkedAdd" "checked+" [ kInt ] (f a (f a (TTuple [ tBool; a ]))) 2
+      b "Native.checkedSub" "checked-" [ kInt ] (f a (f a (TTuple [ tBool; a ]))) 2
+      b "Native.checkedMul" "checked*" [ kInt ] (f a (f a (TTuple [ tBool; a ]))) 2
+      b "Int.saturatingAdd" "sat+" [ kInt ] (f a (f a a)) 2
+      b "Int.saturatingSub" "sat-" [ kInt ] (f a (f a a)) 2
+      b "Int.saturatingMul" "sat*" [ kInt ] (f a (f a a)) 2
+      b "Int.popCount" "int.popCount" [ kInt ] (f a tInt) 1
+      b "Int.leadingZeros" "int.leadingZeros" [ kInt ] (f a tInt) 1
+      b "Int.trailingZeros" "int.trailingZeros" [ kInt ] (f a tInt) 1
+      b "Int.rotateLeft" "int.rotateLeft" [ kInt ] (f a (f tInt a)) 2
+      b "Int.rotateRight" "int.rotateRight" [ kInt ] (f a (f tInt a)) 2
+      b "Int.byteSwap" "int.byteSwap" [ kInt ] (f a a) 1
       b "Runtime.allocations" "Runtime.allocations" [] (f tUnit tInt) 1
       b "Environment.exit" "Process.exit" [ kAny ] (f tInt a) 1
       b "Mmio.read32" "mmio.read.u32" [] (f (tcon "usize") (tcon "u32")) 1

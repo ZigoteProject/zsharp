@@ -1,0 +1,4 @@
+tests/err_member_twice.zs:6: error: 'Stack' already has a member 'Push'
+tests/err_member_twice.zs:7: error: member 'items' has the same name as a field of 'Stack'
+tests/err_member_twice.zs:12: error: 'P' already has a member 'Make'
+3 errors

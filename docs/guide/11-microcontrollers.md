@@ -197,7 +197,7 @@ The compiler does most of the work. These habits help it:
 - **`-Os`:** for size. At `-O2`, the compiler may unroll loops and version them for speed.
 
 **What still costs more than C:**
-- **Overflow checks:** arithmetic is checked for overflow, so `+`, `-` and `*` that the compiler can't prove safe cost an extra instruction or two. For hashes and checksums, mark the function `[<Wrapping>]`, or use `Int.wrappingAdd` and friends.
+- **Overflow checks:** arithmetic is checked for overflow, so `+`, `-` and `*` that the compiler can't prove safe cost an extra instruction or two. For hashes and checksums, mark the function `[<Wrapping>]`, or use `Int.wrappingAdd` and friends; `Int.saturatingAdd` and `Int.checkedAdd` are the other answers, and `Int.leadingZeros`, `popCount` and `rotateLeft` the bit operations, each an instruction where the chip has one (`CLZ`, the M4's saturating `QADD`).
 - **Heap data:** lists, strings and recursive unions are heap-allocated, with reference counting. Each object has a 4-byte count, then a 4-byte length (strings, arrays) or tag (a union with several cases that have fields), plus 8 bytes of allocator header. `[]`, `None` and other cases without fields are never allocated.
 
 ## Timing code

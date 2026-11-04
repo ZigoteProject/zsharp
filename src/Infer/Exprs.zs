@@ -1327,7 +1327,11 @@ and staticMember (cx: Cx) (name: string) : option<MemberInfo> =
 /// default (evaluated here, seeing earlier parameters) or None.
 and memberCall (cx: Cx) (env: Map<string, Local>) (depth: int) (m: MemberInfo) (self: option<CExpr>) (args0: list<Expr>) (what: string) : CExpr =
   let v = cx.v
-  let g = Map.find m.gname cx.globals.Value
+  // a member whose declaration failed has no function: an error here, not a crash
+  let g =
+    match Map.tryFind m.gname cx.globals.Value with
+    | Some g -> g
+    | None -> fail $"'{String.replace m.gname "#" "."}' has no definition: its declaration didn't check"
   let head =
     if g.defining then
       mk (CGlobal(m.gname, None)) g.ty

@@ -32,7 +32,7 @@ proposal describes a change to it, and [ROADMAP.md](../../ROADMAP.md) says when 
 | 0021 | [Warnings](0021-warnings.md) | Implemented: `unused-value` (before phase 11), `cycle` (phase 12); `deprecated` at the 1.0 freeze | phase 12's deferred features |
 | 0022 | [Targets: macOS and Windows](0022-targets-macos-windows.md) | Implemented (phase 11.5): every target builds, the suites in CI wait for machines | decision 29, track T's plan |
 | 0023 | [JSON in Core](0023-json-in-core.md) | Implemented (before phase 11) | track S's plan |
-| 0024 | [The library's API](0024-library-api.md) | Implemented in part: items 2–4 and 6–8 of track S; integers' checked and bit operations, ISO 8601 parsing, UDP and name lookup after 0.6.2 | track S's plan |
+| 0024 | [The library's API](0024-library-api.md) | Implemented in part: items 2–4 and 6–8 of track S, and the integers' checked, saturating and bit operations (item 3, 2026-11-04); ISO 8601 parsing, UDP and name lookup after 0.6.2 | track S's plan |
 | 0025 | [Reading effect rows](0025-reading-effects.md) | Implemented (before phase 11, decision 80) | a design review with 0017, before phase 11 |
 | 0026 | [Performance you can see](0026-performance-you-can-see.md) | Implemented in part (phase 12): the editor's allocation hints; atomic counts and the rest are a draft | a design review, with the flagship's first profiles |
 | 0027 | [More microcontrollers](0027-more-microcontrollers.md) | Implemented in part (phase 12): the Nucleo-F401RE, RTT and probe-rs; the other boards are a draft | a design review, before phase 12's M4 (one real board) |

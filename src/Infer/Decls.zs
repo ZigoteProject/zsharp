@@ -146,8 +146,28 @@ let private defineGroup (cx: Cx) (items: list<Item>) = defineGroupWith cx false 
 
 let private defineRecGroup (cx: Cx) (items: list<Item>) = defineGroupWith cx true items |> ignore
 
-/// Members become functions `Type#Name`: self first (instance members), then parameters; an
-/// optional parameter without a default is an option in the body.
+/// One member as an item of the type's group: its function `Type#Name`, self first (instance
+/// members), then parameters; an optional parameter without a default is an option in the body.
+let private declareMember (cx: Cx) (tname: string) (tparams: list<string>) (m: Member) (existing: list<string * MemberInfo>) : Item =
+  let gname = tname + "#" + m.memberName
+  let ps = Option.defaultValue [] m.mpars
+  let mparam (p: MemberParam) : Param =
+    let ann =
+      match (p.optional, p.mdefault) with
+      | (true, None) -> Some(STName("option", [ Option.defaultValue (STVar("$opt." + p.mname)) p.mty ]))
+      | _ -> p.mty
+    { param = plainPat (PIdent(p.mname, None)); ann = ann }
+  let selfPar =
+    match m.self with
+    | Some s -> [ { param = plainPat (PIdent(s, None)); ann = Some(STName(tname, List.map STVar tparams)) } ]
+    | None -> []
+  let all = List.append selfPar (List.map mparam ps)
+  let info = { gname = gname; isStatic = m.isStatic; isProperty = Option.isNone m.mpars; mpars = ps }
+  // a new list: a module extending another's type writes the type's members anew
+  cx.members.Value <- Map.add tname (List.append existing [ (m.memberName, info) ]) cx.members.Value
+  item m.mat gname true (if List.isEmpty all then [ unitParam ] else all) m.mret m.mbody
+
+/// A type's members, as one group of functions (`declareMember`); one that can't be is left out.
 let private declareMembers (cx: Cx) (tname: string) (tparams: list<string>) (ms: list<Member>) =
   if not (Map.containsKey tname cx.members.Value) then
     cx.members.Value <- Map.add tname [] cx.members.Value
@@ -156,30 +176,20 @@ let private declareMembers (cx: Cx) (tname: string) (tparams: list<string>) (ms:
     match Map.tryFind tname cx.types.Value with
     | Some { def = RecordDef fs } -> List.map fst fs
     | _ -> []
-  let one (m: Member) =
+  // a member that can't be is reported and left out, and the others stand: a failure here would
+  // abandon the whole group, leaving the members already added without their functions, and a
+  // call to one of them with nothing to find
+  let one (m: Member) : option<Item> =
     let existing = Map.find tname cx.members.Value
     if List.exists (fun (n, _) -> n = m.memberName) existing then
-      failLine m.mat $"'{tname}' already has a member '{m.memberName}'"
-    if not m.isStatic && List.contains m.memberName fieldNames then
-      failLine m.mat $"member '{m.memberName}' has the same name as a field of '{tname}'"
-    let gname = tname + "#" + m.memberName
-    let ps = Option.defaultValue [] m.mpars
-    let mparam (p: MemberParam) : Param =
-      let ann =
-        match (p.optional, p.mdefault) with
-        | (true, None) -> Some(STName("option", [ Option.defaultValue (STVar("$opt." + p.mname)) p.mty ]))
-        | _ -> p.mty
-      { param = plainPat (PIdent(p.mname, None)); ann = ann }
-    let selfPar =
-      match m.self with
-      | Some s -> [ { param = plainPat (PIdent(s, None)); ann = Some(STName(tname, List.map STVar tparams)) } ]
-      | None -> []
-    let all = List.append selfPar (List.map mparam ps)
-    let info = { gname = gname; isStatic = m.isStatic; isProperty = Option.isNone m.mpars; mpars = ps }
-    // a new list: a module extending another's type writes the type's members anew
-    cx.members.Value <- Map.add tname (List.append existing [ (m.memberName, info) ]) cx.members.Value
-    item m.mat gname true (if List.isEmpty all then [ unitParam ] else all) m.mret m.mbody
-  defineGroup cx (List.map one ms)
+      reportLine m.mat $"'{tname}' already has a member '{m.memberName}'"
+      None
+    else if not m.isStatic && List.contains m.memberName fieldNames then
+      reportLine m.mat $"member '{m.memberName}' has the same name as a field of '{tname}'"
+      None
+    else
+      Some(declareMember cx tname tparams m existing)
+  defineGroup cx (List.choose (fun x -> x) (List.map one ms))
 
 // ------------------------------------------------------------ C's boundary
 

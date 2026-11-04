@@ -99,6 +99,8 @@ panic: List.head: empty list
 
 **Wrap-around on purpose:** for hashes, checksums and random number generators, use `Int.wrappingAdd`, `Int.wrappingSub` and `Int.wrappingMul`.
 
+**Checked and saturating:** when an overflow is an input's fault rather than a bug (a parsed size, a timestamp plus a duration), `Int.checkedAdd a b` is `Some` the sum or `None`, with `checkedSub` and `checkedMul` beside it. `Int.saturatingAdd`, `saturatingSub` and `saturatingMul` stop at the type's bounds instead (`Int.saturatingSub (u8 3) (u8 5)` is `0`), as a gain control or a counter that must not wrap does. The bit operations are `Int.popCount`, `leadingZeros`, `trailingZeros`, `rotateLeft`, `rotateRight` and `byteSwap`.
+
 ```zsharp
 let main () =
   let big = 9223372036854775807
