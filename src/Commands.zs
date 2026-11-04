@@ -380,11 +380,160 @@ let private leafOf (line: string) : option<Leaf> =
 
 // runs a test binary on one test, killed after its time limit: the exit code (None when it timed
 // out) and its output (standard output, then standard error)
-let private runLeaf (exe: string) (l: Leaf) : option<int> * string =
+let private runLeafWith (exe: string) (l: Leaf) (extra: list<string>) : option<int> * string =
   let secs = float l.timeout / 1000.0
-  match Tools.runSplit "timeout" [ "--kill-after=1"; $"{secs}"; exe; l.path ] with
+  match Tools.runSplit "timeout" (List.concat [ [ "--kill-after=1"; $"{secs}"; exe; l.path ]; extra ]) with
   | Ok r -> ((if r.code = 124 || r.code = 137 then None else Some r.code), r.out + r.err)
   | Error e -> (Some 1, e)
+
+// a property's side files, beside the binary: the case being run (its seed, size and index) and
+// its bytes as drawn; named by the path, so the stress runs don't share them
+let private propertyFiles (exe: string) (l: Leaf) : string * string =
+  let key = Tools.hashOf [ l.path ]
+  ($"{exe}.{key}.case", $"{exe}.{key}.record")
+
+let private runLeaf (exe: string) (l: Leaf) : option<int> * string =
+  if l.kind = "property" then
+    let (caseFile, recordFile) = propertyFiles exe l
+    runLeafWith exe l [ "--record"; caseFile; recordFile ]
+  else
+    runLeafWith exe l []
+
+// bytes as hex and back (the record files', and the saved failures')
+let private hexOf (bytes: array<u8>) : string =
+  let digits = "0123456789abcdef"
+  String.concat (List.map (fun (b: u8) -> String.sub digits (int (b >>> u8 4)) 1 + String.sub digits (int (b &&& u8 15)) 1) (Array.toList bytes))
+
+let private unhex (s: string) : option<array<u8>> =
+  let t = String.trim s
+  let digit (c: u8) : int =
+    if c >= u8 48 && c <= u8 57 then int c - 48
+    else if c >= u8 97 && c <= u8 102 then int c - 87
+    else if c >= u8 65 && c <= u8 70 then int c - 55
+    else -1
+  if String.length t % 2 <> 0 then
+    None
+  else
+    let n = String.length t / 2
+    let mutable out = Array.create n (u8 0)
+    let mutable ok = true
+    for i in 0 .. n - 1 do
+      let hi = digit (String.byte t (2 * i))
+      let lo = digit (String.byte t (2 * i + 1))
+      if hi < 0 || lo < 0 then
+        ok <- false
+      else
+        out.[i] <- u8 (hi * 16 + lo)
+    if ok then Some out else None
+
+// where a property's shrunk failing case is saved, beside the test file, to be replayed first
+// the next time (0010): .zs-cache/failures/<path>, the path's other characters made '-'
+let private failureFile (src: string) (path: string) : string =
+  let safe (c: u8) =
+    if (c >= u8 48 && c <= u8 57) || (c >= u8 65 && c <= u8 90) || (c >= u8 97 && c <= u8 122) || c = u8 45 || c = u8 95 || c = u8 46 then String.ofByte c else "-"
+  let name = String.concat (List.init (String.length path) (fun i -> safe (String.byte path i)))
+  Path.combine (Path.combine (Path.combine (dirOf src) ".zs-cache") "failures") name
+
+// a replay of one case of a property: its exit code and output; the case still fails when the
+// code isn't 0 and the case wasn't discarded
+let private replayCase (exe: string) (l: Leaf) (file: string) (size: int) : option<int> * string =
+  runLeafWith exe l [ "--replay"; file; string size ]
+
+let private replayFails (r: option<int> * string) : bool =
+  let (code, output) = r
+  code <> Some 0 && not (String.contains "zs-discarded" output)
+
+// a property's case that panicked, shrunk by replays of the test binary (0010): its bytes, as
+// recorded, made shorter first (a block at a time, the largest first), then smaller (each byte
+// zeroed, halved or one less), each candidate a run of the case, kept while it still panics; up
+// to 300 runs
+let private shrinkByReplay (exe: string) (l: Leaf) (size: int) (bytes0: array<u8>) (file: string) : array<u8> * int =
+  let bytes = ref bytes0
+  let runs = ref 0
+  let progress = ref true
+  let accept (candidate: array<u8>) : bool =
+    if runs.Value >= 300 || Array.toList candidate = Array.toList bytes.Value then
+      false
+    else
+      runs.Value <- runs.Value + 1
+      File.writeAllText file (hexOf candidate) |> ignore
+      if replayFails (replayCase exe l file size) then
+        bytes.Value <- candidate
+        progress.Value <- true
+        true
+      else
+        false
+  while progress.Value && runs.Value < 300 do
+    progress.Value <- false
+    let mutable block = Array.length bytes.Value / 2
+    while block >= 1 do
+      let mutable at = 0
+      while at + block <= Array.length bytes.Value do
+        let now = bytes.Value
+        if not (accept (Array.append (Array.sub now 0 at) (Array.sub now (at + block) (Array.length now - at - block)))) then
+          at <- at + block
+      block <- block / 2
+    for i in 0 .. Array.length bytes.Value - 1 do
+      if i < Array.length bytes.Value then
+        let b = bytes.Value.[i]
+        let tryWith (v: u8) =
+          let mutable candidate = Array.copy bytes.Value
+          candidate.[i] <- v
+          accept candidate
+        if b > u8 0 then
+          if not (tryWith (u8 0)) then
+            if not (tryWith (b / u8 2)) then
+              tryWith (b - u8 1) |> ignore
+  (bytes.Value, runs.Value)
+
+// a property's run (0010): a saved failing case is replayed first (one that passes now is
+// deleted, the bug fixed); then the random run, its cases recorded; a case that panicked is
+// shrunk by replays, shown by a last replay, and saved
+let private runProperty (exe: string) (src: string) (l: Leaf) : option<int> * string =
+  let saved = failureFile src l.path
+  let (caseFile, recordFile) = propertyFiles exe l
+  let replayed =
+    match File.readAllText saved with
+    | Ok text ->
+      match String.split "\n" text with
+      | sizeText :: hex :: _ ->
+        match ((Int.parse (String.trim sizeText) : option<int>), unhex hex) with
+        | (Some size, Some bytes) ->
+          File.writeAllText recordFile (hexOf bytes) |> ignore
+          let (code, output) = replayCase exe l recordFile size
+          if replayFails (code, output) then
+            Some(code, output + $"\nthe failing case saved last time, replayed first (delete {Path.getRelativePath (Environment.currentDirectory ()) saved} to run afresh)")
+          else
+            File.delete saved |> ignore
+            None
+        | _ -> None
+      | _ -> None
+    | Error _ -> None
+  match replayed with
+  | Some r -> r
+  | None ->
+    let (code, output) = runLeaf exe l
+    // a panic of the body (not the property's own report of a false or an Error): shrunk here
+    if code <> Some 0 && Option.isSome code && not (String.contains "panic: falsified" output) && File.exists caseFile then
+      match (File.readAllText caseFile, File.readAllText recordFile) with
+      | (Ok caseText, Ok hex) ->
+        match (String.split "\t" (String.trim caseText), unhex hex) with
+        | ([ _; sizeText; _ ], Some bytes0) ->
+          let size = Option.defaultValue 100 (Int.parse (String.trim sizeText) : option<int>)
+          let file = recordFile + ".try"
+          let (bytes, runs) = shrinkByReplay exe l size bytes0 file
+          File.writeAllText file (hexOf bytes) |> ignore
+          let (code2, shown) = replayCase exe l file size
+          File.delete file |> ignore
+          let dir = Path.getDirectoryName saved
+          Tools.makeDirectory dir
+          File.writeAllText saved $"{size}\n{hexOf bytes}\n" |> ignore
+          let note = $"\nshrunk from {Array.length bytes0} bytes to {Array.length bytes} in {runs} runs; saved as {Path.getRelativePath (Environment.currentDirectory ()) saved}, replayed first next time"
+          (code2, shown + note)
+        | _ -> (code, output)
+      | _ -> (code, output)
+    else
+      (code, output)
 
 // whether a test's run passed: exit 0, and no leak reported at its exit (ZS_LEAKCHECK=1: the
 // runtime's "leak check: n object(s) still allocated")
@@ -613,8 +762,8 @@ let private runTests (o: Options.Options) (src: string) (args: list<string>) (st
         match Tools.runSplit exe [ "--list" ] with
         | Ok r -> r.out
         | Error _ -> ""
-      // the tests: a benchmark is zs bench's
-      let leaves = List.filter (fun (l: Leaf) -> l.kind = "test") (List.choose leafOf (List.filter (fun l -> l <> "") (String.split "\n" listed)))
+      // the tests and properties: a benchmark is zs bench's
+      let leaves = List.filter (fun (l: Leaf) -> l.kind <> "bench") (List.choose leafOf (List.filter (fun l -> l <> "") (String.split "\n" listed)))
       if List.isEmpty leaves then
         eprintln $"{src}: no [<Tests>] values"
         File.delete exe |> ignore
@@ -682,7 +831,7 @@ let private runTests (o: Options.Options) (src: string) (args: list<string>) (st
           println $"stress: {total} runs of {n} tests on {workers} cores for {ms / 1000} s, {failed.Value} failed"
         | _ ->
           // ponytail: one test at a time; up to the cores at once as tasks when runs get long
-          let results = Map.ofList (List.map (fun (l: Leaf) -> (l.path, runLeaf exe l)) (List.filter runs chosen))
+          let results = Map.ofList (List.map (fun (l: Leaf) -> (l.path, (if l.kind = "property" then runProperty exe src l else runLeaf exe l))) (List.filter runs chosen))
           for l in chosen do
             match Map.tryFind l.path results with
             | Some(code, output) when passedRun code output ->

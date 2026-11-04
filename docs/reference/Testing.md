@@ -125,6 +125,15 @@ A group: its name, its tests, its focus, and whether they run one at a time.
 
 A benchmark: its name and its body, which `zs bench` times (`zs test` runs it once).
 
+#### `Testing.Property`
+
+```zsharp
+| Property of name: string * run: (PropertyDriver -> unit)
+```
+
+A property (`testProperty`): its name and its run, driven by the test binary's runner
+(which records each case for `zs test`, or replays one).
+
 ### `Testing.Source`
 
 ```zsharp
@@ -568,6 +577,14 @@ Runs every test in order, in this process: what `zs test --target <chip>` builds
 image (a chip has no processes, 0009 D11). Prints `test path` before each, `ok   path` after,
 `skip path` for a pending one (or one left out while others are focused), and the counts; a
 failure's panic ends the run after `test path`, which names it.
+
+### `Testing.Source.randomWith`
+
+```zsharp
+Testing.Source.randomWith : Random -> int -> option<array<u8> -> unit> -> Testing.Source
+```
+
+A random stream from `r`, recording what's drawn, at `size`; `onDraw` is told each block.
 
 ### `Testing.Source.random`
 

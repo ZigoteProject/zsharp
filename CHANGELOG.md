@@ -439,8 +439,11 @@ a real machine. The flagship runs under QEMU's STM32F405, not yet on the board i
   `classify`, `collect`): a passing property reports how its cases were labelled, a failure
   shows the failing case's labels. `Prop.model commands { init; step }` checks a system
   against a model with a derived sequence of commands, which shrinks to the fewest with the
-  smallest arguments. A case that panics ends the test with the panic; the runner's record
-  and replay protocol and `zs fuzz` are left (`tests/property/basic.zs`, `model.zs`).
+  smallest arguments. Under `zs test`, a case that panics is recorded as drawn (each case from
+  its own seed), shrunk by replays of the test binary (`--replay`) to a smallest case that
+  still panics, shown, and saved beside the file in `.zs-cache/failures/`; the next run
+  replays it first, and once it passes it's deleted. `zs fuzz` is left
+  (`tests/property/basic.zs`, `model.zs`, `tests/ztest/property.sh`).
 - `Numerics.Fixed` (0015, track M item 10): `q7`, `q15` and `q31`, each a one-case union over
   its integer (its size, by decision 66), with saturating `+`, `-`, `*` (rounded half up), `/`, `%` and negation,
   `mulAdd`, `abs`, `clamp`, `ofFloat`/`toFloat`/`toF32`, `ofInt`, `raw`/`ofRaw`, the conversions

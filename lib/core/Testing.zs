@@ -20,6 +20,20 @@ type Test =
   | Group of name: string * tests: list<Test> * focus: Focus * sequenced: bool
   /// A benchmark: its name and its body, which `zs bench` times (`zs test` runs it once).
   | Bench of name: string * run: (unit -> unit)
+  /// A property (`testProperty`): its name and its run, driven by the test binary's runner
+  /// (which records each case for `zs test`, or replays one).
+  | Property of name: string * run: (PropertyDriver -> unit)
+
+/// How the test binary's runner drives a property (0010): a random run, each case's seed and
+/// size noted and its bytes recorded as drawn (so `zs test` can shrink a case that panics by
+/// replaying the binary), or one case replayed from given bytes.
+and PropertyDriver =
+  { /// The bytes and size of one case to run instead of a random run.
+    replay: option<array<u8> * int>
+    /// Before each random case: its index, its seed and its size.
+    onCase: int -> u64 -> int -> unit
+    /// Each block drawn at random.
+    onDraw: option<array<u8> -> unit> }
 
 /// What a test's body gives back: nothing (a panic fails it), a `result` (an `Error` fails it),
 /// or a task (Std's impl runs it on the event loop).
@@ -160,6 +174,11 @@ let runAll (tests: list<Test>) : int =
     | Case(name, run, f, _) -> [ (prefix + name, run, (if focus = Normal then f else focus)) ]
     // a benchmark runs once here, as a test of its body
     | Bench(name, run) -> [ (prefix + name, run, focus) ]
+    // a property runs at random, nothing recorded (a chip has no files)
+    | Property(name, run) ->
+      [ (prefix + name,
+          (fun () -> run { replay = None; onCase = (fun _ _ _ -> ()); onDraw = None }),
+          focus) ]
     | Group(name, ts, f, _) ->
       List.collect (leaves (prefix + name + "/") (if focus = Normal then f else focus)) ts
   let all = List.collect (leaves "" Normal) tests
@@ -192,20 +211,27 @@ type Source =
     discarded: ref<bool>
     /// The case's labels (`Prop.label`, `Prop.classify`), reported with the result.
     labels: Buffer<string>
+    /// Told each block drawn at random (the test binary records them, so `zs test` can shrink
+    /// a case that panics).
+    onDraw: option<array<u8> -> unit>
     /// How large the values may get: a property's cases grow from 0 to its `maxSize`.
     size: int }
 
 /// Functions on `Source`.
 module Source =
-  /// A random stream from `r`, recording what's drawn, at `size`.
-  let random (r: Numerics.Random) (size: int) : Source =
+  /// A random stream from `r`, recording what's drawn, at `size`; `onDraw` is told each block.
+  let randomWith (r: Numerics.Random) (size: int) (onDraw: option<array<u8> -> unit>) : Source =
     { bytes = Buffer.ofArray [||]
       pos = ref 0
       random = Some r
       overrun = ref false
       discarded = ref false
       labels = Buffer.ofArray [||]
+      onDraw = onDraw
       size = size }
+
+  /// A random stream from `r`, recording what's drawn, at `size`.
+  let random (r: Numerics.Random) (size: int) : Source = randomWith r size None
 
   /// A given stream (a shrink candidate, a saved case), at `size`.
   let ofBytes (bytes: array<u8>) (size: int) : Source =
@@ -215,12 +241,14 @@ module Source =
       overrun = ref false
       discarded = ref false
       labels = Buffer.ofArray [||]
+      onDraw = None
       size = size }
 
   /// `n` bytes from the stream: the next of the given or recorded ones, else drawn at random and
   /// recorded, else (a given stream used up) zeros, and the source has overrun.
   let draw (n: int) (s: Source) : array<u8> =
     let mutable out = Array.create n (u8 0)
+    let fresh = Buffer.ofArray [||]
     for i in 0 .. n - 1 do
       let p = s.pos.Value + i
       if p < Buffer.length s.bytes then
@@ -230,9 +258,13 @@ module Source =
         | Some r ->
           let b = u8 (Numerics.Random.nextInt 0 256 r)
           Buffer.push b s.bytes
+          Buffer.push b fresh
           out.[i] <- b
         | None -> s.overrun.Value <- true
     s.pos.Value <- s.pos.Value + n
+    match s.onDraw with
+    | Some f when Buffer.length fresh > 0 -> f (Buffer.toArray fresh)
+    | _ -> ()
     out
 
   /// Whether the case is to be discarded: a filter that never held, or an overrun.
@@ -736,22 +768,40 @@ let private shrink (prop: 'a -> 'r) (size: int) (bytes0: array<u8>) : array<u8> 
 /// shows, with the seed to replay the run. A case that panics ends the test at once, with the
 /// panic: `testPropertyWith { seed = Some s }` replays it.
 let testPropertyWith (ps: PropertySettings) (name: string) (prop: 'a -> 'r) : Test =
-  let body () =
+  let labelled (ls: list<string>) =
+    if List.isEmpty ls then "" else $"\n  labels: {String.join ", " ls}"
+  // one case from given bytes (zs test's replay of a case that panicked, or a saved one): the
+  // case shown, then run; a discarded one is said so
+  let replay (bytes: array<u8>) (size: int) =
+    let src = Source.ofBytes bytes size
+    let x = Gen.draw (arbitrary ()) src
+    if Source.rejected src then
+      println "zs-discarded"
+    else
+      println $"case: {show x}"
+      match check (prop x) src with
+      | Some msg when not (Source.rejected src) ->
+        panic $"falsified: {show x}\n  {msg}{labelled (Array.toList (Buffer.toArray src.labels))}"
+      | Some _ -> println "zs-discarded"
+      | None -> ()
+  let body (d: PropertyDriver) =
     let seed =
       match ps.seed with
       | Some s -> s
       | None -> Runtime.ticks ()
-    let r = Numerics.Random.create seed
     let mutable passed = 0
     let mutable discarded = 0
     let mutable failure = None
     let counts = ref Map.empty
-    let labelled (ls: list<string>) =
-      if List.isEmpty ls then "" else $"\n  labels: {String.join ", " ls}"
     while passed < ps.runs && failure.IsNone do
       // the size grows with the cases, discarded ones included: at size 0 a filter may never hold
       let size = min ps.maxSize (ps.maxSize * (passed + discarded) / max 1 (ps.runs - 1))
-      let src = Source.random r size
+      // each case from its own seed, so one regenerates alone
+      let index = passed + discarded
+      let caseSeed =
+        Int.wrappingAdd seed (Int.wrappingMul (u64 (index + 1)) (u64 0x9E3779B97F4A7C15))
+      d.onCase index caseSeed size
+      let src = Source.randomWith (Numerics.Random.create caseSeed) size d.onDraw
       let x = Gen.draw (arbitrary ()) src
       let result = if Source.rejected src then None else check (prop x) src
       if Source.rejected src then
@@ -787,7 +837,11 @@ let testPropertyWith (ps: PropertySettings) (name: string) (prop: 'a -> 'r) : Te
         else
           (x0, msg0, labels0, 0)
       panic $"falsified after {passed + 1} cases ({steps} shrinks): {show x}\n  {msg}{labelled labels}\n  replay: testPropertyWith {{ seed = Some (u64 {seed}) }}"
-  Case(name, body, Normal, limit)
+  let run (d: PropertyDriver) =
+    match d.replay with
+    | Some(bytes, size) -> replay bytes size
+    | None -> body d
+  Property(name, run)
 
 /// A property with the default settings: 100 cases, growing to size 100, shrunk on failure.
 let testProperty (name: string) (prop: 'a -> 'r) : Test = testPropertyWith { runs = 100 } name prop

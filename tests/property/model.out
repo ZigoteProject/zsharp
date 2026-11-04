@@ -1,8 +1,8 @@
 test prop/division
-  division: 100 cases, 6 discarded; 24% small divisor
+  division: 100 cases, 7 discarded; 28% small divisor
 ok   prop/division
 1 passed, 0 skipped
 test a stack agrees with a list
-panic: falsified after 15 cases (51 shrinks): [Push 0; Push 0; Pop; Pop]
+panic: falsified after 11 cases (28 shrinks): [Push 0; Push 0; Pop; Pop]
   Error after 3 commands, Pop: the stack gives None, the model Some 0
   replay: testPropertyWith { seed = Some (u64 5) }

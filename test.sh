@@ -200,6 +200,10 @@ else echo "FAIL tests/ztest/stress.sh"; diff <(tests/ztest/stress.sh 2>&1) tests
 # zs test --coverage (D10): the lines run and not run per file, and coverage.lcov
 if [ "$(tests/ztest/coverage.sh 2>&1)" = "$(cat tests/ztest/coverage.expected)" ]; then echo "ok   tests/ztest/coverage.sh (zs test --coverage)"
 else echo "FAIL tests/ztest/coverage.sh"; diff <(tests/ztest/coverage.sh 2>&1) tests/ztest/coverage.expected; fail=1; fi
+# properties under zs test (0010, step 2): a case that panics shrunk by replays, saved, replayed
+# first, and gone once it passes
+if [ "$(tests/ztest/property.sh 2>&1)" = "$(cat tests/ztest/property.expected)" ]; then echo "ok   tests/ztest/property.sh (a panicking case shrunk by replays, saved, replayed first)"
+else echo "FAIL tests/ztest/property.sh"; diff <(tests/ztest/property.sh 2>&1) tests/ztest/property.expected; fail=1; fi
 # zs bench (0009, D9): benchmarks as values, a median and a confidence interval each, a planted
 # slowdown reported against the saved run and nothing for the same build; testFaster
 if [ "$(tests/ztest/bench.sh 2>&1)" = "$(cat tests/ztest/bench.expected)" ]; then echo "ok   tests/ztest/bench.sh (zs bench, testFaster)"
