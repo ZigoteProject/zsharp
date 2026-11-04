@@ -75,7 +75,7 @@ user asking. Optimization still waits for profiles of real programs.
 2. **Hardening** (track D, and the gaps in shipped features; code, now):
    - **The fuzzer in every run:** `tests/fuzz.sh` runs in `./test.sh` already; its seed is rotated per run (`ZS_FUZZ_SEED` from the date), and a crash it finds is a test the same day. Seed 1's first find, a type with a member declared twice crashing a later call, is fixed (`tests/err_member_twice.zs`, 2026-11-04).
    - *Done 2026-11-04:* **`use` under effects** (S10, known gap 5): a throw or a stop passing over a `use` disposes what it bound.
-   - **Stress and sanitizers** (D4): `zs test --stress` over the pool, tasks and `Alt` under ThreadSanitizer and `ZS_LEAKCHECK=1`, so a race or a leak that one run hides is found before a user's server finds it; `./test.sh --sanitize=address` as a mode beside `--valgrind` and `--release`.
+   - *Done 2026-11-04:* **Stress and sanitizers** (D4): `zs test --stress`, and `./test.sh --sanitize` as a mode beside `--valgrind` and `--release` (the suite's programs under the address and undefined-behaviour sanitizers: no finding on the first run). Left: the stress run over the pool, tasks and `Alt` under ThreadSanitizer on a machine with the sanitizer's runtime.
    - **Debug info for every value** (D1, known gap 4): lists and boxed unions as gdb and lldb values, so a user's first crash is debuggable.
 3. **What the flagship asked for** (track M, from `examples/nucleo`'s build and the board):
    - **Constants in flash** (M3) and **placement** (M12: `[<Section>]`, `[<Align>]`): the firmware's tables stop being copied to RAM at startup.
@@ -253,7 +253,7 @@ attributed functions, so they compose with ordinary code.
    - **`[<Test>]` goes:** gone; one way to write a test is simpler than two.
 2. **Assertions that explain:** *(done before phase 11: the `Diff` derive in the prelude)* a failed `assert` on a comparison (`assert (parse s = Ok expected)`) prints both sides through `Show`, and for records, unions and collections the first place they differ, as power asserts do. The compiler knows the expression, so there's no `Expect.equal` family to learn, and no message strings to keep in sync; an operand without `Show` is shown by its source text.
 3. **Running:** *(done before phase 11)* `zs test parser/` runs the tests whose path starts with it, with a timeout per test (a hang fails the test and names it). `--summary` lists every test with its time, slowest first.
-4. **Stress:** *(after 0.6.2)* `zs test --stress 10m` runs the tests at random, on every core, over and over for that long, as Expecto's `--stress` does. With `ZS_LEAKCHECK=1` and `--sanitize=thread` it finds what a single run hides: a leak that grows, a race, a deadlock.
+4. **Stress:** *(done 2026-11-04: `tests/ztest/stress.sh`; `./test.sh --sanitize` beside it, which found no memory error in the suite's programs)* `zs test --stress 10m` runs the tests at random, on every core, over and over for that long, as Expecto's `--stress` does. With `ZS_LEAKCHECK=1` and `--sanitize=thread` it finds what a single run hides: a leak that grows, a race, a deadlock.
 5. **Properties:** *(after 0.6.2)* `testProperty "name" (fun (x: int) (xs: list<int>) -> …)` runs a property on generated values, and a failure is shrunk to a smallest case. Its settings are a record with defaults, `testPropertyWith { runs = 1000 } "name" …` (DESIGN §2's field defaults), not an attribute.
    - **One source of randomness:** a generator reads its choices from a stream of bytes, and shrinking shrinks the stream (Hypothesis's design). So every generator shrinks, mapped and filtered ones included, keeping their invariants, with no shrinking code anywhere. FsCheck's shrinking goes by type and loses them: a generator of even numbers can shrink to an odd one.
    - **Generators:** `Gen.int`, `range`, `elements`, `frequency`, `sized`, `map`, `filter`, `list`, `oneOf` and a `gen { }` builder. An `Arbitrary` trait gives each type its default generator, derived for records and unions (DESIGN §3.1) and written by hand where an invariant needs it.
@@ -291,7 +291,7 @@ attributed functions, so they compose with ordinary code.
 - *Done but for `testTask` (item 5):* `zs test` runs a test that hangs (failed by its timeout), and an inline expect test that `--update` rewrites in place (`tests/ztest/update.sh`).
 - *Done in phase 12:* a doc test runs under `zs test --doc` (`tests/doctest.sh`).
 - *Done in phase 12:* gdb and lldb show strings, records and plain unions as values (`tests/debug/gdb.sh`, `lldb.sh`).
-- *After 0.6.2:* `zs test --stress 1m` with `ZS_LEAKCHECK=1` finds a planted leak that one run doesn't show.
+- *Done 2026-11-04:* `zs test --stress 4s` with `ZS_LEAKCHECK=1` finds a planted leak, and a planted failure, that one run doesn't show (`tests/ztest/stress.sh`).
 - *After 0.6.2:* `zs bench` reports a planted 20% slowdown and nothing for an unchanged build; `testFaster` passes for reuse over copying an array.
 - *After 0.6.2:* a property with a filtered generator of even numbers finds a planted bug and shrinks it to the smallest even case; its replay file reproduces it; a stateful test against a model finds a planted `HashMap` bug and shrinks the commands.
 - *After 0.6.2:* `zs fuzz` on a typed parser property finds a planted out-of-bounds read within a minute.

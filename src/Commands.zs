@@ -154,6 +154,31 @@ let private runLeaf (exe: string) (l: Leaf) : option<int> * string =
   | Ok r -> ((if r.code = 124 || r.code = 137 then None else Some r.code), r.out + r.err)
   | Error e -> (Some 1, e)
 
+// whether a test's run passed: exit 0, and no leak reported at its exit (ZS_LEAKCHECK=1: the
+// runtime's "leak check: n object(s) still allocated")
+let private passedRun (code: option<int>) (output: string) : bool =
+  code = Some 0 && not (List.exists (fun (l: string) -> String.startsWith "leak check:" l) (String.splitLines output))
+
+// zs test --stress 10m (0009, D4): the duration, in milliseconds, and the arguments without the
+// pair: 30s, 10m, 1h, or plain seconds
+let private stressDuration (args: list<string>) : result<option<int> * list<string>, string> =
+  let rec go (acc: list<string>) (rest: list<string>) : result<option<int> * list<string>, string> =
+    match rest with
+    | [ "--stress" ] -> Error "zs test --stress takes a duration: 30s, 10m or 1h"
+    | "--stress" :: d :: more ->
+      let n = String.length d
+      let (digits, scale) =
+        if n > 1 && String.endsWith "s" d then (String.sub d 0 (n - 1), 1000)
+        else if n > 1 && String.endsWith "m" d then (String.sub d 0 (n - 1), 60000)
+        else if n > 1 && String.endsWith "h" d then (String.sub d 0 (n - 1), 3600000)
+        else (d, 1000)
+      match Int.parse digits with
+      | Some k when k > 0 -> Ok(Some(k * scale), List.append (List.rev acc) more)
+      | _ -> Error $"zs test --stress takes a duration such as 30s, 10m or 1h, not '{d}'"
+    | a :: more -> go (a :: acc) more
+    | [] -> Ok(None, List.rev acc)
+  go [] args
+
 // what expectAt prints for zs test --update: the place, the text, an end line (Testing.zs); the
 // output without them
 let private expectRecords (output: string) : list<string * int * string> * string =
@@ -234,9 +259,10 @@ let private summaryLine (passed: int) (failed: int) (skipped: int) (broken: int)
 
 // builds a file's [<Tests>] values and runs each test in its own process (0009), a sequenced
 // group's tests one after another, each within its time limit. args: filters (a path ending in /
-// is a prefix; else a part of the path), --summary, --fail-on-focused, --update. The passed,
-// failed and skipped, or None when it didn't build.
-let private runTests (o: Options.Options) (src: string) (args: list<string>) : option<int * int * int> =
+// is a prefix; else a part of the path), --summary, --fail-on-focused, --update. stress: for that
+// many milliseconds, the tests at random on every core, over and over (D4). The passed, failed
+// and skipped, or None when it didn't build.
+let private runTests (o: Options.Options) (src: string) (args: list<string>) (stress: option<int>) : option<int * int * int> =
   let filters = List.filter (fun (a: string) -> not (String.startsWith "--" a)) args
   let exe = scratchExe ()
   if Make.build { o with main = src; out = exe } true <> 0 then
@@ -266,31 +292,73 @@ let private runTests (o: Options.Options) (src: string) (args: list<string>) : o
         println $"no test's path matches {String.join " " filters} (they start with {roots})"
       let focused = List.exists (fun (l: Leaf) -> l.focus = "focused") chosen
       let runs (l: Leaf) = l.focus <> "pending" && (not focused || l.focus = "focused")
-      // ponytail: one test at a time; up to the cores at once as tasks when runs get long
-      let results = Map.ofList (List.map (fun (l: Leaf) -> (l.path, runLeaf exe l)) (List.filter runs chosen))
+      let updates = Buffer.empty
+      // a failure shown: its output, and its time limit when it hit it; the expect records kept
+      // for --update
+      let showFailure (l: Leaf) (code: option<int>) (output0: string) =
+        println $"FAIL {l.path}"
+        let (records, output) = expectRecords output0
+        for r in records do
+          Buffer.push r updates
+        for line in String.split "\n" (String.trim output) do
+          if line <> "" then
+            println $"       {line}"
+        if Option.isNone code then
+          println $"       timed out after {float l.timeout / 1000.0} s"
       let failed = ref 0
       let skipped = ref 0
       let passed = ref 0
-      let updates = Buffer.empty
-      for l in chosen do
-        match Map.tryFind l.path results with
-        | Some(Some 0, _) ->
-          passed.Value <- passed.Value + 1
-          println $"ok   {l.path}"
-        | Some(code, output0) ->
-          failed.Value <- failed.Value + 1
-          println $"FAIL {l.path}"
-          let (records, output) = expectRecords output0
-          for r in records do
-            Buffer.push r updates
-          for line in String.split "\n" (String.trim output) do
-            if line <> "" then
-              println $"       {line}"
-          if Option.isNone code then
-            println $"       timed out after {float l.timeout / 1000.0} s"
-        | None ->
-          skipped.Value <- skipped.Value + 1
-          println $"skip {l.path}{(if l.focus = "pending" then " (pending)" else "")}"
+      match stress with
+      | Some ms when List.exists runs chosen ->
+        // over and over at random, a worker per core, each run its own process as always: what
+        // one run hides (a race, a leak on a rare path, a timeout under load) shows; each failing
+        // test is shown once, with its first failure
+        let arr = Array.ofList (List.filter runs chosen)
+        let n = Array.length arr
+        let workers = max 1 (Parallel.workers ())
+        let started = Runtime.ticks ()
+        let deadline = started + u64 ms * u64 1000000
+        // stage 0's library is what src/ compiles with: a xorshift of its own, not Random
+        let worker (w: int) : int * array<Leaf * option<int> * string> =
+          let mutable s = Int.wrappingAdd started (Int.wrappingMul (u64 (w + 1)) (u64 0x9E3779B97F4A7C15))
+          let failures = Buffer.empty
+          let mutable count = 0
+          while Runtime.ticks () < deadline do
+            s <- s ^^^ (s <<< u64 13)
+            s <- s ^^^ (s >>> u64 7)
+            s <- s ^^^ (s <<< u64 17)
+            let l = arr.[int (s % u64 n)]
+            let (code, output) = runLeaf exe l
+            count <- count + 1
+            if not (passedRun code output) then
+              Buffer.push (l, code, output) failures
+          (count, Buffer.toArray failures)
+        let results = Array.Parallel.map worker (Array.init workers (fun w -> w))
+        let total = Array.fold (fun acc (c, _) -> acc + c) 0 results
+        let shown = ref Set.empty
+        for (_, fs) in results do
+          for (l, code, output) in fs do
+            failed.Value <- failed.Value + 1
+            if not (Set.contains l.path shown.Value) then
+              shown.Value <- Set.add l.path shown.Value
+              showFailure l code output
+        passed.Value <- total - failed.Value
+        skipped.Value <- List.length chosen - n
+        println $"stress: {total} runs of {n} tests on {workers} cores for {ms / 1000} s, {failed.Value} failed"
+      | _ ->
+        // ponytail: one test at a time; up to the cores at once as tasks when runs get long
+        let results = Map.ofList (List.map (fun (l: Leaf) -> (l.path, runLeaf exe l)) (List.filter runs chosen))
+        for l in chosen do
+          match Map.tryFind l.path results with
+          | Some(code, output) when passedRun code output ->
+            passed.Value <- passed.Value + 1
+            println $"ok   {l.path}"
+          | Some(code, output) ->
+            failed.Value <- failed.Value + 1
+            showFailure l code output
+          | None ->
+            skipped.Value <- skipped.Value + 1
+            println $"skip {l.path}{(if l.focus = "pending" then " (pending)" else "")}"
       if List.contains "--update" args then
         for (file, line, text) in Buffer.toArray updates do
           let path = Path.combine (dirOf src) file
@@ -393,58 +461,65 @@ let test (args: list<string>) : int =
           eprintln $"zs: {msg}"
           []
     docTests o files (List.contains "--update" rest)
-  | Ok(o, rest) ->
-    // the filters, and the flags only zs test takes (--update, --summary, --fail-on-focused)
-    let filters = List.filter (fun a -> not (isFile a)) rest
-    match List.filter isFile rest with
-    | src :: _ ->
-      if not (fetched (dirOf src)) then
-        1
-      else
-        match runTests o src filters with
-        | None -> 1
-        | Some(0, 0, 0) -> 1
-        | Some(p, f, s) ->
-          println (summaryLine p f s 0)
-          if f = 0 then 0 else 1
-    | [] ->
-      match project () with
-      | Error msg ->
-        eprintln $"zs: {msg}"
-        1
-      | Ok m ->
-        if not (fetched m.root) then
-          1
-        else
-          let under (d: string) : list<string> =
-            let dir = Path.combine m.root d
-            if Directory.exists dir then
-              match Directory.listRecursive dir with
-              | Ok rels -> List.map (fun r -> Path.combine dir r) (List.filter isFile rels)
-              | Error _ -> []
+  | Ok(o, rest0) ->
+    match stressDuration rest0 with
+    | Error e ->
+      eprintln e
+      2
+    | Ok(stress, rest) ->
+        // the filters, and the flags only zs test takes (--update, --summary, --fail-on-focused)
+        let filters = List.filter (fun a -> not (isFile a)) rest
+        match List.filter isFile rest with
+        | src :: _ ->
+          if not (fetched (dirOf src)) then
+            1
+          else
+            match runTests o src filters stress with
+            | None -> 1
+            | Some(0, 0, 0) -> 1
+            | Some(p, f, s) ->
+              println (summaryLine p f s 0)
+              if f = 0 then 0 else 1
+        | [] ->
+          match project () with
+          | Error msg ->
+            eprintln $"zs: {msg}"
+            1
+          | Ok m ->
+            if not (fetched m.root) then
+              1
             else
-              []
-          let hasTests (f: string) =
-            match File.readAllText f with
-            | Ok t -> String.contains "[<Tests>]" t
-            | Error _ -> false
-          let files = List.filter hasTests (List.append (under "src") (under "tests"))
-          let runFile (f: string) =
-            println (Path.getRelativePath (Environment.currentDirectory ()) f)
-            runTests o f filters
-          let results = List.map runFile files
-          let sumOf (pick: int * int * int -> int) = List.sumBy (fun (r: option<int * int * int>) -> match r with | Some t -> pick t | None -> 0) results
-          let passed = sumOf (fun (p, _, _) -> p)
-          let failed = sumOf (fun (_, f, _) -> f)
-          let skipped = sumOf (fun (_, _, s) -> s)
-          let broken = List.length (List.filter Option.isNone results)
-          println (summaryLine passed failed skipped broken)
-          if failed = 0 && broken = 0 then 0 else 1
+              let under (d: string) : list<string> =
+                let dir = Path.combine m.root d
+                if Directory.exists dir then
+                  match Directory.listRecursive dir with
+                  | Ok rels -> List.map (fun r -> Path.combine dir r) (List.filter isFile rels)
+                  | Error _ -> []
+                else
+                  []
+              let hasTests (f: string) =
+                match File.readAllText f with
+                | Ok t -> String.contains "[<Tests>]" t
+                | Error _ -> false
+              let files = List.filter hasTests (List.append (under "src") (under "tests"))
+              // a stress run's time shared among the files
+              let each = Option.map (fun ms -> max 1000 (ms / max 1 (List.length files))) stress
+              let runFile (f: string) =
+                println (Path.getRelativePath (Environment.currentDirectory ()) f)
+                runTests o f filters each
+              let results = List.map runFile files
+              let sumOf (pick: int * int * int -> int) = List.sumBy (fun (r: option<int * int * int>) -> match r with | Some t -> pick t | None -> 0) results
+              let passed = sumOf (fun (p, _, _) -> p)
+              let failed = sumOf (fun (_, f, _) -> f)
+              let skipped = sumOf (fun (_, _, s) -> s)
+              let broken = List.length (List.filter Option.isNone results)
+              println (summaryLine passed failed skipped broken)
+              if failed = 0 && broken = 0 then 0 else 1
 
-/// zs doctor: what builds need, found here or not, with how to get what's missing: the library
-/// and runtime zs uses, clang (this machine's builds), zig (other targets', a chip's and
-/// WebAssembly's) and libclang (import c), then what some commands need. 1 when a build for this
-/// machine can't work.
+    /// zs doctor: what builds need, found here or not, with how to get what's missing: the library
+    /// and runtime zs uses, clang (this machine's builds), zig (other targets', a chip's and
+    /// WebAssembly's) and libclang (import c), then what some commands need. 1 when a build for this
+    /// machine can't work.
 let doctor () : int =
   let os = Tools.hostOs ()
   let pick (mac: string) (linux: string) (windows: string) = if os = "macos" then mac else if os = "windows" then windows else linux

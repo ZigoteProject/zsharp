@@ -14,9 +14,13 @@
 # --release: build the programs optimized (zs build --release), so what LLVM's optimizer may assume
 #   of the IR the compiler writes (no overflow where it says nsw, no aliasing where it says noalias)
 #   is tested too: each program must print the same.
+# --sanitize: build the programs with the address and undefined-behaviour sanitizers (zs build
+#   --sanitize: objects from malloc, as under valgrind), so a write past an object, a use after its
+#   free, a leak or undefined behaviour in the runtime or the generated code fails the test; a
+#   program that panics is exempt from the leak check, as under valgrind.
 set -u
 cd "$(dirname "$0")"
-valgrind=0; target=""; tgt=(); qemu=(); zsbin=""; buildonly=0; syslibs=(); rel=()
+valgrind=0; target=""; tgt=(); qemu=(); zsbin=""; buildonly=0; syslibs=(); rel=(); san=()
 while [ $# -gt 0 ]; do
   case $1 in
     --valgrind) valgrind=1; export ZS_NO_POOL=1 ;; # objects from malloc, so valgrind sees each one
@@ -29,6 +33,7 @@ while [ $# -gt 0 ]; do
     --build-only) buildonly=1 ;;
     --zs) zsbin=$2; shift ;;
     --release) rel=(--release) ;;
+    --sanitize) san=(--sanitize) ;;
   esac
   shift
 done
@@ -64,10 +69,13 @@ for t in $(find tests -name '*.zs' | sort); do
   # base.posix-only: the reason it's about Linux and macOS (what the runtime does there): skipped
   # on Windows, built for it or run on it
   if [ -f "$base.posix-only" ] && [ $windows = 1 ]; then echo "skip $t ($(cat "$base.posix-only"))"; continue; fi
+  # base.plain-only: the reason it runs only as built (it measures the pool, or the runtime's
+  # stack guard): skipped under valgrind and the sanitizers, which take those away
+  if [ -f "$base.plain-only" ] && { [ $valgrind = 1 ] || [ ${#san[@]} -gt 0 ]; }; then echo "skip $t ($(cat "$base.plain-only"))"; continue; fi
   if [ -f "$base.err" ]; then
     # compare the error lines, not the source snippets under them
-    actual=$(bin/zs build --strict "$t" "${tgt[@]}" "${rel[@]}" -o "$tmp/exe" 2>&1 | grep -v '^ [ 0-9]* | '); expected=$(cat "$base.err")
-  elif ! bin/zs build --strict "$t" "${tgt[@]}" "${rel[@]}" -o "$tmp/exe" 2>"$tmp/build.log"; then
+    actual=$(bin/zs build --strict "$t" "${tgt[@]}" "${rel[@]}" "${san[@]}" -o "$tmp/exe" 2>&1 | grep -v '^ [ 0-9]* | '); expected=$(cat "$base.err")
+  elif ! bin/zs build --strict "$t" "${tgt[@]}" "${rel[@]}" "${san[@]}" -o "$tmp/exe" 2>"$tmp/build.log"; then
     actual=$(cat "$tmp/build.log"); expected=$(cat "$base.out")
   elif [ $buildonly = 1 ]; then
     actual=$(cat "$base.out"); expected=$actual
@@ -75,10 +83,17 @@ for t in $(find tests -name '*.zs' | sort); do
     run=("${qemu[@]}" "$tmp/exe")
     # panics abort without cleanup by design, so only exit-normally programs are leak-checked
     [ $valgrind = 1 ] && ! grep -q "^panic:" "$base.out" && run=(valgrind -q --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=all --error-exitcode=99 "$tmp/exe")
-    actual=$("${run[@]}" < /dev/null 2>&1); code=$?
+    # a sanitized program: its report ends the run with status 99, as valgrind's does; a panic
+    # aborts without cleanup, so its leaks aren't counted
+    sanenv=()
+    if [ ${#san[@]} -gt 0 ]; then
+      leaks=1; grep -q "^panic:" "$base.out" && leaks=0
+      sanenv=(env "ASAN_OPTIONS=exitcode=99:detect_leaks=$leaks:abort_on_error=0" "UBSAN_OPTIONS=exitcode=99:print_stacktrace=1")
+    fi
+    actual=$("${sanenv[@]}" "${run[@]}" < /dev/null 2>&1); code=$?
     expected=$(cat "$base.out"); [ $windows = 1 ] && [ -f "$base.windows.out" ] && expected=$(cat "$base.windows.out")
     [ $code = 99 ] && actual="$actual
-(valgrind reported memory errors or leaks)"
+(${san[0]:+the sanitizers}${san[0]:-valgrind} reported memory errors or leaks)"
   fi
   # base.same-ir names another program that must compile to identical LLVM IR
   if [ -f "$base.same-ir" ]; then
@@ -179,6 +194,9 @@ else echo "FAIL zs test tests/ztest/sample.zs (exit $code)"; diff <(echo "$actua
 # zs test --update rewrites a failing expect test's literal (0009)
 if [ "$(tests/ztest/update.sh 2>&1)" = "$(cat tests/ztest/update.expected)" ]; then echo "ok   tests/ztest/update.sh (zs test --update)"
 else echo "FAIL tests/ztest/update.sh"; diff <(tests/ztest/update.sh 2>&1) tests/ztest/update.expected; fail=1; fi
+# zs test --stress (D4): a failure every fifth run, and a leak every seventh, found in four seconds
+if [ "$(tests/ztest/stress.sh 2>&1)" = "$(cat tests/ztest/stress.expected)" ]; then echo "ok   tests/ztest/stress.sh (zs test --stress)"
+else echo "FAIL tests/ztest/stress.sh"; diff <(tests/ztest/stress.sh 2>&1) tests/ztest/stress.expected; fail=1; fi
 
 # projects: a CLI tool built from zs.toml with a path dependency; zs test over a project; two
 # dependencies with a Util.zs each (0018 K1) and one with C code ([c], K4); zs new

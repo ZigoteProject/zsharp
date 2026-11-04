@@ -38,6 +38,10 @@
   (a library leaves its C host's signals alone), not under a sanitizer, which reports one itself.
 
 ### Tests
+- `./test.sh --sanitize` builds every program with the address and undefined-behaviour sanitizers
+  (`zs build --sanitize`) and runs it, a report failing the test as valgrind's does, beside
+  `--valgrind` and `--release`. A `.plain-only` file beside a test gives the reason it runs only as
+  built (it measures the pool, or the runtime's stack guard), skipped under both.
 - `tests/stress.sh`: long literals, long runs of statements and lets, deep nesting and a byte
   order mark build in time and run; a statement failing after a long literal is one error, the
   next statements checked; deeper than any stack is the panic above, not a crash.
@@ -57,6 +61,11 @@
   records: 3.5 s and 935 MB, now 1.4 s and 368 MB).
 
 ### Tooling
+- `zs test --stress 10m` (track D, item 4): the tests at random on every core, over and over for
+  that long (`30s`, `10m`, `1h`), each run its own process as always; a failure one run hides (a
+  race, a leak on a rare path, a timeout under load) shows, each failing test shown once with its
+  first failure. With `ZS_LEAKCHECK=1`, a leak at a test's exit (`leak check: n object(s) still
+  allocated`) fails the test, in one run too; it was reported and the test passed.
 - `zs provide json <file>` and `zs provide csv <file>` print a module from a data source, to keep
   beside the program ([proposal 0001](docs/proposals/0001-type-providers.md), track P's first
   step): `json` gives a document's records with the `Json` derive and `parse` and `print`, an

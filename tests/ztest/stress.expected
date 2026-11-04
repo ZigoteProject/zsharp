@@ -1,0 +1,9 @@
+one run:
+ok   flaky/fails every fifth run
+ok   flaky/leaks every seventh run
+ok   flaky/always passes
+3 passed, 0 failed
+stress:
+FAIL flaky/fails every fifth run
+FAIL flaky/leaks every seventh run
+stress: runs of 3 tests, some failed

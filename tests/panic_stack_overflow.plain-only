@@ -1,0 +1,1 @@
+the runtime's stack guard and its panic, which a sanitizer takes over with a report of its own
