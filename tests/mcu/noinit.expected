@@ -1,0 +1,3 @@
+boot 1 dma 1 room 64
+boot 2 dma 2 room 64
+boot 3 dma 3 room 64

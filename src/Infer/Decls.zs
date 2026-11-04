@@ -1378,6 +1378,34 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
       | [] -> fail "[<Multiversion>] takes a version's features each: [<Multiversion(\"avx2,fma\", \"sse4.2\")>]"
       | versions -> cx.targets.Value <- Map.add name ("multiversion" :: versions) cx.targets.Value
     | _ -> ()
+  | Attrs(attrs, inner) when Option.isSome (funName inner) && List.exists (fun (a, _) -> a = "Section" || a = "Align") attrs ->
+    let a = fst (List.find (fun (a, _) -> a = "Section" || a = "Align") attrs)
+    fail $"[<{a}>] applies to top-level values; '{Option.get (funName inner)}' is a function"
+  | Attrs(attrs, inner) when Option.isSome (valueName inner) && List.forall (fun (a, _) -> a = "Section" || a = "Align") attrs ->
+    // [<Section ".noinit">] and [<Align 32>] on a top-level value (0014 item 12): its storage is
+    // in the image, in that section (never written at startup when it's .noinit) and so aligned
+    let section =
+      match List.tryFind (fun (a, _) -> a = "Section") attrs with
+      | Some(_, [ s ]) when s <> "" -> s
+      | Some _ -> fail "[<Section>] takes the section's name: [<Section \".noinit\">]"
+      | None -> ""
+    let align =
+      match List.tryFind (fun (a, _) -> a = "Align") attrs with
+      | Some(_, [ text ]) ->
+        match (Int.parse text : option<int>) with
+        | Some n when n >= 8 && n <= 4096 && (n &&& (n - 1)) = 0 -> n
+        | _ -> fail $"[<Align>] takes a power of two from 8 to 4096; {text} isn't one"
+      | Some _ -> fail "[<Align>] takes the alignment in bytes: [<Align 32>]"
+      | None -> 0
+    declare cx inner
+    let name = Option.get (valueName inner)
+    let q = qualify cx name
+    let which = if section <> "" then "[<Section>]" else "[<Align>]"
+    let init = List.tryFind (fun (f: FunDef) -> f.name = "$init." + q) (Array.toList (Buffer.toArray cx.funs))
+    match Option.bind (fun (f: FunDef) -> Core.Ir.placedInit f.body) init with
+    | Some _ -> cx.placements.Value <- Map.add q (section, align) cx.placements.Value
+    | None ->
+      fail $"{which} needs a constant table, 'Buffer.create n x' or 'ref x' with constant arguments; '{name}' is computed at startup. Write the table as a literal, or fill a Buffer in main"
   | Attrs([ ("Test", []) ], inner) when Option.isSome (funName inner) ->
     let n = Option.get (funName inner)
     fail $"tests are values now (0009): [<Tests>] let tests = testList \"{n}\" [ test \"…\" (fun () -> assert (…)) ]"

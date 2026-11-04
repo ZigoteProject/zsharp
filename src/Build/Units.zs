@@ -408,7 +408,7 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
   let typesBytes = Binary.toBytes types.Value
   let dumpDir = Environment.getVariable "ZS_DUMP_IR"
   // what they read of the program: not its functions' Core, which isn't theirs to mark shared
-  let (externs, exports, tests, values, clayouts) = (prog.externs, prog.exports, prog.tests, prog.values, prog.clayouts)
+  let (externs, exports, tests, values, clayouts, placements) = (prog.externs, prog.exports, prog.tests, prog.values, prog.clayouts, prog.placements)
   // a part's IR, made by a job that owns what it walks (0020's *Crossings move*): the part's
   // file and kind (own, copies or whole), its module's own functions' names, the functions it
   // defines, the module's others by their signatures (it declares them) and the other modules'
@@ -438,7 +438,7 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
     let entries = if file <> mainFile then [] else List.choose entry (List.append (Set.toList fixedNames) (List.map snd values))
     let name = if kind = "copies" then nameOf file + "#copies" else nameOf file
     // the functions it calls in the module's other part are declared, from its functions
-    match Gen.Module.compile gopts typesHere externs exports tests values clayouts part (List.concat [ defined; others; stubs; entries ]) with
+    match Gen.Module.compile gopts typesHere externs exports tests values clayouts placements part (List.concat [ defined; others; stubs; entries ]) with
     | Ok(ir0, _) ->
       let ir = $"source_filename = \"{name}\"\n" + ir0
       match dumpDir with

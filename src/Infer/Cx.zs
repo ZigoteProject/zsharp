@@ -120,6 +120,9 @@ and CxData =
     measures: ref<Set<string>>
     /// [<CLayout>] records
     clayouts: ref<Set<string>>
+    /// top-level values with [<Section>] or [<Align>]: the section ("" for none), the alignment
+    /// (0 for none)
+    placements: ref<Map<string, string * int>>
     /// [<Unsafe>] functions: only `unsafe` code may name them
     unsafes: ref<Set<string>>
     /// [<Target>] and [<Multiversion>] functions
@@ -334,6 +337,9 @@ type Cx with
   member c.clayouts =
     match c with
     | Cx { clayouts = x } -> x
+  member c.placements =
+    match c with
+    | Cx { placements = x } -> x
   member c.unsafes =
     match c with
     | Cx { unsafes = x } -> x
@@ -538,6 +544,7 @@ let create (requireMain: bool) (collect: bool) (allModules: list<string>) (manua
       counter = ref 0
       measures = ref Set.empty
       clayouts = ref Set.empty
+      placements = ref Map.empty
       unsafes = ref Set.empty
       targets = ref Map.empty
       exports = Buffer.empty

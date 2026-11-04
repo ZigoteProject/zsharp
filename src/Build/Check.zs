@@ -223,6 +223,7 @@ let private programFrom (c: Checked) (all: list<Core.Ir.FunDef>) : Core.Program.
     values = Array.toList (Buffer.toArray cx.valueList)
     tests = Array.toList (Buffer.toArray cx.tests)
     clayouts = cx.clayouts.Value
+    placements = cx.placements.Value
     targets = cx.targets.Value
     memberNames = Map.map (fun _ (ms: list<string * Infer.Cx.MemberInfo>) -> List.map fst ms) cx.members.Value }
 

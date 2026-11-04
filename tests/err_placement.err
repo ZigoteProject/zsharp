@@ -1,0 +1,4 @@
+tests/err_placement.zs:3: error: [<Section>] applies to top-level values; 'tick' is a function
+tests/err_placement.zs:6: error: [<Align>] takes a power of two from 8 to 4096; 24 isn't one
+tests/err_placement.zs:9: error: [<Section>] needs a constant table, 'Buffer.create n x' or 'ref x' with constant arguments; 'squares' is computed at startup. Write the table as a literal, or fill a Buffer in main
+3 errors

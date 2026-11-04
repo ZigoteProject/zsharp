@@ -22,6 +22,9 @@ type Program =
     tests: list<string>
     /// [<CLayout>] records
     clayouts: Set<string>
+    /// top-level values with [<Section>] or [<Align>] (0014 item 12): the section ("" for
+    /// none) and the alignment (0 for none)
+    placements: Map<string, string * int>
     /// [<Target "avx2,fma">] functions: "target" and the features; [<Multiversion("avx2",
     /// "sse4.2")>] ones: "multiversion" and a version's features each
     targets: Map<string, list<string>>

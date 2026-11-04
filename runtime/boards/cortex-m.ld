@@ -8,7 +8,10 @@ SECTIONS {
   _sidata = LOADADDR(.data);
   .data : { _sdata = .; *(.data*) . = ALIGN(4); _edata = .; } > RAM AT > FLASH
   .bss (NOLOAD) : { _sbss = .; *(.bss*) *(COMMON) . = ALIGN(4); _ebss = .; } > RAM
+  /* [<Section ".noinit">] values (0014): neither copied nor zeroed at reset, so they keep what
+     the memory held */
+  .noinit (NOLOAD) : { . = ALIGN(4); *(.noinit*) . = ALIGN(4); _enoinit = .; } > RAM
   _estack = ORIGIN(RAM) + LENGTH(RAM);
   _sstack = _estack - _stack_size;
-  ASSERT(_ebss <= _sstack, "RAM overflow: data + bss + heap don't leave room for the stack")
+  ASSERT(_enoinit <= _sstack, "RAM overflow: data + bss + heap don't leave room for the stack")
 }

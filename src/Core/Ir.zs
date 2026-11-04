@@ -501,6 +501,36 @@ let staticList (e: CExpr) : option<list<StaticElem>> =
 /// Whether a top-level value's initializer becomes a static object (no startup code).
 let staticInit (e: CExpr) : bool = Option.isSome (staticArray e) || Option.isSome (staticList e)
 
+/// What a top-level value with `[<Section>]` or `[<Align>]` is made of (0014 item 12): a
+/// constant table (a static object already), `Buffer.create n x` or `ref x` with constant
+/// arguments; its storage goes in the image instead of the heap.
+type Placed =
+  | PlacedConstant
+  | PlacedBuffer of int * StaticElem
+  | PlacedRef of StaticElem
+
+/// A top-level value's initializer as `[<Section>]` or `[<Align>]` can place it; None for one
+/// computed at startup.
+let placedInit (e: CExpr) : option<Placed> =
+  let rec plain (x: CExpr) : CExpr =
+    match x.k with
+    | CLine(_, a) -> plain a
+    | _ -> x
+  let p = plain e
+  // a Buffer, as checked or as monomorphization leaves it (a ref to its storage cell)
+  let isBuffer =
+    match p.ty with
+    | TCon("Buffer", [ _ ])
+    | TCon("ref", [ TCon("$buffer", [ _ ]) ]) -> true
+    | _ -> false
+  match p.k with
+  | CPrim("Array.create", [ n; x ]) when isBuffer ->
+    match (staticElem n, staticElem x) with
+    | (Some(SInt count), Some v) when count >= i64 0 && count <= i64 1073741824 -> Some(PlacedBuffer(int count, v))
+    | _ -> None
+  | CPrim("ref", [ x ]) -> Option.map PlacedRef (staticElem x)
+  | _ -> if staticInit e then Some PlacedConstant else None
+
 /// Core as indented text, for reading what a pass did (ZS_DUMP_CORE); showTy shows an effect's
 /// label.
 let rec showCore (showTy: Ty -> string) (ind: int) (e: CExpr) : string =

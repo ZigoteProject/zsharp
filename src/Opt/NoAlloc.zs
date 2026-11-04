@@ -47,9 +47,15 @@ let private builds (op: string) (args: list<CExpr>) : option<string> =
     match args with
     | [ a ] -> a.ty = tStr
     | _ -> false
+  // a write to a Buffer's element is in place (its storage is its own)
+  let intoBuffer =
+    match args with
+    | { ty = TCon("ref", [ TCon("$buffer", _) ]) } :: _ -> true
+    | _ -> false
   match op with
   // a string is its own text
   | "string" when ofString -> None
+  | "array.set" when intoBuffer -> None
   | "string"
   | "format"
   | "String.ofCStr"

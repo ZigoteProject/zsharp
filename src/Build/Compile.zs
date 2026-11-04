@@ -63,8 +63,11 @@ let private noAllocRoots (prog: Program) (funs: list<MFun>) (noHeap: bool) : lis
   let marked = List.filter (fun (f: MFun) -> Map.tryFind (Core.Ir.baseFunName f.name) prog.targets = Some [ "noalloc" ]) funs
   let handlers = List.filter (fun (e: Core.Ir.Export) -> e.interrupt) prog.exports
   // a value whose initializer is a static object (0014 item 1) has no startup code to check
-  let isStatic (init: string) = List.exists (fun (f: MFun) -> f.name = init && Core.Ir.staticInit f.body) funs
-  let entries = if noHeap then "main" :: List.append (List.filter (fun i -> not (isStatic i)) (List.map snd prog.values)) (List.map (fun (e: Core.Ir.Export) -> e.fname) prog.exports) else []
+  let isStatic (vi: string * string) =
+    let (v, init) = vi
+    let placed = Map.containsKey v prog.placements
+    List.exists (fun (f: MFun) -> f.name = init && (Core.Ir.staticInit f.body || (placed && Option.isSome (Core.Ir.placedInit f.body)))) funs
+  let entries = if noHeap then "main" :: List.append (List.map snd (List.filter (fun vi -> not (isStatic vi)) prog.values)) (List.map (fun (e: Core.Ir.Export) -> e.fname) prog.exports) else []
   let present (n: string) = List.exists (fun (f: MFun) -> f.name = n) funs
   let byAttribute = List.map (fun (f: MFun) -> (f.name, "noalloc")) marked
   let byHandler = List.map (fun (e: Core.Ir.Export) -> (e.fname, "handler")) handlers
@@ -353,7 +356,7 @@ let generate (o: Options.Options) (prog0: Program) (testBuild: bool) : result<Pr
           cpu = o.cpu
           wideVectors = wideVectors types funs
           threaded = threads }
-      match timed o.time "LLVM IR" (fun () -> Gen.Module.compile gopts types prog.externs prog.exports prog.tests prog.values prog.clayouts None funs) with
+      match timed o.time "LLVM IR" (fun () -> Gen.Module.compile gopts types prog.externs prog.exports prog.tests prog.values prog.clayouts prog.placements None funs) with
       | Error(line, msg) -> Error(InPass { file = ""; line = line; message = msg })
       | Ok(ir, header) -> Ok(prog, ir, header, threads)
 

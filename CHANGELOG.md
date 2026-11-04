@@ -132,6 +132,17 @@
   `--types=volume:f64`. `zs provide --list` names the providers.
 
 ### Language
+- `[<Section ".noinit">]` and `[<Align 32>]` on a top-level value (0014 item 12, decision 69):
+  a constant table, `Buffer.create n x` or `ref x` with constant arguments has its storage in
+  the image, in the named section and so aligned (a table's data at a multiple of it after its
+  header), with no startup code and nothing allocated. `.noinit` is neither copied nor zeroed by
+  the chip's reset handler (`cortex-m.ld`), so a boot counter or a crash log survives a reset; a
+  push past a placed Buffer's room moves it to the heap and leaves the storage. On a function,
+  a computed value or an alignment that isn't a power of two from 8 to 4096, an error says what
+  the attribute takes (`tests/placement.zs`, `tests/err_placement.zs`; on both chips, a boot
+  counter across SYSRESETREQ resets under QEMU, `tests/mcu/noinit.zs`). `[<Align>]` on a type
+  is left. Writing a Buffer's element passes `[<NoAlloc>]` and `--no-heap` now (it was taken
+  for an array's copy-on-write), so a placed Buffer is usable in a program with no heap.
 - One-case unions without a tag (decision 66, built): a plain union with one case that has
   fields is the field itself (`type UserId = UserId of int` is an `int` in registers, arrays,
   records and C structs; `sizeof<q15>` is 2), or a struct of its fields; matching, equality,

@@ -246,6 +246,20 @@ else echo "FAIL tests/project/git.sh"; cat "$tmp/git.diff"; fail=1; fi
 if bin/zs build tests/static.zs --emit-llvm -o "$tmp/static" >/dev/null 2>&1 && [ "$(grep -c '^@"zsv\.[a-z]*" = internal global ptr @"zss\.' "$tmp/static.ll")" = 7 ] && ! grep -q '^@"zsv\.[a-z]*" = internal global ptr zeroinitializer' "$tmp/static.ll"; then
   echo "ok   tests/static.zs: five static tables and two static lists in the image"
 else echo "FAIL tests/static.zs: static tables"; grep '^@"zs[sv]\.' "$tmp/static.ll" | cut -c1-100; fail=1; fi
+# [<Section>] and [<Align>] (0014 item 12): the table's object in its section, padded so its data
+# is at a multiple of 64 and the value's global pointing past the padding; the Buffer's bytes
+# aligned, its cell static; the .noinit ref's header written at startup; nothing computed at
+# startup for any of them
+if bin/zs build tests/placement.zs --emit-llvm -o "$tmp/placement" >/dev/null 2>&1 \
+   && grep -q '^@"zss\.sine" = .* { \[48 x i8\], i64, i64, \[4 x i64\] } .*, section "\.tables", align 64$' "$tmp/placement.ll" \
+   && grep -q '^@"zsv\.sine" = internal global ptr getelementptr (i8, ptr @"zss\.sine", i64 48)$' "$tmp/placement.ll" \
+   && grep -q '^@"zss\.frame\.data" = .* global \[8 x i8\] .*, align 32$' "$tmp/placement.ll" \
+   && grep -q '^@"zss\.log\.data" = .* global \[4 x ptr\] .*, section "\.noinit"$' "$tmp/placement.ll" \
+   && grep -q '^@"zss\.boots" = .* global { i64, i64 } { i64 0, i64 0 }, section "\.noinit"$' "$tmp/placement.ll" \
+   && grep -q '^  store i64 0, ptr @"zss\.boots"$' "$tmp/placement.ll" \
+   && ! grep -q 'call ptr @"zs\.\$init\.' "$tmp/placement.ll"; then
+  echo "ok   tests/placement.zs: a table, two Buffers and a ref placed in the image"
+else echo "FAIL tests/placement.zs: placement"; grep '^@"zs[sv]\.\|\$init' "$tmp/placement.ll" | cut -c1-120; fail=1; fi
 # the three small tools of examples/tools, built and run (track S's exit test)
 if diff <(tests/examples_tools.sh 2>&1) tests/examples_tools.expected >"$tmp/tools.diff"; then echo "ok   tests/examples_tools.sh (examples/tools: grep, jsonpp, tail -f)"
 else echo "FAIL tests/examples_tools.sh"; cat "$tmp/tools.diff"; fail=1; fi
@@ -316,7 +330,7 @@ else echo "FAIL tests/mcu/layout.zs"; cat "$tmp/layout.log"; fail=1; fi
 if command -v qemu-system-arm >/dev/null; then
   for chip in cortex-m4 cortex-m0plus; do
     board=$([ $chip = cortex-m4 ] && echo mps2-an386 || echo microbit)
-    for t in isr systick cpu bits task ints static tree fixed; do
+    for t in isr systick cpu bits task ints static tree fixed noinit; do
       if bin/zs build tests/mcu/$t.zs --target $chip -o "$tmp/$t.elf" 2>"$tmp/$t.log" \
          && out=$(timeout 60 qemu-system-arm -M $board -nographic -semihosting-config enable=on,target=native -kernel "$tmp/$t.elf" 2>&1) \
          && [ "$(echo "$out" | grep -v '^#zs')" = "$(cat tests/mcu/$t.expected)" ] \
@@ -325,6 +339,14 @@ if command -v qemu-system-arm >/dev/null; then
       else echo "FAIL tests/mcu/$t.zs on $chip"; cat "$tmp/$t.log"; fail=1; fi
     done
   done
+fi
+# .noinit on a chip (0014 item 12): the section is NOBITS in RAM (the reset handler neither copies
+# nor zeroes it), 32-byte aligned for the Buffer, holding the two refs and the 64 bytes
+if command -v qemu-system-arm >/dev/null && command -v llvm-readelf >/dev/null; then
+  if bin/zs build tests/mcu/noinit.zs --target cortex-m4 -o "$tmp/noinit.elf" 2>"$tmp/noinit.log" \
+     && llvm-readelf -S "$tmp/noinit.elf" | grep -q '\.noinit *NOBITS *2[0-9a-f]* [0-9a-f]* 000060 00 *WA *0 *0 *32'; then
+    echo "ok   tests/mcu/noinit.zs: .noinit is NOBITS in RAM, 96 bytes at 32"
+  else echo "FAIL tests/mcu/noinit.zs: .noinit section"; llvm-readelf -S "$tmp/noinit.elf" | grep noinit; fail=1; fi
 fi
 # zs test --target <chip> (0009, D11): a file's tests built into one image and run under QEMU in
 # one process, Core's runner printing each; a failing test's panic ends the run, naming it

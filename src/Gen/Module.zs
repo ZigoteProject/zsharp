@@ -89,7 +89,7 @@ let private unsignedInts : Set<string> = Set.ofList [ "u8"; "u16"; "u32"; "u64" 
 /// calls are declared, and what must have one address in the program (top-level values, the
 /// static cells of cases without fields) is defined in every part for the linker to merge. Error:
 /// what the program can't be compiled for (the line of the statement, and a message).
-let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string, ExternSig>) (exports: list<Export>) (tests: list<string>) (values: list<string * string>) (clayouts: Set<string>) (part: option<Part>) (funs: list<MFun>) : result<string * string, int * string> =
+let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string, ExternSig>) (exports: list<Export>) (tests: list<string>) (values: list<string * string>) (clayouts: Set<string>) (placements: Map<string, string * int>) (part: option<Part>) (funs: list<MFun>) : result<string * string, int * string> =
   // one address in the whole program
   let shared = if Option.isSome part then "linkonce_odr hidden" else "private"
   let pre0 = if opts.threaded then replaceDef (replaceDef Prelude.prelude Prelude.threadedDup) Prelude.threadedRelease else Prelude.prelude
@@ -168,6 +168,20 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
       topLine g $"{name} = {shared} unnamed_addr constant {{ i_W, i_W, [{n + 1} x i8] }} {{ i_W 0, i_W {n}, [{n + 1} x i8] c\"{encoded s}\\00\" }}"
       sharedStrings.Value <- Map.add s name sharedStrings.Value
       name
+  // a value's [<Section>] and [<Align>] (0014 item 12) as the global's attributes; the section's
+  // name is dropped where names are the linker's (macOS, Windows), the storage static all the same
+  let placement (v: string) : string * int =
+    match Map.tryFind v placements with
+    | Some(sec, al) -> ((if isWindows g || String.contains "-apple" g.opts.target then "" else sec), al)
+    | None -> ("", 0)
+  let placed (v: string) : string =
+    let (sec, al) = placement v
+    (if sec = "" then "" else $", section \"{sec}\"") + (if al = 0 then "" else $", align {al}")
+  // the bytes before an object's two header words that put its data at a multiple of the
+  // alignment (the object itself is aligned so)
+  let padBefore (v: string) : int =
+    let (_, al) = placement v
+    if al > 2 * pointerBytes g then al - 2 * pointerBytes g else 0
   let staticOf (v: string) (init: string) : option<string> =
     match Map.tryFind init fnTable with
     | Some f when List.isEmpty f.pars ->
@@ -187,14 +201,47 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
           | SFloat x -> $"{lt} {floatConst lt x}"
           | SBool b -> $"{lt} {(if b then "true" else "false")}"
           | SStr s -> $"ptr {sharedStr s}"
+      let isPlaced = Map.containsKey v placements
       match (staticArray f.body, staticList f.body, f.ret) with
       | (Some xs, _, TCon("array", [ el ])) ->
         let lt = llty g el
         let one = elemOf el
         let n = List.length xs
         let name = $"@\"zss.{v}\""
-        topLine g $"{name} = {shared} unnamed_addr constant {{ i_W, i_W, [{n} x {lt}] }} {{ i_W 0, i_W {n}, [{n} x {lt}] [{String.join ", " (List.map one xs)}] }}"
-        Some name
+        let pad = padBefore v
+        if pad = 0 then
+          topLine g $"{name} = {shared} unnamed_addr constant {{ i_W, i_W, [{n} x {lt}] }} {{ i_W 0, i_W {n}, [{n} x {lt}] [{String.join ", " (List.map one xs)}] }}{placed v}"
+          Some name
+        else
+          topLine g $"{name} = {shared} unnamed_addr constant {{ [{pad} x i8], i_W, i_W, [{n} x {lt}] }} {{ [{pad} x i8] zeroinitializer, i_W 0, i_W {n}, [{n} x {lt}] [{String.join ", " (List.map one xs)}] }}{placed v}"
+          Some $"getelementptr (i8, ptr {name}, i_W {pad})"
+      // a Buffer is a ref to its storage cell from monomorphization on
+      | (_, _, TCon("ref", [ TCon("$buffer", [ el ]) ])) when isPlaced ->
+        // a Buffer over static storage: its elements in the section, aligned (plain bytes, so a
+        // .noinit one has no header to lose), its owner an empty static array it never windows
+        // from the start of (so growing copies into the heap and leaves the storage), and its
+        // cell static too
+        match placedInit f.body with
+        | Some(PlacedBuffer(n, x)) ->
+          let lt = llty g el
+          let data = $"@\"zss.{v}.data\""
+          let owner = $"@\"zss.{v}.owner\""
+          let name = $"@\"zss.{v}\""
+          let elems = if n = 0 then "zeroinitializer" else $"[{String.join ", " (List.replicate n (elemOf el x))}]"
+          topLine g $"{data} = {shared} global [{n} x {lt}] {elems}{placed v}"
+          topLine g $"{owner} = {shared} global {{ i_W, i_W, [0 x {lt}] }} {{ i_W 0, i_W 0, [0 x {lt}] zeroinitializer }}"
+          topLine g $"{name} = {shared} global {{ i_W, {{ ptr, ptr, i_W, i_W }} }} {{ i_W 0, {{ ptr, ptr, i_W, i_W }} {{ ptr {owner}, ptr {data}, i_W {n}, i_W {n} }} }}"
+          Some name
+        | _ -> None
+      | (_, _, TCon("ref", [ t ])) when isPlaced ->
+        // a ref cell with the constant in it; in .noinit its header is written at startup (the
+        // count 0 of a static), the value left as the memory holds it
+        match placedInit f.body with
+        | Some(PlacedRef x) ->
+          let name = $"@\"zss.{v}\""
+          topLine g $"{name} = {shared} global {{ i_W, {llty g t} }} {{ i_W 0, {elemOf t x} }}{placed v}"
+          Some name
+        | _ -> None
       | (_, Some xs, TCon("list", [ el ])) ->
         // a cell per element, each pointing at the next, the last at the static []; the header
         // as a cons cell's: the count 0, and the tag where the union keeps one
@@ -208,7 +255,7 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
         let nil = nullary g t 0
         List.iteri (fun (i: int) (x: StaticElem) ->
           let next = if i + 1 < n then List.item (i + 1) names else nil
-          topLine g $"{List.item i names} = {shared} unnamed_addr constant {cell} {{ i_W {header}{tagPart}, {one x}, ptr {next} }}") xs
+          topLine g $"{List.item i names} = {shared} unnamed_addr constant {cell} {{ i_W {header}{tagPart}, {one x}, ptr {next} }}{placed v}") xs
         Some(List.head names)
       | _ -> None
     | _ -> None
@@ -237,7 +284,11 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
     let one (i: int) (vi: string * string) =
       let (v, init) = vi
       if Map.containsKey v statics then
-        ""
+        // a .noinit ref's header: the memory is whatever it was, the count must be a static's
+        match (fst (placement v), Map.find v valueTypes) with
+        | (".noinit", TCon("ref", [ TCon("$buffer", _) ])) -> ""
+        | (".noinit", TCon("ref", [ _ ])) -> $"  store i_W 0, ptr @\"zss.{v}\"\n"
+        | _ -> ""
       else
         let vt = Map.find v valueTypes
         let t = llty g vt
@@ -255,8 +306,16 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
     let em = emitter ()
     for (v, _) in List.rev values do
       let t = Map.find v valueTypes
-      if heap g t then
-        dropValue g em t (instr em $"load {llty g t}, ptr {valueSym v}")
+      match t with
+      | TCon("ref", [ b ]) when isBuf t && Map.containsKey v statics ->
+        // a placed Buffer: its cell is static, but a push past its room moved its contents to
+        // the heap, and those go as a Buffer's do (its owner released)
+        let cell = instr em $"load ptr, ptr {valueSym v}"
+        let sp = instr em $"getelementptr {{ i_W, {llty g b} }}, ptr {cell}, i32 0, i32 1"
+        dropValue g em b (instr em $"load {llty g b}, ptr {sp}")
+      | _ ->
+        if heap g t then
+          dropValue g em t (instr em $"load {llty g t}, ptr {valueSym v}")
     emit em "ret void"
     Buffer.push $"define private void @zsv.dropAll() {{\n{bodyOf em}}}\n\n" g.funcs
   // C entry points: main (an int result becomes the exit code) and [<Export>] wrappers

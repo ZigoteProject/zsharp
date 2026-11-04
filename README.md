@@ -293,7 +293,8 @@ normally written ([bench/mcu](bench/mcu)). The ratios are instructions executed,
 - **Constants in flash:** a top-level array or list literal of numbers, bools or strings (a CRC table, a font, a list of commands) is a static object in the image, read in place: no startup code, no RAM, and a write to it copies it. Records and unions are still startup values.
 - **Tests on the chip:** `zs test firmware.zs --target cortex-m4` builds the file's `[<Tests>]` into one image and runs them under QEMU (or on the board), each named as it passes.
 - **Fixed-point numbers:** `q7`, `q15` and `q31` in Core, saturating, with rounding products and `mulAdd`, as CMSIS-DSP has them: a `q15` filter is plain arithmetic, printed as decimals with no float.
-- **Not yet:** `[<Section>]` and `[<Align>]`, weak references and arenas on a chip, RISC-V, and boards beyond the Nucleo-F401RE. The flagship has run under QEMU's STM32F405, not yet on the board itself. They're track M of the [roadmap](ROADMAP.md).
+- **Placement:** `[<Section ".noinit">]` on a top-level `ref` or `Buffer` keeps it where a reset neither copies nor zeroes (a boot counter, a crash log), any other section name puts it where the linker script says (a DMA region), and `[<Align 32>]` aligns its storage; a constant table takes them too (`[<Section ".data">]` for one read from RAM). The storage is in the image: no startup code, and nothing allocated.
+- **Not yet:** `[<Align>]` on a type, weak references and arenas on a chip, RISC-V, and boards beyond the Nucleo-F401RE. The flagship has run under QEMU's STM32F405, not yet on the board itself. They're track M of the [roadmap](ROADMAP.md).
 
 The registers can come from the chip's SVD file: `import svd ("stm32f401-part.svd", only = "GPIOA,RCC")` gives a module per peripheral with each register a `[<Bits>]` record ([examples/mcu/nucleo-f401-svd.zs](examples/mcu/nucleo-f401-svd.zs) is the firmware written that way, compiled to the same accesses).
 

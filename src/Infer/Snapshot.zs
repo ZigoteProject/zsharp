@@ -40,6 +40,7 @@ type Iface =
     externModules: list<string * string>
     measures: list<string>
     clayouts: list<string>
+    placements: list<string * (string * int)>
     unsafes: list<string>
     targets: list<string * list<string>>
     exports: list<Export>
@@ -112,6 +113,7 @@ type Marks =
     mfuns: int
     mmeasures: Set<string>
     mclayouts: Set<string>
+    mplacements: Map<string, string * int>
     munsafes: Set<string>
     mtargets: Map<string, list<string>>
     mexports: int
@@ -160,6 +162,7 @@ let marks (cx: Cx) : Marks =
     mfuns = Buffer.length cx.funs
     mmeasures = cx.measures.Value
     mclayouts = cx.clayouts.Value
+    mplacements = cx.placements.Value
     munsafes = cx.unsafes.Value
     mtargets = cx.targets.Value
     mexports = Buffer.length cx.exports
@@ -276,6 +279,7 @@ let written (cx: Cx) (m: Marks) : option<Iface * list<FunDef> * list<Hover> * li
       externModules = added m.mexternModules cx.externModules.Value
       measures = newIn m.mmeasures cx.measures.Value
       clayouts = newIn m.mclayouts cx.clayouts.Value
+      placements = added m.mplacements cx.placements.Value
       unsafes = newIn m.munsafes cx.unsafes.Value
       targets = added m.mtargets cx.targets.Value
       exports = since cx.exports m.mexports
@@ -360,6 +364,7 @@ let restore (cx: Cx) (i: Iface) : unit =
   into cx.externModules i.externModules
   union cx.measures i.measures
   union cx.clayouts i.clayouts
+  into cx.placements i.placements
   union cx.unsafes i.unsafes
   into cx.targets i.targets
   push cx.exports i.exports

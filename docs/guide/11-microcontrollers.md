@@ -185,6 +185,23 @@ main.zs:2: error: reply is [<NoAlloc>], but reply -> describe builds a string
 zs build firmware.zs --target cortex-m0plus --no-heap -Os -o firmware.elf
 ```
 
+## Memory with an address
+
+A top-level constant table, `Buffer.create n x` or `ref x` with constant arguments can say where its storage goes. `[<Section ".noinit">]` puts it in memory the reset handler neither copies nor zeroes, so it holds what the last run left: a boot counter, a crash log, validated by a magic word before it's trusted. Any other name goes where the board's linker script puts that section (a DMA region, a second SRAM), and `[<Align 32>]` aligns the storage as a DMA controller or a cache line asks. The storage is in the image: no startup code, nothing allocated, so it passes `--no-heap`.
+
+```fsharp
+[<Section ".noinit">]
+let boots = ref 0
+
+[<Section ".noinit"; Align 32>]
+let frame = Buffer.create 1536 (u8 0)
+
+[<Section ".data">]
+let sine = [| 0; 49; 97; 142 |]   // a table read from RAM, for a hot loop on a chip with flash wait states
+```
+
+A push past a placed Buffer's room moves its contents to the heap and leaves the storage. `[<Align>]` on a type isn't there yet.
+
 ## Writing fast, small code
 
 The compiler does most of the work. These habits help it:
