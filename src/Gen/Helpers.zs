@@ -12,6 +12,12 @@ open Layout
 // ------------------------------------------------------------ reference counting
 
 /// A dup of the value, when it holds a count.
+/// `musttail ` for a drop's or walk's last call, which frees long lists iteratively; on a
+/// Cortex-M0 (Thumb1), where LLVM can't tail-call another function, a plain call unless the
+/// callee is the function itself (a loop, which it can).
+let tailKeyword (g: G) (self: string) (callee: string) : string =
+  if String.startsWith "thumbv6m" g.opts.target && callee <> self then "" else "musttail "
+
 let rec dupValue (g: G) (em: Emitter) (t: Ty) (v: string) =
   if heap g t then
     match llty g t with
@@ -86,13 +92,15 @@ and walkIn (g: G) (em: Emitter) (t: Ty) (v: string) (move: string) =
 /// same way. One function for both, so a type's walk is made once.
 and walkFn (g: G) (t: Ty) : string =
   let name = $"@\"walk.{showF g t}\""
+  let tail (callee: string) = tailKeyword g name callee
   if firstTime g name then
     let em = emitter ()
     let inner (ft: Ty) (fv: string) = walkIn g em ft fv "%move"
     match repOfUnion g t with
     | Some(Niche(_, payload)) ->
       // the payload itself, or the static @zs.none
-      emit em $"musttail call void {walkFn g payload}(ptr %p, i1 %move)"
+      let callee = walkFn g payload
+      emit em $"{tail callee}call void {callee}(ptr %p, i1 %move)"
       emit em "ret void"
     | _ ->
       let rc = instr em "load atomic i32, ptr %p monotonic, align 4"
@@ -126,7 +134,7 @@ and walkFn (g: G) (t: Ty) : string =
         let inf = instr em $"load ptr, ptr {ip}"
         let fp = instr em $"getelementptr {{ ptr, i32, ptr, ptr, ptr }}, ptr {inf}, i32 0, i32 3"
         let f = instr em $"load ptr, ptr {fp}"
-        emit em $"musttail call void {f}(ptr %p, i1 %move)"
+        emit em $"{tail f}call void {f}(ptr %p, i1 %move)"
         emit em "ret void"
       | TCon("array", [ el ]) when heap g el ->
         let lp = instr em "getelementptr { i_W, i_W }, ptr %p, i32 0, i32 1"
@@ -167,7 +175,8 @@ and walkFn (g: G) (t: Ty) : string =
           for (ft, fv) in List.take (List.length refs - 1) refs do
             inner ft fv
           if llty g lt = "ptr" then
-            emit em $"musttail call void {walkFn g lt}(ptr {lv}, i1 %move)"
+            let callee = walkFn g lt
+            emit em $"{tail callee}call void {callee}(ptr {lv}, i1 %move)"
             emit em "ret void"
           else
             inner lt lv
@@ -498,7 +507,8 @@ and dropFn (g: G) (t: Ty) : string =
       match repOfUnion g pt with
       | Some(Niche(_, payload)) ->
         // the payload itself, or @zs.none (static: its count is never changed)
-        emit em $"musttail call void {dropFn g payload}(ptr %p)"
+        let callee = dropFn g payload
+        emit em $"{tailKeyword g name callee}call void {callee}(ptr %p)"
         emit em "ret void"
       | _ ->
         let last = instr em "call i1 @zs.release(ptr %p)"
@@ -574,7 +584,11 @@ and dropFn (g: G) (t: Ty) : string =
             for (ft, fv) in List.take (List.length refs - 1) refs do
               dropValue g em ft fv
             // the last field is dropped by a tail call, so long lists free iteratively
-            if llty g lt = "ptr" then emit em $"musttail call void {dropFn g lt}(ptr {lv})" else dropValue g em lt lv
+            if llty g lt = "ptr" then
+              let callee = dropFn g lt
+              emit em $"{tailKeyword g name callee}call void {callee}(ptr {lv})"
+            else
+              dropValue g em lt lv
             emit em "ret void"
           enter em "plain"
           emit em "call void @zs_free(ptr %p)"

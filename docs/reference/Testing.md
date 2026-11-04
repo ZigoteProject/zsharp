@@ -188,3 +188,14 @@ Testing.expect : 'a -> string -> unit when 'a : Show
 
 An expect test: `expect (parse "1 + 2") """Add (Num 1, Num 2)"""`.
 
+### `Testing.runAll`
+
+```zsharp
+Testing.runAll : list<Testing.Test> -> int
+```
+
+Runs every test in order, in this process: what `zs test --target <chip>` builds into the
+image (a chip has no processes, 0009 D11). Prints `test path` before each, `ok   path` after,
+`skip path` for a pending one (or one left out while others are focused), and the counts; a
+failure's panic ends the run after `test path`, which names it.
+

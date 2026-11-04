@@ -316,7 +316,7 @@ else echo "FAIL tests/mcu/layout.zs"; cat "$tmp/layout.log"; fail=1; fi
 if command -v qemu-system-arm >/dev/null; then
   for chip in cortex-m4 cortex-m0plus; do
     board=$([ $chip = cortex-m4 ] && echo mps2-an386 || echo microbit)
-    for t in isr systick cpu bits task ints static; do
+    for t in isr systick cpu bits task ints static tree; do
       if bin/zs build tests/mcu/$t.zs --target $chip -o "$tmp/$t.elf" 2>"$tmp/$t.log" \
          && out=$(timeout 60 qemu-system-arm -M $board -nographic -semihosting-config enable=on,target=native -kernel "$tmp/$t.elf" 2>&1) \
          && [ "$(echo "$out" | grep -v '^#zs')" = "$(cat tests/mcu/$t.expected)" ] \
@@ -324,6 +324,16 @@ if command -v qemu-system-arm >/dev/null; then
         echo "ok   tests/mcu/$t.zs on $chip (under qemu)"
       else echo "FAIL tests/mcu/$t.zs on $chip"; cat "$tmp/$t.log"; fail=1; fi
     done
+  done
+fi
+# zs test --target <chip> (0009, D11): a file's tests built into one image and run under QEMU in
+# one process, Core's runner printing each; a failing test's panic ends the run, naming it
+if command -v qemu-system-arm >/dev/null; then
+  for chip in cortex-m4 cortex-m0plus; do
+    if [ "$(bin/zs test tests/mcu/ztest.zs --target $chip 2>&1)" = "$(cat tests/mcu/ztest.expected)" ] \
+       && actual=$(bin/zs test tests/mcu/ztest_fail.zs --target $chip 2>&1) && [ "$actual" = "$(cat tests/mcu/ztest_fail.expected)" ]; then
+      echo "ok   zs test --target $chip (tests/mcu/ztest.zs, ztest_fail.zs under qemu)"
+    else echo "FAIL zs test --target $chip"; bin/zs test tests/mcu/ztest.zs --target $chip 2>&1 | diff - tests/mcu/ztest.expected; fail=1; fi
   done
 fi
 # a real board (0027): the Nucleo-F401RE's firmware builds; an image for it (its STM32F401RE's

@@ -481,118 +481,176 @@ let private summaryLine (passed: int) (failed: int) (skipped: int) (broken: int)
   let b = if broken > 0 then $", {broken} file(s) didn't build" else ""
   $"{passed} passed, {failed} failed{s}{b}"
 
+// zs test --target <chip> (0009, D11): the file's tests built into one image and run under the
+// chip's runner (QEMU's board, or probe-rs on a real one) in one process, its output read: `ok
+// path` and `skip path` as the image prints them, and a panic after `test path` failing that test
+// and ending the run, the test's own output shown then. The passed, failed and skipped, or None
+// when the image didn't build.
+let private runOnChip (o: Options.Options) (src: string) (m: Options.Mcu) : option<int * int * int> =
+  let exe = scratchExe ()
+  if Make.build { o with main = src; out = exe } true <> 0 then
+    File.delete exe |> ignore
+    None
+  else
+    let output =
+      match Tools.runSplit "timeout" (List.concat [ [ "--kill-after=1"; "120"; List.head m.runner ]; List.tail m.runner; [ exe ] ]) with
+      | Ok r -> r.out + "\n" + r.err
+      | Error e -> e
+    File.delete exe |> ignore
+    let passed = ref 0
+    let failed = ref 0
+    let skipped = ref 0
+    // the test running, and what it printed so far (shown only when it fails)
+    let current = ref ""
+    let said = Buffer.empty
+    let fail (why: string) =
+      failed.Value <- failed.Value + 1
+      println $"FAIL {current.Value}"
+      for l in Buffer.toArray said do
+        println $"       {l}"
+      if why <> "" then
+        println $"       {why}"
+      current.Value <- ""
+      Buffer.clear said
+    for line in String.splitLines output do
+      if String.startsWith "test " line then
+        current.Value <- String.sub line 5 (String.length line - 5)
+        Buffer.clear said
+      else if String.startsWith "ok   " line && current.Value <> "" then
+        passed.Value <- passed.Value + 1
+        println line
+        current.Value <- ""
+      else if String.startsWith "skip " line then
+        skipped.Value <- skipped.Value + 1
+        println line
+      else if String.startsWith "panic: " line && current.Value <> "" then
+        fail line
+      else if String.startsWith "#zs " line || String.endsWith " skipped" line || String.trim line = "" then
+        ()
+      else if current.Value <> "" then
+        Buffer.push line said
+    if current.Value <> "" then
+      fail "ended without finishing (a hang, or the chip stopped)"
+    Some(passed.Value, failed.Value, skipped.Value)
+
 // builds a file's [<Tests>] values and runs each test in its own process (0009), a sequenced
 // group's tests one after another, each within its time limit. args: filters (a path ending in /
 // is a prefix; else a part of the path), --summary, --fail-on-focused, --update. stress: for that
 // many milliseconds, the tests at random on every core, over and over (D4). The passed, failed
 // and skipped, or None when it didn't build.
 let private runTests (o: Options.Options) (src: string) (args: list<string>) (stress: option<int>) : option<int * int * int> =
-  let filters = List.filter (fun (a: string) -> not (String.startsWith "--" a)) args
-  let exe = scratchExe ()
-  if Make.build { o with main = src; out = exe } true <> 0 then
-    File.delete exe |> ignore
+  match o.mcu with
+  | Some m when not (List.isEmpty m.runner) -> runOnChip o src m
+  | Some m ->
+    eprintln $"zs test --target {m.name}: tests run on a chip's board (QEMU's, or a real one through probe-rs) or on this machine"
     None
-  else
-    let listed =
-      match Tools.runSplit exe [ "--list" ] with
-      | Ok r -> r.out
-      | Error _ -> ""
-    let leafOf (line: string) : option<Leaf> =
-      match String.split "\t" line with
-      | [ p; f; t; s ] ->
-        let ms : option<int> = Int.parse t
-        Some { path = p; focus = f; timeout = Option.defaultValue 10000 ms; sequence = s }
-      | _ -> None
-    let leaves = List.choose leafOf (List.filter (fun l -> l <> "") (String.split "\n" listed))
-    if List.isEmpty leaves then
-      eprintln $"{src}: no [<Tests>] values"
+  | None ->
+    let filters = List.filter (fun (a: string) -> not (String.startsWith "--" a)) args
+    let exe = scratchExe ()
+    if Make.build { o with main = src; out = exe } true <> 0 then
       File.delete exe |> ignore
-      Some(0, 0, 0)
+      None
     else
-      let wanted (l: Leaf) = List.isEmpty filters || List.exists (fun (f: string) -> if String.endsWith "/" f then String.startsWith f l.path else String.contains f l.path) filters
-      let chosen = List.filter wanted leaves
-      if List.isEmpty chosen then
-        let roots = String.join ", " (List.distinct (List.map (fun (l: Leaf) -> List.head (String.split "/" l.path) + "/") leaves))
-        println $"no test's path matches {String.join " " filters} (they start with {roots})"
-      let focused = List.exists (fun (l: Leaf) -> l.focus = "focused") chosen
-      let runs (l: Leaf) = l.focus <> "pending" && (not focused || l.focus = "focused")
-      let updates = Buffer.empty
-      // a failure shown: its output, and its time limit when it hit it; the expect records kept
-      // for --update
-      let showFailure (l: Leaf) (code: option<int>) (output0: string) =
-        println $"FAIL {l.path}"
-        let (records, output) = expectRecords output0
-        for r in records do
-          Buffer.push r updates
-        for line in String.split "\n" (String.trim output) do
-          if line <> "" then
-            println $"       {line}"
-        if Option.isNone code then
-          println $"       timed out after {float l.timeout / 1000.0} s"
-      let failed = ref 0
-      let skipped = ref 0
-      let passed = ref 0
-      match stress with
-      | Some ms when List.exists runs chosen ->
-        // over and over at random, a worker per core, each run its own process as always: what
-        // one run hides (a race, a leak on a rare path, a timeout under load) shows; each failing
-        // test is shown once, with its first failure
-        let arr = Array.ofList (List.filter runs chosen)
-        let n = Array.length arr
-        let workers = max 1 (Parallel.workers ())
-        let started = Runtime.ticks ()
-        let deadline = started + u64 ms * u64 1000000
-        // stage 0's library is what src/ compiles with: a xorshift of its own, not Random
-        let worker (w: int) : int * array<Leaf * option<int> * string> =
-          let mutable s = Int.wrappingAdd started (Int.wrappingMul (u64 (w + 1)) (u64 0x9E3779B97F4A7C15))
-          let failures = Buffer.empty
-          let mutable count = 0
-          while Runtime.ticks () < deadline do
-            s <- s ^^^ (s <<< u64 13)
-            s <- s ^^^ (s >>> u64 7)
-            s <- s ^^^ (s <<< u64 17)
-            let l = arr.[int (s % u64 n)]
-            let (code, output) = runLeaf exe l
-            count <- count + 1
-            if not (passedRun code output) then
-              Buffer.push (l, code, output) failures
-          (count, Buffer.toArray failures)
-        let results = Array.Parallel.map worker (Array.init workers (fun w -> w))
-        let total = Array.fold (fun acc (c, _) -> acc + c) 0 results
-        let shown = ref Set.empty
-        for (_, fs) in results do
-          for (l, code, output) in fs do
-            failed.Value <- failed.Value + 1
-            if not (Set.contains l.path shown.Value) then
-              shown.Value <- Set.add l.path shown.Value
+      let listed =
+        match Tools.runSplit exe [ "--list" ] with
+        | Ok r -> r.out
+        | Error _ -> ""
+      let leafOf (line: string) : option<Leaf> =
+        match String.split "\t" line with
+        | [ p; f; t; s ] ->
+          let ms : option<int> = Int.parse t
+          Some { path = p; focus = f; timeout = Option.defaultValue 10000 ms; sequence = s }
+        | _ -> None
+      let leaves = List.choose leafOf (List.filter (fun l -> l <> "") (String.split "\n" listed))
+      if List.isEmpty leaves then
+        eprintln $"{src}: no [<Tests>] values"
+        File.delete exe |> ignore
+        Some(0, 0, 0)
+      else
+        let wanted (l: Leaf) = List.isEmpty filters || List.exists (fun (f: string) -> if String.endsWith "/" f then String.startsWith f l.path else String.contains f l.path) filters
+        let chosen = List.filter wanted leaves
+        if List.isEmpty chosen then
+          let roots = String.join ", " (List.distinct (List.map (fun (l: Leaf) -> List.head (String.split "/" l.path) + "/") leaves))
+          println $"no test's path matches {String.join " " filters} (they start with {roots})"
+        let focused = List.exists (fun (l: Leaf) -> l.focus = "focused") chosen
+        let runs (l: Leaf) = l.focus <> "pending" && (not focused || l.focus = "focused")
+        let updates = Buffer.empty
+        // a failure shown: its output, and its time limit when it hit it; the expect records kept
+        // for --update
+        let showFailure (l: Leaf) (code: option<int>) (output0: string) =
+          println $"FAIL {l.path}"
+          let (records, output) = expectRecords output0
+          for r in records do
+            Buffer.push r updates
+          for line in String.split "\n" (String.trim output) do
+            if line <> "" then
+              println $"       {line}"
+          if Option.isNone code then
+            println $"       timed out after {float l.timeout / 1000.0} s"
+        let failed = ref 0
+        let skipped = ref 0
+        let passed = ref 0
+        match stress with
+        | Some ms when List.exists runs chosen ->
+          // over and over at random, a worker per core, each run its own process as always: what
+          // one run hides (a race, a leak on a rare path, a timeout under load) shows; each failing
+          // test is shown once, with its first failure
+          let arr = Array.ofList (List.filter runs chosen)
+          let n = Array.length arr
+          let workers = max 1 (Parallel.workers ())
+          let started = Runtime.ticks ()
+          let deadline = started + u64 ms * u64 1000000
+          // stage 0's library is what src/ compiles with: a xorshift of its own, not Random
+          let worker (w: int) : int * array<Leaf * option<int> * string> =
+            let mutable s = Int.wrappingAdd started (Int.wrappingMul (u64 (w + 1)) (u64 0x9E3779B97F4A7C15))
+            let failures = Buffer.empty
+            let mutable count = 0
+            while Runtime.ticks () < deadline do
+              s <- s ^^^ (s <<< u64 13)
+              s <- s ^^^ (s >>> u64 7)
+              s <- s ^^^ (s <<< u64 17)
+              let l = arr.[int (s % u64 n)]
+              let (code, output) = runLeaf exe l
+              count <- count + 1
+              if not (passedRun code output) then
+                Buffer.push (l, code, output) failures
+            (count, Buffer.toArray failures)
+          let results = Array.Parallel.map worker (Array.init workers (fun w -> w))
+          let total = Array.fold (fun acc (c, _) -> acc + c) 0 results
+          let shown = ref Set.empty
+          for (_, fs) in results do
+            for (l, code, output) in fs do
+              failed.Value <- failed.Value + 1
+              if not (Set.contains l.path shown.Value) then
+                shown.Value <- Set.add l.path shown.Value
+                showFailure l code output
+          passed.Value <- total - failed.Value
+          skipped.Value <- List.length chosen - n
+          println $"stress: {total} runs of {n} tests on {workers} cores for {ms / 1000} s, {failed.Value} failed"
+        | _ ->
+          // ponytail: one test at a time; up to the cores at once as tasks when runs get long
+          let results = Map.ofList (List.map (fun (l: Leaf) -> (l.path, runLeaf exe l)) (List.filter runs chosen))
+          for l in chosen do
+            match Map.tryFind l.path results with
+            | Some(code, output) when passedRun code output ->
+              passed.Value <- passed.Value + 1
+              println $"ok   {l.path}"
+            | Some(code, output) ->
+              failed.Value <- failed.Value + 1
               showFailure l code output
-        passed.Value <- total - failed.Value
-        skipped.Value <- List.length chosen - n
-        println $"stress: {total} runs of {n} tests on {workers} cores for {ms / 1000} s, {failed.Value} failed"
-      | _ ->
-        // ponytail: one test at a time; up to the cores at once as tasks when runs get long
-        let results = Map.ofList (List.map (fun (l: Leaf) -> (l.path, runLeaf exe l)) (List.filter runs chosen))
-        for l in chosen do
-          match Map.tryFind l.path results with
-          | Some(code, output) when passedRun code output ->
-            passed.Value <- passed.Value + 1
-            println $"ok   {l.path}"
-          | Some(code, output) ->
-            failed.Value <- failed.Value + 1
-            showFailure l code output
-          | None ->
-            skipped.Value <- skipped.Value + 1
-            println $"skip {l.path}{(if l.focus = "pending" then " (pending)" else "")}"
-      if List.contains "--update" args then
-        for (file, line, text) in Buffer.toArray updates do
-          let path = Path.combine (dirOf src) file
-          if File.exists path && updateExpect path line text then
-            println $"updated {file}:{line}"
-      File.delete exe |> ignore
-      if focused && List.contains "--fail-on-focused" args then
-        println "focused tests are left (--fail-on-focused)"
-        failed.Value <- failed.Value + 1
-      Some(passed.Value, failed.Value, skipped.Value)
+            | None ->
+              skipped.Value <- skipped.Value + 1
+              println $"skip {l.path}{(if l.focus = "pending" then " (pending)" else "")}"
+        if List.contains "--update" args then
+          for (file, line, text) in Buffer.toArray updates do
+            let path = Path.combine (dirOf src) file
+            if File.exists path && updateExpect path line text then
+              println $"updated {file}:{line}"
+        File.delete exe |> ignore
+        if focused && List.contains "--fail-on-focused" args then
+          println "focused tests are left (--fail-on-focused)"
+          failed.Value <- failed.Value + 1
+        Some(passed.Value, failed.Value, skipped.Value)
 
 /// zs test [file.zs] [filters…]: a file's tests, or every file of the project's src/ and tests/
 /// that has [<Tests>].

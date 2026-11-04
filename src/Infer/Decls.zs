@@ -1797,7 +1797,9 @@ let check (cx: Cx) (file: InFile) (modName: option<string>) (decls: list<Decl>) 
     let all = List.map one (Array.toList (Buffer.toArray cx.testValues))
     let cons (acc: Expr) (a: Expr) = plain (Call("::", [ plain (Tuple [ a; acc ]) ]))
     let joined = plain (Call(libraryName "Collections.List.concat", [ List.fold cons (plain (Var "[]")) (List.rev all) ]))
-    let entry = plain (Call(libraryName "Testing.Runner.main", [ joined ]))
+    // on a chip (no Std, so no processes), Core's runner runs them all in the image (D11)
+    let runner = if Set.isEmpty cx.unavailable then "Testing.Runner.main" else "Testing.runAll"
+    let entry = plain (Call(libraryName runner, [ joined ]))
     declareOne cx (decl (Fun("$tests", false, [ unitParam ], None, entry)) -1)
     Buffer.push "$tests" cx.tests
   // the types its annotations name, for the editor: a type's key is type:Its.Name

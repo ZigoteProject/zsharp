@@ -8,6 +8,10 @@
   global pointing at it, with no startup code and no heap; on a chip its bytes are in flash
   (`tests/static.zs`, `tests/mcu/static.zs`: three tables on a Cortex-M4, 64 bytes of heap and
   three allocations gone, and the image 496 bytes smaller without their startup code). `--no-heap` takes such a value. Records and unions are still built at startup.
+- A union with a case holding a list of itself (a tree) builds for the Cortex-M0+: its drop
+  function's last call is a plain call there, where Thumb1 can't tail-call another function (a
+  loop still, as a list's drop is a call to itself); LLVM refused the image before
+  (`tests/mcu/tree.zs`).
 - `use` under effects (track S, item 10): a throw, or any handler clause that stops without
   resuming, disposes what the `use`s it passes over bound, newest first, before the clause runs,
   as a cancelled task does (`tests/effects/use.zs`). It freed them without their `Dispose.dispose`.
@@ -98,6 +102,11 @@
   cortex-m4 has none, so it can't depend on this package`, instead of an error deep in its code.
 
 ### Tooling
+- `zs test file.zs --target cortex-m4` (track D, item 11): the file's `[<Tests>]` built into one
+  image and run under the chip's QEMU board (or a real board through probe-rs, as `zs run` does),
+  every test in one process in order: Core's `Testing.runAll` prints `ok path` as each passes and
+  `skip path` for a pending one, a failing test's panic ends the run and `zs test` names it, with
+  what it printed; the counts as on the host. A test returning a task isn't run on a chip.
 - `zs mcp` has `definition` (where the name at a position is defined: `file:line:column` and the
   defining line, in the program's files or the library's) and `explain` (its type with
   constraints, its effects in words, where it's defined, and its doc comment, a built-in's

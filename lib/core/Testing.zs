@@ -103,3 +103,29 @@ let expectAt (value: 'a) (expected: string) (file: string) (line: int) : unit =
 
 /// An expect test: `expect (parse "1 + 2") """Add (Num 1, Num 2)"""`.
 let expect (value: 'a) (expected: string) : unit = expectAt value expected "" 0
+
+/// Runs every test in order, in this process: what `zs test --target <chip>` builds into the
+/// image (a chip has no processes, 0009 D11). Prints `test path` before each, `ok   path` after,
+/// `skip path` for a pending one (or one left out while others are focused), and the counts; a
+/// failure's panic ends the run after `test path`, which names it.
+let runAll (tests: list<Test>) : int =
+  let rec leaves (prefix: string) (focus: Focus) (t: Test) : list<string * (unit -> unit) * Focus> =
+    match t with
+    | Case(name, run, f, _) -> [ (prefix + name, run, (if focus = Normal then f else focus)) ]
+    | Group(name, ts, f, _) ->
+      List.collect (leaves (prefix + name + "/") (if focus = Normal then f else focus)) ts
+  let all = List.collect (leaves "" Normal) tests
+  let focused = List.exists (fun (_, _, f) -> f = Focused) all
+  let mutable passed = 0
+  let mutable skipped = 0
+  for (path, run, f) in all do
+    if f = Pending || (focused && f <> Focused) then
+      skipped <- skipped + 1
+      println $"skip {path}{(if f = Pending then " (pending)" else "")}"
+    else
+      println $"test {path}"
+      run ()
+      passed <- passed + 1
+      println $"ok   {path}"
+  println $"{passed} passed, {skipped} skipped"
+  0

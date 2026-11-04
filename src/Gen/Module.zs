@@ -281,7 +281,9 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
     Buffer.push "define i32 @main(i32 %argc, ptr %argv) {\n  call void @zs_set_args(i32 %argc, ptr %argv)\n" g.funcs
     Buffer.push (initValues ()) g.funcs
     Buffer.push $"  %r = call {rt} {sym g first}({{}} zeroinitializer)\n" g.funcs
-    Buffer.push $"  %c = trunc {rt} %r to i32\n  call void @zsv.dropAll()\n  ret i32 %c\n}}\n" g.funcs
+    // the exit code: the result as it is where int is 32 bits (a chip)
+    let code = if rt = "i32" then "" else $"  %c = trunc {rt} %r to i32\n"
+    Buffer.push $"{code}  call void @zsv.dropAll()\n  ret i32 {(if rt = "i32" then "%r" else "%c")}\n}}\n" g.funcs
   for e in (if entry then exports else []) do
     let fd = Map.find e.fname fnTable
     let em = emitter ()

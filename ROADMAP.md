@@ -52,7 +52,7 @@ itself from the previous release (stage 0, pinned in `dev`).
 4. **Debug info (track D):** lists and other boxed unions aren't shown as gdb or lldb values (plain unions are).
 5. **`use` under effects (track S):** *(closed 2026-11-04: a stop disposes the scopes it passes over, `tests/effects/use.zs`)* left: a resumption never called (a generator its consumer left) disposes nothing, and neither does a stop inside a `task { }` body.
 6. **Generators (track S):** a pipeline of `Seq` functions allocates nothing per element but isn't one loop yet, as a list pipeline is: each stage is an indirect call per element (4.8× a fused list pipeline's time). Item 9 of track S fuses it.
-7. **Tests on a chip (track D):** `zs test --target cortex-m4` doesn't exist; a chip's library code is tested by programs under QEMU (`tests/mcu`), and a firmware's logic on the computer (`examples/nucleo`'s shell).
+7. **Tests on a chip (track D):** *(closed 2026-11-04: `zs test file.zs --target cortex-m4`, the tests in one image under QEMU or on the board; `tests/mcu/ztest.zs`)*
 
 ## Next
 
@@ -79,7 +79,7 @@ user asking. Optimization still waits for profiles of real programs.
    - **Debug info for every value** (D1, known gap 4): lists and boxed unions as gdb and lldb values, so a user's first crash is debuggable.
 3. **What the flagship asked for** (track M, from `examples/nucleo`'s build and the board):
    - **Constants in flash** (M3: *arrays and lists done 2026-11-04*; records and unions left) and **placement** (M12: `[<Section>]`, `[<Align>]`): the firmware's tables stop being copied to RAM at startup.
-   - **Tests on the chip** (D11): `zs test --target cortex-m4` under QEMU, and `--probe` on the board, so the shell's tests run where the shell runs.
+   - *Done 2026-11-04:* **Tests on the chip** (D11): `zs test --target cortex-m4` under QEMU (and the board's target through probe-rs), so the shell's tests run where the shell runs.
    - **Weak references and arenas on a chip** (M8, known gap 3).
    - **The next board** (0027) only once the first is flashed and a user names one.
 4. **What an F# programmer reaches for next** (track S, each small, taken as it comes):
@@ -174,7 +174,7 @@ Tier 2 (DESIGN §10): every phase keeps `bench/mcu` working and within its ratio
   10. **Fixed-point numbers:** *(after 0.6.2; a Core library, approved at the third design review with decision 66 as its one language change)* `q7`, `q15` and `q31`, the formats CMSIS-DSP and the chips' saturating instructions use, as library types with `Add`, `Num` and `Show`, for DSP on chips without an FPU (Cortex-M0+). A general `fix<i, f>` would need numbers as type arguments beyond `fixed`'s size, for formats no hardware has.
   11. **Core intrinsics:** *(done in phase 12)* `Cpu.wfi`, `wfe`, `dsb`, `dmb`, `isb`, `nop`, and `Cpu.critical (fun () -> …)` with interrupts masked for its body, instead of inline assembly. The rules for state shared with interrupt handlers (item 1) build on `critical` and `Atomic`.
   12. **Placement:** *(after 0.6.2)* `[<Section ".noinit">]` on a top-level value (memory kept across a reset, or a DMA region a linker script names) and `[<Align 32>]` on a value or a type (DMA buffers, cache lines).
-  13. **Constants in flash** is item 3; **tests on a chip** (`zs test --target`) is track D's item 11; both after 0.6.2.
+  13. **Constants in flash** is item 3; **tests on a chip** (`zs test --target`) is track D's item 11 (done 2026-11-04).
 - **Done in phase 12, beside the numbered items:** async on bare metal ([proposal 0016](docs/proposals/0016-async-bare-metal.md), decision 71): the same `task { }`, `Task.run`, `sleep`, `both`, `all`, `race`, `timeout` and `scope` on the embedded runtime's loop, timers on SysTick, `wfi` when idle, `Irq.wait`, `Signal`, `Runtime.setClock`, `Task.fromCallback`; `Task` moved from Std to Core, and `Task.spawn`, `blocking` and `waitFor` are compile errors on a chip (`tests/mcu/task.zs`, `examples/mcu/uart.zs`, `examples/nucleo`).
 
 ### Editor tooling (E)
@@ -267,7 +267,7 @@ attributed functions, so they compose with ordinary code.
 8. **Doc tests:** *(done in phase 12)* the examples in `///` comments compile and run under `zs test --doc`, their output checked as inline expectations (`// => text`, rewritten by `--update`), so the docs can't go stale (`tests/doctest.sh`, and the library's examples in `./test.sh`).
 9. **Benchmarks:** *(after 0.6.2)* `bench "insert" (fun () -> …)` is a value too, run by `zs bench`: warm-up, then enough runs for a median and a confidence interval. A run compares with the last saved one and reports only changes beyond the noise. `testFaster "reuse beats copy" fast slow` is a test that passes when one is faster with statistical confidence (Expecto's `isFasterThan`), so a performance claim can't silently regress.
 10. **Coverage:** *(after 0.6.2)* `zs test --coverage` instruments with LLVM's source-based coverage (counters and a region map the compiler emits for Z#'s source), so `llvm-cov` reports lines and branches, match cases included.
-11. **Microcontrollers:** *(after 0.6.2)* `zs test --target cortex-m4` runs the tests under QEMU, and with `--probe` on a board through probe-rs, with results over semihosting or RTT.
+11. **Microcontrollers:** *(done 2026-11-04: `tests/mcu/ztest.zs`, `ztest_fail.zs`; Core's `Testing.runAll` runs them in one image, a failing test's panic ending the run and naming it; `--target nucleo-f401` runs through probe-rs, as `zs run` does)* `zs test --target cortex-m4` runs the tests under QEMU, and with `--probe` on a board through probe-rs, with results over semihosting or RTT.
 
 **Profiling, next:**
 1. **Where it allocates, before running:** *(done in phase 12, [0026](docs/proposals/0026-performance-you-can-see.md): allocates, reuses and copies on write, with the objects and their sizes, and a function's summary on hover, `tests/lsp/hints.sh`; atomic counts left, after 0.6.2)* `zs lsp` marks, as inlay hints that can be turned on, the lines that allocate, copy an array on write, or count atomically, and the calls that reuse a cell in place. It's what the compiler already decided, so performance can be read like types. `[<NoAlloc>]` (track M) is the same analysis made an error.

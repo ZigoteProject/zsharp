@@ -291,7 +291,8 @@ normally written ([bench/mcu](bench/mcu)). The ratios are instructions executed,
 - **RAM:** the programs built on lists and unions peak at 32 bytes of heap, and stack use is within 10% of C's on all but `isort` at `-O2`. A program that allocates nothing links no heap at all.
 - **Also there:** interrupt handlers (`[<Interrupt "USART2">]`), `[<NoAlloc>]` and `--no-heap` (a compile error naming the chain that may allocate), `[<Bits>]` records for registers, `Cpu.critical` and the other intrinsics, and tasks on the runtime's loop with the core asleep between events.
 - **Constants in flash:** a top-level array or list literal of numbers, bools or strings (a CRC table, a font, a list of commands) is a static object in the image, read in place: no startup code, no RAM, and a write to it copies it. Records and unions are still startup values.
-- **Not yet:** `[<Section>]` and `[<Align>]`, fixed-point numbers, weak references and arenas on a chip, `zs test --target`, RISC-V, and boards beyond the Nucleo-F401RE. The flagship has run under QEMU's STM32F405, not yet on the board itself. They're track M of the [roadmap](ROADMAP.md).
+- **Tests on the chip:** `zs test firmware.zs --target cortex-m4` builds the file's `[<Tests>]` into one image and runs them under QEMU (or on the board), each named as it passes.
+- **Not yet:** `[<Section>]` and `[<Align>]`, fixed-point numbers, weak references and arenas on a chip, RISC-V, and boards beyond the Nucleo-F401RE. The flagship has run under QEMU's STM32F405, not yet on the board itself. They're track M of the [roadmap](ROADMAP.md).
 
 The registers can come from the chip's SVD file: `import svd ("stm32f401-part.svd", only = "GPIOA,RCC")` gives a module per peripheral with each register a `[<Bits>]` record ([examples/mcu/nucleo-f401-svd.zs](examples/mcu/nucleo-f401-svd.zs) is the firmware written that way, compiled to the same accesses).
 
