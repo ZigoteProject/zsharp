@@ -330,10 +330,10 @@ fi
 # one process, Core's runner printing each; a failing test's panic ends the run, naming it
 if command -v qemu-system-arm >/dev/null; then
   for chip in cortex-m4 cortex-m0plus; do
-    if [ "$(bin/zs test tests/mcu/ztest.zs --target $chip 2>&1)" = "$(cat tests/mcu/ztest.expected)" ] \
-       && actual=$(bin/zs test tests/mcu/ztest_fail.zs --target $chip 2>&1) && [ "$actual" = "$(cat tests/mcu/ztest_fail.expected)" ]; then
+    passing=$(bin/zs test tests/mcu/ztest.zs --target $chip 2>&1); failing=$(bin/zs test tests/mcu/ztest_fail.zs --target $chip 2>&1); code=$?
+    if [ "$passing" = "$(cat tests/mcu/ztest.expected)" ] && [ "$failing" = "$(cat tests/mcu/ztest_fail.expected)" ] && [ $code = 1 ]; then
       echo "ok   zs test --target $chip (tests/mcu/ztest.zs, ztest_fail.zs under qemu)"
-    else echo "FAIL zs test --target $chip"; bin/zs test tests/mcu/ztest.zs --target $chip 2>&1 | diff - tests/mcu/ztest.expected; fail=1; fi
+    else echo "FAIL zs test --target $chip (exit $code)"; diff <(echo "$passing") tests/mcu/ztest.expected; diff <(echo "$failing") tests/mcu/ztest_fail.expected; fail=1; fi
   done
 fi
 # a real board (0027): the Nucleo-F401RE's firmware builds; an image for it (its STM32F401RE's
