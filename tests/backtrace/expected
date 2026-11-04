@@ -1,0 +1,14 @@
+with a backtrace:
+panic: boom
+  at depth
+  at depth
+  at depth
+  at main
+exit 134
+without:
+panic: boom
+exit 134
+a release build, the same names:
+panic: boom
+  at depth
+exit 134

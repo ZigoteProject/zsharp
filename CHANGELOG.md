@@ -46,6 +46,11 @@
   "expected 'let'".
 
 ### Runtime
+- A panic's backtrace names the Z# functions on the way (0011, debugging 3), the runtime's own
+  frames left out and the program's `main` last: on Linux the runtime reads the executable's
+  own symbol table at the panic (a build keeps it; the functions are internal, so nothing else
+  names them), in release builds too. `ZS_BACKTRACE=0` keeps the panic to its message, as
+  before (`tests/backtrace/run.sh`). Lines need `-g`'s DWARF and are left.
 - Weak references and arenas on a chip (track M, item 8, known gap 3): the embedded runtime
   has the host's table of weak cells and its arenas, over the chip's heap. An arena's blocks are
   an eighth of the heap each (4 KB at most), bumped through, and go back at once when the
@@ -84,6 +89,10 @@
   records: 3.5 s and 935 MB, now 1.4 s and 368 MB).
 
 ### Examples
+- `examples/aoc`: ten Advent of Code puzzles (2015 to 2021's first days), each solved on the
+  puzzle's example input with only the prelude, Core and Std, 203 lines in all: track S's exit
+  test that the library is enough for a day's puzzle (`tests/examples_aoc.sh` checks the
+  answers).
 - `examples/tools`: grep (38 lines), a JSON pretty-printer (16) and `tail -f` (49), each with the
   prelude, Core and Std alone (track S's exit test), built and run by `tests/examples_tools.sh`.
 

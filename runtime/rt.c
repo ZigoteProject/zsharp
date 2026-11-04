@@ -302,6 +302,90 @@ int32_t zs_fuzz_drive(void (*cb)(void *, const uint8_t *), void *user, const cha
 #endif
 }
 
+// ---- Z# names in a panic's backtrace (0011): the program's own symbol table (.symtab, which
+// a build keeps; its functions are internal, so nothing else names them), read from the
+// executable at the panic and sorted by address; a frame's function is the nearest symbol at or
+// below it. Linux's ELF; elsewhere the C library's backtrace_symbols_fd stands.
+#if defined(__linux__)
+#include <elf.h>
+
+_Noreturn void zs_panic_c(const char *msg);
+
+typedef struct {
+    uintptr_t addr;
+    const char *name;
+} zs_symbol;
+
+static zs_symbol *symbols;
+static size_t symbol_count;
+static uintptr_t symbol_base; // where the executable is loaded, for a position-independent one
+
+static int symbol_order(const void *a, const void *b) {
+    uintptr_t x = ((const zs_symbol *)a)->addr, y = ((const zs_symbol *)b)->addr;
+    return x < y ? -1 : x > y;
+}
+
+static bool load_symbols(void) {
+    if (symbols) return true;
+    FILE *f = fopen("/proc/self/exe", "rb");
+    if (!f) return false;
+    if (fseek(f, 0, SEEK_END) != 0) return false;
+    long size = ftell(f);
+    if (size <= 0 || fseek(f, 0, SEEK_SET) != 0) return false;
+    unsigned char *image = malloc((size_t)size);
+    if (!image || fread(image, 1, (size_t)size, f) != (size_t)size) {
+        fclose(f);
+        return false;
+    }
+    fclose(f);
+    const Elf64_Ehdr *eh = (const Elf64_Ehdr *)image;
+    if (memcmp(eh->e_ident, ELFMAG, SELFMAG) != 0 || eh->e_ident[EI_CLASS] != ELFCLASS64) return false;
+    const Elf64_Shdr *sh = (const Elf64_Shdr *)(image + eh->e_shoff);
+    for (int i = 0; i < eh->e_shnum; i++) {
+        if (sh[i].sh_type != SHT_SYMTAB) continue;
+        const Elf64_Sym *syms = (const Elf64_Sym *)(image + sh[i].sh_offset);
+        size_t n = sh[i].sh_size / sizeof(Elf64_Sym);
+        const char *strings = (const char *)(image + sh[sh[i].sh_link].sh_offset);
+        symbols = malloc(n * sizeof *symbols);
+        if (!symbols) return false;
+        for (size_t k = 0; k < n; k++) {
+            if (ELF64_ST_TYPE(syms[k].st_info) != STT_FUNC || syms[k].st_value == 0) continue;
+            const char *name = strings + syms[k].st_name;
+            symbols[symbol_count++] = (zs_symbol){(uintptr_t)syms[k].st_value, name};
+            if (strcmp(name, "zs_panic_c") == 0) symbol_base = (uintptr_t)(void *)zs_panic_c - (uintptr_t)syms[k].st_value;
+        }
+        qsort(symbols, symbol_count, sizeof *symbols, symbol_order);
+        return symbol_count > 0; // the image stays: its strings are the names
+    }
+    return false;
+}
+
+// the function a return address is in: the last symbol at or below it
+static const char *symbol_at(void *frame) {
+    uintptr_t a = (uintptr_t)frame - symbol_base;
+    size_t lo = 0, hi = symbol_count;
+    while (lo < hi) {
+        size_t mid = (lo + hi) / 2;
+        if (symbols[mid].addr <= a) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo == 0 ? NULL : symbols[lo - 1].name;
+}
+
+// the frames as Z# names: "zs." dropped, the runtime's own (zs_*) and the C library's left out,
+// the program's main last
+static void print_frames(void **frames, int n) {
+    for (int i = 0; i < n; i++) {
+        const char *name = symbol_at(frames[i]);
+        if (!name || strncmp(name, "zs_", 3) == 0) continue;
+        if (strncmp(name, "zs.", 3) == 0) name += 3;
+        else if (strcmp(name, "main") != 0) continue;
+        fprintf(stderr, "  at %s\n", name);
+        if (strcmp(name, "main") == 0) break;
+    }
+}
+#endif
+
 // a C host's function, run on a panic before the process stops (zs_set_panic_hook)
 static void (*panic_hook)(const char *message);
 
@@ -362,7 +446,12 @@ _Noreturn void zs_panic_c(const char *msg) {
     if (!bt || strcmp(bt, "0") != 0) {
         void *frames[64];
         int n = backtrace(frames, 64);
+#if defined(__linux__)
+        if (load_symbols()) print_frames(frames + 1, n - 1);
+        else backtrace_symbols_fd(frames + 1, n - 1, 2);
+#else
         backtrace_symbols_fd(frames + 1, n - 1, 2);
+#endif
     }
 #endif
     void (*hook)(const char *) = panic_hook;

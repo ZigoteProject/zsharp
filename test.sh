@@ -282,6 +282,14 @@ else echo "FAIL tests/placement.zs: placement"; grep '^@"zs[sv]\.\|\$init' "$tmp
 # the three small tools of examples/tools, built and run (track S's exit test)
 if diff <(tests/examples_tools.sh 2>&1) tests/examples_tools.expected >"$tmp/tools.diff"; then echo "ok   tests/examples_tools.sh (examples/tools: grep, jsonpp, tail -f)"
 else echo "FAIL tests/examples_tools.sh"; cat "$tmp/tools.diff"; fail=1; fi
+# a panic's backtrace names the Z# functions (0011, debugging 3), on Linux
+if [ "$(uname -s)" = Linux ]; then
+  if diff <(tests/backtrace/run.sh 2>&1) tests/backtrace/expected >"$tmp/bt.diff"; then echo "ok   tests/backtrace/run.sh (a panic's backtrace names the functions)"
+  else echo "FAIL tests/backtrace/run.sh"; cat "$tmp/bt.diff"; fail=1; fi
+fi
+# ten Advent of Code puzzles with only the prelude, Core and Std (track S's exit test)
+if diff <(tests/examples_aoc.sh 2>&1) tests/examples_aoc.expected >"$tmp/aoc.diff"; then echo "ok   tests/examples_aoc.sh (examples/aoc: ten puzzles)"
+else echo "FAIL tests/examples_aoc.sh"; cat "$tmp/aoc.diff"; fail=1; fi
 # workspaces (0018 item 8): one lock and cache at the root, the commands over every member
 if diff <(tests/project/workspace.sh 2>&1) tests/project/workspace.expected >"$tmp/ws.diff"; then echo "ok   tests/project/workspace.sh (workspaces)"
 else echo "FAIL tests/project/workspace.sh"; cat "$tmp/ws.diff"; fail=1; fi
