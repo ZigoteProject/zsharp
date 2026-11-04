@@ -11,9 +11,15 @@ echo "--- csv"
 "$zs" provide csv stocks.csv --separator=';' | tee "$dir/Stocks.zs"
 echo "--- sql"
 "$zs" provide sql schema.sql | tee "$dir/Db.zs"
+echo "--- sql with named queries (one query's module)"
+"$zs" provide sql schema.sql --queries=queries.sql | sed -n '/^module OrdersFor/,/^$/p'
+"$zs" provide sql schema.sql --queries=nowhere.sql; echo "exit $?"
+printf -- '-- name: Bad :one\nSELECT nope FROM users;\n' > "$dir/bad.sql"; "$zs" provide sql schema.sql --queries="$dir/bad.sql" 2>&1 | sed "s|$dir/||"; echo "exit ${PIPESTATUS[0]}"
 echo "--- svd (GPIOA only; the module's head and one register)"
 "$zs" provide svd ../../examples/mcu/stm32f401-part.svd --only=GPIOA > "$dir/Gpio.zs"; echo "exit $?, $(wc -l < "$dir/Gpio.zs") lines"
 sed -n '1,8p' "$dir/Gpio.zs"; grep -n -A12 'type Bsrr' "$dir/Gpio.zs" | grep -E 'Bsrr|bs5|br15|read|write|modify' | head -8
+echo "--- c: a header's declarations as Z#"
+"$zs" provide c cshapes/shapes.h
 echo "--- a provider on PATH: zs-provider-upper, a shell script"
 mkdir -p "$dir/bin"
 cat > "$dir/bin/zs-provider-upper" <<'SH'

@@ -935,6 +935,7 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
     let pars = List.map (cty true) args
     let r = cty false ret
     cx.externs.Value <- Map.add name { pars = pars; ret = r; variadic = variadic } cx.externs.Value
+    cx.externModules.Value <- Map.add name (Option.defaultValue "" cx.currentModule.Value) cx.externModules.Value
   | Fun(name0, isRec, ps, ret, body) when String.startsWith "|" name0 ->
     // active pattern: cases become constructors of a hidden union (total) or option (partial)
     let names = List.filter (fun s -> s <> "") (String.split "|" name0)

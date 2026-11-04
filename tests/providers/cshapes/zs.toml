@@ -1,0 +1,9 @@
+# a project whose C code is linked by [c] (0001): main.zs names the header's module with
+# module Shapes = import c "shapes.h"
+[package]
+name = "cshapes"
+main = "main.zs"
+
+[c]
+sources = ["shapes.c"]
+include = ["."]

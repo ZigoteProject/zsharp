@@ -113,6 +113,31 @@ let insert (u: Db.Users) =
   $"insert into {Db.Users.table} ({columns}) values (…)"
 ```
 
+With `queries = "queries.sql"`, a file of named queries in sqlc's style gives a module per query,
+typed against the schema: its text with `?` where each parameter goes, the parameters' names,
+a `Params` record typed from the columns the parameters are compared with (or inserted into), and
+a `Row` record for what it selects (`SELECT *` is the table's columns; a join's columns by their
+table or alias; an expression needs `AS name` and is an `int` for a count, else a `string`).
+A column or table the schema doesn't have is an error naming the query.
+
+```sql
+-- name: GetUser :one
+SELECT id, name, email FROM users WHERE id = :id;
+-- name: OrdersFor :many
+SELECT o.id, o.total, u.name AS buyer FROM orders o JOIN users u ON u.id = o.user_id WHERE o.user_id = :user;
+```
+
+```fsharp
+module Db = import sql ("schema.sql", queries = "queries.sql")
+
+let lookup (id: int) =
+  let p: Db.GetUser.Params = { id = id }
+  (Db.GetUser.sql, Db.GetUser.parameters)      // "SELECT id, name, email FROM users WHERE id = ?", [ "id" ]
+```
+
+A driver package runs the text with the parameters and builds the `Row`; the provider gives it
+what to type against, and nothing runs at compile time but the reading of the two files.
+
 **`svd`**, from a microcontroller's SVD file (the vendor's description of its peripherals;
 `only = "GPIOA,RCC"` keeps the module to the peripherals a program uses): a module per
 peripheral, each register a [`[<Bits>]` record](11-microcontrollers.md) whose defaults are its
@@ -139,6 +164,12 @@ Each register function is one volatile access at an immediate address once inlin
 [examples/mcu/nucleo-f401-svd.zs](../../examples/mcu/nucleo-f401-svd.zs) is the Nucleo
 firmware on the chip's SVD, and the test suite checks that it compiles to the same register
 accesses as [the version with addresses by hand](../../examples/mcu/nucleo-f401.zs).
+
+**`c`**, the one that was there first: `module Ray = import c "raylib.h"` is the header's
+declarations as a module, each with its C signature and comment as its doc, read by libclang
+as the bare `import c` reads them ([C interop](09-c-interop.md)); `zs provide c raylib.h`
+prints that binding to keep. The bare form keeps its own path, with `[<Link>]` and the editor's
+C hover; the library a named module needs is linked by the package's `[c]` section.
 
 ## Where the module is, and keeping it
 

@@ -365,7 +365,7 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
   // .zs-cache/providers/<importing module>/<Name>.zs and loaded as a dependency of the file, so
   // its names, positions and docs are a module's. `module Name = import …` names it; a bare
   // import opens a hidden one named after its file and the provider.
-  let provided (m: Loaded) (path: string) (pkg: Project.Package) : result<Loaded * list<string * string>, Diagnostic> =
+  let provided (m: Loaded) (path: string) (pkg: Project.Package) (cflags: list<string>) : result<Loaded * list<string * string>, Diagnostic> =
     let dir = Path.getDirectoryName (Path.getFullPath path)
     let root =
       match Project.findProject dir with
@@ -376,6 +376,7 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
       | Some n -> n
       | None -> Path.getFileNameWithoutExtension path
     let cacheDir = Path.combine (Path.combine (Path.combine root ".zs-cache") "providers") importer
+    let cimportDir = Path.combine (Path.combine root ".zs-cache") "cimport"
     let lineOf (d: Ast.Decl) : Span =
       let offset = if d.dat >= 0 && d.dat < Array.length m.tree.tokens then m.tree.tokens.[d.dat].offset else 0
       { file = m.source.file; offset = offset; length = -1 }
@@ -464,7 +465,11 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
         match failedBuild with
         | Some e -> Error e
         | None ->
-          match Provide.Command.provide provider dir $"next to {Path.getFileName path}" arg opts packaged with
+          // import c on the protocol (question 2): the header's declarations as Z#
+          let ran =
+            if provider = "c" then Provide.CProvider.provide arg dir cflags cimportDir
+            else Provide.Command.provide provider dir $"next to {Path.getFileName path}" arg opts packaged
+          match ran with
           | Ok s -> Ok s
           | Error e when String.startsWith "no provider" e && File.exists out ->
             // a provider that isn't here (an editor's sandbox, a machine without it) and the module
@@ -508,6 +513,13 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
         | Ast.Import(provider, arg, opts) ->
           provide (Some n) provider arg opts inner |> ignore
           []
+        | Ast.ImportC header ->
+          // module Ray = import c "raylib.h": the header's declarations as a module
+          provide (Some n) "c" header [] inner |> ignore
+          []
+        | Ast.Attrs(_, { d = Ast.ImportC _ }) ->
+          report inner "[<Link>] goes on a bare import c; module X = import c \"header.h\" takes none (the program's or its package's [c] links the library)"
+          []
         | _ -> [ d ]
       | _ -> [ d ]
     let decls = List.collect expand m.decls
@@ -522,7 +534,7 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
       | Ok loaded ->
         // the package's [c] is the build's; its include directories and pkg-config's flags are
         // its import c's
-        match Result.bind (fun (m0: Loaded) -> Result.mapError (fun d -> (d, Some m0.source)) (provided m0 path pkg)) (Result.mapError (fun d -> (d, Some loaded.source)) (imports loaded path (List.append (cOf pkg) forTarget))) with
+        match Result.bind (fun (m0: Loaded) -> Result.mapError (fun d -> (d, Some m0.source)) (provided m0 path pkg (List.append (cOf pkg) forTarget))) (Result.mapError (fun d -> (d, Some loaded.source)) (imports loaded path (List.append (cOf pkg) forTarget))) with
         | Error d -> fail d
         | Ok(m, providedDeps) ->
           // a dependency's file is named by its place in the package; a header may only agree

@@ -12,7 +12,7 @@ let private providers : list<string * string * list<string>> =
     ("svd", "a microcontroller's peripherals as modules of [<Bits>] registers, from its SVD file", Provide.SvdProvider.options) ]
 
 let private names () =
-  let ns = List.map (fun (n, _, _) -> n) providers
+  let ns = "c" :: List.map (fun (n, _, _) -> n) providers
   String.join ", " (List.take (List.length ns - 1) ns) + " and " + List.last ns
 
 /// The providers on PATH: each program named zs-provider-<name>, by its name.
@@ -78,7 +78,7 @@ let provide (provider: string) (dir: string) (where: string) (arg: string) (opts
         match provider with
         | "json" -> Provide.JsonProvider.provide arg text opts
         | "csv" -> Provide.CsvProvider.provide arg text opts
-        | "sql" -> Provide.SqlProvider.provide arg text opts
+        | "sql" -> Provide.SqlProvider.provide dir arg text opts
         | _ -> Provide.SvdProvider.provide arg text opts
   | None ->
     match List.tryFind (fun (n, _) -> n = provider) packaged with
@@ -104,12 +104,22 @@ let private parseOptions (args: list<string>) : result<list<string * string>, st
 let run (args: list<string>) : int =
   match args with
   | [ "--list" ] ->
+    println $"{"c",-6} a C header's declarations, as import c reads them (options: none; a package's include directories through import c)"
     for (name, what, options) in providers do
       let listed = String.join ", " options
       println $"{name,-6} {what} (options: {listed})"
     for name in onPath () do
       println $"{name,-6} zs-provider-{name}, on PATH"
     0
+  | [ "c"; header ] ->
+    // the header beside the working directory or on the system's path, with this machine's flags
+    match Provide.CProvider.provide header (Environment.currentDirectory ()) [] (Path.combine ".zs-cache" "cimport") with
+    | Ok text ->
+      print text
+      0
+    | Error e ->
+      eprintln e
+      1
   | name :: file :: opts ->
     match parseOptions opts with
     | Error e ->

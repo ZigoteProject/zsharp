@@ -2,8 +2,12 @@
 /// table's name and columns in a module of the same name, as `zs provide sql <file>` prints.
 /// SQLite's dialect first, and the common subset of Postgres's types: `INTEGER` is `int`,
 /// `REAL` `f64`, `TEXT` `string`, `BLOB` `array<u8>`, `BOOLEAN` `bool`; a column is an option
-/// unless `NOT NULL` or in the primary key. Typed queries wait for a SQL parser (the proposal's
-/// open question).
+/// unless `NOT NULL` or in the primary key. With `queries = "queries.sql"`, a file of named
+/// queries (`-- name: GetUser :one` before each, as sqlc writes them) gives a module per query:
+/// its text with `?` for each parameter, the parameters' names in order, a `Params` record typed
+/// from the columns they're compared with (or inserted into), and a `Row` record for what it
+/// selects, typed from the schema (`SELECT *` is the table's record). Joins, aliases and
+/// expressions are read as far as the columns can be named; what can't be typed is a `string`.
 
 /// A column: its name, its Z# type, and whether it can be null.
 type Column = { name: string; ty: string; nullable: bool }
@@ -179,13 +183,183 @@ let tables (text: string) : result<list<Table>, string> =
       | Ok None -> go rest acc
   go statements []
 
+/// A named query: its name, its kind (`one`, `many` or `exec`), its text with `?` for each
+/// parameter, its parameters (name and type) in order, and its row's columns (name and type).
+type Query = { name: string; kind: string; sql: string; parameters: list<string * string>; row: list<string * string> }
+
+// the first table named after a keyword (FROM, INTO, UPDATE, JOIN), without an alias
+let private tableAfter (keyword: string) (ws: list<string>) : list<string * string> =
+  // every "KEYWORD table [AS alias]" in the statement: the table and the name it's known by
+  let rec go (rest: list<string>) (acc: list<string * string>) =
+    match rest with
+    | k :: t :: more when upper k = keyword && not (Set.contains (upper t) constraintWords) ->
+      let table = unquote (List.last (String.split "." t))
+      match more with
+      | a :: alias :: tail when upper a = "AS" -> go tail ((table, unquote alias) :: acc)
+      | alias :: tail when not (List.contains (upper alias) [ "WHERE"; "SET"; "ON"; "JOIN"; "LEFT"; "RIGHT"; "INNER"; "OUTER"; "CROSS"; "GROUP"; "ORDER"; "LIMIT"; "VALUES"; "(" ]) && not (String.startsWith "(" alias) && String.length alias > 0 && Names.isIdent alias -> go tail ((table, unquote alias) :: acc)
+      | _ -> go more ((table, table) :: acc)
+    | _ :: more -> go more acc
+    | [] -> List.rev acc
+  go ws []
+
+// a column's type in a table, or in the query's tables when unqualified
+let private columnType (tables: list<Table>) (known: list<string * string>) (name: string) : option<Column> =
+  let (qualifier, column) =
+    match String.indexOf "." name with
+    | Some i -> (Some(unquote (String.sub name 0 i)), unquote (String.sub name (i + 1) (String.length name - i - 1)))
+    | None -> (None, unquote name)
+  let candidates =
+    match qualifier with
+    | Some q ->
+      match List.tryFind (fun (ta: string * string) -> snd ta = q || fst ta = q) known with
+      | Some(t, _) -> List.filter (fun (x: Table) -> x.name = t) tables
+      | None -> []
+    | None -> List.filter (fun (x: Table) -> List.exists (fun (ta: string * string) -> fst ta = x.name) known) tables
+  List.tryPick (fun (t: Table) -> List.tryFind (fun (c: Column) -> c.name = column) t.columns) candidates
+
+let private typeText (c: Column) = if c.nullable then "option<" + c.ty + ">" else c.ty
+
+// the parameters in a statement's words, in order: :name, $n, @name or ?, each typed by the
+// column it follows an operator of (col = :p, col IN (:p)), else string; INSERT's VALUES by position
+let private parametersOf (tables: list<Table>) (known: list<string * string>) (ws: list<string>) : list<string * string> =
+  let isParam (w: string) = w = "?" || String.startsWith ":" w || String.startsWith "$" w || String.startsWith "@" w
+  let nameOf (i: int) (w: string) =
+    let bare = String.trim (String.replace (String.replace (String.replace w ")" "") "(" "") "," "")
+    if bare = "?" || String.startsWith "$" bare then "p" + string (i + 1) else String.sub bare 1 (String.length bare - 1)
+  // INSERT INTO t (a, b) VALUES (?, ?): the columns, in order
+  let inserted =
+    match ws with
+    | i :: into :: _ when upper i = "INSERT" && upper into = "INTO" ->
+      match String.indexOf "(" (String.join " " ws) with
+      | Some k ->
+        let text = String.join " " ws
+        let close = Option.defaultValue (String.length text) (String.indexOf ")" (String.sub text k (String.length text - k)))
+        List.map (fun (c: string) -> unquote (String.trim c)) (String.split "," (String.sub text (k + 1) (close - 1)))
+      | None -> []
+    | _ -> []
+  let ops = [ "="; "<"; ">"; "<="; ">="; "<>"; "!="; "IN"; "LIKE"; "IS" ]
+  let rec go (i: int) (before: list<string>) (rest: list<string>) (acc: list<string * string>) =
+    match rest with
+    | [] -> List.rev acc
+    | w :: more ->
+      // a word may hold several parameters: (?, ?) or :a,:b
+      let pieces = List.filter isParam (List.map String.trim (String.split "," (String.replace (String.replace w "(" "") ")" "")))
+      if List.isEmpty pieces then go i (w :: before) more acc
+      else
+        let typed (k: int) (piece: string) =
+          let name = nameOf (i + k) piece
+          let byColumn =
+            match before with
+            | op :: col :: _ when List.contains (upper op) ops -> columnType tables known col
+            | _ -> None
+          let byInsert = if List.length inserted > i + k then columnType tables known (List.item (i + k) inserted) else None
+          match (byColumn, byInsert) with
+          | (Some c, _) -> (name, typeText c)
+          | (None, Some c) -> (name, typeText c)
+          | _ -> (name, "string")
+        let found = List.mapi typed pieces
+        go (i + List.length pieces) (w :: before) more (List.append (List.rev found) acc)
+  go 0 [] ws []
+
+// the row a SELECT gives: its columns typed from the schema; * is a table's whole record
+let private rowOf (tables: list<Table>) (known: list<string * string>) (ws: list<string>) : result<list<string * string>, string> =
+  let text = String.join " " ws
+  let upperText = upper text
+  match (String.indexOf "SELECT " upperText, String.indexOf " FROM " upperText) with
+  | (Some a, Some b) when b > a ->
+    let items = List.map String.trim (splitTop (u8 44) (String.sub text (a + 7) (b - a - 7)))
+    let one (item: string) : result<list<string * string>, string> =
+      let parts = List.filter (fun (w: string) -> w <> "") (String.split " " item)
+      let (expr, alias) =
+        match List.rev parts with
+        | alias :: a :: rest when upper a = "AS" -> (String.join " " (List.rev rest), Some(unquote alias))
+        | alias :: rest when List.length rest > 0 && Names.isIdent alias && not (String.contains "." alias) && not (String.endsWith ")" (List.head rest)) && List.length rest = 1 && Names.isIdent (List.head rest) -> (List.head rest, Some(unquote alias))
+        | _ -> (item, None)
+      if expr = "*" || String.endsWith ".*" expr then
+        let wanted = if expr = "*" then None else Some(unquote (String.sub expr 0 (String.length expr - 2)))
+        let picked = List.filter (fun (ta: string * string) -> match wanted with | Some q -> snd ta = q || fst ta = q | None -> true) known
+        Ok(List.collect (fun (ta: string * string) ->
+          match List.tryFind (fun (t: Table) -> t.name = fst ta) tables with
+          | Some t -> List.map (fun (c: Column) -> (c.name, typeText c)) t.columns
+          | None -> []) picked)
+      else
+        match columnType tables known expr with
+        | Some c -> Ok [ (Option.defaultValue (unquote (List.last (String.split "." expr))) alias, typeText c) ]
+        | None ->
+          let u = upper expr
+          let counted = String.startsWith "COUNT(" u || String.startsWith "SUM(" u || String.startsWith "TOTAL(" u || String.startsWith "LENGTH(" u
+          match alias with
+          | Some a -> Ok [ (a, (if counted then "int" else "string")) ]
+          | None -> if String.contains "(" expr then Error $"'{expr}' needs a name: write it AS name" else Error $"no column '{expr}' in {String.join ", " (List.map fst known)}"
+    let rec go (items: list<string>) (acc: list<string * string>) =
+      match items with
+      | [] -> Ok(List.rev acc)
+      | item :: rest ->
+        match one item with
+        | Ok cols -> go rest (List.append (List.rev cols) acc)
+        | Error e -> Error e
+    go items []
+  | _ -> Ok []
+
+/// The named queries of a file: `-- name: GetUser :one` (or `:many`, `:exec`), then the statement.
+let queries (tables: list<Table>) (text: string) : result<list<Query>, string> =
+  let lines = String.split "\n" text
+  // each name line with the statement lines up to the next
+  let rec groups (ls: list<string>) (current: option<string * string * list<string>>) (acc: list<string * string * string>) =
+    let finish () =
+      match current with
+      | Some(n, k, body) -> (n, k, String.trim (String.join " " (List.rev body))) :: acc
+      | None -> acc
+    match ls with
+    | [] -> List.rev (finish ())
+    | l :: rest ->
+      let t = String.trim l
+      if String.startsWith "-- name:" t || String.startsWith "--name:" t then
+        let spec = String.trim (String.sub t (Option.get (String.indexOf ":" t) + 1) (String.length t - Option.get (String.indexOf ":" t) - 1))
+        let ws = List.filter (fun (w: string) -> w <> "") (String.split " " spec)
+        let name = if List.isEmpty ws then "" else List.head ws
+        let kind = if List.length ws > 1 && String.startsWith ":" (List.item 1 ws) then String.sub (List.item 1 ws) 1 (String.length (List.item 1 ws) - 1) else "many"
+        groups rest (Some(name, kind, [])) (finish ())
+      else if String.startsWith "--" t then groups rest current acc
+      else
+        match current with
+        | Some(n, k, body) -> groups rest (Some(n, k, t :: body)) acc
+        | None -> groups rest current acc
+  let rec build (gs: list<string * string * string>) (acc: list<Query>) =
+    match gs with
+    | [] -> Ok(List.rev acc)
+    | (name, kind, stmt) :: rest ->
+      let stmt = String.trim (String.replace (stripComments stmt) ";" "")
+      if not (Names.isIdent name) || not (String.toUpper (String.sub name 0 1) = String.sub name 0 1) then Error $"query '{name}': a name is a capitalized word, as GetUser"
+      else if not (List.contains kind [ "one"; "many"; "exec" ]) then Error $"query {name}: ':{kind}' isn't :one, :many or :exec"
+      else
+        let ws = words stmt
+        let known = List.concat [ tableAfter "FROM" ws; tableAfter "INTO" ws; tableAfter "UPDATE" ws; tableAfter "JOIN" ws ]
+        let unknown = List.filter (fun (ta: string * string) -> not (List.exists (fun (t: Table) -> t.name = fst ta) tables)) known
+        if List.isEmpty known then Error $"query {name}: no table after FROM, INTO or UPDATE"
+        else if not (List.isEmpty unknown) then Error $"query {name}: no table '{fst (List.head unknown)}' in the schema ({String.join ", " (List.map (fun (t: Table) -> t.name) tables)})"
+        else
+          match rowOf tables known ws with
+          | Error e -> Error $"query {name}: {e}"
+          | Ok row ->
+            let parameters = parametersOf tables known ws
+            // the text with ? for each parameter
+            // a word's parameters, each a ?: (:a, :b) is (?, ?)
+            let placeholder (piece: string) =
+              let b = String.trim (String.replace (String.replace piece "(" "") ")" "")
+              if String.startsWith ":" b || String.startsWith "$" b || String.startsWith "@" b then String.replace piece b "?" else piece
+            let sql = String.join " " (List.map (fun (w: string) -> String.join "," (List.map placeholder (String.split "," w))) ws)
+            build rest ({ name = name; kind = kind; sql = sql; parameters = parameters; row = row } :: acc)
+  build (groups lines None []) []
+
 /// The options `zs provide sql` takes.
-let options : list<string> = [ "types" ]
+let options : list<string> = [ "types"; "queries" ]
 
 /// The module for the schema in `text`, read from `file`: `types = "users.email:string"`
-/// overrides a column's type by table and column. Error when a statement doesn't read, or no
-/// table is declared.
-let provide (file: string) (text: string) (opts: list<string * string>) : result<string, string> =
+/// overrides a column's type by table and column, `queries = "queries.sql"` (a path beside the
+/// schema, read by `readQueries`) adds a module per named query. Error when a statement doesn't
+/// read, or no table is declared.
+let provideWith (file: string) (text: string) (opts: list<string * string>) (queryText: option<string * string>) : result<string, string> =
   let overrides =
     match List.tryFind (fun (n, _) -> n = "types") opts with
     | Some(_, v) when v <> "" ->
@@ -198,23 +372,61 @@ let provide (file: string) (text: string) (opts: list<string * string>) : result
   | Error e -> Error (file + ": " + e)
   | Ok [] -> Error (file + ": no CREATE TABLE")
   | Ok ts ->
-    let decl (t: Table) : list<string> =
-      let typeName = Names.typeName t.name
-      let field (c: Column) =
-        let ty =
-          match List.tryFind (fun (k, _) -> k = t.name + "." + c.name) overrides with
-          | Some(_, over) -> over
-          | None -> c.ty
-        if c.nullable then Names.fieldName c.name + ": option<" + ty + "> = None" else Names.fieldName c.name + ": " + ty
-      let literal (s: string) = "\"" + String.replace s "\"" "\\\"" + "\""
-      [ "/// From \"" + file + "\": " + t.name + " (" + String.join ", " (List.map (fun (c: Column) -> c.name) t.columns) + ")"
-        "type " + typeName + " = { " + String.join "; " (List.map field t.columns) + " }"
-        ""
-        "module " + typeName + " ="
-        "  /// The table's name."
-        "  let table = " + literal t.name
-        "  /// Its columns, in order."
-        "  let columns = [ " + String.join "; " (List.map (fun (c: Column) -> literal c.name) t.columns) + " ]"
-        "" ]
-    let header = [ "// provided by sql 0.1 from " + file; "// input: " + file; "" ]
-    Ok(String.join "\n" (List.append header (List.collect decl ts)))
+    let queryModules =
+      match queryText with
+      | None -> Ok []
+      | Some(qfile, qtext) ->
+        match queries ts qtext with
+        | Error e -> Error (qfile + ": " + e)
+        | Ok qs ->
+          let literal (s: string) = "\"" + String.replace s "\"" "\\\"" + "\""
+          let one (q: Query) : list<string> =
+            let field (nt: string * string) = Names.fieldName (fst nt) + ": " + snd nt + (if String.startsWith "option<" (snd nt) then " = None" else "")
+            List.concat [ [ "/// From \"" + qfile + "\": " + q.name + " (:" + q.kind + "): " + q.sql
+                  "module " + q.name + " ="
+                  "  /// The query, with ? where each parameter goes, in order."
+                  "  let sql = " + literal q.sql
+                  "  /// :one, :many or :exec: what it gives."
+                  "  let kind = " + literal q.kind
+                  "  /// Its parameters' names, in order."
+                  "  let parameters = [ " + String.join "; " (List.map (fun (nt: string * string) -> literal (fst nt)) q.parameters) + " ]" ]
+                (if List.isEmpty q.parameters then [] else [ "  /// Its parameters, typed from the columns they meet."; "  type Params = { " + String.join "; " (List.map field q.parameters) + " }" ])
+                (if List.isEmpty q.row then [] else [ "  /// A row it gives."; "  type Row = { " + String.join "; " (List.map field q.row) + " }" ])
+                [ "" ] ]
+          Ok(List.collect one qs)
+    match queryModules with
+    | Error e -> Error e
+    | Ok queryLines ->
+      let decl (t: Table) : list<string> =
+        let typeName = Names.typeName t.name
+        let field (c: Column) =
+          let ty =
+            match List.tryFind (fun (k, _) -> k = t.name + "." + c.name) overrides with
+            | Some(_, over) -> over
+            | None -> c.ty
+          if c.nullable then Names.fieldName c.name + ": option<" + ty + "> = None" else Names.fieldName c.name + ": " + ty
+        let literal (s: string) = "\"" + String.replace s "\"" "\\\"" + "\""
+        [ "/// From \"" + file + "\": " + t.name + " (" + String.join ", " (List.map (fun (c: Column) -> c.name) t.columns) + ")"
+          "type " + typeName + " = { " + String.join "; " (List.map field t.columns) + " }"
+          ""
+          "module " + typeName + " ="
+          "  /// The table's name."
+          "  let table = " + literal t.name
+          "  /// Its columns, in order."
+          "  let columns = [ " + String.join "; " (List.map (fun (c: Column) -> literal c.name) t.columns) + " ]"
+          "" ]
+      let inputs = List.append [ "// input: " + file ] (match queryText with | Some(q, _) -> [ "// input: " + q ] | None -> [])
+      let header = List.concat [ [ "// provided by sql 0.1 from " + file ]; inputs; [ "" ] ]
+      Ok(String.join "\n" (List.concat [ header; List.collect decl ts; queryLines ]))
+
+/// As `provideWith`, the `queries` option's file read from beside the schema: `file` is the
+/// schema's path as the import wrote it, relative to `dir` (the importing file's directory).
+let provide (dir: string) (file: string) (text: string) (opts: list<string * string>) : result<string, string> =
+  match List.tryFind (fun (n, _) -> n = "queries") opts with
+  | Some(_, q) when q <> "" ->
+    let schemaDir = Path.getDirectoryName (Path.combine dir file)
+    let path = Path.combine schemaDir q
+    match File.readAllText path with
+    | Ok qtext -> provideWith file text opts (Some(q, qtext))
+    | Error _ -> Error $"queries: {q} not found beside {file}"
+  | _ -> provideWith file text opts None

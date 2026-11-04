@@ -110,6 +110,9 @@ and CxData =
     optOut: ref<Set<string * string>>
     globals: ref<Map<string, Global>>
     externs: ref<Map<string, ExternSig>>
+    /// each extern's declaring module (its full name, "" at the top level): a C function is one
+    /// global name, and `M.f` names it from outside M too
+    externModules: ref<Map<string, string>>
     funs: Buffer<FunDef>
     /// for unique names, from 0 in each module (so a module's names are its own)
     counter: ref<int>
@@ -316,6 +319,9 @@ type Cx with
   member c.externs =
     match c with
     | Cx { externs = x } -> x
+  member c.externModules =
+    match c with
+    | Cx { externModules = x } -> x
   member c.funs =
     match c with
     | Cx { funs = x } -> x
@@ -527,6 +533,7 @@ let create (requireMain: bool) (collect: bool) (allModules: list<string>) (manua
       optOut = ref Set.empty
       globals = ref Map.empty
       externs = ref Map.empty
+      externModules = ref Map.empty
       funs = Buffer.empty
       counter = ref 0
       measures = ref Set.empty

@@ -1,0 +1,5 @@
+SELECT id, name, email FROM users WHERE id = ? | one | [id]
+7 Ada None
+true None [active]
+Ada 2 5 SELECT o.id, o.total, u.name AS buyer, COUNT(*) AS n FROM orders o JOIN users u ON u.id = o.user_id WHERE o.user_id = ? AND o.total > ? GROUP BY o.id
+None INSERT INTO users (name, email, active) VALUES (?, ?, ?) | [p1; p2]

@@ -37,6 +37,7 @@ type Iface =
     optOut: list<string * string>
     globals: list<string * Global>
     externs: list<string * ExternSig>
+    externModules: list<string * string>
     measures: list<string>
     clayouts: list<string>
     unsafes: list<string>
@@ -107,6 +108,7 @@ type Marks =
     moptOut: Set<string * string>
     mglobals: Map<string, Global>
     mexterns: Map<string, ExternSig>
+    mexternModules: Map<string, string>
     mfuns: int
     mmeasures: Set<string>
     mclayouts: Set<string>
@@ -154,6 +156,7 @@ let marks (cx: Cx) : Marks =
     moptOut = cx.optOut.Value
     mglobals = cx.globals.Value
     mexterns = cx.externs.Value
+    mexternModules = cx.externModules.Value
     mfuns = Buffer.length cx.funs
     mmeasures = cx.measures.Value
     mclayouts = cx.clayouts.Value
@@ -270,6 +273,7 @@ let written (cx: Cx) (m: Marks) : option<Iface * list<FunDef> * list<Hover> * li
       optOut = newIn m.moptOut cx.optOut.Value
       globals = changed m.mglobals cx.globals.Value
       externs = added m.mexterns cx.externs.Value
+      externModules = added m.mexternModules cx.externModules.Value
       measures = newIn m.mmeasures cx.measures.Value
       clayouts = newIn m.mclayouts cx.clayouts.Value
       unsafes = newIn m.munsafes cx.unsafes.Value
@@ -353,6 +357,7 @@ let restore (cx: Cx) (i: Iface) : unit =
   union cx.optOut i.optOut
   into cx.globals i.globals
   into cx.externs i.externs
+  into cx.externModules i.externModules
   union cx.measures i.measures
   union cx.clayouts i.clayouts
   union cx.unsafes i.unsafes

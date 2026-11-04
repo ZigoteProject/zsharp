@@ -1562,9 +1562,23 @@ and resolveName (cx: Cx) (x: string) : option<string> =
     r
 
 and resolveAnew (cx: Cx) (x: string) : option<string> =
+  // M.f, where f is an extern declared in module M: the extern (one global name)
+  let qualifiedExtern (q: string) : option<string> =
+    match String.lastIndexOf "." q with
+    | Some i ->
+      let f = String.sub q (i + 1) (String.length q - i - 1)
+      if Map.tryFind f cx.externModules.Value = Some(String.sub q 0 i) then Some f else None
+    | None -> None
   let exists (q: string) =
-    Map.containsKey q cx.globals.Value || Map.containsKey q cx.ctors.Value || Map.containsKey q cx.traitAliases.Value || Map.containsKey q builtins || Map.containsKey q cx.externs.Value || Map.containsKey q cx.consts.Value || Map.containsKey q cx.globalValues.Value || Map.containsKey q cx.effectOps.Value || Option.isSome (staticMember cx q)
-  resolveWith cx exists x
+    Option.isSome (qualifiedExtern q) || Map.containsKey q cx.globals.Value || Map.containsKey q cx.ctors.Value || Map.containsKey q cx.traitAliases.Value || Map.containsKey q builtins || Map.containsKey q cx.externs.Value || Map.containsKey q cx.consts.Value || Map.containsKey q cx.globalValues.Value || Map.containsKey q cx.effectOps.Value || Option.isSome (staticMember cx q)
+  match resolveWith cx exists x with
+  | Some q ->
+    if Map.containsKey q cx.globals.Value then Some q
+    else
+      match qualifiedExtern q with
+      | Some f -> Some f
+      | None -> Some q
+  | None -> None
 
 /// A name's value.
 and value (cx: Cx) (env: Map<string, Local>) (depth: int) (x: string) : CExpr =

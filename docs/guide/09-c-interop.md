@@ -2,6 +2,10 @@
 
 **Linking with C is direct:** a Z# program calls C functions with no wrapper code, and C code can call Z#. Records marked `[<CLayout>]` have the C struct layout and pass by value under the platform's calling convention: x86-64 System V, or AAPCS64 on aarch64.
 
+Besides the bare `import c "raylib.h"` below, which declares a header's functions and types where
+it stands, `module Ray = import c "raylib.h"` puts them in a module, and `zs provide c raylib.h`
+prints them as Z# to keep ([type providers](18-type-providers.md)).
+
 ## Calling C: extern
 
 `extern` declares a C function with C-compatible types.

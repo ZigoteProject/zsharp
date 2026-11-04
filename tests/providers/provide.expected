@@ -1,6 +1,7 @@
+c      a C header's declarations, as import c reads them (options: none; a package's include directories through import c)
 json   a document's records with the Json derive, from a sample (options: root, types)
 csv    a file's rows as a Row record, from the header and the rows (options: separator, hasHeaders, types)
-sql    a schema's tables as records, from its CREATE TABLEs (options: types)
+sql    a schema's tables as records, from its CREATE TABLEs (options: types, queries)
 svd    a microcontroller's peripherals as modules of [<Bits>] registers, from its SVD file (options: only)
 --- json
 // provided by json 0.1 from weather.json
@@ -201,6 +202,23 @@ module Orders =
   let table = "orders"
   /// Its columns, in order.
   let columns = [ "id"; "user_id"; "total"; "note"; "payload" ]
+--- sql with named queries (one query's module)
+module OrdersFor =
+  /// The query, with ? where each parameter goes, in order.
+  let sql = "SELECT o.id, o.total, u.name AS buyer, COUNT(*) AS n FROM orders o JOIN users u ON u.id = o.user_id WHERE o.user_id = ? AND o.total > ? GROUP BY o.id"
+  /// :one, :many or :exec: what it gives.
+  let kind = "many"
+  /// Its parameters' names, in order.
+  let parameters = [ "user"; "least" ]
+  /// Its parameters, typed from the columns they meet.
+  type Params = { user: int; least: f64 }
+  /// A row it gives.
+  type Row = { id: int; total: f64; buyer: string; n: int }
+
+sql: queries: nowhere.sql not found beside schema.sql
+exit 1
+sql: bad.sql: query Bad: no column 'nope' in users
+exit 1
 --- svd (GPIOA only; the module's head and one register)
 exit 0, 448 lines
 // provided by svd 0.1 from ../../examples/mcu/stm32f401-part.svd
@@ -213,6 +231,35 @@ module Gpioa =
   type Moder =
 274:  type Bsrr =
 286-      bs5: bool = false
+--- c: a header's declarations as Z#
+// provided by c 0.1 from cshapes/shapes.h
+// input: cshapes/shapes.h
+
+/// `typedef struct Point { double x; double y; } Point;`
+///
+/// A point in the plane.
+[<CLayout>]
+type Point = { x: f64; y: f64 }
+
+/// `double rect_area(Point a, Point b)`
+///
+/// The area of the rectangle with corners a and b.
+extern rect_area : Point -> Point -> f64
+
+/// `int32_t manhattan(int32_t x, int32_t y)`
+///
+/// The distance from the origin, as an integer.
+extern manhattan : i32 -> i32 -> i32
+
+/// `#define MAX_CORNERS 8`
+///
+/// The number of corners a shape may have at most.
+let MAX_CORNERS = 8
+
+/// `#define UNIT_AREA 1.0`
+///
+/// The unit square's area.
+let UNIT_AREA = 1.0
 --- a provider on PATH: zs-provider-upper, a shell script
 upper  zs-provider-upper, on PATH
 // provided by upper 1.0 from words.txt
@@ -229,7 +276,7 @@ ALPHA BETA
 upper_use.zs:1: warning: words.txt changed since the last build, and zs-provider-upper isn't on PATH; the types shown are from that build [stale-input]
 ALPHA BETA
 --- errors (exit codes)
-no provider 'jsn': zs has json, csv, sql and svd, no zs-provider-jsn is on PATH, and no dependency named jsn has a [provider] section
+no provider 'jsn': zs has c, json, csv, sql and svd, no zs-provider-jsn is on PATH, and no dependency named jsn has a [provider] section
 exit 1
 csv: unknown option 'seperator' (separator, hasHeaders, types)
 exit 1
@@ -247,7 +294,7 @@ json: broken.json: 2:1: expected ',' or ']' after a value
 exit 1
 csv: wide.csv: a row has 3 cells, the header 2
 exit 1
-usage: zs provide <provider> <file> [--option=value]…, or zs provide --list; the providers are json, csv, sql and svd, and any zs-provider-<name> on PATH
+usage: zs provide <provider> <file> [--option=value]…, or zs provide --list; the providers are c, json, csv, sql and svd, and any zs-provider-<name> on PATH
 exit 2
 --- options
 type Reading = { at: string; value: f32; note: option<string> = None }

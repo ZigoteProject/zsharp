@@ -10,7 +10,7 @@
 
 - [x] Approved in principle
 - [ ] Discussion
-- [x] Implementation (2026-11-03): `zs provide`, the `import` form (both spellings, the cache, the hidden module), the editor's side (watched inputs, rename's refusal), `svd`, `sql` and providers on PATH with the cache fallback (`src/Provide/`, `Build/Modules.provided`, `tests/providers/`, `examples/providers`, guide chapter 18). Then providers from packages (`[provider] main = …`, built by zs as a process; question 3) and `svd`'s enumerated values as unions. Open: `import c` on the protocol (question 2), typed SQL queries (question 5)
+- [x] Implementation (2026-11-03): `zs provide`, the `import` form (both spellings, the cache, the hidden module), the editor's side (watched inputs, rename's refusal), `svd`, `sql` and providers on PATH with the cache fallback (`src/Provide/`, `Build/Modules.provided`, `tests/providers/`, `examples/providers`, guide chapter 18). Then providers from packages (`[provider] main = …`, built by zs as a process; question 3) and `svd`'s enumerated values as unions. Then `import c` on the protocol (question 2: the named form and `zs provide c`; the bare form keeps its path). Then typed SQL queries (question 5, the subset a schema can type: `queries = …`, a module per named query with its text, `Params` and `Row`; a driver package runs them). Nothing of the proposal is left open; `rows = "sqlite"` waits for the package
 
 ## Summary
 
@@ -395,6 +395,10 @@ leaving linear time:
 
 A whole SVD is the case to test: checking 50,000 lines once, from the cache after, and one
 module's cache entry of that size loading without reading it all when nothing changed.
+*Measured (2026-11-03):* the STM32F401's whole SVD (957 KB, 524 registers, 3,075 fields) is an
+18,237-line module, provided in 0.07 s; a program importing it all builds in 2.7 s cold, 0.26 s
+warm, and `zs check` takes 0.15 s. The provider runs at each build (cheap), and the module cache
+keeps the checked result.
 
 ### Culture-aware formatting and parsing
 

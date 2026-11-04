@@ -85,6 +85,19 @@
   `[provider] main = "Main.zs"` section is the provider of its name: the compiler builds its
   program into `.zs-cache/providers/bin` when its sources change and runs it the same way.
   `examples/providers` and the guide's chapter 18 show all of it.
+- `import c` on the providers' protocol: `module Ray = import c "raylib.h"` is the header's
+  declarations as a module, each with its C signature and comment as its doc, and
+  `zs provide c raylib.h` prints that binding as Z# to keep (externs, `[<CLayout>]` records and
+  unions, constants from macros; the names left out listed with why). The bare `import c` keeps
+  its path, `[<Link>]` and the editor's C hover.
+- `sql`'s `queries = "queries.sql"`: named queries (`-- name: GetUser :one` before each, as sqlc
+  writes them) as a module each, typed against the schema: the text with `?` for each parameter,
+  the parameters' names, a `Params` record typed from the columns they meet (compared with, or
+  inserted into by position), and a `Row` record for a select's columns (`SELECT *` a table's,
+  a join's by table or alias, an expression `AS name`). A column or table not in the schema is an
+  error naming the query.
+- `M.f` names the extern `f` declared in module `M` (a C function is one global name, and was
+  reachable only bare): `Shapes.rect_area` on a `module Shapes = import c "shapes.h"`.
 - `svd`: a field's enumerated values that are 0 to n-1 are a union of cases, named after the list
   (`Value` added when a register's record has the name), shared by the fields with the same
   values; sparse values stay a number. The tree-sitter grammar (and so Zed) parses the imports.
