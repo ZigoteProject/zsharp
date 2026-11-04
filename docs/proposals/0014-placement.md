@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved in principle. Built: the heap (track M item 7, phase 12: blocks over 256 bytes reused, `[target.<chip>] heap` in `zs.toml`). After 0.6.2: constants in flash (item 3), `[<Section>]` and `[<Align>]` (decision 69, item 12) |
+| **Status** | Approved in principle. Built: the heap (track M item 7, phase 12: blocks over 256 bytes reused, `[target.<chip>] heap` in `zs.toml`); constants in flash for arrays of numbers, bools and strings (item 3, 2026-11-04: `tests/static.zs`). After 0.6.2: lists, records and unions in flash, `[<Section>]` and `[<Align>]` (decision 69, item 12) |
 | **Decided at** | track M's plan ([ROADMAP](../../ROADMAP.md#microcontrollers-m)) for items 3 and 7; the third design review ([ROADMAP](../../ROADMAP.md#third-design-review-)) for item 12 |
 | **Builds** | track M: items 3 and 7 next, item 12 after phase 11 |
 | **Rests on** | decisions 2 (Perceus), 7 (arrays are values, `Buffer` is shared), 8 (static cells with count 0), 26 (`zig cc`) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §5.1](../../DESIGN.md#51-representation), [§5.2](../../DESIGN.md#52-perceus-reference-counting), [§10](../../DESIGN.md#10-targets) |

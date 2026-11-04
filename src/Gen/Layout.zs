@@ -658,7 +658,7 @@ let sizeOf (em: Emitter) (ty: string) : string =
   instr em $"ptrtoint ptr {p} to i_W"
 
 // a string constant's bytes as LLVM writes them: printable ones as they are, others escaped
-let private encoded (s: string) : string =
+let encoded (s: string) : string =
   let parts = Buffer.empty
   for i in 0 .. String.length s - 1 do
     let b = String.byte s i

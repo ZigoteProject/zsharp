@@ -432,6 +432,49 @@ let baseFunName (n: string) : string =
   | Some i when i > 0 -> String.sub noLambda 0 i
   | _ -> noLambda
 
+/// A constant element of a static object (0014 item 1): an integer, a float, a bool or a string.
+type StaticElem =
+  | SInt of i64
+  | SFloat of f64
+  | SBool of bool
+  | SStr of string
+
+/// An expression's constant value, when it has one as written: a literal, its negation, or a
+/// conversion of one to another number type (`u32 0xFF`, `i8 -3`, `f32 1`); None otherwise.
+let rec staticElem (e: CExpr) : option<StaticElem> =
+  match e.k with
+  | CLine(_, a) -> staticElem a
+  | CInt n -> Some(SInt n)
+  | CFloat x -> Some(SFloat x)
+  | CBool b -> Some(SBool b)
+  | CStr s -> Some(SStr s)
+  | CNeg a ->
+    match staticElem a with
+    | Some(SInt n) when n > i64 (-9223372036854775807) -> Some(SInt(i64 0 - n))
+    | Some(SFloat x) -> Some(SFloat(0.0 - x))
+    | _ -> None
+  | CPrim("conv", [ a ]) ->
+    match (staticElem a, e.ty) with
+    | (Some(SInt n), TCon(t, [])) when Set.contains t floats -> Some(SFloat(float n))
+    | (Some(SInt n), TCon(t, [])) when Set.contains t ints -> Some(SInt n)
+    | (Some(SFloat x), TCon(t, [])) when Set.contains t floats -> Some(SFloat x)
+    | _ -> None
+  | _ -> None
+
+/// A top-level value's initializer that is an array literal of constants: its elements' values,
+/// for a static object in the image (flash on a chip) instead of one built at startup (0014
+/// item 1); None for anything else, the empty literal included (a static already).
+let staticArray (e: CExpr) : option<list<StaticElem>> =
+  let rec plain (x: CExpr) : CExpr =
+    match x.k with
+    | CLine(_, a) -> plain a
+    | _ -> x
+  match (plain e).k with
+  | CPrim("array.lit", xs) when not (List.isEmpty xs) ->
+    let elems = List.map staticElem xs
+    if List.forall Option.isSome elems then Some(List.map Option.get elems) else None
+  | _ -> None
+
 /// Core as indented text, for reading what a pass did (ZS_DUMP_CORE); showTy shows an effect's
 /// label.
 let rec showCore (showTy: Ty -> string) (ind: int) (e: CExpr) : string =

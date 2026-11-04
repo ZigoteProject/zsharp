@@ -78,7 +78,7 @@ user asking. Optimization still waits for profiles of real programs.
    - *Done 2026-11-04:* **Stress and sanitizers** (D4): `zs test --stress`, and `./test.sh --sanitize` as a mode beside `--valgrind` and `--release` (the suite's programs under the address and undefined-behaviour sanitizers: no finding on the first run). Left: the stress run over the pool, tasks and `Alt` under ThreadSanitizer on a machine with the sanitizer's runtime.
    - **Debug info for every value** (D1, known gap 4): lists and boxed unions as gdb and lldb values, so a user's first crash is debuggable.
 3. **What the flagship asked for** (track M, from `examples/nucleo`'s build and the board):
-   - **Constants in flash** (M3) and **placement** (M12: `[<Section>]`, `[<Align>]`): the firmware's tables stop being copied to RAM at startup.
+   - **Constants in flash** (M3: *arrays done 2026-11-04*; lists, records and unions left) and **placement** (M12: `[<Section>]`, `[<Align>]`): the firmware's tables stop being copied to RAM at startup.
    - **Tests on the chip** (D11): `zs test --target cortex-m4` under QEMU, and `--probe` on the board, so the shell's tests run where the shell runs.
    - **Weak references and arenas on a chip** (M8, known gap 3).
    - **The next board** (0027) only once the first is flashed and a user names one.
@@ -164,7 +164,7 @@ Tier 2 (DESIGN §10): every phase keeps `bench/mcu` working and within its ratio
 - **Next:**
   1. **Interrupt handlers:** *(done in phase 12)* `[<Interrupt "SysTick">] let tick () = …`, placed in the vector table, with the rules for sharing state with them: `Atomic` in Core, `Spsc`, `Irq` and the boards' `.irq` tables.
   2. **`[<NoAlloc>]` and `--no-heap`** *(done in phase 12)* (DESIGN §10, decision 42): a compile error naming the call chain if a function, or anything it calls, may allocate or free heap memory; `--no-heap` checks the whole program.
-  3. **Constants in flash:** constant arrays placed in flash, instead of startup values copied to RAM.
+  3. **Constants in flash:** *(arrays done 2026-11-04: `tests/static.zs`, on both chips `tests/mcu/static.zs`; lists, records and unions still startup values)* constant arrays placed in flash, instead of startup values copied to RAM.
   4. **More boards:** *(the STM32F401RE, probe-rs and RTT done in phase 12: `--target nucleo-f401`, `runtime/boards/stm32f401re.ld` and `.irq`; the RP2040 and others after 0.6.2, proposal 0027)* linker scripts for STM32F4 and RP2040, flashing through `probe-rs` or OpenOCD, and RTT output as an alternative to semihosting. **First, the board in hand:** the flagship flashed to a Nucleo-F401RE and its LED, button and shell checked there (phase 12's open exit test).
   5. **RISC-V:** *(after 0.6.2)* ESP32-C3, under QEMU first.
   6. **32-bit ARM C ABI:** *(done in phase 12)* AAPCS for structs by value, hard and soft float, both ways; `--lib` for a chip makes an archive a C firmware links, `[<Link>]` C is compiled for the chip, and callbacks work there (`tests/cimport/abi.zs` and `tests/cexport/bare.c` under QEMU on both chips).

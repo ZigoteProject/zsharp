@@ -154,11 +154,56 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
         if defined f.name then
           walk f.body
       read.Value
+  // a value whose initializer is an array literal of constants (0014 item 1): a static object in
+  // the image, count 0 (never unique, so a write copies it; dup and drop leave it alone), the
+  // value's global pointing at it and no startup code. Its strings are statics of their own with
+  // the same linkage, named by their content, so every part writes the same bytes.
+  let sharedStrings = ref Map.empty
+  let sharedStr (s: string) : string =
+    match Map.tryFind s sharedStrings.Value with
+    | Some name -> name
+    | None ->
+      let n = String.length s
+      let name = $"@\"zsstr.{Xxhash.hex (String.bytes s)}\""
+      topLine g $"{name} = {shared} unnamed_addr constant {{ i_W, i_W, [{n + 1} x i8] }} {{ i_W 0, i_W {n}, [{n + 1} x i8] c\"{encoded s}\\00\" }}"
+      sharedStrings.Value <- Map.add s name sharedStrings.Value
+      name
+  let staticOf (v: string) (init: string) : option<string> =
+    match Map.tryFind init fnTable with
+    | Some f when List.isEmpty f.pars ->
+      match (staticArray f.body, f.ret) with
+      | (Some xs, TCon("array", [ el ])) ->
+        let lt = llty g el
+        // an integer in its width's two's complement, as LLVM reads a constant of the type
+        let width = if lt = "i8" then 8 else if lt = "i16" then 16 else if lt = "i32" then 32 else 64
+        let fitted (n: i64) : i64 =
+          if width = 64 then
+            n
+          else
+            let v = n &&& ((i64 1 <<< i64 width) - i64 1)
+            if v >= (i64 1 <<< i64 (width - 1)) then v - (i64 1 <<< i64 width) else v
+        let one (x: StaticElem) : string =
+          match x with
+          | SInt n -> $"{lt} {fitted n}"
+          | SFloat x -> $"{lt} {floatConst lt x}"
+          | SBool b -> $"{lt} {(if b then "true" else "false")}"
+          | SStr s -> $"ptr {sharedStr s}"
+        let n = List.length xs
+        let name = $"@\"zss.{v}\""
+        topLine g $"{name} = {shared} unnamed_addr constant {{ i_W, i_W, [{n} x {lt}] }} {{ i_W 0, i_W {n}, [{n} x {lt}] [{String.join ", " (List.map one xs)}] }}"
+        Some name
+      | _ -> None
+    | _ -> None
+  let statics = Map.ofList (List.choose (fun (v, init) -> if Map.containsKey v valueTypes then Option.map (fun s -> (v, s)) (staticOf v init) else None) values)
   for (v, _) in values do
     match Map.tryFind v valueTypes with
     | Some t ->
       let linkage = if Option.isSome part then "linkonce_odr hidden" else "internal"
-      topLine g $"{valueSym v} = {linkage} global {llty g t} zeroinitializer"
+      let initial =
+        match Map.tryFind v statics with
+        | Some s -> s
+        | None -> "zeroinitializer"
+      topLine g $"{valueSym v} = {linkage} global {llty g t} {initial}"
     | None -> ()
   for (name, s) in Map.toList externs do
     let (ret, sret) = cRet g s.ret
@@ -173,16 +218,19 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
   let initValues () : string =
     let one (i: int) (vi: string * string) =
       let (v, init) = vi
-      let vt = Map.find v valueTypes
-      let t = llty g vt
-      let share =
-        if opts.threaded && Option.isNone (Types.Repr.shareBlocker g.v (fun _ -> ()) types Set.empty vt) then
-          let em = emitter ()
-          shareValue g em vt $"%iv{i}"
-          codeOf em
-        else
-          ""
-      $"  %iv{i} = call {t} {sym g init}()\n{share}  store {t} %iv{i}, ptr {valueSym v}\n"
+      if Map.containsKey v statics then
+        ""
+      else
+        let vt = Map.find v valueTypes
+        let t = llty g vt
+        let share =
+          if opts.threaded && Option.isNone (Types.Repr.shareBlocker g.v (fun _ -> ()) types Set.empty vt) then
+            let em = emitter ()
+            shareValue g em vt $"%iv{i}"
+            codeOf em
+          else
+            ""
+        $"  %iv{i} = call {t} {sym g init}()\n{share}  store {t} %iv{i}, ptr {valueSym v}\n"
     String.concat (List.mapi one values)
   // the values, released in reverse order after main returns (so the leak check stays exact)
   if entry then

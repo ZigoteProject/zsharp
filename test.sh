@@ -241,6 +241,11 @@ else echo "FAIL packages"; echo "$pk"; fail=1; fi
 # git dependencies against a local repository: tags, branches, zs.lock, zs update, re-fetching
 if diff <(tests/project/git.sh 2>&1) tests/project/git.expected >"$tmp/git.diff"; then echo "ok   tests/project/git.sh (git dependencies)"
 else echo "FAIL tests/project/git.sh"; cat "$tmp/git.diff"; fail=1; fi
+# constants in flash (0014 item 1): a top-level array literal of constants is a static object in
+# the image, its global pointing at it, with no startup code
+if bin/zs build tests/static.zs --emit-llvm -o "$tmp/static" >/dev/null 2>&1 && [ "$(grep -c '^@"zss\.' "$tmp/static.ll")" = 5 ] && ! grep -q '^@"zsv\.[a-z]*" = internal global ptr zeroinitializer' "$tmp/static.ll"; then
+  echo "ok   tests/static.zs: five static tables in the image"
+else echo "FAIL tests/static.zs: static tables"; grep '^@"zs[sv]\.' "$tmp/static.ll" | cut -c1-100; fail=1; fi
 # the three small tools of examples/tools, built and run (track S's exit test)
 if diff <(tests/examples_tools.sh 2>&1) tests/examples_tools.expected >"$tmp/tools.diff"; then echo "ok   tests/examples_tools.sh (examples/tools: grep, jsonpp, tail -f)"
 else echo "FAIL tests/examples_tools.sh"; cat "$tmp/tools.diff"; fail=1; fi
@@ -308,7 +313,7 @@ else echo "FAIL tests/mcu/layout.zs"; cat "$tmp/layout.log"; fail=1; fi
 if command -v qemu-system-arm >/dev/null; then
   for chip in cortex-m4 cortex-m0plus; do
     board=$([ $chip = cortex-m4 ] && echo mps2-an386 || echo microbit)
-    for t in isr systick cpu bits task ints; do
+    for t in isr systick cpu bits task ints static; do
       if bin/zs build tests/mcu/$t.zs --target $chip -o "$tmp/$t.elf" 2>"$tmp/$t.log" \
          && out=$(timeout 60 qemu-system-arm -M $board -nographic -semihosting-config enable=on,target=native -kernel "$tmp/$t.elf" 2>&1) \
          && [ "$(echo "$out" | grep -v '^#zs')" = "$(cat tests/mcu/$t.expected)" ] \

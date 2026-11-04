@@ -22,7 +22,7 @@ proposal describes a change to it, and [ROADMAP.md](../../ROADMAP.md) says when 
 | 0011 | [Debug info, profiles and traces](0011-debug-info-profiles-traces.md) | Implemented in part: gdb and lldb on strings, records and plain unions, `ZS_STATS`, the editor's allocation hints; DWARF for every value, `zs profile` and traces after 0.6.2 | track D's plan |
 | 0012 | [Interrupts, `[<NoAlloc>]` and intrinsics](0012-interrupts-noalloc-intrinsics.md) | Implemented (phase 12); `noalloc<F>` declined | decision 42, track M's plan, the third design review |
 | 0013 | [Bit fields](0013-bit-fields.md) | Implemented (phase 12) | the third design review |
-| 0014 | [Placement](0014-placement.md) | Implemented in part: the heap's size and reuse (phase 12); constants in flash, `[<Section>]` and `[<Align>]` after 0.6.2 | track M's plan; the third design review (`[<Section>]`, `[<Align>]`) |
+| 0014 | [Placement](0014-placement.md) | Implemented in part: the heap's size and reuse (phase 12), constants in flash for arrays (2026-11-04); lists, records and unions in flash, `[<Section>]` and `[<Align>]` after 0.6.2 | track M's plan; the third design review (`[<Section>]`, `[<Align>]`) |
 | 0015 | [Fixed-point numbers](0015-fixed-point.md) | Approved in principle as a library, after 0.6.2 | the third design review |
 | 0016 | [Async on bare metal](0016-async-bare-metal.md) | Implemented (phase 12) | the third design review |
 | 0017 | [Iteration](0017-iteration.md) | Implemented (before phase 11); list expressions over any `Iter` after 0.6.2 | the third design review |
