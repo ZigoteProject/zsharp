@@ -23,9 +23,10 @@ type q31 =
 
 /// Functions on `q7`.
 module Q7 =
-  // a wide result into the format's range
-  let private saturate (w: i64) : q7 =
-    if w > i64 127 then Q7(i8 127) else if w < i64 -128 then Q7(i8 -128) else Q7(i8 w)
+  // a wide result into the format's range; a product, a product plus a value or a quotient of
+  // two q7 fits 32 bits, the chips' word
+  let private saturate (w: i32) : q7 =
+    if w > i32 127 then Q7(i8 127) else if w < i32 -128 then Q7(i8 -128) else Q7(i8 w)
 
   /// 0.
   let zero = Q7(i8 0)
@@ -52,14 +53,17 @@ module Q7 =
   let sub (Q7 a) (Q7 b) : q7 = Q7(Int.saturatingSub a b)
 
   /// `a * b`, rounded half up and saturating: `-1 * -1` is `Q7.max`.
-  let mul (Q7 a) (Q7 b) : q7 = saturate ((i64 a * i64 b + i64 64) >>> i64 7)
+  [<Wrapping>]
+  let mul (Q7 a) (Q7 b) : q7 = saturate ((i32 a * i32 b + i32 64) >>> i32 7)
 
   /// `a * b + c` with one rounding, saturating.
+  [<Wrapping>]
   let mulAdd (Q7 a) (Q7 b) (Q7 c) : q7 =
-    saturate ((i64 a * i64 b + (i64 c <<< i64 7) + i64 64) >>> i64 7)
+    saturate ((i32 a * i32 b + (i32 c <<< i32 7) + i32 64) >>> i32 7)
 
   /// `a / b`, saturating; by zero panics.
-  let div (Q7 a) (Q7 b) : q7 = saturate ((i64 a <<< i64 7) / i64 b)
+  [<Wrapping>]
+  let div (Q7 a) (Q7 b) : q7 = saturate ((i32 a <<< i32 7) / i32 b)
 
   /// `a % b`, the integers' remainder (both sides have the same scale); by zero panics.
   let rem (Q7 a) (Q7 b) : q7 = Q7(a % b)
@@ -119,8 +123,10 @@ impl Show<q7> =
 
 /// Functions on `q15`.
 module Q15 =
-  let private saturate (w: i64) : q15 =
-    if w > i64 32767 then Q15(i16 32767) else if w < i64 -32768 then Q15(i16 -32768) else Q15(i16 w)
+  // a product, a product plus a value or a quotient of two q15 fits 32 bits, the chips' word,
+  // and can't overflow, so those functions are [<Wrapping>]: no checks in a filter's loop
+  let private saturate (w: i32) : q15 =
+    if w > i32 32767 then Q15(i16 32767) else if w < i32 -32768 then Q15(i16 -32768) else Q15(i16 w)
 
   /// 0.
   let zero = Q15(i16 0)
@@ -147,14 +153,17 @@ module Q15 =
   let sub (Q15 a) (Q15 b) : q15 = Q15(Int.saturatingSub a b)
 
   /// `a * b`, rounded half up and saturating: `-1 * -1` is `Q15.max`.
-  let mul (Q15 a) (Q15 b) : q15 = saturate ((i64 a * i64 b + i64 0x4000) >>> i64 15)
+  [<Wrapping>]
+  let mul (Q15 a) (Q15 b) : q15 = saturate ((i32 a * i32 b + i32 0x4000) >>> i32 15)
 
   /// `a * b + c` with one rounding, saturating.
+  [<Wrapping>]
   let mulAdd (Q15 a) (Q15 b) (Q15 c) : q15 =
-    saturate ((i64 a * i64 b + (i64 c <<< i64 15) + i64 0x4000) >>> i64 15)
+    saturate ((i32 a * i32 b + (i32 c <<< i32 15) + i32 0x4000) >>> i32 15)
 
   /// `a / b`, saturating; by zero panics.
-  let div (Q15 a) (Q15 b) : q15 = saturate ((i64 a <<< i64 15) / i64 b)
+  [<Wrapping>]
+  let div (Q15 a) (Q15 b) : q15 = saturate ((i32 a <<< i32 15) / i32 b)
 
   /// `a % b`, the integers' remainder (both sides have the same scale); by zero panics.
   let rem (Q15 a) (Q15 b) : q15 = Q15(a % b)
@@ -253,16 +262,19 @@ module Q31 =
   let sub (Q31 a) (Q31 b) : q31 = Q31(Int.saturatingSub a b)
 
   /// `a * b`, rounded half up and saturating: `-1 * -1` is `Q31.max`.
+  [<Wrapping>]
   let mul (Q31 a) (Q31 b) : q31 = saturate ((i64 a * i64 b + i64 0x40000000) >>> i64 31)
 
   /// `a * b + c` with one rounding, saturating (the 64-bit sum saturates too, so a result past
   /// the range is the nearest end).
+  [<Wrapping>]
   let mulAdd (Q31 a) (Q31 b) (Q31 c) : q31 =
     let sum =
       Int.saturatingAdd (Int.saturatingAdd (i64 a * i64 b) (i64 c <<< i64 31)) (i64 0x40000000)
     saturate (sum >>> i64 31)
 
   /// `a / b`, saturating; by zero panics.
+  [<Wrapping>]
   let div (Q31 a) (Q31 b) : q31 = saturate ((i64 a <<< i64 31) / i64 b)
 
   /// `a % b`, the integers' remainder (both sides have the same scale); by zero panics.

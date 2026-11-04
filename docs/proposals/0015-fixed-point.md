@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Implemented (steps 1 to 3, 2026-11-04: one-case unions without a tag, decision 66, `tests/onecase.zs`; `Numerics.Fixed`, `tests/fixedpoint.zs`, `tests/mcu/fixed.zs`); folding `ofFloat` on literals, the vector functions and the `fir` benchmark (steps 4 and 5) left |
+| **Status** | Implemented (steps 1 to 3, 2026-11-04: one-case unions without a tag, decision 66, `tests/onecase.zs`; `Numerics.Fixed`, `tests/fixedpoint.zs`, `tests/mcu/fixed.zs`); the `fir` benchmark in `q15` (step 5, 2026-11-04: `bench/mcu/firq15.zs` against C in CMSIS-DSP's style, as many instructions as C at `-O2` on both chips, 1.43 and 1.49 at `-Os`, where loop versioning is off for its body; the filter is `[<NoAlloc>]`); folding `ofFloat` on literals and the vector functions (step 4) left |
 | **Decided at** | the third design review ([ROADMAP](../../ROADMAP.md#third-design-review-)): it passes decision 39 (it replaces hand-written shifts, rounding and saturation, and needs no runtime), and nothing in the language but untagged one-case unions |
 | **Builds** | track M item 10 ([ROADMAP](../../ROADMAP.md#microcontrollers-m)), after phase 11 |
 | **Rests on** | decisions 4 (overflow traps; wrapping is explicit), 25 (the SIMD API) and 53 (no type-level numbers beyond `fixed`) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §8](../../DESIGN.md#8-simd) |
@@ -102,7 +102,7 @@ A general format needs numbers as type arguments beyond `fixed`'s size, where de
 2. **`Int.saturatingAdd/Sub/Mul`** at every width: [0024](0024-library-api.md) owns them; they're the dependency.
 3. **The types and impls** in `lib/core/Q7.zs`, `Q15.zs` and `Q31.zs`, with `///` docs and reference pages; `tests/fixedpoint.zs` runs the same cases at each format: `-1 * -1 = max`, `min - step = min`, `-min = max`, a tie's rounding, `Show`'s round trip, and a `.out` test with the division-by-zero panic.
 4. **Folding `ofFloat` on literals,** the `raws` builtins, and the vector functions.
-5. **The exit test:** `bench/mcu/fir.zs` in `q15` on the `cortex-m0plus` against a C version in CMSIS-DSP's style, within track M's ratios; a `q15` filter marked `[<NoAlloc>]` compiles.
+5. **The exit test** *(done 2026-11-04: `bench/mcu/firq15.zs`, M0+ 1.01 at `-O2`, 1.49 at `-Os`, M4 1.05 and 1.43; the filter is `[<NoAlloc>]`. `Q7` and `Q15` compute in 32 bits, the chips' word, and their products and quotients are `[<Wrapping>]`, since they can't overflow)*: `bench/mcu/fir.zs` in `q15` on the `cortex-m0plus` against a C version in CMSIS-DSP's style, within track M's ratios; a `q15` filter marked `[<NoAlloc>]` compiles.
 
 ## Drawbacks
 

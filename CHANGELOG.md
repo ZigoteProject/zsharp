@@ -406,8 +406,11 @@ a real machine. The flagship runs under QEMU's STM32F405, not yet on the board i
   its integer (its size, by decision 66), with saturating `+`, `-`, `*` (rounded half up), `/`, `%` and negation,
   `mulAdd`, `abs`, `clamp`, `ofFloat`/`toFloat`/`toF32`, `ofInt`, `raw`/`ofRaw`, the conversions
   between the formats, and `Show` as the decimal with the digits the format needs (`0.99997` for
-  `Q15.max`), in integer arithmetic. `List.sum` over them saturates like `+`. Folding `ofFloat`
-  on a literal and the vector forms are left.
+  `Q15.max`), in integer arithmetic. `List.sum` over them saturates like `+`. `Q7` and `Q15`
+  compute in 32 bits, the chips' word, their products and quotients `[<Wrapping>]` (they can't
+  overflow): `bench/mcu/firq15.zs`, a 32-tap `q15` filter, executes as many instructions as C
+  in CMSIS-DSP's style at `-O2` on both chips. Folding `ofFloat` on a literal and the vector
+  forms are left.
 - `Net.Udp` (track S, item 8): `Udp.bind host port` (0 for a port the system picks, `Udp.port`
   says which), `Udp.send` and `sendText` to a host and port, and `Udp.receive`, which gives the
   bytes (a longer datagram cut to the buffer) and the sender's address and port, each waiting on

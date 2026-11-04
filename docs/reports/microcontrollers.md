@@ -32,6 +32,7 @@ Both versions print the same result.
 | `fib` | recursive Fibonacci(24) on `i32` | calls, checked arithmetic |
 | `fib64` | the same on Z#'s default `int` against C's `int64_t` | the cost of word size |
 | `fir` | a 32-tap FIR filter over 1024 `f32` samples | float arrays, bounds checks |
+| `firq15` | the same filter in `q15` fixed point (`Numerics.Fixed`, 0015), a saturating multiply-add per tap, against C in CMSIS-DSP's style | fixed-point arithmetic without an FPU, one-case unions, `[<NoAlloc>]` |
 | `isort` | insertion sort of 512 `i32`, in place | array writes (copy-on-write), bounds checks |
 | `tokens` | a tokenizer state machine over 2 KB (a union state) | unions, small structs, branches |
 | `pipeline` | `List.init 200 \|> map \|> filter \|> sum`, 20 times (C: a loop) | idiomatic functional code |
@@ -46,8 +47,11 @@ Both versions print the same result.
 | fib | 1.15 | 1.25 | 1.23 | 1.47 |
 | fib64 | **0.62** | **0.72** | **0.49** | **0.57** |
 | fir | 1.06 | 1.12 | **1.01** | **1.01** |
+| firq15 | 1.05 | 1.43 | **1.01** | 1.49 |
 | isort | 1.04 | **1.00** | **0.97** | **0.90** |
 | pipeline | 1.26 | **1.00** | 1.48 | 1.28 |
+
+`firq15` at `-O2` executes as many instructions as C on both chips: the `q15` multiply-add is a 32-bit product, a shift and a saturation, as C's is, and loop versioning proves the taps' and samples' bounds once per loop. At `-Os` the versioning is off for a loop body over 40 Core nodes (the inlined multiply-add is one), so every tap pays two bounds checks and a checked subtraction: 1.43 and 1.49. (`firq15` is not in the bitcode table below: it was added after that measurement.)
 | tokens | 1.39 | 1.25 | 2.86 | 2.52 |
 
 **Flash, bytes** (Z# / C, including the shared runtime):
@@ -57,6 +61,7 @@ Both versions print the same result.
 | crc32 | 2304 / 2084 | 2496 / 2268 |
 | fib | 2356 / 2032 | 2532 / 2208 |
 | fir | 2564 / 2356 | 4428 / 4092 |
+| firq15 | 3012 / 2364 | 3260 / 2584 |
 | isort | 2720 / 2112 | 3080 / 2440 |
 | pipeline | 2348 / 2024 | 2524 / 2212 |
 | tokens | 2716 / 2192 | 2980 / 2372 |
@@ -98,6 +103,7 @@ these instructions and flash, bitcode ÷ separate:
 | crc32 | 0.99 | 1.00 | 1.00 | 1.00 |
 | fib | 1.00 | 1.00 | 1.00 | 1.00 |
 | fir | 0.68 | 1.00 | 1.00 | 1.00 |
+| firq15 | – | – | – | – |
 | isort | 1.04 | 1.00 | 0.97 | 1.00 |
 | pipeline | 0.59 | 1.00 | 0.51 | 1.00 |
 | tokens | 1.00 | 1.00 | 1.00 | 1.00 |
