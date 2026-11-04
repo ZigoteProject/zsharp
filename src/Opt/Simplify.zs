@@ -169,6 +169,142 @@ let private literal (e: CExpr) : option<CPat> =
   | CStr s -> Some(CPStr s)
   | _ -> None
 
+// ---- constant folding (0015 step 4): arithmetic, comparisons, conversions and Math.round and
+// sqrt on literals, as the code would compute them (an integer result must fit its type, else
+// the operation stays, to overflow at run time as written), so Q15.ofFloat 0.5 is a constant
+// once inlined, and a table of them a static object
+
+// whether an integer is a value of the type: int and usize are 32 bits on a chip, so those
+// take only what fits 32 bits
+let private fitsIn (t: Ty) (n: i64) : bool =
+  match t with
+  | TCon("i8", []) -> n >= i64 -128 && n <= i64 127
+  | TCon("i16", []) -> n >= i64 -32768 && n <= i64 32767
+  | TCon("i32", [])
+  | TCon("int", []) -> n >= i64 -2147483648 && n <= i64 2147483647
+  | TCon("i64", []) -> true
+  | TCon("u8", []) -> n >= i64 0 && n <= i64 255
+  | TCon("u16", []) -> n >= i64 0 && n <= i64 65535
+  | TCon("u32", [])
+  | TCon("usize", []) -> n >= i64 0 && n <= i64 4294967295
+  | TCon("u64", []) -> n >= i64 0
+  | _ -> false
+
+let private isFloatTy (t: Ty) : bool =
+  match t with
+  | TCon("f64", [])
+  | TCon("f32", []) -> true
+  | _ -> false
+
+// a literal operand, through a line marker
+let rec private plainLit (e: CExpr) : CExpr =
+  match e.k with
+  | CLine(_, a) -> plainLit a
+  | _ -> e
+
+// Math.round's rounding, half to even (the compiler's own library, its stage 0's, may lack it);
+// a float past 2^52 is integral already
+let private roundEven (x: f64) : f64 =
+  if x <> x || x > 4503599627370496.0 || x < -4503599627370496.0 then
+    x
+  else
+    let t = float (i64 x)
+    let frac = x - t
+    if frac > 0.5 then t + 1.0
+    else if frac < -0.5 then t - 1.0
+    else if frac = 0.5 then (if float (i64 t) / 2.0 = float (i64 (t / 2.0)) then t else t + 1.0)
+    else if frac = -0.5 then (if float (i64 t) / 2.0 = float (i64 (t / 2.0)) then t else t - 1.0)
+    else t
+
+let private foldConst (e: CExpr) : CExpr =
+  let with_ (k: CKind) = { e with k = k }
+  let intOp (op: string) (a: i64) (b: i64) : option<i64> =
+    match op with
+    | "+" ->
+      let r = Int.wrappingAdd a b
+      if (a >= i64 0) = (b >= i64 0) && (r >= i64 0) <> (a >= i64 0) then None else Some r
+    | "-" ->
+      let r = Int.wrappingSub a b
+      if (a >= i64 0) <> (b >= i64 0) && (r >= i64 0) <> (a >= i64 0) then None else Some r
+    | "*" ->
+      let r = Int.wrappingMul a b
+      if a <> i64 0 && (r / a <> b || (a = i64 -1 && b = i64 -9223372036854775807 - i64 1)) then None else Some r
+    | "/" -> if b = i64 0 || (b = i64 -1 && a = i64 -9223372036854775807 - i64 1) then None else Some(a / b)
+    | "%" -> if b = i64 0 || b = i64 -1 then None else Some(a % b)
+    | "&&&" -> Some(a &&& b)
+    | "|||" -> Some(a ||| b)
+    | "^^^" -> Some(a ^^^ b)
+    | _ -> None
+  let compare (op: string) (c: int) : option<bool> =
+    match op with
+    | "=" -> Some(c = 0)
+    | "<>" -> Some(c <> 0)
+    | "<" -> Some(c < 0)
+    | "<=" -> Some(c <= 0)
+    | ">" -> Some(c > 0)
+    | ">=" -> Some(c >= 0)
+    | _ -> None
+  match e.k with
+  | CBin(op, a0, b0) ->
+    match ((plainLit a0).k, (plainLit b0).k) with
+    | (CInt a, CInt b) ->
+      match compare op (if a < b then -1 else if a > b then 1 else 0) with
+      | Some r -> with_ (CBool r)
+      | None ->
+        match intOp op a b with
+        | Some r when fitsIn e.ty r -> with_ (CInt r)
+        | _ -> e
+    | (CFloat a, CFloat b) ->
+      match compare op (if a < b then -1 else if a > b then 1 else if a = b then 0 else 2) with
+      | Some r when not (a <> a || b <> b) -> with_ (CBool r)
+      | Some _ -> e
+      | None ->
+        match op with
+        | "+" -> with_ (CFloat(a + b))
+        | "-" -> with_ (CFloat(a - b))
+        | "*" -> with_ (CFloat(a * b))
+        | "/" -> with_ (CFloat(a / b))
+        | _ -> e
+    | (CBool a, CBool b) ->
+      match op with
+      | "=" -> with_ (CBool(a = b))
+      | "<>" -> with_ (CBool(a <> b))
+      | _ -> e
+    | (CStr a, CStr b) when op = "+" -> with_ (CStr(a + b))
+    | _ -> e
+  | CNeg a0 ->
+    match (plainLit a0).k with
+    | CInt n when n <> i64 -9223372036854775807 - i64 1 && fitsIn e.ty (i64 0 - n) -> with_ (CInt(i64 0 - n))
+    | CFloat x -> with_ (CFloat(0.0 - x))
+    | _ -> e
+  | CPrim("conv", [ a0 ]) ->
+    match ((plainLit a0).k, e.ty) with
+    | (CInt n, t) when isFloatTy t -> with_ (CFloat(if t = TCon("f32", []) then f64 (f32 (float n)) else float n))
+    | (CInt n, t) when fitsIn t n -> with_ (CInt n)
+    | (CFloat x, t) when isFloatTy t -> with_ (CFloat(if t = TCon("f32", []) then f64 (f32 x) else x))
+    | (CFloat x, t) when x = x && x = float (i64 x) && x > -9.0e18 && x < 9.0e18 && fitsIn t (i64 x) -> with_ (CInt(i64 x))
+    | _ -> e
+  | CPrim("Math.round", [ a0 ]) ->
+    match (plainLit a0).k with
+    | CFloat x -> with_ (CFloat(roundEven x))
+    | _ -> e
+  | CPrim("Math.sqrt", [ a0 ]) ->
+    match (plainLit a0).k with
+    | CFloat x when x >= 0.0 -> with_ (CFloat(Math.sqrt x))
+    | _ -> e
+  | _ -> e
+
+// x replaced by a literal in e; None when e binds x again somewhere (then the uses are left)
+let private substLit (x: string) (lit: CExpr) (e: CExpr) : option<CExpr> =
+  if List.contains x (binders e) then
+    None
+  else
+    let rec go (a: CExpr) : CExpr =
+      match a.k with
+      | CLocal y when y = x -> { lit with ty = a.ty }
+      | k -> { a with k = mapChildren go k }
+    Some(go e)
+
 // a value whose evaluation has no effect and can't fail, so it can be dropped when unused
 let rec private pureValue (e: CExpr) : bool =
   match e.k with
@@ -317,65 +453,75 @@ let run (types: Map<string, TypeInfo>) (funs: list<MFun>) : list<MFun> =
         let a = simp env a0
         let b = simp env b0
         if pureValue a then b else { e with k = CSeq(a, b) }
-      | k -> { e with k = mapChildren (simp env) k }
+      | k -> foldConst { e with k = mapChildren (simp env) k }
     and simpLet (env: Map<string, Known>) (e: CExpr) (x: string) (w0: CExpr) (body: CExpr) : CExpr =
       let w = simp env w0
-      let applied =
-        match lambdaOf w with
-        | Some(ps, lb) ->
-          match callsOnly x (List.length ps) body with
-          | Some n -> if (n = 1 || (n > 1 && size lb <= 40)) && burn () then Some(simp env (applyAt x w body)) else None
-          | None -> None
-        | None -> None
-      match applied with
-      | Some r -> r
+      // let x = <literal>: the literal in x's place, so what's computed from it folds
+      let substituted =
+        match w.k with
+        | CInt _
+        | CFloat _
+        | CBool _ when not (Set.contains x mutables.Value) -> substLit x w body
+        | _ -> None
+      match substituted with
+      | Some b -> simp env b
       | None ->
-        // let x = v in match x with … (or through let y = x, as an inlined call binds its
-        // parameters), where v is a match or an if: case of case
-        let rec matchOnX (names: Set<string>) (b: CExpr) : option<list<CPat * option<CExpr> * CExpr>> =
-          match b.k with
-          | CMatch({ k = CLocal y }, cases) when Set.contains y names ->
-            let mentions (c: CPat * option<CExpr> * CExpr) =
-              let (_, g, cb) = c
-              List.exists (fun n -> uses n cb || Option.exists (uses n) g) (Set.toList names)
-            if List.exists mentions cases then None else Some cases
-          | CLet(y, { k = CLocal z }, rest) when Set.contains z names -> matchOnX (Set.add y names) rest
-          | CLine(_, inner) -> matchOnX names inner
-          | _ -> None
-        match (matchOnX (Set.ofList [ x ]) body, w.k) with
-        | (Some cases, _) when Option.isSome (plan env w cases false) && burn () -> simp env (mk (CMatch(w, cases)) e.ty)
-        | (_, CCtor(u, tag, args)) when List.exists notLocal args && burn () ->
-          // the fields named, so a match on x knows them
-          let nameArg (a: CExpr) : CExpr * option<string * CExpr> =
-            match a.k with
-            | CLocal _ -> (a, None)
-            | _ ->
-              let t = fresh "$f"
-              (mk (CLocal t) a.ty, Some(t, a))
-          let named = List.map nameArg args
-          let inner = mk (CLet(x, mk (CCtor(u, tag, List.map fst named)) w.ty, body)) e.ty
-          let bind (acc: CExpr) (nb: CExpr * option<string * CExpr>) : CExpr =
-            match snd nb with
-            | Some(t, a) -> mk (CLet(t, a, acc)) acc.ty
-            | None -> acc
-          simp env (List.fold bind inner (List.rev named))
-        | _ ->
-          let env2 =
-            match w.k with
-            | CCtor(_, tag, args) -> Map.add x (KCtor(tag, List.map immutable args)) env
-            | CLocal y ->
-              match Map.tryFind y env with
-              | Some kn -> Map.add x kn env
-              | None -> env
-            | _ ->
-              match literal w with
-              | Some l -> Map.add x (KLit l) env
-              | None -> env
-          let body2 = simp env2 body
-          // the body may have become such a match only now
-          match matchOnX (Set.ofList [ x ]) body2 with
-          | Some cases when Option.isSome (plan env w cases false) && burn () -> simp env (mk (CMatch(w, cases)) e.ty)
-          | _ -> if pureValue w && not (uses x body2) then body2 else { e with k = CLet(x, w, body2) }
+        let applied =
+          match lambdaOf w with
+          | Some(ps, lb) ->
+            match callsOnly x (List.length ps) body with
+            | Some n -> if (n = 1 || (n > 1 && size lb <= 40)) && burn () then Some(simp env (applyAt x w body)) else None
+            | None -> None
+          | None -> None
+        match applied with
+        | Some r -> r
+        | None ->
+          // let x = v in match x with … (or through let y = x, as an inlined call binds its
+          // parameters), where v is a match or an if: case of case
+          let rec matchOnX (names: Set<string>) (b: CExpr) : option<list<CPat * option<CExpr> * CExpr>> =
+            match b.k with
+            | CMatch({ k = CLocal y }, cases) when Set.contains y names ->
+              let mentions (c: CPat * option<CExpr> * CExpr) =
+                let (_, g, cb) = c
+                List.exists (fun n -> uses n cb || Option.exists (uses n) g) (Set.toList names)
+              if List.exists mentions cases then None else Some cases
+            | CLet(y, { k = CLocal z }, rest) when Set.contains z names -> matchOnX (Set.add y names) rest
+            | CLine(_, inner) -> matchOnX names inner
+            | _ -> None
+          match (matchOnX (Set.ofList [ x ]) body, w.k) with
+          | (Some cases, _) when Option.isSome (plan env w cases false) && burn () -> simp env (mk (CMatch(w, cases)) e.ty)
+          | (_, CCtor(u, tag, args)) when List.exists notLocal args && burn () ->
+            // the fields named, so a match on x knows them
+            let nameArg (a: CExpr) : CExpr * option<string * CExpr> =
+              match a.k with
+              | CLocal _ -> (a, None)
+              | _ ->
+                let t = fresh "$f"
+                (mk (CLocal t) a.ty, Some(t, a))
+            let named = List.map nameArg args
+            let inner = mk (CLet(x, mk (CCtor(u, tag, List.map fst named)) w.ty, body)) e.ty
+            let bind (acc: CExpr) (nb: CExpr * option<string * CExpr>) : CExpr =
+              match snd nb with
+              | Some(t, a) -> mk (CLet(t, a, acc)) acc.ty
+              | None -> acc
+            simp env (List.fold bind inner (List.rev named))
+          | _ ->
+            let env2 =
+              match w.k with
+              | CCtor(_, tag, args) -> Map.add x (KCtor(tag, List.map immutable args)) env
+              | CLocal y ->
+                match Map.tryFind y env with
+                | Some kn -> Map.add x kn env
+                | None -> env
+              | _ ->
+                match literal w with
+                | Some l -> Map.add x (KLit l) env
+                | None -> env
+            let body2 = simp env2 body
+            // the body may have become such a match only now
+            match matchOnX (Set.ofList [ x ]) body2 with
+            | Some cases when Option.isSome (plan env w cases false) && burn () -> simp env (mk (CMatch(w, cases)) e.ty)
+            | _ -> if pureValue w && not (uses x body2) then body2 else { e with k = CLet(x, w, body2) }
     and matchOf (env: Map<string, Known>) (s: CExpr) (cases: list<CPat * option<CExpr> * CExpr>) (ty: Ty) : CExpr =
       match s.k with
       | CLocal x when Map.containsKey x env ->

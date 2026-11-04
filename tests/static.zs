@@ -15,6 +15,8 @@ type Color =
   | Green
   | Blue
 type Id = Id of u16
+
+open Numerics
 let crc = [| u32 0x00000000; u32 0x77073096; u32 0xEE0E612C; u32 0x990951BA |]
 let names = [| "zero"; "one"; "two" |]
 let flags = [| true; false; true |]
@@ -33,6 +35,8 @@ let ident = Id(u16 7)
 let points = [| { x = 1; y = 1; name = "a" }; { x = 2; y = 2; name = "b" } |]
 let shapes = [ Circle 1.5; Rect(4, 5) ]
 let big: i64 = 9223372036854775807
+// fixed-point values of literals fold to constants (0015 step 4), so a table of them is static
+let taps = [| Q15.ofFloat 0.25; Q15.ofFloat -0.5; Q15.ofFloat 0.125 |]
 
 let rec total (t: Tree) : int =
   match t with
@@ -63,4 +67,5 @@ let main () =
     | Rect(w, h) :: _ -> w * h
     | [] -> 0
   println $"{moved.x} {origin.x} {area}"
+  println $"{taps.[0]} {taps.[1]} {Q15.raw taps.[2]}"
   0

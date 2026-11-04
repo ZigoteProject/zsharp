@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Implemented (steps 1 to 3, 2026-11-04: one-case unions without a tag, decision 66, `tests/onecase.zs`; `Numerics.Fixed`, `tests/fixedpoint.zs`, `tests/mcu/fixed.zs`); the `fir` benchmark in `q15` (step 5, 2026-11-04: `bench/mcu/firq15.zs` against C in CMSIS-DSP's style, as many instructions as C at `-O2` on both chips, 1.43 and 1.49 at `-Os`, where loop versioning is off for its body; the filter is `[<NoAlloc>]`); folding `ofFloat` on literals and the vector functions (step 4) left |
+| **Status** | Implemented (steps 1 to 3, 2026-11-04: one-case unions without a tag, decision 66, `tests/onecase.zs`; `Numerics.Fixed`, `tests/fixedpoint.zs`, `tests/mcu/fixed.zs`); the `fir` benchmark in `q15` (step 5, 2026-11-04: `bench/mcu/firq15.zs` against C in CMSIS-DSP's style, as many instructions as C at `-O2` on both chips, 1.43 and 1.49 at `-Os`, where loop versioning is off for its body; the filter is `[<NoAlloc>]`); folding `ofFloat` on literals done too (2026-11-04: the simplifier folds constants, so a table of `Q15.ofFloat` values is a static object, `tests/static.zs`); the vector functions left |
 | **Decided at** | the third design review ([ROADMAP](../../ROADMAP.md#third-design-review-)): it passes decision 39 (it replaces hand-written shifts, rounding and saturation, and needs no runtime), and nothing in the language but untagged one-case unions |
 | **Builds** | track M item 10 ([ROADMAP](../../ROADMAP.md#microcontrollers-m)), after phase 11 |
 | **Rests on** | decisions 4 (overflow traps; wrapping is explicit), 25 (the SIMD API) and 53 (no type-level numbers beyond `fixed`) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §8](../../DESIGN.md#8-simd) |

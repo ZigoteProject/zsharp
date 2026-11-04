@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Compiler
+- Constants folded (0015 step 4): arithmetic, comparisons, bit operations, conversions and
+  `Math.round` and `sqrt` on literals are computed at compile time, as the code would compute
+  them, and a `let` of a literal puts the literal in its uses; an integer result that wouldn't
+  fit its type stays as written, to overflow at run time (`int` taken as 32 bits, a chip's).
+  So `Q15.ofFloat 0.5` is a constant once inlined, and a table of them a static object
+  (`tests/fold.zs`, `tests/static.zs`).
 - Constants in flash, the rest of item 3 (0014): a top-level record, tuple or plain union of
   constants is written into its global, a boxed union case (a tree's node) is a static cell, and
   they nest any way (an array of records, a list of shapes, a record holding a table). A boxed

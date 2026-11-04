@@ -261,9 +261,9 @@ else echo "FAIL tests/project/git.sh"; cat "$tmp/git.diff"; fail=1; fi
 # constants in flash (0014 items 1 and 3): a top-level array, list or boxed union literal of
 # constants is a static object in the image, its global pointing at it; a record, tuple, plain
 # union, number or string is written into its global; none has startup code
-if bin/zs build tests/static.zs --emit-llvm -o "$tmp/static" >/dev/null 2>&1 && [ "$(grep -c '^@"zsv\.[a-z]*" = internal global ptr @"zss\.' "$tmp/static.ll")" = 10 ] \
+if bin/zs build tests/static.zs --emit-llvm -o "$tmp/static" >/dev/null 2>&1 && [ "$(grep -c '^@"zsv\.[a-z]*" = internal global ptr @"zss\.' "$tmp/static.ll")" = 11 ] \
    && ! grep -q '^@"zsv\.[a-z]*" = internal global .* zeroinitializer$' "$tmp/static.ll" && ! grep -q 'call .* @"zs\.\$init\.' "$tmp/static.ll"; then
-  echo "ok   tests/static.zs: six static tables, three static lists and a tree in the image, the records and plain unions in their globals"
+  echo "ok   tests/static.zs: seven static tables (a q15 one of folded constants), three static lists and a tree in the image, the records and plain unions in their globals"
 else echo "FAIL tests/static.zs: static tables"; grep '^@"zs[sv]\.' "$tmp/static.ll" | cut -c1-100; fail=1; fi
 # [<Section>] and [<Align>] (0014 item 12): the table's object in its section, padded so its data
 # is at a multiple of 64 and the value's global pointing past the padding; the Buffer's bytes
