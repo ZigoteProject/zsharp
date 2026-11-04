@@ -46,6 +46,12 @@
   "expected 'let'".
 
 ### Runtime
+- Weak references and arenas on a chip (track M, item 8, known gap 3): the embedded runtime
+  has the host's table of weak cells and its arenas, over the chip's heap. An arena's blocks are
+  an eighth of the heap each (4 KB at most), bumped through, and go back at once when the
+  arena's last object has died; an object's arena is found by its address among the blocks. The
+  table and the blocks are heap memory, not objects, so the exit report's `live` stays the
+  program's (`tests/mcu/weak.zs`, `tests/mcu/arena.zs`, both chips).
 - A stack overflow is a panic: `panic: stack overflow (recursion too deep)`, exit status 134, what
   was printed before it flushed, on whichever thread overflows (the pool's, a task's loop's;
   two at once say so once). It was a SIGSEGV with nothing said. On Linux and macOS, in programs

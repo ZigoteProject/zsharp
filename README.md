@@ -294,7 +294,8 @@ normally written ([bench/mcu](bench/mcu)). The ratios are instructions executed,
 - **Tests on the chip:** `zs test firmware.zs --target cortex-m4` builds the file's `[<Tests>]` into one image and runs them under QEMU (or on the board), each named as it passes.
 - **Fixed-point numbers:** `q7`, `q15` and `q31` in Core, saturating, with rounding products and `mulAdd`, as CMSIS-DSP has them: a `q15` filter is plain arithmetic, printed as decimals with no float.
 - **Placement:** `[<Section ".noinit">]` on a top-level `ref` or `Buffer` keeps it where a reset neither copies nor zeroes (a boot counter, a crash log), any other section name puts it where the linker script says (a DMA region), and `[<Align 32>]` aligns its storage; a constant table takes them too (`[<Section ".data">]` for one read from RAM). The storage is in the image: no startup code, and nothing allocated.
-- **Not yet:** `[<Align>]` on a type, weak references and arenas on a chip, RISC-V, and boards beyond the Nucleo-F401RE. The flagship has run under QEMU's STM32F405, not yet on the board itself. They're track M of the [roadmap](ROADMAP.md).
+- **Weak references and arenas** work on a chip as on the host: an arena's blocks are an eighth of the heap each, and go back at once when its last object has died.
+- **Not yet:** `[<Align>]` on a type, RISC-V, and boards beyond the Nucleo-F401RE. The flagship has run under QEMU's STM32F405, not yet on the board itself. They're track M of the [roadmap](ROADMAP.md).
 
 The registers can come from the chip's SVD file: `import svd ("stm32f401-part.svd", only = "GPIOA,RCC")` gives a module per peripheral with each register a `[<Bits>]` record ([examples/mcu/nucleo-f401-svd.zs](examples/mcu/nucleo-f401-svd.zs) is the firmware written that way, compiled to the same accesses).
 

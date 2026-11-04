@@ -1,0 +1,6 @@
+kid's parent: root
+c's parent, once the rest of its tree has gone: gone
+alive: true
+after its cells were reused: false [10; 20; 30]
+static: true
+root still has 1 child

@@ -48,7 +48,7 @@ itself from the previous release (stage 0, pinned in `dev`).
 **Known gaps** (in priority order, each with the phase or track that closes it):
 1. **Targets (phase 11.5):** macOS and Windows programs and compilers build (`--target`), and Windows x64's suite passes under Wine, but nothing has run on a Mac or a Windows machine yet: the suite on each in CI (`.github/workflows/test.yml` is written, and needs a remote to run on), and the release archives on clean machines, close the phase.
 2. **The board itself (phase 12, track M):** the flagship runs under QEMU's STM32F405 with its RTT ring read from RAM; it hasn't been flashed to a Nucleo-F401RE yet. QEMU has no model of the board's GPIO, so the LED and the button are untested until it is.
-3. **Weak references and arenas on microcontrollers (track M):** they're hosted-only so far; the embedded runtime lacks their functions.
+3. **Weak references and arenas on microcontrollers (track M):** *(closed 2026-11-04: the embedded runtime has them, `tests/mcu/weak.zs`, `tests/mcu/arena.zs`)* they're hosted-only so far; the embedded runtime lacks their functions.
 4. **Debug info (track D):** *(closed 2026-11-04: lists, arrays, boxed unions, refs and Buffers are shown through their objects, `tests/debug/gdb_heap.sh`)* lists and other boxed unions aren't shown as gdb or lldb values (plain unions are).
 5. **`use` under effects (track S):** *(closed 2026-11-04: a stop disposes the scopes it passes over, `tests/effects/use.zs`)* left: a resumption never called (a generator its consumer left) disposes nothing, and neither does a stop inside a `task { }` body.
 6. **Generators (track S):** a pipeline of `Seq` functions allocates nothing per element but isn't one loop yet, as a list pipeline is: each stage is an indirect call per element (4.8× a fused list pipeline's time). Item 9 of track S fuses it.
@@ -80,7 +80,7 @@ user asking. Optimization still waits for profiles of real programs.
 3. **What the flagship asked for** (track M, from `examples/nucleo`'s build and the board):
    - **Constants in flash** (M3: *done 2026-11-04*, arrays, lists, records, tuples and unions) and **placement** (M12: `[<Section>]`, `[<Align>]`; *values done 2026-11-04*, `[<Align>]` on a type left): the firmware's tables stop being copied to RAM at startup.
    - *Done 2026-11-04:* **Tests on the chip** (D11): `zs test --target cortex-m4` under QEMU (and the board's target through probe-rs), so the shell's tests run where the shell runs.
-   - **Weak references and arenas on a chip** (M8, known gap 3).
+   - **Weak references and arenas on a chip** (M8, known gap 3; *done 2026-11-04*: the host's table of weak cells and arenas over the chip's heap, blocks an eighth of it, 4 KB at most; `tests/mcu/weak.zs`, `tests/mcu/arena.zs` on both chips, every object gone at exit).
    - **The next board** (0027) only once the first is flashed and a user names one.
 4. **What an F# programmer reaches for next** (track S, each small, taken as it comes):
    - *Done 2026-11-04:* `Int`'s checked, saturating and bit operations (S3).

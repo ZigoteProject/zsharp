@@ -616,8 +616,9 @@ static struct {
     void *large;
 } H;
 
-void *zs_alloc(zs_int size) {
-    size_t need = ((size_t)size + 7) & ~(size_t)7;
+// a block of the heap that isn't an object (a weak table, an arena's block): counted in the
+// bytes used, not as an allocation
+static void *heap_take(size_t need) {
     size_t cls = need / 8;
     uint64_t *block = 0;
 
@@ -644,20 +645,29 @@ void *zs_alloc(zs_int size) {
 
     H.used += (size_t)*block;
     if (H.used > H.peak) H.peak = H.used;
-    H.live++;
-    H.allocations++;
     return block + 1;
 }
 
-void zs_free(void *p) {
+static void heap_give(void *p) {
     uint64_t *block = (uint64_t *)p - 1;
     size_t cls = (size_t)*block / 8;
     H.used -= (size_t)*block;
-    H.live--;
 
     void **list = cls <= 32 ? &H.free_lists[cls] : &H.large;
     *(void **)p = *list;
     *list = p;
+}
+
+void *zs_alloc(zs_int size) {
+    void *p = heap_take(((size_t)size + 7) & ~(size_t)7);
+    H.live++;
+    H.allocations++;
+    return p;
+}
+
+void zs_free(void *p) {
+    H.live--;
+    heap_give(p);
 }
 
 zs_int zs_allocations(void) { return H.allocations; }
@@ -665,6 +675,224 @@ zs_int zs_allocations(void) { return H.allocations; }
 // Runtime.mallocs (): the times memory was taken for an object (no system allocator here: the
 // heap's own), and Runtime.marks (): objects marked shared, none with no threads
 zs_int zs_mallocs(void) { return H.allocations; }
+
+// ---- weak references and arenas (track M item 8), as the host runtime has them: a program that
+// uses Weak or Arena allocates and frees through zs_alloc_checked and zs_free_checked. The weak
+// references to one object share a cell { count, object }, found from the object in a table, and
+// the object dying (freed, or its cell reused for another) empties the cell. The table's memory
+// and an arena's blocks are the heap's, not objects: the exit report's live is the program's.
+
+// a table from addresses to pointers (open addressing, linear probing)
+typedef struct {
+    void **keys, **vals;
+    size_t cap, count;
+} ptrtab;
+
+static ptrtab weaks;
+
+static size_t tab_slot(const ptrtab *t, const void *k) {
+    return (size_t)(((uint64_t)(uintptr_t)k * 0x9E3779B97F4A7C15ull) >> 32) & (t->cap - 1);
+}
+
+static void *tab_get(const ptrtab *t, const void *k) {
+    if (!t->count) return NULL;
+    for (size_t i = tab_slot(t, k);; i = (i + 1) & (t->cap - 1)) {
+        if (t->keys[i] == k) return t->vals[i];
+        if (!t->keys[i]) return NULL;
+    }
+}
+
+static void **tab_array(size_t cap) {
+    void **a = heap_take(cap * sizeof(void *));
+    for (size_t i = 0; i < cap; i++) a[i] = NULL;
+    return a;
+}
+
+static void tab_put(ptrtab *t, void *k, void *v) {
+    if (2 * (t->count + 1) > t->cap) {
+        size_t cap = t->cap ? 2 * t->cap : 16;
+        ptrtab n = {tab_array(cap), tab_array(cap), cap, 0};
+        for (size_t i = 0; i < t->cap; i++)
+            if (t->keys[i]) tab_put(&n, t->keys[i], t->vals[i]);
+        if (t->cap) {
+            heap_give(t->keys);
+            heap_give(t->vals);
+        }
+        *t = n;
+    }
+    size_t i = tab_slot(t, k);
+    while (t->keys[i]) i = (i + 1) & (t->cap - 1);
+    t->keys[i] = k;
+    t->vals[i] = v;
+    t->count++;
+}
+
+// removes k and returns its value (NULL if it isn't there); later entries of its run move back
+static void *tab_remove(ptrtab *t, const void *k) {
+    if (!t->count) return NULL;
+    size_t m = t->cap - 1, i = tab_slot(t, k);
+    while (t->keys[i] != k) {
+        if (!t->keys[i]) return NULL;
+        i = (i + 1) & m;
+    }
+    void *v = t->vals[i];
+    for (size_t j = (i + 1) & m; t->keys[j]; j = (j + 1) & m) {
+        size_t home = tab_slot(t, t->keys[j]);
+        bool stays = i < j ? (i < home && home <= j) : (i < home || home <= j);
+        if (!stays) {
+            t->keys[i] = t->keys[j];
+            t->vals[i] = t->vals[j];
+            i = j;
+        }
+    }
+    t->keys[i] = t->vals[i] = NULL;
+    if (--t->count == 0) {
+        heap_give(t->keys);
+        heap_give(t->vals);
+        *t = (ptrtab){0};
+    }
+    return v;
+}
+
+typedef struct {
+    int32_t rc;
+    void *target;
+} zs_weak;
+
+zs_weak *zs_weak_new(void *target) {
+    bool dies = *(int32_t *)target != 0; // a static object never does: its cells aren't in the table
+    zs_weak *w = dies ? tab_get(&weaks, target) : NULL;
+    if (w) {
+        w->rc++;
+    } else {
+        w = zs_alloc((zs_int)sizeof(zs_weak));
+        w->rc = 1;
+        w->target = dies ? target : (void *)((uintptr_t)target | 1); // the low bit: static
+        if (dies) tab_put(&weaks, target, w);
+    }
+    return w;
+}
+
+// the object, with a new reference, or NULL once it has died (a count below 0 is an object an
+// interrupt handler shares)
+void *zs_weak_target(zs_weak *w) {
+    if ((uintptr_t)w->target & 1) return (void *)((uintptr_t)w->target & ~(uintptr_t)1);
+    int32_t *t = w->target;
+    if (t) {
+        int32_t c = *t;
+        if (c > 0) *t = c + 1;
+        else if (c < 0) *t = c - 1;
+        else t = NULL;
+    }
+    return t;
+}
+
+// the cell's last reference has gone
+void zs_weak_free(zs_weak *w) {
+    if (w->target && !((uintptr_t)w->target & 1)) tab_remove(&weaks, w->target);
+    zs_free(w);
+}
+
+// a cell Perceus reuses for another object: the object it held has died
+void zs_reused(void *p) {
+    zs_weak *w = weaks.count ? tab_remove(&weaks, p) : NULL;
+    if (w) w->target = NULL;
+}
+
+// arenas (Arena.with): what a function allocates comes from blocks of the heap, bumped through,
+// an eighth of the heap each (4 KB at most). An object dying frees nothing; the blocks go at once
+// when the arena's last object has died: when the function returns, or later if something it
+// made lives on. The arena's own record is in its first block. An object's arena is found by
+// its address among the arenas' blocks (few on a chip).
+#define ARENA_BLOCK ((size_t)(ZS_HEAP_SIZE / 8 < 4096 ? ZS_HEAP_SIZE / 8 : 4096))
+
+typedef struct zs_arena {
+    struct zs_arena *parent; // the arena open around this one
+    struct zs_arena *older;  // the arenas with blocks, newest first
+    void *blocks;            // the newest first, each starting with a block_head
+    char *next, *end;        // the free part of the newest block
+    zs_int live;             // objects in the arena that haven't died
+    bool open;               // Arena.with hasn't returned yet
+} zs_arena;
+
+typedef struct {
+    void *next;
+} block_head;
+
+#define ARENA_HEAD ((sizeof(block_head) + 7) & ~(size_t)7)
+
+static zs_arena *arena;  // the innermost open arena
+static zs_arena *arenas; // every arena that still has blocks
+
+static char *arena_block(zs_arena *a) {
+    char *b = heap_take(ARENA_BLOCK);
+    *(block_head *)b = (block_head){a ? a->blocks : NULL};
+    return b;
+}
+
+void zs_arena_open(void) {
+    char *b = arena_block(NULL);
+    zs_arena *a = (zs_arena *)(b + ARENA_HEAD);
+    *a = (zs_arena){arena, arenas, b, b + ARENA_HEAD + ((sizeof(zs_arena) + 7) & ~(size_t)7), b + ARENA_BLOCK, 0, true};
+    arenas = a;
+    arena = a;
+}
+
+static void arena_release(zs_arena *a) {
+    for (zs_arena **at = &arenas; *at; at = &(*at)->older)
+        if (*at == a) {
+            *at = a->older;
+            break;
+        }
+    for (void *b = a->blocks, *next; b; b = next) { // the oldest block, holding *a, is the last
+        next = ((block_head *)b)->next;
+        heap_give(b);
+    }
+}
+
+void zs_arena_close(void) {
+    zs_arena *a = arena;
+    arena = a->parent;
+    a->open = false;
+    if (a->live == 0) arena_release(a);
+}
+
+static zs_arena *arena_of(const void *p) {
+    for (zs_arena *a = arenas; a; a = a->older)
+        for (void *b = a->blocks; b; b = ((block_head *)b)->next)
+            if ((const char *)p >= (const char *)b && (const char *)p < (const char *)b + ARENA_BLOCK) return a;
+    return NULL;
+}
+
+void *zs_alloc_checked(zs_int size) {
+    zs_arena *a = arena;
+    if (!a || (size_t)size > ARENA_BLOCK / 4) return zs_alloc(size); // a big object is the heap's
+    size_t n = ((size_t)size + 7) & ~(size_t)7;
+    if (a->next + n > a->end) {
+        char *b = arena_block(a);
+        a->blocks = b;
+        a->next = b + ARENA_HEAD;
+        a->end = b + ARENA_BLOCK;
+    }
+    void *p = a->next;
+    a->next += n;
+    a->live++;
+    H.live++;
+    H.allocations++;
+    return p;
+}
+
+void zs_free_checked(void *p) {
+    zs_weak *w = weaks.count ? tab_remove(&weaks, p) : NULL;
+    if (w) w->target = NULL;
+    zs_arena *a = arenas ? arena_of(p) : NULL;
+    if (a) {
+        H.live--;
+        if (--a->live == 0 && !a->open) arena_release(a);
+    } else {
+        zs_free(p);
+    }
+}
 #endif
 // objects marked shared: with an interrupt handler (0012), the values it can reach, at startup
 zs_int zs_marked;

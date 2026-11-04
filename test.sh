@@ -338,11 +338,11 @@ else echo "FAIL tests/mcu/layout.zs"; cat "$tmp/layout.log"; fail=1; fi
 if command -v qemu-system-arm >/dev/null; then
   for chip in cortex-m4 cortex-m0plus; do
     board=$([ $chip = cortex-m4 ] && echo mps2-an386 || echo microbit)
-    for t in isr systick cpu bits task ints static tree fixed noinit; do
+    for t in isr systick cpu bits task ints static tree fixed noinit weak arena; do
       if bin/zs build tests/mcu/$t.zs --target $chip -o "$tmp/$t.elf" 2>"$tmp/$t.log" \
          && out=$(timeout 60 qemu-system-arm -M $board -nographic -semihosting-config enable=on,target=native -kernel "$tmp/$t.elf" 2>&1) \
          && [ "$(echo "$out" | grep -v '^#zs')" = "$(cat tests/mcu/$t.expected)" ] \
-         && { [ $t != task ] || echo "$out" | grep -q ' live=0 '; }; then
+         && { [ $t != task ] && [ $t != weak ] && [ $t != arena ] || echo "$out" | grep -q ' live=0 '; }; then
         echo "ok   tests/mcu/$t.zs on $chip (under qemu)"
       else echo "FAIL tests/mcu/$t.zs on $chip"; cat "$tmp/$t.log"; fail=1; fi
     done
