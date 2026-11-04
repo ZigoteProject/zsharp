@@ -1,0 +1,49 @@
+grep: 38 lines
+jsonpp: 16 lines
+tail: 49 lines
+== grep
+apple crumble
+exit 0
+a.txt:1:Apple pie
+a.txt:4:apple crumble
+b.txt:2:APPLE sauce
+exit 0
+Apple pie
+exit 0
+exit 1
+grep: missing.txt: cannot open missing.txt: No such file or directory
+exit 2
+usage: grep [-i] [-n] [-v] <text> [files…]
+exit 2
+== jsonpp
+{
+  "name": "Z#",
+  "tags": [
+    "ml",
+    "native"
+  ],
+  "stars": {
+    "host": true,
+    "chip": true
+  },
+  "none": null
+}
+
+{"name":"Z#","tags":["ml","native"],"stars":{"host":true,"chip":true},"none":null}
+jsonpp: 1:6: expected ',' or ']' after a value
+exit 1
+== tail
+10
+11
+12
+3
+11
+12
+13
+14
+15
+new
+tail: log: gone
+exit 0
+usage: tail [-n <count>] [-f] <file>
+exit 2

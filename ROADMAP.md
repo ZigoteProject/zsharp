@@ -85,7 +85,7 @@ user asking. Optimization still waits for profiles of real programs.
 4. **What an F# programmer reaches for next** (track S, each small, taken as it comes):
    - *Done 2026-11-04:* `Int`'s checked, saturating and bit operations (S3).
    - *Done 2026-11-04:* ISO 8601 parsing (S6). UDP and name lookup (S8); list expressions over any `Iter` (S1); `Seq` pipelines as one loop (S9, known gap 6).
-   - **The exit tests that say the library is enough:** ten Advent of Code puzzles with only the prelude, Core and Std; grep, a JSON pretty-printer and `tail -f` in `examples/`, each under 100 lines.
+   - **The exit tests that say the library is enough:** ten Advent of Code puzzles with only the prelude, Core and Std; *done 2026-11-04:* grep, a JSON pretty-printer and `tail -f` in `examples/tools`, each under 100 lines.
 5. **Not in 0.7 unless a user asks:** the package index and `zs add` (K7, K8: git URLs work), completion-based I/O (S14), properties and fuzzing as properties (D5, D6: the plain fuzzer covers the compiler), traces (D4 of profiling), RISC-V (T), the editor extensions in their registries (E: after CI is green, since each registry wants a release that was tested on its platform), and `import c` through the provider protocol's open questions (0001).
 
 **Exit:** 1 to 3 done and 4's exit tests met is 0.7; 4's items ship in it as they come. The release
@@ -347,7 +347,7 @@ DESIGN §9's layers.
 - **Freeze at 1.0:** a review checks every name against .NET and F#. After it, renaming something takes a `[<Deprecated "use X">]` warning for one release.
 - **Exit tests:**
   - *After 0.6.2:* ten Advent of Code puzzles written with only the prelude, Core and Std, with no helper that F#'s library already has.
-  - *After 0.6.2:* in `examples/`, grep, a JSON pretty-printer and `tail -f`, each under 100 lines.
+  - *Done 2026-11-04:* in `examples/tools`, grep, a JSON pretty-printer and `tail -f`, each under 100 lines (38, 16 and 49; `tests/examples_tools.sh`).
   - Every Core module builds for Cortex-M0+.
   - *After 0.6.2:* the twelve-dollar server's `Fast/` rebuilt on items 12 to 14: no `unsafe` outside the library and no Rust, at the same user-space instructions per request (67.6k in its mixed workload, against 71.9k for the challenge's leading Rust entry).
 

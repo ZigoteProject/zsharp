@@ -60,6 +60,10 @@
   `Bytes.appendJsonString` no longer costs a whole program the pool (a JSON round trip of 200k
   records: 3.5 s and 935 MB, now 1.4 s and 368 MB).
 
+### Examples
+- `examples/tools`: grep (38 lines), a JSON pretty-printer (16) and `tail -f` (49), each with the
+  prelude, Core and Std alone (track S's exit test), built and run by `tests/examples_tools.sh`.
+
 ### Packages
 - `zs add ../text`, `zs add https://…/json.git@1.2` (a release) or `@v1` (a rev), `--rev main`:
   the dependency written into `zs.toml`'s `[dependencies]` (the name from the package's
