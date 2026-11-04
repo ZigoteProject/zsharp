@@ -81,7 +81,51 @@ let private tools : list<string * string * Json> =
     ("build", "Compile a Z# program to a native executable next to it.", schema [ fileArg ] [ "file" ])
     ("run", "Compile and run a Z# program (10 second limit, empty stdin). Returns its output, exit code and the leak check.", schema [ fileArg ] [ "file" ])
     ("emit_llvm", "The LLVM IR a Z# program compiles to.", schema [ fileArg ] [ "file" ])
-    ("format", "A Z# file in the canonical layout (zs fmt). Returns the formatted text; the file is not changed.", schema [ fileArg ] [ "file" ]) ]
+    ("format", "A Z# file in the canonical layout (zs fmt). Returns the formatted text; the file is not changed.", schema [ fileArg ] [ "file" ])
+    ("definition", "Where the name at a position in a Z# file is defined (1-based line and column): file:line:column and the defining line, in the program's files or the library's.", schema [ fileArg; ("line", "integer", "1-based line"); ("column", "integer", "1-based column") ] [ "file"; "line"; "column" ])
+    ("explain", "The name at a position in a Z# file explained: its type with constraints, its effects in words, where it is defined, and its doc comment.", schema [ fileArg; ("line", "integer", "1-based line"); ("column", "integer", "1-based column") ] [ "file"; "line"; "column" ]) ]
+
+// where a hover's token is: its module, and its 1-based line and column
+let private placeOf (c: Build.Check.Checked) (h: Infer.Cx.Hover) : option<Build.Modules.Loaded * int * int> =
+  match List.tryFind (fun (m: Build.Modules.Loaded) -> m.source.file = h.file) c.modules with
+  | Some m when h.token >= 0 && h.token < Array.length m.tree.tokens ->
+    let t = m.tree.tokens.[h.token]
+    let (l, k) = Syntax.Source.position m.source t.offset
+    Some(m, l, k)
+  | _ -> None
+
+// the hover at a position of a file (1-based): the shortest name there
+let private hoverAt (c: Build.Check.Checked) (file: string) (line: int) (col: int) : option<Infer.Cx.Hover> =
+  let full = Path.getFullPath file
+  let at (h: Infer.Cx.Hover) : option<int * Infer.Cx.Hover> =
+    match placeOf c h with
+    | Some(m, hl, hc) when Path.getFullPath m.source.path = full ->
+      let t = m.tree.tokens.[h.token]
+      let len = String.charCount (String.sub m.source.text t.offset t.length)
+      if hl = line && col >= hc && col < hc + len then Some(len, h) else None
+    | _ -> None
+  match List.sortBy fst (List.choose at (Array.toList (Buffer.toArray c.cx.hovers))) with
+  | (_, h) :: _ -> Some h
+  | [] -> None
+
+// the definition of what a hover names: itself when it is one, else the hover defining its key
+let private definitionOf (c: Build.Check.Checked) (h: Infer.Cx.Hover) : option<Infer.Cx.Hover> =
+  if h.isDef || h.key = "" then Some h else List.tryFind (fun (d: Infer.Cx.Hover) -> d.isDef && d.key = h.key) (Array.toList (Buffer.toArray c.cx.hovers))
+
+// a module's path as shown: the library's under lib/, the program's as given
+let private shownPath (m: Build.Modules.Loaded) : string =
+  let lib = Build.Modules.libraryDir ()
+  let full = Path.getFullPath m.source.path
+  if String.startsWith lib full then "lib/" + Path.getRelativePath lib full else m.source.path
+
+// a definition's place and line: "file:line:column\n  the line"
+let private definitionText (c: Build.Check.Checked) (h: Infer.Cx.Hover) : option<string> =
+  match Option.bind (placeOf c) (definitionOf c h) with
+  | Some(m, l, k) ->
+    let lines = String.splitLines m.source.text
+    let text = if l >= 1 && l <= List.length lines then String.trim (List.item (l - 1) lines) else ""
+    Some $"{shownPath m}:{l}:{k}\n  {text}"
+  | None -> None
 
 // a build's warnings before what it made
 let private withWarnings (b: Build.Make.Built) (text: string) =
@@ -107,7 +151,7 @@ let private call (name: string) (args: Json) : result<string, string> =
       | Ok c ->
         let ds = Array.toList (Buffer.toArray c.cx.diagnostics)
         Ok(if List.isEmpty ds then "no errors" else formatErrors (List.map (fun (m: Build.Modules.Loaded) -> m.source) c.modules) ds)
-  else if name = "type_at" then
+  else if name = "type_at" || name = "definition" || name = "explain" then
     match (fileOf (), arg "line", arg "column") with
     | (Ok file, Ok l, Ok k) ->
       let line = Rpc.intOf l
@@ -115,18 +159,26 @@ let private call (name: string) (args: Json) : result<string, string> =
       match check file with
       | Error e -> Error e
       | Ok c ->
-        let full = Path.getFullPath file
-        let at (h: Infer.Cx.Hover) : option<int * Infer.Cx.Hover> =
-          match List.tryFind (fun (m: Build.Modules.Loaded) -> m.source.file = h.file) c.modules with
-          | Some m when Path.getFullPath m.source.path = full && h.token >= 0 && h.token < Array.length m.tree.tokens ->
-            let t = m.tree.tokens.[h.token]
-            let (hl, hc) = Syntax.Source.position m.source t.offset
-            let len = String.charCount (String.sub m.source.text t.offset t.length)
-            if hl = line && col >= hc && col < hc + len then Some(len, h) else None
-          | _ -> None
-        match List.sortBy fst (List.choose at (Array.toList (Buffer.toArray c.cx.hovers))) with
-        | (_, h) :: _ -> Ok(signature c h)
-        | [] -> Ok $"no name at {file}:{line}:{col}"
+        match hoverAt c file line col with
+        | None -> Ok $"no name at {file}:{line}:{col}"
+        | Some h when name = "type_at" -> Ok(signature c h)
+        | Some h when name = "definition" -> Ok(Option.defaultValue $"{h.name} has no definition in this program's files (a built-in)" (definitionText c h))
+        | Some h ->
+          // explain: the signature, where it's defined, and its doc comment (at the definition,
+          // or a built-in's)
+          let defined =
+            match definitionText c h with
+            | Some d -> "\ndefined at " + d
+            | None -> "\nbuilt into the compiler"
+          let doc =
+            let above =
+              match Option.bind (placeOf c) (definitionOf c h) with
+              | Some(m, dl, _) -> Build.Doc.docAbove (Array.ofList (String.splitLines m.source.text)) dl
+              | None -> None
+            match above with
+            | Some d -> Some d
+            | None -> List.tryPick (fun (key: string) -> Option.map snd (List.tryFind (fun (kd: string * string) -> fst kd = key) Build.Doc.builtinDocs)) [ h.key; h.name ]
+          Ok(signature c h + defined + (match doc with | Some d -> "\n\n" + d | None -> ""))
     | (Error e, _, _) -> Error e
     | (_, Error e, _) -> Error e
     | (_, _, Error e) -> Error e

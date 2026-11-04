@@ -194,7 +194,7 @@ same support through a thin extension each.
 - **Allocation hints** (phase 12, [0026](docs/proposals/0026-performance-you-can-see.md)): with `allocationHints` on, each line shows what it does to the heap (`allocates ×2`, `reuses t`, `copies on write`), and hover on a function says whether `[<NoAlloc>]` would pass.
 
 **Next:**
-- **E3, rest:** *(after 0.6.2)* `definition` and `explain` tools.
+- **E3, rest:** *(done 2026-11-04: `tests/mcp/session.sh`)* `definition` and `explain` tools.
 - **Grammar and extensions published:** *(after 0.6.2)* the Zed extension in Zed's registry, the VS Code extension on its marketplace, the Rider plugin on JetBrains's; today each is installed from its folder.
 - **Exit tests:**
   - A 2,000-line file re-checks within 100 ms in Zed.

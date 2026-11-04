@@ -76,6 +76,11 @@
   cortex-m4 has none, so it can't depend on this package`, instead of an error deep in its code.
 
 ### Tooling
+- `zs mcp` has `definition` (where the name at a position is defined: `file:line:column` and the
+  defining line, in the program's files or the library's) and `explain` (its type with
+  constraints, its effects in words, where it's defined, and its doc comment, a built-in's
+  included) beside `check`, `type_at`, `docs`, `build`, `run`, `emit_llvm` and `format` (track E,
+  item 3).
 - `zs test --stress 10m` (track D, item 4): the tests at random on every core, over and over for
   that long (`30s`, `10m`, `1h`), each run its own process as always; a failure one run hides (a
   race, a leak on a rare path, a timeout under load) shows, each failing test shown once with its

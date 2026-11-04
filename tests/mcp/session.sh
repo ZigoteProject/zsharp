@@ -17,6 +17,10 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
   echo '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"docs","arguments":{"query":"List.sort"}}}'
   echo '{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"run","arguments":{"file":"tests/mcp/sample.zs"}}}'
   echo '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"run","arguments":{"file":"/etc/passwd"}}}'
+  echo '{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"definition","arguments":{"file":"tests/mcp/sample.zs","line":5,"column":21}}}'
+  echo '{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"definition","arguments":{"file":"tests/mcp/sample.zs","line":5,"column":17}}}'
+  echo '{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"explain","arguments":{"file":"tests/mcp/sample.zs","line":5,"column":21}}}'
+  echo '{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"explain","arguments":{"file":"tests/mcp/sample.zs","line":6,"column":3}}}'
 } | ZS_NO_SERVER=1 TMPDIR=$tmp "$zs" mcp | sed "s|$(pwd)|.|g" | while IFS= read -r line; do
   case "$line" in
     *'"tools":['*) printf '%s\n' "$line" | grep -o '"name":"[a-z_]*"' | tr '\n' ' '; echo ;;
