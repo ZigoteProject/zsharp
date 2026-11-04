@@ -204,6 +204,12 @@ else echo "FAIL tests/ztest/coverage.sh"; diff <(tests/ztest/coverage.sh 2>&1) t
 # first, and gone once it passes
 if [ "$(tests/ztest/property.sh 2>&1)" = "$(cat tests/ztest/property.expected)" ]; then echo "ok   tests/ztest/property.sh (a panicking case shrunk by replays, saved, replayed first)"
 else echo "FAIL tests/ztest/property.sh"; diff <(tests/ztest/property.sh 2>&1) tests/ztest/property.expected; fail=1; fi
+# zs fuzz (0010, step 5): a property under libFuzzer, the planted bug found, shrunk, saved;
+# where clang has libFuzzer's runtime (the dev container does)
+if [ -n "$(find "$(clang -print-resource-dir 2>/dev/null)/lib" -name 'libclang_rt.fuzzer_no_main*' 2>/dev/null | head -1)" ]; then
+  if [ "$(tests/fuzz/fuzz.sh 2>&1)" = "$(cat tests/fuzz/fuzz.expected)" ]; then echo "ok   tests/fuzz/fuzz.sh (zs fuzz finds and shrinks a planted bug)"
+  else echo "FAIL tests/fuzz/fuzz.sh"; diff <(tests/fuzz/fuzz.sh 2>&1) tests/fuzz/fuzz.expected; fail=1; fi
+else echo "skip tests/fuzz/fuzz.sh (no libFuzzer runtime)"; fi
 # zs bench (0009, D9): benchmarks as values, a median and a confidence interval each, a planted
 # slowdown reported against the saved run and nothing for the same build; testFaster
 if [ "$(tests/ztest/bench.sh 2>&1)" = "$(cat tests/ztest/bench.expected)" ]; then echo "ok   tests/ztest/bench.sh (zs bench, testFaster)"

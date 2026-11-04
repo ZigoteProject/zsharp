@@ -1,0 +1,13 @@
+fuzzing parser/parses anything (corpus kept)
+FAIL parser/parses anything
+       case: ()
+       panic: index out of bounds
+       input: [| 90; 83; 33; 0 |]
+       found by libFuzzer (N inputs in the corpus); shrunk from N bytes to 4 in N runs; saved as .zs-cache/failures/parser-parses-anything, which zs test replays first
+saved:
+parser-parses-anything
+zs test replays it first:
+FAIL parser/parses anything
+       case: ()
+       the failing case saved last time, replayed first (delete .zs-cache/failures/parser-parses-anything to run afresh)
+0 passed, 1 failed

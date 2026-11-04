@@ -237,8 +237,69 @@ typedef struct {
 // a core dump, so system crash reporters don't flag every panic. ZS_ABORT=1 aborts for real
 // (a core file for a debugger).
 static _Noreturn void stop(void) {
+#ifdef ZS_FUZZ
+    abort(); // libFuzzer records the crash
+#endif
     if (getenv("ZS_ABORT")) abort();
     _exit(134);
+}
+
+// ---- zs fuzz (0010): the test binary's runner hands libFuzzer a property; each input it makes
+// runs the property's case on those bytes (a callback<span<u8> -> unit>). args: the corpus
+// directory and libFuzzer's flags, a line each. In a build without ZS_FUZZ there's no libFuzzer:
+// said so, and 2.
+#ifdef ZS_FUZZ
+int LLVMFuzzerRunDriver(int *argc, char ***argv, int (*cb)(const uint8_t *data, size_t size));
+static void (*fuzz_cb)(void *, const uint8_t *);
+static void *fuzz_user;
+static intptr_t fuzz_size;
+static int fuzz_one(const uint8_t *data, size_t size) {
+    fuzz_size = (intptr_t)size;
+    fuzz_cb(fuzz_user, data);
+    return 0;
+}
+#endif
+
+// the input's length, for the callback (a callback takes one argument)
+intptr_t zs_fuzz_size(void) {
+#ifdef ZS_FUZZ
+    return fuzz_size;
+#else
+    return 0;
+#endif
+}
+
+int32_t zs_fuzz_drive(void (*cb)(void *, const uint8_t *), void *user, const char *args) {
+#ifdef ZS_FUZZ
+    fuzz_cb = cb;
+    fuzz_user = user;
+    // argv: the program, then a line each
+    int n = 1;
+    for (const char *p = args; *p; p++)
+        if (*p == '\n') n++;
+    char **argv = malloc((size_t)(n + 2) * sizeof *argv);
+    char *text = strdup(args);
+    if (!argv || !text) abort();
+    int argc = 0;
+    argv[argc++] = "zs-fuzz";
+    for (char *p = text, *start = text;; p++) {
+        if (*p == '\n' || *p == 0) {
+            bool last = *p == 0;
+            *p = 0;
+            if (*start) argv[argc++] = start;
+            if (last) break;
+            start = p + 1;
+        }
+    }
+    argv[argc] = NULL;
+    return LLVMFuzzerRunDriver(&argc, &argv, fuzz_one);
+#else
+    (void)cb;
+    (void)user;
+    (void)args;
+    fprintf(stderr, "not a fuzz build: zs fuzz builds the tests with libFuzzer\n");
+    return 2;
+#endif
 }
 
 // a C host's function, run on a panic before the process stops (zs_set_panic_hook)

@@ -107,6 +107,9 @@ type Options =
     /// --coverage: a counter per line of the program's own files, written at exit to
     /// <program>.zscov; zs test --coverage reports them
     coverage: bool
+    /// zs fuzz's build: libFuzzer's instrumentation and runtime (fuzzer-no-link) with the
+    /// sanitizers, and a panic aborts, so libFuzzer records it as a crash
+    fuzz: bool
     /// --emit-llvm: the IR kept next to the output (out.ll)
     emitLlvm: bool
     /// --target: the triple ("" for the host); a chip's name sets mcu, and the chip's triple here
@@ -161,6 +164,7 @@ let defaults : Options =
     release = false
     debugInfo = false
     coverage = false
+    fuzz = false
     emitLlvm = false
     target = ""
     mcu = None

@@ -3,6 +3,13 @@
 /// benchmark with `--bench path runs`.
 module Testing.Runner
 
+/// libFuzzer, driven by the runtime: the property's case on each input it makes (a build of
+/// `zs fuzz`; any other says so).
+extern zs_fuzz_drive : callback<ptr<u8> -> unit> -> cstr -> i32
+
+/// The input's length, for the callback's bytes.
+extern zs_fuzz_size : unit -> int
+
 /// A test with its path and what it has from the groups above it.
 type private Leaf =
   { path: string
@@ -36,7 +43,8 @@ let rec private leaves (prefix: string) (focus: Focus) (sequence: string) (t: Te
         property = None } ]
   | Property(name, run) ->
     [ { path = prefix + name
-        run = (fun () -> run { replay = None; onCase = (fun _ _ _ -> ()); onDraw = None })
+        run = (fun () ->
+          run { replay = None; onCase = (fun _ _ _ -> ()); onDraw = None; quiet = false })
         focus = focus
         timeout = 60000
         sequence = sequence
@@ -82,7 +90,7 @@ let main (tests: list<Test>) : int =
         IO.File.writeAllText recordFile "" |> ignore
       let onDraw (bytes: array<u8>) =
         IO.File.appendAllText recordFile (Text.Hex.encode bytes) |> ignore
-      run { replay = None; onCase = onCase; onDraw = Some onDraw }
+      run { replay = None; onCase = onCase; onDraw = Some onDraw; quiet = false }
       0
     | Some l ->
       l.run ()
@@ -95,7 +103,7 @@ let main (tests: list<Test>) : int =
     | (Some { property = Some run }, Ok hex, Some size) ->
       match Text.Hex.decode (String.trim hex) with
       | Some bytes ->
-        run { replay = Some(bytes, size); onCase = (fun _ _ _ -> ()); onDraw = None }
+        run { replay = Some(bytes, size); onCase = (fun _ _ _ -> ()); onDraw = None; quiet = false }
         0
       | None ->
         eprintln $"{bytesFile}: not hex"
@@ -125,6 +133,21 @@ let main (tests: list<Test>) : int =
       0
     | None ->
       eprintln $"no test {path}"
+      2
+  | path :: "--fuzz" :: flags ->
+    // zs fuzz: libFuzzer makes the inputs, each the bytes of one case at size 100 (the corpus
+    // directory and its flags, a line each)
+    match find path with
+    | Some { property = Some run } ->
+      let one (data: ptr<u8>) =
+        let input = unsafe (Span.ofPtr data (zs_fuzz_size ()))
+        run { replay = Some(Array.ofSpan input, 100)
+          onCase = (fun _ _ _ -> ())
+          onDraw = None
+          quiet = true }
+      int (zs_fuzz_drive one (String.join "\n" flags))
+    | _ ->
+      eprintln $"no property {path}"
       2
   | _ ->
     eprintln "usage: <tests> --list | <tests> <path>"

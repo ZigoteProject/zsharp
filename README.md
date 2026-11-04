@@ -315,6 +315,7 @@ One `zs` binary holds the compiler and its tools.
 | `zs bench` | `bench` values timed with a median and a confidence interval, a change from the last saved run reported; `testFaster` for a performance claim |
 | `zs test --coverage` | the lines run and not run per file, and `coverage.lcov` for `genhtml` |
 | properties | `testProperty "name" (fun (xs: list<int>) -> …)`: cases drawn with `Arbitrary` (derived for your types), a failure shrunk to a smallest case and shown with its seed |
+| `zs fuzz` | a property under libFuzzer, guided by coverage; a crash shrunk and saved for `zs test` to replay first |
 | `zs doctor` | what builds need (clang 23 or later, zig, libclang, …), found or not, and how to get what's missing |
 | `zs fmt`, `zs doc` | one canonical format; Markdown docs from `///` comments |
 | `zs provide`, `import json "weather.json"` | type providers ([the guide's chapter](docs/guide/18-type-providers.md)): the types of a JSON sample, a CSV file, a SQL schema or a chip's SVD file, declared from the file when the program is compiled and checked against it; `zs provide` prints the module to keep instead; a `zs-provider-<name>` on PATH is one of your own |

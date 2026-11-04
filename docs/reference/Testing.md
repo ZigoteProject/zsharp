@@ -722,6 +722,15 @@ Testing.Gen.array : Testing.Gen<'a> -> Testing.Gen<array<'a>>
 
 An array of `g`, as `list`.
 
+### `Testing.Gen.bytes`
+
+```zsharp
+Testing.Gen.bytes : unit -> Testing.Gen<array<u8>>
+```
+
+Raw bytes: at random, up to the size many; from a given stream (a replay, or `zs fuzz`'s
+input), all that's left, so a property over bytes takes the fuzzer's input as it is.
+
 ### `Testing.Gen.option`
 
 ```zsharp

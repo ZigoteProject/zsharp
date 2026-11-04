@@ -442,8 +442,14 @@ a real machine. The flagship runs under QEMU's STM32F405, not yet on the board i
   smallest arguments. Under `zs test`, a case that panics is recorded as drawn (each case from
   its own seed), shrunk by replays of the test binary (`--replay`) to a smallest case that
   still panics, shown, and saved beside the file in `.zs-cache/failures/`; the next run
-  replays it first, and once it passes it's deleted. `zs fuzz` is left
-  (`tests/property/basic.zs`, `model.zs`, `tests/ztest/property.sh`).
+  replays it first, and once it passes it's deleted. `zs fuzz file.zs path [--for n] [--
+  flags]` (track D, item 6) runs one property under libFuzzer (the tests built with its
+  instrumentation and the sanitizers; a panic aborts, so it's a crash), each input the
+  property's bytes (`Gen.bytes ()` takes an input whole, so a property over bytes fuzzes a
+  parser as it is), the corpus kept beside the file in `.zs-cache/fuzz/<path>/` so a run
+  resumes; a crash is shrunk by replays, shown, and saved as the failure `zs test` replays
+  first (`tests/property/basic.zs`, `model.zs`, `tests/ztest/property.sh`,
+  `tests/fuzz/fuzz.sh`).
 - `Numerics.Fixed` (0015, track M item 10): `q7`, `q15` and `q31`, each a one-case union over
   its integer (its size, by decision 66), with saturating `+`, `-`, `*` (rounded half up), `/`, `%` and negation,
   `mulAdd`, `abs`, `clamp`, `ofFloat`/`toFloat`/`toF32`, `ofInt`, `raw`/`ofRaw`, the conversions

@@ -33,7 +33,9 @@ and PropertyDriver =
     /// Before each random case: its index, its seed and its size.
     onCase: int -> u64 -> int -> unit
     /// Each block drawn at random.
-    onDraw: option<array<u8> -> unit> }
+    onDraw: option<array<u8> -> unit>
+    /// Nothing printed for a replayed case (`zs fuzz` runs millions).
+    quiet: bool }
 
 /// What a test's body gives back: nothing (a panic fails it), a `result` (an `Error` fails it),
 /// or a task (Std's impl runs it on the event loop).
@@ -177,7 +179,7 @@ let runAll (tests: list<Test>) : int =
     // a property runs at random, nothing recorded (a chip has no files)
     | Property(name, run) ->
       [ (prefix + name,
-          (fun () -> run { replay = None; onCase = (fun _ _ _ -> ()); onDraw = None }),
+          (fun () -> run { replay = None; onCase = (fun _ _ _ -> ()); onDraw = None; quiet = false }),
           focus) ]
     | Group(name, ts, f, _) ->
       List.collect (leaves (prefix + name + "/") (if focus = Normal then f else focus)) ts
@@ -372,6 +374,14 @@ module Gen =
 
   /// An array of `g`, as `list`.
   let array (g: Gen<'a>) : Gen<array<'a>> = map Array.ofList (list g)
+
+  /// Raw bytes: at random, up to the size many; from a given stream (a replay, or `zs fuzz`'s
+  /// input), all that's left, so a property over bytes takes the fuzzer's input as it is.
+  let bytes () : Gen<array<u8>> =
+    Gen(fun s ->
+      match s.random with
+      | Some _ -> Source.draw (offset s.size s) s
+      | None -> Source.draw (max 0 (Buffer.length s.bytes - s.pos.Value)) s)
 
   /// `None` first, else `g`.
   let option (g: Gen<'a>) : Gen<option<'a>> =
@@ -786,17 +796,21 @@ let testPropertyWith (ps: PropertySettings) (name: string) (prop: 'a -> 'r) : Te
     if List.isEmpty ls then "" else $"\n  labels: {String.join ", " ls}"
   // one case from given bytes (zs test's replay of a case that panicked, or a saved one): the
   // case shown, then run; a discarded one is said so
-  let replay (bytes: array<u8>) (size: int) =
+  let replay (bytes: array<u8>) (size: int) (quiet: bool) =
     let src = Source.ofBytes bytes size
     let x = Gen.draw (arbitrary ()) src
     if Source.rejected src then
-      println "zs-discarded"
+      if not quiet then
+        println "zs-discarded"
     else
-      println $"case: {show x}"
+      if not quiet then
+        println $"case: {show x}"
       match check (prop x) src with
       | Some msg when not (Source.rejected src) ->
         panic $"falsified: {show x}\n  {msg}{labelled (Array.toList (Buffer.toArray src.labels))}"
-      | Some _ -> println "zs-discarded"
+      | Some _ ->
+        if not quiet then
+          println "zs-discarded"
       | None -> ()
   let body (d: PropertyDriver) =
     let seed =
@@ -853,7 +867,7 @@ let testPropertyWith (ps: PropertySettings) (name: string) (prop: 'a -> 'r) : Te
       panic $"falsified after {passed + 1} cases ({steps} shrinks): {show x}\n  {msg}{labelled labels}\n  replay: testPropertyWith {{ seed = Some (u64 {seed}) }}"
   let run (d: PropertyDriver) =
     match d.replay with
-    | Some(bytes, size) -> replay bytes size
+    | Some(bytes, size) -> replay bytes size d.quiet
     | None -> body d
   Property(name, run)
 

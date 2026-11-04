@@ -426,13 +426,16 @@ let private unhex (s: string) : option<array<u8>> =
         out.[i] <- u8 (hi * 16 + lo)
     if ok then Some out else None
 
+// a test's path as a file name: letters, digits, '-', '_' and '.', the rest made '-'
+let private safeName (path: string) : string =
+  let safe (c: u8) =
+    if (c >= u8 48 && c <= u8 57) || (c >= u8 65 && c <= u8 90) || (c >= u8 97 && c <= u8 122) || c = u8 45 || c = u8 95 || c = u8 46 then String.ofByte c else "-"
+  String.concat (List.init (String.length path) (fun i -> safe (String.byte path i)))
+
 // where a property's shrunk failing case is saved, beside the test file, to be replayed first
 // the next time (0010): .zs-cache/failures/<path>, the path's other characters made '-'
 let private failureFile (src: string) (path: string) : string =
-  let safe (c: u8) =
-    if (c >= u8 48 && c <= u8 57) || (c >= u8 65 && c <= u8 90) || (c >= u8 97 && c <= u8 122) || c = u8 45 || c = u8 95 || c = u8 46 then String.ofByte c else "-"
-  let name = String.concat (List.init (String.length path) (fun i -> safe (String.byte path i)))
-  Path.combine (Path.combine (Path.combine (dirOf src) ".zs-cache") "failures") name
+  Path.combine (Path.combine (Path.combine (dirOf src) ".zs-cache") "failures") (safeName path)
 
 // a replay of one case of a property: its exit code and output; the case still fails when the
 // code isn't 0 and the case wasn't discarded
@@ -1059,6 +1062,133 @@ let bench (args: list<string>) : int =
       | src :: _ -> if fetched o.offline (dirOf src) then benchFile o src filters runs else 1
       | [] ->
         eprintln "zs bench takes the file whose benchmarks to run: zs bench tests/perf.zs [filters] [--runs 50]"
+        2
+
+// zs fuzz file.zs path [--for n] [-- flags…] (0010 step 5, D6): the file's tests built with
+// libFuzzer and the sanitizers, and the property named run under it for n seconds (60 unless
+// --for says; the flags after -- are libFuzzer's), its inputs the property's bytes (Gen.bytes
+// takes an input whole). The corpus is kept beside the file (.zs-cache/fuzz/<path>/), so a run
+// resumes. A crash is a failing case: shrunk by replays of the binary, shown, and saved as
+// zs test's failure, replayed first
+let fuzz (args: list<string>) : int =
+  match Options.parse args with
+  | Error e ->
+    eprintln e
+    2
+  | Ok(o, rest) ->
+    let rec split (xs: list<string>) (ours: list<string>) : list<string> * list<string> =
+      match xs with
+      | "--" :: theirs -> (List.rev ours, theirs)
+      | x :: more -> split more (x :: ours)
+      | [] -> (List.rev ours, [])
+    let (ours, theirs) = split rest []
+    let rec timeIn (xs: list<string>) : result<int, string> =
+      match xs with
+      | "--for" :: n :: _ ->
+        match (Int.parse n : option<int>) with
+        | Some k when k >= 1 -> Ok k
+        | _ -> Error $"zs fuzz --for takes the seconds, not '{n}'"
+      | [ "--for" ] -> Error "zs fuzz --for takes the seconds: --for 60"
+      | _ :: more -> timeIn more
+      | [] -> Ok 60
+    let rec withoutTime (xs: list<string>) : list<string> =
+      match xs with
+      | "--for" :: _ :: more -> withoutTime more
+      | x :: more -> x :: withoutTime more
+      | [] -> []
+    match timeIn ours with
+    | Error e ->
+      eprintln e
+      2
+    | Ok seconds ->
+      let plain = withoutTime ours
+      match (List.filter isFile plain, List.filter (fun (a: string) -> not (isFile a) && not (String.startsWith "--" a)) plain) with
+      | (src :: _, wanted :: _) ->
+        if not (fetched o.offline (dirOf src)) then
+          1
+        else
+          let exe = scratchExe ()
+          if Make.build { o with main = src; out = exe; fuzz = true; sanitize = true } true <> 0 then
+            File.delete exe |> ignore
+            1
+          else
+            let listed =
+              match Tools.runSplit exe [ "--list" ] with
+              | Ok r -> r.out
+              | Error _ -> ""
+            let leaves = List.filter (fun (l: Leaf) -> l.kind = "property") (List.choose leafOf (List.filter (fun l -> l <> "") (String.split "\n" listed)))
+            match List.tryFind (fun (l: Leaf) -> l.path = wanted || String.contains wanted l.path) leaves with
+            | None ->
+              println (if List.isEmpty leaves then $"{src}: no properties" else $"no property's path matches {wanted} (they are {String.join ", " (List.map (fun (l: Leaf) -> l.path) leaves)})")
+              File.delete exe |> ignore
+              1
+            | Some l ->
+              let corpus = Path.combine (Path.combine (Path.combine (dirOf src) ".zs-cache") "fuzz") (safeName l.path)
+              Tools.makeDirectory corpus
+              let crashes = exe + ".crashes"
+              Tools.makeDirectory crashes
+              let flags = List.concat [ [ corpus; $"-max_total_time={seconds}"; $"-artifact_prefix={crashes}/" ]; theirs ]
+              println $"fuzzing {l.path} for {seconds} s (corpus: {Path.getRelativePath (Environment.currentDirectory ()) corpus})"
+              let ran = Tools.runSplit exe (List.concat [ [ l.path; "--fuzz" ]; flags ])
+              let found =
+                match Directory.list crashes with
+                | Ok names -> List.sort (List.filter (fun (n: string) -> String.startsWith "crash-" n || String.startsWith "timeout-" n || String.startsWith "oom-" n) names)
+                | Error _ -> []
+              let inputs =
+                match Directory.list corpus with
+                | Ok names -> List.length names
+                | Error _ -> 0
+              let code =
+                match found with
+                | [] ->
+                  match ran with
+                  | Ok r when r.code = 0 ->
+                    println $"no failure in {seconds} s; {inputs} inputs in the corpus"
+                    0
+                  | Ok r ->
+                    println $"libFuzzer stopped with {r.code}:"
+                    for line in List.filter (fun (s: string) -> s <> "") (String.split "\n" r.err) do
+                      println $"       {line}"
+                    1
+                  | Error e ->
+                    println e
+                    1
+                | name :: _ ->
+                  match File.readAllBytes (Path.combine crashes name) with
+                  | Ok bytes0 ->
+                    // the input is the case's bytes at size 100, as the runner replays them
+                    let size = 100
+                    let file = exe + ".try"
+                    let (bytes, runs) = shrinkByReplay exe l size bytes0 file
+                    File.writeAllText file (hexOf bytes) |> ignore
+                    let (_, shown) = replayCase exe l file size
+                    File.delete file |> ignore
+                    let saved = failureFile src l.path
+                    Tools.makeDirectory (Path.getDirectoryName saved)
+                    File.writeAllText saved $"{size}\n{hexOf bytes}\n" |> ignore
+                    println $"FAIL {l.path}"
+                    for line in List.filter (fun (s: string) -> s <> "") (String.split "\n" (String.trim shown)) do
+                      println $"       {line}"
+                    // the input as bytes: what a property over Gen.bytes saw
+                    println $"       input: [| {String.join "; " (List.map (fun (b: u8) -> string (int b)) (Array.toList bytes))} |]"
+                    println $"       found by libFuzzer ({inputs} inputs in the corpus); shrunk from {Array.length bytes0} bytes to {Array.length bytes} in {runs} runs; saved as {Path.getRelativePath (Environment.currentDirectory ()) saved}, which zs test replays first"
+                    1
+                  | Error e ->
+                    println $"{name}: {e}"
+                    1
+              match Directory.list crashes with
+              | Ok names ->
+                for n in names do
+                  File.delete (Path.combine crashes n) |> ignore
+              | Error _ -> ()
+              Directory.delete crashes |> ignore
+              File.delete exe |> ignore
+              code
+      | (_ :: _, []) ->
+        eprintln "zs fuzz takes the property's path too: zs fuzz tests/parse.zs parser/parses"
+        2
+      | _ ->
+        eprintln "zs fuzz takes the file and the property's path: zs fuzz tests/parse.zs parser/parses [--for 60] [-- libFuzzer flags]"
         2
 
 let test (args: list<string>) : int =

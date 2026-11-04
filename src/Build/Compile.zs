@@ -389,7 +389,10 @@ let make (o: Options.Options) (prog0: Program) (linked: Modules.Linked) (testBui
       // ZS_NO_POOL: objects from malloc, one by one, for valgrind (a sanitized build has that too)
       let defines = List.append (if threads then [ "-DZS_THREADS" ] else []) (if Option.isSome (Environment.getVariable "ZS_NO_POOL") then [ "-DZS_NO_POOL" ] else [])
       let san =
-        if not o.sanitize then []
+        // zs fuzz: libFuzzer's coverage instrumentation and its runtime without a main (the test
+        // binary's runner drives it), with the sanitizers; a panic aborts (ZS_FUZZ)
+        if o.fuzz then [ "-fsanitize=address,undefined,fuzzer-no-link"; "-g"; "-DZS_NO_POOL"; "-DZS_FUZZ" ]
+        else if not o.sanitize then []
         else if o.threadSanitizer then [ "-fsanitize=thread"; "-g"; "-DZS_NO_POOL" ]
         // AddressSanitizer sees each object
         else [ "-fsanitize=address,undefined"; "-g"; "-DZS_NO_POOL" ]
@@ -411,6 +414,14 @@ let make (o: Options.Options) (prog0: Program) (linked: Modules.Linked) (testBui
       // drops it, -S to ld.lld and ld64.lld; on Windows -s, which writes no .pdb either)
       let nodebug = if o.debugInfo then [] else if String.contains "-windows" o.target then [ "-g0"; "-s" ] else [ "-g0"; "-Wl,-S" ]
       let cc (args: list<string>) = if cross then Tools.run "zig" (List.concat [ [ "cc"; "-target"; o.target ]; nodebug; args ]) else Tools.run "clang" args
+      // zs fuzz: libFuzzer's runtime without its main (the runner drives it), which is C++
+      let fuzzLink =
+        if not o.fuzz then
+          []
+        else
+          match Tools.runSplit "clang" [ "-print-file-name=libclang_rt.fuzzer_no_main.a" ] with
+          | Ok r when String.contains "/" r.out -> [ String.trim r.out; "-lstdc++" ]
+          | _ -> [ "-lstdc++" ]
       let built =
         match o.mcu with
         | Some m when o.isLib && (m.board <> "" || String.endsWith ".a" o.out) ->
@@ -489,7 +500,7 @@ let make (o: Options.Options) (prog0: Program) (linked: Modules.Linked) (testBui
             File.delete obj |> ignore
             r2
           else
-            timed o.time "clang" (fun () -> Tools.run "clang" (List.concat [ opt; profile; defines; Options.sectionFlags o; Options.unusedLinkFlags o; [ "-Wno-override-module" ]; san; [ ll; runtimeFile "rt.c" ]; linkArgs linked; [ "-o"; o.out; "-lm" ] ]))
+            timed o.time "clang" (fun () -> Tools.run "clang" (List.concat [ opt; profile; defines; Options.sectionFlags o; Options.unusedLinkFlags o; [ "-Wno-override-module" ]; san; [ ll; runtimeFile "rt.c" ]; linkArgs linked; fuzzLink; [ "-o"; o.out; "-lm" ] ]))
       if not o.emitLlvm then
         File.delete ll |> ignore
         Directory.delete scratch |> ignore
