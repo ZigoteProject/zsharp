@@ -243,13 +243,47 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
         | Ok here -> List.contains n here && listed (Path.combine dir n) rest
         | Error _ -> true
     let under (root: string) =
-      let dir = List.fold Path.combine root dirs
-      let named (file: string) = Path.combine dir file <> pkg.main && File.exists (Path.combine dir file) && listed root (List.append dirs [ file ])
-      Option.map (Path.combine dir) (List.tryFind named [ last + ".zs"; lowerFirst last + ".zs" ])
+      // each directory as named, or with its first letter lowered (an internal/ directory, 0018)
+      let rec descend (dir: string) (names: list<string>) (acc: list<string>) : option<string * list<string>> =
+        match names with
+        | [] -> Some(dir, List.rev acc)
+        | n :: rest ->
+          match List.tryFind (fun (c: string) -> Directory.exists (Path.combine dir c)) [ n; lowerFirst n ] with
+          | Some c -> descend (Path.combine dir c) rest (c :: acc)
+          | None -> None
+      match descend root dirs [] with
+      | None -> None
+      | Some(dir, actual) ->
+        let named (file: string) = Path.combine dir file <> pkg.main && File.exists (Path.combine dir file) && listed root (List.append actual [ file ])
+        Option.map (Path.combine dir) (List.tryFind named [ last + ".zs"; lowerFirst last + ".zs" ])
     let own = Path.getDirectoryName pkg.main
     match under pkg.root with
     | None when own <> pkg.root -> under own
     | found -> found
+  // a package's name: its manifest's, else its prefix
+  let packageName (p: Project.Package) : string =
+    match p.manifest with
+    | Some mf -> mf.name
+    | None -> Option.defaultValue "the program" p.prefix
+  // whether a file of p is under a directory named internal (0018 item 3)
+  let isInternal (p: Project.Package) (file: string) : bool =
+    let rel = Path.getRelativePath p.root (Path.getFullPath file)
+    let parts = String.split "/" (String.replace rel "\\" "/")
+    List.exists (fun (d: string) -> String.toLower d = "internal") (List.take (max 0 (List.length parts - 1)) parts)
+  // a package's public modules, for the error: its prefix, and its root's files not under
+  // internal/
+  let publicModules (p: Project.Package) : string =
+    let prefix = Option.defaultValue "" p.prefix
+    let files =
+      match Directory.list p.root with
+      | Ok names -> List.sort (List.choose (fun (n: string) -> if String.endsWith ".zs" n && Path.combine p.root n <> p.main then Some(prefix + "." + Path.getFileNameWithoutExtension n) else None) names)
+      | Error _ -> []
+    String.join ", " (prefix :: files)
+  // whether a use names a module of Std (by its full name, or a tail of it: File for IO.File)
+  let stdModuleOf (u: string) : bool =
+    List.exists (fun (f: string) ->
+      let full = String.replace f "/" "."
+      full = u || String.endsWith ("." + u) full) stdFiles
   // the module with the full name m, as a file of pkg or of one of its dependencies
   let find (pkg: Project.Package) (m: string) : option<string * string * Project.Package> =
     let within (p: Project.Package) (prefix: option<string>) : option<string * string * Project.Package> =
@@ -557,6 +591,17 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
               if List.exists (fun (k, _, _) -> k = n) found then
                 fail (error { file = m.source.file; offset = 0; length = -1 } $"module {n} is provided by an import here and is also a file of the package: name the import's module otherwise", Some m.source)
             let deps = List.append found (List.map (fun (n, f) -> (n, f, pkg)) providedDeps)
+            // internal modules (0018 item 3): a dependency's file under an internal/ directory
+            // is for the package's own files; from outside, its name doesn't resolve
+            for (n, f, p) in deps do
+              if Option.isNone failure.Value && p.root <> pkg.root && isInternal p f then
+                fail (error { file = m.source.file; offset = 0; length = -1 } $"{n} is internal to {packageName p}; use its public modules ({publicModules p})", Some m.source)
+            // a chip has no Std (0018 item 5): a dependency that uses it is an error naming the
+            // package, where the build starts, not an error deep in its code
+            if Option.isNone failure.Value && Option.isSome chip && Option.isSome pkg.prefix then
+              match List.tryFind (fun (u: string) -> stdModuleOf u && Option.isNone (find pkg u)) (usesOf m.source m.tree m.decls) with
+              | Some u -> fail (error { file = m.source.file; offset = 0; length = -1 } $"package '{packageName pkg}' uses {u}, part of Std, which needs an operating system; a build for {targetName} has none, so it can't depend on this package", Some m.source)
+              | None -> ()
             for (n, f, p) in deps do
               if Option.isNone failure.Value then
                 match Map.tryFind n finished.Value with

@@ -357,6 +357,10 @@ let private writeLock (root: string) (entries: list<string * Locked>) =
   let lines = List.append [ "# zs.lock: the exact commits of git dependencies. zs update moves them to the newest"; "# commit of their rev, or release; commit this file so every build uses the same code."; "[dependencies]" ] (List.map line (List.sortBy fst entries))
   File.writeAllText (Path.combine root "zs.lock") (String.join "\n" lines + "\n") |> ignore
 
+/// The commit zs.lock has for a git dependency, by its name in zs.toml (`zs tree`).
+let lockedCommit (root: string) (name: string) : option<string> =
+  Option.map (fun (l: Locked) -> l.commit) (Map.tryFind name (readLock root))
+
 /// Checks out every git dependency of the project (and of its dependencies) at the commit in
 /// zs.lock. A new dependency, a changed URL or rev, or update resolves the rev again (fetching
 /// when needed) and records the new commit. A dependency on releases (version) gets one by

@@ -241,6 +241,9 @@ else echo "FAIL packages"; echo "$pk"; fail=1; fi
 # git dependencies against a local repository: tags, branches, zs.lock, zs update, re-fetching
 if diff <(tests/project/git.sh 2>&1) tests/project/git.expected >"$tmp/git.diff"; then echo "ok   tests/project/git.sh (git dependencies)"
 else echo "FAIL tests/project/git.sh"; cat "$tmp/git.diff"; fail=1; fi
+# zs add, zs remove and zs tree, internal modules, and Std in a chip build's dependency (0018)
+if diff <(tests/project/pkgs.sh 2>&1) tests/project/pkgs.expected >"$tmp/pkgs.diff"; then echo "ok   tests/project/pkgs.sh (zs add, remove, tree; internal modules; Std on a chip)"
+else echo "FAIL tests/project/pkgs.sh"; cat "$tmp/pkgs.diff"; fail=1; fi
 
 # import c in the editor: hover shows the Z# type, C prototype and header comment; definition
 # opens the header. Then the same file checks with clang unavailable, from the saved import.

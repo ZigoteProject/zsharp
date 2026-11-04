@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Implemented in part. Items 1 (namespaced dependencies, `tests/project/two`), 2 (versions, phase 12: `tests/project/git.sh`; a second major in a `v2/` directory isn't read yet, only tags at the root), 4 (the `[c]` section, `tests/project/cwords`; `[c.<target>]` with 0022) and 9 (the orphan rule, decision 84, phase 12) are built; internal modules, targets, integrity, commands and workspaces (items 3, 5–8) after 0.6.2. Draft for the index |
+| **Status** | Implemented in part. Items 1 (namespaced dependencies, `tests/project/two`), 2 (versions, phase 12: `tests/project/git.sh`; a second major in a `v2/` directory isn't read yet, only tags at the root), 4 (the `[c]` section, `tests/project/cwords`; `[c.<target>]` with 0022) and 9 (the orphan rule, decision 84, phase 12) are built, and internal modules, targets and the commands (items 3, 5 and 7; `zs add` by name waits for the index), 2026-11-04; integrity and workspaces (items 6 and 8) after 0.6.2. Draft for the index |
 | **Decided at** | track K's plan ([ROADMAP](../../ROADMAP.md#packages-k)); phase 12's "before 0.1" list takes item 2 ([ROADMAP](../../ROADMAP.md#phase-12-release-062)); the index at a later design review |
 | **Builds** | track K: packages |
 | **Rests on** | decisions 26 (`zig cc`), 27 (source packages, `zs.lock`), 37 (Core and Std) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §12](../../DESIGN.md#12-tooling) Projects |

@@ -141,6 +141,177 @@ let fetch (update: bool) : int =
       eprintln $"zs: {e}"
     if List.isEmpty errors then 0 else 1
 
+// ------------------------------------------------------------ zs add, zs remove, zs tree
+
+// zs.toml's lines with a dependency's line written in [dependencies] (the section added at the
+// end when there's none), or taken out; Error when there's no such dependency to take out
+let private editDependencies (lines: list<string>) (name: string) (value: option<string>) : result<list<string>, string> =
+  let isHeader (l: string) = String.startsWith "[" (String.trim l)
+  let isEntry (l: string) =
+    match String.indexOf "=" l with
+    | Some eq -> String.trim (String.sub l 0 eq) = name
+    | None -> false
+  let rec go (acc: list<string>) (rest: list<string>) (inDeps: bool) (done: bool) : list<string> * bool =
+    match rest with
+    | [] -> (List.rev acc, done)
+    | l :: more ->
+      if isHeader l then
+        let here = String.trim l = "[dependencies]"
+        // the section ends: a new entry goes last in it
+        let acc2 = if inDeps && not done && not here && Option.isSome value then l :: Option.get value :: acc else l :: acc
+        go acc2 more here (done || (inDeps && not done && not here && Option.isSome value))
+      else if inDeps && not done && isEntry l then
+        match value with
+        | Some v -> go (v :: acc) more inDeps true
+        | None -> go acc more inDeps true
+      else
+        go (l :: acc) more inDeps done
+  let (edited, done) = go [] lines false false
+  if done then
+    Ok edited
+  else
+    match value with
+    | Some v ->
+      // not written yet: after an open [dependencies] at the end, else a section of its own
+      let hasSection = List.exists (fun (l: string) -> String.trim l = "[dependencies]") lines
+      let rec dropBlank (ls: list<string>) : list<string> =
+        match ls with
+        | l :: more when String.trim l = "" -> dropBlank more
+        | _ -> ls
+      let trimmed = List.rev (dropBlank (List.rev edited))
+      Ok(if hasSection then List.append trimmed [ v ] else List.concat [ trimmed; [ ""; "[dependencies]"; v ] ])
+    | None ->
+      let names = List.choose (fun (l: string) -> match String.indexOf "=" l with | Some eq when not (isHeader l) -> Some(String.trim (String.sub l 0 eq)) | _ -> None) (snd (List.fold (fun (inDeps, acc) (l: string) -> if isHeader l then (String.trim l = "[dependencies]", acc) else if inDeps && String.contains "=" l then (inDeps, List.append acc [ l ]) else (inDeps, acc)) (false, []) lines))
+      Error(if List.isEmpty names then "zs.toml has no dependencies" else $"zs.toml has no dependency '{name}' (it has {String.join ", " names})")
+
+// what zs add writes for a dependency as given: ../text (a path; its name from its zs.toml, else
+// the directory's), or a git URL, with @1.2 a release or @v1 a rev (the name from the URL's last
+// part)
+let private dependencyLine (root: string) (spec: string) (rev: option<string>) : result<string * string, string> =
+  let isGit = String.contains "://" spec || String.startsWith "git@" spec || String.endsWith ".git" spec
+  if not isGit then
+    let dir = Path.getFullPath (Path.combine root spec)
+    if not (File.exists (Path.combine dir "zs.toml")) then
+      Error $"zs add {spec}: no zs.toml in {dir} (a path dependency is a package; a git one is a URL)"
+    else
+      let name =
+        match Project.findProject dir with
+        | Some(Ok m) when m.name <> "" -> m.name
+        | _ -> Path.getFileName dir
+      Ok(name, $"{name} = {{ path = \"{spec}\" }}")
+  else
+    // the version or rev after the last @ that isn't the URL's user (git@host:…)
+    let (url, tag) =
+      match String.lastIndexOf "@" spec with
+      | Some i when i > 0 && not (String.contains "/" (String.sub spec (i + 1) (String.length spec - i - 1))) && not (String.contains ":" (String.sub spec (i + 1) (String.length spec - i - 1))) -> (String.sub spec 0 i, Some(String.sub spec (i + 1) (String.length spec - i - 1)))
+      | _ -> (spec, None)
+    let last = List.last (List.filter (fun (s: string) -> s <> "") (String.split "/" (String.replace url ":" "/")))
+    let name = if String.endsWith ".git" last then String.sub last 0 (String.length last - 4) else last
+    let how =
+      match (tag, rev) with
+      | (_, Some r) -> $", rev = \"{r}\""
+      | (Some t, None) -> if Option.isSome (Project.parseVersion t) then $", version = \"{t}\"" else $", rev = \"{t}\""
+      | (None, None) -> ""
+    Ok(name, $"{name} = {{ git = \"{url}\"{how} }}")
+
+/// zs add <path | url[@version]> [--rev <rev>]: the dependency written into zs.toml's
+/// [dependencies] and fetched; zs remove <name>: taken out, the lock rewritten (0018 item 7).
+let add (remove: bool) (args: list<string>) : int =
+  match project () with
+  | Error msg ->
+    eprintln $"zs: {msg}"
+    1
+  | Ok m ->
+    let file = Path.combine m.root "zs.toml"
+    let edit (name: string) (value: option<string>) : int =
+      match File.readAllLines file with
+      | Error e ->
+        eprintln $"zs: can't read {file}: {e}"
+        1
+      | Ok lines ->
+        match editDependencies lines name value with
+        | Error e ->
+          eprintln $"zs {(if remove then "remove" else "add")} {name}: {e}"
+          1
+        | Ok edited ->
+          match File.writeAllText file (String.join "\n" edited + "\n") with
+          | Error e ->
+            eprintln $"zs: can't write {file}: {e}"
+            1
+          | Ok _ ->
+            match value with
+            | Some v -> println $"added {v}"
+            | None -> println $"removed {name}"
+            match project () with
+            | Ok m2 ->
+              let errors = Project.fetchDeps m2 false
+              for e in errors do
+                eprintln $"zs: {e}"
+              if List.isEmpty errors then 0 else 1
+            | Error e ->
+              eprintln $"zs: {e}"
+              1
+    match (remove, args) with
+    | (true, [ name ]) -> edit name None
+    | (false, [ spec ])
+    | (false, [ spec; "--rev"; _ ]) ->
+      let rev = match args with | [ _; "--rev"; r ] -> Some r | _ -> None
+      match dependencyLine m.root spec rev with
+      | Ok(name, line) -> edit name (Some line)
+      | Error e ->
+        eprintln $"zs: {e}"
+        1
+    | _ ->
+      eprintln (if remove then "usage: zs remove <name>" else "usage: zs add <path | url[@version]> [--rev <rev>]")
+      2
+
+/// zs tree: the project's dependencies as resolved, each with its version and where it comes
+/// from, its own dependencies under it (0018 item 7).
+let tree () : int =
+  match project () with
+  | Error msg ->
+    eprintln $"zs: {msg}"
+    1
+  | Ok m ->
+    if not (fetched m.root) then
+      1
+    else
+      match Project.packageOf m.main with
+      | Error p ->
+        showProblem p
+        1
+      | Ok top ->
+        let shown = ref Set.empty
+        let rec show (indent: string) (pkg: Project.Package) =
+          let parent = Option.get pkg.manifest
+          let n = List.length pkg.deps
+          List.iteri (fun (i: int) (pd: Project.PackageDep) ->
+            match pd with
+            | Project.PackageDep(key, d) ->
+              let last = i = n - 1
+              let (name, dep) =
+                match List.tryFind (fun (nd: string * Project.Dep) -> Project.modulePrefix (fst nd) = key) parent.deps with
+                | Some nd -> nd
+                | None -> (key, Project.PathDep d.root)
+              let version = match d.manifest with | Some mf when mf.version <> "" -> " " + mf.version | _ -> ""
+              let from =
+                match dep with
+                | Project.PathDep path -> $"path {Path.getRelativePath m.root path}"
+                | Project.GitDep(url, rev) -> $"git {url}{(if rev = "" then "" else ", rev " + rev)}"
+                | Project.GitVersion(url, v) -> $"git {url}, at least {Project.showVersion v}"
+              let commit =
+                match Project.lockedCommit m.root name with
+                | Some c -> $", commit {String.sub c 0 (min 7 (String.length c))}"
+                | None -> ""
+              let again = Set.contains d.root shown.Value
+              println $"{indent}{(if last then "└─ " else "├─ ")}{name}{version} ({from}{commit}){(if again && not (List.isEmpty d.deps) then " (above)" else "")}"
+              if not again then
+                shown.Value <- Set.add d.root shown.Value
+                show (indent + (if last then "   " else "│  ")) d) pkg.deps
+        println $"{m.name}{(if m.version = "" then "" else " " + m.version)} ({Path.getRelativePath (Environment.currentDirectory ()) m.root})"
+        show "" top
+        0
+
 // ------------------------------------------------------------ zs test
 
 // a test of a built test binary (0009): its path, focus, time limit (ms) and sequenced group

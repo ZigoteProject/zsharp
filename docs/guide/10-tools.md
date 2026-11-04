@@ -10,6 +10,8 @@
 | `zs check <file.zs>` | type-check only, reporting every error and warning |
 | `zs test [file.zs] [paths…] [--update] [--summary]` | run `[<Tests>]` values, each test in its own process; `--update` rewrites failing `expect` literals |
 | `zs test --doc [files…] [--update]` | run the examples in `///` comments (the project's files without any); `--update` rewrites their expectations |
+| `zs add ../text`, `zs add https://…/json.git@1.2`, `zs add <url> --rev main` | write a dependency into `zs.toml`'s `[dependencies]` (a path, or a git URL at a release or a rev; the name from the package's `zs.toml`, or the URL's last part) and fetch it |
+| `zs remove json`, `zs tree` | take a dependency out (the lock rewritten); show the dependencies as resolved, each with its version, where it comes from and its locked commit, its own under it |
 | `zs test --stress 10m [file.zs] [paths…]` | the tests at random on every core, over and over for that long (`30s`, `10m`, `1h`), each run its own process: a failure one run hides (a race, a leak on a rare path, a timeout under load) shows, each failing test shown once. With `ZS_LEAKCHECK=1`, a leak at a test's exit fails it, in one run too |
 | `zs fmt [--check] <files…>` | format files in place (`--check`: list unformatted ones; `--stdin`: standard input to standard output) |
 | `zs doc <file.zs>` | print a Markdown reference of a file's documented items |

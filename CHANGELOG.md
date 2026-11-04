@@ -60,6 +60,21 @@
   `Bytes.appendJsonString` no longer costs a whole program the pool (a JSON round trip of 200k
   records: 3.5 s and 935 MB, now 1.4 s and 368 MB).
 
+### Packages
+- `zs add ../text`, `zs add https://…/json.git@1.2` (a release) or `@v1` (a rev), `--rev main`:
+  the dependency written into `zs.toml`'s `[dependencies]` (the name from the package's
+  `zs.toml`, or the URL's last part) and fetched; `zs remove json` takes one out, the lock
+  rewritten, naming the ones there when it isn't; `zs tree` shows the dependencies as resolved,
+  each with its version, where it comes from and its locked commit, its own under it (0018,
+  item 7; `zs add json@1.2` by name waits for the index).
+- Internal modules (0018, item 3): a file under a package's `internal/` directory (any depth)
+  is for the package's own files; from another package its name is an error naming the package
+  and its public modules. A module's directory may start in lower case now (`internal/` for
+  `Internal`), as a file could.
+- A microcontroller build names a dependency that uses Std when it starts (0018, item 5):
+  `package 'logger' uses File, part of Std, which needs an operating system; a build for
+  cortex-m4 has none, so it can't depend on this package`, instead of an error deep in its code.
+
 ### Tooling
 - `zs test --stress 10m` (track D, item 4): the tests at random on every core, over and over for
   that long (`30s`, `10m`, `1h`), each run its own process as always; a failure one run hides (a

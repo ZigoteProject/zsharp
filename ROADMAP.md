@@ -365,11 +365,11 @@ Packages stay source (decision 27).
   2. **Versions:** *(done in phase 12)* `json = { git = "…", version = "1.2" }` picks among `v1.x.y` tags (`tests/project/git.sh`: the diamond, `c` and `c2` in one program, `zs update`).
      - **Minimal version selection,** as in Go: each package gets the highest of the minimum versions asked for it. A build is reproducible without a solver.
      - **Major versions are separate packages** (`json` and `json/v2`), so one program can use both.
-  3. **Internal modules:** *(after 0.6.2)* modules under a package's `internal/` directory are visible only inside it (Go's rule, with no new keyword).
+  3. **Internal modules:** *(done 2026-11-04: `tests/project/pkgs.sh`)* modules under a package's `internal/` directory are visible only inside it (Go's rule, with no new keyword).
   4. **C dependencies:** *(done before phase 11: `tests/project/cwords`, `packages/libclang` and `packages/xxhash`; `[c.<target>]` per target in phase 12)* a `[c]` section (`sources`, `include`, `link` and `pkg-config`) means a package that wraps sqlite or raylib needs no flags from the projects that use it.
-  5. **Targets:** *(after 0.6.2)* a package that uses Std can't be a dependency of a microcontroller build. The error comes when the build starts and names the package, not some module deep inside it.
+  5. **Targets:** *(done 2026-11-04: `tests/project/pkgs.sh`)* a package that uses Std can't be a dependency of a microcontroller build. The error comes when the build starts and names the package, not some module deep inside it.
   6. **Integrity:** *(after 0.6.2)* `zs.lock` keeps a hash of each checkout's contents and checks it. `zs vendor` copies the dependencies into the repository, and `--offline` fails instead of fetching.
-  7. **Commands:** *(after 0.6.2)* `zs add json@1.2`, `zs remove` and `zs tree`.
+  7. **Commands:** *(done 2026-11-04 but for the index's `zs add json@1.2`, which waits for the index: `zs add ../text`, `zs add <url>@1.2`, `--rev`; `tests/project/pkgs.sh`)* `zs add json@1.2`, `zs remove` and `zs tree`.
   8. **Workspaces:** *(after 0.6.2)* `[workspace] members = […]`, with one lock file and one cache.
   9. **Impls across packages:** *(decided and built in phase 12: Rust's orphan rule, decision 84; `tests/err_orphan.zs`, `tests/project/orphan`, and a hand-written impl used before it's checked an error saying where it goes, `tests/err_impl_late.zs`)* an impl could be written in any module for any trait and type, and the program had one impl per (trait, head type) (the checker's `declareImpl`). So two packages that both write `impl Describe<Point>` each build alone, but a program using both fails with `Describe<Point> is already implemented`, in whichever module is checked second: an error its author didn't write and can't fix. A rule is needed before packages are published, since adding one later breaks them. Candidates: Rust's orphan rule (an impl lives in the trait's package or the head type's; another implementation is a one-case wrapper, free by decision 66), or Haskell's (allowed, a warning on an orphan). Also to settle: a manual impl in a later module suppressing an automatic derive an earlier module needed (`manualImpls` collects every module's).
 - **Later: an index, not a registry.** Git URLs work without anyone running a service. When names are worth having, an index can be a git repository that maps each name to a URL and a hash, so that `json = "1.2"` works. `zs publish` opens a pull request against it.
@@ -378,7 +378,7 @@ Packages stay source (decision 27).
 - **Exit tests:**
   - *Done in phase 12:* a diamond (A needs C ≥ 1.1, B needs C ≥ 1.3) resolves to C 1.3 on every machine, and `json` and `json/v2` build in one program.
   - *After 0.6.2:* a project uses `zsharp/sqlite` after nothing more than `zs add`.
-  - *After 0.6.2:* a microcontroller project that depends on a Std package fails with an error naming that package.
+  - *Done 2026-11-04:* a microcontroller project that depends on a Std package fails with an error naming that package (`tests/project/pkgs.sh`).
   - *After 0.6.2:* `examples/echo`, rebuilt on `zsharp/http`, serves HTTP.
 
 ## Ordering rationale

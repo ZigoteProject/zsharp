@@ -1,0 +1,36 @@
+== zs tree
+two 0.1.0 (.)
+├─ alpha 0.1.0 (path ../alpha)
+├─ beta 0.1.0 (path ../beta)
+│  └─ text 0.1.0 (path ../text)
+└─ cwords 0.1.0 (path ../cwords)
+== zs add ../text, zs remove alpha
+added text = { path = "../text" }
+removed alpha
+[dependencies]
+beta = { path = "../beta" }
+cwords = { path = "../cwords" }
+text = { path = "../text" }
+two 0.1.0 (.)
+├─ beta 0.1.0 (path ../beta)
+│  └─ text 0.1.0 (path ../text)
+├─ cwords 0.1.0 (path ../cwords)
+└─ text 0.1.0 (path ../text)
+== what isn't there
+zs remove yaml: zs.toml has no dependency 'yaml' (it has beta, cwords, text)
+exit 1
+zs: zs add ../nowhere: no zs.toml in …/nowhere (a path dependency is a package; a git one is a URL)
+exit 1
+== a git dependency, as written (not fetched here)
+added json = { git = "https://example.invalid/someone/json.git", version = "1.2" }
+added json = { git = "git@github.com:someone/json", rev = "v1" }
+added t = { git = "https://example.invalid/t.git", rev = "main" }
+[dependencies]
+json = { git = "git@github.com:someone/json", rev = "v1" }
+t = { git = "https://example.invalid/t.git", rev = "main" }
+== an internal module (box/src/internal/Secret.zs)
+42 42
+src/main.zs:1: error: Box.Internal.Secret is internal to box; use its public modules (Box, Box.Pub)
+== Std in a chip build's dependency
+../logger/src/Logger.zs:1: error: package 'logger' uses File, part of Std, which needs an operating system; a build for cortex-m4 has none, so it can't depend on this package
+exit 1
