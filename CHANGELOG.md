@@ -317,6 +317,10 @@ a real machine. The flagship runs under QEMU's STM32F405, not yet on the board i
   object it compiles.
 
 ### Library
+- `DateTime.parseIso` (track S, item 6): the moment ISO 8601 writes, `2026-11-04T08:30:00Z`, with
+  a fraction (`.25`, to nanoseconds), an offset (`+02:00`, taken off) or no zone (UTC), without
+  the seconds, or a date alone; `None` for anything else, a day its month hasn't included. And
+  `DateTime.ofParts year month day hour minute second nanos`, `None` out of range.
 - `Int`'s checked, saturating and bit operations (track S, item 3): `Int.checkedAdd`, `checkedSub`
   and `checkedMul` give an `option`; `saturatingAdd`, `saturatingSub` and `saturatingMul` stop at
   the type's bounds; `popCount`, `leadingZeros`, `trailingZeros`, `rotateLeft`, `rotateRight` and `byteSwap`

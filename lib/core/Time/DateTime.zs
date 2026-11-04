@@ -63,6 +63,103 @@ module DateTime =
         string year
     $"{yearText}-{twoDigits month}-{twoDigits day}T{twoDigits (secs / i64 3600)}:{twoDigits (secs / i64 60 % i64 60)}:{twoDigits (secs % i64 60)}{fraction}Z"
 
+  /// The moment of a civil date and time in UTC: `DateTime.ofParts 2026 11 4 8 30 0 0` (year,
+  /// month, day, hour, minute, second, nanoseconds), or `None` when a part is out of its range
+  /// (the day's, for its month and year; the year's, 1678 to 2262).
+  let ofParts (year: int) (month: int) (day: int) (hour: int) (minute: int) (second: int) (nanos: int) : option<DateTime> =
+    let leap = year % 4 = 0 && (year % 100 <> 0 || year % 400 = 0)
+    let daysIn =
+      match month with
+      | 2 -> if leap then 29 else 28
+      | 4
+      | 6
+      | 9
+      | 11 -> 30
+      | _ -> 31
+    if year < 1678 || year > 2262 || month < 1 || month > 12 || day < 1 || day > daysIn || hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59 || nanos < 0 || nanos > 999999999 then
+      None
+    else
+      // the day number of a civil date (Howard Hinnant's days_from_civil)
+      let y = i64 (if month <= 2 then year - 1 else year)
+      let m = i64 month
+      let era = floorDiv y (i64 400)
+      let yoe = y - era * i64 400
+      let doy =
+        (i64 153 * (if m > i64 2 then m - i64 3 else m + i64 9) + i64 2) / i64 5 + i64 day - i64 1
+      let doe = yoe * i64 365 + yoe / i64 4 - yoe / i64 100 + doy
+      let days = era * i64 146097 + doe - i64 719468
+      let secs = days * i64 86400 + i64 hour * i64 3600 + i64 minute * i64 60 + i64 second
+      Some { sinceEpoch = (secs * i64 1000000000 + i64 nanos) * 1<ns> }
+
+  /// The moment ISO 8601 writes: `2026-11-04T08:30:00Z`, `2026-11-04T08:30:00.25Z`, with
+  /// `+02:00` or `-05:30` instead of `Z` (the offset taken off, the moment in UTC) or no zone at
+  /// all (taken as UTC), without the seconds (`2026-11-04T08:30Z`), or a date alone
+  /// (`2026-11-04`, midnight UTC); a space may stand for the `T`. `None` for anything else, a
+  /// part out of its range included.
+  let parseIso (s: string) : option<DateTime> =
+    let n = String.length s
+    let at (i: int) = if i < n then int (String.byte s i) else -1
+    let digit (i: int) = at i >= 48 && at i <= 57
+    // the number of the digits from i for len: -1 when one isn't a digit
+    let number (i: int) (len: int) =
+      let mutable v = 0
+      for k in i .. i + len - 1 do
+        v <- if v < 0 || not (digit k) then -1 else v * 10 + at k - 48
+      v
+    let year = number 0 4
+    let month = number 5 2
+    let day = number 8 2
+    if year < 0 || at 4 <> 45 || month < 0 || at 7 <> 45 || day < 0 then
+      None
+    else if n = 10 then
+      ofParts year month day 0 0 0 0
+    else if at 10 <> 84 && at 10 <> 32 then
+      None
+    else
+      let hour = number 11 2
+      let minute = number 14 2
+      if hour < 0 || at 13 <> 58 || minute < 0 then
+        None
+      else
+        let mutable i = 16
+        let mutable second = 0
+        let mutable nanos = 0
+        let mutable ok = true
+        if at i = 58 then
+          second <- number (i + 1) 2
+          ok <- second >= 0
+          i <- i + 3
+          if ok && at i = 46 then
+            // a fraction of any length, the first nine digits nanoseconds
+            i <- i + 1
+            let mutable scale = 100000000
+            if not (digit i) then
+              ok <- false
+            while digit i do
+              nanos <- nanos + (at i - 48) * scale
+              scale <- scale / 10
+              i <- i + 1
+        // the zone: Z, or an offset, taken off
+        let mutable offset = 0
+        if ok then
+          if at i = 90 then
+            i <- i + 1
+          else if at i = 43 || at i = 45 then
+            let sign = if at i = 43 then 1 else -1
+            let oh = number (i + 1) 2
+            let om = number (i + 4) 2
+            if oh < 0 || at (i + 3) <> 58 || om < 0 || oh > 23 || om > 59 then
+              ok <- false
+            else
+              offset <- sign * (oh * 3600 + om * 60)
+              i <- i + 6
+        if not ok || i <> n then
+          None
+        else
+          match ofParts year month day hour minute second nanos with
+          | Some t -> Some { sinceEpoch = t.sinceEpoch - i64 offset * 1000000000<ns> }
+          | None -> None
+
 /// A moment prints in ISO 8601 (`DateTime.toIso`).
 impl Show<DateTime> =
   let show (t: DateTime) = DateTime.toIso t

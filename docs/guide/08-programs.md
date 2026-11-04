@@ -196,7 +196,7 @@ src/main.zs .zs notes.md
 - **Directories:** `Directory.list`, `create`, `exists`, `delete`, `listRecursive`, `deleteRecursive`, `createTemp` and `temp ()`.
 - **Paths:** `Path.combine`, `getFileName`, `getDirectoryName`, `getExtension` and the others work on the text alone; `getFullPath` and `getRelativePath` also read the working directory (`Environment.currentDirectory ()`).
 - **Processes with pipes:** `Process.start { program = "clang"; args = [ "-c"; "a.c" ]; stderr = Piped }` gives a `Process` whose piped streams are a `Reader` or a `Writer`, and `Process.wait p` its exit code as a `Task<int>`.
-- **Time:** `DateTime.utcNow ()` is the current moment; `string` prints a `DateTime` in ISO 8601.
+- **Time:** `DateTime.utcNow ()` is the current moment; `string` prints a `DateTime` in ISO 8601, and `DateTime.parseIso "2026-11-04T08:30:00+02:00"` reads one back (an `option`), `DateTime.ofParts` makes one from its parts.
 - **Unix sockets:** `Unix.listen path`, `Unix.accept` and `Unix.connect path` are `Tcp`'s calls over a path, for processes on one machine.
 - **The console:** `Console.readLine ()` and `Console.readLines ()` read standard input, and `Console.Error.writeLine` writes to standard error.
 - **Exit codes:** `Environment.exit code` ends the program at once with that code. Returning a number from `main` sets the exit code too.

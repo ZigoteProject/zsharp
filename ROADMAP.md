@@ -84,7 +84,7 @@ user asking. Optimization still waits for profiles of real programs.
    - **The next board** (0027) only once the first is flashed and a user names one.
 4. **What an F# programmer reaches for next** (track S, each small, taken as it comes):
    - *Done 2026-11-04:* `Int`'s checked, saturating and bit operations (S3).
-   - ISO 8601 parsing (S6); UDP and name lookup (S8); list expressions over any `Iter` (S1); `Seq` pipelines as one loop (S9, known gap 6).
+   - *Done 2026-11-04:* ISO 8601 parsing (S6). UDP and name lookup (S8); list expressions over any `Iter` (S1); `Seq` pipelines as one loop (S9, known gap 6).
    - **The exit tests that say the library is enough:** ten Advent of Code puzzles with only the prelude, Core and Std; grep, a JSON pretty-printer and `tail -f` in `examples/`, each under 100 lines.
 5. **Not in 0.7 unless a user asks:** the package index and `zs add` (K7, K8: git URLs work), completion-based I/O (S14), properties and fuzzing as properties (D5, D6: the plain fuzzer covers the compiler), traces (D4 of profiling), RISC-V (T), the editor extensions in their registries (E: after CI is green, since each registry wants a release that was tested on its platform), and `import c` through the provider protocol's open questions (0001).
 
@@ -327,7 +327,7 @@ DESIGN §9's layers.
      - **UTF-8:** *(done in phase 12)* `Text.Utf8` converts between bytes and strings, with validation.
      - **`StringBuilder`:** only if measuring shows that reuse doesn't already make `s <- s + x` in a loop linear; `Bytes.Writer` (item 12) is the byte-level one.
   5. **JSON in Core:** *(done before phase 11: `Text.Json`, [0023](docs/proposals/0023-json-in-core.md))* a `Json` union with parse and print, plus `ToJson`/`FromJson` derives (the example in DESIGN §3.1). Track P's provider and the packages build on it.
-  6. **Time:** *(done before phase 11: `DateTime.utcNow`, `Duration` in nanoseconds with units of measure, `DateTime.toIso`)* `DateTime.utcNow`, which the compiler's cache needs. *After 0.6.2:* ISO 8601 parsing. Time zones are a package.
+  6. **Time:** *(done before phase 11: `DateTime.utcNow`, `Duration` in nanoseconds with units of measure, `DateTime.toIso`; ISO 8601 parsing done 2026-11-04: `DateTime.parseIso` and `ofParts`, `tests/datetime.zs`)* `DateTime.utcNow`, which the compiler's cache needs. Time zones are a package.
   7. **IO:** *(done before phase 11)*
      - **Streams:** `File.openRead`, `openWrite` and `openAppend` give readers and writers (`readLine`, `readBytes`, `readExactly`, `readToEnd`, `write`, `writeText`, `flush`), closed by `use`.
      - **Files and directories:** `readAllBytes`, `File.exists`, `Directory.exists`, recursive listing and deletion, copy, move, `modifiedAt`, `size`, `touch` and temporary files.
