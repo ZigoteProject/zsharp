@@ -65,8 +65,9 @@ module Q7 =
   [<Wrapping>]
   let div (Q7 a) (Q7 b) : q7 = saturate ((i32 a <<< i32 7) / i32 b)
 
-  /// `a % b`, the integers' remainder (both sides have the same scale); by zero panics.
-  let rem (Q7 a) (Q7 b) : q7 = Q7(a % b)
+  /// `a % b`, the integers' remainder (both sides have the same scale), computed wider so `min %
+  /// -step` is 0 rather than an overflow; by zero panics.
+  let rem (Q7 a) (Q7 b) : q7 = Q7(i8 (i32 a % i32 b))
 
   /// `-a`, saturating: `-Q7.min` is `Q7.max`.
   let neg (Q7 a) : q7 = Q7(Int.saturatingSub (i8 0) a)
@@ -165,8 +166,9 @@ module Q15 =
   [<Wrapping>]
   let div (Q15 a) (Q15 b) : q15 = saturate ((i32 a <<< i32 15) / i32 b)
 
-  /// `a % b`, the integers' remainder (both sides have the same scale); by zero panics.
-  let rem (Q15 a) (Q15 b) : q15 = Q15(a % b)
+  /// `a % b`, the integers' remainder (both sides have the same scale), computed wider so `min %
+  /// -step` is 0 rather than an overflow; by zero panics.
+  let rem (Q15 a) (Q15 b) : q15 = Q15(i16 (i32 a % i32 b))
 
   /// `-a`, saturating: `-Q15.min` is `Q15.max`.
   let neg (Q15 a) : q15 = Q15(Int.saturatingSub (i16 0) a)
@@ -277,8 +279,9 @@ module Q31 =
   [<Wrapping>]
   let div (Q31 a) (Q31 b) : q31 = saturate ((i64 a <<< i64 31) / i64 b)
 
-  /// `a % b`, the integers' remainder (both sides have the same scale); by zero panics.
-  let rem (Q31 a) (Q31 b) : q31 = Q31(a % b)
+  /// `a % b`, the integers' remainder (both sides have the same scale), computed wider so `min %
+  /// -step` is 0 rather than an overflow; by zero panics.
+  let rem (Q31 a) (Q31 b) : q31 = Q31(i32 (i64 a % i64 b))
 
   /// `-a`, saturating: `-Q31.min` is `Q31.max`.
   let neg (Q31 a) : q31 = Q31(Int.saturatingSub (i32 0) a)

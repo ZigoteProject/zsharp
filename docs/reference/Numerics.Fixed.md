@@ -227,7 +227,8 @@ Q7.div : q7 -> q7 -> q7
 Q7.rem : q7 -> q7 -> q7
 ```
 
-`a % b`, the integers' remainder (both sides have the same scale); by zero panics.
+`a % b`, the integers' remainder (both sides have the same scale), computed wider so `min %
+-step` is 0 rather than an overflow; by zero panics.
 
 ### `Q7.neg`
 
@@ -387,7 +388,8 @@ Q15.div : q15 -> q15 -> q15
 Q15.rem : q15 -> q15 -> q15
 ```
 
-`a % b`, the integers' remainder (both sides have the same scale); by zero panics.
+`a % b`, the integers' remainder (both sides have the same scale), computed wider so `min %
+-step` is 0 rather than an overflow; by zero panics.
 
 ### `Q15.neg`
 
@@ -564,7 +566,8 @@ Q31.div : q31 -> q31 -> q31
 Q31.rem : q31 -> q31 -> q31
 ```
 
-`a % b`, the integers' remainder (both sides have the same scale); by zero panics.
+`a % b`, the integers' remainder (both sides have the same scale), computed wider so `min %
+-step` is 0 rather than an overflow; by zero panics.
 
 ### `Q31.neg`
 

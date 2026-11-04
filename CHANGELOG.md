@@ -513,7 +513,7 @@ a real machine. The flagship runs under QEMU's STM32F405, not yet on the board i
   panic, a property's case and replay seed included (`tests/property/basic.zs`, `model.zs`, `tests/ztest/property.sh`,
   `tests/fuzz/fuzz.sh`).
 - `Numerics.Fixed` (0015, track M item 10): `q7`, `q15` and `q31`, each a one-case union over
-  its integer (its size, by decision 66), with saturating `+`, `-`, `*` (rounded half up), `/`, `%` and negation,
+  its integer (its size, by decision 66), with saturating `+`, `-`, `*` (rounded half up), `/`, `%` (computed wider, so `min % -step` is 0) and negation,
   `mulAdd`, `abs`, `clamp`, `ofFloat`/`toFloat`/`toF32`, `ofInt`, `raw`/`ofRaw`, the conversions
   between the formats, and `Show` as the decimal with the digits the format needs (`0.99997` for
   `Q15.max`), in integer arithmetic. `List.sum` over them saturates like `+`. `Q7` and `Q15`
