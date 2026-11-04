@@ -1,0 +1,14 @@
+words 3
+zs.lock entries with a hash: 1
+== an edited checkout, restored by the next fetch
+0
+== vendored
+vendored text v1 into vendor/text
+src zs.toml 
+words 3
+checkouts made: 0
+== a vendored copy that was edited
+zs: text doesn't match zs.lock's hash: the tag moved, or vendor/text was edited; zs fetch restores the locked files, zs update accepts the new ones
+== --offline with nothing fetched
+zs: git dependency 'text' (file://…/text v1): isn't fetched here, and --offline was given (zs vendor keeps a copy in the project)
+zs: git dependency 'text' (file://…/text v1): isn't fetched here, and --offline was given (zs vendor keeps a copy in the project)

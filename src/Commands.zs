@@ -22,10 +22,10 @@ let private project () : result<Project.Manifest, string> =
 
 // fetches the git dependencies of the project around dir (if any) before a build; false on
 // failure, with the reasons shown
-let private fetched (dir: string) : bool =
+let private fetched (offline: bool) (dir: string) : bool =
   match Project.findProject dir with
   | Some(Ok m) ->
-    let errors = Project.fetchDeps m false
+    let errors = Project.fetchDeps m false offline
     for e in errors do
       eprintln $"zs: {e}"
     List.isEmpty errors
@@ -65,7 +65,7 @@ let build (served: bool) (args: list<string>) : int =
         eprintln $"zs: {msg}"
         1
       | Ok m ->
-        if not (fetched m.root) then
+        if not (fetched o.offline m.root) then
           1
         else
           let dir = Path.combine m.root "build"
@@ -76,7 +76,7 @@ let build (served: bool) (args: list<string>) : int =
             println $"built {Path.getRelativePath (Environment.currentDirectory ()) out}"
           code
     | file :: _ ->
-      if not (fetched (dirOf file)) then 1 else Make.build { o with main = file; out = (if o.out = "" then Path.getFileNameWithoutExtension file else o.out) } false
+      if not (fetched o.offline (dirOf file)) then 1 else Make.build { o with main = file; out = (if o.out = "" then Path.getFileNameWithoutExtension file else o.out) } false
 
 /// zs run [file.zs] … [-- arguments]: the program built and run with the arguments; its exit code.
 let run (args: list<string>) : int =
@@ -87,11 +87,11 @@ let run (args: list<string>) : int =
   | Ok(o0, files) ->
     let main =
       match List.filter isFile files with
-      | file :: _ -> if fetched (dirOf file) then Ok(file, o0) else Error ""
+      | file :: _ -> if fetched o0.offline (dirOf file) then Ok(file, o0) else Error ""
       | [] ->
         match project () with
         | Error msg -> Error msg
-        | Ok m -> if fetched m.root then Ok(m.main, projectTarget m args o0) else Error ""
+        | Ok m -> if fetched o0.offline m.root then Ok(m.main, projectTarget m args o0) else Error ""
     match main with
     | Error msg ->
       if msg <> "" then
@@ -126,7 +126,7 @@ let run (args: list<string>) : int =
         1
 
 /// zs check file.zs: its errors and warnings (its project's git dependencies fetched first).
-let check (path: string) (strict: bool) : int = if fetched (dirOf path) then Check.run path strict else 1
+let check (path: string) (strict: bool) : int = if fetched false (dirOf path) then Check.run path strict else 1
 
 /// zs fetch, zs update: the project's git dependencies checked out at their locked commits, or
 /// moved to the newest of their revs (zs.lock rewritten).
@@ -136,7 +136,7 @@ let fetch (update: bool) : int =
     eprintln $"zs: {msg}"
     1
   | Ok m ->
-    let errors = Project.fetchDeps m update
+    let errors = Project.fetchDeps m update false
     for e in errors do
       eprintln $"zs: {e}"
     if List.isEmpty errors then 0 else 1
@@ -244,7 +244,7 @@ let add (remove: bool) (args: list<string>) : int =
             | None -> println $"removed {name}"
             match project () with
             | Ok m2 ->
-              let errors = Project.fetchDeps m2 false
+              let errors = Project.fetchDeps m2 false false
               for e in errors do
                 eprintln $"zs: {e}"
               if List.isEmpty errors then 0 else 1
@@ -265,6 +265,19 @@ let add (remove: bool) (args: list<string>) : int =
       eprintln (if remove then "usage: zs remove <name>" else "usage: zs add <path | url[@version]> [--rev <rev>]")
       2
 
+/// zs vendor: the git dependencies copied into vendor/, where the project reads them from, never
+/// fetching (0018 item 6).
+let vendor () : int =
+  match project () with
+  | Error msg ->
+    eprintln $"zs: {msg}"
+    1
+  | Ok m ->
+    let errors = Project.vendor m
+    for e in errors do
+      eprintln $"zs: {e}"
+    if List.isEmpty errors then 0 else 1
+
 /// zs tree: the project's dependencies as resolved, each with its version and where it comes
 /// from, its own dependencies under it (0018 item 7).
 let tree () : int =
@@ -273,7 +286,7 @@ let tree () : int =
     eprintln $"zs: {msg}"
     1
   | Ok m ->
-    if not (fetched m.root) then
+    if not (fetched false m.root) then
       1
     else
       match Project.packageOf m.main with
@@ -642,7 +655,7 @@ let test (args: list<string>) : int =
         let filters = List.filter (fun a -> not (isFile a)) rest
         match List.filter isFile rest with
         | src :: _ ->
-          if not (fetched (dirOf src)) then
+          if not (fetched o.offline (dirOf src)) then
             1
           else
             match runTests o src filters stress with
@@ -657,7 +670,7 @@ let test (args: list<string>) : int =
             eprintln $"zs: {msg}"
             1
           | Ok m ->
-            if not (fetched m.root) then
+            if not (fetched o.offline m.root) then
               1
             else
               let under (d: string) : list<string> =

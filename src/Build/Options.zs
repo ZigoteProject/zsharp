@@ -118,6 +118,8 @@ type Options =
     strict: bool
     /// --sanitize (address and undefined behaviour), --sanitize=thread (data races)
     sanitize: bool
+    /// --offline: an error instead of fetching a dependency (0018 item 6)
+    offline: bool
     /// --no-heap: the whole program checked as [<NoAlloc>], and a chip's image with no heap (0012)
     noHeap: bool
     threadSanitizer: bool
@@ -162,6 +164,7 @@ let defaults : Options =
     isLib = false
     strict = false
     sanitize = false
+    offline = false
     noHeap = false
     threadSanitizer = false
     profileGenerate = false
@@ -196,6 +199,7 @@ let parse (args: list<string>) : result<Options * list<string>, string> =
     | "--lib" :: more -> go { o with isLib = true } others more
     | "--strict" :: more -> go { o with strict = true } others more
     | "--sanitize" :: more -> go { o with sanitize = true } others more
+    | "--offline" :: more -> go { o with offline = true } others more
     | "--no-heap" :: more -> go { o with noHeap = true } others more
     | "--sanitize=thread" :: more -> go { o with sanitize = true; threadSanitizer = true } others more
     | "--profile-generate" :: more -> go { o with profileGenerate = true; release = true } others more

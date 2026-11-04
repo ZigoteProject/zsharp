@@ -230,11 +230,17 @@ let rec findProject (dir: string) : option<result<Manifest, Problem>> =
 /// Where a git dependency is checked out: <project>/.zs-cache/deps/<name>.
 let gitDir (top: Manifest) (name: string) : string = Path.combine (Path.combine (Path.combine top.root ".zs-cache") "deps") name
 
+/// Where a vendored dependency is: <project>/vendor/<name> (zs vendor); a project with one reads
+/// it and never fetches.
+let vendorDir (top: Manifest) (name: string) : string = Path.combine (Path.combine top.root "vendor") name
+
+let private vendored (top: Manifest) (name: string) : bool = File.exists (Path.combine (vendorDir top name) "zs.toml")
+
 let private depPath (top: Manifest) (name: string) (d: Dep) : string =
   match d with
   | PathDep p -> p
   | GitDep _
-  | GitVersion _ -> gitDir top name
+  | GitVersion _ -> if vendored top name then vendorDir top name else gitDir top name
 
 /// The module a dependency's code is seen under (0018 K1): its key with the first letter
 /// upper-cased, each `-` dropped and the letter after it upper-cased (`tree-sitter`: TreeSitter).
@@ -324,7 +330,17 @@ let private git (args: list<string>) : result<string, string> =
 //   json = { git = "https://…", rev = "v1", commit = "<sha>" }
 //   text = { git = "https://…", version = "1.3.0", commit = "<sha>" }
 // A release's rev is its tag (v1.3.0) here; isVersion says which it was.
-type private Locked = { url: string; rev: string; commit: string; isVersion: bool }
+type private Locked = { url: string; rev: string; commit: string; isVersion: bool; hash: string }
+
+/// A checkout's files hashed (0018 item 6): their paths under the directory, sorted, each with its
+/// content, .git left out; "" for a directory that can't be read.
+let dirHash (dir: string) : string =
+  match Directory.listRecursive dir with
+  | Error _ -> ""
+  | Ok rels ->
+    let files = List.sort (List.filter (fun (r: string) -> r <> ".git" && not (String.startsWith ".git/" r) && not (Directory.exists (Path.combine dir r))) rels)
+    Tools.hashOf (List.collect (fun (r: string) -> [ r; Result.defaultValue "" (File.readAllText (Path.combine dir r)) ]) files)
+
 
 let private readLock (root: string) : Map<string, Locked> =
   match File.readAllLines (Path.combine root "zs.lock") with
@@ -340,8 +356,8 @@ let private readLock (root: string) : Map<string, Locked> =
             match (Map.tryFind "git" fields, Map.tryFind "commit" fields, Map.tryFind "version" fields) with
             // a commit git would take as an option is no commit: the rev is resolved again
             | (Some url, Some commit, _) when String.startsWith "-" commit -> acc
-            | (Some url, Some commit, Some v) -> Map.add name { url = url; rev = "v" + v; commit = commit; isVersion = true } acc
-            | (Some url, Some commit, None) -> Map.add name { url = url; rev = Option.defaultValue "" (Map.tryFind "rev" fields); commit = commit; isVersion = false } acc
+            | (Some url, Some commit, Some v) -> Map.add name { url = url; rev = "v" + v; commit = commit; isVersion = true; hash = Option.defaultValue "" (Map.tryFind "hash" fields) } acc
+            | (Some url, Some commit, None) -> Map.add name { url = url; rev = Option.defaultValue "" (Map.tryFind "rev" fields); commit = commit; isVersion = false; hash = Option.defaultValue "" (Map.tryFind "hash" fields) } acc
             | _ -> acc
           | Error _ -> acc
         else
@@ -353,8 +369,9 @@ let private writeLock (root: string) (entries: list<string * Locked>) =
   let line (e: string * Locked) =
     let (name, l) = e
     let how = if l.isVersion then $"version = \"{String.sub l.rev 1 (String.length l.rev - 1)}\"" else $"rev = \"{l.rev}\""
-    $"{name} = {{ git = \"{l.url}\", {how}, commit = \"{l.commit}\" }}"
-  let lines = List.append [ "# zs.lock: the exact commits of git dependencies. zs update moves them to the newest"; "# commit of their rev, or release; commit this file so every build uses the same code."; "[dependencies]" ] (List.map line (List.sortBy fst entries))
+    let hash = if l.hash = "" then "" else $", hash = \"{l.hash}\""
+    $"{name} = {{ git = \"{l.url}\", {how}, commit = \"{l.commit}\"{hash} }}"
+  let lines = List.append [ "# zs.lock: the exact commits of git dependencies, and a hash of each one's files. zs update"; "# moves them to the newest commit of their rev, or release; commit this file so every build"; "# uses the same code."; "[dependencies]" ] (List.map line (List.sortBy fst entries))
   File.writeAllText (Path.combine root "zs.lock") (String.join "\n" lines + "\n") |> ignore
 
 /// The commit zs.lock has for a git dependency, by its name in zs.toml (`zs tree`).
@@ -369,17 +386,25 @@ let lockedCommit (root: string) (name: string) : option<string> =
 /// asks for its own; each package gets the highest release asked for, so the result follows
 /// from the manifests alone. The lock stands while it gives every release asked for at least
 /// what's asked; update first raises the project's own minimums in zs.toml to the newest
-/// releases. Returns error messages.
-let fetchDeps (top: Manifest) (update: bool) : list<string> =
+/// releases. Each checkout's files are hashed into the lock and checked against it (item 6): a
+/// locked checkout that differs is restored from its commit, and one that still differs is an
+/// error; a vendored dependency (vendor/<name>) is read as it is, its hash checked, and never
+/// fetched. offline (--offline, or ZS_OFFLINE=1): an error instead of the network. Returns error
+/// messages.
+let fetchDeps (top: Manifest) (update: bool) (offline0: bool) : list<string> =
+  let offline = offline0 || Environment.getVariable "ZS_OFFLINE" = Some "1"
   let lock = readLock top.root
   let resolved = ref Map.empty
   let errors = Buffer.empty
   let visited = ref Set.empty
+  let noNetwork (what: string) = Error $"{what} needs the network, and --offline was given"
   // a clone of the dependency's repository, made once
   let cloneOf (name: string) (url: string) : result<string, string> =
     let dir = gitDir top name
     if Directory.exists (Path.combine dir ".git") then
       Ok dir
+    else if offline then
+      Error "isn't fetched here, and --offline was given (zs vendor keeps a copy in the project)"
     else
       if Directory.exists dir then
         Directory.deleteRecursive dir |> ignore
@@ -387,58 +412,89 @@ let fetchDeps (top: Manifest) (update: bool) : list<string> =
       Directory.create (Path.getDirectoryName dir) |> ignore
       eprintln $"fetching {name} from {url}"
       Result.map (fun _ -> dir) (git [ "clone"; "--quiet"; "--"; url; dir ])
+  let fetchOrigin (dir: string) (what: string) : result<string, string> =
+    if offline then noNetwork what else git [ "-C"; dir; "fetch"; "--quiet"; "--tags"; "--force"; "origin" ]
+  let mismatch (name: string) (where: string) = $"{name} doesn't match zs.lock's hash: the tag moved, or {where} was edited; zs fetch restores the locked files, zs update accepts the new ones"
   let checkout (name: string) (url: string) (rev: string) (isVersion: bool) : bool =
     let dir = gitDir top name
+    let entry = Map.tryFind name lock
     let locked =
-      match Map.tryFind name lock with
-      | Some l -> if l.url = url && l.rev = rev && not update then Some l.commit else None
+      match entry with
+      | Some l -> if l.url = url && l.rev = rev && not update then Some l else None
       | None -> None
     let head () = git [ "-C"; dir; "rev-parse"; "HEAD" ]
-    let checkedOut =
-      match cloneOf name url with
-      | Error e -> Error e
-      | Ok _ ->
-        match locked with
-        | Some c ->
-          match head () with
-          // already checked out: no network
-          | Ok h when h = c -> Ok h
-          | _ ->
-            // the locked commit: fetched only if this clone doesn't have it
-            let have = git [ "-C"; dir; "cat-file"; "-e"; c + "^{commit}" ]
-            let fetched =
-              match have with
-              | Ok _ -> Ok ""
-              | Error _ -> git [ "-C"; dir; "fetch"; "--quiet"; "--tags"; "origin" ]
-            match fetched with
+    if vendored top name then
+      // vendored: as it is, against the lock's hash
+      let vdir = vendorDir top name
+      let h = dirHash vdir
+      match locked with
+      | Some l when l.hash <> "" && l.hash <> h ->
+        Buffer.push (mismatch name (Path.getRelativePath top.root vdir)) errors
+        false
+      | _ ->
+        let l0 = Option.defaultValue { url = url; rev = rev; commit = ""; isVersion = isVersion; hash = "" } locked
+        resolved.Value <- Map.add name { l0 with hash = h } resolved.Value
+        true
+    else
+      let checkedOut =
+        match cloneOf name url with
+        | Error e -> Error e
+        | Ok _ ->
+          match locked with
+          | Some l ->
+            let c = l.commit
+            let at =
+              match head () with
+              // already checked out: no network
+              | Ok h when h = c -> Ok h
+              | _ ->
+                // the locked commit: fetched only if this clone doesn't have it
+                let have = git [ "-C"; dir; "cat-file"; "-e"; c + "^{commit}" ]
+                let fetched =
+                  match have with
+                  | Ok _ -> Ok ""
+                  | Error _ -> fetchOrigin dir $"the locked commit of {name}"
+                match fetched with
+                | Error e -> Error e
+                | Ok _ ->
+                  match git [ "-C"; dir; "checkout"; "--quiet"; "--detach"; c ] with
+                  | Error e -> Error e
+                  | Ok _ -> head ()
+            // the files against the lock's hash: an edited checkout is restored from its commit
+            match at with
+            | Error e -> Error e
+            | Ok h ->
+              if l.hash = "" || dirHash dir = l.hash then
+                Ok h
+              else
+                match git [ "-C"; dir; "checkout"; "--quiet"; "--force"; "--detach"; c ] with
+                | Error e -> Error e
+                | Ok _ ->
+                  git [ "-C"; dir; "clean"; "-fdq" ] |> ignore
+                  if dirHash dir = l.hash then Ok h else Error(mismatch name (Path.getRelativePath top.root dir))
+          | None ->
+            // the rev resolved on the remote's current state: a branch means origin's branch
+            eprintln $"resolving {name} {(if rev = "" then "(default branch)" else rev)}"
+            match fetchOrigin dir $"resolving {name}" with
             | Error e -> Error e
             | Ok _ ->
-              match git [ "-C"; dir; "checkout"; "--quiet"; "--detach"; c ] with
+              let target =
+                if rev = "" then
+                  "origin/HEAD"
+                else
+                  match git [ "-C"; dir; "rev-parse"; "--verify"; "--quiet"; "refs/remotes/origin/" + rev ] with
+                  | Ok _ -> "origin/" + rev
+                  | Error _ -> rev
+              match git [ "-C"; dir; "checkout"; "--quiet"; "--detach"; target ] with
               | Error e -> Error e
               | Ok _ -> head ()
-        | None ->
-          // the rev resolved on the remote's current state: a branch means origin's branch
-          eprintln $"resolving {name} {(if rev = "" then "(default branch)" else rev)}"
-          match git [ "-C"; dir; "fetch"; "--quiet"; "--tags"; "--force"; "origin" ] with
-          | Error e -> Error e
-          | Ok _ ->
-            let target =
-              if rev = "" then
-                "origin/HEAD"
-              else
-                match git [ "-C"; dir; "rev-parse"; "--verify"; "--quiet"; "refs/remotes/origin/" + rev ] with
-                | Ok _ -> "origin/" + rev
-                | Error _ -> rev
-            match git [ "-C"; dir; "checkout"; "--quiet"; "--detach"; target ] with
-            | Error e -> Error e
-            | Ok _ -> head ()
-    match checkedOut with
-    | Ok commit ->
-      resolved.Value <- Map.add name { url = url; rev = rev; commit = commit; isVersion = isVersion } resolved.Value
-      true
-    | Error e ->
-      Buffer.push $"git dependency '{name}' ({url}{(if rev = "" then "" else " " + rev)}): {e}" errors
-      false
+      match checkedOut with
+      | Ok commit ->
+        resolved.Value <- Map.add name { url = url; rev = rev; commit = commit; isVersion = isVersion; hash = dirHash dir } resolved.Value
+        true
+      | Error e ->
+        Buffer.push $"git dependency '{name}' ({url}{(if rev = "" then "" else " " + rev)}): {e}" errors
+        false
   // a package's releases, its tags (v1.2.3) by version, fetched once a run
   let tagLists = ref Map.empty
   let releases (name: string) (url: string) : result<list<Version * string>, string> =
@@ -449,7 +505,7 @@ let fetchDeps (top: Manifest) (update: bool) : list<string> =
         match cloneOf name url with
         | Error e -> Error e
         | Ok dir ->
-          match git [ "-C"; dir; "fetch"; "--quiet"; "--tags"; "--force"; "origin" ] with
+          match fetchOrigin dir $"the releases of {name}" with
           | Error e -> Error e
           | Ok _ -> Result.map (fun (out: string) -> String.split "\n" out) (git [ "-C"; dir; "tag"; "--list"; "v*" ])
       let tagged (t: string) = Option.map (fun (v: Version) -> (v, t)) (parseVersion (String.sub t 1 (String.length t - 1)))
@@ -577,6 +633,41 @@ let fetchDeps (top: Manifest) (update: bool) : list<string> =
     writeLock top.root (Map.toList resolved.Value)
   Array.toList (Buffer.toArray errors)
 
+/// zs vendor (0018 item 6): each git dependency's checkout copied into vendor/<name> (.git left
+/// out), the lock's hash with it, so the project builds from its own files and never fetches.
+/// Returns error messages.
+let vendor (top: Manifest) : list<string> =
+  match fetchDeps top false false with
+  | [] ->
+    let errors = Buffer.empty
+    for (name, l) in Map.toList (readLock top.root) do
+      let from = if vendored top name then vendorDir top name else gitDir top name
+      let into = vendorDir top name
+      if from <> into then
+        if Directory.exists into then
+          Directory.deleteRecursive into |> ignore
+        match Directory.listRecursive from with
+        | Error e -> Buffer.push $"vendor {name}: {e}" errors
+        | Ok rels ->
+          Directory.create (Path.combine top.root "vendor") |> ignore
+          Directory.create into |> ignore
+          for r in List.sort rels do
+            if r <> ".git" && not (String.startsWith ".git/" r) then
+              let src = Path.combine from r
+              let dst = Path.combine into r
+              if Directory.exists src then
+                Directory.create dst |> ignore
+              else
+                match File.copy src dst with
+                | Ok _ -> ()
+                | Error e -> Buffer.push $"vendor {name}: {r}: {e}" errors
+          if dirHash into <> l.hash then
+            Buffer.push $"vendor {name}: the copy's hash differs from the lock's" errors
+          else
+            println $"vendored {name} {l.rev} into {Path.getRelativePath top.root into}"
+    Array.toList (Buffer.toArray errors)
+  | errors -> errors
+
 /// A new project: zs.toml, src/main.zs with a test, and .gitignore; false (with a message) when
 /// the directory exists.
 let newProject (name: string) : bool =
@@ -589,6 +680,6 @@ let newProject (name: string) : bool =
     let pkg = Path.getFileName (Path.getFullPath name)
     File.writeAllText (Path.combine name "zs.toml") $"[package]\nname = \"{pkg}\"\nversion = \"0.1.0\"\nmain = \"src/main.zs\"\n\n[dependencies]\n# text = {{ path = \"../text\" }}\n" |> ignore
     File.writeAllText (Path.combine (Path.combine name "src") "main.zs") "open Testing\n\nlet greeting (who: string) = $\"Hello, {who}!\"\n\nlet main () =\n  match Environment.args () with\n  | [] -> println (greeting \"world\")\n  | who :: _ -> println (greeting who)\n  0\n\n[<Tests>]\nlet tests = testList \"greeting\" [ test \"greets\" (fun () -> assert (greeting \"Z#\" = \"Hello, Z#!\")) ]\n" |> ignore
-    File.writeAllText (Path.combine name ".gitignore") "build/\n" |> ignore
+    File.writeAllText (Path.combine name ".gitignore") "build/\n.zs-cache/\n" |> ignore
     println $"created {name}: zs.toml, src/main.zs (cd {name} && zs run)"
     true

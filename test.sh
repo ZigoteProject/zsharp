@@ -244,6 +244,9 @@ else echo "FAIL tests/project/git.sh"; cat "$tmp/git.diff"; fail=1; fi
 # the three small tools of examples/tools, built and run (track S's exit test)
 if diff <(tests/examples_tools.sh 2>&1) tests/examples_tools.expected >"$tmp/tools.diff"; then echo "ok   tests/examples_tools.sh (examples/tools: grep, jsonpp, tail -f)"
 else echo "FAIL tests/examples_tools.sh"; cat "$tmp/tools.diff"; fail=1; fi
+# the lock's hashes, zs vendor and --offline (0018 item 6)
+if diff <(tests/project/vendor.sh 2>&1) tests/project/vendor.expected >"$tmp/vendor.diff"; then echo "ok   tests/project/vendor.sh (zs.lock hashes, zs vendor, --offline)"
+else echo "FAIL tests/project/vendor.sh"; cat "$tmp/vendor.diff"; fail=1; fi
 # zs add, zs remove and zs tree, internal modules, and Std in a chip build's dependency (0018)
 if diff <(tests/project/pkgs.sh 2>&1) tests/project/pkgs.expected >"$tmp/pkgs.diff"; then echo "ok   tests/project/pkgs.sh (zs add, remove, tree; internal modules; Std on a chip)"
 else echo "FAIL tests/project/pkgs.sh"; cat "$tmp/pkgs.diff"; fail=1; fi

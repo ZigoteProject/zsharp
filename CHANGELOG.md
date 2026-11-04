@@ -65,6 +65,13 @@
   prelude, Core and Std alone (track S's exit test), built and run by `tests/examples_tools.sh`.
 
 ### Packages
+- `zs.lock` hashes each git dependency's files (0018, item 6): a checkout that was edited is
+  restored from its commit at the next fetch, and one whose files still differ is an error
+  naming it (`zs update` accepts the new files). `zs vendor` copies the dependencies into
+  `vendor/`, where the project reads them from and never fetches, their hashes checked; `zs
+  build --offline` (any command's `--offline`, or `ZS_OFFLINE=1`) is an error instead of a
+  fetch. `zs new` puts `.zs-cache/` in `.gitignore`. The hash is the compiler's xxhash until
+  stage 0's library has `Sha256`.
 - `zs add ../text`, `zs add https://…/json.git@1.2` (a release) or `@v1` (a rev), `--rev main`:
   the dependency written into `zs.toml`'s `[dependencies]` (the name from the package's
   `zs.toml`, or the URL's last part) and fetched; `zs remove json` takes one out, the lock
