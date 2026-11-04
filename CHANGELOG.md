@@ -434,9 +434,13 @@ a real machine. The flagship runs under QEMU's STM32F405, not yet on the board i
   `sized`, `scale`, `constant`, the `gen { }` builder, and `Gen.sample seed n g` to look at
   one. `Arbitrary` has impls for Core's types, lists, arrays, options, results and tuples, and
   `[<Derive(Arbitrary)>]` for records and unions (a case without fields at size 0, so a tree
-  ends; the derives gain `Shape.cases`). A case that panics ends the test with the panic; the
-  runner's record and replay protocol, `Prop`, `Prop.model` and `zs fuzz` are left
-  (`tests/property/basic.zs`).
+  ends; the derives gain `Shape.cases`). `prop { let! x = Gen.int … do! Prop.assume (y <> 0)
+  … return … }` draws as it goes, discards a case (`Prop.assume`) or labels it (`Prop.label`,
+  `classify`, `collect`): a passing property reports how its cases were labelled, a failure
+  shows the failing case's labels. `Prop.model commands { init; step }` checks a system
+  against a model with a derived sequence of commands, which shrinks to the fewest with the
+  smallest arguments. A case that panics ends the test with the panic; the runner's record
+  and replay protocol and `zs fuzz` are left (`tests/property/basic.zs`, `model.zs`).
 - `Numerics.Fixed` (0015, track M item 10): `q7`, `q15` and `q31`, each a one-case union over
   its integer (its size, by decision 66), with saturating `+`, `-`, `*` (rounded half up), `/`, `%` and negation,
   `mulAdd`, `abs`, `clamp`, `ofFloat`/`toFloat`/`toF32`, `ofInt`, `raw`/`ofRaw`, the conversions

@@ -41,18 +41,19 @@ abstract arbitrary : unit -> Gen<'a>
 
 The type's generator.
 
-### `Testing.Verdict`
+### `Testing.Checks`
 
 ```zsharp
-trait Verdict<'r>
+trait Checks<'r>
 ```
 
-What a property's body gives back, as a verdict: `unit` passes, `false` and an `Error` fail.
+What a property's body gives back, checked against the case's source: `unit` passes, `false`
+and an `Error` fail, and a `Prop` runs on the source (drawing more, discarding, labelling).
 
-#### `Testing.Verdict.verdict`
+#### `Testing.Checks.check`
 
 ```zsharp
-abstract verdict : 'r -> option<string>
+abstract check : 'r -> Source -> option<string>
 ```
 
 `None` when the case passed; the failure's message otherwise.
@@ -151,6 +152,57 @@ type CaseInfo
 ```
 
 A union's case as a derive sees it (`Shape.cases`): its name, its index and how many fields.
+
+### `Testing.Verdict`
+
+```zsharp
+type Verdict
+```
+
+How a case of a `Prop` ended.
+
+#### `Testing.Passed`
+
+```zsharp
+| Passed
+```
+
+The checks held.
+
+#### `Testing.Failed`
+
+```zsharp
+| Failed of string
+```
+
+A check failed: its message.
+
+#### `Testing.Discarded`
+
+```zsharp
+| Discarded
+```
+
+The case doesn't count (`Prop.assume` was false, or a filter never held).
+
+### `Testing.Prop`
+
+```zsharp
+type Prop
+```
+
+A property that draws as it goes: `prop { let! x = Gen.int … do! Prop.assume (x <> 0) …
+return x / x = 1 }`. Its draws come from the case's source, after the parameters', so they
+shrink with them.
+
+### `Testing.Model`
+
+```zsharp
+type Model<'c, 's, 'm>
+```
+
+A system checked against a model by a sequence of commands (`Prop.model`): `init` makes the
+two, and `step` applies a command to both, or says how they disagree.
 
 ### `Testing.PropertySettings`
 
@@ -363,29 +415,37 @@ derive Arbitrary
 A record draws each field; a union draws a case (one without fields when the size is 0, so a
 recursive type ends), then its fields; a field is drawn at half the size.
 
-### `impl Verdict<unit>`
+### `impl Checks<unit>`
 
 ```zsharp
-impl Verdict<unit>
+impl Checks<unit>
 ```
 
 A body that returns: the case passed.
 
-### `impl Verdict<bool>`
+### `impl Checks<bool>`
 
 ```zsharp
-impl Verdict<bool>
+impl Checks<bool>
 ```
 
 `false` fails the case.
 
-### `impl Verdict<result<'a, 'e>>`
+### `impl Checks<result<'a, 'e>>`
 
 ```zsharp
-impl Verdict<result<'a, 'e>>
+impl Checks<result<'a, 'e>>
 ```
 
 An `Error` fails the case, shown.
+
+### `impl Checks<Prop>`
+
+```zsharp
+impl Checks<Prop>
+```
+
+A `Prop` runs on the case's source: a `Failed` fails the case, a `Discarded` discards it.
 
 ## Functions
 
@@ -679,7 +739,7 @@ Testing.Gen.sample : u64 -> int -> Testing.Gen<'a> -> list<'a>
 ### `Testing.Gen.unit`
 
 ```zsharp
-let unit : Gen<unit>
+Testing.Gen.unit : unit -> Testing.Gen<unit>
 ```
 
 `()`; draws nothing.
@@ -687,7 +747,7 @@ let unit : Gen<unit>
 ### `Testing.Gen.bool`
 
 ```zsharp
-let bool : Gen<bool>
+Testing.Gen.bool : unit -> Testing.Gen<bool>
 ```
 
 `true` or `false`; `false` first.
@@ -695,7 +755,7 @@ let bool : Gen<bool>
 ### `Testing.Gen.char`
 
 ```zsharp
-let char : Gen<char>
+Testing.Gen.char : unit -> Testing.Gen<char>
 ```
 
 A character: printable ASCII first (space the simplest), then any scalar value.
@@ -703,7 +763,7 @@ A character: printable ASCII first (space the simplest), then any scalar value.
 ### `Testing.Gen.string`
 
 ```zsharp
-let string : Gen<string>
+Testing.Gen.string : unit -> Testing.Gen<string>
 ```
 
 A string of `char`s, up to the size long.
@@ -711,7 +771,7 @@ A string of `char`s, up to the size long.
 ### `Testing.Gen.int`
 
 ```zsharp
-let int : Gen<int>
+Testing.Gen.int : unit -> Testing.Gen<int>
 ```
 
 An integer in `-size .. size`: zero the simplest, then small ones.
@@ -719,7 +779,7 @@ An integer in `-size .. size`: zero the simplest, then small ones.
 ### `Testing.Gen.i8`
 
 ```zsharp
-let i8 : Gen<i8>
+Testing.Gen.i8 : unit -> Testing.Gen<i8>
 ```
 
 An `i8` as `int`, within the width.
@@ -727,7 +787,7 @@ An `i8` as `int`, within the width.
 ### `Testing.Gen.i16`
 
 ```zsharp
-let i16 : Gen<i16>
+Testing.Gen.i16 : unit -> Testing.Gen<i16>
 ```
 
 An `i16` as `int`.
@@ -735,7 +795,7 @@ An `i16` as `int`.
 ### `Testing.Gen.i32`
 
 ```zsharp
-let i32 : Gen<i32>
+Testing.Gen.i32 : unit -> Testing.Gen<i32>
 ```
 
 An `i32` as `int`.
@@ -743,7 +803,7 @@ An `i32` as `int`.
 ### `Testing.Gen.i64`
 
 ```zsharp
-let i64 : Gen<i64>
+Testing.Gen.i64 : unit -> Testing.Gen<i64>
 ```
 
 An `i64` as `int`.
@@ -751,7 +811,7 @@ An `i64` as `int`.
 ### `Testing.Gen.u8`
 
 ```zsharp
-let u8 : Gen<u8>
+Testing.Gen.u8 : unit -> Testing.Gen<u8>
 ```
 
 A `u8` from 0 to the size (255 at most): zero the simplest.
@@ -759,7 +819,7 @@ A `u8` from 0 to the size (255 at most): zero the simplest.
 ### `Testing.Gen.u16`
 
 ```zsharp
-let u16 : Gen<u16>
+Testing.Gen.u16 : unit -> Testing.Gen<u16>
 ```
 
 A `u16` from 0 to the size.
@@ -767,7 +827,7 @@ A `u16` from 0 to the size.
 ### `Testing.Gen.u32`
 
 ```zsharp
-let u32 : Gen<u32>
+Testing.Gen.u32 : unit -> Testing.Gen<u32>
 ```
 
 A `u32` from 0 to the size.
@@ -775,7 +835,7 @@ A `u32` from 0 to the size.
 ### `Testing.Gen.u64`
 
 ```zsharp
-let u64 : Gen<u64>
+Testing.Gen.u64 : unit -> Testing.Gen<u64>
 ```
 
 A `u64` from 0 to the size.
@@ -783,7 +843,7 @@ A `u64` from 0 to the size.
 ### `Testing.Gen.float`
 
 ```zsharp
-let float : Gen<f64>
+Testing.Gen.float : unit -> Testing.Gen<f64>
 ```
 
 A float: integer-valued first, then with a fraction, and now and then NaN or an infinity.
@@ -791,21 +851,74 @@ A float: integer-valued first, then with a fraction, and now and then NaN or an 
 ### `Testing.Gen.f32`
 
 ```zsharp
-let f32 : Gen<f32>
+Testing.Gen.f32 : unit -> Testing.Gen<f32>
 ```
 
 `float`, single precision.
 
+### `Testing.Prop.run`
+
+```zsharp
+Testing.Prop.run : Testing.Prop -> Testing.Source -> Testing.Verdict
+```
+
+Runs the property's checks on a source.
+
+### `Testing.Prop.assume`
+
+```zsharp
+Testing.Prop.assume : bool -> Testing.Gen<unit>
+```
+
+`do! Prop.assume cond`: a false condition discards the case, and nothing after it runs
+(FsCheck's `==>`). Generate valid values where you can: discards cost cases.
+
+### `Testing.Prop.label`
+
+```zsharp
+Testing.Prop.label : string -> Testing.Gen<unit>
+```
+
+`do! Prop.label name`: names the case; a failure shows its labels, and a passing property
+reports how its cases were labelled.
+
+### `Testing.Prop.classify`
+
+```zsharp
+Testing.Prop.classify : bool -> string -> Testing.Gen<unit>
+```
+
+`do! Prop.classify cond name`: labels the case `name` when `cond` holds.
+
+### `Testing.Prop.collect`
+
+```zsharp
+Testing.Prop.collect : 'a -> Testing.Gen<unit> when 'a : Show
+```
+
+`do! Prop.collect value`: labels the case with the value's text.
+
+### `Testing.Prop.model`
+
+```zsharp
+Testing.Prop.model : list<'a> -> Testing.Model<'a, 'b, 'c> -> result<unit, string> when 'a : Show
+```
+
+Applies each command to the system and the model, in turn; the first disagreement is the
+failure, with the commands before it, so a failing sequence shrinks to the fewest commands
+with the smallest arguments.
+
 ### `Testing.testPropertyWith`
 
 ```zsharp
-Testing.testPropertyWith : Testing.PropertySettings -> string -> ('a -> 'b / <>) -> Testing.Test when 'a : Show, 'a : Testing.Arbitrary, 'b : Testing.Verdict
+Testing.testPropertyWith : Testing.PropertySettings -> string -> ('a -> 'b / <>) -> Testing.Test when 'a : Show, 'a : Testing.Arbitrary, 'b : Testing.Checks
   prop must perform nothing
 ```
 
 A property with its settings: `prop` runs on `runs` cases drawn with `Arbitrary` at its
 parameter's type (a tuple for several), the cases growing from size 0 to `maxSize`; `unit`,
-`true` or `Ok` passes a case. A case that returns `false` or an `Error` fails the property:
+`true`, `Ok` or a `Prop` that passes passes a case (a `Prop` draws more as it goes, and may
+discard the case or label it). A case that returns `false` or an `Error` fails the property:
 it's shrunk to a smallest failing case (shorter bytes, then smaller), which the failure
 shows, with the seed to replay the run. A case that panics ends the test at once, with the
 panic: `testPropertyWith { seed = Some s }` replays it.
@@ -813,7 +926,7 @@ panic: `testPropertyWith { seed = Some s }` replays it.
 ### `Testing.testProperty`
 
 ```zsharp
-Testing.testProperty : string -> ('a -> 'b / <>) -> Testing.Test when 'a : Show, 'a : Testing.Arbitrary, 'b : Testing.Verdict
+Testing.testProperty : string -> ('a -> 'b / <>) -> Testing.Test when 'a : Show, 'a : Testing.Arbitrary, 'b : Testing.Checks
   prop must perform nothing
 ```
 

@@ -190,6 +190,8 @@ type Source =
     random: option<Numerics.Random>
     overrun: ref<bool>
     discarded: ref<bool>
+    /// The case's labels (`Prop.label`, `Prop.classify`), reported with the result.
+    labels: Buffer<string>
     /// How large the values may get: a property's cases grow from 0 to its `maxSize`.
     size: int }
 
@@ -202,6 +204,7 @@ module Source =
       random = Some r
       overrun = ref false
       discarded = ref false
+      labels = Buffer.ofArray [||]
       size = size }
 
   /// A given stream (a shrink candidate, a saved case), at `size`.
@@ -211,6 +214,7 @@ module Source =
       random = None
       overrun = ref false
       discarded = ref false
+      labels = Buffer.ofArray [||]
       size = size }
 
   /// `n` bytes from the stream: the next of the given or recorded ones, else drawn at random and
@@ -345,13 +349,13 @@ module Gen =
     if offset 1 s = 0 then m else -m
 
   /// `()`; draws nothing.
-  let unit : Gen<unit> = constant ()
+  let unit () : Gen<unit> = constant ()
 
   /// `true` or `false`; `false` first.
-  let bool : Gen<bool> = Gen(fun s -> offset 1 s = 1)
+  let bool () : Gen<bool> = Gen(fun s -> offset 1 s = 1)
 
   /// A character: printable ASCII first (space the simplest), then any scalar value.
-  let char : Gen<char> =
+  let char () : Gen<char> =
     Gen(fun s ->
       let kind = offset 7 s
       if kind < 6 then
@@ -360,37 +364,37 @@ module Gen =
         char (0xA1 + offset (0xD7FF - 0xA1) s))
 
   /// A string of `char`s, up to the size long.
-  let string : Gen<string> = map String.ofChars (list char)
+  let string () : Gen<string> = map String.ofChars (list (char ()))
 
   /// An integer in `-size .. size`: zero the simplest, then small ones.
-  let int : Gen<int> = Gen signed
+  let int () : Gen<int> = Gen signed
 
   /// An `i8` as `int`, within the width.
-  let i8 : Gen<i8> = map (fun n -> i8 (max -128 (min 127 n))) int
+  let i8 () : Gen<i8> = map (fun n -> i8 (max -128 (min 127 n))) (int ())
 
   /// An `i16` as `int`.
-  let i16 : Gen<i16> = map (fun n -> i16 n) int
+  let i16 () : Gen<i16> = map (fun n -> i16 n) (int ())
 
   /// An `i32` as `int`.
-  let i32 : Gen<i32> = map (fun n -> i32 n) int
+  let i32 () : Gen<i32> = map (fun n -> i32 n) (int ())
 
   /// An `i64` as `int`.
-  let i64 : Gen<i64> = map (fun n -> i64 n) int
+  let i64 () : Gen<i64> = map (fun n -> i64 n) (int ())
 
   /// A `u8` from 0 to the size (255 at most): zero the simplest.
-  let u8 : Gen<u8> = Gen(fun s -> u8 (offset (min 255 s.size) s))
+  let u8 () : Gen<u8> = Gen(fun s -> u8 (offset (min 255 s.size) s))
 
   /// A `u16` from 0 to the size.
-  let u16 : Gen<u16> = Gen(fun s -> u16 (offset s.size s))
+  let u16 () : Gen<u16> = Gen(fun s -> u16 (offset s.size s))
 
   /// A `u32` from 0 to the size.
-  let u32 : Gen<u32> = Gen(fun s -> u32 (offset s.size s))
+  let u32 () : Gen<u32> = Gen(fun s -> u32 (offset s.size s))
 
   /// A `u64` from 0 to the size.
-  let u64 : Gen<u64> = Gen(fun s -> u64 (offset s.size s))
+  let u64 () : Gen<u64> = Gen(fun s -> u64 (offset s.size s))
 
   /// A float: integer-valued first, then with a fraction, and now and then NaN or an infinity.
-  let float : Gen<f64> =
+  let float () : Gen<f64> =
     Gen(fun s ->
       let kind = offset 15 s
       let m = f64 (signed s)
@@ -403,7 +407,7 @@ module Gen =
         | _ -> -1.0 / 0.0)
 
   /// `float`, single precision.
-  let f32 : Gen<f32> = map (fun x -> f32 x) float
+  let f32 () : Gen<f32> = map (fun x -> f32 x) (float ())
 
   /// The `gen { }` builder: `let!` draws, `return` makes a value.
   module Builder =
@@ -429,63 +433,63 @@ trait Arbitrary<'a> =
 
 /// `()`.
 impl Arbitrary<unit> =
-  let arbitrary () = Gen.unit
+  let arbitrary () = Gen.unit ()
 
 /// `Gen.bool`.
 impl Arbitrary<bool> =
-  let arbitrary () = Gen.bool
+  let arbitrary () = Gen.bool ()
 
 /// `Gen.char`.
 impl Arbitrary<char> =
-  let arbitrary () = Gen.char
+  let arbitrary () = Gen.char ()
 
 /// `Gen.string`.
 impl Arbitrary<string> =
-  let arbitrary () = Gen.string
+  let arbitrary () = Gen.string ()
 
 /// `Gen.int`: `-size .. size`.
 impl Arbitrary<int> =
-  let arbitrary () = Gen.int
+  let arbitrary () = Gen.int ()
 
 /// `Gen.i8`.
 impl Arbitrary<i8> =
-  let arbitrary () = Gen.i8
+  let arbitrary () = Gen.i8 ()
 
 /// `Gen.i16`.
 impl Arbitrary<i16> =
-  let arbitrary () = Gen.i16
+  let arbitrary () = Gen.i16 ()
 
 /// `Gen.i32`.
 impl Arbitrary<i32> =
-  let arbitrary () = Gen.i32
+  let arbitrary () = Gen.i32 ()
 
 /// `Gen.i64`.
 impl Arbitrary<i64> =
-  let arbitrary () = Gen.i64
+  let arbitrary () = Gen.i64 ()
 
 /// `Gen.u8`.
 impl Arbitrary<u8> =
-  let arbitrary () = Gen.u8
+  let arbitrary () = Gen.u8 ()
 
 /// `Gen.u16`.
 impl Arbitrary<u16> =
-  let arbitrary () = Gen.u16
+  let arbitrary () = Gen.u16 ()
 
 /// `Gen.u32`.
 impl Arbitrary<u32> =
-  let arbitrary () = Gen.u32
+  let arbitrary () = Gen.u32 ()
 
 /// `Gen.u64`.
 impl Arbitrary<u64> =
-  let arbitrary () = Gen.u64
+  let arbitrary () = Gen.u64 ()
 
 /// `Gen.float`.
 impl Arbitrary<f64> =
-  let arbitrary () = Gen.float
+  let arbitrary () = Gen.float ()
 
 /// `Gen.f32`.
 impl Arbitrary<f32> =
-  let arbitrary () = Gen.f32
+  let arbitrary () = Gen.f32 ()
 
 /// A list of the element's values, up to the size long.
 impl Arbitrary<list<'a>> =
@@ -545,25 +549,115 @@ derive Arbitrary =
       | Ok v -> v
       | Error e -> panic e)
 
-/// What a property's body gives back, as a verdict: `unit` passes, `false` and an `Error` fail.
-trait Verdict<'r> =
+/// What a property's body gives back, checked against the case's source: `unit` passes, `false`
+/// and an `Error` fail, and a `Prop` runs on the source (drawing more, discarding, labelling).
+trait Checks<'r> =
   /// `None` when the case passed; the failure's message otherwise.
-  abstract verdict : 'r -> option<string>
+  abstract check : 'r -> Source -> option<string>
 
 /// A body that returns: the case passed.
-impl Verdict<unit> =
-  let verdict () = None
+impl Checks<unit> =
+  let check () (_: Source) = None
 
 /// `false` fails the case.
-impl Verdict<bool> =
-  let verdict b = if b then None else Some "false"
+impl Checks<bool> =
+  let check b (_: Source) = if b then None else Some "false"
 
 /// An `Error` fails the case, shown.
-impl Verdict<result<'a, 'e>> =
-  let verdict r =
+impl Checks<result<'a, 'e>> =
+  let check r (_: Source) =
     match r with
     | Ok _ -> None
     | Error e -> Some $"Error {e}"
+
+/// How a case of a `Prop` ended.
+type Verdict =
+  /// The checks held.
+  | Passed
+  /// A check failed: its message.
+  | Failed of string
+  /// The case doesn't count (`Prop.assume` was false, or a filter never held).
+  | Discarded
+
+/// A property that draws as it goes: `prop { let! x = Gen.int … do! Prop.assume (x <> 0) …
+/// return x / x = 1 }`. Its draws come from the case's source, after the parameters', so they
+/// shrink with them.
+type Prop = Prop of (Source -> Verdict)
+
+/// A system checked against a model by a sequence of commands (`Prop.model`): `init` makes the
+/// two, and `step` applies a command to both, or says how they disagree.
+type Model<'c, 's, 'm> =
+  { /// The system and the model to start from.
+    init: unit -> 's * 'm
+    /// Both after a command, or an `Error` naming the disagreement.
+    step: 'c -> 's * 'm -> result<'s * 'm, string> }
+
+/// Functions on `Prop`, and the `prop { }` builder.
+module Prop =
+  /// Runs the property's checks on a source.
+  let run (Prop f) (s: Source) : Verdict = f s
+
+  /// `do! Prop.assume cond`: a false condition discards the case, and nothing after it runs
+  /// (FsCheck's `==>`). Generate valid values where you can: discards cost cases.
+  let assume (cond: bool) : Gen<unit> =
+    Gen(fun s ->
+      if not cond then
+        s.discarded.Value <- true)
+
+  /// `do! Prop.label name`: names the case; a failure shows its labels, and a passing property
+  /// reports how its cases were labelled.
+  let label (name: string) : Gen<unit> = Gen(fun s -> Buffer.push name s.labels)
+
+  /// `do! Prop.classify cond name`: labels the case `name` when `cond` holds.
+  let classify (cond: bool) (name: string) : Gen<unit> = if cond then label name else Gen.unit ()
+
+  /// `do! Prop.collect value`: labels the case with the value's text.
+  let collect (value: 'a) : Gen<unit> = label (show value)
+
+  /// Applies each command to the system and the model, in turn; the first disagreement is the
+  /// failure, with the commands before it, so a failing sequence shrinks to the fewest commands
+  /// with the smallest arguments.
+  let model (commands: list<'c>) (m: Model<'c, 's, 'm>) : result<unit, string> =
+    let rec go (i: int) (state: 's * 'm) (rest: list<'c>) : result<unit, string> =
+      match rest with
+      | [] -> Ok()
+      | c :: more ->
+        match m.step c state with
+        | Ok next -> go (i + 1) next more
+        | Error e -> Error $"after {i} commands, {show c}: {e}"
+    go 0 (m.init ()) commands
+
+  /// The `prop { }` builder: `let!` draws from a generator, `do!` runs a check or a draw of
+  /// unit, and `return` gives the case's result (`unit`, `bool`, a `result` or another `Prop`).
+  module Builder =
+    /// `let!`: the rest with what the generator draws, unless the case was discarded.
+    let bind (g: Gen<'a>) (f: 'a -> Prop) : Prop =
+      Prop(fun s ->
+        let x = Gen.draw g s
+        if Source.rejected s then Discarded else run (f x) s)
+
+    /// `return x`: the case's result, checked.
+    let ret (x: 'r) : Prop =
+      Prop(fun s ->
+        match check x s with
+        | None -> if s.discarded.Value then Discarded else Passed
+        | Some m -> Failed m)
+
+    /// A body that ends in a statement: the case passed.
+    let zero () : Prop = Prop(fun _ -> Passed)
+
+    /// The body, run with the case.
+    let delay (f: unit -> Prop) : Prop = Prop(fun s -> run (f ()) s)
+
+/// A `Prop` runs on the case's source: a `Failed` fails the case, a `Discarded` discards it.
+impl Checks<Prop> =
+  let check p (s: Source) =
+    match Prop.run p s with
+    | Passed -> None
+    | Failed m -> Some m
+    | Discarded ->
+      s.discarded.Value <- true
+      None
 
 /// A property's settings: `testPropertyWith { runs = 1000 } "name" …` names what changes.
 type PropertySettings =
@@ -580,15 +674,16 @@ type PropertySettings =
 
 // a shrink candidate's bytes, re-run: whether the property still fails on them (not an overrun
 // or a discard), and the value and message then
-let private stillFails (prop: 'a -> 'r) (size: int) (bytes: array<u8>) : option<'a * string> =
+let private stillFails (prop: 'a -> 'r) (size: int) (bytes: array<u8>) : option<'a * string * list<string>> =
   let src = Source.ofBytes bytes size
   let x = Gen.draw (arbitrary ()) src
   if Source.rejected src then
     None
   else
-    match verdict (prop x) with
-    | Some msg -> Some(x, msg)
-    | None -> None
+    match check (prop x) src with
+    | Some msg when not (Source.rejected src) ->
+      Some(x, msg, Array.toList (Buffer.toArray src.labels))
+    | _ -> None
 
 // the failing stream made shorter, then its bytes smaller, while the property still fails:
 // shorter first (Hypothesis's order), a block at a time, then each byte zeroed, halved or one
@@ -635,7 +730,8 @@ let private shrink (prop: 'a -> 'r) (size: int) (bytes0: array<u8>) : array<u8> 
 
 /// A property with its settings: `prop` runs on `runs` cases drawn with `Arbitrary` at its
 /// parameter's type (a tuple for several), the cases growing from size 0 to `maxSize`; `unit`,
-/// `true` or `Ok` passes a case. A case that returns `false` or an `Error` fails the property:
+/// `true`, `Ok` or a `Prop` that passes passes a case (a `Prop` draws more as it goes, and may
+/// discard the case or label it). A case that returns `false` or an `Error` fails the property:
 /// it's shrunk to a smallest failing case (shorter bytes, then smaller), which the failure
 /// shows, with the seed to replay the run. A case that panics ends the test at once, with the
 /// panic: `testPropertyWith { seed = Some s }` replays it.
@@ -649,30 +745,48 @@ let testPropertyWith (ps: PropertySettings) (name: string) (prop: 'a -> 'r) : Te
     let mutable passed = 0
     let mutable discarded = 0
     let mutable failure = None
+    let counts = ref Map.empty
+    let labelled (ls: list<string>) =
+      if List.isEmpty ls then "" else $"\n  labels: {String.join ", " ls}"
     while passed < ps.runs && failure.IsNone do
-      let size = ps.maxSize * passed / max 1 (ps.runs - 1)
+      // the size grows with the cases, discarded ones included: at size 0 a filter may never hold
+      let size = min ps.maxSize (ps.maxSize * (passed + discarded) / max 1 (ps.runs - 1))
       let src = Source.random r size
       let x = Gen.draw (arbitrary ()) src
+      let result = if Source.rejected src then None else check (prop x) src
       if Source.rejected src then
         discarded <- discarded + 1
         if discarded > ps.maxDiscardRatio * max 1 passed + ps.maxDiscardRatio then
           panic $"{name}: {discarded} cases discarded for {passed} passed: generate valid values instead of filtering invalid ones (seed {seed})"
       else
-        match verdict (prop x) with
-        | None -> passed <- passed + 1
-        | Some msg -> failure <- Some(x, msg, Buffer.toArray src.bytes, size)
+        match result with
+        | None ->
+          passed <- passed + 1
+          for l in Buffer.toArray src.labels do
+            counts.Value <- Map.add l (1 + Option.defaultValue 0 (Map.tryFind l counts.Value)) counts.Value
+        | Some msg ->
+          failure <- Some(x,
+            msg,
+            Array.toList (Buffer.toArray src.labels),
+            Buffer.toArray src.bytes,
+            size)
     match failure with
-    | None -> ()
-    | Some(x0, msg0, bytes0, size) ->
-      let (x, msg, steps) =
+    | None ->
+      // how the cases were labelled, when any were
+      if not (Map.isEmpty counts.Value) then
+        let total = max 1 passed
+        let parts = List.map (fun (l, n) -> $"{100 * n / total}% {l}") (Map.toList counts.Value)
+        println $"  {name}: {passed} cases, {discarded} discarded; {String.join ", " parts}"
+    | Some(x0, msg0, labels0, bytes0, size) ->
+      let (x, msg, labels, steps) =
         if ps.shrink then
           let (bytes, steps) = shrink prop size bytes0
           match stillFails prop size bytes with
-          | Some(x, msg) -> (x, msg, steps)
-          | None -> (x0, msg0, steps)
+          | Some(x, msg, labels) -> (x, msg, labels, steps)
+          | None -> (x0, msg0, labels0, steps)
         else
-          (x0, msg0, 0)
-      panic $"falsified after {passed + 1} cases ({steps} shrinks): {show x}\n  {msg}\n  replay: testPropertyWith {{ seed = Some (u64 {seed}) }}"
+          (x0, msg0, labels0, 0)
+      panic $"falsified after {passed + 1} cases ({steps} shrinks): {show x}\n  {msg}{labelled labels}\n  replay: testPropertyWith {{ seed = Some (u64 {seed}) }}"
   Case(name, body, Normal, limit)
 
 /// A property with the default settings: 100 cases, growing to size 100, shrunk on failure.

@@ -1,0 +1,5 @@
+test labels on a failure
+panic: falsified after 39 cases (3 shrinks): 25
+  false
+  labels: odd
+  replay: testPropertyWith { seed = Some (u64 9) }
