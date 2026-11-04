@@ -293,7 +293,7 @@ attributed functions, so they compose with ordinary code.
 - *Done in phase 12:* a doc test runs under `zs test --doc` (`tests/doctest.sh`).
 - *Done in phase 12:* gdb and lldb show strings, records and plain unions as values (`tests/debug/gdb.sh`, `lldb.sh`).
 - *Done 2026-11-04:* `zs test --stress 4s` with `ZS_LEAKCHECK=1` finds a planted leak, and a planted failure, that one run doesn't show (`tests/ztest/stress.sh`).
-- *Done 2026-11-04 (`tests/ztest/bench.sh`):* `zs bench` reports a planted slowdown (four times the work) and nothing for an unchanged build; `testFaster` passes for an int sum over a float one.
+- *Done 2026-11-04 (`tests/ztest/bench.sh`):* `zs bench` reports a planted slowdown (four times the work) and nothing for an unchanged build; `testFaster` passes for a sum of 1,000 over one of 50,000 (a gap no load hides).
 - *After 0.6.2:* a property with a filtered generator of even numbers finds a planted bug and shrinks it to the smallest even case; its replay file reproduces it; a stateful test against a model finds a planted `HashMap` bug and shrinks the commands.
 - *After 0.6.2:* `zs fuzz` on a typed parser property finds a planted out-of-bounds read within a minute.
 - *After 0.6.2:* `llvm-cov` reports a match case the tests never reach.
