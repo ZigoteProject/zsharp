@@ -326,6 +326,9 @@ else echo "skip tests/debug/gdb.sh (no gdb)"; fi
 if command -v gdb >/dev/null; then
   if diff <(tests/debug/gdb_heap.sh) tests/debug/gdb_heap.expected >"$tmp/gdb_heap.diff"; then echo "ok   tests/debug/gdb_heap.sh"
   else echo "FAIL tests/debug/gdb_heap.sh"; cat "$tmp/gdb_heap.diff"; fail=1; fi
+  # -g on an optimized build (0011, debugging 5): the lines stay
+  if diff <(tests/debug/opt.sh) tests/debug/opt.expected >"$tmp/gdb_opt.diff"; then echo "ok   tests/debug/opt.sh (-g --release)"
+  else echo "FAIL tests/debug/opt.sh"; cat "$tmp/gdb_opt.diff"; fail=1; fi
 fi
 # the same under lldb, the debugger on macOS
 if command -v lldb >/dev/null && [ $windows = 0 ]; then

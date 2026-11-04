@@ -347,7 +347,9 @@ let generate (o: Options.Options) (prog0: Program) (testBuild: bool) : result<Pr
       | Some m -> unrunnable m
       | None -> Map.empty
     // --coverage keeps the code as written, as -g does: every line of every reached function counts
-    match lower prog (o.debugInfo || o.coverage) o.time o.checkIr o.noHeap cant with
+    // -g at -O0 (its default) keeps the code as written, for stepping; with a level or --release
+    // the optimizer runs and the lines stay (an inlined call's lines are its caller's frame's)
+    match lower prog ((o.debugInfo && Options.optLevel o = "-O0") || o.coverage) o.time o.checkIr o.noHeap cant with
     | Error e -> Error(InPass e)
     | Ok(types, funs) ->
       // a library's handles may be used on any thread of its C host
@@ -397,7 +399,7 @@ let make (o: Options.Options) (prog0: Program) (linked: Modules.Linked) (testBui
         // AddressSanitizer sees each object
         else [ "-fsanitize=address,undefined"; "-g"; "-DZS_NO_POOL" ]
       // -g: unoptimized, so stepping follows the source
-      let opt = if o.debugInfo then [ "-O0"; "-g" ] else level :: cpuFlags o
+      let opt = if o.debugInfo then (if level = "-O0" then [ "-O0"; "-g" ] else List.concat [ [ level; "-g" ]; cpuFlags o ]) else level :: cpuFlags o
       let profile =
         if o.profileGenerate then [ "-fprofile-generate" ]
         else

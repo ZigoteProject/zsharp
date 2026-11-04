@@ -107,10 +107,10 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
   let libKey = Tools.hashOf ("library" :: List.map (fun (u: Check.Unit) -> u.key) lib)
   let decide = Option.isNone (Environment.getVariable "ZS_NO_DECIDE")
   // --coverage keeps the code as written, as -g does: every line of every reached function counts
-  let asWritten = o.debugInfo || o.coverage
+  let asWritten = (o.debugInfo && Options.optLevel o = "-O0") || o.coverage
   let simple = Option.isSome (Environment.getVariable "ZS_NO_SIMPLIFY") || asWritten
   // the settings a module's code is made with (its object's are in its key)
-  let settings = $"{o.debugInfo} {o.coverage} {testBuild} {decide}"
+  let settings = $"{o.debugInfo} {asWritten} {o.coverage} {testBuild} {decide}"
   let compiler = Tools.compilerId ()
   // which module defines each function, and a module's own functions: its non-generic ones (in a
   // test build, not main)

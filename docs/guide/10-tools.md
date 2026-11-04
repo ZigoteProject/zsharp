@@ -163,7 +163,7 @@ ok   lib/core/Collections/List.zs:405 chunkBySize
 
 ## Debugging
 
-`zs build -g` builds without optimization and with DWARF debug info, so gdb, and lldb (the debugger on macOS), work with the Z# source:
+`zs build -g` builds without optimization and with DWARF debug info, so gdb, and lldb (the debugger on macOS), work with the Z# source (`-g --release`, or `-g` with an `-O` level, keeps the lines in an optimized build, for a crash that only shows there; stepping follows the optimizer's order, and an inlined call's lines are its caller's):
 - **Breakpoints and stepping:** break on a function (`break square`) or a line (`break prog.zs:12`), then step with `next` and `step`.
 - **Backtraces:** `bt` shows Z# files and lines.
 - **Values:** arguments and local variables are shown when they are numbers, bools or chars, strings (as their text), or tuples, records and unions of those. A union shows its case and every case's fields; a string inside a record is a pointer to its object, which `print *r.name` shows.
