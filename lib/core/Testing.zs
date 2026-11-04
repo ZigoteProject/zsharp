@@ -18,6 +18,8 @@ type Test =
   | Case of name: string * run: (unit -> unit) * focus: Focus * timeout: int
   /// A group: its name, its tests, its focus, and whether they run one at a time.
   | Group of name: string * tests: list<Test> * focus: Focus * sequenced: bool
+  /// A benchmark: its name and its body, which `zs bench` times (`zs test` runs it once).
+  | Bench of name: string * run: (unit -> unit)
 
 /// What a test's body gives back: nothing (a panic fails it), a `result` (an `Error` fails it),
 /// or a task (Std's impl runs it on the event loop).
@@ -66,6 +68,50 @@ let ftestList (name: string) (tests: list<Test>) : Test = Group(name, tests, Foc
 /// A pending group.
 let ptestList (name: string) (tests: list<Test>) : Test = Group(name, tests, Pending, false)
 
+/// A benchmark: `zs bench` warms it up, times enough runs for a median and a confidence
+/// interval, and reports a change from the last run beyond the noise; `zs test` runs it once.
+let bench (name: string) (body: unit -> 'r) : Test = Bench(name, (fun () -> body () |> ignore))
+
+// how many of the paired rounds one side must win for the sign test to say it's faster: 19 of
+// 25 happens by chance under one time in a hundred
+let private rounds = 25
+
+let private winsNeeded = 19
+
+/// A test that passes when `fast` is faster than `slow` with statistical confidence: the two
+/// run in paired rounds, in alternating order, and `fast` must win 19 of 25 (a sign test at
+/// 1%), so a performance claim can't silently regress. Both run once each per round: give each
+/// enough work to time.
+let testFaster (name: string) (fast: unit -> 'a) (slow: unit -> 'b) : Test =
+  let body () =
+    let time (f: unit -> unit) : i64 =
+      let t0 = Runtime.ticks ()
+      f ()
+      i64 (Runtime.ticks () - t0)
+    let runFast () = fast () |> ignore
+    let runSlow () = slow () |> ignore
+    // a warm-up round, not counted
+    runFast ()
+    runSlow ()
+    let mutable wins = 0
+    let mutable fastTotal = i64 0
+    let mutable slowTotal = i64 0
+    for i in 1 .. rounds do
+      let (tf, ts) =
+        if i % 2 = 0 then
+          let tf = time runFast
+          (tf, time runSlow)
+        else
+          let ts = time runSlow
+          (time runFast, ts)
+      fastTotal <- fastTotal + tf
+      slowTotal <- slowTotal + ts
+      if tf < ts then
+        wins <- wins + 1
+    if wins < winsNeeded then
+      panic $"not faster with confidence: faster in {wins} of {rounds} rounds (19 needed); mean {fastTotal / i64 rounds} against {slowTotal / i64 rounds} ticks"
+  Case(name, body, Normal, limit)
+
 // the expected text as a literal on lines of its own writes it: without the line break after
 // the opening quotes, the indentation its lines share, and the line the closing quotes are on
 let private normal (s: string) =
@@ -112,6 +158,8 @@ let runAll (tests: list<Test>) : int =
   let rec leaves (prefix: string) (focus: Focus) (t: Test) : list<string * (unit -> unit) * Focus> =
     match t with
     | Case(name, run, f, _) -> [ (prefix + name, run, (if focus = Normal then f else focus)) ]
+    // a benchmark runs once here, as a test of its body
+    | Bench(name, run) -> [ (prefix + name, run, focus) ]
     | Group(name, ts, f, _) ->
       List.collect (leaves (prefix + name + "/") (if focus = Normal then f else focus)) ts
   let all = List.collect (leaves "" Normal) tests

@@ -368,7 +368,15 @@ let tree () : int =
 // ------------------------------------------------------------ zs test
 
 // a test of a built test binary (0009): its path, focus, time limit (ms) and sequenced group
-type private Leaf = { path: string; focus: string; timeout: int; sequence: string }
+type private Leaf = { path: string; focus: string; timeout: int; sequence: string; kind: string }
+
+// a test binary's --list line: path, focus, time limit, sequenced group and kind (test or bench)
+let private leafOf (line: string) : option<Leaf> =
+  match String.split "\t" line with
+  | [ p; f; t; s; k ] ->
+    let ms : option<int> = Int.parse t
+    Some { path = p; focus = f; timeout = Option.defaultValue 10000 ms; sequence = s; kind = k }
+  | _ -> None
 
 // runs a test binary on one test, killed after its time limit: the exit code (None when it timed
 // out) and its output (standard output, then standard error)
@@ -555,13 +563,8 @@ let private runTests (o: Options.Options) (src: string) (args: list<string>) (st
         match Tools.runSplit exe [ "--list" ] with
         | Ok r -> r.out
         | Error _ -> ""
-      let leafOf (line: string) : option<Leaf> =
-        match String.split "\t" line with
-        | [ p; f; t; s ] ->
-          let ms : option<int> = Int.parse t
-          Some { path = p; focus = f; timeout = Option.defaultValue 10000 ms; sequence = s }
-        | _ -> None
-      let leaves = List.choose leafOf (List.filter (fun l -> l <> "") (String.split "\n" listed))
+      // the tests: a benchmark is zs bench's
+      let leaves = List.filter (fun (l: Leaf) -> l.kind = "test") (List.choose leafOf (List.filter (fun l -> l <> "") (String.split "\n" listed)))
       if List.isEmpty leaves then
         eprintln $"{src}: no [<Tests>] values"
         File.delete exe |> ignore
@@ -720,6 +723,141 @@ let private docTests (o: Options.Options) (files: list<string>) (update: bool) :
         println $"updated {shown}"
   println (summaryLine passed.Value failed.Value 0 0)
   if failed.Value = 0 then 0 else 1
+
+// zs bench [file.zs] [filters…] [--runs n] (0009, D9): the file's benchmarks (bench values among
+// its [<Tests>]), each timed in a process of its own: three warm-up runs, then n runs (30 unless
+// --runs says), whose median and 95% confidence interval (the order statistics) are shown. The
+// results are saved beside the file (.zs-cache/bench/<file>.tsv), and a benchmark whose interval
+// doesn't overlap the saved one's, by at least 5%, is reported slower or faster.
+type private Stat = { path: string; median: i64; lo: i64; hi: i64 }
+
+let private statOf (path: string) (samples: list<i64>) : Stat =
+  let sorted = List.sort samples
+  let n = List.length sorted
+  // the value at a 1-based rank, within the samples
+  let at (rank: int) = List.item (max 0 (min (n - 1) (rank - 1))) sorted
+  let half = 1.96 * Math.sqrt (float n)
+  // the ranks, rounded down and up (both positive: a conversion truncates)
+  let hiF = 1.0 + (float n + half) / 2.0
+  { path = path
+    median = (if n % 2 = 1 then at ((n + 1) / 2) else (at (n / 2) + at (n / 2 + 1)) / i64 2)
+    lo = at (int ((float n - half) / 2.0))
+    hi = at (int hiF + (if float (int hiF) < hiF then 1 else 0)) }
+
+let private shownNs (ns: i64) : string =
+  if ns >= i64 1000000000 then $"{float ns / 1000000000.0:F2} s"
+  else if ns >= i64 1000000 then $"{float ns / 1000000.0:F2} ms"
+  else if ns >= i64 1000 then $"{float ns / 1000.0:F1} µs"
+  else $"{ns} ns"
+
+let private benchFile (o: Options.Options) (src: string) (filters: list<string>) (runs: int) : int =
+  let exe = scratchExe ()
+  if Make.build { o with main = src; out = exe } true <> 0 then
+    File.delete exe |> ignore
+    1
+  else
+    let listed =
+      match Tools.runSplit exe [ "--list" ] with
+      | Ok r -> r.out
+      | Error _ -> ""
+    let leaves = List.filter (fun (l: Leaf) -> l.kind = "bench") (List.choose leafOf (List.filter (fun l -> l <> "") (String.split "\n" listed)))
+    let wanted (l: Leaf) = List.isEmpty filters || List.exists (fun (f: string) -> String.contains f l.path) filters
+    let chosen = List.filter wanted leaves
+    if List.isEmpty chosen then
+      println (if List.isEmpty leaves then $"{src}: no benchmarks (a bench value among its [<Tests>])" else $"no benchmark's path matches {String.join " " filters}")
+      File.delete exe |> ignore
+      0
+    else
+      // the last run's results, by path
+      let dir = Path.combine (Path.combine (dirOf src) ".zs-cache") "bench"
+      let saved = Path.combine dir (Path.getFileNameWithoutExtension src + ".tsv")
+      let last =
+        match File.readAllText saved with
+        | Ok text ->
+          let one (line: string) =
+            match String.split "\t" line with
+            | [ p; m; l; h ] ->
+              match ((Int.parse m : option<i64>), (Int.parse l : option<i64>), (Int.parse h : option<i64>)) with
+              | (Some m, Some l, Some h) -> Some(p, { path = p; median = m; lo = l; hi = h })
+              | _ -> None
+            | _ -> None
+          Map.ofList (List.choose one (String.split "\n" text))
+        | Error _ -> Map.empty
+      let changed = ref 0
+      let failed = ref 0
+      let results = Buffer.empty
+      for l in chosen do
+        match Tools.runSplit exe [ "--bench"; l.path; string runs ] with
+        | Ok r when r.code = 0 ->
+          let samples = List.choose (fun (w: string) -> (Int.parse w : option<i64>)) (String.split " " (String.trim r.out))
+          let s = statOf l.path samples
+          Buffer.push s results
+          let change =
+            match Map.tryFind l.path last with
+            | Some was ->
+              let ratio = float s.median / float (max (i64 1) was.median)
+              if s.lo > was.hi && ratio >= 1.05 then
+                changed.Value <- changed.Value + 1
+                $"  slower by {int ((ratio - 1.0) * 100.0 + 0.5)}% (was {shownNs was.median})"
+              else if s.hi < was.lo && ratio <= 0.95 then
+                changed.Value <- changed.Value + 1
+                $"  faster by {int ((1.0 - ratio) * 100.0 + 0.5)}% (was {shownNs was.median})"
+              else
+                ""
+            | None -> "  new"
+          println $"bench {l.path}: {shownNs s.median} [{shownNs s.lo}, {shownNs s.hi}] ({runs} runs){change}"
+        | Ok r ->
+          failed.Value <- failed.Value + 1
+          println $"FAIL {l.path}"
+          for line in String.split "\n" (String.trim (r.out + r.err)) do
+            if line <> "" then
+              println $"       {line}"
+        | Error e ->
+          failed.Value <- failed.Value + 1
+          println $"FAIL {l.path}: {e}"
+      File.delete exe |> ignore
+      // every benchmark run this time replaces its saved result; the others keep theirs
+      let kept = List.filter (fun (p, _) -> not (List.exists (fun (s: Stat) -> s.path = p) (Array.toList (Buffer.toArray results)))) (Map.toList last)
+      let lines = List.map (fun (s: Stat) -> $"{s.path}\t{s.median}\t{s.lo}\t{s.hi}") (List.append (List.map snd kept) (Array.toList (Buffer.toArray results)))
+      Tools.makeDirectory dir
+      File.writeAllText saved (String.join "\n" lines + "\n") |> ignore
+      let n = Buffer.length results
+      println $"{n} benchmark{(if n = 1 then "" else "s")}, {(if changed.Value = 0 then "none" else string changed.Value)} changed{(if failed.Value = 0 then "" else $", {failed.Value} failed")}"
+      if failed.Value = 0 then 0 else 1
+
+let bench (args: list<string>) : int =
+  match Options.parse args with
+  | Error e ->
+    eprintln e
+    2
+  | Ok(o, rest) ->
+    // --runs n: the timed runs per benchmark (30 unless said)
+    let rec runsIn (xs: list<string>) : result<int, string> =
+      match xs with
+      | "--runs" :: n :: _ ->
+        match (Int.parse n : option<int>) with
+        | Some k when k >= 3 -> Ok k
+        | _ -> Error $"zs bench --runs takes a count of 3 or more, not '{n}'"
+      | [ "--runs" ] -> Error "zs bench --runs takes a count: --runs 50"
+      | _ :: more -> runsIn more
+      | [] -> Ok 30
+    match runsIn rest with
+    | Error e ->
+      eprintln e
+      2
+    | Ok runs ->
+      let rec args0 (xs: list<string>) : list<string> =
+        match xs with
+        | "--runs" :: _ :: more -> args0 more
+        | x :: more -> x :: args0 more
+        | [] -> []
+      let plain = args0 rest
+      let filters = List.filter (fun (a: string) -> not (isFile a) && not (String.startsWith "--" a)) plain
+      match List.filter isFile plain with
+      | src :: _ -> if fetched o.offline (dirOf src) then benchFile o src filters runs else 1
+      | [] ->
+        eprintln "zs bench takes the file whose benchmarks to run: zs bench tests/perf.zs [filters] [--runs 50]"
+        2
 
 let test (args: list<string>) : int =
   match Options.parse args with

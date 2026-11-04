@@ -116,6 +116,14 @@
   cortex-m4 has none, so it can't depend on this package`, instead of an error deep in its code.
 
 ### Tooling
+- `zs bench file.zs [filters] [--runs n]` (track D, item 9): `bench "name" (fun () -> …)` is a
+  `Test` value among a file's `[<Tests>]`, timed in a process of its own after three warm-up
+  runs: the median of 30 runs (or `--runs`) and its 95% confidence interval from the order
+  statistics. The results are saved beside the file (`.zs-cache/bench/<file>.tsv`), and a
+  benchmark whose interval doesn't overlap the saved one's by 5% or more is reported slower or
+  faster; `zs test` runs a benchmark once, as a test of its body. `testFaster "name" fast slow`
+  is a test that passes when `fast` wins 19 of 25 paired rounds (a sign test at 1%), so a
+  performance claim can't silently regress (`tests/ztest/bench.sh`).
 - Debug info for every value (track D, item 1, known gap 4): a list, array, boxed union, `ref`
   or `Buffer` has its type's name over a pointer to its object, so gdb's `print *xs` shows a
   cell's count, head and tail, an array's count, length and elements, a node's case (where the

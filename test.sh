@@ -197,6 +197,10 @@ else echo "FAIL tests/ztest/update.sh"; diff <(tests/ztest/update.sh 2>&1) tests
 # zs test --stress (D4): a failure every fifth run, and a leak every seventh, found in four seconds
 if [ "$(tests/ztest/stress.sh 2>&1)" = "$(cat tests/ztest/stress.expected)" ]; then echo "ok   tests/ztest/stress.sh (zs test --stress)"
 else echo "FAIL tests/ztest/stress.sh"; diff <(tests/ztest/stress.sh 2>&1) tests/ztest/stress.expected; fail=1; fi
+# zs bench (0009, D9): benchmarks as values, a median and a confidence interval each, a planted
+# slowdown reported against the saved run and nothing for the same build; testFaster
+if [ "$(tests/ztest/bench.sh 2>&1)" = "$(cat tests/ztest/bench.expected)" ]; then echo "ok   tests/ztest/bench.sh (zs bench, testFaster)"
+else echo "FAIL tests/ztest/bench.sh"; diff <(tests/ztest/bench.sh 2>&1) tests/ztest/bench.expected; fail=1; fi
 
 # projects: a CLI tool built from zs.toml with a path dependency; zs test over a project; two
 # dependencies with a Util.zs each (0018 K1) and one with C code ([c], K4); zs new

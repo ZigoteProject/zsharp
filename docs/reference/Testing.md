@@ -81,6 +81,14 @@ One test: its name, its body (a failure panics), its focus and its time limit (m
 
 A group: its name, its tests, its focus, and whether they run one at a time.
 
+#### `Testing.Bench`
+
+```zsharp
+| Bench of name: string * run: (unit -> unit)
+```
+
+A benchmark: its name and its body, which `zs bench` times (`zs test` runs it once).
+
 ## Derives and impls
 
 ### `impl Outcome<unit>`
@@ -169,6 +177,28 @@ Testing.ptestList : string -> list<Testing.Test> -> Testing.Test
 ```
 
 A pending group.
+
+### `Testing.bench`
+
+```zsharp
+Testing.bench : string -> (unit -> 'a / <>) -> Testing.Test
+  body must perform nothing
+```
+
+A benchmark: `zs bench` warms it up, times enough runs for a median and a confidence
+interval, and reports a change from the last run beyond the noise; `zs test` runs it once.
+
+### `Testing.testFaster`
+
+```zsharp
+Testing.testFaster : string -> (unit -> 'a / <>) -> (unit -> 'b / <>) -> Testing.Test
+  fast must perform nothing, slow must perform nothing
+```
+
+A test that passes when `fast` is faster than `slow` with statistical confidence: the two
+run in paired rounds, in alternating order, and `fast` must win 19 of 25 (a sign test at
+1%), so a performance claim can't silently regress. Both run once each per round: give each
+enough work to time.
 
 ### `Testing.expectAt`
 

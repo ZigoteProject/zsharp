@@ -1,0 +1,14 @@
+first run:
+bench perf/sum  new
+bench perf/sort  new
+2 benchmarks, none changed
+same build:
+bench perf/sum
+bench perf/sort
+2 benchmarks, none changed
+sum does four times the work:
+bench perf/sum  slower
+1 benchmark, 1 changed
+zs test runs the benchmarks once, as tests:
+ok   perf/an int is faster than a float sum
+ok   perf/passes
