@@ -1,5 +1,6 @@
 ok   chip/doubles
 ok   chip/prints
+ok   chip/halves
 ok   chip/bits/pops
 skip chip/bits/later (pending)
-3 passed, 0 failed, 1 skipped
+4 passed, 0 failed, 1 skipped
