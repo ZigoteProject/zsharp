@@ -933,9 +933,26 @@ let private param (p: P) : Ast.Param =
     let x = name p
     advance p
     let t = ty p
-    expect p RParen "')'"
-    finish p
-    ({ param = Ast.pat (Ast.PIdent(x, None)) xi; ann = Some t } : Ast.Param)
+    if peek p = Comma then
+      // F#'s tupled parameters, each with its type: (a: int, b: string) is one tuple parameter
+      let names = Buffer.empty
+      let tys = Buffer.empty
+      Buffer.push (Ast.pat (Ast.PIdent(x, None)) xi) names
+      Buffer.push t tys
+      while peek p = Comma do
+        advance p
+        let yi = p.pos.Value
+        let y = name p
+        expect p Colon "':' (each part of a tuple parameter takes its type: (a: int, b: string))"
+        Buffer.push (Ast.pat (Ast.PIdent(y, None)) yi) names
+        Buffer.push (ty p) tys
+      expect p RParen "')'"
+      finish p
+      ({ param = plainPat (Ast.PTuple(listOf names)); ann = Some(Ast.STTuple(listOf tys)) } : Ast.Param)
+    else
+      expect p RParen "')'"
+      finish p
+      ({ param = Ast.pat (Ast.PIdent(x, None)) xi; ann = Some t } : Ast.Param)
   else
     ({ param = patAtom p; ann = None } : Ast.Param)
 
@@ -2073,17 +2090,56 @@ and private atom (p: P) : Ast.Expr =
   e
 
 and private items (p: P) (close: Kind) (what: string) : list<Ast.Expr> =
+  if peek p = close || peek p = Eof then
+    expect p close what
+    []
+  else
+    itemsAfter p (expr p) close what
+
+// the items after the first, already parsed: `;` between them (a line break is one), the last
+// `;` optional
+and private itemsAfter (p: P) (first: Ast.Expr) (close: Kind) (what: string) : list<Ast.Expr> =
   let xs = Buffer.empty
+  Buffer.push first xs
   let mutable go = true
-  while go && peek p <> close && peek p <> Eof do
-    Buffer.push (expr p) xs
+  while go do
     if peek p = Semi then
       advance p
-    else if peek p <> close then
-      err p ("';' or " + what)
+      if peek p <> close && peek p <> Eof then Buffer.push (expr p) xs else go <- false
+    else
+      if peek p <> close then
+        err p ("';' or " + what)
       go <- false
   expect p close what
   listOf xs
+
+/// A list or array literal's items, or F#'s range in it: [a .. b] and [a .. step .. b] are the
+/// list expression over the range (one loop, the list built once), [| |] the array.
+and private bracketed (p: P) (isArray: bool) (close: Kind) (what: string) : Ast.Expr =
+  let ofItems (xs: list<Ast.Expr>) =
+    if isArray then plain (Ast.ArrayLit xs) else List.fold (fun acc x -> cons x acc) (plain (Ast.Var "[]")) (List.rev xs)
+  if peek p = close || peek p = Eof then
+    expect p close what
+    ofItems []
+  else
+    let fi = p.pos.Value
+    let first = expr p
+    if peek p = DotDot then
+      start p Tree.Range
+      advance p
+      let second = expr p
+      let (step, last) =
+        if peek p = DotDot then
+          advance p
+          (Some second, expr p)
+        else
+          (None, second)
+      finish p
+      expect p close what
+      let i = $"$range{fi}"
+      plain (Ast.ListComp(isArray, plain (Ast.For(i, first, step, last, plain (Ast.Yield(plain (Ast.Var i)))))))
+    else
+      ofItems (itemsAfter p first close what)
 
 and private primary (p: P) : Ast.Expr =
   if not (startsAtom p) then
@@ -2146,12 +2202,11 @@ and private primary (p: P) : Ast.Expr =
       wrap p at Tree.ArrayComp
       e
     | LBrack ->
-      let e =
-        List.fold (fun acc x -> cons x acc) (plain (Ast.Var "[]")) (List.rev (items p RBrack "']'"))
+      let e = bracketed p false RBrack "']'"
       wrap p at Tree.List
       e
     | LBrackBar ->
-      let e = plain (Ast.ArrayLit(items p BarRBrack "'|]'"))
+      let e = bracketed p true BarRBrack "'|]'"
       wrap p at Tree.Array
       e
     | LParen when peek2 p = RParen && (peek p = Op || isBuiltinOperator (peek p)) ->

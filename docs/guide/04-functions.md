@@ -223,7 +223,7 @@ let main () =
 - **Optional:** an argument declared `?name` may be left out. With `= default` it gets that value; without one it's an `option`.
 - **Defaults:** a default can use the arguments before it.
 
-These apply to members only. Ordinary curried functions keep positional arguments.
+These apply to members only. Ordinary curried functions keep positional arguments. A function may take a tuple as F# writes it, `let distance (x: float, y: float) = …`: one parameter, a tuple whose parts each take their type, called as `distance (3.0, 4.0)` and passed where an `int * int -> int` is wanted.
 
 ```zsharp
 type Http =

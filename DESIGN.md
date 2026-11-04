@@ -96,9 +96,9 @@ let sumTo n =                            // imperative code is fine; mutation st
   - **Strings and characters:** `for c in s` decodes a string's UTF-8 character by character; `String.length` stays the byte length. The `Char` functions classify ASCII.
   - **SIMD vectors** `f32x4`, `i32x8`, `u8x32`, … (§8).
 - **Data:** tuples, records (`{ p with x = 1.0 }`), unions; library types `option`, `result`, `list`, `array`, `Buffer`, `ref`, `Map`, `Set`, `HashMap`, `span` (§5.1) and `fixed` (§5).
-  - **List and array expressions:** `[ for x in xs -> f x ]`, `[ for x in xs do if p x then yield f x ]`, and the same in `[| … |]`. They lower to the pipelines fusion makes one loop of (§9.1), so no list is built in between.
+  - **List and array expressions:** `[ for x in xs -> f x ]`, `[ for x in xs do if p x then yield f x ]`, and the same in `[| … |]`; F#'s ranges, `[ a .. b ]` and `[ a .. step .. b ]`, are the expression over the range. They lower to the pipelines fusion makes one loop of (§9.1), so no list is built in between.
 - **Functions:**
-  - Curried, with closures (`fun x -> …`), `|>`, `>>` and partial application.
+  - Curried, with closures (`fun x -> …`), `|>`, `>>` and partial application. A tupled parameter as F# writes it, `let f (a: int, b: string)`, is one parameter of the tuple type, each part with its type given.
   - **Blocks inside brackets:** inside a bracket, a line ending in `->` (or `then`, `else`, `do`) and deeper lines after it open a block, as at the top level. So `xs |> List.map (fun x ->` can be followed by a multi-line body, and `Parser (fun cs ->` by a `match`. The block ends at the bracket's closer or at a line left of it.
   - **Custom operators:** `let (>>=) r f = …` defines one, and `(op)` is the function (`(+)` too). Precedence comes from the first character after any dots, as in F#: `|>`, `>>`, the comparisons and operators starting with `< > = | & $ !` share one level above `&&`; `@ ^` group like `::`, `+ -` like `+`, `* / %` like `*`, and `**` is right-associative. Operators starting with `!` (but not `!=`) or `~` are prefix: `!r` binds tighter than application.
   - Known calls pass all arguments at once, and so does a closure applied to as many arguments as it takes, so currying costs nothing at run time.

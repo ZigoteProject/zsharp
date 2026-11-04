@@ -40,7 +40,7 @@ let main () =
 [[1; 2]; [3]] [[1; 2]; [2; 3]] [(1, 2); (2, 3)] [0; 1; 3; 6]
 ```
 
-**List expressions:** `[ for x in xs -> e ]` is the list of `e` for each `x`; inside, `if c then yield e` keeps some, nested `for`s and `let`s and `match`es may yield, and `yield! ys` adds each of `ys`. `[| … |]` is the same for an array. A range is a source too: `[ for i in 1 .. n -> i * i ]`.
+**List expressions:** `[ for x in xs -> e ]` is the list of `e` for each `x`; inside, `if c then yield e` keeps some, nested `for`s and `let`s and `match`es may yield, and `yield! ys` adds each of `ys`. `[| … |]` is the same for an array. A range is a source too: `[ for i in 1 .. n -> i * i ]`, and a range alone is F#'s `[ 1 .. n ]`, `[ 1 .. 2 .. 9 ]` (with a step, which may be negative) or `[| 0 .. n |]`: the same loop, the list or array built once, empty when the range is.
 
 ```zsharp
 let main () =

@@ -78,6 +78,12 @@
   `--types=volume:f64`. `zs provide --list` names the providers.
 
 ### Language
+- F#'s list and array ranges: `[ 1 .. 10 ]`, `[ 1 .. 2 .. 9 ]` (a step, negative too) and
+  `[| 0 .. n |]`, the list expression over the range, so one loop and the list built once, empty
+  when the range is (`tests/ranges.zs`). The README called them not there yet.
+- Typed tuple parameters as F# writes them: `let f (a: int, b: string) = …` is one parameter of
+  type `int * string`, called `f (1, "x")`; each part takes its type (the error says so when one
+  is missing). The other not-there-yet of the README.
 - `module Weather = import json "weather.json"` and the bare `import csv ("stocks.csv", separator = ";")`
   (0001): the provider's module, written to `.zs-cache/providers/<importing module>/<Name>.zs`
   and loaded as a dependency of the file, so `Weather.Root`, `Weather.parse` and hover, definition

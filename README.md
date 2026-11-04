@@ -90,9 +90,8 @@ printing; Hindley–Milner inference.
 | NuGet and the .NET library | C libraries through `import c`, and Z# packages by path or git |
 | `List.map (fun s -> s.Length) names` needs an annotation | it compiles: a lambda is typed after the call's other arguments |
 
-**Not there yet:** list ranges (`[1 .. 10]`; use `List.init`, or `[ for i in 1 .. 10 -> i ]`), and
-typed tuple parameters (`let f (a: int, b: int)`; write `let f (a: int) (b: int)`, or match the
-tuple).
+**Also as in F#:** list and array ranges (`[ 1 .. 10 ]`, `[ 1 .. 2 .. 9 ]`, `[| 0 .. n |]`), and
+typed tuple parameters (`let f (a: int, b: int)`, one tuple parameter; each part takes its type).
 
 ### Stricter than F#
 

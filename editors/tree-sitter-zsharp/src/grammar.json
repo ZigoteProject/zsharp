@@ -900,6 +900,30 @@
           ]
         },
         {
+          "type": "REPEAT",
+          "content": {
+            "type": "SEQ",
+            "members": [
+              {
+                "type": "STRING",
+                "value": ","
+              },
+              {
+                "type": "FIELD",
+                "name": "name",
+                "content": {
+                  "type": "SYMBOL",
+                  "name": "identifier"
+                }
+              },
+              {
+                "type": "SYMBOL",
+                "name": "type_annotation"
+              }
+            ]
+          }
+        },
+        {
           "type": "STRING",
           "value": ")"
         }
@@ -5329,6 +5353,10 @@
               "members": [
                 {
                   "type": "SYMBOL",
+                  "name": "range"
+                },
+                {
+                  "type": "SYMBOL",
                   "name": "_items"
                 },
                 {
@@ -5384,6 +5412,10 @@
               "members": [
                 {
                   "type": "SYMBOL",
+                  "name": "range"
+                },
+                {
+                  "type": "SYMBOL",
                   "name": "_items"
                 },
                 {
@@ -5421,6 +5453,44 @@
         {
           "type": "STRING",
           "value": "|]"
+        }
+      ]
+    },
+    "range": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "SYMBOL",
+          "name": "_expression"
+        },
+        {
+          "type": "STRING",
+          "value": ".."
+        },
+        {
+          "type": "SYMBOL",
+          "name": "_expression"
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "STRING",
+                  "value": ".."
+                },
+                {
+                  "type": "SYMBOL",
+                  "name": "_expression"
+                }
+              ]
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
         }
       ]
     },

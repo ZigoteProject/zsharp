@@ -43,6 +43,8 @@ type Kind =
   | Let
   | LetBang
   | List
+  /// a .. b or a .. step .. b inside [ ] or [| |]: the list expression over the range
+  | Range
   | ListComp
   | Match
   | Measure

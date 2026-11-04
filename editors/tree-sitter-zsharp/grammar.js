@@ -125,7 +125,8 @@ module.exports = grammar({
     active_pattern_name: $ => seq('(', '|', sep1(choice($.identifier, '_'), '|'), '|', ')'),
 
     _parameter: $ => choice($.identifier, $.unit, $.wildcard, $.typed_parameter, $.parenthesized_pattern, $.list_pattern, $.record_pattern),
-    typed_parameter: $ => seq('(', optional('?'), field('name', $.identifier), $.type_annotation, optional(seq('=', $._expression)), ')'),
+    // (x: T), (?x: T = e); or F#'s tupled parameters, each with its type: (a: int, b: string)
+    typed_parameter: $ => seq('(', optional('?'), field('name', $.identifier), $.type_annotation, optional(seq('=', $._expression)), repeat(seq(',', field('name', $.identifier), $.type_annotation)), ')'),
     type_annotation: $ => seq(':', $._type),
 
     import_c_declaration: $ => seq('import', 'c', field('header', $.string)),
@@ -436,9 +437,11 @@ module.exports = grammar({
     power_operator: $ => token(prec(1, new RegExp('\\.*\\*\\*' + OP))),
     typed_expression: $ => seq('(', $._expression, ':', field('type', $._type), ')'),
     tuple: $ => seq('(', $._expression, repeat1(seq(',', $._expression)), ')'),
-    // [ a; b ], or the items on lines of their own, deeper than the line the bracket is on
-    list: $ => seq('[', optional(choice($._items, seq($._indent, $._items, optional($._dedent)))), ']'),
-    array: $ => seq('[|', optional(choice($._items, seq($._indent, $._items, optional($._dedent)))), '|]'),
+    // [ a; b ], or the items on lines of their own, deeper than the line the bracket is on; or a
+    // range, [ a .. b ] and [ a .. step .. b ]
+    list: $ => seq('[', optional(choice($.range, $._items, seq($._indent, $._items, optional($._dedent)))), ']'),
+    array: $ => seq('[|', optional(choice($.range, $._items, seq($._indent, $._items, optional($._dedent)))), '|]'),
+    range: $ => seq($._expression, '..', $._expression, optional(seq('..', $._expression))),
     _items: $ => seq(sep1($._expression, choice(';', $._newline)), optional(choice(';', $._newline))),
     record: $ => seq('{', sep1($.field_value, choice(';', $._newline)), optional(choice(';', $._newline)), '}'),
     record_update: $ => seq('{', $._expression, 'with', sep1($.field_value, choice(';', $._newline)), optional(choice(';', $._newline)), '}'),
