@@ -110,6 +110,18 @@ let private reachable (cant: Map<string, string * string>) (roots: list<string>)
     | k -> List.iter (walk chain f line) (Core.Ir.children k)
   List.iter (inFun []) roots
 
+/// An as-written build's (-g, --coverage) functions, but for the top-level values whose
+/// initializer folds to a constant (a table, a record of constants, a placed Buffer.create or ref
+/// of one) once its callees are inlined: those are the constant, as in an optimized build, so
+/// whether a value is static (a library's must be; placement needs one) doesn't depend on the
+/// flags. The other initializers keep their code as written, the lambdas in them included.
+let constantInits (types: Map<string, TypeInfo>) (kept: string -> bool) (values: list<string * string>) (funs: list<MFun>) : list<MFun> =
+  let inits = Set.ofList (List.map snd values)
+  let folded = Opt.Simplify.run types (List.filter (fun (f: MFun) -> Set.contains f.name inits) (Opt.Inline.runWith kept (fun caller _ -> Set.contains caller inits) funs))
+  let constant (f: MFun) = Option.isSome (Core.Ir.staticElem f.body) || Option.isSome (Core.Ir.placedInit f.body)
+  let swaps = Map.ofList (List.choose (fun (f: MFun) -> if constant f then Some(f.name, f) else None) folded)
+  List.map (fun (f: MFun) -> Option.defaultValue f (Map.tryFind f.name swaps)) funs
+
 /// A checked program's functions monomorphic, closure-converted and reference counted, with the
 /// program as the passes took it and the types they added (effects' frames); Error where a pass
 /// can't go on. What must not touch the heap isn't checked (lower does it; the editor shows what
@@ -127,9 +139,13 @@ let counted (prog0: Program) (debugInfo: bool) (time: bool) (checkIr: bool) (can
     let mono = check "monomorphize" (stage "mono" (timed time "monomorphize" (fun () -> Opt.Mono.fuse (Opt.Mono.checkShared prog (Opt.Mono.run prog)))))
     if not (Map.isEmpty cant) then
       reachable cant (List.append (Set.toList fixedNames) (List.map snd prog.values)) mono
-    let inlined = check "inline" (stage "inline" (timed time "inline" (fun () -> if debugInfo then mono else Opt.Inline.run kept (Opt.Inline.uncurry fixedNames mono))))
     // ZS_NO_SIMPLIFY=1: no simplification, to compare with the F# compiler's passes
-    let simple = Option.isSome (Environment.getVariable "ZS_NO_SIMPLIFY") || debugInfo
+    let noSimplify = Option.isSome (Environment.getVariable "ZS_NO_SIMPLIFY")
+    let inlined =
+      check "inline" (stage "inline" (timed time "inline" (fun () ->
+        if debugInfo then (if noSimplify then mono else constantInits prog.types kept prog.values mono)
+        else Opt.Inline.run kept (Opt.Inline.uncurry fixedNames mono))))
+    let simple = noSimplify || debugInfo
     let simplified = check "simplify" (stage "simplify" (timed time "simplify" (fun () -> if simple then inlined else Opt.Simplify.run prog.types inlined)))
     let (types, lowered0) = timed time "effects" (fun () -> Opt.Evidence.run prog.types prog.effects simplified)
     let lowered = check "effects" lowered0
@@ -337,8 +353,9 @@ let private readText (path: string) : string =
 /// of (a test build, zs test's, has the file's test entry for main) and whether it runs threads.
 let generate (o: Options.Options) (prog0: Program) (testBuild: bool) : result<Program * string * string * bool, Failure> =
   let prog = if testBuild then { prog0 with funs = List.filter (fun (f: Core.Ir.FunDef) -> f.name <> "main") prog0.funs } else prog0
+  let startupAssert (v: string * string) = String.contains ".$assert" (fst v) || String.startsWith "$assert" (fst v)
   match (if o.isLib then prog.values else []) with
-  | (value, _) :: _ when String.contains ".$assert" value || String.startsWith "$assert" value ->
+  | values when List.exists startupAssert values ->
     Error(InPass { file = ""; line = 0; message = "a top-level assert whose condition isn't a constant is checked at startup, which a library doesn't have; assert on constants (sizeof<T> = 20), or check it in a function" })
   // a chip's runtime has no file to write the counts to
   | _ when o.coverage && Option.isSome o.mcu ->

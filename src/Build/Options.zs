@@ -257,8 +257,11 @@ let optLevel (o: Options) : string =
 let dropsUnused (o: Options) : bool = optLevel o <> "-O0" && not o.debugInfo
 
 /// -g with no optimization asked for (no level, no --release): a build for stepping, at -O0
-/// with the code as written, on every target (a chip's -O2 default included).
-let stepping (o: Options) : bool = o.debugInfo && Option.isNone o.opt && not o.release
+/// with the code as written, on every target (a chip's -O2 default included) but the Cortex-M0+
+/// and WebAssembly, whose -O0 can't lower the tail calls Z# makes (nor fit an M0+'s RAM): there
+/// -g alone keeps the optimized build, with lines.
+let stepping (o: Options) : bool =
+  o.debugInfo && Option.isNone o.opt && not o.release && not (String.startsWith "thumbv6m" o.target) && arch o <> "wasm32"
 
 /// Compile flags for that: each function and datum in a section of its own.
 let sectionFlags (o: Options) : list<string> = if dropsUnused o then [ "-ffunction-sections"; "-fdata-sections" ] else []

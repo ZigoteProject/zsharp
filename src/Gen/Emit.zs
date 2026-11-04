@@ -151,7 +151,9 @@ type Abi =
 /// directory whose name merely starts with root's (root "/a/b", file "/a/bc/x.zs") isn't
 let covers (root: string) (file: string) : bool =
   let full = Path.getFullPath file
-  root <> "" && (String.startsWith (root + "/") full || String.startsWith (root + "\\") full)
+  // a root that ends in its separator ("/", "C:\\") is a prefix as it is
+  let under (sep: string) = String.startsWith (if String.endsWith sep root then root else root + sep) full
+  root <> "" && (under "/" || under "\\")
 
 /// What code generation is told about the build (the F# compiler's Codegen settings).
 type Options =

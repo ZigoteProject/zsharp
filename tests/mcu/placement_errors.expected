@@ -1,0 +1,7 @@
+table: error: [<Section ".dma">] constant 'table': on a chip, a section the board's linker script doesn't name is RAM that's never loaded from the flash image, so the table would be lost; drop the attribute (a constant is in flash already), use .data for a RAM copy, or make it a ref or Buffer.create
+flash: error: [<Section ".rodata.boot">] 'boots': on a chip that section is flash, which a ref or Buffer can't be written in; use .data, .noinit or a RAM section the board's script names
+noinitlog: error: [<Section ".noinit_log">] holds what a reset leaves in memory, so a constant there would never be loaded: drop the attribute from 'table', or make it a ref or a Buffer.create
+dmalib: error: [<Section ".dma">] 'counter' needs startup work in a library, which has none (a copy from flash into a section the reset doesn't load, or a .noinit ref's header written); keep that storage in the firmware and pass it in, or use a Buffer.create in .noinit
+noinitlib: error: [<Section ".noinit">] 'boots' needs startup work in a library, which has none (a copy from flash into a section the reset doesn't load, or a .noinit ref's header written); keep that storage in the firmware and pass it in, or use a Buffer.create in .noinit
+bufferlib: built
+hostlib: built

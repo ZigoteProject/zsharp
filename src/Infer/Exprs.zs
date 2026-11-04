@@ -1483,6 +1483,7 @@ and activeOf (cx: Cx) (p: Pat) : option<string * bool * list<Expr> * string * op
     let toExpr (q: Pat) =
       match q.pat with
       | PInt n -> plain (Lit n)
+      | PNegInt n -> plain (Neg(plain (Lit(Int.wrappingSub (i64 0) n))))
       | PStr s -> plain (StrLit s)
       | PBool b -> plain (BoolLit b)
       | PUnit -> plain UnitLit

@@ -1,0 +1,1 @@
+tests/err_neg_pattern.zs:4:3: error: pattern: expected u8, got int: numbers don't convert on their own; write u8 x

@@ -40,6 +40,9 @@ and PatShape =
   | PRecord of list<string * int * Pat>
   /// several atoms after a name: a parameterized active pattern's arguments
   | PArgs of list<Pat>
+  /// a negative integer literal (`-5`): its value, at a signed type as a negative literal
+  /// expression is
+  | PNegInt of i64
 
 /// A parameter: its pattern, and its type when written.
 [<Derive(Binary)>]

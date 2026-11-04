@@ -70,3 +70,26 @@ let tests =
   ]
 ZS
 "$zs" test main.zs --coverage | grep "stats.zs"
+echo "threads that all end the program at once write the counts once:"
+cd ..
+cat > race.zs <<'ZS'
+open Threading
+
+let main () =
+  let n = Parallel.workers ()
+  let arrived = Atomic.make 0
+  Parallel.for 0 n (fun i ->
+    Atomic.add arrived 1 |> ignore
+    while Atomic.get arrived < n do
+      ()
+    Environment.exit 3)
+  0
+ZS
+"$zs" build --coverage race.zs -o race
+dups=0
+for i in 1 2 3 4 5 6 7 8; do
+  rm -f race.zscov
+  ZS_WORKERS=4 timeout 20 ./race
+  [ -s race.zscov ] && [ "$(sort race.zscov | uniq -d | wc -l)" = 0 ] || dups=$((dups + 1))
+done
+echo "runs with a copy too many or none: $dups"

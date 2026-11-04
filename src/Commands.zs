@@ -455,7 +455,16 @@ let private replayFails (r: option<int> * string) : bool =
 // recorded, made shorter first (a block at a time, the largest first), then smaller (each byte
 // zeroed, halved or one less), each candidate a run of the case, kept while it still panics; up
 // to 300 runs
-let private shrinkByReplay (exe: string) (l: Leaf) (size: int) (bytes0: array<u8>) (file: string) : array<u8> * int =
+// whether a shrink candidate's replay fails as the case did: a stack overflow is a failure of its
+// own, which a candidate cut short (its values recursing on the zeros past its end) can reach
+// where the case had another panic, and the reverse
+let private sameFailure (original: string) (candidate: string) : bool =
+  let overflow (s: string) = String.contains "panic: stack overflow" s
+  overflow original = overflow candidate
+
+// the case's bytes shrunk by replays of the test binary (shorter, then smaller) while it still
+// fails as it did (original: the case's replay output)
+let private shrinkByReplay (exe: string) (l: Leaf) (size: int) (bytes0: array<u8>) (file: string) (original: string) : array<u8> * int =
   let bytes = ref bytes0
   let runs = ref 0
   let progress = ref true
@@ -465,7 +474,8 @@ let private shrinkByReplay (exe: string) (l: Leaf) (size: int) (bytes0: array<u8
     else
       runs.Value <- runs.Value + 1
       File.writeAllText file (hexOf candidate) |> ignore
-      if replayFails (replayCase exe l file size) then
+      let (code, output) = replayCase exe l file size
+      if replayFails (code, output) && sameFailure original output then
         bytes.Value <- candidate
         progress.Value <- true
         true
@@ -533,11 +543,12 @@ let private runProperty (exe: string) (src: string) (l: Leaf) : option<int> * st
           // the recorded case alone first: a panic it doesn't reproduce (one that depended on
           // the cases before it) is reported as the run gave it, not shrunk or saved
           File.writeAllText file (hexOf bytes0) |> ignore
-          if not (replayFails (replayCase exe l file size)) then
+          let first = replayCase exe l file size
+          if not (replayFails first) then
             File.delete file |> ignore
             (code, output + "\n(the case that panicked passes when replayed alone, so it isn't shrunk or saved)")
           else
-            let (bytes, runs) = shrinkByReplay exe l size bytes0 file
+            let (bytes, runs) = shrinkByReplay exe l size bytes0 file (snd first)
             File.writeAllText file (hexOf bytes) |> ignore
             let (code2, shown) = replayCase exe l file size
             File.delete file |> ignore
@@ -688,16 +699,18 @@ let private runOnChip (o: Options.Options) (src: string) (m: Options.Mcu) : opti
         println $"       {why}"
       current.Value <- ""
       Buffer.clear said
-    // a panic's text may span lines (a property's message and its replay seed): they're kept
-    // with it until the run's next test, its exit line or its end
+    // a panic's text may span lines (a property's message and its replay seed, an expect's two
+    // values, blank lines among them): they're kept with it until the run's next test, its exit
+    // line or its end
     let panicking = ref false
     let endPanic () =
       if panicking.Value then
         panicking.Value <- false
         fail ""
     for line in String.splitLines output do
-      if panicking.Value && not (String.startsWith "#zs " line || String.startsWith "test " line || String.trim line = "") then
-        Buffer.push line said
+      if panicking.Value && not (String.startsWith "#zs " line || String.startsWith "test " line) then
+        if String.trim line <> "" then
+          Buffer.push line said
       else if String.startsWith "test " line then
         endPanic ()
         current.Value <- String.sub line 5 (String.length line - 5)
@@ -1128,11 +1141,17 @@ let fuzz (args: list<string>) : int =
       | "--for" :: _ :: more -> withoutTime more
       | x :: more -> x :: withoutTime more
       | [] -> []
-    match timeIn ours with
-    | Error e ->
+    // libFuzzer's flags that run it again in other processes: they'd start the binary by a name
+    // that isn't its path and without the property's, so zs fuzz runs one process
+    let multiProcess = List.tryFind (fun (f: string) -> List.exists (fun (p: string) -> String.startsWith p f) [ "-jobs="; "-workers="; "-fork="; "-merge=" ]) theirs
+    match (timeIn ours, multiProcess) with
+    | (Error e, _) ->
       eprintln e
       2
-    | Ok seconds ->
+    | (_, Some f) ->
+      eprintln $"zs fuzz runs libFuzzer in one process, so it doesn't take {f}; run several zs fuzz commands over the same corpus instead"
+      2
+    | (Ok seconds, None) ->
       let plain = withoutTime ours
       match (List.filter isFile plain, List.filter (fun (a: string) -> not (isFile a) && not (String.startsWith "--" a)) plain) with
       | (src :: _, wanted :: _) ->
@@ -1176,7 +1195,9 @@ let fuzz (args: list<string>) : int =
                 | [] ->
                   match ran with
                   | Ok r when r.code = 0 ->
-                    println $"no failure in {seconds} s; {inputs} inputs in the corpus"
+                    // libFuzzer's own flags (-runs, -max_total_time) may have ended it sooner
+                    let spent = if List.isEmpty theirs then $" in {seconds} s" else ""
+                    println $"no failure{spent}; {inputs} inputs in the corpus"
                     0
                   | Ok r ->
                     println $"libFuzzer stopped with {r.code}:"
@@ -1192,7 +1213,8 @@ let fuzz (args: list<string>) : int =
                     // the input is the case's bytes at size 100, as the runner replays them
                     let size = 100
                     let file = exe + ".try"
-                    let (bytes, runs) = shrinkByReplay exe l size bytes0 file
+                    File.writeAllText file (hexOf bytes0) |> ignore
+                    let (bytes, runs) = shrinkByReplay exe l size bytes0 file (snd (replayCase exe l file size))
                     File.writeAllText file (hexOf bytes) |> ignore
                     let (_, shown) = replayCase exe l file size
                     File.delete file |> ignore

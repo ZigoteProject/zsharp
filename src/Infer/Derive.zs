@@ -8,8 +8,9 @@
 ///     (f.default: Some of a record field's default, None for a field without one)
 ///   Shape.build (fun f -> e)   a record from per-field results (stops at the first Error)
 ///   Shape.buildCase name (fun f -> e)   the named union case from per-field results, or None
-///   Shape.cases   a union's cases with no value in hand: { name; index; count; recursive } each,
-///     a list (recursive: a field can hold a value of the type, directly or through others)
+///   Shape.cases   a union's cases with no value in hand: { name; index; count; rank } each, a
+///     list (rank: 0 when no field can hold a value of the type, 1 when only lists, arrays and
+///     options do, 2 otherwise; a type parameter may be the type)
 /// The expansion has no places: the derive is written in another module, so an error in it is at
 /// the use (the type declaration) instead.
 open Types.Fail
@@ -19,9 +20,10 @@ open Syntax.Ast
 type ShapeInfo =
   /// a record: its fields' names, and their defaults
   | RecordShape of list<string * option<Expr>>
-  /// a union: its cases' names and their fields' names, and the cases whose fields can hold a
-  /// value of the type (a generator ends a value with the others)
-  | UnionShape of list<string * list<string>> * Set<string>
+  /// a union: its cases' names and their fields' names, and each case's rank: how readily a
+  /// generated value of it ends (0 none of its fields holds the type, 1 only in lists, arrays or
+  /// options, 2 otherwise)
+  | UnionShape of list<string * list<string>> * Map<string, int>
 
 type private FieldInfo =
   { fname: string
@@ -165,11 +167,11 @@ let expand (tname: string) (head: SType) (shape: ShapeInfo) (defs: list<Definiti
         plain (Match(plain (Tuple [ a; b ]), List.append sameCases different))
     | Var "Shape.cases" ->
       match shape with
-      | UnionShape(shapes, recursive) ->
+      | UnionShape(shapes, ranks) ->
         let info (i: int) (c: string * list<string>) =
           let (cn, fnames) = c
           let fv (f: string) (v: Expr) : FieldValue = { field = f; nameAt = -1; value = v }
-          plain (RecordLit [ fv "name" (plain (StrLit cn)); fv "index" (plain (Lit(i64 i))); fv "count" (plain (Lit(i64 (List.length fnames)))); fv "recursive" (plain (BoolLit(Set.contains cn recursive))) ])
+          plain (RecordLit [ fv "name" (plain (StrLit cn)); fv "index" (plain (Lit(i64 i))); fv "count" (plain (Lit(i64 (List.length fnames)))); fv "rank" (plain (Lit(i64 (Option.defaultValue 2 (Map.tryFind cn ranks))))) ])
         let cons (acc: Expr) (item: Expr) = plain (Call("::", [ plain (Tuple [ item; acc ]) ]))
         List.fold cons (var "[]") (List.rev (List.mapi info shapes))
       | RecordShape _ -> var "[]"

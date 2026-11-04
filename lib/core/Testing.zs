@@ -329,18 +329,21 @@ module Gen =
 
   /// One of the generators, each as likely as its weight; the first the simplest.
   let frequency (pairs: list<int * Gen<'a>>) : Gen<'a> =
-    let total = List.sumBy fst pairs
-    if total <= 0 then
-      panic "Gen.frequency needs weights above 0"
+    if List.exists (fun (w, _) -> w < 0) pairs then
+      panic "Gen.frequency needs weights of 0 or more"
+    // summed in u64, as a total past Int's max (or a 32-bit chip's) still draws
+    let total = List.fold (fun (t: u64) (w, _) -> Int.wrappingAdd t (u64 w)) (u64 0) pairs
+    if total = u64 0 then
+      panic "Gen.frequency needs a weight above 0"
     Gen(fun s ->
-      let mutable at = offset (total - 1) s
+      let mutable at = offsetU (total - u64 1) s
       let mutable chosen = None
       for (w, g) in pairs do
         if chosen.IsNone then
-          if at < w then
+          if at < u64 w then
             chosen <- Some g
           else
-            at <- at - w
+            at <- at - u64 w
       match chosen with
       | Some g -> draw g s
       | None -> draw (snd (List.head pairs)) s)
@@ -393,9 +396,9 @@ module Gen =
       | Some _ -> Source.draw (offset s.size s) s
       | None -> Source.draw (max 0 (Buffer.length s.bytes - s.pos.Value)) s)
 
-  /// `None` first, else `g`.
+  /// `None` first (always at size 0, so a recursive type through an option ends), else `g`.
   let option (g: Gen<'a>) : Gen<option<'a>> =
-    Gen(fun s -> if offset 3 s = 0 then None else Some(draw g s))
+    Gen(fun s -> if s.size = 0 || offset 3 s = 0 then None else Some(draw g s))
 
   /// What `f size` draws: a generator that depends on the size.
   let sized (f: int -> Gen<'a>) : Gen<'a> = Gen(fun s -> draw (f s.size) s)
@@ -420,17 +423,20 @@ module Gen =
   /// `true` or `false`; `false` first.
   let bool () : Gen<bool> = Gen(fun s -> offset 1 s = 1)
 
-  /// A character: printable ASCII first (space the simplest), then any scalar value (U+0000 the
-  /// simplest of those; the surrogates, which aren't characters, skipped).
+  /// A character: printable ASCII first (space the simplest), then any scalar value, from U+00A0
+  /// on (the controls below it last, so a case shrinks to a printable one; the surrogates,
+  /// which aren't characters, skipped).
   let char () : Gen<char> =
     Gen(fun s ->
       let kind = offset 7 s
       if kind < 6 then
         char (32 + offset 94 s)
       else
-        // 0 .. 0x10FFFF less the 0x800 surrogates, those above them moved past the gap
-        let c = offset (0x10FFFF - 0x800) s
-        char (if c >= 0xD800 then c + 0x800 else c))
+        // the scalar values in order from U+00A0, wrapping round to U+0000 .. U+009F; those at or
+        // above the surrogates moved past them
+        let count = 0x110000 - 0x800
+        let v = (offset (count - 1) s + 0xA0) % count
+        char (if v >= 0xD800 then v + 0x800 else v))
 
   /// A string of `char`s, up to the size long.
   let string () : Gen<string> = map String.ofChars (list (char ()))
@@ -494,8 +500,9 @@ module Gen =
 
 /// A type with a default generator: what `testProperty` draws its parameters with. Core's types
 /// have it, and `[<Derive(Arbitrary)>]` gives it to a record or union: a record draws each field,
-/// a union a case (one without fields when the size is 0) and then its fields, each field at half
-/// the size, so a recursive type's values are finite.
+/// a union a case and then its fields, each field at half the size. At size 0, and past a
+/// replayed stream's end, a union takes a case that ends a value, so a recursive type's values
+/// are finite (see the derive).
 trait Arbitrary<'a> =
   /// The type's generator.
   abstract arbitrary : unit -> Gen<'a>
@@ -595,15 +602,17 @@ impl Arbitrary<'a * 'b * 'c * 'd> =
         Gen.draw (arbitrary ()) s))
 
 /// A union's case as a derive sees it (`Shape.cases`): its name, its index, how many fields, and
-/// whether a field can hold a value of the type (directly, or inside a list, an option or another
-/// type that holds it).
-type CaseInfo = { name: string; index: int; count: int; recursive: bool }
+/// its rank, how readily a generated value of it ends: 0 when no field can hold a value of the
+/// type, 1 when only lists, arrays and options can (empty at size 0 and from zero bytes), 2
+/// otherwise (a field that is the type, or holds it in a record, a tuple, a result or another
+/// union, or is a type parameter, which may be the type).
+type CaseInfo = { name: string; index: int; count: int; rank: int }
 
 /// A record draws each field; a union draws a case, then its fields; a field is drawn at half the
-/// size. The cases that end a value (none of their fields holds the type) come first, so zero
-/// bytes make a finite value; at size 0 or past a replayed stream's end the choice is the ones of
-/// them with the fewest fields (of every case, when each holds the type), so a recursive type's
-/// values end.
+/// size. The cases come in order of rank, so zero bytes take one of the lowest; at size 0 and past
+/// a replayed stream's end the choice is the lowest rank's cases with the fewest fields. So a
+/// value ends when its type has a case of rank 0 or 1, at every level; a type whose every case
+/// is rank 2 (each holds the type outright) may not.
 derive Arbitrary =
   let arbitrary () : Gen<'self> =
     Gen(fun src ->
@@ -613,15 +622,17 @@ derive Arbitrary =
           Shape.build (fun f -> Ok(Gen.draw (Gen.scale (fun n -> n / 2) (arbitrary ())) src))
         | UnionKind ->
           let all = Shape.cases
-          let ends0 = List.filter (fun (c: CaseInfo) -> not c.recursive) all
-          let ends = if List.isEmpty ends0 then all else ends0
+          let lowest = List.fold (fun m (c: CaseInfo) -> min m c.rank) 2 all
+          let ends = List.filter (fun (c: CaseInfo) -> c.rank = lowest) all
           // of those, the ones with the fewest fields: the only choice at size 0 or past the end
           let fewest = List.fold (fun m (c: CaseInfo) -> min m c.count) (List.head ends).count ends
           let least = List.filter (fun (c: CaseInfo) -> c.count = fewest) ends
-          let others =
-            List.filter (fun (c: CaseInfo) ->
-              not (List.exists (fun (d: CaseInfo) -> d.name = c.name) ends)) all
-          let cases = if src.size = 0 || src.overrun.Value then least else List.append ends others
+          let ranked (r: int) = List.filter (fun (c: CaseInfo) -> c.rank = r) all
+          let cases =
+            if src.size = 0 || src.overrun.Value then
+              least
+            else
+              List.append (ranked 0) (List.append (ranked 1) (ranked 2))
           let c = Gen.draw (Gen.elements cases) src
           match Shape.buildCase c.name (fun f ->
             Ok(Gen.draw (Gen.scale (fun n -> n / 2) (arbitrary ())) src)) with

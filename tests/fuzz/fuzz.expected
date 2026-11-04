@@ -13,4 +13,7 @@ FAIL parser/parses anything
 0 passed, 1 failed
 the flags after -- are libFuzzer's (-runs=0: the corpus is run, nothing new tried):
 fuzzing parser/parses anything (corpus kept)
-no failure in 60 s; N inputs in the corpus
+no failure; N inputs in the corpus
+and not those that start other processes:
+zs fuzz runs libFuzzer in one process, so it doesn't take -jobs=2; run several zs fuzz commands over the same corpus instead
+exit 2

@@ -162,13 +162,6 @@ let rec private staticMatch (know: string -> option<Known>) (k: option<Known>) (
     | (Some(KLit l), _) -> if isLiteralPat p then (if sameLit p l then Yes [] else No) else Unknown
     | _ -> Unknown
 
-let private literal (e: CExpr) : option<CPat> =
-  match e.k with
-  | CInt n -> Some(CPInt n)
-  | CBool b -> Some(CPBool b)
-  | CStr s -> Some(CPStr s)
-  | _ -> None
-
 // ---- constant folding (0015 step 4): arithmetic, comparisons, conversions and Math.round and
 // sqrt on literals, as the code would compute them (an integer result must fit its type, else
 // the operation stays, to overflow at run time as written), so Q15.ofFloat 0.5 is a constant
@@ -189,6 +182,32 @@ let private fitsIn (t: Ty) (n: i64) : bool =
   | TCon("usize", []) -> n >= i64 0 && n <= i64 4294967295
   | TCon("u64", []) -> n >= i64 0
   | _ -> false
+
+// an integer literal or pattern that's a value of its type (a char's a scalar value): one that
+// isn't (256 at u8, as a pattern the code compares at the type's width) is left to the code,
+// never known or matched at compile time
+let private litFits (t: Ty) (n: i64) : bool =
+  match t with
+  | TCon("char", []) -> n >= i64 0 && n <= i64 0x10FFFF
+  | _ -> fitsIn t n
+
+let rec private patFits (t: Ty) (p: CPat) : bool =
+  match p with
+  | CPInt n -> litFits t n
+  | CPTuple ps ->
+    match t with
+    | TTuple ts when List.length ts = List.length ps -> List.forall (fun (x, q) -> patFits x q) (List.zip ts ps)
+    | _ -> true
+  | CPOr(a, b) -> patFits t a && patFits t b
+  | CPAs(a, _, _) -> patFits t a
+  | _ -> true
+
+let private literal (e: CExpr) : option<CPat> =
+  match e.k with
+  | CInt n when litFits e.ty n -> Some(CPInt n)
+  | CBool b -> Some(CPBool b)
+  | CStr s -> Some(CPStr s)
+  | _ -> None
 
 let private isFloatTy (t: Ty) : bool =
   match t with
@@ -577,7 +596,7 @@ let run (types: Map<string, TypeInfo>) (funs: list<MFun>) : list<MFun> =
       let caseEnv (p: CPat) : Map<string, Known> =
         match (s.k, p) with
         | (CLocal x, CPCtor(_, tag, ps)) -> Map.add x (KCtor(tag, List.map patVarName ps)) env
-        | (CLocal x, _) -> if isLiteralPat p then Map.add x (KLit p) env else env
+        | (CLocal x, _) -> if isLiteralPat p && patFits s.ty p then Map.add x (KLit p) env else env
         | _ -> env
       match cases with
       | [ (CPBool true, None, t); (CPWild, None, f) ] ->
@@ -598,6 +617,7 @@ let run (types: Map<string, TypeInfo>) (funs: list<MFun>) : list<MFun> =
     // matches, a test of its guard, or (where a case can't be told) the cases left; None when
     // nothing is decided
     and select (env: Map<string, Known>) (x: string) (xty: Ty) (cases: list<CPat * option<CExpr> * CExpr>) (ty: Ty) : option<CExpr> =
+      let fits = List.forall (fun (p, _, _) -> patFits xty p) cases
       let rec go (cs: list<CPat * option<CExpr> * CExpr>) (dropped: bool) : option<CExpr> =
         match cs with
         | [] -> None
@@ -620,7 +640,7 @@ let run (types: Map<string, TypeInfo>) (funs: list<MFun>) : list<MFun> =
             match fieldMatch env x xty cs ty with
             | Some e2 -> Some e2
             | None -> if dropped then Some(mk (CMatch(mk (CLocal x) xty, cs)) ty) else None
-      go cases false
+      if fits then go cases false else None
     // a match on a value whose case is known, with patterns that test inside its fields: the same
     // match on the fields themselves, so the value needn't exist
     and fieldMatch (env: Map<string, Known>) (x: string) (xty: Ty) (cases: list<CPat * option<CExpr> * CExpr>) (ty: Ty) : option<CExpr> =
@@ -701,7 +721,7 @@ let run (types: Map<string, TypeInfo>) (funs: list<MFun>) : list<MFun> =
         | CMatch _ -> true
         | _ -> false
       let ts = tails s
-      if not inside || List.forall (fun t -> Option.isNone (shape t)) ts then
+      if not inside || List.forall (fun t -> Option.isNone (shape t)) ts || not (List.forall (fun (p, _, _) -> patFits s.ty p) cases) then
         None
       else
         let reaches = List.map reach ts

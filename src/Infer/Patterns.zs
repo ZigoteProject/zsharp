@@ -61,6 +61,9 @@ let rec pattern (cx: Cx) (names: ref<Map<string, string>>) (p: Pat) (ty: Ty) : C
   | PInt n ->
     expect cx "pattern" ty (fresh cx.v kInt)
     CPInt n
+  | PNegInt n ->
+    expect cx "pattern" ty (fresh cx.v kSignedInt)
+    CPInt n
   | PChar c ->
     expect cx "pattern" ty tChar
     CPInt(i64 c)

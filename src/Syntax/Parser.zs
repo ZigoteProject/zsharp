@@ -857,7 +857,8 @@ and private patAtomOf (p: P) : Ast.Pat =
       if peek p = Int then
         let n = intOf p p.pos.Value
         advance p
-        plainPat (Ast.PInt(-n))
+        // wrapping: -0x8000_0000_0000_0000 is i64's least value
+        plainPat (Ast.PNegInt(Int.wrappingSub (i64 0) n))
       else
         skip p "integer"
         plainPat Ast.PWild

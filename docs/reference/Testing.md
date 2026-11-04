@@ -30,8 +30,9 @@ trait Arbitrary<'a>
 
 A type with a default generator: what `testProperty` draws its parameters with. Core's types
 have it, and `[<Derive(Arbitrary)>]` gives it to a record or union: a record draws each field,
-a union a case (one without fields when the size is 0) and then its fields, each field at half
-the size, so a recursive type's values are finite.
+a union a case and then its fields, each field at half the size. At size 0, and past a
+replayed stream's end, a union takes a case that ends a value, so a recursive type's values
+are finite (see the derive).
 
 #### `Testing.Arbitrary.arbitrary`
 
@@ -161,8 +162,10 @@ type CaseInfo
 ```
 
 A union's case as a derive sees it (`Shape.cases`): its name, its index, how many fields, and
-whether a field can hold a value of the type (directly, or inside a list, an option or another
-type that holds it).
+its rank, how readily a generated value of it ends: 0 when no field can hold a value of the
+type, 1 when only lists, arrays and options can (empty at size 0 and from zero bytes), 2
+otherwise (a field that is the type, or holds it in a record, a tuple, a result or another
+union, or is a type parameter, which may be the type).
 
 ### `Testing.Verdict`
 
@@ -424,10 +427,10 @@ derive Arbitrary
 ```
 
 A record draws each field; a union draws a case, then its fields; a field is drawn at half the
-size. The cases that end a value (none of their fields holds the type) come first, so zero
-bytes make a finite value; at size 0 or past a replayed stream's end the choice is the ones of
-them with the fewest fields (of every case, when each holds the type), so a recursive type's
-values end.
+size. The cases come in order of rank, so zero bytes take one of the lowest; at size 0 and past
+a replayed stream's end the choice is the lowest rank's cases with the fewest fields. So a
+value ends when its type has a case of rank 0 or 1, at every level; a type whose every case
+is rank 2 (each holds the type outright) may not.
 
 ### `impl Checks<unit>`
 
@@ -742,7 +745,7 @@ input), all that's left, so a property over bytes takes the fuzzer's input as it
 Testing.Gen.option : Testing.Gen<'a> -> Testing.Gen<option<'a>>
 ```
 
-`None` first, else `g`.
+`None` first (always at size 0, so a recursive type through an option ends), else `g`.
 
 ### `Testing.Gen.sized`
 
@@ -792,8 +795,9 @@ Testing.Gen.bool : unit -> Testing.Gen<bool>
 Testing.Gen.char : unit -> Testing.Gen<char>
 ```
 
-A character: printable ASCII first (space the simplest), then any scalar value (U+0000 the
-simplest of those; the surrogates, which aren't characters, skipped).
+A character: printable ASCII first (space the simplest), then any scalar value, from U+00A0
+on (the controls below it last, so a case shrinks to a printable one; the surrogates,
+which aren't characters, skipped).
 
 ### `Testing.Gen.string`
 

@@ -10,8 +10,14 @@
   Integers fold only when they're values of their types (a `u64` at or above 2^63 isn't folded
   with signed arithmetic), `f32` is rounded to single precision at every step, the sign of zero
   is kept (`-0.0`, `Math.round -0.3`), a NaN result isn't folded, and a conversion nested in
-  another wraps as the code does. So `Q15.ofFloat 0.5` is a constant once inlined, and a table
-  of them a static object (`tests/fold.zs`, `tests/fold_edges.zs`, `tests/static.zs`).
+  another wraps as the code does. A static's `f32` literal is single precision (so widening it
+  is exact), and an `int` or `usize` past 32 bits converted to a wider integer or a float is
+  left to the code, as a chip wraps it. A negative literal is signed in a pattern too (`| -1` at `u8` is an error, as `let
+  x : u8 = -1` is; `| -0x8000_0000_0000_0000` matches i64's least), and a pattern that isn't a
+  value of its type (`| 256` at `u8`) is never matched at compile time, so the code's comparison
+  at the type's width decides it. So `Q15.ofFloat 0.5` is a constant once inlined, and a table
+  of them a static object (`tests/fold.zs`, `tests/fold_edges.zs`, `tests/static.zs`,
+  `tests/err_neg_pattern.zs`).
 - Constants in flash, the rest of item 3 (0014): a top-level record, tuple or plain union of
   constants is written into its global, a boxed union case (a tree's node) is a static cell, and
   they nest any way (an array of records, a list of shapes, a record holding a table). A boxed
@@ -66,9 +72,11 @@
   arena's last object has died; an object's arena is found by its address among the blocks. The
   table and the blocks are heap memory, not objects, so the exit report's `live` stays the
   program's. Released blocks are kept for arenas (on the heap's list of large blocks any object
-  over 256 bytes would take a whole one), and a block is a multiple of 8, so a heap size that
-  isn't a multiple of 64 keeps the heap aligned (`tests/mcu/weak.zs`, `tests/mcu/arena.zs`,
-  `tests/mcu/arena_rounds.zs`, `tests/mcu/odd_heap.sh`, both chips).
+  over 256 bytes would take a whole one), but a larger freed block an arena took goes back to
+  the heap when it's released, and the heap takes the arenas' blocks back before it runs out;
+  a block is a multiple of 8, so a heap size that isn't a multiple of 64 keeps the heap aligned
+  (`tests/mcu/weak.zs`, `tests/mcu/arena.zs`, `tests/mcu/arena_rounds.zs`,
+  `tests/mcu/arena_big.zs`, `tests/mcu/odd_heap.sh`, both chips).
 - A weak reference to an object the runtime frees itself (a weak cell, an `Spsc`, a `Channel`)
   sees it die: those frees go through the checked path, so a later object at the same address
   isn't mistaken for it (`tests/weak_runtime.zs`, on both chips too).
@@ -148,8 +156,10 @@
   and the DWARF lines stay, so gdb and lldb break on a line of an optimized build and show its
   backtrace with Z# files and lines; a value the optimizer keeps is shown, an inlined call's
   lines are its caller's frame's. `-g` alone is `-O0` with the code as written, for stepping,
-  on every target (a chip's `-O2` default included) (`tests/debug/opt.sh`,
-  `tests/mcu/stepping.zs`).
+  on every target (a chip's `-O2` default included) but the Cortex-M0+ and wasm32, whose `-O0`
+  can't lower Z#'s tail calls: there `-g` alone stays the optimized build with lines. Code as
+  written is what `[<NoAlloc>]` checks then, so a function passing a lambda to a library's
+  higher-order function may need `-O2` (`tests/debug/opt.sh`, `tests/mcu/stepping.zs`).
 - `zs test --coverage` (track D, item 10): the test binary is built with a counter per line of
   the file's directory's sources (`--coverage` on any build: the program writes the counts to
   `<program>.zscov` at exit, a panic's included), and the command reports the lines run and
@@ -159,7 +169,9 @@
   its definition's line, so one defined in another module and run isn't listed as never run;
   code nested on a line already counted isn't counted again; `coverage.lcov` is this run's,
   each test file of a workspace adding its own; and `--coverage` on a chip is an error, since
-  the chip has no file to write the counts to (`tests/ztest/coverage.sh`).
+  the chip has no file to write the counts to. The counts are written once, whichever of a
+  panic, `Environment.exit` and the end of `main` comes first, on whichever thread
+  (`tests/ztest/coverage.sh`).
 - `zs bench file.zs [filters] [--runs n]` (track D, item 9): `bench "name" (fun () -> …)` is a
   `Test` value among a file's `[<Tests>]`, timed in a process of its own after three warm-up
   runs: the median of 30 runs (or `--runs`) and its 95% confidence interval from the order
@@ -174,7 +186,8 @@
   cells carry one) and each case's fields over the cell, a ref's value; an option over a string
   is the string's pointer, a closure or one of the runtime's cells an address, and a `fixed` an
   array. Nothing is left out of `info locals` for its type now, and a type that holds itself
-  through a list, a ref or an array is described once (`tests/debug/gdb_heap.sh`,
+  through a list, a ref or an array is described once; a SIMD vector has no DWARF type of its
+  own, but its size lays out the fields after it (`tests/debug/gdb_heap.sh`,
   `tests/debug/kinds.zs`, whose DWARF `llvm-dwarfdump --verify` checks).
 - `zs test file.zs --target cortex-m4` (track D, item 11): the file's `[<Tests>]` built into one
   image and run under the chip's QEMU board (or a real board through probe-rs, as `zs run` does),
@@ -210,22 +223,33 @@
   the chip's reset handler (`cortex-m.ld`), so a boot counter or a crash log survives a reset; a
   push past a placed Buffer's room moves it to the heap and leaves the storage. On a function,
   a computed value or an alignment that isn't a power of two from 8 to 4096, an error says what
-  the attribute takes. `.noinit` takes a ref or Buffer of plain values only (a string or array
-  there would point into memory a reset left), and not a constant (never loaded); a section's
-  name is letters, digits, '.', '_' and '$'. The element may be any constant (a fixed-point
-  number, a tuple, an option, a table), its own objects constants outside the section. On a
-  chip, a ref or Buffer in a section the board's script doesn't name (a DMA region) is copied
-  from flash at startup. A program with placed values builds as one module, so they're placed
-  wherever they're declared (`tests/placement.zs`, `tests/err_placement.zs`; on both chips, a
-  boot counter across SYSRESETREQ resets under QEMU, `tests/mcu/noinit.zs`,
-  `tests/mcu/sections.zs`, and with `--no-heap`, `tests/mcu/noheap_placed.zs`). `[<Align>]` on
-  a type is left. Writing a Buffer's element is no allocation for `[<NoAlloc>]` and `--no-heap`
-  (it was taken for an array's copy-on-write); the element it overwrites is a drop when its
-  type is counted, and so is a Buffer passed in that may be the last reference
-  (`tests/err_noalloc_buffer.zs`).
+  the attribute takes. A section named `.noinit…` (as the boards' scripts' `*(.noinit*)` takes
+  it) holds a ref or Buffer of plain values only (a string or array there would point into
+  memory a reset left), and not a constant (never loaded); a section's name is letters,
+  digits, '.', '_' and '$'. The element may be any constant (a fixed-point number, a tuple, an
+  option, a table), its own objects constants outside the section. On a chip, a ref's or
+  Buffer's storage in a section the board's script doesn't name (a DMA region) is copied from
+  flash at startup; a constant table there is an error (it would never be loaded; a constant
+  is in flash already), and so is a ref or Buffer in flash (`.text…`, `.rodata…`). A library
+  has no startup, so its placed values mustn't need that copy or a `.noinit` ref's header. A
+  placed Buffer's slots are dropped at exit whatever it did since (written, grown into the
+  heap, shortened). A program with placed values builds as one module, so they're placed
+  wherever they're declared (`tests/placement.zs`, `tests/placement_drops.zs`,
+  `tests/err_placement.zs`, `tests/mcu/placement_errors.sh`; on both chips, a boot counter
+  across SYSRESETREQ resets under QEMU, `tests/mcu/noinit.zs`, `tests/mcu/sections.zs`, and
+  with `--no-heap`, `tests/mcu/noheap_placed.zs`). `[<Align>]` on a type is left. Writing a
+  Buffer's element is no allocation for `[<NoAlloc>]` and `--no-heap` (it was taken for an
+  array's copy-on-write), and the write borrows the Buffer as a read does, so writing a
+  parameter's or a top-level Buffer frees nothing; the element it overwrites is a drop when
+  its type is counted, and so is a Buffer a call gave that's dropped after the write
+  (`tests/noalloc.zs`, `tests/err_noalloc_buffer.zs`, `tests/err_noalloc_buffer_call.zs`).
 - A library (`--lib`) may hold top-level constants: a table, a record, a tree of union cases
   are static objects with no startup code, which a library doesn't have; only a value really
-  computed at startup is an error, from the code generator (`tests/libstatic.zs`, from C).
+  computed at startup is an error, from the code generator, and so is a startup assert
+  wherever it is among the values. Whether a value is a constant doesn't depend on the build:
+  `-g` and `--coverage` keep the code as written, but a value whose initializer folds to a
+  constant (`[| 1 + 2 |]`, `[| Q15.ofFloat 0.5 |]`) is that constant there too
+  (`tests/libstatic.zs`, from C, with `-g` and `--coverage`).
 - One-case unions without a tag (decision 66, built): a plain union with one case that has
   fields is the field itself (`type UserId = UserId of int` is an `int` in registers, arrays and
   records; `sizeof<q15>` is 2), or a struct of its fields; matching, equality, show, hash and
@@ -487,12 +511,16 @@ a real machine. The flagship runs under QEMU's STM32F405, not yet on the board i
   `frequency`, `oneOf`, `map`, `bind`, `filter`, `list`, `array`, `listOfLength`, `option`,
   `sized`, `scale`, `constant`, the `gen { }` builder, and `Gen.sample seed n g` to look at
   one. `Arbitrary` has impls for Core's types, lists, arrays, options, results and tuples, and
-  `[<Derive(Arbitrary)>]` for records and unions: the cases that end a value (none of their
-  fields holds the type, directly, in a list or option, or through types that hold each other)
-  come first and are the only choice at size 0 or past a replayed stream's end, so a tree whose
-  leaves carry values ends too (the derives gain `Shape.cases`, each case's `recursive` among
-  its facts). `Gen.range` spans all of `int` without overflowing, and `Gen.char` draws any
-  scalar value but a surrogate (`tests/property/recursive.zs`). `prop { let! x = Gen.int … do! Prop.assume (y <> 0)
+  `[<Derive(Arbitrary)>]` for records and unions: a union's cases are ranked by how readily a
+  value ends (0 when no field can hold the type, 1 when only lists, arrays and options do,
+  which are empty at size 0, 2 otherwise; a type parameter may be the type), drawn in that
+  order, and at size 0 or past a replayed stream's end the lowest rank's with the fewest fields
+  are the only choice, so a tree whose leaves carry values, one recursive through a list or a
+  `result`, and a generic one end (the derives gain `Shape.cases`, each case's `rank` among its
+  facts). `Gen.option` is `None` at size 0; `Gen.range` and `Gen.frequency` span all of `int`
+  without overflowing; and `Gen.char` draws any scalar value but a surrogate, the controls
+  last, so a case shrinks to a printable one (a panic's message is printed by its length, so a
+  NUL in one doesn't cut it) (`tests/property/recursive.zs`). `prop { let! x = Gen.int … do! Prop.assume (y <> 0)
   … return … }` draws as it goes, discards a case (`Prop.assume`) or labels it (`Prop.label`,
   `classify`, `collect`): a passing property reports how its cases were labelled, a failure
   shows the failing case's labels. `Prop.model commands { init; step }` checks a system
@@ -502,15 +530,17 @@ a real machine. The flagship runs under QEMU's STM32F405, not yet on the board i
   still panics, shown, and saved beside the file in `.zs-cache/failures/<file>/`, keyed by
   the test file and the property's path; the next run replays it first, and once it passes
   it's deleted. A panic the case doesn't reproduce alone, and a run that gave up on its
-  discards, are reported as they happened, nothing shrunk or saved. `zs fuzz file.zs path [--for n] [--
+  discards, are reported as they happened, nothing shrunk or saved; a shrink keeps the panic it
+  started with (a candidate that ends in a stack overflow instead isn't taken). `zs fuzz file.zs path [--for n] [--
   flags]` (track D, item 6) runs one property under libFuzzer (the tests built with its
   instrumentation and the sanitizers; a panic aborts, so it's a crash), each input the
   property's bytes (`Gen.bytes ()` takes an input whole, so a property over bytes fuzzes a
   parser as it is), the corpus kept beside the file in `.zs-cache/fuzz/<file>/<path>/` so a
-  run resumes, the flags after `--` libFuzzer's (and its output read apart from the property's,
-  so neither stream blocks the other); a crash is shrunk by replays, shown, and saved as the
-  failure `zs test` replays first. `zs test --target` shows every line of a failing test's
-  panic, a property's case and replay seed included (`tests/property/basic.zs`, `model.zs`, `tests/ztest/property.sh`,
+  run resumes, the flags after `--` libFuzzer's but for those that start other processes
+  (`-jobs`, `-fork`: it runs in one), its output read apart from the property's so neither
+  stream blocks the other; a crash is shrunk by replays, shown, and saved as the failure `zs
+  test` replays first. `zs test --target` shows every line of a failing test's panic, blank
+  ones among them, a property's case and replay seed included (`tests/property/basic.zs`, `model.zs`, `tests/ztest/property.sh`,
   `tests/fuzz/fuzz.sh`).
 - `Numerics.Fixed` (0015, track M item 10): `q7`, `q15` and `q31`, each a one-case union over
   its integer (its size, by decision 66), with saturating `+`, `-`, `*` (rounded half up), `/`, `%` (computed wider, so `min % -step` is 0) and negation,

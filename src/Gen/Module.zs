@@ -189,9 +189,23 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
   // from a flash image at startup: (destination, LLVM type, its image's name)
   let bareMetal = String.contains "-none" opts.target
   let startupCopies = ref Map.empty
-  let copiedAtStartup (v: string) =
+  // a section a chip's reset neither loads nor keeps in flash (one the board's script doesn't
+  // name): RAM, its contents never loaded from the image
+  let unloaded (sec: string) = bareMetal && sec <> "" && not (dataSection sec) && not (noinitSection sec) && not (flashSection sec)
+  let copiedAtStartup (v: string) = unloaded (fst (placement v))
+  // a placed Buffer's room (its static storage's slots), for the drops at exit
+  let placedRooms = ref Map.empty
+  let placementFails (message: string) =
+    if Option.isNone g.failure.Value then
+      g.failure.Value <- Some(0, message)
+  // a ref or Buffer in flash would be written there, which faults
+  let writable (v: string) =
     let (sec, _) = placement v
-    bareMetal && sec <> "" && sec <> ".data" && not (String.startsWith ".data." sec) && sec <> ".noinit" && not (String.startsWith ".noinit." sec)
+    if bareMetal && flashSection sec then
+      placementFails $"[<Section \"{sec}\">] '{v}': on a chip that section is flash, which a ref or Buffer can't be written in; use .data, .noinit or a RAM section the board's script names"
+      false
+    else
+      true
   let unplaceable (v: string) =
     if Option.isNone g.failure.Value then
       g.failure.Value <- Some(0, $"[<Section>] or [<Align>] value '{v}': its element can't be laid out in the image (a [<Bits>] record or a C union); build it in main instead")
@@ -331,7 +345,8 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
         // from the start of (so growing copies into the heap and leaves the storage), and its
         // cell static too
         match placedInit f.body with
-        | Some(PlacedBuffer(n, x)) when feasible el x ->
+        | Some(PlacedBuffer(n, x)) when feasible el x && writable v ->
+          placedRooms.Value <- Map.add v n placedRooms.Value
           let lt = llty g el
           let data = $"@\"zss.{v}.data\""
           let owner = $"@\"zss.{v}.owner\""
@@ -358,7 +373,7 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
         // a ref cell with the constant in it; in .noinit its header is written at startup (the
         // count 0 of a static), the value left as the memory holds it
         match placedInit f.body with
-        | Some(PlacedRef x) when feasible t x ->
+        | Some(PlacedRef x) when feasible t x && writable v ->
           let name = $"@\"zss.{v}\""
           made.Value <- 1
           nestedPlaced.Value <- false
@@ -378,16 +393,34 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
         // a constant: tables, lists and boxed cases as static objects, a record, tuple or plain
         // union written into the value's global, a number or string the same (0014 items 1, 3)
         match staticElem f.body with
+        | Some _ when isPlaced && unloaded (fst (placement v)) ->
+          let (sec, _) = placement v
+          placementFails $"[<Section \"{sec}\">] constant '{v}': on a chip, a section the board's linker script doesn't name is RAM that's never loaded from the flash image, so the table would be lost; drop the attribute (a constant is in flash already), use .data for a RAM copy, or make it a ref or Buffer.create"
+          None
         | Some x when feasible t x -> Some(constOf t x)
         | _ -> None
     | _ -> None
   let statics = Map.ofList (List.choose (fun (v, init) -> if Map.containsKey v valueTypes then Option.map (fun s -> (v, s)) (staticOf v init) else None) values)
-  // a library has no main to run the others' initializers
+  // a library has no main to run the others' initializers, nor the startup work of a placed
+  // value: a copy from flash, a .noinit ref's header
   if opts.library then
     match List.tryFind (fun (v, _) -> Map.containsKey v valueTypes && not (Map.containsKey v statics) && not (String.contains "$assert" v)) values with
     | Some(v, _) when Option.isNone g.failure.Value ->
       g.failure.Value <- Some(0, $"top-level value '{v}' is computed at startup, which a library doesn't have; make it a constant (a literal table, record or union of constants is one) or a function")
     | _ -> ()
+    let startupWork (v: string) =
+      let (sec, _) = placement v
+      let noinitRef =
+        match Map.tryFind v valueTypes with
+        | Some(TCon("ref", [ TCon("$buffer", _) ])) -> false
+        | Some(TCon("ref", [ _ ])) -> noinitSection sec
+        | _ -> false
+      Map.containsKey v statics && (Map.containsKey v startupCopies.Value || noinitRef)
+    match List.tryFind (fun (v, _) -> startupWork v) values with
+    | Some(v, _) ->
+      let (sec, _) = placement v
+      placementFails $"[<Section \"{sec}\">] '{v}' needs startup work in a library, which has none (a copy from flash into a section the reset doesn't load, or a .noinit ref's header written); keep that storage in the firmware and pass it in, or use a Buffer.create in .noinit"
+    | None -> ()
   for (v, _) in values do
     match Map.tryFind v valueTypes with
     | Some t ->
@@ -420,7 +453,7 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
           // a .noinit ref's header: the memory is whatever it was, the count must be a static's
           match Map.find v valueTypes with
           | TCon("ref", [ TCon("$buffer", _) ]) -> ""
-          | TCon("ref", [ _ ]) when sec = ".noinit" || String.startsWith ".noinit." sec -> $"  store i_W 0, ptr @\"zss.{v}\"\n"
+          | TCon("ref", [ _ ]) when noinitSection sec -> $"  store i_W 0, ptr @\"zss.{v}\"\n"
           | _ -> ""
       else
         let vt = Map.find v valueTypes
@@ -442,8 +475,8 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
       match t with
       | TCon("ref", [ b ]) when isBuf t && Map.containsKey v statics ->
         // a placed Buffer: its cell is static, but a push past its room moved its contents to
-        // the heap, and those go as a Buffer's do (its owner released); while it still windows
-        // its static storage, the elements written there are dropped one by one
+        // the heap, and those go as a Buffer's do (its owner released); its static storage's
+        // elements are dropped one by one
         let el =
           match b with
           | TCon("$buffer", [ el ]) -> el
@@ -451,20 +484,19 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
         let cell = instr em $"load ptr, ptr {valueSym v}"
         let sp = instr em $"getelementptr {{ i_W, {llty g b} }}, ptr {cell}, i32 0, i32 1"
         if heap g el then
-          let fields = instr em $"getelementptr {{ i_W, {{ ptr, ptr, i_W, i_W }} }}, ptr {cell}, i32 0, i32 1"
-          let dataP = instr em $"getelementptr {{ ptr, ptr, i_W, i_W }}, ptr {fields}, i32 0, i32 1"
-          let lenP = instr em $"getelementptr {{ ptr, ptr, i_W, i_W }}, ptr {fields}, i32 0, i32 2"
-          let data = instr em $"load ptr, ptr {dataP}"
-          let len = instr em $"load i_W, ptr {lenP}"
-          let own = instr em $"icmp eq ptr {data}, @\"zss.{v}.data\""
+          // every slot of the static storage holds one reference until exit, whatever the
+          // Buffer did since: a write drops the old one, a push past the room copies (dups) the
+          // contents to the heap, and removeLast and truncate leave the slots as they are
+          let room = Option.defaultValue 0 (Map.tryFind v placedRooms.Value)
+          let data = $"@\"zss.{v}.data\""
           let l = fresh em "pdrop"
           let slot = "%" + fresh em "pi"
           alloca em $"{slot} = alloca i_W"
           emit em $"store i_W 0, ptr {slot}"
-          emit em $"br i1 {own}, label %{l}.cond, label %{l}.end"
+          emit em $"br label %{l}.cond"
           enter em (l + ".cond")
           let i = instr em $"load i_W, ptr {slot}"
-          let more = instr em $"icmp slt i_W {i}, {len}"
+          let more = instr em $"icmp slt i_W {i}, {room}"
           emit em $"br i1 {more}, label %{l}.body, label %{l}.end"
           enter em (l + ".body")
           let ep = instr em $"getelementptr {llty g el}, ptr {data}, i_W {i}"

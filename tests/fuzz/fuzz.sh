@@ -34,3 +34,4 @@ echo "saved:"; (cd .zs-cache/failures && find . -type f | sed 's|^\./||')
 echo "zs test replays it first:"; "$zs" test parse.zs 2>&1 | grep -v "^       panic\|^       index\|^       /" | head -4
 echo "the flags after -- are libFuzzer's (-runs=0: the corpus is run, nothing new tried):"
 "$zs" fuzz parse.zs parses --for 60 -- -runs=0 2>/dev/null | sed -E 's/; [0-9]+ inputs in the corpus/; N inputs in the corpus/; s/^fuzzing (.*) for 60 s \(corpus: .*\)$/fuzzing \1 (corpus kept)/'
+echo "and not those that start other processes:"; "$zs" fuzz parse.zs parses -- -jobs=2; echo "exit $?"

@@ -58,7 +58,8 @@ let dump (src: Source.Source) (toks: array<Token.Token>) (decls: list<Decl>) : l
     | PWild -> "_"
     | PIdent(x, None) -> x + at p.patAt
     | PIdent(x, Some q) -> "(" + x + " " + pat q + ")" + at p.patAt
-    | PInt n -> $"{n}"
+    | PInt n
+    | PNegInt n -> $"{n}"
     | PChar c -> $"#{c}"
     | PStr s -> quote s
     | PBool b -> if b then "true" else "false"

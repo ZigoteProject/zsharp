@@ -14,6 +14,8 @@ let rec sum (t: Tree) : int =
 let tree = Node(Node(Leaf, 1, Leaf), 2, Leaf)
 let table = [| 10; 20; 30 |]
 let range = { lo = 1; hi = 4 }
+// folded to a table, under -g and --coverage too (an initializer is folded as in an optimized build)
+let folded = [| 1 + 2; 3 * 4 |]
 
 [<Export>]
-let total (n: int) : int = sum tree + Array.sum table + range.hi - range.lo + n
+let total (n: int) : int = sum tree + Array.sum table + range.hi - range.lo + Array.sum folded + n

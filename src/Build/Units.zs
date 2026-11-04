@@ -189,7 +189,15 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
       match unitOf g with
       | None -> true
       | u -> unitOf caller = u
-    let mono1 = check "inline" (if asWritten then mono0 else timedInto timedLines "inline" (fun () -> Opt.Inline.runWith kept mayInline (Opt.Inline.uncurry fixedNames mono0)))
+    // as written (--coverage), but a value whose initializer folds to a constant is that
+    // constant, as Compile.counted has it
+    let noSimplify = Option.isSome (Environment.getVariable "ZS_NO_SIMPLIFY")
+    let mono1 =
+      check "inline" (
+        if asWritten then
+          (if noSimplify then mono0 else timedInto timedLines "inline" (fun () -> Compile.constantInits types.Value kept prog.values mono0))
+        else
+          timedInto timedLines "inline" (fun () -> Opt.Inline.runWith kept mayInline (Opt.Inline.uncurry fixedNames mono0)))
     let mono2 = check "simplify" (timedOn timedLines "simplify" (fun (fs: list<MFun>) -> if simple then fs else Opt.Simplify.run types.Value fs) mono1)
     let (lowered, mono3a) = timedInto timedLines "effects" (fun () -> Opt.Evidence.run types.Value prog.effects mono2)
     let mono3 = check "effects" mono3a

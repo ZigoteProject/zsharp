@@ -626,6 +626,11 @@ static struct {
     void *large;
 } H;
 
+// the blocks arenas released (their size, ARENA_BLOCK, in the header as any block's): kept for
+// arenas, as the heap's large list would hand a whole one to any object over 256 bytes, and
+// taken by an object only when the heap has nothing else left
+static void *arena_free;
+
 // a block of the heap that isn't an object (a weak table, an arena's block): counted in the
 // bytes used, not as an allocation
 static void *heap_take(size_t need) {
@@ -646,12 +651,19 @@ static void *heap_take(size_t need) {
                     *at = *(void **)*at;
                     break;
                 }
-        if (!block) {
-            if (H.top + need + 8 > ZS_HEAP_SIZE) zs_panic_c("out of memory");
+        if (!block && H.top + need + 8 <= ZS_HEAP_SIZE) {
             block = (uint64_t *)(heap + H.top);
             H.top += need + 8;
             *block = need;
         }
+        if (!block)
+            for (void **at = &arena_free; *at; at = (void **)*at)
+                if (((uint64_t *)*at)[-1] >= need) {
+                    block = (uint64_t *)*at - 1;
+                    *at = *(void **)*at;
+                    break;
+                }
+        if (!block) zs_panic_c("out of memory");
     }
 
     H.used += (size_t)*block;
@@ -840,16 +852,14 @@ typedef struct {
 static zs_arena *arena;  // the innermost open arena
 static zs_arena *arenas; // every arena that still has blocks
 
-// an arena's blocks, once released, are kept for arenas: on the heap's list of large blocks a
-// first fit would hand a whole block to any object over 256 bytes
-static void *arena_free;
-
+// a block for an arena: one an arena released, else the heap's (which may be a larger freed
+// block: arena_release gives that one back to the heap)
 static char *arena_block(zs_arena *a) {
     char *b;
     if (arena_free) {
         b = arena_free;
         arena_free = *(void **)b;
-        H.used += ARENA_BLOCK;
+        H.used += (size_t)((uint64_t *)b)[-1];
         if (H.used > H.peak) H.peak = H.used;
     } else {
         b = heap_take(ARENA_BLOCK);
@@ -874,9 +884,13 @@ static void arena_release(zs_arena *a) {
         }
     for (void *b = a->blocks, *next; b; b = next) { // the oldest block, holding *a, is the last
         next = ((block_head *)b)->next;
-        H.used -= ARENA_BLOCK;
-        *(void **)b = arena_free;
-        arena_free = b;
+        if ((size_t)((uint64_t *)b)[-1] > ARENA_BLOCK) {
+            heap_give(b); // a larger block the heap had freed: the heap's again
+        } else {
+            H.used -= ARENA_BLOCK;
+            *(void **)b = arena_free;
+            arena_free = b;
+        }
     }
 }
 
@@ -1436,9 +1450,10 @@ static void (*panic_hook)(const char *message);
 
 void zs_set_panic_hook(void (*hook)(const char *message)) { panic_hook = hook; }
 
-_Noreturn void zs_panic_c(const char *msg) {
+// the message by its length (a Z# string may hold a NUL)
+_Noreturn static void panic_with(const char *msg, size_t len) {
     write_c("panic: ");
-    write_c(msg);
+    write_bytes(msg, (int64_t)len);
     write_c("\n");
     void (*hook)(const char *) = panic_hook;
     panic_hook = NULL; // a panic inside the hook stops at once
@@ -1446,7 +1461,9 @@ _Noreturn void zs_panic_c(const char *msg) {
     stop(134);
 }
 
-_Noreturn void zs_panic(zs_str *msg) { zs_panic_c(msg->data); }
+_Noreturn void zs_panic_c(const char *msg) { panic_with(msg, strlen(msg)); }
+
+_Noreturn void zs_panic(zs_str *msg) { panic_with(msg->data, (size_t)msg->len); }
 
 _Noreturn void zs_exit(zs_int code) { stop((int)code); }
 

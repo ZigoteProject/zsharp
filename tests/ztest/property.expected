@@ -22,3 +22,9 @@ FAIL g/never holds
 0 passed, 1 failed
 exit 1
 0
+shrunk to the same panic:
+FAIL d/small numbers
+       case: B ([], 6)
+       panic: a big number
+       shrunk from N bytes to M in N runs; saved as .zs-cache/failures/deep/d-small-numbers-HASH, replayed first next time
+0 passed, 1 failed

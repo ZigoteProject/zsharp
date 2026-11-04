@@ -1757,7 +1757,8 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
     let old = instr em $"load {llty g el}, ptr {ep}"
     emit em $"store {llty g el} {arg 2}, ptr {ep}"
     dropValue g em el old
-    dropValue g em t (arg 0)
+    // the Buffer itself, unless the write borrowed it (Rc's array.set#b)
+    dropFirst ()
     "zeroinitializer"
   | "buffer.push" ->
     // push x b: room made when there's none (Core's bufferDef says how)
@@ -1812,7 +1813,8 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
     let old = instr em $"load {llty g el}, ptr {ep}"
     emit em $"store {llty g el} {arg 2}, ptr {ep}"
     dropValue g em el old
-    dropValue g em t (arg 0)
+    // the Buffer itself, unless the write borrowed it (Rc's array.set#b)
+    dropFirst ()
     "zeroinitializer"
   | "span.ofArray" ->
     // the array's reference moves into the span

@@ -470,8 +470,14 @@ let rec private staticIn (env: Map<string, StaticElem>) (e: CExpr) : option<Stat
     | Some v -> staticIn (Map.add x v env) b
     | None -> None
   | CLocal x -> Map.tryFind x env
-  | CInt n -> Some(SInt n)
-  | CFloat x -> Some(SFloat x)
+  // a literal at its type: an f32 one rounded to single precision, as the code has it (so a
+  // widening of it is exact), an integer one at a float type a float
+  | CInt n ->
+    match e.ty with
+    | TCon("f32", []) -> Some(SFloat(f64 (f32 n)))
+    | TCon("f64", []) -> Some(SFloat(float n))
+    | _ -> Some(SInt n)
+  | CFloat x -> Some(SFloat(if e.ty = TCon("f32", []) then f64 (f32 x) else x))
   | CBool b -> Some(SBool b)
   | CStr s -> Some(SStr s)
   | CNeg a ->
@@ -507,7 +513,20 @@ let rec private staticIn (env: Map<string, StaticElem>) (e: CExpr) : option<Stat
       | TCon("u64", [])
       | TCon("usize", []) -> true
       | _ -> false
+    // an int or usize source past 32 bits (the word on a chip, where the code wraps it) converted
+    // to a wider integer or a float is left to the code too, as it depends on the target; to 32
+    // bits or fewer the low bits are the same either way
+    let sourceFits (n: i64) =
+      match a.ty with
+      | TCon("int", []) -> n >= i64 -2147483648 && n <= i64 2147483647
+      | TCon("usize", []) -> n >= i64 0 && n <= i64 4294967295
+      | _ -> true
+    let narrow (t: Ty) =
+      match t with
+      | TCon(w, []) -> List.contains w [ "i8"; "i16"; "i32"; "u8"; "u16"; "u32" ]
+      | _ -> false
     match (staticElem a, e.ty) with
+    | (Some(SInt n), _) when not (sourceFits n) && not (narrow e.ty) -> None
     | (Some(SInt n), TCon(t, [])) when Set.contains t floats ->
       if n < i64 0 && unsignedSource then None
       // rounded once, from the integer
@@ -534,6 +553,17 @@ let staticElem (e: CExpr) : option<StaticElem> = staticIn Map.empty e
 /// Whether a top-level value's initializer is a constant the image holds (a static object, or a
 /// value written into its global), with no startup code (0014 items 1 and 3).
 let staticInit (e: CExpr) : bool = Option.isSome (staticElem e)
+
+/// [<Section>]: a section the boards' linker scripts keep as .noinit (their `*(.noinit*)`), never
+/// written at reset.
+let noinitSection (sec: string) : bool = String.startsWith ".noinit" sec
+
+/// [<Section>]: a section the boards' linker scripts load at reset with the data (`*(.data*)`).
+let dataSection (sec: string) : bool = String.startsWith ".data" sec
+
+/// [<Section>]: a section the boards' linker scripts put in flash with the code (`*(.text*)`,
+/// `*(.rodata*)`): in the image, read-only.
+let flashSection (sec: string) : bool = String.startsWith ".text" sec || String.startsWith ".rodata" sec
 
 /// What a top-level value with `[<Section>]` or `[<Align>]` is made of (0014 item 12): a
 /// constant table (a static object already), `Buffer.create n x` or `ref x` with constant

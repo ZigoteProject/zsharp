@@ -1,7 +1,8 @@
 // constant folding at its edges (0015 step 4): each line prints a folded expression and the same
 // computed at run time (through mutable variables, which aren't folded), which must agree:
 // u64 values above 2^63, f32 rounding at every step, the sign of zero, conversions narrowed
-// inside others, and negative literals down to i64's least
+// inside others, negative literals down to i64's least (in patterns too), an f32 static widened,
+// and a pattern that isn't a value of its type (left to the code, which compares at its width)
 let widen (a: f32) = float a
 let addsub (b: f32) (c: f32) = (b + c) - b
 
@@ -12,6 +13,18 @@ type Tree =
 let staticTree = Node(Leaf, int (i8 200), Leaf)
 let staticTable = [| int (i16 0xFFFE); int (i8 0x80); int (u8 300) |]
 let staticFloats = [| -0.0; f64 (u8 300); f64 (f32 1152921573326323713) |]
+let staticWide = [| widen 0.1; widen 16777217.0 |]
+
+let describe (x: i64) =
+  match x with
+  | -0x8000_0000_0000_0000 -> "least"
+  | -1 -> "minus one"
+  | _ -> "other"
+
+let byte (x: u8) =
+  match x with
+  | 256 -> "256"
+  | _ -> "other"
 
 let main () =
   let mutable big : u64 = 0xFFFF_FFFF_FFFF_FFFF
@@ -38,4 +51,9 @@ let main () =
   | Leaf -> ()
   let least : i64 = -0x8000_0000_0000_0000
   println $"least: {least} {-0x7FFF_FFFF_FFFF_FFFF}"
+  let mutable leastV = -0x7FFF_FFFF_FFFF_FFFF
+  leastV <- leastV - 1
+  let mutable zero : u8 = 0
+  println $"patterns: {describe -0x8000_0000_0000_0000} {describe leastV} {describe -1} | {byte 0} {byte zero}"
+  println $"static f32: {staticWide.[0]} {widen f1} {staticWide.[1]} {widen fBig}"
   0

@@ -28,6 +28,17 @@ let private reads : Set<string> = Set.ofList [ "array.get"; "Array.length"; "Str
 // the reads that borrow the array (or string) they read from, a variable or a field of one
 let private lends : Set<string> = Set.ofList [ "array.get"; "Array.length"; "String.length"; "String.byte"; "vec.load"; "fixed.get"; "fixed.length" ]
 
+// a Buffer (a ref to its storage cell from monomorphization on)
+let private isBufferTy (t: Ty) : bool =
+  match t with
+  | TCon("ref", [ TCon("$buffer", _) ]) -> true
+  | _ -> false
+
+// a write of a Buffer's element borrows the Buffer as a read does: the write is in place, the
+// Buffer stays its holder's (so a [<NoAlloc>] function writing a parameter's or a top-level
+// Buffer frees nothing, and one it got from a call is dropped after, where the check sees it)
+let private lending (op: string) (a: CExpr) : bool = Set.contains op lends || (op = "array.set" && isBufferTy a.ty)
+
 // whether e writes the mutable x: assigns it, or writes its array in place
 let rec private writes (x: string) (e: CExpr) : bool =
   match e.k with
@@ -141,6 +152,10 @@ let borrowingWith (types: Map<string, TypeInfo>) (entries: Set<string>) (externa
       let f = Map.find name fnOf
       let index = Map.ofList (List.map (fun i -> (fst (List.item i f.pars), i)) (Set.toList set))
       let bad = ref Set.empty
+      let paramBuffer (a: CExpr) =
+        match a.k with
+        | CLocal x -> isBufferTy a.ty && Map.containsKey x index
+        | _ -> false
       let rec walk (e: CExpr) =
         match e.k with
         | CLocal x when Map.containsKey x index -> bad.Value <- Set.add (Map.find x index) bad.Value
@@ -148,6 +163,8 @@ let borrowingWith (types: Map<string, TypeInfo>) (entries: Set<string>) (externa
         | CField({ k = CLocal x }, _) when Map.containsKey x index -> ()
         | CApplyClo({ k = CLocal x }, args) when Map.containsKey x index -> List.iter walk args
         | CPrim(op, { k = CLocal x } :: rest) when Set.contains op reads && Map.containsKey x index -> List.iter walk rest
+        // a parameter's Buffer written: borrowed (Rc's array.set#b)
+        | CPrim("array.set", a :: rest) when paramBuffer a -> List.iter walk rest
         | CCallDirect(g, args) ->
           let one (j: int) (a: CExpr) =
             match a.k with
@@ -669,7 +686,7 @@ let private lowerFun (types: Map<string, TypeInfo>) (borrowedParams: Map<string,
         setType t e.ty
         re (CLet(t, e, mk (CDup(t, e.ty, mk (CLocal t) e.ty)) e.ty))
       | CGlobalVal _ -> e
-      | CPrim(op, a :: rest) when Set.contains op lends && rootLent a rest ->
+      | CPrim(op, a :: rest) when lending op a && rootLent a rest ->
         // reading an element or the length borrows the array (or string), a variable or a record
         // field of one: no dup before, no drop inside; if this was x's last use, x is dropped after
         let x = Option.get (rootLocal a)

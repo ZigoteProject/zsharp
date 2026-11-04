@@ -108,8 +108,19 @@ let rec sizeAlign (g: G) (t: Ty) : int * int =
     let (size, align, _) = cLayout g t
     (size, align)
   | _ ->
-    let (size, align, _) = layout g (structFields g t)
-    (size, align)
+    match t with
+    // a SIMD vector, or a mask: its lanes side by side, aligned to its size as LLVM lays it out
+    | TCon(n, []) when isVectorName n ->
+      let (e, lanes) = Option.get (vectorInfo n)
+      let size = lanes * fst (sizeAlign g (tcon e))
+      (size, size)
+    | TCon(n, []) when isMaskName n ->
+      let lanes = snd (List.find (fun (m, _) -> m = n) maskTypes)
+      let size = max 1 ((lanes + 7) / 8)
+      (size, size)
+    | _ ->
+      let (size, align, _) = layout g (structFields g t)
+      (size, align)
 
 /// A struct's size and alignment, and each field's offset.
 and layout (g: G) (ts: list<Ty>) : int * int * list<int> =

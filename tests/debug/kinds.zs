@@ -1,5 +1,6 @@
-// every kind of value under -g (tests/debug run by test.sh): closures, C pointers, a Buffer, and
-// unions whose payload holds the union again, through a list, a ref or an array
+// every kind of value under -g (tests/debug run by test.sh): closures, C pointers, a Buffer,
+// unions whose payload holds the union again, through a list, a ref or an array, and SIMD vectors
+// (no DWARF type of their own, but their size lays out what follows them)
 type Rose =
   | Leaf
   | Node of list<Rose>
@@ -19,6 +20,8 @@ let rec count (r: Rose) : int =
 
 let apply (f: int -> int) x = f x
 
+type Lanes = { v: f32x4; n: int }
+
 let main () =
   let xs = List.map (fun x -> x + 1) [ 1; 2 ]
   let p : ptr<u8> = unsafe (Ptr.alloc 4)
@@ -34,6 +37,11 @@ let main () =
     match w with
     | W1 ws -> Array.length ws
     | W0 -> 0
-  println $"{xs} {apply (fun x -> x * 2) 21} {unsafe (Ptr.read p)} {Buffer.length b} {count (Node [ Leaf; Node [ Leaf; Leaf ] ])} {depth} {width}"
+  let one : f32 = 1.0
+  let lanes = [ { v = F32x4.splat one; n = 3 } ]
+  let vs = [| F32x4.splat one |]
+  let vr = ref (F32x4.splat one)
+  let vb = Buffer.ofArray [| F32x4.splat one |]
+  println $"{xs} {apply (fun x -> x * 2) 21} {unsafe (Ptr.read p)} {Buffer.length b} {count (Node [ Leaf; Node [ Leaf; Leaf ] ])} {depth} {width} {(List.head lanes).n + Array.length vs + Buffer.length vb} {F32x4.sum vr.Value}"
   unsafe (Ptr.free p)
   0

@@ -13,3 +13,5 @@ exit 2
 ex.zscov written
 a generic function of another module counts as run where an instance of it runs:
   stats.zs: 2 of 3 lines (66%), not run: 4
+threads that all end the program at once write the counts once:
+runs with a copy too many or none: 0

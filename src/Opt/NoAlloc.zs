@@ -159,6 +159,15 @@ let private stepsOf (v: Types.Vars.Vars) (types: Map<string, TypeInfo>) (word: i
     let ps = List.map one each
     out.Value <- outer
     Buffer.push (Paths ps) outer
+  // a reference that's never the last: a top-level value's (read with a reference of its own, the
+  // value keeping one until exit), or one to a local that's never freed
+  let rec neverLast (statics: Set<string>) (e: CExpr) : bool =
+    match e.k with
+    | CLet(r, { k = CGlobalVal _ }, { k = CDup(y, _, { k = CLocal z }) }) -> y = r && z = r
+    | CDup(y, _, { k = CLocal z }) -> y = z && Set.contains y statics
+    | CLocal x -> Set.contains x statics
+    | CLine(_, a) -> neverLast statics a
+    | _ -> false
   // statics: the locals holding objects that are never freed (literals, cases without fields, a
   // scrutinee matched to one); tokens: each reuse token's matched cell
   let rec go (line: int) (statics: Set<string>) (tokens: Map<string, string>) (e: CExpr) =
@@ -177,7 +186,7 @@ let private stepsOf (v: Types.Vars.Vars) (types: Map<string, TypeInfo>) (word: i
         | CStr _
         | CCtor(_, _, []) -> true
         | CPrim("array.lit", []) -> true
-        | _ -> view w
+        | _ -> view w || neverLast statics w
       go line statics tokens w
       go line (if isStatic then Set.add x statics else statics) tokens body
     | CIf(c, t, el) ->
@@ -227,18 +236,20 @@ let private stepsOf (v: Types.Vars.Vars) (types: Map<string, TypeInfo>) (word: i
       if List.length (List.filter filled pieces) > 1 then
         own Allocates "builds a string" "builds a string" "" line
       List.iter (go line statics tokens) pieces
-    | CPrim("array.set", buf :: _) when Option.isSome (bufferElement buf.ty) ->
+    | CPrim(op, buf :: _) when (op = "array.set" || op = "array.set#b") && Option.isSome (bufferElement buf.ty) ->
       // a Buffer's element written in place: no new object, but the overwritten element is
-      // dropped (it may be the last reference to it), and so is the Buffer passed (unless it's a
-      // value that lives on)
+      // dropped (it may be the last reference to it). The write borrows the Buffer (array.set#b),
+      // its holder dropping it where this check sees a drop; one Rc couldn't lend is consumed by
+      // the write, which may free it
       let el = Option.get (bufferElement buf.ty)
       if heap el then
         own Frees "overwrites a Buffer element, which drops the old one (it may be the last reference)" "drops the element it overwrites" "" line
-      match buf.k with
-      | CLocal x when heap buf.ty && not (Set.contains x statics) ->
-        let what = dropping x buf.ty
-        own Frees what what (subjectOf x) line
-      | _ -> ()
+      if op = "array.set" && heap buf.ty && not (neverLast statics buf) then
+        match buf.k with
+        | CLocal x ->
+          let what = dropping x buf.ty
+          own Frees what what (subjectOf x) line
+        | _ -> own Frees "writes a Buffer it then drops (one a call made), which may free it" "drops the Buffer it writes" "" line
       rest ()
     | CPrim(op, args) ->
       if waits op then

@@ -1,7 +1,9 @@
 // [<NoAlloc>] functions that pass (0012): numbers, a borrowed string, a record, a loop over an
 // array it borrows; an option's None (a static cell) dropped and its Some's string kept, which
 // frees nothing; a string interpolated into what's printed, which is its own text; an
-// interpolation of one string, which is that string
+// interpolation of one string, which is that string; a Buffer's numbers written in place, the
+// Buffer a parameter's or a top-level value's (directly, and through a name for it), which the
+// write borrows and frees nothing of
 type Point = { x: int; y: int }
 
 [<NoAlloc>]
@@ -22,7 +24,22 @@ let shout (s: string) = println $"{s}!"
 [<NoAlloc>]
 let same (s: string) : string = $"{s}"
 
+let frame = Buffer.create 4 (u8 0)
+
+[<NoAlloc>]
+let mark (b: Buffer<u8>) (i: int) = b.[i] <- u8 7
+
+[<NoAlloc>]
+let markFrame () =
+  frame.[1] <- u8 9
+  let f = frame
+  f.[2] <- u8 5
+
 let main () =
+  let b = Buffer.create 2 (u8 0)
+  mark b 0
+  markFrame ()
+  println $"{b.[0]} {frame.[1]} {frame.[2]}"
   let p = step { x = 1; y = 2 } "abc"
   println $"{p.x} {p.y} {total [| 1; 2; 3 |]}"
   println (orNone None)

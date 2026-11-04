@@ -416,21 +416,35 @@ static cov_module *cov_modules;
 static int cov_count, cov_cap;
 static char **g_argv;
 
+// written once per process (a panic's stop, Environment.exit and exit's handlers may each come
+// here, on several threads at once): a later caller waits for the first's write to finish, so
+// the process doesn't end with it half written
+static pthread_mutex_t cov_mu = PTHREAD_MUTEX_INITIALIZER;
+static bool cov_written;
+
 static void coverage_dump(void) {
-    if (!cov_count) return;
+    pthread_mutex_lock(&cov_mu);
+    if (cov_written || !cov_count) {
+        pthread_mutex_unlock(&cov_mu);
+        return;
+    }
+    cov_written = true;
     const char *exe = g_argv && g_argv[0] ? g_argv[0] : "program";
     size_t len = strlen(exe) + 7;
     char *path = malloc(len);
-    if (!path) return;
-    snprintf(path, len, "%s.zscov", exe);
-    FILE *f = fopen(path, "a");
-    free(path);
-    if (!f) return;
-    for (int m = 0; m < cov_count; m++)
-        for (int64_t i = 0; i < cov_modules[m].n; i++)
-            fprintf(f, "%s\t%d\t%" PRId64 "\n", cov_modules[m].table[i].file, cov_modules[m].table[i].line, cov_modules[m].counts[i]);
-    fclose(f);
-    cov_count = 0; // written once: a panic's stop, then exit's handlers
+    FILE *f = NULL;
+    if (path) {
+        snprintf(path, len, "%s.zscov", exe);
+        f = fopen(path, "a");
+        free(path);
+    }
+    if (f) {
+        for (int m = 0; m < cov_count; m++)
+            for (int64_t i = 0; i < cov_modules[m].n; i++)
+                fprintf(f, "%s\t%d\t%" PRId64 "\n", cov_modules[m].table[i].file, cov_modules[m].table[i].line, cov_modules[m].counts[i]);
+        fclose(f);
+    }
+    pthread_mutex_unlock(&cov_mu);
 }
 
 void zs_coverage_register(const zs_cov_line *table, int64_t *counts, int64_t n) {
@@ -448,7 +462,9 @@ void zs_coverage_register(const zs_cov_line *table, int64_t *counts, int64_t n) 
 static atomic_flag panicking = ATOMIC_FLAG_INIT;
 static _Thread_local bool in_panic;
 
-_Noreturn void zs_panic_c(const char *msg) {
+// the message by its length: a Z# string may hold a NUL (a property's case shown in it), which
+// would end it early as a C string
+_Noreturn static void panic_with(const char *msg, size_t len) {
     if (in_panic) stop();
     in_panic = true;
     if (atomic_flag_test_and_set(&panicking))
@@ -461,7 +477,9 @@ _Noreturn void zs_panic_c(const char *msg) {
         }
     coverage_dump();
     fflush(stdout);
-    fprintf(stderr, "panic: %s\n", msg);
+    fputs("panic: ", stderr);
+    fwrite(msg, 1, len, stderr);
+    fputc('\n', stderr);
     fflush(stderr); // the UCRT buffers it when it isn't a console
 #if defined(__GLIBC__) || defined(__APPLE__)
     const char *bt = getenv("ZS_BACKTRACE");
@@ -482,7 +500,9 @@ _Noreturn void zs_panic_c(const char *msg) {
     stop();
 }
 
-_Noreturn void zs_panic(zs_str *msg) { zs_panic_c(msg->data); }
+_Noreturn void zs_panic_c(const char *msg) { panic_with(msg, strlen(msg)); }
+
+_Noreturn void zs_panic(zs_str *msg) { panic_with(msg->data, (size_t)msg->len); }
 
 // The objects counted: allocated now (reported at exit when ZS_LEAKCHECK is set), allocated in
 // all (Runtime.allocations, ZS_STATS) and the system allocator's calls (Runtime.mallocs). With

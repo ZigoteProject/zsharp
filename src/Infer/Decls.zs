@@ -367,26 +367,58 @@ let private finishImpl (cx: Cx) (st: Started) =
 
 let private declareImpl (cx: Cx) (tr0: string) (head: SType) (others: list<SType>) (defs: list<Definition>) = finishImpl cx (startImpl cx true tr0 head others defs)
 
-// whether a value of type t can hold a value of type tname: directly, in a type argument, or
-// through the fields of the records and unions it names (an over-approximation: a phantom type
-// argument counts)
-let private holdsType (cx: Cx) (tname: string) (t: Ty) : bool =
-  let rec go (seen: Set<string>) (t: Ty) : bool =
+// a union's cases ranked by how readily a generated value of each ends (Shape.cases' rank): 0
+// when no field can hold a value of the type, 1 when the ones that can are lists, arrays or
+// options (empty at size 0 and from zero bytes), 2 otherwise. A field holds the type when it is
+// the type, or names a type that reaches it through its fields (found once, by a search back
+// from the type over the types it reaches: linear in their definitions), or is a type parameter,
+// which may be the type itself.
+let private caseRanks (cx: Cx) (tname: string) (cs: list<string * list<Ty>>) : Map<string, int> =
+  let rec names (t: Ty) : list<string> =
     match t with
-    | TCon(n, args) ->
-      if n = tname || List.exists (go seen) args then
-        true
-      else if Set.contains n seen then
-        false
-      else
-        let inside = go (Set.add n seen)
-        match Map.tryFind n cx.types.Value with
-        | Some { def = RecordDef fs } -> List.exists (fun (_, ft) -> inside ft) fs
-        | Some { def = UnionDef cs } -> List.exists (fun (_, fts) -> List.exists inside fts) cs
-        | _ -> false
-    | TTuple ts -> List.exists (go seen) ts
+    | TCon(n, args) -> n :: List.collect names args
+    | TTuple ts -> List.collect names ts
+    | _ -> []
+  let fieldsOf (n: string) : list<Ty> =
+    match Map.tryFind n cx.types.Value with
+    | Some { def = RecordDef fs } -> List.map snd fs
+    | Some { def = UnionDef ucs } -> List.collect snd ucs
+    | _ -> []
+  // the named types reachable from tname, each with the ones whose definitions name it
+  let seen = ref (Set.ofList [ tname ])
+  let namedBy = ref Map.empty
+  let todo = Buffer.ofArray [| tname |]
+  while Buffer.length todo > 0 do
+    let n = Buffer.removeLast todo
+    for m in List.distinct (List.collect names (fieldsOf n)) do
+      namedBy.Value <- Map.add m (n :: Option.defaultValue [] (Map.tryFind m namedBy.Value)) namedBy.Value
+      if not (Set.contains m seen.Value) then
+        seen.Value <- Set.add m seen.Value
+        Buffer.push m todo
+  // the ones that reach tname: back from it
+  let reaching = ref Set.empty
+  let back = Buffer.ofArray [| tname |]
+  while Buffer.length back > 0 do
+    let n = Buffer.removeLast back
+    for p in Option.defaultValue [] (Map.tryFind n namedBy.Value) do
+      if not (Set.contains p reaching.Value) then
+        reaching.Value <- Set.add p reaching.Value
+        Buffer.push p back
+  let rec holds (t: Ty) : bool =
+    match t with
+    | TGen _ -> true
+    | TCon(n, args) -> n = tname || Set.contains n reaching.Value || List.exists holds args
+    | TTuple ts -> List.exists holds ts
     | _ -> false
-  go Set.empty t
+  let rec rank (t: Ty) : int =
+    if not (holds t) then
+      0
+    else
+      match t with
+      | TCon(n, [ _ ]) when n = "list" || n = "array" || n = "option" -> 1
+      | TTuple ts -> List.fold (fun m x -> max m (rank x)) 0 ts
+      | _ -> 2
+  Map.ofList (List.map (fun (c, fts) -> (c, List.fold (fun m t -> max m (rank t)) 0 fts)) cs)
 
 // a type's shape, as a derive sees it
 let private shapeOf (cx: Cx) (tname: string) : Derive.ShapeInfo =
@@ -404,10 +436,9 @@ let private shapeOf (cx: Cx) (tname: string) : Derive.ShapeInfo =
         | Some ns -> ns
         | None -> List.map (fun _ -> None) fts
       List.mapi (fun j (n: option<string>) -> Option.defaultValue $"item{j + 1}" n) given
-    let recursive = List.filter (fun (_, fts) -> List.exists (holdsType cx tname) fts) cs
-    Derive.UnionShape(List.map (fun (c, fts) -> (c, names c fts)) cs, Set.ofList (List.map fst recursive))
+    Derive.UnionShape(List.map (fun (c, fts) -> (c, names c fts)) cs, caseRanks cx tname cs)
   // nothing to derive from: deriveImpl refuses a C union first
-  | CUnionDef _ -> Derive.UnionShape([], Set.empty)
+  | CUnionDef _ -> Derive.UnionShape([], Map.empty)
 
 // runs f, a failure in it said to be in the context first
 let private explained (context: string) (f: unit -> 'r / <Fails | 'e>) : 'r / <Fails | 'e> =
@@ -1446,7 +1477,7 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
     // .noinit memory is never written at reset: what's there is the last run's, so it holds a
     // ref's or Buffer's own plain values only (a pointer there would point at nothing), and not a
     // constant, whose image would never be loaded
-    let noinit = section = ".noinit" || String.startsWith ".noinit." section
+    let noinit = Core.Ir.noinitSection section
     let counted (t: Ty) =
       match prune v t with
       | TCon("ref", [ x ])

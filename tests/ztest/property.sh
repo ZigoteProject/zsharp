@@ -3,7 +3,8 @@
 # replays of the test binary to a smallest case that still panics, shown, and saved beside the
 # file; the next run replays it first, and once the bug is fixed the saved case passes and goes.
 # A run that gives up on its discards fails as it is: no one case reproduces it, so nothing is
-# shrunk or saved.
+# shrunk or saved. A shrink keeps the panic it started with: a candidate cut short that recurses
+# on zeros into a stack overflow isn't taken for it.
 set -u
 zs="$(pwd)/${1:-bin/zs}"; t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 write() {
@@ -42,3 +43,24 @@ let tests =
 ZS
 echo "a run that gives up on its discards fails, unshrunk:"; "$zs" test gives.zs; echo "exit $?"
 find .zs-cache/failures -type f 2>/dev/null | wc -l
+cat > deep.zs <<'ZS'
+open Testing
+
+[<Derive(Arbitrary)>]
+type T =
+  | A of result<T, int>
+  | B of list<T> * int
+
+let rec biggest (t: T) : int =
+  match t with
+  | A(Ok x) -> biggest x
+  | A(Error n) -> n
+  | B(xs, n) -> List.fold (fun m x -> max m (biggest x)) n xs
+
+[<Tests>]
+let tests =
+  testList "d" [
+    testPropertyWith { seed = Some (u64 2) } "small numbers" (fun (t: T) -> if biggest t > 5 then panic "a big number")
+  ]
+ZS
+echo "shrunk to the same panic:"; "$zs" test deep.zs | sed -E 's/from [0-9]+ bytes to [0-9]+ in [0-9]+ runs/from N bytes to M in N runs/; s/-[0-9a-f]{8},/-HASH,/'

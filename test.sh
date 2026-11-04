@@ -323,13 +323,21 @@ if command -v gdb >/dev/null && [ $windows = 0 ]; then
 else echo "skip tests/debug/gdb.sh (no gdb)"; fi
 # -g on every kind of value (closures, C pointers, a Buffer, unions that hold themselves through
 # a list, a ref or an array): it builds, runs, and its DWARF verifies, at -O0 and with --release
-if bin/zs build -g tests/debug/kinds.zs -o "$tmp/kinds" 2>"$tmp/kinds.log" && [ "$("$tmp/kinds")" = "[2; 3] 42 7 2 5 1 2" ] \
+if bin/zs build -g tests/debug/kinds.zs -o "$tmp/kinds" 2>"$tmp/kinds.log" && [ "$("$tmp/kinds")" = "[2; 3] 42 7 2 5 1 2 5 4" ] \
    && { ! command -v llvm-dwarfdump >/dev/null || llvm-dwarfdump --verify "$tmp/kinds" >/dev/null 2>&1; } \
-   && bin/zs build -g --release tests/debug/kinds.zs -o "$tmp/kinds2" 2>>"$tmp/kinds.log" && [ "$("$tmp/kinds2")" = "[2; 3] 42 7 2 5 1 2" ]; then echo "ok   tests/debug/kinds.zs (-g on every kind of value)"
+   && bin/zs build -g --release tests/debug/kinds.zs -o "$tmp/kinds2" 2>>"$tmp/kinds.log" && [ "$("$tmp/kinds2")" = "[2; 3] 42 7 2 5 1 2 5 4" ]; then echo "ok   tests/debug/kinds.zs (-g on every kind of value)"
 else echo "FAIL tests/debug/kinds.zs"; cat "$tmp/kinds.log"; fail=1; fi
 # -g alone on a chip is a build for stepping: -O0, the code as written (the call to sq stays)
 if bin/zs build -g tests/mcu/stepping.zs --target cortex-m4 --emit-llvm -o "$tmp/step.elf" 2>"$tmp/step.log" && grep -q 'call i32 @"zs.sq"' "$tmp/step.ll"; then echo "ok   tests/mcu/stepping.zs (-g on a chip steps the code as written)"
 else echo "FAIL tests/mcu/stepping.zs"; cat "$tmp/step.log"; fail=1; fi
+# -g alone on the Cortex-M0+ and wasm32 stays optimized (their -O0 can't lower Z#'s tail calls)
+if command -v qemu-system-arm >/dev/null && command -v node >/dev/null; then
+  if bin/zs build -g tests/mcu/tree.zs --target cortex-m0plus -o "$tmp/tree0.elf" 2>"$tmp/tree0.log" \
+     && [ "$(timeout 60 qemu-system-arm -M microbit -nographic -semihosting-config enable=on,target=native -kernel "$tmp/tree0.elf" 2>&1 | grep -v '^#zs')" = "$(cat tests/mcu/tree.expected)" ] \
+     && bin/zs build -g tests/mcu/bytes.zs --target wasm32 -o "$tmp/bytes0.wasm" 2>>"$tmp/tree0.log" \
+     && [ "$(node bin/run-wasm.mjs "$tmp/bytes0.wasm" 2>&1)" = "$(cat tests/mcu/bytes.expected)" ]; then echo "ok   -g on cortex-m0plus and wasm32 (tests/mcu/tree.zs, bytes.zs)"
+  else echo "FAIL -g on cortex-m0plus and wasm32"; cat "$tmp/tree0.log"; fail=1; fi
+fi
 # heap values under gdb (track D, item 1): a list's cells, an array's elements, a tree's nodes
 # with their case, an option over a string, a ref's value
 if command -v gdb >/dev/null; then
@@ -375,11 +383,11 @@ else echo "FAIL tests/mcu/layout.zs"; cat "$tmp/layout.log"; fail=1; fi
 if command -v qemu-system-arm >/dev/null; then
   for chip in cortex-m4 cortex-m0plus; do
     board=$([ $chip = cortex-m4 ] && echo mps2-an386 || echo microbit)
-    for t in isr systick cpu bits task ints static tree fixed noinit weak arena sections weak_runtime arena_rounds; do
+    for t in isr systick cpu bits task ints static tree fixed noinit weak arena sections weak_runtime arena_rounds arena_big; do
       if bin/zs build tests/mcu/$t.zs --target $chip -o "$tmp/$t.elf" 2>"$tmp/$t.log" \
          && out=$(timeout 60 qemu-system-arm -M $board -nographic -semihosting-config enable=on,target=native -kernel "$tmp/$t.elf" 2>&1) \
          && [ "$(echo "$out" | grep -v '^#zs')" = "$(cat tests/mcu/$t.expected)" ] \
-         && { [ $t != task ] && [ $t != weak ] && [ $t != arena ] && [ $t != weak_runtime ] && [ $t != arena_rounds ] || echo "$out" | grep -q ' live=0 '; }; then
+         && { [ $t != task ] && [ $t != weak ] && [ $t != arena ] && [ $t != weak_runtime ] && [ $t != arena_rounds ] && [ $t != arena_big ] || echo "$out" | grep -q ' live=0 '; }; then
         echo "ok   tests/mcu/$t.zs on $chip (under qemu)"
       else echo "FAIL tests/mcu/$t.zs on $chip"; cat "$tmp/$t.log"; fail=1; fi
     done
@@ -420,6 +428,8 @@ if command -v qemu-system-arm >/dev/null; then
     else echo "FAIL tests/mcu/noheap_placed.zs on $chip"; cat "$tmp/nhp.log"; fail=1; fi
   done
 fi
+if [ "$(tests/mcu/placement_errors.sh 2>&1)" = "$(cat tests/mcu/placement_errors.expected)" ]; then echo "ok   tests/mcu/placement_errors.sh (placement's rules on a chip and in a library)"
+else echo "FAIL tests/mcu/placement_errors.sh"; diff <(tests/mcu/placement_errors.sh 2>&1) tests/mcu/placement_errors.expected; fail=1; fi
 if bin/zs build tests/mcu/sections.zs --target cortex-m4 --emit-llvm -o "$tmp/sec.elf" 2>"$tmp/sec.log" \
    && [ "$(grep -c 'llvm.memcpy.p0.p0.i32(ptr @"zss.counter", ptr @"zss.counter.image"\|llvm.memcpy.p0.p0.i32(ptr @"zss.window.data", ptr @"zss.window.data.image"' "$tmp/sec.ll")" = 2 ]; then
   echo "ok   tests/mcu/sections.zs: storage in an unnamed section copied at startup"
@@ -691,8 +701,19 @@ mkdir -p "$tmp/libstatic"
 printf '#include <stdio.h>\n#include "libstatic.h"\nint main(void) { printf("%%lld\\n", (long long)total(41)); return 0; }\n' > "$tmp/libstatic/main.c"
 if bin/zs build tests/libstatic.zs --lib -o "$tmp/libstatic/libstatic.a" 2>"$tmp/libstatic.log" \
    && clang -I"$tmp/libstatic" "$tmp/libstatic/main.c" "$tmp/libstatic/libstatic.a" -lm -o "$tmp/libstatic/cmain" 2>>"$tmp/libstatic.log" \
-   && [ "$("$tmp/libstatic/cmain")" = 107 ]; then echo "ok   tests/libstatic.zs (a library's static constants, from C)"
+   && [ "$("$tmp/libstatic/cmain")" = 122 ]; then echo "ok   tests/libstatic.zs (a library's static constants, from C)"
 else echo "FAIL tests/libstatic.zs"; cat "$tmp/libstatic.log"; fail=1; fi
+# the same under -g and --coverage, which keep the code as written but fold the initializers; and
+# a startup assert among a library's values, wherever it is, refused
+for flag in -g --coverage; do
+  if bin/zs build tests/libstatic.zs --lib $flag -o "$tmp/libstatic/libstatic.a" 2>"$tmp/libstatic.log" \
+     && clang -I"$tmp/libstatic" "$tmp/libstatic/main.c" "$tmp/libstatic/libstatic.a" -lm -o "$tmp/libstatic/cmain" 2>>"$tmp/libstatic.log" \
+     && [ "$(cd "$tmp/libstatic" && ./cmain)" = 122 ]; then echo "ok   tests/libstatic.zs --lib $flag"
+  else echo "FAIL tests/libstatic.zs --lib $flag"; cat "$tmp/libstatic.log"; fail=1; fi
+done
+printf 'let table = [| 1; 2; 3 |]\nlet check (n: int) = n * 2 = 5\nassert (check (Array.length table))\n\n[<Export>]\nlet get (i: int) : int = table.[i]\n' > "$tmp/libassert.zs"
+if ! bin/zs build "$tmp/libassert.zs" --lib -o "$tmp/libassert.a" 2>"$tmp/libassert.log" && grep -q "top-level assert" "$tmp/libassert.log"; then echo "ok   a library's startup assert after a table is refused"
+else echo "FAIL a library's startup assert after a table"; cat "$tmp/libassert.log"; fail=1; fi
 # C interop: a directory with main.c links the static library built from its lib.zs
 cc=(clang); [ -n "$target" ] && cc=(zig cc -target "$target")
 [ $windows = 1 ] && [ -z "$target" ] && cc=(zig cc -target "$(uname -m | sed 's/arm64/aarch64/')-windows-gnu")
