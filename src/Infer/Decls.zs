@@ -506,12 +506,24 @@ let rec private isConstant (cx: Cx) (e: Expr) : bool =
       match Exprs.resolveName cx f with
       | Some q -> Map.containsKey q cx.ctors.Value && q <> "::"
       | None -> false
+    // a case with fields of a boxed union (a tree's node) is a cell: as a constant it would be
+    // built at each use, so it's a value, a static object in the image (0014 item 3)
+    let boxedCtor =
+      match Exprs.resolveName cx f with
+      | Some q when q <> "::" ->
+        match Map.tryFind q cx.ctors.Value with
+        | Some(u, _) ->
+          match Map.tryFind u cx.types.Value with
+          | Some info -> info.npars = 0 && not (Types.Repr.plainUnion cx.v cx.types.Value (TCon(u, [])))
+          | None -> false
+        | None -> false
+      | _ -> false
     // a Buffer of constants: a constant's uses are its expression, so each use is a new Buffer
     // (Buffer.empty)
     let freshBuffer = Exprs.resolveName cx f = Some "Collections.Buffer.ofArray"
     // whether the build is for Windows: the code generator's constant (Path's separator)
     let perTarget = Exprs.resolveName cx f = Some "Native.isWindows"
-    (isCtorCall || conversion f || freshBuffer || perTarget) && List.forall (isConstant cx) args
+    ((isCtorCall && not boxedCtor) || conversion f || freshBuffer || perTarget) && List.forall (isConstant cx) args
   | _ -> false
 
 /// Whether a constant makes a Buffer, which each use would make anew: one of a single type is a

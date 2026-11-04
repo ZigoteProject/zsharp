@@ -438,12 +438,38 @@ type StaticElem =
   | SFloat of f64
   | SBool of bool
   | SStr of string
+  /// an array literal: the element type, the elements
+  | SArray of Ty * list<StaticElem>
+  /// a list literal (`[ … ]`, `::` chains ending in `[]`): the list's type, the elements
+  | SList of Ty * list<StaticElem>
+  /// a record or tuple: its type, its fields in order
+  | SStruct of Ty * list<StaticElem>
+  /// a union's case (not a list's): the union's type, the tag, the fields
+  | SCtor of Ty * int * list<StaticElem>
 
-/// An expression's constant value, when it has one as written: a literal, its negation, or a
-/// conversion of one to another number type (`u32 0xFF`, `i8 -3`, `f32 1`); None otherwise.
-let rec staticElem (e: CExpr) : option<StaticElem> =
+// staticElem with the let-bound locals that are constants
+let rec private staticIn (env: Map<string, StaticElem>) (e: CExpr) : option<StaticElem> =
+  let staticElem (x: CExpr) = staticIn env x
+  let all (xs: list<CExpr>) : option<list<StaticElem>> =
+    let elems = List.map staticElem xs
+    if List.forall Option.isSome elems then Some(List.map Option.get elems) else None
+  let rec listOf (x: CExpr) (acc: list<StaticElem>) : option<list<StaticElem>> =
+    match x.k with
+    | CLine(_, a) -> listOf a acc
+    | CCtor(_, 1, [ h; t ]) ->
+      match staticElem h with
+      | Some v -> listOf t (v :: acc)
+      | None -> None
+    | CCtor(_, 0, []) -> Some(List.rev acc)
+    | _ -> None
   match e.k with
   | CLine(_, a) -> staticElem a
+  // a record literal binds its fields in order, then builds the tuple of them
+  | CLet(x, a, b) ->
+    match staticElem a with
+    | Some v -> staticIn (Map.add x v env) b
+    | None -> None
+  | CLocal x -> Map.tryFind x env
   | CInt n -> Some(SInt n)
   | CFloat x -> Some(SFloat x)
   | CBool b -> Some(SBool b)
@@ -459,47 +485,25 @@ let rec staticElem (e: CExpr) : option<StaticElem> =
     | (Some(SInt n), TCon(t, [])) when Set.contains t ints -> Some(SInt n)
     | (Some(SFloat x), TCon(t, [])) when Set.contains t floats -> Some(SFloat x)
     | _ -> None
-  | _ -> None
-
-/// A top-level value's initializer that is an array literal of constants: its elements' values,
-/// for a static object in the image (flash on a chip) instead of one built at startup (0014
-/// item 1); None for anything else, the empty literal included (a static already).
-let staticArray (e: CExpr) : option<list<StaticElem>> =
-  let rec plain (x: CExpr) : CExpr =
-    match x.k with
-    | CLine(_, a) -> plain a
-    | _ -> x
-  match (plain e).k with
-  | CPrim("array.lit", xs) when not (List.isEmpty xs) ->
-    let elems = List.map staticElem xs
-    if List.forall Option.isSome elems then Some(List.map Option.get elems) else None
-  | _ -> None
-
-/// A top-level value's initializer that is a list literal of constants: its elements' values, for
-/// static cells in the image (0014 item 1); None for anything else, the empty list included (a
-/// static cell already).
-let staticList (e: CExpr) : option<list<StaticElem>> =
-  let rec plain (x: CExpr) : CExpr =
-    match x.k with
-    | CLine(_, a) -> plain a
-    | _ -> x
-  let rec go (x: CExpr) (acc: list<StaticElem>) : option<list<StaticElem>> =
-    match (plain x).k with
-    | CCtor(_, 1, [ h; t ]) ->
-      match staticElem h with
-      | Some v -> go t (v :: acc)
-      | None -> None
-    | CCtor(_, 0, []) -> Some(List.rev acc)
+  | CPrim("array.lit", xs) ->
+    match e.ty with
+    | TCon("array", [ el ]) -> Option.map (fun es -> SArray(el, es)) (all xs)
     | _ -> None
-  match (plain e).ty with
-  | TCon("list", [ _ ]) ->
-    match go e [] with
-    | Some [] -> None
-    | found -> found
+  | CTuple xs -> Option.map (fun es -> SStruct(e.ty, es)) (all xs)
+  | CCtor(_, tag, args) ->
+    match e.ty with
+    | TCon("list", [ _ ]) -> Option.map (fun es -> SList(e.ty, es)) (listOf e [])
+    | _ -> Option.map (fun es -> SCtor(e.ty, tag, es)) (all args)
   | _ -> None
 
-/// Whether a top-level value's initializer becomes a static object (no startup code).
-let staticInit (e: CExpr) : bool = Option.isSome (staticArray e) || Option.isSome (staticList e)
+/// An expression's constant value, when it has one as written: a literal, its negation, a
+/// conversion of one to another number type (`u32 0xFF`, `i8 -3`, `f32 1`), or an array, list,
+/// record, tuple or union case of those (0014 items 1 and 3); None otherwise.
+let staticElem (e: CExpr) : option<StaticElem> = staticIn Map.empty e
+
+/// Whether a top-level value's initializer is a constant the image holds (a static object, or a
+/// value written into its global), with no startup code (0014 items 1 and 3).
+let staticInit (e: CExpr) : bool = Option.isSome (staticElem e)
 
 /// What a top-level value with `[<Section>]` or `[<Align>]` is made of (0014 item 12): a
 /// constant table (a static object already), `Buffer.create n x` or `ref x` with constant

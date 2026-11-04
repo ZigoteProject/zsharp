@@ -3,11 +3,16 @@
 ## Unreleased
 
 ### Compiler
+- Constants in flash, the rest of item 3 (0014): a top-level record, tuple or plain union of
+  constants is written into its global, a boxed union case (a tree's node) is a static cell, and
+  they nest any way (an array of records, a list of shapes, a record holding a table). A boxed
+  case of constants was a constant built at each use and is a value now, so it's static too.
+  Nothing of these runs at startup (`tests/static.zs`, `tests/mcu/static.zs`).
 - Constants in flash (0014, item 1, for arrays and lists): a top-level array or list literal of
   numbers, bools or strings is a static object in the image (count 0, never unique: a write copies it), the value's
   global pointing at it, with no startup code and no heap; on a chip its bytes are in flash
   (`tests/static.zs`, `tests/mcu/static.zs`: three tables on a Cortex-M4, 64 bytes of heap and
-  three allocations gone, and the image 496 bytes smaller without their startup code). `--no-heap` takes such a value. Records and unions are still built at startup.
+  three allocations gone, and the image 496 bytes smaller without their startup code). `--no-heap` takes such a value.
 - A union with a case holding a list of itself (a tree) builds for the Cortex-M0+: its drop
   function's last call is a plain call there, where Thumb1 can't tail-call another function (a
   loop still, as a list's drop is a call to itself); LLVM refused the image before

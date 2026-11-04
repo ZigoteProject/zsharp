@@ -195,28 +195,120 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
           else
             let v = n &&& ((i64 1 <<< i64 width) - i64 1)
             if v >= (i64 1 <<< i64 (width - 1)) then v - (i64 1 <<< i64 width) else v
+        // the constant's text without its type
         fun (x: StaticElem) ->
           match x with
-          | SInt n -> $"{lt} {fitted n}"
-          | SFloat x -> $"{lt} {floatConst lt x}"
-          | SBool b -> $"{lt} {(if b then "true" else "false")}"
-          | SStr s -> $"ptr {sharedStr s}"
+          | SInt n -> $"{fitted n}"
+          | SFloat x -> floatConst lt x
+          | SBool b -> if b then "true" else "false"
+          | SStr s -> sharedStr s
+          | _ -> panic "a static element"
       let isPlaced = Map.containsKey v placements
-      match (staticArray f.body, staticList f.body, f.ret) with
-      | (Some xs, _, TCon("array", [ el ])) ->
-        let lt = llty g el
-        let one = elemOf el
-        let n = List.length xs
-        let name = $"@\"zss.{v}\""
-        let pad = padBefore v
-        if pad = 0 then
-          topLine g $"{name} = {shared} unnamed_addr constant {{ i_W, i_W, [{n} x {lt}] }} {{ i_W 0, i_W {n}, [{n} x {lt}] [{String.join ", " (List.map one xs)}] }}{placed v}"
-          Some name
-        else
-          topLine g $"{name} = {shared} unnamed_addr constant {{ [{pad} x i8], i_W, i_W, [{n} x {lt}] }} {{ [{pad} x i8] zeroinitializer, i_W 0, i_W {n}, [{n} x {lt}] [{String.join ", " (List.map one xs)}] }}{placed v}"
-          Some $"getelementptr (i8, ptr {name}, i_W {pad})"
+      // a static object's name: the value's for the first, then numbered
+      let made = ref 0
+      let objectName () =
+        let name = if made.Value = 0 then $"@\"zss.{v}\"" else $"@\"zss.{v}.{made.Value}\""
+        made.Value <- made.Value + 1
+        name
+      let fieldTypes (t: Ty) : list<Ty> =
+        match t with
+        | TTuple ts -> ts
+        | TCon(n, args) ->
+          match (Map.find n g.types).def with
+          | RecordDef fs -> List.map (fun (_, ft) -> substGen g args ft) fs
+          | _ -> []
+        | _ -> []
+      // whether the constant can be in the image as the type lays it out: not a [<Bits>] record
+      // (built from its fields' bits) or a C union
+      let rec feasible (t: Ty) (x: StaticElem) : bool =
+        match x with
+        | SArray(el, xs) -> List.forall (feasible el) xs
+        | SList(lt, xs) ->
+          match lt with
+          | TCon("list", [ el ]) -> List.forall (feasible el) xs
+          | _ -> false
+        | SStruct(st, xs) ->
+          Option.isNone (bitsLayoutOf g st) && Option.isNone (cUnion g st) && List.length (fieldTypes st) = List.length xs && List.forall (fun (ft, y) -> feasible ft y) (List.zip (fieldTypes st) xs)
+        | SCtor(ut, tag, xs) ->
+          match ut with
+          | TCon(n, _) when isUnionType g n && Option.isNone (cUnion g ut) ->
+            let fs = snd (List.item tag (snd (union g ut)))
+            List.length fs = List.length xs && List.forall (fun (ft, y) -> feasible ft y) (List.zip fs xs)
+          | _ -> false
+        | _ -> true
+      // the constant of type t, as an initializer's text without its type; the objects it needs
+      // (arrays, list cells, boxed cases) emitted, each with the value's section and alignment
+      let rec constOf (t: Ty) (x: StaticElem) : string =
+        let typed (ft: Ty) (y: StaticElem) = $"{llty g ft} {constOf ft y}"
+        match x with
+        | SArray(el, xs) ->
+          if List.isEmpty xs then
+            "@zs.noelems"
+          else
+            let lt = llty g el
+            let n = List.length xs
+            let name = objectName ()
+            let pad = if name = $"@\"zss.{v}\"" then padBefore v else 0
+            let elems = String.join ", " (List.map (typed el) xs)
+            if pad = 0 then
+              topLine g $"{name} = {shared} unnamed_addr constant {{ i_W, i_W, [{n} x {lt}] }} {{ i_W 0, i_W {n}, [{n} x {lt}] [{elems}] }}{placed v}"
+              name
+            else
+              // the bytes before the header put the data at a multiple of the alignment
+              topLine g $"{name} = {shared} unnamed_addr constant {{ [{pad} x i8], i_W, i_W, [{n} x {lt}] }} {{ [{pad} x i8] zeroinitializer, i_W 0, i_W {n}, [{n} x {lt}] [{elems}] }}{placed v}"
+              $"getelementptr (i8, ptr {name}, i_W {pad})"
+        | SList(lt, xs) ->
+          // a cell per element, each pointing at the next, the last at the static []; the header
+          // as a cons cell's: the count 0, and the tag where the union keeps one
+          let el =
+            match lt with
+            | TCon("list", [ el ]) -> el
+            | _ -> panic "a static list's type"
+          let nil = nullary g lt 0
+          if List.isEmpty xs then
+            nil
+          else
+            let cell = cellTy g lt 1
+            let header = if tagged g lt && not (tagWord g lt) then $"{i64 1 <<< i64 32}" else "0"
+            let tagPart = if tagWord g lt then ", i32 1" else ""
+            let names = List.map (fun _ -> objectName ()) xs
+            let n = List.length xs
+            List.iteri (fun (i: int) (y: StaticElem) ->
+              let next = if i + 1 < n then List.item (i + 1) names else nil
+              topLine g $"{List.item i names} = {shared} unnamed_addr constant {cell} {{ i_W {header}{tagPart}, {typed el y}, ptr {next} }}{placed v}") xs
+            List.head names
+        | SStruct(st, xs) -> "{ " + String.join ", " (List.map2 typed (fieldTypes st) xs) + " }"
+        | SCtor(ut, tag, xs) ->
+          let cases = snd (union g ut)
+          let fs = snd (List.item tag cases)
+          if Types.Repr.plainUnion g.v g.types ut then
+            // the tag (none for one case), this case's fields, the other cases' zero
+            match (oneCase g ut, xs) with
+            | (Some [ _ ], [ y ]) -> constOf (List.head fs) y
+            | (one, _) ->
+              let tagPart = if Option.isSome one then [] else [ $"{tagTy cases} {tag}" ]
+              let ofCase (ci: int) (c: string * list<Ty>) =
+                if ci = tag then List.map2 typed (snd c) xs else List.map (fun ft -> $"{llty g ft} zeroinitializer") (snd c)
+              "{ " + String.join ", " (List.append tagPart (List.concat (List.mapi ofCase cases))) + " }"
+          else if isNiche g ut then
+            // the payload itself, or the static None
+            match xs with
+            | [ y ] -> constOf (List.head fs) y
+            | _ -> "@zs.none"
+          else if List.isEmpty xs then
+            nullary g ut tag
+          else
+            // a boxed case: a static cell, the tag in its header where the union keeps one
+            let cell = cellTy g ut tag
+            let header = if tagged g ut && not (tagWord g ut) then $"{i64 tag <<< i64 32}" else "0"
+            let tagPart = if tagWord g ut then $", i32 {tag}" else ""
+            let name = objectName ()
+            topLine g $"{name} = {shared} unnamed_addr constant {cell} {{ i_W {header}{tagPart}, {String.join ", " (List.map2 typed fs xs)} }}{placed v}"
+            name
+        | _ -> elemOf t x
+      match f.ret with
       // a Buffer is a ref to its storage cell from monomorphization on
-      | (_, _, TCon("ref", [ TCon("$buffer", [ el ]) ])) when isPlaced ->
+      | TCon("ref", [ TCon("$buffer", [ el ]) ]) when isPlaced ->
         // a Buffer over static storage: its elements in the section, aligned (plain bytes, so a
         // .noinit one has no header to lose), its owner an empty static array it never windows
         // from the start of (so growing copies into the heap and leaves the storage), and its
@@ -227,37 +319,27 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
           let data = $"@\"zss.{v}.data\""
           let owner = $"@\"zss.{v}.owner\""
           let name = $"@\"zss.{v}\""
-          let elems = if n = 0 then "zeroinitializer" else $"[{String.join ", " (List.replicate n (elemOf el x))}]"
+          let elems = if n = 0 then "zeroinitializer" else $"[{String.join ", " (List.replicate n $"{lt} {elemOf el x}")}]"
           topLine g $"{data} = {shared} global [{n} x {lt}] {elems}{placed v}"
           topLine g $"{owner} = {shared} global {{ i_W, i_W, [0 x {lt}] }} {{ i_W 0, i_W 0, [0 x {lt}] zeroinitializer }}"
           topLine g $"{name} = {shared} global {{ i_W, {{ ptr, ptr, i_W, i_W }} }} {{ i_W 0, {{ ptr, ptr, i_W, i_W }} {{ ptr {owner}, ptr {data}, i_W {n}, i_W {n} }} }}"
           Some name
         | _ -> None
-      | (_, _, TCon("ref", [ t ])) when isPlaced ->
+      | TCon("ref", [ t ]) when isPlaced ->
         // a ref cell with the constant in it; in .noinit its header is written at startup (the
         // count 0 of a static), the value left as the memory holds it
         match placedInit f.body with
         | Some(PlacedRef x) ->
           let name = $"@\"zss.{v}\""
-          topLine g $"{name} = {shared} global {{ i_W, {llty g t} }} {{ i_W 0, {elemOf t x} }}{placed v}"
+          topLine g $"{name} = {shared} global {{ i_W, {llty g t} }} {{ i_W 0, {llty g t} {elemOf t x} }}{placed v}"
           Some name
         | _ -> None
-      | (_, Some xs, TCon("list", [ el ])) ->
-        // a cell per element, each pointing at the next, the last at the static []; the header
-        // as a cons cell's: the count 0, and the tag where the union keeps one
-        let t = f.ret
-        let one = elemOf el
-        let cell = cellTy g t 1
-        let header = if tagged g t && not (tagWord g t) then $"{i64 1 <<< i64 32}" else "0"
-        let tagPart = if tagWord g t then ", i32 1" else ""
-        let n = List.length xs
-        let names = List.init n (fun i -> $"@\"zss.{v}.{i}\"")
-        let nil = nullary g t 0
-        List.iteri (fun (i: int) (x: StaticElem) ->
-          let next = if i + 1 < n then List.item (i + 1) names else nil
-          topLine g $"{List.item i names} = {shared} unnamed_addr constant {cell} {{ i_W {header}{tagPart}, {one x}, ptr {next} }}{placed v}") xs
-        Some(List.head names)
-      | _ -> None
+      | t ->
+        // a constant: tables, lists and boxed cases as static objects, a record, tuple or plain
+        // union written into the value's global, a number or string the same (0014 items 1, 3)
+        match staticElem f.body with
+        | Some x when feasible t x -> Some(constOf t x)
+        | _ -> None
     | _ -> None
   let statics = Map.ofList (List.choose (fun (v, init) -> if Map.containsKey v valueTypes then Option.map (fun s -> (v, s)) (staticOf v init) else None) values)
   for (v, _) in values do
