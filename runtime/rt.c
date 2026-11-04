@@ -319,6 +319,7 @@ typedef struct {
 static zs_symbol *symbols;
 static size_t symbol_count;
 static uintptr_t symbol_base; // where the executable is loaded, for a position-independent one
+static bool symbol_base_found;
 
 static int symbol_order(const void *a, const void *b) {
     uintptr_t x = ((const zs_symbol *)a)->addr, y = ((const zs_symbol *)b)->addr;
@@ -352,17 +353,23 @@ static bool load_symbols(void) {
             if (ELF64_ST_TYPE(syms[k].st_info) != STT_FUNC || syms[k].st_value == 0) continue;
             const char *name = strings + syms[k].st_name;
             symbols[symbol_count++] = (zs_symbol){(uintptr_t)syms[k].st_value, name};
-            if (strcmp(name, "zs_panic_c") == 0) symbol_base = (uintptr_t)(void *)zs_panic_c - (uintptr_t)syms[k].st_value;
+            if (strcmp(name, "zs_panic_c") == 0) {
+                symbol_base = (uintptr_t)(void *)zs_panic_c - (uintptr_t)syms[k].st_value;
+                symbol_base_found = true;
+            }
         }
         qsort(symbols, symbol_count, sizeof *symbols, symbol_order);
-        return symbol_count > 0; // the image stays: its strings are the names
+        // the image stays: its strings are the names. The table names this code only if it has
+        // zs_panic_c (in a library built into another program, the executable is the host's)
+        return symbol_count > 0 && symbol_base_found;
     }
     return false;
 }
 
 // the function a return address is in: the last symbol at or below it
 static const char *symbol_at(void *frame) {
-    uintptr_t a = (uintptr_t)frame - symbol_base;
+    // the call before the return address: a call that ends a function returns past its end
+    uintptr_t a = (uintptr_t)frame - 1 - symbol_base;
     size_t lo = 0, hi = symbol_count;
     while (lo < hi) {
         size_t mid = (lo + hi) / 2;
@@ -436,7 +443,22 @@ void zs_coverage_register(const zs_cov_line *table, int64_t *counts, int64_t n) 
     cov_modules[cov_count++] = (cov_module){table, counts, n};
 }
 
+// one panic at a time: a second thread's panic waits for the first's stop (which ends the
+// process), and a panic inside the panic (its hook, a dump, the backtrace) stops at once
+static atomic_flag panicking = ATOMIC_FLAG_INIT;
+static _Thread_local bool in_panic;
+
 _Noreturn void zs_panic_c(const char *msg) {
+    if (in_panic) stop();
+    in_panic = true;
+    if (atomic_flag_test_and_set(&panicking))
+        for (;;) {
+#ifdef _WIN32
+            Sleep(1000);
+#else
+            pause();
+#endif
+        }
     coverage_dump();
     fflush(stdout);
     fprintf(stderr, "panic: %s\n", msg);
@@ -890,11 +912,13 @@ void *zs_weak_target(zs_weak *w) {
 }
 
 // the cell's last reference has gone
+void zs_free_checked(void *p);
+
 void zs_weak_free(zs_weak *w) {
     HEAP_LOCK();
     if (w->target && !((uintptr_t)w->target & 1)) tab_remove(&weaks, w->target);
     HEAP_UNLOCK();
-    zs_free(w);
+    zs_free_checked(w);
 }
 
 // ---- arenas (Arena.with): what a function allocates comes from large blocks, bumped through. An
@@ -1770,8 +1794,10 @@ zs_str *zs_env_get(zs_str *name) {
     return zs_str_from_c(v ? v : "");
 }
 
-// like a panic, no cleanup (and so no leak report): the process ends here
+// like a panic, no cleanup (and so no leak report): the process ends here, the coverage counts
+// written first (_exit skips atexit's)
 _Noreturn void zs_exit(zs_int code) {
+    coverage_dump();
     fflush(NULL);
     _exit((int)code);
 }
@@ -3988,7 +4014,7 @@ void zs_chan_free(zs_chan *c) {
     pthread_cond_destroy(&c->not_full);
     pthread_cond_destroy(&c->taken);
     free(c->slots);
-    zs_free(c);
+    zs_free_checked(c);
 }
 
 // ---- Spsc (0012): a ring between one producer and one consumer, an interrupt handler and the
@@ -4037,7 +4063,7 @@ bool zs_spsc_pop(zs_spsc *q, void *out) {
 void zs_spsc_free(zs_spsc *q) {
     if (q->drop)
         for (zs_int i = q->head; i != q->tail; i = (i + 1) % q->cap) q->drop(q->slots + i * q->size);
-    zs_free(q);
+    zs_free_checked(q);
 }
 
 // ---- CPU features ([<Multiversion>]): whether the CPU has each of the features, named as LLVM

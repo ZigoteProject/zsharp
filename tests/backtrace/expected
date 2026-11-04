@@ -12,3 +12,5 @@ a release build, the same names:
 panic: boom
   at depth
 exit 134
+panics on four threads at once, ten runs: one report each, nothing corrupted
+10 1 0

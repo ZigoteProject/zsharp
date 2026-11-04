@@ -184,6 +184,17 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
   let padBefore (v: string) : int =
     let (_, al) = placement v
     if al > 2 * pointerBytes g then al - 2 * pointerBytes g else 0
+  // on a bare-metal chip, a placed ref's or Buffer's storage in a section the reset handler
+  // doesn't load (one the board's script doesn't name: a DMA region, a second SRAM) is copied
+  // from a flash image at startup: (destination, LLVM type, its image's name)
+  let bareMetal = String.contains "-none" opts.target
+  let startupCopies = ref Map.empty
+  let copiedAtStartup (v: string) =
+    let (sec, _) = placement v
+    bareMetal && sec <> "" && sec <> ".data" && not (String.startsWith ".data." sec) && sec <> ".noinit" && not (String.startsWith ".noinit." sec)
+  let unplaceable (v: string) =
+    if Option.isNone g.failure.Value then
+      g.failure.Value <- Some(0, $"[<Section>] or [<Align>] value '{v}': its element can't be laid out in the image (a [<Bits>] record or a C union); build it in main instead")
   let staticOf (v: string) (init: string) : option<string> =
     match Map.tryFind init fnTable with
     | Some f when List.isEmpty f.pars ->
@@ -206,6 +217,10 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
           | SStr s -> sharedStr s
           | _ -> panic "a static element"
       let isPlaced = Map.containsKey v placements
+      // the objects a placed ref's or Buffer's element needs are constants anywhere (in flash on a
+      // chip), not in its section, which may be one a reset doesn't load
+      let nestedPlaced = ref true
+      let nestedPlace () = if nestedPlaced.Value then placed v else ""
       // a static object's name: the value's for the first, then numbered
       let made = ref 0
       let objectName () =
@@ -253,11 +268,11 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
             let pad = if name = $"@\"zss.{v}\"" then padBefore v else 0
             let elems = String.join ", " (List.map (typed el) xs)
             if pad = 0 then
-              topLine g $"{name} = {shared} unnamed_addr constant {{ i_W, i_W, [{n} x {lt}] }} {{ i_W 0, i_W {n}, [{n} x {lt}] [{elems}] }}{placed v}"
+              topLine g $"{name} = {shared} unnamed_addr constant {{ i_W, i_W, [{n} x {lt}] }} {{ i_W 0, i_W {n}, [{n} x {lt}] [{elems}] }}{nestedPlace ()}"
               name
             else
               // the bytes before the header put the data at a multiple of the alignment
-              topLine g $"{name} = {shared} unnamed_addr constant {{ [{pad} x i8], i_W, i_W, [{n} x {lt}] }} {{ [{pad} x i8] zeroinitializer, i_W 0, i_W {n}, [{n} x {lt}] [{elems}] }}{placed v}"
+              topLine g $"{name} = {shared} unnamed_addr constant {{ [{pad} x i8], i_W, i_W, [{n} x {lt}] }} {{ [{pad} x i8] zeroinitializer, i_W 0, i_W {n}, [{n} x {lt}] [{elems}] }}{nestedPlace ()}"
               $"getelementptr (i8, ptr {name}, i_W {pad})"
         | SList(lt, xs) ->
           // a cell per element, each pointing at the next, the last at the static []; the header
@@ -277,7 +292,7 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
             let n = List.length xs
             List.iteri (fun (i: int) (y: StaticElem) ->
               let next = if i + 1 < n then List.item (i + 1) names else nil
-              topLine g $"{List.item i names} = {shared} unnamed_addr constant {cell} {{ i_W {header}{tagPart}, {typed el y}, ptr {next} }}{placed v}") xs
+              topLine g $"{List.item i names} = {shared} unnamed_addr constant {cell} {{ i_W {header}{tagPart}, {typed el y}, ptr {next} }}{nestedPlace ()}") xs
             List.head names
         | SStruct(st, xs) -> "{ " + String.join ", " (List.map2 typed (fieldTypes st) xs) + " }"
         | SCtor(ut, tag, xs) ->
@@ -305,7 +320,7 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
             let header = if tagged g ut && not (tagWord g ut) then $"{i64 tag <<< i64 32}" else "0"
             let tagPart = if tagWord g ut then $", i32 {tag}" else ""
             let name = objectName ()
-            topLine g $"{name} = {shared} unnamed_addr constant {cell} {{ i_W {header}{tagPart}, {String.join ", " (List.map2 typed fs xs)} }}{placed v}"
+            topLine g $"{name} = {shared} unnamed_addr constant {cell} {{ i_W {header}{tagPart}, {String.join ", " (List.map2 typed fs xs)} }}{nestedPlace ()}"
             name
         | _ -> elemOf t x
       match f.ret with
@@ -316,25 +331,48 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
         // from the start of (so growing copies into the heap and leaves the storage), and its
         // cell static too
         match placedInit f.body with
-        | Some(PlacedBuffer(n, x)) ->
+        | Some(PlacedBuffer(n, x)) when feasible el x ->
           let lt = llty g el
           let data = $"@\"zss.{v}.data\""
           let owner = $"@\"zss.{v}.owner\""
           let name = $"@\"zss.{v}\""
-          let elems = if n = 0 then "zeroinitializer" else $"[{String.join ", " (List.replicate n $"{lt} {elemOf el x}")}]"
+          // the element once (its objects, if any, named after the cell's: zss.v.1, …)
+          made.Value <- 1
+          nestedPlaced.Value <- false
+          let et = constOf el x
+          nestedPlaced.Value <- true
+          let elems = if n = 0 then "zeroinitializer" else $"[{String.join ", " (List.replicate n $"{lt} {et}")}]"
           topLine g $"{data} = {shared} global [{n} x {lt}] {elems}{placed v}"
+          if copiedAtStartup v then
+            let image = $"@\"zss.{v}.data.image\""
+            topLine g $"{image} = {shared} unnamed_addr constant [{n} x {lt}] {elems}"
+            startupCopies.Value <- Map.add v (data, $"[{n} x {lt}]", image) startupCopies.Value
           topLine g $"{owner} = {shared} global {{ i_W, i_W, [0 x {lt}] }} {{ i_W 0, i_W 0, [0 x {lt}] zeroinitializer }}"
           topLine g $"{name} = {shared} global {{ i_W, {{ ptr, ptr, i_W, i_W }} }} {{ i_W 0, {{ ptr, ptr, i_W, i_W }} {{ ptr {owner}, ptr {data}, i_W {n}, i_W {n} }} }}"
           Some name
+        | Some(PlacedBuffer _) ->
+          unplaceable v
+          None
         | _ -> None
       | TCon("ref", [ t ]) when isPlaced ->
         // a ref cell with the constant in it; in .noinit its header is written at startup (the
         // count 0 of a static), the value left as the memory holds it
         match placedInit f.body with
-        | Some(PlacedRef x) ->
+        | Some(PlacedRef x) when feasible t x ->
           let name = $"@\"zss.{v}\""
-          topLine g $"{name} = {shared} global {{ i_W, {llty g t} }} {{ i_W 0, {llty g t} {elemOf t x} }}{placed v}"
+          made.Value <- 1
+          nestedPlaced.Value <- false
+          let init = $"{{ i_W 0, {llty g t} {constOf t x} }}"
+          nestedPlaced.Value <- true
+          topLine g $"{name} = {shared} global {{ i_W, {llty g t} }} {init}{placed v}"
+          if copiedAtStartup v then
+            let image = $"@\"zss.{v}.image\""
+            topLine g $"{image} = {shared} unnamed_addr constant {{ i_W, {llty g t} }} {init}"
+            startupCopies.Value <- Map.add v (name, $"{{ i_W, {llty g t} }}", image) startupCopies.Value
           Some name
+        | Some(PlacedRef _) ->
+          unplaceable v
+          None
         | _ -> None
       | t ->
         // a constant: tables, lists and boxed cases as static objects, a record, tuple or plain
@@ -344,6 +382,12 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
         | _ -> None
     | _ -> None
   let statics = Map.ofList (List.choose (fun (v, init) -> if Map.containsKey v valueTypes then Option.map (fun s -> (v, s)) (staticOf v init) else None) values)
+  // a library has no main to run the others' initializers
+  if opts.library then
+    match List.tryFind (fun (v, _) -> Map.containsKey v valueTypes && not (Map.containsKey v statics) && not (String.contains "$assert" v)) values with
+    | Some(v, _) when Option.isNone g.failure.Value ->
+      g.failure.Value <- Some(0, $"top-level value '{v}' is computed at startup, which a library doesn't have; make it a constant (a literal table, record or union of constants is one) or a function")
+    | _ -> ()
   for (v, _) in values do
     match Map.tryFind v valueTypes with
     | Some t ->
@@ -368,11 +412,16 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
     let one (i: int) (vi: string * string) =
       let (v, init) = vi
       if Map.containsKey v statics then
-        // a .noinit ref's header: the memory is whatever it was, the count must be a static's
-        match (fst (placement v), Map.find v valueTypes) with
-        | (".noinit", TCon("ref", [ TCon("$buffer", _) ])) -> ""
-        | (".noinit", TCon("ref", [ _ ])) -> $"  store i_W 0, ptr @\"zss.{v}\"\n"
-        | _ -> ""
+        let (sec, _) = placement v
+        match Map.tryFind v startupCopies.Value with
+        // a section the reset doesn't load: the storage copied from its flash image
+        | Some(dst, ty, image) -> $"  call void @llvm.memcpy.p0.p0.i_W(ptr {dst}, ptr {image}, i_W ptrtoint (ptr getelementptr ({ty}, ptr null, i32 1) to i_W), i1 false)\n"
+        | None ->
+          // a .noinit ref's header: the memory is whatever it was, the count must be a static's
+          match Map.find v valueTypes with
+          | TCon("ref", [ TCon("$buffer", _) ]) -> ""
+          | TCon("ref", [ _ ]) when sec = ".noinit" || String.startsWith ".noinit." sec -> $"  store i_W 0, ptr @\"zss.{v}\"\n"
+          | _ -> ""
       else
         let vt = Map.find v valueTypes
         let t = llty g vt
@@ -393,10 +442,42 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
       match t with
       | TCon("ref", [ b ]) when isBuf t && Map.containsKey v statics ->
         // a placed Buffer: its cell is static, but a push past its room moved its contents to
-        // the heap, and those go as a Buffer's do (its owner released)
+        // the heap, and those go as a Buffer's do (its owner released); while it still windows
+        // its static storage, the elements written there are dropped one by one
+        let el =
+          match b with
+          | TCon("$buffer", [ el ]) -> el
+          | _ -> b
         let cell = instr em $"load ptr, ptr {valueSym v}"
         let sp = instr em $"getelementptr {{ i_W, {llty g b} }}, ptr {cell}, i32 0, i32 1"
+        if heap g el then
+          let fields = instr em $"getelementptr {{ i_W, {{ ptr, ptr, i_W, i_W }} }}, ptr {cell}, i32 0, i32 1"
+          let dataP = instr em $"getelementptr {{ ptr, ptr, i_W, i_W }}, ptr {fields}, i32 0, i32 1"
+          let lenP = instr em $"getelementptr {{ ptr, ptr, i_W, i_W }}, ptr {fields}, i32 0, i32 2"
+          let data = instr em $"load ptr, ptr {dataP}"
+          let len = instr em $"load i_W, ptr {lenP}"
+          let own = instr em $"icmp eq ptr {data}, @\"zss.{v}.data\""
+          let l = fresh em "pdrop"
+          let slot = "%" + fresh em "pi"
+          alloca em $"{slot} = alloca i_W"
+          emit em $"store i_W 0, ptr {slot}"
+          emit em $"br i1 {own}, label %{l}.cond, label %{l}.end"
+          enter em (l + ".cond")
+          let i = instr em $"load i_W, ptr {slot}"
+          let more = instr em $"icmp slt i_W {i}, {len}"
+          emit em $"br i1 {more}, label %{l}.body, label %{l}.end"
+          enter em (l + ".body")
+          let ep = instr em $"getelementptr {llty g el}, ptr {data}, i_W {i}"
+          dropValue g em el (instr em $"load {llty g el}, ptr {ep}")
+          emit em $"store i_W {instr em $"add i_W {i}, 1"}, ptr {slot}"
+          emit em $"br label %{l}.cond"
+          enter em (l + ".end")
         dropValue g em b (instr em $"load {llty g b}, ptr {sp}")
+      // a placed ref: its cell is static, what it holds now is dropped
+      | TCon("ref", [ x ]) when Map.containsKey v statics && heap g x ->
+        let cell = instr em $"load ptr, ptr {valueSym v}"
+        let vp = instr em $"getelementptr {{ i_W, {llty g x} }}, ptr {cell}, i32 0, i32 1"
+        dropValue g em x (instr em $"load {llty g x}, ptr {vp}")
       | _ ->
         if heap g t then
           dropValue g em t (instr em $"load {llty g t}, ptr {valueSym v}")

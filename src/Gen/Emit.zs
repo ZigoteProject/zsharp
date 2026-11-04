@@ -168,6 +168,8 @@ type Options =
     /// the program has weak references or arenas: its objects go through the runtime's checked
     /// allocation, and a cell Perceus reuses is reported
     checkedHeap: bool
+    /// --lib: no main runs the values' initializers, so every top-level value must be static
+    library: bool
     /// [<Target>] and [<Multiversion>] functions (Program.targets)
     targets: Map<string, list<string>>
     /// --cpu's name, for the check that an intrinsic's features are there

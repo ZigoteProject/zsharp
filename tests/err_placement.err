@@ -1,4 +1,7 @@
-tests/err_placement.zs:3: error: [<Section>] applies to top-level values; 'tick' is a function
-tests/err_placement.zs:6: error: [<Align>] takes a power of two from 8 to 4096; 24 isn't one
-tests/err_placement.zs:9: error: [<Section>] needs a constant table, 'Buffer.create n x' or 'ref x' with constant arguments; 'squares' is computed at startup. Write the table as a literal, or fill a Buffer in main
-3 errors
+tests/err_placement.zs:4: error: [<Section>] applies to top-level values; 'tick' is a function
+tests/err_placement.zs:7: error: [<Align>] takes a power of two from 8 to 4096; 24 isn't one
+tests/err_placement.zs:10: error: [<Section>] needs a constant table, 'Buffer.create n x' or 'ref x' with constant arguments; 'squares' is computed at startup. Write the table as a literal, or fill a Buffer in main
+tests/err_placement.zs:13: error: [<Section ".noinit">] holds what a reset leaves in memory, so a constant there would never be loaded: drop the attribute from 'lost', or make it a ref or a Buffer.create
+tests/err_placement.zs:16: error: [<Section ".noinit">] keeps what the last run left, so 'name' can hold only numbers, bools, chars and records or unions of those: a string, array, list or other object there would be a pointer into memory that's gone
+tests/err_placement.zs:19: error: [<Section>]'s name is letters, digits, '.', '_' and '$': "bad name" isn't one
+6 errors

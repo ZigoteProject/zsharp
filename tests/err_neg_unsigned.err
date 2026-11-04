@@ -1,0 +1,1 @@
+tests/err_neg_unsigned.zs:3:3: error: value of 'x': expected u8, got int: numbers don't convert on their own; write u8 x

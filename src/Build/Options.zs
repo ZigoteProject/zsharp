@@ -256,6 +256,10 @@ let optLevel (o: Options) : string =
 /// all, and exports them (-rdynamic) so a panic's backtrace names the runtime's frames.
 let dropsUnused (o: Options) : bool = optLevel o <> "-O0" && not o.debugInfo
 
+/// -g with no optimization asked for (no level, no --release): a build for stepping, at -O0
+/// with the code as written, on every target (a chip's -O2 default included).
+let stepping (o: Options) : bool = o.debugInfo && Option.isNone o.opt && not o.release
+
 /// Compile flags for that: each function and datum in a section of its own.
 let sectionFlags (o: Options) : list<string> = if dropsUnused o then [ "-ffunction-sections"; "-fdata-sections" ] else []
 

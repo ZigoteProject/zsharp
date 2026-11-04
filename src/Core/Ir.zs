@@ -477,13 +477,43 @@ let rec private staticIn (env: Map<string, StaticElem>) (e: CExpr) : option<Stat
   | CNeg a ->
     match staticElem a with
     | Some(SInt n) when n > i64 (-9223372036854775807) -> Some(SInt(i64 0 - n))
-    | Some(SFloat x) -> Some(SFloat(0.0 - x))
+    // the sign flipped: -0.0 stays -0.0
+    | Some(SFloat x) -> Some(SFloat(-x))
     | _ -> None
   | CPrim("conv", [ a ]) ->
+    // as the code converts: an integer narrowed wraps to the type's width, so a conversion
+    // nested in another sees the wrapped value; an int or usize (the word, 32 bits on a chip)
+    // that may not fit is left to the code
+    let wrapTo (t: string) (n: i64) : option<i64> =
+      let low (bits: int) = n &&& ((i64 1 <<< i64 bits) - i64 1)
+      let signed (bits: int) =
+        let v = low bits
+        if v >= (i64 1 <<< i64 (bits - 1)) then v - (i64 1 <<< i64 bits) else v
+      match t with
+      | "i8" -> Some(signed 8)
+      | "i16" -> Some(signed 16)
+      | "i32" -> Some(signed 32)
+      | "u8" -> Some(low 8)
+      | "u16" -> Some(low 16)
+      | "u32" -> Some(low 32)
+      | "i64"
+      | "u64" -> Some n
+      | "int" -> if n >= i64 -2147483648 && n <= i64 2147483647 then Some n else None
+      | "usize" -> if n >= i64 0 && n <= i64 4294967295 then Some n else None
+      | _ -> None
+    // a u64 at or above 2^63 is stored negative: as a float it's that plus 2^64
+    let unsignedSource =
+      match a.ty with
+      | TCon("u64", [])
+      | TCon("usize", []) -> true
+      | _ -> false
     match (staticElem a, e.ty) with
-    | (Some(SInt n), TCon(t, [])) when Set.contains t floats -> Some(SFloat(float n))
-    | (Some(SInt n), TCon(t, [])) when Set.contains t ints -> Some(SInt n)
-    | (Some(SFloat x), TCon(t, [])) when Set.contains t floats -> Some(SFloat x)
+    | (Some(SInt n), TCon(t, [])) when Set.contains t floats ->
+      if n < i64 0 && unsignedSource then None
+      // rounded once, from the integer
+      else Some(SFloat(if t = "f32" then f64 (f32 n) else float n))
+    | (Some(SInt n), TCon(t, [])) when Set.contains t ints -> Option.map SInt (wrapTo t n)
+    | (Some(SFloat x), TCon(t, [])) when Set.contains t floats -> Some(SFloat(if t = "f32" then f64 (f32 x) else x))
     | _ -> None
   | CPrim("array.lit", xs) ->
     match e.ty with

@@ -7,8 +7,11 @@
   `Math.round` and `sqrt` on literals are computed at compile time, as the code would compute
   them, and a `let` of a float literal puts the literal in its uses; an integer result that wouldn't
   fit its type stays as written, to overflow at run time (`int` taken as 32 bits, a chip's).
-  So `Q15.ofFloat 0.5` is a constant once inlined, and a table of them a static object
-  (`tests/fold.zs`, `tests/static.zs`).
+  Integers fold only when they're values of their types (a `u64` at or above 2^63 isn't folded
+  with signed arithmetic), `f32` is rounded to single precision at every step, the sign of zero
+  is kept (`-0.0`, `Math.round -0.3`), a NaN result isn't folded, and a conversion nested in
+  another wraps as the code does. So `Q15.ofFloat 0.5` is a constant once inlined, and a table
+  of them a static object (`tests/fold.zs`, `tests/fold_edges.zs`, `tests/static.zs`).
 - Constants in flash, the rest of item 3 (0014): a top-level record, tuple or plain union of
   constants is written into its global, a boxed union case (a tree's node) is a static cell, and
   they nest any way (an array of records, a list of shapes, a record holding a table). A boxed
@@ -62,7 +65,17 @@
   an eighth of the heap each (4 KB at most), bumped through, and go back at once when the
   arena's last object has died; an object's arena is found by its address among the blocks. The
   table and the blocks are heap memory, not objects, so the exit report's `live` stays the
-  program's (`tests/mcu/weak.zs`, `tests/mcu/arena.zs`, both chips).
+  program's. Released blocks are kept for arenas (on the heap's list of large blocks any object
+  over 256 bytes would take a whole one), and a block is a multiple of 8, so a heap size that
+  isn't a multiple of 64 keeps the heap aligned (`tests/mcu/weak.zs`, `tests/mcu/arena.zs`,
+  `tests/mcu/arena_rounds.zs`, `tests/mcu/odd_heap.sh`, both chips).
+- A weak reference to an object the runtime frees itself (a weak cell, an `Spsc`, a `Channel`)
+  sees it die: those frees go through the checked path, so a later object at the same address
+  isn't mistaken for it (`tests/weak_runtime.zs`, on both chips too).
+- Panics on several threads at once give one report: the others wait for its stop, and a panic
+  inside a panic stops at once. `Environment.exit` writes the coverage counts first, as a panic
+  does. A panic's backtrace names the function of each call (not the one after it), and in a
+  library built into a C program it falls back to the C library's symbolizer.
 - A stack overflow is a panic: `panic: stack overflow (recursion too deep)`, exit status 134, what
   was printed before it flushed, on whichever thread overflows (the pool's, a task's loop's;
   two at once say so once). It was a SIGSEGV with nothing said. On Linux and macOS, in programs
@@ -134,8 +147,9 @@
 - `zs build -g --release` (and `-g` with any `-O` level; 0011, debugging 5): the optimizer runs
   and the DWARF lines stay, so gdb and lldb break on a line of an optimized build and show its
   backtrace with Z# files and lines; a value the optimizer keeps is shown, an inlined call's
-  lines are its caller's frame's. `-g` alone is still `-O0` with the code as written, for
-  stepping (`tests/debug/opt.sh`).
+  lines are its caller's frame's. `-g` alone is `-O0` with the code as written, for stepping,
+  on every target (a chip's `-O2` default included) (`tests/debug/opt.sh`,
+  `tests/mcu/stepping.zs`).
 - `zs test --coverage` (track D, item 10): the test binary is built with a counter per line of
   the file's directory's sources (`--coverage` on any build: the program writes the counts to
   `<program>.zscov` at exit, a panic's included), and the command reports the lines run and
@@ -155,7 +169,9 @@
   cell's count, head and tail, an array's count, length and elements, a node's case (where the
   cells carry one) and each case's fields over the cell, a ref's value; an option over a string
   is the string's pointer, a closure or one of the runtime's cells an address, and a `fixed` an
-  array. Nothing is left out of `info locals` for its type now (`tests/debug/gdb_heap.sh`).
+  array. Nothing is left out of `info locals` for its type now, and a type that holds itself
+  through a list, a ref or an array is described once (`tests/debug/gdb_heap.sh`,
+  `tests/debug/kinds.zs`, whose DWARF `llvm-dwarfdump --verify` checks).
 - `zs test file.zs --target cortex-m4` (track D, item 11): the file's `[<Tests>]` built into one
   image and run under the chip's QEMU board (or a real board through probe-rs, as `zs run` does),
   every test in one process in order: Core's `Testing.runAll` prints `ok path` as each passes and
@@ -190,19 +206,33 @@
   the chip's reset handler (`cortex-m.ld`), so a boot counter or a crash log survives a reset; a
   push past a placed Buffer's room moves it to the heap and leaves the storage. On a function,
   a computed value or an alignment that isn't a power of two from 8 to 4096, an error says what
-  the attribute takes (`tests/placement.zs`, `tests/err_placement.zs`; on both chips, a boot
-  counter across SYSRESETREQ resets under QEMU, `tests/mcu/noinit.zs`). `[<Align>]` on a type
-  is left. Writing a Buffer's element passes `[<NoAlloc>]` and `--no-heap` now (it was taken
-  for an array's copy-on-write), so a placed Buffer is usable in a program with no heap.
+  the attribute takes. `.noinit` takes a ref or Buffer of plain values only (a string or array
+  there would point into memory a reset left), and not a constant (never loaded); a section's
+  name is letters, digits, '.', '_' and '$'. The element may be any constant (a fixed-point
+  number, a tuple, an option, a table), its own objects constants outside the section. On a
+  chip, a ref or Buffer in a section the board's script doesn't name (a DMA region) is copied
+  from flash at startup. A program with placed values builds as one module, so they're placed
+  wherever they're declared (`tests/placement.zs`, `tests/err_placement.zs`; on both chips, a
+  boot counter across SYSRESETREQ resets under QEMU, `tests/mcu/noinit.zs`,
+  `tests/mcu/sections.zs`, and with `--no-heap`, `tests/mcu/noheap_placed.zs`). `[<Align>]` on
+  a type is left. Writing a Buffer's element is no allocation for `[<NoAlloc>]` and `--no-heap`
+  (it was taken for an array's copy-on-write); the element it overwrites is a drop when its
+  type is counted, and so is a Buffer passed in that may be the last reference
+  (`tests/err_noalloc_buffer.zs`).
+- A library (`--lib`) may hold top-level constants: a table, a record, a tree of union cases
+  are static objects with no startup code, which a library doesn't have; only a value really
+  computed at startup is an error, from the code generator (`tests/libstatic.zs`, from C).
 - One-case unions without a tag (decision 66, built): a plain union with one case that has
-  fields is the field itself (`type UserId = UserId of int` is an `int` in registers, arrays,
-  records and C structs; `sizeof<q15>` is 2), or a struct of its fields; matching, equality,
-  show, hash and the debug info follow (`tests/onecase.zs`). One over a heap value (`Wrap of
-  string`) stays boxed, its count in the object. A one-case union field in a `[<CLayout>]`
-  record was a struct with a tag and is now the field.
+  fields is the field itself (`type UserId = UserId of int` is an `int` in registers, arrays and
+  records; `sizeof<q15>` is 2), or a struct of its fields; matching, equality, show, hash and
+  the debug info follow (`tests/onecase.zs`). One over a heap value (`Wrap of string`) stays
+  boxed, its count in the object. A `[<CLayout>]` record still takes the field's type, not the
+  union (C's view of a one-case union is left).
 - A negative integer literal is one constant: `i32 -2147483648` on a 32-bit `int` target (a
   chip) was the positive literal, past the type's range, negated, and panicked with an overflow
-  (`tests/mcu/ints.zs`).
+  (`tests/mcu/ints.zs`). It's a signed integer: `let a : u8 = -1` is an error (it overflowed
+  at run time), and `-0x8000_0000_0000_0000` is i64's least (`tests/err_neg_unsigned.zs`,
+  `tests/fold_edges.zs`).
 - F#'s list and array ranges: `[ 1 .. 10 ]`, `[ 1 .. 2 .. 9 ]` (a step, negative too) and
   `[| 0 .. n |]`, the list expression over the range, so one loop and the list built once, empty
   when the range is (`tests/ranges.zs`). The README called them not there yet.

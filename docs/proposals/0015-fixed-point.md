@@ -98,7 +98,7 @@ A general format needs numbers as type arguments beyond `fixed`'s size, where de
 
 ### Order of implementation
 
-1. **One-case unions without a tag** *(built 2026-11-04: `oneCase` in src/Gen/Layout.zs, `llty`, `plainField`, construction and matching in src/Gen/Fun.zs, `layout` in src/Types/Repr.zs and the debug info, a typedef of the field; `tests/onecase.zs`, and `sizeof` in `tests/fixedpoint.zs`)*: `llty` and `plainField`, with the derives and debug info following. Test: an `array<q15>` of 1,024 elements has a heap peak of 2 KB plus headers under QEMU, and `sizeof<q15>` is 2 once [0004](0004-c-layout.md)'s `sizeof` exists.
+1. **One-case unions without a tag** *(built 2026-11-04, except C's view: a `[<CLayout>]` record or a C signature still takes the field's type, `i16`, not `q15`; `oneCase` in src/Gen/Layout.zs, `llty`, `plainField`, construction and matching in src/Gen/Fun.zs, `layout` in src/Types/Repr.zs and the debug info, a typedef of the field; `tests/onecase.zs`, and `sizeof` in `tests/fixedpoint.zs`)*: `llty` and `plainField`, with the derives and debug info following. Test: an `array<q15>` of 1,024 elements has a heap peak of 2 KB plus headers under QEMU, and `sizeof<q15>` is 2 once [0004](0004-c-layout.md)'s `sizeof` exists.
 2. **`Int.saturatingAdd/Sub/Mul`** at every width: [0024](0024-library-api.md) owns them; they're the dependency.
 3. **The types and impls** in `lib/core/Q7.zs`, `Q15.zs` and `Q31.zs`, with `///` docs and reference pages; `tests/fixedpoint.zs` runs the same cases at each format: `-1 * -1 = max`, `min - step = min`, `-min = max`, a tie's rounding, `Show`'s round trip, and a `.out` test with the division-by-zero panic.
 4. **Folding `ofFloat` on literals,** the `raws` builtins, and the vector functions.

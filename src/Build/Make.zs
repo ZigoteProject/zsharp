@@ -34,8 +34,10 @@ let make (o: Options.Options) (testBuild: bool) : Built =
       { made = false; diagnostics = errors; sources = sources }
     else if o.strict && Array.length all > 0 then
       { made = false; diagnostics = all; sources = sources }
-    // what must not touch the heap is checked on the whole program, made in one module
-    else if Option.isNone o.mcu && o.target = "" && not o.isLib && not o.emitLlvm && not o.debugInfo && not o.sanitize && not o.noHeap && not (List.exists (fun (_, v) -> v = [ "noalloc" ]) (Map.toList c.cx.targets.Value)) then
+    // what must not touch the heap is checked on the whole program, made in one module; so is a
+    // program with [<Section>] or [<Align>] values, which only the whole program's code places
+    // (a part sees another module's values by their signatures)
+    else if Option.isNone o.mcu && o.target = "" && not o.isLib && not o.emitLlvm && not o.debugInfo && not o.sanitize && not o.noHeap && not (List.exists (fun (_, v) -> v = [ "noalloc" ]) (Map.toList c.cx.targets.Value)) && Map.isEmpty c.cx.placements.Value then
       // a host executable: a module per source file, compiled in parallel and from the cache when
       // unchanged (the other builds are one module)
       let failed (msg: string) = { made = false; diagnostics = Array.append all [| passError sources o.main { file = ""; line = 0; message = msg } |]; sources = sources }

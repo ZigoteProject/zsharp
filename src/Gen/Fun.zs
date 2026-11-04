@@ -830,7 +830,7 @@ let rec gen (fx: F) (env: Map<string, Binding>) (tail: bool) (e: CExpr) : string
     fx.line.Value <- savedLine
     fx.at.Value <- savedAt
     r
-  | CInt k -> if isFloat e.ty then floatConst (llty g e.ty) (f64 k) else $"{k}"
+  | CInt k -> if isFloat e.ty then floatConst (llty g e.ty) (if llty g e.ty = "float" then f64 (f32 k) else f64 k) else $"{k}"
   | CFloat x -> floatConst (llty g e.ty) x
   | CBool b -> if b then "true" else "false"
   | CUnit -> "zeroinitializer"

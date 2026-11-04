@@ -36,3 +36,17 @@ cd "$t"
 echo "lcov:"
 grep -c '^DA:' coverage.lcov
 grep '^SF:' coverage.lcov | sed "s|$t/||"
+echo "a program that ends with Environment.exit writes its counts too:"
+cat > ex.zs <<'ZS'
+let check n =
+  if n > 3 then
+    println "big"
+    Environment.exit 2
+  n
+
+let main () =
+  println $"{check 5}"
+  0
+ZS
+"$zs" build --coverage ex.zs -o ex && ./ex; echo "exit $?"; [ -s ex.zscov ] && echo "ex.zscov written"
+

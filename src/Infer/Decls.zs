@@ -1396,9 +1396,16 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
   | Attrs(attrs, inner) when Option.isSome (valueName inner) && List.forall (fun (a, _) -> a = "Section" || a = "Align") attrs ->
     // [<Section ".noinit">] and [<Align 32>] on a top-level value (0014 item 12): its storage is
     // in the image, in that section (never written at startup when it's .noinit) and so aligned
+    // a section's name as assemblers and linker scripts take it: letters, digits, '.', '_' and '$'
+    let validName (s: string) =
+      let ok (i: int) =
+        let c = String.byte s i
+        (c >= u8 48 && c <= u8 57) || (c >= u8 65 && c <= u8 90) || (c >= u8 97 && c <= u8 122) || c = u8 46 || c = u8 95 || c = u8 36
+      s <> "" && List.forall ok (List.init (String.length s) (fun i -> i))
     let section =
       match List.tryFind (fun (a, _) -> a = "Section") attrs with
-      | Some(_, [ s ]) when s <> "" -> s
+      | Some(_, [ s ]) when validName s -> s
+      | Some(_, [ s ]) when s <> "" -> fail $"[<Section>]'s name is letters, digits, '.', '_' and '$': \"{s}\" isn't one"
       | Some _ -> fail "[<Section>] takes the section's name: [<Section \".noinit\">]"
       | None -> ""
     let align =
@@ -1414,7 +1421,20 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
     let q = qualify cx name
     let which = if section <> "" then "[<Section>]" else "[<Align>]"
     let init = List.tryFind (fun (f: FunDef) -> f.name = "$init." + q) (Array.toList (Buffer.toArray cx.funs))
+    // .noinit memory is never written at reset: what's there is the last run's, so it holds a
+    // ref's or Buffer's own plain values only (a pointer there would point at nothing), and not a
+    // constant, whose image would never be loaded
+    let noinit = section = ".noinit" || String.startsWith ".noinit." section
+    let counted (t: Ty) =
+      match prune v t with
+      | TCon("ref", [ x ])
+      | TCon("Buffer", [ x ]) -> Types.Repr.needsRc v cx.types.Value x
+      | _ -> false
     match Option.bind (fun (f: FunDef) -> Core.Ir.placedInit f.body) init with
+    | Some Core.Ir.PlacedConstant when noinit ->
+      fail $"[<Section \"{section}\">] holds what a reset leaves in memory, so a constant there would never be loaded: drop the attribute from '{name}', or make it a ref or a Buffer.create"
+    | Some _ when noinit && Option.exists (fun (f: FunDef) -> counted f.body.ty) init ->
+      fail $"[<Section \"{section}\">] keeps what the last run left, so '{name}' can hold only numbers, bools, chars and records or unions of those: a string, array, list or other object there would be a pointer into memory that's gone"
     | Some _ -> cx.placements.Value <- Map.add q (section, align) cx.placements.Value
     | None ->
       fail $"{which} needs a constant table, 'Buffer.create n x' or 'ref x' with constant arguments; '{name}' is computed at startup. Write the table as a literal, or fill a Buffer in main"

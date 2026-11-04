@@ -273,7 +273,7 @@ if bin/zs build tests/placement.zs --emit-llvm -o "$tmp/placement" >/dev/null 2>
    && grep -q '^@"zss\.sine" = .* { \[48 x i8\], i64, i64, \[4 x i64\] } .*, section "\.tables", align 64$' "$tmp/placement.ll" \
    && grep -q '^@"zsv\.sine" = internal global ptr getelementptr (i8, ptr @"zss\.sine", i64 48)$' "$tmp/placement.ll" \
    && grep -q '^@"zss\.frame\.data" = .* global \[8 x i8\] .*, align 32$' "$tmp/placement.ll" \
-   && grep -q '^@"zss\.log\.data" = .* global \[4 x ptr\] .*, section "\.noinit"$' "$tmp/placement.ll" \
+   && grep -q '^@"zss\.log\.data" = .* global \[4 x ptr\] .*, section "\.logs"$' "$tmp/placement.ll" \
    && grep -q '^@"zss\.boots" = .* global { i64, i64 } { i64 0, i64 0 }, section "\.noinit"$' "$tmp/placement.ll" \
    && grep -q '^  store i64 0, ptr @"zss\.boots"$' "$tmp/placement.ll" \
    && ! grep -q 'call ptr @"zs\.\$init\.' "$tmp/placement.ll"; then
@@ -321,6 +321,15 @@ if command -v gdb >/dev/null && [ $windows = 0 ]; then
   if diff <(tests/debug/gdb.sh) tests/debug/gdb.expected >"$tmp/gdb.diff"; then echo "ok   tests/debug/gdb.sh"
   else echo "FAIL tests/debug/gdb.sh"; cat "$tmp/gdb.diff"; fail=1; fi
 else echo "skip tests/debug/gdb.sh (no gdb)"; fi
+# -g on every kind of value (closures, C pointers, a Buffer, unions that hold themselves through
+# a list, a ref or an array): it builds, runs, and its DWARF verifies, at -O0 and with --release
+if bin/zs build -g tests/debug/kinds.zs -o "$tmp/kinds" 2>"$tmp/kinds.log" && [ "$("$tmp/kinds")" = "[2; 3] 42 7 2 5 1 2" ] \
+   && { ! command -v llvm-dwarfdump >/dev/null || llvm-dwarfdump --verify "$tmp/kinds" >/dev/null 2>&1; } \
+   && bin/zs build -g --release tests/debug/kinds.zs -o "$tmp/kinds2" 2>>"$tmp/kinds.log" && [ "$("$tmp/kinds2")" = "[2; 3] 42 7 2 5 1 2" ]; then echo "ok   tests/debug/kinds.zs (-g on every kind of value)"
+else echo "FAIL tests/debug/kinds.zs"; cat "$tmp/kinds.log"; fail=1; fi
+# -g alone on a chip is a build for stepping: -O0, the code as written (the call to sq stays)
+if bin/zs build -g tests/mcu/stepping.zs --target cortex-m4 --emit-llvm -o "$tmp/step.elf" 2>"$tmp/step.log" && grep -q 'call i32 @"zs.sq"' "$tmp/step.ll"; then echo "ok   tests/mcu/stepping.zs (-g on a chip steps the code as written)"
+else echo "FAIL tests/mcu/stepping.zs"; cat "$tmp/step.log"; fail=1; fi
 # heap values under gdb (track D, item 1): a list's cells, an array's elements, a tree's nodes
 # with their case, an option over a string, a ref's value
 if command -v gdb >/dev/null; then
@@ -366,11 +375,11 @@ else echo "FAIL tests/mcu/layout.zs"; cat "$tmp/layout.log"; fail=1; fi
 if command -v qemu-system-arm >/dev/null; then
   for chip in cortex-m4 cortex-m0plus; do
     board=$([ $chip = cortex-m4 ] && echo mps2-an386 || echo microbit)
-    for t in isr systick cpu bits task ints static tree fixed noinit weak arena; do
+    for t in isr systick cpu bits task ints static tree fixed noinit weak arena sections weak_runtime arena_rounds; do
       if bin/zs build tests/mcu/$t.zs --target $chip -o "$tmp/$t.elf" 2>"$tmp/$t.log" \
          && out=$(timeout 60 qemu-system-arm -M $board -nographic -semihosting-config enable=on,target=native -kernel "$tmp/$t.elf" 2>&1) \
          && [ "$(echo "$out" | grep -v '^#zs')" = "$(cat tests/mcu/$t.expected)" ] \
-         && { [ $t != task ] && [ $t != weak ] && [ $t != arena ] || echo "$out" | grep -q ' live=0 '; }; then
+         && { [ $t != task ] && [ $t != weak ] && [ $t != arena ] && [ $t != weak_runtime ] && [ $t != arena_rounds ] || echo "$out" | grep -q ' live=0 '; }; then
         echo "ok   tests/mcu/$t.zs on $chip (under qemu)"
       else echo "FAIL tests/mcu/$t.zs on $chip"; cat "$tmp/$t.log"; fail=1; fi
     done
@@ -394,6 +403,27 @@ if command -v qemu-system-arm >/dev/null; then
     else echo "FAIL zs test --target $chip (exit $code)"; diff <(echo "$passing") tests/mcu/ztest.expected; diff <(echo "$failing") tests/mcu/ztest_fail.expected; fail=1; fi
   done
 fi
+# an arena on a heap whose size isn't a multiple of 64 keeps the heap's blocks aligned (M0+)
+if command -v qemu-system-arm >/dev/null; then
+  if [ "$(tests/mcu/odd_heap.sh 2>&1)" = "$(cat tests/mcu/odd_heap.expected)" ]; then echo "ok   tests/mcu/odd_heap.sh (arena blocks rounded to 8)"
+  else echo "FAIL tests/mcu/odd_heap.sh"; tests/mcu/odd_heap.sh 2>&1 | tail -3; fail=1; fi
+fi
+# placed values with no heap at all (0014 item 12): a .noinit Buffer and ref build with --no-heap
+# and run with only the stack in the exit report; a ref and a Buffer in a section the board's
+# script doesn't name are copied from flash at startup
+if command -v qemu-system-arm >/dev/null; then
+  for chip in cortex-m4 cortex-m0plus; do
+    board=$([ $chip = cortex-m4 ] && echo mps2-an386 || echo microbit)
+    if bin/zs build tests/mcu/noheap_placed.zs --target $chip --no-heap -o "$tmp/nhp.elf" 2>"$tmp/nhp.log" \
+       && timeout 60 qemu-system-arm -M $board -nographic -semihosting-config enable=on,target=native -kernel "$tmp/nhp.elf" 2>&1 | grep -q '^#zs stack='; then
+      echo "ok   tests/mcu/noheap_placed.zs on $chip (--no-heap)"
+    else echo "FAIL tests/mcu/noheap_placed.zs on $chip"; cat "$tmp/nhp.log"; fail=1; fi
+  done
+fi
+if bin/zs build tests/mcu/sections.zs --target cortex-m4 --emit-llvm -o "$tmp/sec.elf" 2>"$tmp/sec.log" \
+   && [ "$(grep -c 'llvm.memcpy.p0.p0.i32(ptr @"zss.counter", ptr @"zss.counter.image"\|llvm.memcpy.p0.p0.i32(ptr @"zss.window.data", ptr @"zss.window.data.image"' "$tmp/sec.ll")" = 2 ]; then
+  echo "ok   tests/mcu/sections.zs: storage in an unnamed section copied at startup"
+else echo "FAIL tests/mcu/sections.zs: startup copies"; cat "$tmp/sec.log"; fail=1; fi
 # a real board (0027): the Nucleo-F401RE's firmware builds; an image for it (its STM32F401RE's
 # flash and RAM, output over RTT) boots on qemu's STM32F405, which has the same memory map, and its
 # output is read from its RAM, the RTT block found by its ID as a probe finds it (and by its
@@ -655,6 +685,14 @@ else echo "skip editors/tree-sitter-zsharp (no tree-sitter CLI; rebuild the dev 
 
 fi
 
+# a library's constants are static (0014): a tree of union cases, a table and a record, read by an
+# export that C calls, with no startup code (a library has none)
+mkdir -p "$tmp/libstatic"
+printf '#include <stdio.h>\n#include "libstatic.h"\nint main(void) { printf("%%lld\\n", (long long)total(41)); return 0; }\n' > "$tmp/libstatic/main.c"
+if bin/zs build tests/libstatic.zs --lib -o "$tmp/libstatic/libstatic.a" 2>"$tmp/libstatic.log" \
+   && clang -I"$tmp/libstatic" "$tmp/libstatic/main.c" "$tmp/libstatic/libstatic.a" -lm -o "$tmp/libstatic/cmain" 2>>"$tmp/libstatic.log" \
+   && [ "$("$tmp/libstatic/cmain")" = 107 ]; then echo "ok   tests/libstatic.zs (a library's static constants, from C)"
+else echo "FAIL tests/libstatic.zs"; cat "$tmp/libstatic.log"; fail=1; fi
 # C interop: a directory with main.c links the static library built from its lib.zs
 cc=(clang); [ -n "$target" ] && cc=(zig cc -target "$target")
 [ $windows = 1 ] && [ -z "$target" ] && cc=(zig cc -target "$(uname -m | sed 's/arm64/aarch64/')-windows-gnu")

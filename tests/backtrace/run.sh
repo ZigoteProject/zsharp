@@ -12,3 +12,10 @@ ZS_BACKTRACE=0 "$t/prog" 2>&1; echo "exit $?"
 echo "a release build, the same names:"
 "$zs" build tests/backtrace/prog.zs --release -o "$t/rel" || exit 1
 ZS_BACKTRACE=1 "$t/rel" 2>&1 | head -2; echo "exit ${PIPESTATUS[0]}"
+echo "panics on four threads at once, ten runs: one report each, nothing corrupted"
+"$zs" build tests/backtrace/threads.zs -o "$t/threads" || exit 1
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  out=$(ZS_WORKERS=4 ZS_BACKTRACE=1 "$t/threads" 2>&1)
+  echo "$(echo "$out" | grep -c '^panic: boom') $(echo "$out" | grep -c 'corrupt\|malloc\|Segmentation\|free()')"
+done | sort | uniq -c | sed 's/^ *//'
+

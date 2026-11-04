@@ -117,6 +117,9 @@ let private allow (s: Set<string>) : Kind = { allowed = Some s; traits = Set.emp
 
 let kInt : Kind = allow ints
 
+/// What a negative integer literal can be: a signed integer (an unsigned one would wrap).
+let kSignedInt : Kind = allow (Set.difference ints unsigned)
+
 let kFloat : Kind = allow floats
 
 let kNumeric : Kind = allow nums

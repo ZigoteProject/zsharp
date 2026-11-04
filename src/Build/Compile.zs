@@ -340,16 +340,17 @@ let generate (o: Options.Options) (prog0: Program) (testBuild: bool) : result<Pr
   match (if o.isLib then prog.values else []) with
   | (value, _) :: _ when String.contains ".$assert" value || String.startsWith "$assert" value ->
     Error(InPass { file = ""; line = 0; message = "a top-level assert whose condition isn't a constant is checked at startup, which a library doesn't have; assert on constants (sizeof<T> = 20), or check it in a function" })
-  | (value, _) :: _ -> Error(InPass { file = ""; line = 0; message = $"top-level value '{value}' is computed at startup, which a library doesn't have; make it a constant or a function" })
-  | [] ->
+  // the other values are code generation's to judge: a static one (a table, a record of
+  // constants) needs no startup, and one that isn't is an error there
+  | _ ->
     let cant =
       match o.mcu with
       | Some m -> unrunnable m
       | None -> Map.empty
     // --coverage keeps the code as written, as -g does: every line of every reached function counts
-    // -g at -O0 (its default) keeps the code as written, for stepping; with a level or --release
-    // the optimizer runs and the lines stay (an inlined call's lines are its caller's frame's)
-    match lower prog ((o.debugInfo && Options.optLevel o = "-O0") || o.coverage) o.time o.checkIr o.noHeap cant with
+    // -g alone keeps the code as written, for stepping; with a level or --release the optimizer
+    // runs and the lines stay (an inlined call's lines are its caller's frame's)
+    match lower prog (Options.stepping o || (o.debugInfo && Options.optLevel o = "-O0") || o.coverage) o.time o.checkIr o.noHeap cant with
     | Error e -> Error(InPass e)
     | Ok(types, funs) ->
       // a library's handles may be used on any thread of its C host
@@ -360,11 +361,12 @@ let generate (o: Options.Options) (prog0: Program) (testBuild: bool) : result<Pr
         { debugInfo = o.debugInfo
           coverageRoot = (if o.coverage then Path.getFullPath (Path.getDirectoryName (Path.getFullPath o.main)) else "")
           coverageSeeds = (if o.coverage then coverageSeeds prog.funs funs (Path.getFullPath (Path.getDirectoryName (Path.getFullPath o.main))) else [])
-          optimized = level <> "-O0"
+          optimized = level <> "-O0" && not (Options.stepping o)
           optimizeSize = level = "-Os"
           target = o.target
           arch = Options.arch o
           checkedHeap = usesPrim heapPrims funs
+          library = o.isLib
           targets = prog.targets
           cpu = o.cpu
           wideVectors = wideVectors types funs
@@ -399,7 +401,7 @@ let make (o: Options.Options) (prog0: Program) (linked: Modules.Linked) (testBui
         // AddressSanitizer sees each object
         else [ "-fsanitize=address,undefined"; "-g"; "-DZS_NO_POOL" ]
       // -g: unoptimized, so stepping follows the source
-      let opt = if o.debugInfo then (if level = "-O0" then [ "-O0"; "-g" ] else List.concat [ [ level; "-g" ]; cpuFlags o ]) else level :: cpuFlags o
+      let opt = if o.debugInfo then (if Options.stepping o || level = "-O0" then [ "-O0"; "-g" ] else List.concat [ [ level; "-g" ]; cpuFlags o ]) else level :: cpuFlags o
       let profile =
         if o.profileGenerate then [ "-fprofile-generate" ]
         else

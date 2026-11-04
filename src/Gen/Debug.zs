@@ -163,8 +163,10 @@ let rec diTypeOf (g: G) (field: bool) (t: Ty) : option<string> =
       let p = meta g $"!DIDerivedType(tag: DW_TAG_pointer_type, baseType: {obj}, size: {word})"
       define g td $"!DIDerivedType(tag: DW_TAG_typedef, name: \"{name}\", baseType: {p})"
       Some td
+  // void*: a pointer with no pointee (LLVM requires the field, null for none)
+  let voidPtr () = Option.get (named "void*" (fun () -> meta g $"!DIDerivedType(tag: DW_TAG_pointer_type, baseType: null, size: {word})"))
   // a pointer gdb shows as an address: the type's name over void*
-  let opaque () = named ("opaque " + showF g t) (fun () -> meta g $"!DIDerivedType(tag: DW_TAG_typedef, name: \"{showT g t}\", baseType: {meta g $"!DIDerivedType(tag: DW_TAG_pointer_type, size: {word})"})")
+  let opaque () = named ("opaque " + showF g t) (fun () -> meta g $"!DIDerivedType(tag: DW_TAG_typedef, name: \"{showT g t}\", baseType: {voidPtr ()})")
   // a member of a struct, when gdb can show its type
   let memberAt (fo: (string * Ty) * int) : option<string> =
     let ((f, ft), off) = fo
@@ -215,31 +217,35 @@ let rec diTypeOf (g: G) (field: bool) (t: Ty) : option<string> =
     | Some et -> named ("fixed " + showF g t) (fun () -> meta g $"!DICompositeType(tag: DW_TAG_array_type, baseType: {et}, size: {8 * fst (sizeAlign g t)}, elements: !{{!DISubrange(count: {toInt n})}})")
     | None -> None
   // an array: its object is the count, the length and the elements
+  // (the element's type is made inside the object's callback, after the object's name is known:
+  // an element may hold the object's own type, as Q of ref<Q> does)
   | TCon("array", [ el ]) ->
-    match diTypeOf g true el with
-    | Some et ->
-      let (es, _) = sizeAlign g el
-      objectOf (2 * pointerBytes g) (fun _ ->
+    let (es, _) = sizeAlign g el
+    objectOf (2 * pointerBytes g) (fun _ ->
+      let length = memberNode "length" (Option.get (basic "int" word "DW_ATE_signed")) word (pointerBytes g)
+      match diTypeOf g true el with
+      | Some et ->
         let elems = meta g $"!DICompositeType(tag: DW_TAG_array_type, baseType: {et}, elements: !{{!DISubrange(count: -1)}})"
-        [ countMember (); memberNode "length" (Option.get (basic "int" word "DW_ATE_signed")) word (pointerBytes g); memberNode "elements" elems (8 * es) (2 * pointerBytes g) ])
-    | None -> None
+        [ countMember (); length; memberNode "elements" elems (8 * es) (2 * pointerBytes g) ]
+      | None -> [ countMember (); length ])
   // a list: a cell is the header, the head and the tail, another list
   | TCon("list", [ el ]) ->
-    match diTypeOf g true el with
-    | Some et ->
-      let (size, _, offsets) = layout g [ tcon "int"; el; t ]
-      let (es, _) = sizeAlign g el
-      objectOf size (fun td -> [ countMember (); memberNode "head" et (8 * es) (List.item 1 offsets); memberNode "tail" td word (List.item 2 offsets) ])
-    | None -> None
+    let (size, _, offsets) = layout g [ tcon "int"; el; t ]
+    let (es, _) = sizeAlign g el
+    objectOf size (fun td ->
+      let tail = memberNode "tail" td word (List.item 2 offsets)
+      match diTypeOf g true el with
+      | Some et -> [ countMember (); memberNode "head" et (8 * es) (List.item 1 offsets); tail ]
+      | None -> [ countMember (); tail ])
   // a ref, or a Buffer (a ref to its storage record: the owner array, the data, the length and
   // the room): the header and the value
   | TCon("ref", [ x ]) ->
-    match diTypeOf g true x with
-    | Some xt ->
-      let (size, _, offsets) = layout g [ tcon "int"; x ]
-      let (xs, _) = sizeAlign g x
-      objectOf size (fun _ -> [ countMember (); memberNode "value" xt (8 * xs) (List.item 1 offsets) ])
-    | None -> None
+    let (size, _, offsets) = layout g [ tcon "int"; x ]
+    let (xs, _) = sizeAlign g x
+    objectOf size (fun _ ->
+      match diTypeOf g true x with
+      | Some xt -> [ countMember (); memberNode "value" xt (8 * xs) (List.item 1 offsets) ]
+      | None -> [ countMember () ])
   | TCon("cstr", _)
   | TCon("cptr", _)
   | TCon("ptr", _)
@@ -302,9 +308,20 @@ let rec diTypeOf (g: G) (field: bool) (t: Ty) : option<string> =
     match repOf g t with
     // the option shape over a pointer: the pointer itself (None is the static none)
     | Types.Repr.Niche(_, payload) ->
-      match diTypeOf g true payload with
-      | Some pt -> named ("niche " + showF g t) (fun () -> meta g $"!DIDerivedType(tag: DW_TAG_typedef, name: \"{showT g t}\", baseType: {pt})")
-      | None -> None
+      // its name reserved before the payload's type is made, which may hold this type again
+      // (Leaf | Node of list<Rose>)
+      let key = "niche " + showF g t
+      match Map.tryFind key g.diTypes.Value with
+      | Some id -> Some id
+      | None ->
+        let td = reserve g
+        g.diTypes.Value <- Map.add key td g.diTypes.Value
+        let pt =
+          match diTypeOf g true payload with
+          | Some pt -> pt
+          | None -> voidPtr ()
+        define g td $"!DIDerivedType(tag: DW_TAG_typedef, name: \"{showT g t}\", baseType: {pt})"
+        Some td
     | _ ->
       // a cell: the header's count, the case (where the cells carry one), then each case with
       // fields as a struct of them over the cell, named after the case

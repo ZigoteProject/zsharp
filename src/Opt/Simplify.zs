@@ -210,14 +210,22 @@ let private roundEven (x: f64) : f64 =
   else
     let t = float (i64 x)
     let frac = x - t
-    if frac > 0.5 then t + 1.0
-    else if frac < -0.5 then t - 1.0
-    else if frac = 0.5 then (if float (i64 t) / 2.0 = float (i64 (t / 2.0)) then t else t + 1.0)
-    else if frac = -0.5 then (if float (i64 t) / 2.0 = float (i64 (t / 2.0)) then t else t - 1.0)
-    else t
+    let r =
+      if frac > 0.5 then t + 1.0
+      else if frac < -0.5 then t - 1.0
+      else if frac = 0.5 then (if float (i64 t) / 2.0 = float (i64 (t / 2.0)) then t else t + 1.0)
+      else if frac = -0.5 then (if float (i64 t) / 2.0 = float (i64 (t / 2.0)) then t else t - 1.0)
+      else t
+    // a zero keeps x's sign, as roundeven's does (-0.4 rounds to -0.0)
+    if r = 0.0 then x * 0.0 else r
 
 let private foldConst (e: CExpr) : CExpr =
   let with_ (k: CKind) = { e with k = k }
+  // a float as its type holds it: an f32 literal or result rounded to single precision, as the
+  // compiled code computes it (f64's 53 bits make each f32 operation exact after rounding)
+  let rd (t: Ty) (x: f64) : f64 = if t = TCon("f32", []) then f64 (f32 x) else x
+  // a NaN isn't folded: its bits would be the compiler's, not the target's
+  let float_ (x: f64) = if x <> x then e else with_ (CFloat(rd e.ty x))
   let intOp (op: string) (a: i64) (b: i64) : option<i64> =
     match op with
     | "+" ->
@@ -228,7 +236,8 @@ let private foldConst (e: CExpr) : CExpr =
       if (a >= i64 0) <> (b >= i64 0) && (r >= i64 0) <> (a >= i64 0) then None else Some r
     | "*" ->
       let r = Int.wrappingMul a b
-      if a <> i64 0 && (r / a <> b || (a = i64 -1 && b = i64 -9223372036854775807 - i64 1)) then None else Some r
+      // -1 * MIN tested first: r / a would overflow there
+      if a <> i64 0 && ((a = i64 -1 && b = i64 -9223372036854775807 - i64 1) || r / a <> b) then None else Some r
     | "/" -> if b = i64 0 || (b = i64 -1 && a = i64 -9223372036854775807 - i64 1) then None else Some(a / b)
     | "%" -> if b = i64 0 || b = i64 -1 then None else Some(a % b)
     | "&&&" -> Some(a &&& b)
@@ -246,24 +255,30 @@ let private foldConst (e: CExpr) : CExpr =
     | _ -> None
   match e.k with
   | CBin(op, a0, b0) ->
-    match ((plainLit a0).k, (plainLit b0).k) with
-    | (CInt a, CInt b) ->
+    let a1 = plainLit a0
+    let b1 = plainLit b0
+    match (a1.k, b1.k) with
+    // only integers that are values of their own types: a u64 at or above 2^63 is stored
+    // negative, and signed arithmetic or comparison would be wrong for it
+    | (CInt a, CInt b) when fitsIn a1.ty a && fitsIn b1.ty b ->
       match compare op (if a < b then -1 else if a > b then 1 else 0) with
       | Some r -> with_ (CBool r)
       | None ->
         match intOp op a b with
         | Some r when fitsIn e.ty r -> with_ (CInt r)
         | _ -> e
-    | (CFloat a, CFloat b) ->
+    | (CFloat a2, CFloat b2) ->
+      let a = rd a1.ty a2
+      let b = rd b1.ty b2
       match compare op (if a < b then -1 else if a > b then 1 else if a = b then 0 else 2) with
       | Some r when not (a <> a || b <> b) -> with_ (CBool r)
       | Some _ -> e
       | None ->
         match op with
-        | "+" -> with_ (CFloat(a + b))
-        | "-" -> with_ (CFloat(a - b))
-        | "*" -> with_ (CFloat(a * b))
-        | "/" -> with_ (CFloat(a / b))
+        | "+" -> float_ (a + b)
+        | "-" -> float_ (a - b)
+        | "*" -> float_ (a * b)
+        | "/" -> float_ (a / b)
         | _ -> e
     | (CBool a, CBool b) ->
       match op with
@@ -273,24 +288,33 @@ let private foldConst (e: CExpr) : CExpr =
     | (CStr a, CStr b) when op = "+" -> with_ (CStr(a + b))
     | _ -> e
   | CNeg a0 ->
-    match (plainLit a0).k with
-    | CInt n when n <> i64 -9223372036854775807 - i64 1 && fitsIn e.ty (i64 0 - n) -> with_ (CInt(i64 0 - n))
-    | CFloat x -> with_ (CFloat(0.0 - x))
+    let a1 = plainLit a0
+    match a1.k with
+    | CInt n when n <> i64 -9223372036854775807 - i64 1 && fitsIn a1.ty n && fitsIn e.ty (i64 0 - n) -> with_ (CInt(i64 0 - n))
+    // the sign flipped, so -0.0 stays -0.0 (0.0 - x would make it +0.0)
+    | CFloat x -> float_ (-(rd a1.ty x))
     | _ -> e
   | CPrim("conv", [ a0 ]) ->
-    match ((plainLit a0).k, e.ty) with
-    | (CInt n, t) when isFloatTy t -> with_ (CFloat(if t = TCon("f32", []) then f64 (f32 (float n)) else float n))
-    | (CInt n, t) when fitsIn t n -> with_ (CInt n)
-    | (CFloat x, t) when isFloatTy t -> with_ (CFloat(if t = TCon("f32", []) then f64 (f32 x) else x))
-    | (CFloat x, t) when x = x && x = float (i64 x) && x > -9.0e18 && x < 9.0e18 && fitsIn t (i64 x) -> with_ (CInt(i64 x))
+    let a1 = plainLit a0
+    match (a1.k, e.ty) with
+    // an integer to a float rounded once, from the integer (an i64 through f64 to f32 would
+    // round twice)
+    | (CInt n, t) when isFloatTy t && fitsIn a1.ty n -> with_ (CFloat(if t = TCon("f32", []) then f64 (f32 n) else float n))
+    | (CInt n, t) when fitsIn a1.ty n && fitsIn t n -> with_ (CInt n)
+    | (CFloat x, t) when isFloatTy t -> float_ (rd a1.ty x)
+    | (CFloat x0, t) ->
+      let x = rd a1.ty x0
+      if x = x && x = float (i64 x) && x > -9.0e18 && x < 9.0e18 && fitsIn t (i64 x) then with_ (CInt(i64 x)) else e
     | _ -> e
   | CPrim("Math.round", [ a0 ]) ->
-    match (plainLit a0).k with
-    | CFloat x -> with_ (CFloat(roundEven x))
+    let a1 = plainLit a0
+    match a1.k with
+    | CFloat x -> float_ (roundEven (rd a1.ty x))
     | _ -> e
   | CPrim("Math.sqrt", [ a0 ]) ->
-    match (plainLit a0).k with
-    | CFloat x when x >= 0.0 -> with_ (CFloat(Math.sqrt x))
+    let a1 = plainLit a0
+    match a1.k with
+    | CFloat x when rd a1.ty x >= 0.0 -> float_ (Math.sqrt (rd a1.ty x))
     | _ -> e
   | _ -> e
 

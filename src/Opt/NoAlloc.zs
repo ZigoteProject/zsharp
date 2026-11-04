@@ -41,21 +41,21 @@ type private Step =
   | Calls of string * int
   | Paths of list<list<Step>>
 
+// a Buffer's element type (a Buffer is a ref to its storage cell from monomorphization on)
+let private bufferElement (t: Ty) : option<Ty> =
+  match t with
+  | TCon("ref", [ TCon("$buffer", [ el ]) ]) -> Some el
+  | _ -> None
+
 // what a primitive makes, if it makes an object (or may: a Buffer's push grows it)
 let private builds (op: string) (args: list<CExpr>) : option<string> =
   let ofString =
     match args with
     | [ a ] -> a.ty = tStr
     | _ -> false
-  // a write to a Buffer's element is in place (its storage is its own)
-  let intoBuffer =
-    match args with
-    | { ty = TCon("ref", [ TCon("$buffer", _) ]) } :: _ -> true
-    | _ -> false
   match op with
   // a string is its own text
   | "string" when ofString -> None
-  | "array.set" when intoBuffer -> None
   | "string"
   | "format"
   | "String.ofCStr"
@@ -227,6 +227,19 @@ let private stepsOf (v: Types.Vars.Vars) (types: Map<string, TypeInfo>) (word: i
       if List.length (List.filter filled pieces) > 1 then
         own Allocates "builds a string" "builds a string" "" line
       List.iter (go line statics tokens) pieces
+    | CPrim("array.set", buf :: _) when Option.isSome (bufferElement buf.ty) ->
+      // a Buffer's element written in place: no new object, but the overwritten element is
+      // dropped (it may be the last reference to it), and so is the Buffer passed (unless it's a
+      // value that lives on)
+      let el = Option.get (bufferElement buf.ty)
+      if heap el then
+        own Frees "overwrites a Buffer element, which drops the old one (it may be the last reference)" "drops the element it overwrites" "" line
+      match buf.k with
+      | CLocal x when heap buf.ty && not (Set.contains x statics) ->
+        let what = dropping x buf.ty
+        own Frees what what (subjectOf x) line
+      | _ -> ()
+      rest ()
     | CPrim(op, args) ->
       if waits op then
         own Waits $"waits ({op}), which an interrupt handler can't: push to an Spsc, and let the program's loop do the rest" $"waits ({op})" "" line

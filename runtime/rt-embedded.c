@@ -599,9 +599,19 @@ static void write_c(const char *s) { write_bytes(s, (int64_t)strlen(s)); }
 
 _Noreturn void zs_panic_c(const char *msg);
 
+// the runtime's own frees go through the checked path, so a weak reference to a weak cell or an
+// Spsc sees it die
+void zs_free_checked(void *p);
+
 #ifdef ZS_NO_HEAP
 void *zs_alloc(zs_int size);
-void zs_free(void *p);
+// with no heap only static objects (count 0) reach a drop, and they're never freed: this is never
+// called, but a drop's code names it (zs_alloc stays undefined, so an allocation fails the link)
+void zs_free(void *p) {
+    (void)p;
+    zs_panic_c("free with no heap");
+}
+void zs_free_checked(void *p) { zs_free(p); }
 zs_int zs_allocations(void) { return 0; }
 zs_int zs_mallocs(void) { return 0; }
 #else
@@ -619,6 +629,7 @@ static struct {
 // a block of the heap that isn't an object (a weak table, an arena's block): counted in the
 // bytes used, not as an allocation
 static void *heap_take(size_t need) {
+    need = (need + 7) & ~(size_t)7; // every block 8-aligned, so the next one is too
     size_t cls = need / 8;
     uint64_t *block = 0;
 
@@ -790,7 +801,7 @@ void *zs_weak_target(zs_weak *w) {
 // the cell's last reference has gone
 void zs_weak_free(zs_weak *w) {
     if (w->target && !((uintptr_t)w->target & 1)) tab_remove(&weaks, w->target);
-    zs_free(w);
+    zs_free_checked(w);
 }
 
 // a cell Perceus reuses for another object: the object it held has died
@@ -804,7 +815,6 @@ void zs_reused(void *p) {
 // when the arena's last object has died: when the function returns, or later if something it
 // made lives on. The arena's own record is in its first block. An object's arena is found by
 // its address among the arenas' blocks (few on a chip).
-#define ARENA_BLOCK ((size_t)(ZS_HEAP_SIZE / 8 < 4096 ? ZS_HEAP_SIZE / 8 : 4096))
 
 typedef struct zs_arena {
     struct zs_arena *parent; // the arena open around this one
@@ -821,11 +831,29 @@ typedef struct {
 
 #define ARENA_HEAD ((sizeof(block_head) + 7) & ~(size_t)7)
 
+// an arena's block: an eighth of the heap, 4 KB at most, a multiple of 8 (so the heap's blocks
+// after it stay aligned), and at least room for its head, the arena's record and an object
+#define ARENA_BLOCK_RAW ((size_t)(ZS_HEAP_SIZE / 8 < 4096 ? ZS_HEAP_SIZE / 8 : 4096) & ~(size_t)7)
+#define ARENA_MIN (ARENA_HEAD + ((sizeof(zs_arena) + 7) & ~(size_t)7) + 64)
+#define ARENA_BLOCK (ARENA_BLOCK_RAW > ARENA_MIN ? ARENA_BLOCK_RAW : ARENA_MIN)
+
 static zs_arena *arena;  // the innermost open arena
 static zs_arena *arenas; // every arena that still has blocks
 
+// an arena's blocks, once released, are kept for arenas: on the heap's list of large blocks a
+// first fit would hand a whole block to any object over 256 bytes
+static void *arena_free;
+
 static char *arena_block(zs_arena *a) {
-    char *b = heap_take(ARENA_BLOCK);
+    char *b;
+    if (arena_free) {
+        b = arena_free;
+        arena_free = *(void **)b;
+        H.used += ARENA_BLOCK;
+        if (H.used > H.peak) H.peak = H.used;
+    } else {
+        b = heap_take(ARENA_BLOCK);
+    }
     *(block_head *)b = (block_head){a ? a->blocks : NULL};
     return b;
 }
@@ -846,7 +874,9 @@ static void arena_release(zs_arena *a) {
         }
     for (void *b = a->blocks, *next; b; b = next) { // the oldest block, holding *a, is the last
         next = ((block_head *)b)->next;
-        heap_give(b);
+        H.used -= ARENA_BLOCK;
+        *(void **)b = arena_free;
+        arena_free = b;
     }
 }
 
@@ -1466,7 +1496,7 @@ bool zs_spsc_pop(zs_spsc *q, void *out) {
 void zs_spsc_free(zs_spsc *q) {
     if (q->drop)
         for (zs_int i = q->head; i != q->tail; i = (i + 1) % q->cap) q->drop(q->slots + i * q->size);
-    zs_free(q);
+    zs_free_checked(q);
 }
 
 // ---- callbacks: a callback<F> C calls only where it was passed, as a host's on its own thread

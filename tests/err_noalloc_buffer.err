@@ -1,0 +1,1 @@
+tests/err_noalloc_buffer.zs:4: error: put is [<NoAlloc>], but put overwrites a Buffer element, which drops the old one (it may be the last reference)

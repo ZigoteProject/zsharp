@@ -7,3 +7,7 @@ coverage written to coverage.lcov (genhtml -o coverage coverage.lcov renders it)
 lcov:
 12
 SF:cov.zs
+a program that ends with Environment.exit writes its counts too:
+big
+exit 2
+ex.zscov written
