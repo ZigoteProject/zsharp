@@ -238,18 +238,32 @@ let private stepsOf (v: Types.Vars.Vars) (types: Map<string, TypeInfo>) (word: i
       List.iter (go line statics tokens) pieces
     | CPrim(op, buf :: _) when (op = "array.set" || op = "array.set#b") && Option.isSome (bufferElement buf.ty) ->
       // a Buffer's element written in place: no new object, but the overwritten element is
-      // dropped (it may be the last reference to it). The write borrows the Buffer (array.set#b),
-      // its holder dropping it where this check sees a drop; one Rc couldn't lend is consumed by
-      // the write, which may free it
+      // dropped (it may be the last reference to it). The write borrows the Buffer (array.set#b);
+      // one Rc couldn't lend is passed in and dropped by the write, which frees it only when the
+      // write had its last reference: a local's, a call's result, a mutable moved in (a dup of a
+      // variable or of a field is another reference, never the last)
       let el = Option.get (bufferElement buf.ty)
       if heap el then
         own Frees "overwrites a Buffer element, which drops the old one (it may be the last reference)" "drops the element it overwrites" "" line
       if op = "array.set" && heap buf.ty && not (neverLast statics buf) then
+        let rec fresh (b: CExpr) : option<string> =
+          match b.k with
+          | CLet(x, w, { k = CLocal y }) when x = y -> fresh w
+          | CLine(_, a)
+          | CLet(_, _, a) -> fresh a
+          | CCallDirect _
+          | CApplyClo _
+          | CExtern _ -> Some "writes a Buffer a call gave and then drops it, which may free it"
+          | CPrim("slot.take", [ { k = CLocal m } ]) -> Some $"moves the mutable '{written m}' into the write, which drops it and may free it"
+          | _ -> None
         match buf.k with
         | CLocal x ->
           let what = dropping x buf.ty
           own Frees what what (subjectOf x) line
-        | _ -> own Frees "writes a Buffer it then drops (one a call made), which may free it" "drops the Buffer it writes" "" line
+        | _ ->
+          match fresh buf with
+          | Some what -> own Frees what what "" line
+          | None -> ()
       rest ()
     | CPrim(op, args) ->
       if waits op then

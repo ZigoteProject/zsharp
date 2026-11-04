@@ -726,9 +726,18 @@ let private lowerFun (types: Map<string, TypeInfo>) (borrowedParams: Map<string,
       | _ -> panic "Rc: unexpected node"
     // whether a read through a (a variable, or a field of one) can borrow it: the rest of the
     // read doesn't use the variable
+    // whether a, a variable or a field of one, can be lent to an operation whose other arguments
+    // are rest: none of them may need the variable, nor what keeps it alive (a pattern variable's
+    // value, borrowed from the value matched, which rest might consume and free first)
     and rootLent (a: CExpr) (rest: list<CExpr>) : bool =
       match rootLocal a with
-      | Some x -> not (List.exists (fun (r: CExpr) -> Set.contains x (live r)) rest)
+      | Some x ->
+        let rec holders (acc: Set<string>) (y: string) : Set<string> =
+          match Map.tryFind y parentOf.Value with
+          | Some p when not (Set.contains p acc) -> holders (Set.add p acc) p
+          | _ -> acc
+        let needed = holders (Set.ofList [ x ]) x
+        not (List.exists (fun (r: CExpr) -> not (Set.isEmpty (Set.intersect needed (live r)))) rest)
       | None -> false
     and matchVar (owned: Set<string>) (borrowed: Set<string>) (e: CExpr) (s: CExpr) (cases: list<CPat * option<CExpr> * CExpr>) : CExpr =
       let x = Option.get (rootLocal s)

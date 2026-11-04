@@ -455,12 +455,29 @@ let private replayFails (r: option<int> * string) : bool =
 // recorded, made shorter first (a block at a time, the largest first), then smaller (each byte
 // zeroed, halved or one less), each candidate a run of the case, kept while it still panics; up
 // to 300 runs
-// whether a shrink candidate's replay fails as the case did: a stack overflow is a failure of its
-// own, which a candidate cut short (its values recursing on the zeros past its end) can reach
-// where the case had another panic, and the reverse
-let private sameFailure (original: string) (candidate: string) : bool =
-  let overflow (s: string) = String.contains "panic: stack overflow" s
-  overflow original = overflow candidate
+// what a failure says, without the values in it: its first panic line (else a sanitizer's
+// report), cut at its first digit or quote, so "the third is -4" and "the third is 3" are one
+// failure, "index out of bounds" and a stack overflow (the runtime's or AddressSanitizer's)
+// others
+let private failureOf (output: string) : string =
+  let lines = String.splitLines output
+  let reported (l: string) = String.contains "ERROR: AddressSanitizer:" l || String.contains "runtime error:" l
+  let line =
+    match List.tryFind (fun (l: string) -> String.startsWith "panic: " l) lines with
+    | Some l -> l
+    | None -> Option.defaultValue "" (List.tryFind reported lines)
+  let valueAt (i: int) =
+    let c = String.byte line i
+    (c >= u8 48 && c <= u8 57) || c = u8 34 || c = u8 39
+  let cut = Option.defaultValue (String.length line) (List.tryFind valueAt (List.init (String.length line) (fun i -> i)))
+  let head = String.trimEnd (String.sub line 0 cut)
+  // a negative number's sign goes with it
+  String.trimEnd (if String.endsWith "-" head then String.sub head 0 (String.length head - 1) else head)
+
+// whether a shrink candidate's replay fails as the case did: the same failure, so a candidate
+// cut short (its values recursing on the zeros past its end into a stack overflow) or one that
+// trips another bug isn't taken for it
+let private sameFailure (original: string) (candidate: string) : bool = failureOf original = failureOf candidate
 
 // the case's bytes shrunk by replays of the test binary (shorter, then smaller) while it still
 // fails as it did (original: the case's replay output)

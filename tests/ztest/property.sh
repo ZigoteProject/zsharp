@@ -3,8 +3,9 @@
 # replays of the test binary to a smallest case that still panics, shown, and saved beside the
 # file; the next run replays it first, and once the bug is fixed the saved case passes and goes.
 # A run that gives up on its discards fails as it is: no one case reproduces it, so nothing is
-# shrunk or saved. A shrink keeps the panic it started with: a candidate cut short that recurses
-# on zeros into a stack overflow isn't taken for it.
+# shrunk or saved. A shrink keeps the panic it started with: a candidate that fails another way
+# (another panic, a stack overflow from values recursing on the zeros past its end) isn't taken
+# for it, while one whose panic differs only in its values is.
 set -u
 zs="$(pwd)/${1:-bin/zs}"; t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 write() {
@@ -64,3 +65,20 @@ let tests =
   ]
 ZS
 echo "shrunk to the same panic:"; "$zs" test deep.zs | sed -E 's/from [0-9]+ bytes to [0-9]+ in [0-9]+ runs/from N bytes to M in N runs/; s/-[0-9a-f]{8},/-HASH,/'
+cat > two.zs <<'ZS'
+open Testing
+
+// two bugs: the third element not 0 panics with its value, and 0 there reads past an array
+let probe (xs: list<int>) : unit =
+  if List.length xs >= 3 then
+    let i = List.item 2 xs
+    if i <> 0 then panic $"the third is {i}"
+    else ignore ([| 1; 2 |].[i + 7])
+
+[<Tests>]
+let tests =
+  testList "s" [
+    testPropertyWith { seed = Some (u64 5) } "short lists" (fun (xs: list<int>) -> probe xs)
+  ]
+ZS
+echo "shrunk within its own bug:"; "$zs" test two.zs | sed -E 's/from [0-9]+ bytes to [0-9]+ in [0-9]+ runs/from N bytes to M in N runs/; s/-[0-9a-f]{8},/-HASH,/'

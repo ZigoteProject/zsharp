@@ -2,8 +2,9 @@
 // array it borrows; an option's None (a static cell) dropped and its Some's string kept, which
 // frees nothing; a string interpolated into what's printed, which is its own text; an
 // interpolation of one string, which is that string; a Buffer's numbers written in place, the
-// Buffer a parameter's or a top-level value's (directly, and through a name for it), which the
-// write borrows and frees nothing of
+// Buffer a parameter's or a top-level value's (directly, and through a name for it), a record's
+// field, an element of a Buffer of Buffers, the value written read from the same Buffer: each
+// write frees nothing
 type Point = { x: int; y: int }
 
 [<NoAlloc>]
@@ -35,7 +36,30 @@ let markFrame () =
   let f = frame
   f.[2] <- u8 5
 
+type Ring = { data: Buffer<u8>; head: ref<int> }
+
+[<NoAlloc>]
+let push (r: Ring) (x: u8) =
+  r.data.[r.head.Value] <- x
+  r.head.Value <- (r.head.Value + 1) % Buffer.length r.data
+
+[<NoAlloc>]
+let bump (counts: Buffer<int>) (k: int) = counts.[k] <- counts.[k] + 1
+
+[<NoAlloc>]
+let setCell (grid: Buffer<Buffer<u8>>) (r: int) (c: int) = grid.[r].[c] <- u8 1
+
 let main () =
+  let ring = { data = Buffer.create 2 (u8 0); head = ref 0 }
+  push ring (u8 4)
+  push ring (u8 5)
+  push ring (u8 6)
+  let counts = Buffer.create 2 0
+  bump counts 1
+  bump counts 1
+  let grid = Buffer.ofArray [| Buffer.create 2 (u8 0); Buffer.create 2 (u8 0) |]
+  setCell grid 1 0
+  println $"{ring.data.[0]} {ring.data.[1]} {counts.[1]} {grid.[1].[0]}"
   let b = Buffer.create 2 (u8 0)
   mark b 0
   markFrame ()

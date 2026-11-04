@@ -1,7 +1,8 @@
 // derived Arbitrary on recursive types: the cases that end a value (none of their fields holds
 // the type) come first, and are the only choice at size 0 or past a replayed stream's end, so a
 // type whose base case has fields, one recursive through a list, and types that hold each other
-// all make finite values, and zero bytes make the simplest. Gen.range across all of int, and
+// all make finite values, and zero bytes make the simplest; so do generic ones, whose type
+// parameter's case ends a value once the parameter's type does. Gen.range across all of int, and
 // Gen.char's scalar values
 open Testing
 
@@ -19,6 +20,25 @@ type Expr =
   | Num of int
 
 and Stmt = { label: string; body: Expr }
+
+[<Derive(Arbitrary)>]
+type Expr2<'v> =
+  | Lit of 'v * int
+  | Neg of Expr2<'v>
+  | Add of Expr2<'v> * Expr2<'v>
+
+[<Derive(Arbitrary)>]
+type Chain<'a> =
+  | Next of Chain<'a>
+  | Value of 'a
+
+[<Derive(Arbitrary)>]
+type Labeled<'a> =
+  | Plain of 'a
+  | Missing of string * int
+
+[<Derive(Arbitrary)>]
+type Wrapped = Wrapped of Labeled<Wrapped>
 
 let rec leaves (t: Tree) : int =
   match t with
@@ -39,6 +59,7 @@ let main () =
   println $"{Gen.draw (arbitrary () : Gen<Tree>) (Source.ofBytes [||] 100)}"
   println $"{Gen.draw (arbitrary () : Gen<Rose>) (Source.ofBytes [||] 100)}"
   println $"{Gen.draw (arbitrary () : Gen<Expr>) (Source.ofBytes [||] 100)}"
+  println $"{Gen.draw (arbitrary () : Gen<Expr2<int>>) (Source.ofBytes [||] 0)} {Gen.draw (arbitrary () : Gen<Chain<int>>) (Source.ofBytes [||] 10)} {Gen.draw (arbitrary () : Gen<Wrapped>) (Source.ofBytes [||] 10)}"
   // bytes that pick the recursive case each time, until they run out
   println $"{leaves (Gen.draw (arbitrary () : Gen<Tree>) (Source.ofBytes (Array.create 40 (u8 255)) 100))}"
   println $"{Gen.sample (u64 7) 8 (Gen.map leaves (arbitrary ()))}"

@@ -454,7 +454,9 @@ let run (types: Map<string, TypeInfo>) (funs: list<MFun>) : list<MFun> =
     let rec lower (e0: CExpr) : CExpr =
       let e = { e0 with k = mapChildren lower e0.k }
       match e.k with
-      | CMatch(s, cases) when List.exists (fun (p, _, _) -> nested p) cases ->
+      // (one with a literal that isn't a value of its type is left as written: the code compares
+      // it at the type's width, where it may equal a later case's)
+      | CMatch(s, cases) when List.exists (fun (p, _, _) -> nested p) cases && List.forall (fun (p, _, _) -> Opt.Literals.patternFits types s.ty p) cases ->
         // a clause per alternative of a top-level or-pattern, sharing its body (by id)
         let rec alts (p: CPat) : list<CPat> =
           match p with

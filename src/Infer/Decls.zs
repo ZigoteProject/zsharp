@@ -369,10 +369,10 @@ let private declareImpl (cx: Cx) (tr0: string) (head: SType) (others: list<SType
 
 // a union's cases ranked by how readily a generated value of each ends (Shape.cases' rank): 0
 // when no field can hold a value of the type, 1 when the ones that can are lists, arrays or
-// options (empty at size 0 and from zero bytes), 2 otherwise. A field holds the type when it is
-// the type, or names a type that reaches it through its fields (found once, by a search back
-// from the type over the types it reaches: linear in their definitions), or is a type parameter,
-// which may be the type itself.
+// options (empty at size 0 and from zero bytes), 2 when the others only might (a type parameter,
+// which may be the type itself: Plain of 'a in Labeled<'a> when T holds a Labeled<T>), 3 when a
+// field is the type or names one that reaches it through its fields (found once, by a search
+// back from the type over the types it reaches: linear in their definitions).
 let private caseRanks (cx: Cx) (tname: string) (cs: list<string * list<Ty>>) : Map<string, int> =
   let rec names (t: Ty) : list<string> =
     match t with
@@ -406,18 +406,23 @@ let private caseRanks (cx: Cx) (tname: string) (cs: list<string * list<Ty>>) : M
         Buffer.push p back
   let rec holds (t: Ty) : bool =
     match t with
-    | TGen _ -> true
     | TCon(n, args) -> n = tname || Set.contains n reaching.Value || List.exists holds args
     | TTuple ts -> List.exists holds ts
     | _ -> false
+  let rec mayHold (t: Ty) : bool =
+    match t with
+    | TGen _ -> true
+    | TCon(_, args) -> List.exists mayHold args
+    | TTuple ts -> List.exists mayHold ts
+    | _ -> false
   let rec rank (t: Ty) : int =
-    if not (holds t) then
+    if not (holds t) && not (mayHold t) then
       0
     else
       match t with
       | TCon(n, [ _ ]) when n = "list" || n = "array" || n = "option" -> 1
       | TTuple ts -> List.fold (fun m x -> max m (rank x)) 0 ts
-      | _ -> 2
+      | _ -> if holds t then 3 else 2
   Map.ofList (List.map (fun (c, fts) -> (c, List.fold (fun m t -> max m (rank t)) 0 fts)) cs)
 
 // a type's shape, as a derive sees it

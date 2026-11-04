@@ -62,7 +62,11 @@ let rec pattern (cx: Cx) (names: ref<Map<string, string>>) (p: Pat) (ty: Ty) : C
     expect cx "pattern" ty (fresh cx.v kInt)
     CPInt n
   | PNegInt n ->
-    expect cx "pattern" ty (fresh cx.v kSignedInt)
+    // said plainly where the type is known (the mismatch's own advice, a conversion, can't be
+    // written in a pattern)
+    match prune cx.v ty with
+    | TCon(u, []) when Set.contains u unsigned -> fail $"a negative pattern is a signed integer; {u} has no {n}"
+    | _ -> expect cx "pattern" ty (fresh cx.v kSignedInt)
     CPInt n
   | PChar c ->
     expect cx "pattern" ty tChar

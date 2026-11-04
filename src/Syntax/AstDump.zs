@@ -58,8 +58,9 @@ let dump (src: Source.Source) (toks: array<Token.Token>) (decls: list<Decl>) : l
     | PWild -> "_"
     | PIdent(x, None) -> x + at p.patAt
     | PIdent(x, Some q) -> "(" + x + " " + pat q + ")" + at p.patAt
-    | PInt n
-    | PNegInt n -> $"{n}"
+    | PInt n -> $"{n}"
+    // a negative literal as written (-0 is one too, signed as -1 is)
+    | PNegInt n -> $"(neg {Int.wrappingSub (i64 0) n})"
     | PChar c -> $"#{c}"
     | PStr s -> quote s
     | PBool b -> if b then "true" else "false"

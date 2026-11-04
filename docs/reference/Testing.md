@@ -163,9 +163,10 @@ type CaseInfo
 
 A union's case as a derive sees it (`Shape.cases`): its name, its index, how many fields, and
 its rank, how readily a generated value of it ends: 0 when no field can hold a value of the
-type, 1 when only lists, arrays and options can (empty at size 0 and from zero bytes), 2
-otherwise (a field that is the type, or holds it in a record, a tuple, a result or another
-union, or is a type parameter, which may be the type).
+type, 1 when only lists, arrays and options can (empty at size 0 and from zero bytes), 2 when
+the others only might (a type parameter, which may be the type: `Plain of 'a` in `Labeled<'a>`
+drawn for a `T` that holds a `Labeled<T>`), 3 otherwise (a field that is the type, or holds
+it in a record, a tuple, a result or another union).
 
 ### `Testing.Verdict`
 
@@ -429,8 +430,10 @@ derive Arbitrary
 A record draws each field; a union draws a case, then its fields; a field is drawn at half the
 size. The cases come in order of rank, so zero bytes take one of the lowest; at size 0 and past
 a replayed stream's end the choice is the lowest rank's cases with the fewest fields. So a
-value ends when its type has a case of rank 0 or 1, at every level; a type whose every case
-is rank 2 (each holds the type outright) may not.
+value ends when every type on its way has a case below rank 3 that ends it (a generic one's
+type-parameter case ends it once the parameter's own type does); a type whose every case
+holds it outright (rank 3) may not, and a case holding a type parameter comes after those
+that hold nothing.
 
 ### `impl Checks<unit>`
 

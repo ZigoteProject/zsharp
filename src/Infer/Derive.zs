@@ -10,7 +10,7 @@
 ///   Shape.buildCase name (fun f -> e)   the named union case from per-field results, or None
 ///   Shape.cases   a union's cases with no value in hand: { name; index; count; rank } each, a
 ///     list (rank: 0 when no field can hold a value of the type, 1 when only lists, arrays and
-///     options do, 2 otherwise; a type parameter may be the type)
+///     options do, 2 when only a type parameter might, 3 otherwise)
 /// The expansion has no places: the derive is written in another module, so an error in it is at
 /// the use (the type declaration) instead.
 open Types.Fail
@@ -22,7 +22,7 @@ type ShapeInfo =
   | RecordShape of list<string * option<Expr>>
   /// a union: its cases' names and their fields' names, and each case's rank: how readily a
   /// generated value of it ends (0 none of its fields holds the type, 1 only in lists, arrays or
-  /// options, 2 otherwise)
+  /// options, 2 only maybe, through a type parameter, 3 otherwise)
   | UnionShape of list<string * list<string>> * Map<string, int>
 
 type private FieldInfo =
@@ -171,7 +171,7 @@ let expand (tname: string) (head: SType) (shape: ShapeInfo) (defs: list<Definiti
         let info (i: int) (c: string * list<string>) =
           let (cn, fnames) = c
           let fv (f: string) (v: Expr) : FieldValue = { field = f; nameAt = -1; value = v }
-          plain (RecordLit [ fv "name" (plain (StrLit cn)); fv "index" (plain (Lit(i64 i))); fv "count" (plain (Lit(i64 (List.length fnames)))); fv "rank" (plain (Lit(i64 (Option.defaultValue 2 (Map.tryFind cn ranks))))) ])
+          plain (RecordLit [ fv "name" (plain (StrLit cn)); fv "index" (plain (Lit(i64 i))); fv "count" (plain (Lit(i64 (List.length fnames)))); fv "rank" (plain (Lit(i64 (Option.defaultValue 3 (Map.tryFind cn ranks))))) ])
         let cons (acc: Expr) (item: Expr) = plain (Call("::", [ plain (Tuple [ item; acc ]) ]))
         List.fold cons (var "[]") (List.rev (List.mapi info shapes))
       | RecordShape _ -> var "[]"

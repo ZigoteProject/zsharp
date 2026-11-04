@@ -1,1 +1,1 @@
-tests/err_noalloc_buffer_call.zs:6: error: put is [<NoAlloc>], but put writes a Buffer it then drops (one a call made), which may free it
+tests/err_noalloc_buffer_call.zs:6: error: put is [<NoAlloc>], but put writes a Buffer a call gave and then drops it, which may free it

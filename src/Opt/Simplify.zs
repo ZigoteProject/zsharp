@@ -183,28 +183,9 @@ let private fitsIn (t: Ty) (n: i64) : bool =
   | TCon("u64", []) -> n >= i64 0
   | _ -> false
 
-// an integer literal or pattern that's a value of its type (a char's a scalar value): one that
-// isn't (256 at u8, as a pattern the code compares at the type's width) is left to the code,
-// never known or matched at compile time
-let private litFits (t: Ty) (n: i64) : bool =
-  match t with
-  | TCon("char", []) -> n >= i64 0 && n <= i64 0x10FFFF
-  | _ -> fitsIn t n
-
-let rec private patFits (t: Ty) (p: CPat) : bool =
-  match p with
-  | CPInt n -> litFits t n
-  | CPTuple ps ->
-    match t with
-    | TTuple ts when List.length ts = List.length ps -> List.forall (fun (x, q) -> patFits x q) (List.zip ts ps)
-    | _ -> true
-  | CPOr(a, b) -> patFits t a && patFits t b
-  | CPAs(a, _, _) -> patFits t a
-  | _ -> true
-
 let private literal (e: CExpr) : option<CPat> =
   match e.k with
-  | CInt n when litFits e.ty n -> Some(CPInt n)
+  | CInt n when Opt.Literals.fits e.ty n -> Some(CPInt n)
   | CBool b -> Some(CPBool b)
   | CStr s -> Some(CPStr s)
   | _ -> None
@@ -596,7 +577,7 @@ let run (types: Map<string, TypeInfo>) (funs: list<MFun>) : list<MFun> =
       let caseEnv (p: CPat) : Map<string, Known> =
         match (s.k, p) with
         | (CLocal x, CPCtor(_, tag, ps)) -> Map.add x (KCtor(tag, List.map patVarName ps)) env
-        | (CLocal x, _) -> if isLiteralPat p && patFits s.ty p then Map.add x (KLit p) env else env
+        | (CLocal x, _) -> if isLiteralPat p && Opt.Literals.patternFits types s.ty p then Map.add x (KLit p) env else env
         | _ -> env
       match cases with
       | [ (CPBool true, None, t); (CPWild, None, f) ] ->
@@ -617,7 +598,7 @@ let run (types: Map<string, TypeInfo>) (funs: list<MFun>) : list<MFun> =
     // matches, a test of its guard, or (where a case can't be told) the cases left; None when
     // nothing is decided
     and select (env: Map<string, Known>) (x: string) (xty: Ty) (cases: list<CPat * option<CExpr> * CExpr>) (ty: Ty) : option<CExpr> =
-      let fits = List.forall (fun (p, _, _) -> patFits xty p) cases
+      let fits = List.forall (fun (p, _, _) -> Opt.Literals.patternFits types xty p) cases
       let rec go (cs: list<CPat * option<CExpr> * CExpr>) (dropped: bool) : option<CExpr> =
         match cs with
         | [] -> None
@@ -721,7 +702,7 @@ let run (types: Map<string, TypeInfo>) (funs: list<MFun>) : list<MFun> =
         | CMatch _ -> true
         | _ -> false
       let ts = tails s
-      if not inside || List.forall (fun t -> Option.isNone (shape t)) ts || not (List.forall (fun (p, _, _) -> patFits s.ty p) cases) then
+      if not inside || List.forall (fun t -> Option.isNone (shape t)) ts || not (List.forall (fun (p, _, _) -> Opt.Literals.patternFits types s.ty p) cases) then
         None
       else
         let reaches = List.map reach ts

@@ -13,9 +13,10 @@
   another wraps as the code does. A static's `f32` literal is single precision (so widening it
   is exact), and an `int` or `usize` past 32 bits converted to a wider integer or a float is
   left to the code, as a chip wraps it. A negative literal is signed in a pattern too (`| -1` at `u8` is an error, as `let
-  x : u8 = -1` is; `| -0x8000_0000_0000_0000` matches i64's least), and a pattern that isn't a
-  value of its type (`| 256` at `u8`) is never matched at compile time, so the code's comparison
-  at the type's width decides it. So `Q15.ofFloat 0.5` is a constant once inlined, and a table
+  x : u8 = -1` is, and says so; `| -0x8000_0000_0000_0000` matches i64's least), and a match
+  with a pattern literal, at any depth, that isn't a value of its type (`| Some 256` at
+  `option<u8>`) is neither decided at compile time nor made a decision tree, so the code's
+  comparison at the type's width decides it, in order. So `Q15.ofFloat 0.5` is a constant once inlined, and a table
   of them a static object (`tests/fold.zs`, `tests/fold_edges.zs`, `tests/static.zs`,
   `tests/err_neg_pattern.zs`).
 - Constants in flash, the rest of item 3 (0014): a top-level record, tuple or plain union of
@@ -240,9 +241,12 @@
   with `--no-heap`, `tests/mcu/noheap_placed.zs`). `[<Align>]` on a type is left. Writing a
   Buffer's element is no allocation for `[<NoAlloc>]` and `--no-heap` (it was taken for an
   array's copy-on-write), and the write borrows the Buffer as a read does, so writing a
-  parameter's or a top-level Buffer frees nothing; the element it overwrites is a drop when
-  its type is counted, and so is a Buffer a call gave that's dropped after the write
-  (`tests/noalloc.zs`, `tests/err_noalloc_buffer.zs`, `tests/err_noalloc_buffer_call.zs`).
+  parameter's, a field's, an element's or a top-level Buffer frees nothing; the element it
+  overwrites is a drop when its type is counted, and so is a Buffer a call gave or a mutable
+  moved into the write. A Buffer (or array, or string) reached through a pattern variable is
+  lent to a read or write only when nothing else in it needs the value it was matched from,
+  which could free it first (`tests/noalloc.zs`, `tests/buffer_lend.zs`,
+  `tests/err_noalloc_buffer.zs`, `tests/err_noalloc_buffer_call.zs`).
 - A library (`--lib`) may hold top-level constants: a table, a record, a tree of union cases
   are static objects with no startup code, which a library doesn't have; only a value really
   computed at startup is an error, from the code generator, and so is a startup assert
@@ -513,14 +517,17 @@ a real machine. The flagship runs under QEMU's STM32F405, not yet on the board i
   one. `Arbitrary` has impls for Core's types, lists, arrays, options, results and tuples, and
   `[<Derive(Arbitrary)>]` for records and unions: a union's cases are ranked by how readily a
   value ends (0 when no field can hold the type, 1 when only lists, arrays and options do,
-  which are empty at size 0, 2 otherwise; a type parameter may be the type), drawn in that
-  order, and at size 0 or past a replayed stream's end the lowest rank's with the fewest fields
-  are the only choice, so a tree whose leaves carry values, one recursive through a list or a
-  `result`, and a generic one end (the derives gain `Shape.cases`, each case's `rank` among its
-  facts). `Gen.option` is `None` at size 0; `Gen.range` and `Gen.frequency` span all of `int`
-  without overflowing; and `Gen.char` draws any scalar value but a surrogate, the controls
-  last, so a case shrinks to a printable one (a panic's message is printed by its length, so a
-  NUL in one doesn't cut it) (`tests/property/recursive.zs`). `prop { let! x = Gen.int … do! Prop.assume (y <> 0)
+  which are empty at size 0, 2 when only a type parameter might, 3 when a field is or reaches
+  the type), drawn in that order, and at size 0 or past a replayed stream's end the lowest
+  rank's with the fewest fields are the only choice. So a tree whose leaves carry values, one
+  with a way out through a list, and a generic one (`Expr<'v>`'s `Lit of 'v`, a `Labeled<'a>`
+  holding the type) end; a type whose every case holds it outright (through a `result`, say)
+  may not past a replayed stream's end, and a generic union's type-parameter cases come after
+  its others (the derives gain `Shape.cases`, each case's `rank` among its facts).
+  `Gen.option` is `None` at size 0; `Gen.range` spans all of `int` without overflowing and
+  `Gen.frequency` sums its weights in u64; and `Gen.char` draws any scalar value but a
+  surrogate, the controls last, so a case shrinks to a printable one (a panic's message is
+  printed by its length, so a NUL in one doesn't cut it) (`tests/property/recursive.zs`). `prop { let! x = Gen.int … do! Prop.assume (y <> 0)
   … return … }` draws as it goes, discards a case (`Prop.assume`) or labels it (`Prop.label`,
   `classify`, `collect`): a passing property reports how its cases were labelled, a failure
   shows the failing case's labels. `Prop.model commands { init; step }` checks a system
@@ -530,8 +537,9 @@ a real machine. The flagship runs under QEMU's STM32F405, not yet on the board i
   still panics, shown, and saved beside the file in `.zs-cache/failures/<file>/`, keyed by
   the test file and the property's path; the next run replays it first, and once it passes
   it's deleted. A panic the case doesn't reproduce alone, and a run that gave up on its
-  discards, are reported as they happened, nothing shrunk or saved; a shrink keeps the panic it
-  started with (a candidate that ends in a stack overflow instead isn't taken). `zs fuzz file.zs path [--for n] [--
+  discards, are reported as they happened, nothing shrunk or saved; a shrink keeps the failure
+  it started with (its panic or sanitizer report with the values left out), so a candidate that
+  trips another bug, or ends in a stack overflow, isn't taken. `zs fuzz file.zs path [--for n] [--
   flags]` (track D, item 6) runs one property under libFuzzer (the tests built with its
   instrumentation and the sanitizers; a panic aborts, so it's a crash), each input the
   property's bytes (`Gen.bytes ()` takes an input whole, so a property over bytes fuzzes a

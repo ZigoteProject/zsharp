@@ -331,8 +331,14 @@ module Gen =
   let frequency (pairs: list<int * Gen<'a>>) : Gen<'a> =
     if List.exists (fun (w, _) -> w < 0) pairs then
       panic "Gen.frequency needs weights of 0 or more"
-    // summed in u64, as a total past Int's max (or a 32-bit chip's) still draws
-    let total = List.fold (fun (t: u64) (w, _) -> Int.wrappingAdd t (u64 w)) (u64 0) pairs
+    // summed in u64, as a total past Int's max (or a 32-bit chip's) still draws; one past u64's
+    // can't be drawn from
+    let add (t: u64) (pair: int * Gen<'a>) =
+      let next = Int.wrappingAdd t (u64 (fst pair))
+      if next < t then
+        panic "Gen.frequency's weights sum past u64's largest"
+      next
+    let total = List.fold add (u64 0) pairs
     if total = u64 0 then
       panic "Gen.frequency needs a weight above 0"
     Gen(fun s ->
@@ -603,16 +609,19 @@ impl Arbitrary<'a * 'b * 'c * 'd> =
 
 /// A union's case as a derive sees it (`Shape.cases`): its name, its index, how many fields, and
 /// its rank, how readily a generated value of it ends: 0 when no field can hold a value of the
-/// type, 1 when only lists, arrays and options can (empty at size 0 and from zero bytes), 2
-/// otherwise (a field that is the type, or holds it in a record, a tuple, a result or another
-/// union, or is a type parameter, which may be the type).
+/// type, 1 when only lists, arrays and options can (empty at size 0 and from zero bytes), 2 when
+/// the others only might (a type parameter, which may be the type: `Plain of 'a` in `Labeled<'a>`
+/// drawn for a `T` that holds a `Labeled<T>`), 3 otherwise (a field that is the type, or holds
+/// it in a record, a tuple, a result or another union).
 type CaseInfo = { name: string; index: int; count: int; rank: int }
 
 /// A record draws each field; a union draws a case, then its fields; a field is drawn at half the
 /// size. The cases come in order of rank, so zero bytes take one of the lowest; at size 0 and past
 /// a replayed stream's end the choice is the lowest rank's cases with the fewest fields. So a
-/// value ends when its type has a case of rank 0 or 1, at every level; a type whose every case
-/// is rank 2 (each holds the type outright) may not.
+/// value ends when every type on its way has a case below rank 3 that ends it (a generic one's
+/// type-parameter case ends it once the parameter's own type does); a type whose every case
+/// holds it outright (rank 3) may not, and a case holding a type parameter comes after those
+/// that hold nothing.
 derive Arbitrary =
   let arbitrary () : Gen<'self> =
     Gen(fun src ->
@@ -622,7 +631,7 @@ derive Arbitrary =
           Shape.build (fun f -> Ok(Gen.draw (Gen.scale (fun n -> n / 2) (arbitrary ())) src))
         | UnionKind ->
           let all = Shape.cases
-          let lowest = List.fold (fun m (c: CaseInfo) -> min m c.rank) 2 all
+          let lowest = List.fold (fun m (c: CaseInfo) -> min m c.rank) 3 all
           let ends = List.filter (fun (c: CaseInfo) -> c.rank = lowest) all
           // of those, the ones with the fewest fields: the only choice at size 0 or past the end
           let fewest = List.fold (fun m (c: CaseInfo) -> min m c.count) (List.head ends).count ends
@@ -632,7 +641,7 @@ derive Arbitrary =
             if src.size = 0 || src.overrun.Value then
               least
             else
-              List.append (ranked 0) (List.append (ranked 1) (ranked 2))
+              List.append (ranked 0) (List.append (ranked 1) (List.append (ranked 2) (ranked 3)))
           let c = Gen.draw (Gen.elements cases) src
           match Shape.buildCase c.name (fun f ->
             Ok(Gen.draw (Gen.scale (fun n -> n / 2) (arbitrary ())) src)) with
