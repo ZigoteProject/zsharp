@@ -3,11 +3,11 @@
 ## Unreleased
 
 ### Compiler
-- Constants in flash (0014, item 1, for arrays): a top-level array literal of numbers, bools or
-  strings is a static object in the image (count 0, never unique: a write copies it), the value's
+- Constants in flash (0014, item 1, for arrays and lists): a top-level array or list literal of
+  numbers, bools or strings is a static object in the image (count 0, never unique: a write copies it), the value's
   global pointing at it, with no startup code and no heap; on a chip its bytes are in flash
   (`tests/static.zs`, `tests/mcu/static.zs`: three tables on a Cortex-M4, 64 bytes of heap and
-  three allocations gone, and the image 496 bytes smaller without their startup code). `--no-heap` takes such a value. Lists, records and unions are still built at startup.
+  three allocations gone, and the image 496 bytes smaller without their startup code). `--no-heap` takes such a value. Records and unions are still built at startup.
 - `use` under effects (track S, item 10): a throw, or any handler clause that stops without
   resuming, disposes what the `use`s it passes over bound, newest first, before the clause runs,
   as a cancelled task does (`tests/effects/use.zs`). It freed them without their `Dispose.dispose`.

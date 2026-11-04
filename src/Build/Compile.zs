@@ -63,7 +63,7 @@ let private noAllocRoots (prog: Program) (funs: list<MFun>) (noHeap: bool) : lis
   let marked = List.filter (fun (f: MFun) -> Map.tryFind (Core.Ir.baseFunName f.name) prog.targets = Some [ "noalloc" ]) funs
   let handlers = List.filter (fun (e: Core.Ir.Export) -> e.interrupt) prog.exports
   // a value whose initializer is a static object (0014 item 1) has no startup code to check
-  let isStatic (init: string) = List.exists (fun (f: MFun) -> f.name = init && Option.isSome (Core.Ir.staticArray f.body)) funs
+  let isStatic (init: string) = List.exists (fun (f: MFun) -> f.name = init && Core.Ir.staticInit f.body) funs
   let entries = if noHeap then "main" :: List.append (List.filter (fun i -> not (isStatic i)) (List.map snd prog.values)) (List.map (fun (e: Core.Ir.Export) -> e.fname) prog.exports) else []
   let present (n: string) = List.exists (fun (f: MFun) -> f.name = n) funs
   let byAttribute = List.map (fun (f: MFun) -> (f.name, "noalloc")) marked

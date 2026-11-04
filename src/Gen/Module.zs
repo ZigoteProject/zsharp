@@ -171,8 +171,7 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
   let staticOf (v: string) (init: string) : option<string> =
     match Map.tryFind init fnTable with
     | Some f when List.isEmpty f.pars ->
-      match (staticArray f.body, f.ret) with
-      | (Some xs, TCon("array", [ el ])) ->
+      let elemOf (el: Ty) : StaticElem -> string =
         let lt = llty g el
         // an integer in its width's two's complement, as LLVM reads a constant of the type
         let width = if lt = "i8" then 8 else if lt = "i16" then 16 else if lt = "i32" then 32 else 64
@@ -182,16 +181,35 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
           else
             let v = n &&& ((i64 1 <<< i64 width) - i64 1)
             if v >= (i64 1 <<< i64 (width - 1)) then v - (i64 1 <<< i64 width) else v
-        let one (x: StaticElem) : string =
+        fun (x: StaticElem) ->
           match x with
           | SInt n -> $"{lt} {fitted n}"
           | SFloat x -> $"{lt} {floatConst lt x}"
           | SBool b -> $"{lt} {(if b then "true" else "false")}"
           | SStr s -> $"ptr {sharedStr s}"
+      match (staticArray f.body, staticList f.body, f.ret) with
+      | (Some xs, _, TCon("array", [ el ])) ->
+        let lt = llty g el
+        let one = elemOf el
         let n = List.length xs
         let name = $"@\"zss.{v}\""
         topLine g $"{name} = {shared} unnamed_addr constant {{ i_W, i_W, [{n} x {lt}] }} {{ i_W 0, i_W {n}, [{n} x {lt}] [{String.join ", " (List.map one xs)}] }}"
         Some name
+      | (_, Some xs, TCon("list", [ el ])) ->
+        // a cell per element, each pointing at the next, the last at the static []; the header
+        // as a cons cell's: the count 0, and the tag where the union keeps one
+        let t = f.ret
+        let one = elemOf el
+        let cell = cellTy g t 1
+        let header = if tagged g t && not (tagWord g t) then $"{i64 1 <<< i64 32}" else "0"
+        let tagPart = if tagWord g t then ", i32 1" else ""
+        let n = List.length xs
+        let names = List.init n (fun i -> $"@\"zss.{v}.{i}\"")
+        let nil = nullary g t 0
+        List.iteri (fun (i: int) (x: StaticElem) ->
+          let next = if i + 1 < n then List.item (i + 1) names else nil
+          topLine g $"{List.item i names} = {shared} unnamed_addr constant {cell} {{ i_W {header}{tagPart}, {one x}, ptr {next} }}") xs
+        Some(List.head names)
       | _ -> None
     | _ -> None
   let statics = Map.ofList (List.choose (fun (v, init) -> if Map.containsKey v valueTypes then Option.map (fun s -> (v, s)) (staticOf v init) else None) values)

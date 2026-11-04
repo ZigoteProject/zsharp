@@ -6,6 +6,8 @@ let names = [| "zero"; "one"; "two" |]
 let flags = [| true; false; true |]
 let weights = [| 0.5; 1.25; -2.0 |]
 let small = [| i8 -3; i8 7 |]
+let primes = [ 2; 3; 5; 7 ]
+let commands = [ "off"; "on"; "blink" ]
 
 let main () =
   let mutable sum = u32 0
@@ -15,4 +17,11 @@ let main () =
   let mutable copy = crc
   copy.[0] <- u32 1
   println $"{crc.[0]} {copy.[0]} {Array.toList names} {Array.length flags}"
+  // static lists: cells in the image, the last pointing at the static []; a longer list shares
+  // them, and taking the tail is reading
+  let more = 1 :: primes
+  match commands with
+  | first :: rest ->
+    println $"{List.sum primes} {List.length more} {first} {rest} {List.tail more = primes}"
+  | [] -> ()
   0

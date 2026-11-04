@@ -475,6 +475,32 @@ let staticArray (e: CExpr) : option<list<StaticElem>> =
     if List.forall Option.isSome elems then Some(List.map Option.get elems) else None
   | _ -> None
 
+/// A top-level value's initializer that is a list literal of constants: its elements' values, for
+/// static cells in the image (0014 item 1); None for anything else, the empty list included (a
+/// static cell already).
+let staticList (e: CExpr) : option<list<StaticElem>> =
+  let rec plain (x: CExpr) : CExpr =
+    match x.k with
+    | CLine(_, a) -> plain a
+    | _ -> x
+  let rec go (x: CExpr) (acc: list<StaticElem>) : option<list<StaticElem>> =
+    match (plain x).k with
+    | CCtor(_, 1, [ h; t ]) ->
+      match staticElem h with
+      | Some v -> go t (v :: acc)
+      | None -> None
+    | CCtor(_, 0, []) -> Some(List.rev acc)
+    | _ -> None
+  match (plain e).ty with
+  | TCon("list", [ _ ]) ->
+    match go e [] with
+    | Some [] -> None
+    | found -> found
+  | _ -> None
+
+/// Whether a top-level value's initializer becomes a static object (no startup code).
+let staticInit (e: CExpr) : bool = Option.isSome (staticArray e) || Option.isSome (staticList e)
+
 /// Core as indented text, for reading what a pass did (ZS_DUMP_CORE); showTy shows an effect's
 /// label.
 let rec showCore (showTy: Ty -> string) (ind: int) (e: CExpr) : string =

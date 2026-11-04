@@ -243,8 +243,8 @@ if diff <(tests/project/git.sh 2>&1) tests/project/git.expected >"$tmp/git.diff"
 else echo "FAIL tests/project/git.sh"; cat "$tmp/git.diff"; fail=1; fi
 # constants in flash (0014 item 1): a top-level array literal of constants is a static object in
 # the image, its global pointing at it, with no startup code
-if bin/zs build tests/static.zs --emit-llvm -o "$tmp/static" >/dev/null 2>&1 && [ "$(grep -c '^@"zss\.' "$tmp/static.ll")" = 5 ] && ! grep -q '^@"zsv\.[a-z]*" = internal global ptr zeroinitializer' "$tmp/static.ll"; then
-  echo "ok   tests/static.zs: five static tables in the image"
+if bin/zs build tests/static.zs --emit-llvm -o "$tmp/static" >/dev/null 2>&1 && [ "$(grep -c '^@"zsv\.[a-z]*" = internal global ptr @"zss\.' "$tmp/static.ll")" = 7 ] && ! grep -q '^@"zsv\.[a-z]*" = internal global ptr zeroinitializer' "$tmp/static.ll"; then
+  echo "ok   tests/static.zs: five static tables and two static lists in the image"
 else echo "FAIL tests/static.zs: static tables"; grep '^@"zs[sv]\.' "$tmp/static.ll" | cut -c1-100; fail=1; fi
 # the three small tools of examples/tools, built and run (track S's exit test)
 if diff <(tests/examples_tools.sh 2>&1) tests/examples_tools.expected >"$tmp/tools.diff"; then echo "ok   tests/examples_tools.sh (examples/tools: grep, jsonpp, tail -f)"
