@@ -98,9 +98,41 @@ type private K =
 
 /// The function being lowered: its frames in scope (labels in canonical order, each with the
 /// expression holding its frame), its mutable variables in scope (the name in Core, the name in the
-/// block being made, the type), its result's type, and the joins of Simplify's that became local
-/// functions (their function, the mutable variables they take).
-and private Ctx = { ev: list<Ty * CExpr>; muts: list<string * string * Ty>; ret: Ty; joins: Map<string, string * list<string>> }
+/// block being made, the type), its result's type, the joins of Simplify's that became local
+/// functions (their function, the mutable variables they take), and the `use` scopes open here
+/// (each a call of the local function disposing what it bound, the newest first): what a stop
+/// passing over them disposes, where this function returns for it.
+and private Ctx =
+  { ev: list<Ty * CExpr>
+    muts: list<string * string * Ty>
+    ret: Ty
+    joins: Map<string, string * list<string>>
+    uses: list<unit -> CExpr> = [] }
+
+/// e under its line markers.
+let rec private unLine (e: CExpr) : CExpr =
+  match e.k with
+  | CLine(_, a) -> unLine a
+  | _ -> e
+
+/// A `use`'s scope as the parser writes it: `let $use = use.scope after in (dispose; $use)`; the
+/// variable, the scope, the disposal, and the variable's type.
+let private useScope (e: CExpr) : option<string * CExpr * CExpr * Ty> =
+  match e.k with
+  | CLet(u, w, b) ->
+    match ((unLine w).k, (unLine b).k) with
+    | (CPrim("use.scope", [ after ]), CSeq(d, r)) ->
+      match (unLine r).k with
+      | CLocal u2 when u2 = u -> Some(u, after, d, b.ty)
+      | _ -> None
+    | _ -> None
+  | _ -> None
+
+/// e with the `use` markers taken off, for a function with nothing else to lower.
+let rec private stripUseScopes (e: CExpr) : CExpr =
+  match e.k with
+  | CPrim("use.scope", [ after ]) -> stripUseScopes after
+  | k -> { e with k = mapChildren stripUseScopes k }
 
 let private cur (ctx: Ctx) (x: string) : string =
   match List.tryFind (fun (o, _, _) -> o = x) ctx.muts with
@@ -248,7 +280,9 @@ let private lowerAll (types0: Map<string, TypeInfo>) (effects: Map<string, Effec
             let extendWith (vals: Ctx -> list<CExpr>) (cx: Ctx) =
               let inner = fresh "$inner"
               mk (CLet(inner, mk (CPrim("eff.takeCont", [])) contTy, mk (CPrim("eff.setCont", [ contOf (local inner contTy) (vals cx) ])) tUnit)) tUnit
-            let bubble (x: CExpr) (extend: CExpr) = seqE (mk (CIf(isState 1, extend, unitE ())) tUnit) (seqE (mk (CPrim("eff.forget", [ x ])) tUnit) (dummy ()))
+            // the yield goes on up: a clause resuming later takes this frame's rest along; a stop
+            // disposes what the scopes open here bound, since nothing runs the rest
+            let bubble (x: CExpr) (extend: CExpr) = seqE (mk (CIf(isState 1, extend, disposals ctx (unitE ()))) tUnit) (seqE (mk (CPrim("eff.forget", [ x ])) tUnit) (dummy ()))
             let snapVals (cx: Ctx) = List.map (fun (o, _, _, t) -> local (cur cx o) t) snaps
             let rbody =
               let yv = local y callE.ty
@@ -320,6 +354,7 @@ let private lowerAll (types0: Map<string, TypeInfo>) (effects: Map<string, Effec
       | CHandle(l, b, cls, r, rb) -> lowerHandle ctx l b cls r rb ty
       | CPrim("eff.open", [ g ]) -> adapter ctx g e.ty
       | CPrim("eff.lowered", [ x ]) -> x
+      | CPrim("use.scope", [ after ]) -> plain ctx after
       | CJoin(j, ps, b, r) ->
         let r2 = plain ctx r
         mk (CJoin(j, List.map (fun (x, t) -> (x, ev t)) ps, plain ctx b, r2)) ty
@@ -368,7 +403,7 @@ let private lowerAll (types0: Map<string, TypeInfo>) (effects: Map<string, Effec
       let ps = List.map (fun t -> (fresh "$x", t)) (parsOf n openTy)
       let openRow = List.last (rowsOf n openTy)
       let evs = List.map (fun l -> (l, fresh "$ev")) (labelsOf v openRow)
-      let actx = { ctx with ev = List.map (fun (l, x) -> (l, local x (frameT l))) evs; muts = [] }
+      let actx = { ctx with ev = List.map (fun (l, x) -> (l, local x (frameT l))) evs; muts = []; uses = [] }
       let ownRow = List.last (rowsOf n g.ty)
       let args = List.append (List.map (fun (x, t) -> local x (ev t)) ps) (framesFor v actx ownRow)
       let resTy = ev (resultAfter n g.ty)
@@ -424,13 +459,30 @@ let private lowerAll (types0: Map<string, TypeInfo>) (effects: Map<string, Effec
           let inner = lower ctx a k
           mk (CLine(l, inner)) inner.ty
         | CLet(x, w, b) ->
-          lower ctx w (Then(fun cx a ->
-            let b2 = lower cx b k
-            mk (CLet(x, a, b2)) b2.ty))
+          match useScope e with
+          | Some(u, after, d, uty) when not (yields ctx d) ->
+            // the disposal as a local function the scope's yield points call on a stop, and the
+            // scope's end calls; a disposal that performs effects can't run while a stop is on its
+            // way (the yield state is taken), so it stays as it was: run at the end only
+            let dfn = fresh "$dispose"
+            let dty = tfun tUnit tUnit
+            let callD () = mk (CApp(local dfn dty, [ unitE () ])) tUnit
+            let scope =
+              lower { ctx with uses = callD :: ctx.uses } after (Then(fun cx a ->
+                let b2 = give { cx with uses = ctx.uses } k (mk (CSeq(callD (), local u uty)) uty)
+                mk (CLet(u, a, b2)) b2.ty))
+            mk (CLetFun(dfn, false, [ (fresh "$u", tUnit) ], plain { ctx with muts = []; uses = [] } d, scope)) scope.ty
+          | _ ->
+            lower ctx w (Then(fun cx a ->
+              let b2 = lower cx b k
+              mk (CLet(x, a, b2)) b2.ty))
         | CSeq(a, b) ->
           lower ctx a (Then(fun cx a2 ->
             let b2 = lower cx b k
             mk (CSeq(a2, b2)) b2.ty))
+        // a scope not in the parser's shape (its disposal performs effects, or it was rewritten):
+        // the expression as it is, disposed at its end only
+        | CPrim("use.scope", [ after ]) -> lower ctx after k
         | CLetMut(x, w, b) ->
           lower ctx w (Then(fun cx a ->
             let b2 = lower { cx with muts = (x, x, a.ty) :: cx.muts } b k
@@ -544,6 +596,9 @@ let private lowerAll (types0: Map<string, TypeInfo>) (effects: Map<string, Effec
                 h
               | [] -> panic "unreachable"
             give cx k (mk (mapChildren take e.k) (ev e.ty)))
+    /// The disposals of the `use` scopes open in ctx, the newest first, then rest: what a stop
+    /// passing over them runs where the function returns for it.
+    and disposals (ctx: Ctx) (rest: CExpr) : CExpr = List.fold (fun (acc: CExpr) (d: unit -> CExpr) -> seqE (d ()) acc) rest (List.rev ctx.uses)
     /// The type a loop's round gives: whether to go on, then the loop's state (the for loop's
     /// variable, then the mutable variables in scope).
     and roundTy (ctx: Ctx) (xs: list<Ty>) : Ty =
@@ -574,7 +629,7 @@ let private lowerAll (types0: Map<string, TypeInfo>) (effects: Map<string, Effec
       // a round: the state as parameters (the mutable variables declared again)
       let inner = List.map (fun (o, n, t) -> (o, fresh n, t)) ms
       let rps = List.append (List.map (fun (x, t, _) -> (x, t)) xs) (List.map (fun (_, n, t) -> (n + "p", t)) inner)
-      let rctx = { ctx with muts = inner; ret = rty }
+      let rctx = { ctx with muts = inner; ret = rty; uses = [] }
       let finish (c: Ctx) (more: bool) (next: list<CExpr>) = pack more (List.append next (List.map (fun (o, _, t) -> local (cur c o) t) ms))
       let rounded = round rctx finish
       let rbody = List.fold (fun (acc: CExpr) (m: string * string * Ty) -> match m with (_, n, t) -> mk (CLetMut(n, local (n + "p") t, acc)) acc.ty) rounded (List.rev inner)
@@ -613,7 +668,7 @@ let private lowerAll (types0: Map<string, TypeInfo>) (effects: Map<string, Effec
         let r = fresh "$r"
         let callE = mk (CApp(roundLocal, List.map (fun (c, t, _) -> local c t) cells)) rty
         let rv = local r rty
-        let onYield = seqE (mk (CIf(isState 1, extend (), unitE ())) tUnit) (seqE (mk (CPrim("eff.forget", [ rv ])) tUnit) (seqE (mk (CAssign(yielded, mk (CBool true) tBool)) tUnit) (mk (CAssign(go, mk (CBool false) tBool)) tUnit)))
+        let onYield = seqE (mk (CIf(isState 1, extend (), disposals ctx (unitE ()))) tUnit) (seqE (mk (CPrim("eff.forget", [ rv ])) tUnit) (seqE (mk (CAssign(yielded, mk (CBool true) tBool)) tUnit) (mk (CAssign(go, mk (CBool false) tBool)) tUnit)))
         let assignAll (more: CExpr) (vals: list<CExpr>) =
           let step (acc: CExpr) (cv: (string * Ty * string) * CExpr) =
             match cv with
@@ -632,7 +687,7 @@ let private lowerAll (types0: Map<string, TypeInfo>) (effects: Map<string, Effec
       let y = fresh "$y"
       let yv = local y rty
       let resumed = mk (CApp(local c contTy, [ local p tCPtr ])) rty
-      let again = seqE (mk (CIf(isState 1, extend (), unitE ())) tUnit) (seqE (mk (CPrim("eff.forget", [ yv ])) tUnit) (mk (CPrim("eff.dummy", [])) ctx.ret))
+      let again = seqE (mk (CIf(isState 1, extend (), disposals ctx (unitE ()))) tUnit) (seqE (mk (CPrim("eff.forget", [ yv ])) tUnit) (mk (CPrim("eff.dummy", [])) ctx.ret))
       let goOn = unpack yv (fun more vals -> mk (CIf(more, mk (CApp(driveLocal, vals)) ctx.ret, exitWith (List.skip nx vals))) ctx.ret)
       let rpars = [ (c, contTy); (p, tCPtr) ]
       let rb = mk (CLet(y, resumed, mk (CIf(yielding (), again, goOn)) ctx.ret)) ctx.ret
@@ -649,7 +704,7 @@ let private lowerAll (types0: Map<string, TypeInfo>) (effects: Map<string, Effec
     /// of a yield to another (deep handlers: a resumption is handled again).
     and lowerHandle (ctx: Ctx) (label: Ty) (body: CExpr) (cls: list<int * list<string * Ty> * (string * Ty) * CExpr>) (rvt: string * Ty) (retBody: CExpr) (ansTy: Ty) : CExpr =
       let (rv, rt) = rvt
-      let outer = { ctx with muts = []; joins = Map.empty }
+      let outer = { ctx with muts = []; joins = Map.empty; uses = [] }
       let bt = ev rt
       let marker = fresh "$marker"
       let disp = fresh "$dispatch"
@@ -838,7 +893,7 @@ let private lowerAll (types0: Map<string, TypeInfo>) (effects: Map<string, Effec
     let ctx = { ev = List.map (fun (l, x) -> (l, local x (frameT l))) evs; muts = []; ret = ev f.ret; joins = Map.empty }
     let body = lowerBody ctx f.body
     { f with pars = List.append (List.map (fun (x, t) -> (x, ev t)) f.pars) (List.map (fun (l, x) -> (x, frameT l)) evs); ret = ev f.ret; row = rowEmpty; body = body }
-  let lowered = List.map (fun (f, lower) -> if lower then lowerFun f else f) marked
+  let lowered = List.map (fun (f, lower) -> if lower then lowerFun f else { f with body = stripUseScopes f.body }) marked
   (types.Value, lowered, failure.Value)
 
 /// Lowers a program's functions; effects: each effect's operations. The types get the frames.

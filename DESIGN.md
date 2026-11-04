@@ -313,7 +313,7 @@ form, naming it (`counter { } needs Counter.Builder.bind, for let! and do!`). DE
 takes an `M<'a>` for any `'a`), which Z#'s traits, over one type, can't name; the check per
 form says the same, where it matters.
 - **`task { }`** is the one the compiler makes itself (phase 9): its body stays in direct style, its waits (`let!`, `do!`, `return!`) marked, and it becomes a state machine (§6), so a wait allocates no continuation.
-- **Outside builders:** `use x = e` in plain code disposes `x` after the rest of its block.
+- **Outside builders:** `use x = e` in plain code disposes `x` after the rest of its block, and when a throw or a clause that stops without resuming passes over it (§6.1: the function's return for the stop disposes the scopes open there, newest first).
 
 ## 5. Memory
 

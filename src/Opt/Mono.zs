@@ -614,7 +614,8 @@ let rec private isPure (e: CExpr) : bool =
   | CPrim("int.trailingZeros", args)
   | CPrim("int.rotateLeft", args)
   | CPrim("int.rotateRight", args)
-  | CPrim("int.byteSwap", args) -> List.forall isPure args
+  | CPrim("int.byteSwap", args)
+  | CPrim("use.scope", args) -> List.forall isPure args
   | _ -> false
 
 /// Pure, and can't panic: no checked integer arithmetic (it traps on overflow), no division that

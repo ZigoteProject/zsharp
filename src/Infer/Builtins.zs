@@ -177,6 +177,9 @@ let builtins : Map<string, Builtin> =
       b "Int.rotateLeft" "int.rotateLeft" [ kInt ] (f a (f tInt a)) 2
       b "Int.rotateRight" "int.rotateRight" [ kInt ] (f a (f tInt a)) 2
       b "Int.byteSwap" "int.byteSwap" [ kInt ] (f a a) 1
+      // a use's scope (the parser's desugaring), the expression as it is; the effects pass takes
+      // the marker off
+      b "Native.useScope" "use.scope" [ kAny ] (f a a) 1
       b "Runtime.allocations" "Runtime.allocations" [] (f tUnit tInt) 1
       b "Environment.exit" "Process.exit" [ kAny ] (f tInt a) 1
       b "Mmio.read32" "mmio.read.u32" [] (f (tcon "usize") (tcon "u32")) 1

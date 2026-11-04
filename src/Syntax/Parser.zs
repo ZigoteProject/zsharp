@@ -1230,11 +1230,14 @@ and private seq (p: P) : Ast.Expr =
             v,
             letIn id onCancel (letIn "$use" after (plain (Ast.Seq(disposed, var "$use")))))))
     else
+      // the scope marked (Native.useScope, gone after the effects pass): a throw passing over it
+      // disposes x on the way (Evidence)
       let dispose = plain (Ast.Call(Ast.libraryName "Dispose.dispose", [ var x ]))
+      let scope = plain (Ast.Call(Ast.libraryName "Native.useScope", [ after ]))
       stmt (plain (Ast.Let(binder,
             None,
             v,
-            letIn "$use" after (plain (Ast.Seq(dispose, var "$use"))))))
+            letIn "$use" scope (plain (Ast.Seq(dispose, var "$use"))))))
   else if p.inTask.Value > 0 && peek p = Let && bangAt p 1 then
     // let! p = t: the rest once the task t has given its result
     start p Tree.LetBang

@@ -210,7 +210,7 @@ effects didn't exist.
 - **Generators** allocate nothing per element: a pipeline of `Seq` functions is a loop calling each stage's clause in turn.
 
 **Limits:**
-- **`use` and stopping:** a throw, or any clause that stops without resuming, passes over a `use` on the way to its handler: what was bound is freed, but its `Dispose.dispose` doesn't run. Dispose before throwing, or handle the effect inside the `use`'s scope.
+- **`use` and stopping:** a throw, or any clause that stops without resuming, disposes what the `use`s it passes over bound, newest first, before the clause runs, as a cancelled task does. A clause that resumes later runs the rest, which disposes at the scope's end as always; a resumption never called (a generator its consumer left) disposes nothing, and neither does a stop inside a `task { }` body.
 - **A resumption kept for later** runs under the handlers that were around its `handle`, wherever it's called from.
 - **An operation's own type variable** may appear in its result only (`throw : 'e -> 'a`), not in its parameters.
 

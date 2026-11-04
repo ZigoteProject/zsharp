@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Compiler
+- `use` under effects (track S, item 10): a throw, or any handler clause that stops without
+  resuming, disposes what the `use`s it passes over bound, newest first, before the clause runs,
+  as a cancelled task does (`tests/effects/use.zs`). It freed them without their `Dispose.dispose`.
+  Code without effects compiles exactly as before.
 - A record field's default resolves its names in the record's declaring module, not where the
   record is built: a provided register's `mode0: ModeValue = Alternate` holds for a literal in
   another module (it was "unknown name 'Alternate'" there).

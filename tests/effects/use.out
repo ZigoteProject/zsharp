@@ -1,0 +1,31 @@
+  dispose b
+  dispose a
+Ok 30
+  dispose b
+  dispose a
+Error too big: 3
+  dispose a
+Error too big: 3
+  dispose r1
+  dispose r2
+  dispose r3
+  dispose outer
+Ok 6
+  dispose r1
+  dispose r2
+  dispose outer
+Error stopped at 2
+  inside: Error too big: 5
+  dispose kept
+Ok 1
+  dispose risky
+  dispose risky
+  aborted: negative
+8 -1
+  emit 1
+  emit 2
+  dispose emitter
+[1; 2; 0]
+  dispose deep
+  dispose top
+Error too big: 9
