@@ -353,8 +353,22 @@ module Gen =
   let listOfLength (n: int) (g: Gen<'a>) : Gen<list<'a>> =
     Gen(fun s -> List.init n (fun _ -> draw g s))
 
-  /// A list of `g`, up to the size long: the length first, so a shorter stream is a shorter list.
-  let list (g: Gen<'a>) : Gen<list<'a>> = Gen(fun s -> draw (listOfLength (offset s.size s) g) s)
+  /// A list of `g`: before each element one byte, "another?", then the element; a zero stops,
+  /// so the empty list is one zero byte, and zeroing a byte in a failing case ends the list
+  /// there, which is how a list shrinks to its first elements. The chance of another falls with
+  /// the size, and the list stops at the size's length.
+  let list (g: Gen<'a>) : Gen<list<'a>> =
+    Gen(fun s ->
+      let out = Buffer.ofArray [||]
+      let mutable more = true
+      while more && Buffer.length out < s.size do
+        // another element while the byte is below the threshold the size sets: at size 0 never
+        let b = (Source.draw 1 s).[0]
+        if int b < 256 * s.size / (s.size + 1) && int b > 0 then
+          Buffer.push (draw g s) out
+        else
+          more <- false
+      Array.toList (Buffer.toArray out))
 
   /// An array of `g`, as `list`.
   let array (g: Gen<'a>) : Gen<array<'a>> = map Array.ofList (list g)

@@ -1,8 +1,8 @@
 [0; -20; 21; 56; -52; 27]
 [18; 11; 10; 16]
-[[]; [false; true; false; false; true; false; true; true; true; false; false; false; false; false; true; true; false; false; true; true; false; false; false; true; true; true; true; true; false; true; false; true; true; false; false; false; true; true; true; false; true; true]; [true; false; false; true; true; true; true; true; true; true; false; false; false; true; false; true; true; true; false; true; true; false; true; true; true; true; false; true; true; true; false; false; false; true; false; false; true; true; false; true; false; false; true; true; true; false]]
-[; _x輦ᰑ㼷툂f'<5B䈽^W^t,GT_[0ࠐᕉ%!悃2I+ჸ-R籗ެuHD2Cጬ(; |4%‥!炿UF諾뮳兀bjOzr5?vS/  {3WNy䢨]
-[{ id = 0; flags = []; body = Dot }; { id = 13; flags = [true; false; false; true; false; true]; body = Circle 1 }; { id = 0; flags = [false; false; true; true; false; false; true; true; false; false; false]; body = Dot }]
+[[]; [false]; [false; false; true; false; false; false; true; false; true; false; true; true; true; true; true; false; false; true; false; true; true; false; true; true; true; false; false; false; true; false; true]]
+[; _QW'㝲f楻}䈽튖쭔ST᰻枨ᕉa悃 +wB籗஭HaCLᶼ4h+炿|諾2`#O; r:v, 虛dN'ꌭ'⹽꽙♕㉵蒯N쬻[삏Iz!tXC{B3 ^揟☍H͑i\'繍4䭯⛔N5粷䘡T1[">}]
+[{ id = 0; flags = []; body = Dot }; { id = 13; flags = [true; false; false; true; false; false; false; true; false; true; false; true; true; true; true; true; false; false; true; false; true; true; false]; body = Dot }; { id = 9; flags = [true; true; false; true; true; true; true; false; true; true; true; true; false; true; false; true; true; false; true; false; false; false; false; true; false; true; true; false; true; false; false; true; false; false; false; false; false; true; true; true; true; true; false; false; false; true; true; true; false; true]; body = Dot }]
 [bob72@example.com; cy12@example.com; cy27@example.com]
 test props/reverse twice
 ok   props/reverse twice
@@ -15,6 +15,6 @@ ok   props/a packet round-trips through Binary
 test props/a filtered generator
 ok   props/a filtered generator
 test props/sums stay small
-panic: falsified after 8 cases (18 shrinks): [0; 0; 0; 4; 0; 6]
+panic: falsified after 8 cases (24 shrinks): [2; 3; 5]
   false
   replay: testPropertyWith { seed = Some (u64 42) }

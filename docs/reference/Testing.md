@@ -709,7 +709,10 @@ Testing.Gen.listOfLength : int -> Testing.Gen<'a> -> Testing.Gen<list<'a>>
 Testing.Gen.list : Testing.Gen<'a> -> Testing.Gen<list<'a>>
 ```
 
-A list of `g`, up to the size long: the length first, so a shorter stream is a shorter list.
+A list of `g`: before each element one byte, "another?", then the element; a zero stops,
+so the empty list is one zero byte, and zeroing a byte in a failing case ends the list
+there, which is how a list shrinks to its first elements. The chance of another falls with
+the size, and the list stops at the size's length.
 
 ### `Testing.Gen.array`
 
