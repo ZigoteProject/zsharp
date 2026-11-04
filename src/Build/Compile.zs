@@ -115,9 +115,11 @@ let private reachable (cant: Map<string, string * string>) (roots: list<string>)
 /// of one) once its callees are inlined: those are the constant, as in an optimized build, so
 /// whether a value is static (a library's must be; placement needs one) doesn't depend on the
 /// flags. The other initializers keep their code as written, the lambdas in them included.
-let constantInits (types: Map<string, TypeInfo>) (kept: string -> bool) (values: list<string * string>) (funs: list<MFun>) : list<MFun> =
+/// mayInline: which callee's code a caller may take (a build by modules takes only its own
+/// module's, as its cached object depends on the others' signatures alone).
+let constantInits (types: Map<string, TypeInfo>) (kept: string -> bool) (mayInline: string -> string -> bool) (values: list<string * string>) (funs: list<MFun>) : list<MFun> =
   let inits = Set.ofList (List.map snd values)
-  let folded = Opt.Simplify.run types (List.filter (fun (f: MFun) -> Set.contains f.name inits) (Opt.Inline.runWith kept (fun caller _ -> Set.contains caller inits) funs))
+  let folded = Opt.Simplify.run types (List.filter (fun (f: MFun) -> Set.contains f.name inits) (Opt.Inline.runWith kept (fun caller g -> Set.contains caller inits && mayInline caller g) funs))
   let constant (f: MFun) = Option.isSome (Core.Ir.staticElem f.body) || Option.isSome (Core.Ir.placedInit f.body)
   let swaps = Map.ofList (List.choose (fun (f: MFun) -> if constant f then Some(f.name, f) else None) folded)
   List.map (fun (f: MFun) -> Option.defaultValue f (Map.tryFind f.name swaps)) funs
@@ -143,7 +145,7 @@ let counted (prog0: Program) (debugInfo: bool) (time: bool) (checkIr: bool) (can
     let noSimplify = Option.isSome (Environment.getVariable "ZS_NO_SIMPLIFY")
     let inlined =
       check "inline" (stage "inline" (timed time "inline" (fun () ->
-        if debugInfo then (if noSimplify then mono else constantInits prog.types kept prog.values mono)
+        if debugInfo then (if noSimplify then mono else constantInits prog.types kept (fun _ _ -> true) prog.values mono)
         else Opt.Inline.run kept (Opt.Inline.uncurry fixedNames mono))))
     let simple = noSimplify || debugInfo
     let simplified = check "simplify" (stage "simplify" (timed time "simplify" (fun () -> if simple then inlined else Opt.Simplify.run prog.types inlined)))

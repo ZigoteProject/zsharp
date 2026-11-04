@@ -189,20 +189,39 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
   // from a flash image at startup: (destination, LLVM type, its image's name)
   let bareMetal = String.contains "-none" opts.target
   let startupCopies = ref Map.empty
-  // a section a chip's reset neither loads nor keeps in flash (one the board's script doesn't
-  // name): RAM, its contents never loaded from the image
-  let unloaded (sec: string) = bareMetal && sec <> "" && not (dataSection sec) && not (noinitSection sec) && not (flashSection sec)
+  // a section a chip's reset neither loads, zeroes nor keeps in flash (one the board's script
+  // doesn't name): a writable one is RAM, its contents never loaded from the image
+  let unloaded (sec: string) = bareMetal && sec <> "" && not (dataSection sec) && not (noinitSection sec) && not (flashSection sec) && not (bssSection sec)
+  // whether a placed ref or Buffer is in the section (which makes it writable, so RAM; alone, a
+  // constant's section is read-only, and the linker keeps it in flash)
+  let holdsWritable (sec: string) =
+    let writableValue (w: string) =
+      match Map.tryFind w valueTypes with
+      | Some(TCon("ref", _)) -> true
+      | _ -> false
+    List.exists (fun (w, (s, _)) -> s = sec && writableValue w) (Map.toList placements)
   let copiedAtStartup (v: string) = unloaded (fst (placement v))
   // a placed Buffer's room (its static storage's slots), for the drops at exit
   let placedRooms = ref Map.empty
   let placementFails (message: string) =
     if Option.isNone g.failure.Value then
       g.failure.Value <- Some(0, message)
-  // a ref or Buffer in flash would be written there, which faults
-  let writable (v: string) =
+  // a ref or Buffer in flash would be written there, which faults; one in .bss starts as the
+  // zeros a reset leaves there, so only a zero value can
+  let rec zeroElem (x: StaticElem) : bool =
+    match x with
+    | SInt n -> n = i64 0
+    | SFloat f -> f = 0.0 && 1.0 / f > 0.0
+    | SBool b -> not b
+    | SStruct(_, xs) -> List.forall zeroElem xs
+    | _ -> false
+  let writable (v: string) (x: StaticElem) =
     let (sec, _) = placement v
     if bareMetal && flashSection sec then
       placementFails $"[<Section \"{sec}\">] '{v}': on a chip that section is flash, which a ref or Buffer can't be written in; use .data, .noinit or a RAM section the board's script names"
+      false
+    else if bareMetal && bssSection sec && not (zeroElem x) then
+      placementFails $"[<Section \"{sec}\">] '{v}': a chip's reset zeroes .bss, so what's there starts as zeros; give it a zero value, or use .data for one that starts otherwise"
       false
     else
       true
@@ -345,7 +364,7 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
         // from the start of (so growing copies into the heap and leaves the storage), and its
         // cell static too
         match placedInit f.body with
-        | Some(PlacedBuffer(n, x)) when feasible el x && writable v ->
+        | Some(PlacedBuffer(n, x)) when feasible el x && writable v x ->
           placedRooms.Value <- Map.add v n placedRooms.Value
           let lt = llty g el
           let data = $"@\"zss.{v}.data\""
@@ -373,7 +392,7 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
         // a ref cell with the constant in it; in .noinit its header is written at startup (the
         // count 0 of a static), the value left as the memory holds it
         match placedInit f.body with
-        | Some(PlacedRef x) when feasible t x && writable v ->
+        | Some(PlacedRef x) when feasible t x && writable v x ->
           let name = $"@\"zss.{v}\""
           made.Value <- 1
           nestedPlaced.Value <- false
@@ -393,9 +412,13 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
         // a constant: tables, lists and boxed cases as static objects, a record, tuple or plain
         // union written into the value's global, a number or string the same (0014 items 1, 3)
         match staticElem f.body with
-        | Some _ when isPlaced && unloaded (fst (placement v)) ->
+        | Some _ when isPlaced && unloaded (fst (placement v)) && holdsWritable (fst (placement v)) ->
           let (sec, _) = placement v
-          placementFails $"[<Section \"{sec}\">] constant '{v}': on a chip, a section the board's linker script doesn't name is RAM that's never loaded from the flash image, so the table would be lost; drop the attribute (a constant is in flash already), use .data for a RAM copy, or make it a ref or Buffer.create"
+          placementFails $"[<Section \"{sec}\">] constant '{v}': on a chip, a section the board's linker script doesn't name that holds a ref or Buffer too is RAM, never loaded from the flash image, so the table would be lost; give the constant a section of its own (read-only, kept in flash), or drop the attribute"
+          None
+        | Some _ when isPlaced && bareMetal && bssSection (fst (placement v)) ->
+          let (sec, _) = placement v
+          placementFails $"[<Section \"{sec}\">] constant '{v}': a chip's reset zeroes .bss, so the table would be lost; drop the attribute (a constant is in flash already), or use .data for a RAM copy"
           None
         | Some x when feasible t x -> Some(constOf t x)
         | _ -> None
@@ -413,7 +436,7 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
       let noinitRef =
         match Map.tryFind v valueTypes with
         | Some(TCon("ref", [ TCon("$buffer", _) ])) -> false
-        | Some(TCon("ref", [ _ ])) -> noinitSection sec
+        | Some(TCon("ref", [ _ ])) -> bareMetal && noinitSection sec
         | _ -> false
       Map.containsKey v statics && (Map.containsKey v startupCopies.Value || noinitRef)
     match List.tryFind (fun (v, _) -> startupWork v) values with
@@ -450,10 +473,11 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
         // a section the reset doesn't load: the storage copied from its flash image
         | Some(dst, ty, image) -> $"  call void @llvm.memcpy.p0.p0.i_W(ptr {dst}, ptr {image}, i_W ptrtoint (ptr getelementptr ({ty}, ptr null, i32 1) to i_W), i1 false)\n"
         | None ->
-          // a .noinit ref's header: the memory is whatever it was, the count must be a static's
+          // a .noinit ref's header on a chip: the memory is whatever it was, the count must be a
+          // static's (elsewhere the section is loaded from the image like any other)
           match Map.find v valueTypes with
           | TCon("ref", [ TCon("$buffer", _) ]) -> ""
-          | TCon("ref", [ _ ]) when noinitSection sec -> $"  store i_W 0, ptr @\"zss.{v}\"\n"
+          | TCon("ref", [ _ ]) when bareMetal && noinitSection sec -> $"  store i_W 0, ptr @\"zss.{v}\"\n"
           | _ -> ""
       else
         let vt = Map.find v valueTypes

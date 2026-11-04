@@ -455,24 +455,57 @@ let private replayFails (r: option<int> * string) : bool =
 // recorded, made shorter first (a block at a time, the largest first), then smaller (each byte
 // zeroed, halved or one less), each candidate a run of the case, kept while it still panics; up
 // to 300 runs
-// what a failure says, without the values in it: its first panic line (else a sanitizer's
-// report), cut at its first digit or quote, so "the third is -4" and "the third is 3" are one
-// failure, "index out of bounds" and a stack overflow (the runtime's or AddressSanitizer's)
-// others
+// what a failure says, without the values in it, so a shrink candidate is told from the case
+// only by the bug it trips: the first panic line, else a sanitizer's report from its kind on,
+// each run of words that look like a value made one `#` (a number, a string or char, what a
+// bracket opens up to its close, true or false, and past the first word a capitalized one, as a
+// case's name, None or Some is), a place (`evens.zs:6`) kept. So "the third is -4" and "the third
+// is 3" are one failure, "too long, starting Some 4" and "too long, starting None" one, and "4 is
+// the third" and "3 long" two; two asserts on two lines are two, and a stack overflow, the
+// runtime's or AddressSanitizer's, is one of its own.
 let private failureOf (output: string) : string =
   let lines = String.splitLines output
-  let reported (l: string) = String.contains "ERROR: AddressSanitizer:" l || String.contains "runtime error:" l
-  let line =
+  let after (marker: string) (l: string) : string =
+    match String.indexOf marker l with
+    | Some i -> String.sub l (i + String.length marker) (String.length l - i - String.length marker)
+    | None -> l
+  let (kind, body) =
     match List.tryFind (fun (l: string) -> String.startsWith "panic: " l) lines with
-    | Some l -> l
-    | None -> Option.defaultValue "" (List.tryFind reported lines)
-  let valueAt (i: int) =
-    let c = String.byte line i
-    (c >= u8 48 && c <= u8 57) || c = u8 34 || c = u8 39
-  let cut = Option.defaultValue (String.length line) (List.tryFind valueAt (List.init (String.length line) (fun i -> i)))
-  let head = String.trimEnd (String.sub line 0 cut)
-  // a negative number's sign goes with it
-  String.trimEnd (if String.endsWith "-" head then String.sub head 0 (String.length head - 1) else head)
+    | Some l -> ("panic", after "panic: " l)
+    | None ->
+      match List.tryFind (fun (l: string) -> String.contains "AddressSanitizer: " l) lines with
+      | Some l -> ("asan", after "AddressSanitizer: " l)
+      | None ->
+        match List.tryFind (fun (l: string) -> String.contains "runtime error: " l) lines with
+        | Some l -> ("ubsan", after "runtime error: " l)
+        | None -> ("", "")
+  let digit (b: u8) = b >= u8 48 && b <= u8 57
+  let count (b: u8) (w: string) = List.length (List.filter (fun i -> String.byte w i = b) (List.init (String.length w) (fun i -> i)))
+  // a word's bracket depth change and whether it flips a quote
+  let opens (w: string) = count (u8 40) w + count (u8 91) w + count (u8 123) w - count (u8 41) w - count (u8 93) w - count (u8 125) w
+  let quotes (w: string) = count (u8 34) w % 2 = 1
+  let valueLike (first: bool) (w: string) =
+    let c = String.byte w 0
+    let bare = String.trimEnd (String.replace (String.replace (String.replace w ";" "") "," "") ":" "")
+    let starts = digit c || c = u8 34 || c = u8 39 || c = u8 40 || c = u8 91 || c = u8 123
+    let negative = c = u8 45 && String.length w > 1 && digit (String.byte w 1)
+    let named = not first && c >= u8 65 && c <= u8 90
+    not (String.contains ".zs:" w) && (starts || negative || bare = "true" || bare = "false" || named)
+  // the words, each run of values (and what's inside a bracket or a quote begun by one) as #
+  let rec norm (first: bool) (depth: int) (inQuote: bool) (inValue: bool) (ws: list<string>) : list<string> =
+    match ws with
+    | [] -> []
+    | w :: more ->
+      let inside = depth > 0 || inQuote
+      if inside || valueLike first w then
+        let depth2 = max 0 (depth + opens w)
+        let quote2 = if quotes w then not inQuote else inQuote
+        let rest = norm false depth2 quote2 true more
+        if inValue then rest else "#" :: rest
+      else
+        w :: norm false 0 false false more
+  let words = norm true 0 false false (List.filter (fun (w: string) -> w <> "") (String.split " " body))
+  kind + ": " + String.join " " words
 
 // whether a shrink candidate's replay fails as the case did: the same failure, so a candidate
 // cut short (its values recursing on the zeros past its end into a stack overflow) or one that
@@ -1197,7 +1230,9 @@ let fuzz (args: list<string>) : int =
               let crashes = exe + ".crashes"
               Tools.makeDirectory crashes
               let flags = List.concat [ [ corpus; $"-max_total_time={seconds}"; $"-artifact_prefix={crashes}/" ]; theirs ]
-              println $"fuzzing {l.path} for {seconds} s (corpus: {Path.getRelativePath (Environment.currentDirectory ()) corpus})"
+              // libFuzzer's own flags (-runs, -max_total_time) may end it sooner
+              let span = if List.isEmpty theirs then $"for {seconds} s" else $"for at most {seconds} s"
+              println $"fuzzing {l.path} {span} (corpus: {Path.getRelativePath (Environment.currentDirectory ()) corpus})"
               let ran = Tools.runSplit exe (List.concat [ [ l.path; "--fuzz" ]; flags ])
               let found =
                 match Directory.list crashes with

@@ -34,3 +34,15 @@ FAIL s/short lists
        panic: the third is 1
        shrunk from N bytes to M in N runs; saved as .zs-cache/failures/two/s-short-lists-HASH, replayed first next time
 0 passed, 1 failed
+kept apart though their panics start with numbers:
+FAIL d/short lists
+       case: [0; 0; 1]
+       panic: 1 is the third
+       shrunk from N bytes to M in N runs; saved as .zs-cache/failures/digits/d-short-lists-HASH, replayed first next time
+0 passed, 1 failed
+a shown value shrinks:
+FAIL b/few flags
+       case: [false; false; false]
+       panic: too many flags: [false; false; false]
+       shrunk from N bytes to M in N runs; saved as .zs-cache/failures/flags/b-few-flags-HASH, replayed first next time
+0 passed, 1 failed

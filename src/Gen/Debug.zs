@@ -110,10 +110,12 @@ let rec sizeAlign (g: G) (t: Ty) : int * int =
   | _ ->
     match t with
     // a SIMD vector, or a mask: its lanes side by side, aligned to its size as LLVM lays it out
+    // (32-bit ARM's data layout aligns a 128-bit vector to 8)
     | TCon(n, []) when isVectorName n ->
       let (e, lanes) = Option.get (vectorInfo n)
       let size = lanes * fst (sizeAlign g (tcon e))
-      (size, size)
+      let arm32 = String.startsWith "thumb" g.opts.arch || (String.startsWith "arm" g.opts.arch && not (String.startsWith "arm64" g.opts.arch))
+      (size, (if arm32 && size = 16 then 8 else size))
     | TCon(n, []) when isMaskName n ->
       let lanes = snd (List.find (fun (m, _) -> m = n) maskTypes)
       let size = max 1 ((lanes + 7) / 8)

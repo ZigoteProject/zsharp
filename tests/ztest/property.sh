@@ -82,3 +82,32 @@ let tests =
   ]
 ZS
 echo "shrunk within its own bug:"; "$zs" test two.zs | sed -E 's/from [0-9]+ bytes to [0-9]+ in [0-9]+ runs/from N bytes to M in N runs/; s/-[0-9a-f]{8},/-HASH,/'
+cat > digits.zs <<'ZS'
+open Testing
+
+// two bugs whose panics start with their values
+let probe (xs: list<int>) : unit =
+  if List.length xs >= 3 then
+    let i = List.item 2 xs
+    if i <> 0 then panic $"{i} is the third" else panic $"{List.length xs} long, a zero third"
+
+[<Tests>]
+let tests =
+  testList "d" [
+    testPropertyWith { seed = Some (u64 5) } "short lists" (fun (xs: list<int>) -> probe xs)
+  ]
+ZS
+echo "kept apart though their panics start with numbers:"; "$zs" test digits.zs | sed -E 's/from [0-9]+ bytes to [0-9]+ in [0-9]+ runs/from N bytes to M in N runs/; s/-[0-9a-f]{8},/-HASH,/'
+cat > flags.zs <<'ZS'
+open Testing
+
+// a panic that shows the value: words (true, false) shrink as numbers do
+let probe (flags: list<bool>) : unit = if List.length flags >= 3 then panic $"too many flags: {flags}"
+
+[<Tests>]
+let tests =
+  testList "b" [
+    testPropertyWith { seed = Some (u64 3) } "few flags" (fun (flags: list<bool>) -> probe flags)
+  ]
+ZS
+echo "a shown value shrinks:"; "$zs" test flags.zs | sed -E 's/from [0-9]+ bytes to [0-9]+ in [0-9]+ runs/from N bytes to M in N runs/; s/-[0-9a-f]{8},/-HASH,/'

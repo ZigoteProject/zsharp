@@ -188,7 +188,7 @@
   is the string's pointer, a closure or one of the runtime's cells an address, and a `fixed` an
   array. Nothing is left out of `info locals` for its type now, and a type that holds itself
   through a list, a ref or an array is described once; a SIMD vector has no DWARF type of its
-  own, but its size lays out the fields after it (`tests/debug/gdb_heap.sh`,
+  own, but its size lays out the fields after it, as each target aligns it (`tests/debug/gdb_heap.sh`,
   `tests/debug/kinds.zs`, whose DWARF `llvm-dwarfdump --verify` checks).
 - `zs test file.zs --target cortex-m4` (track D, item 11): the file's `[<Tests>]` built into one
   image and run under the chip's QEMU board (or a real board through probe-rs, as `zs run` does),
@@ -230,9 +230,11 @@
   digits, '.', '_' and '$'. The element may be any constant (a fixed-point number, a tuple, an
   option, a table), its own objects constants outside the section. On a chip, a ref's or
   Buffer's storage in a section the board's script doesn't name (a DMA region) is copied from
-  flash at startup; a constant table there is an error (it would never be loaded; a constant
-  is in flash already), and so is a ref or Buffer in flash (`.text…`, `.rodata…`). A library
-  has no startup, so its placed values mustn't need that copy or a `.noinit` ref's header. A
+  flash at startup; a constant table alone in such a section is read-only and stays in flash,
+  but one sharing it with a ref or Buffer (RAM, never loaded) or in `.bss…` (zeroed) is an
+  error, as is a ref or Buffer in flash (`.text…`, `.rodata…`) or one in `.bss…` that doesn't
+  start at zero. A chip's library has no startup, so its placed values mustn't need that copy
+  or a `.noinit` ref's header (a host's or wasm32's loads its sections like any other). A
   placed Buffer's slots are dropped at exit whatever it did since (written, grown into the
   heap, shortened). A program with placed values builds as one module, so they're placed
   wherever they're declared (`tests/placement.zs`, `tests/placement_drops.zs`,
@@ -243,9 +245,10 @@
   array's copy-on-write), and the write borrows the Buffer as a read does, so writing a
   parameter's, a field's, an element's or a top-level Buffer frees nothing; the element it
   overwrites is a drop when its type is counted, and so is a Buffer a call gave or a mutable
-  moved into the write. A Buffer (or array, or string) reached through a pattern variable is
-  lent to a read or write only when nothing else in it needs the value it was matched from,
-  which could free it first (`tests/noalloc.zs`, `tests/buffer_lend.zs`,
+  moved into the write, or one taken out of a value the write frees. A Buffer (or array,
+  string or closure) reached through a pattern variable is lent to a read, a write, a call that
+  borrows it or an application only when nothing else in it takes the value it was matched
+  from, which could free it first (`tests/noalloc.zs`, `tests/buffer_lend.zs`,
   `tests/err_noalloc_buffer.zs`, `tests/err_noalloc_buffer_call.zs`).
 - A library (`--lib`) may hold top-level constants: a table, a record, a tree of union cases
   are static objects with no startup code, which a library doesn't have; only a value really
@@ -523,7 +526,7 @@ a real machine. The flagship runs under QEMU's STM32F405, not yet on the board i
   with a way out through a list, and a generic one (`Expr<'v>`'s `Lit of 'v`, a `Labeled<'a>`
   holding the type) end; a type whose every case holds it outright (through a `result`, say)
   may not past a replayed stream's end, and a generic union's type-parameter cases come after
-  its others (the derives gain `Shape.cases`, each case's `rank` among its facts).
+  those that hold nothing and before those that hold the type (the derives gain `Shape.cases`, each case's `rank` among its facts).
   `Gen.option` is `None` at size 0; `Gen.range` spans all of `int` without overflowing and
   `Gen.frequency` sums its weights in u64; and `Gen.char` draws any scalar value but a
   surrogate, the controls last, so a case shrinks to a printable one (a panic's message is
@@ -538,13 +541,14 @@ a real machine. The flagship runs under QEMU's STM32F405, not yet on the board i
   the test file and the property's path; the next run replays it first, and once it passes
   it's deleted. A panic the case doesn't reproduce alone, and a run that gave up on its
   discards, are reported as they happened, nothing shrunk or saved; a shrink keeps the failure
-  it started with (its panic or sanitizer report with the values left out), so a candidate that
-  trips another bug, or ends in a stack overflow, isn't taken. `zs fuzz file.zs path [--for n] [--
+  it started with (its panic or sanitizer report up to its first value, its place kept), so a
+  candidate that trips another bug, another assert, or ends in a stack overflow, isn't taken. `zs fuzz file.zs path [--for n] [--
   flags]` (track D, item 6) runs one property under libFuzzer (the tests built with its
   instrumentation and the sanitizers; a panic aborts, so it's a crash), each input the
   property's bytes (`Gen.bytes ()` takes an input whole, so a property over bytes fuzzes a
   parser as it is), the corpus kept beside the file in `.zs-cache/fuzz/<file>/<path>/` so a
-  run resumes, the flags after `--` libFuzzer's but for those that start other processes
+  run resumes (for at most `--for`'s seconds), the flags after `--` libFuzzer's but for those
+  that start other processes
   (`-jobs`, `-fork`: it runs in one), its output read apart from the property's so neither
   stream blocks the other; a crash is shrunk by replays, shown, and saved as the failure `zs
   test` replays first. `zs test --target` shows every line of a failing test's panic, blank

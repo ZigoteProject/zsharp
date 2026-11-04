@@ -658,7 +658,8 @@ let private lowerFun (types: Map<string, TypeInfo>) (borrowedParams: Map<string,
         | _ -> viaTemp owned borrowed r (fun w -> re (CField(w, i)))
       | CApplyClo(fe, args) ->
         match fe.k with
-        | CLocal x when isVar fe ->
+        // (unless an argument takes what keeps it alive: then it's taken a reference of its own)
+        | CLocal x when isVar fe && not (holderTaken owned x args) ->
           // the closure stays alive across the arguments and the call, then is released
           let args2 = rcList (Set.remove x owned) (Set.add x borrowed) args
           if Set.contains x owned then
@@ -686,7 +687,7 @@ let private lowerFun (types: Map<string, TypeInfo>) (borrowedParams: Map<string,
         setType t e.ty
         re (CLet(t, e, mk (CDup(t, e.ty, mk (CLocal t) e.ty)) e.ty))
       | CGlobalVal _ -> e
-      | CPrim(op, a :: rest) when lending op a && rootLent a rest ->
+      | CPrim(op, a :: rest) when lending op a && rootLent owned a rest ->
         // reading an element or the length borrows the array (or string), a variable or a record
         // field of one: no dup before, no drop inside; if this was x's last use, x is dropped after
         let x = Option.get (rootLocal a)
@@ -726,18 +727,22 @@ let private lowerFun (types: Map<string, TypeInfo>) (borrowedParams: Map<string,
       | _ -> panic "Rc: unexpected node"
     // whether a read through a (a variable, or a field of one) can borrow it: the rest of the
     // read doesn't use the variable
+    // whether the other arguments of an operation (rest) may free what keeps the variable x alive:
+    // a pattern variable is borrowed from the value matched (and that from its own), and an
+    // argument that takes one of those this code owns (handing it to a function that frees it)
+    // would free x first. Reading x's siblings needs the holder alive, and frees nothing
+    and holderTaken (owned: Set<string>) (x: string) (rest: list<CExpr>) : bool =
+      let rec holders (acc: Set<string>) (y: string) : Set<string> =
+        match Map.tryFind y parentOf.Value with
+        | Some p when not (Set.contains p acc) -> holders (Set.add p acc) p
+        | _ -> acc
+      let mine = Set.intersect (holders Set.empty x) owned
+      not (Set.isEmpty mine) && List.exists (fun (r: CExpr) -> not (Set.isEmpty (Set.intersect mine (freeVars r)))) rest
     // whether a, a variable or a field of one, can be lent to an operation whose other arguments
-    // are rest: none of them may need the variable, nor what keeps it alive (a pattern variable's
-    // value, borrowed from the value matched, which rest might consume and free first)
-    and rootLent (a: CExpr) (rest: list<CExpr>) : bool =
+    // are rest: none of them may need the variable, nor take what keeps it alive
+    and rootLent (owned: Set<string>) (a: CExpr) (rest: list<CExpr>) : bool =
       match rootLocal a with
-      | Some x ->
-        let rec holders (acc: Set<string>) (y: string) : Set<string> =
-          match Map.tryFind y parentOf.Value with
-          | Some p when not (Set.contains p acc) -> holders (Set.add p acc) p
-          | _ -> acc
-        let needed = holders (Set.ofList [ x ]) x
-        not (List.exists (fun (r: CExpr) -> not (Set.isEmpty (Set.intersect needed (live r)))) rest)
+      | Some x -> not (List.exists (fun (r: CExpr) -> Set.contains x (live r)) rest) && not (holderTaken owned x rest)
       | None -> false
     and matchVar (owned: Set<string>) (borrowed: Set<string>) (e: CExpr) (s: CExpr) (cases: list<CPat * option<CExpr> * CExpr>) : CExpr =
       let x = Option.get (rootLocal s)
@@ -839,7 +844,7 @@ let private lowerFun (types: Map<string, TypeInfo>) (borrowedParams: Map<string,
       let bs = Map.find n borrowedParams
       let lentArg (j: int) (a: CExpr) =
         match a.k with
-        | CLocal x -> Set.contains j bs && List.length (List.filter (isLocalNamed x) xs) = 1
+        | CLocal x -> Set.contains j bs && List.length (List.filter (isLocalNamed x) xs) = 1 && not (holderTaken owned x xs)
         | _ -> false
       let needsTemp (j: int) (a: CExpr) = Set.contains j bs && not (lentArg j a)
       let ixs = List.indexed xs

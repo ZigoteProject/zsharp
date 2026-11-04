@@ -267,17 +267,17 @@ if bin/zs build tests/static.zs --emit-llvm -o "$tmp/static" >/dev/null 2>&1 && 
 else echo "FAIL tests/static.zs: static tables"; grep '^@"zs[sv]\.' "$tmp/static.ll" | cut -c1-100; fail=1; fi
 # [<Section>] and [<Align>] (0014 item 12): the table's object in its section, padded so its data
 # is at a multiple of 64 and the value's global pointing past the padding; the Buffer's bytes
-# aligned, its cell static; the .noinit ref's header written at startup; nothing computed at
-# startup for any of them
+# aligned, its cell static; the .noinit ref's header in the image the host loads (a chip writes
+# it at startup: tests/mcu/noinit.zs); nothing computed at startup for any of them
 if bin/zs build tests/placement.zs --emit-llvm -o "$tmp/placement" >/dev/null 2>&1 \
    && grep -q '^@"zss\.sine" = .* { \[48 x i8\], i64, i64, \[4 x i64\] } .*, section "\.tables", align 64$' "$tmp/placement.ll" \
    && grep -q '^@"zsv\.sine" = internal global ptr getelementptr (i8, ptr @"zss\.sine", i64 48)$' "$tmp/placement.ll" \
    && grep -q '^@"zss\.frame\.data" = .* global \[8 x i8\] .*, align 32$' "$tmp/placement.ll" \
    && grep -q '^@"zss\.log\.data" = .* global \[4 x ptr\] .*, section "\.logs"$' "$tmp/placement.ll" \
    && grep -q '^@"zss\.boots" = .* global { i64, i64 } { i64 0, i64 0 }, section "\.noinit"$' "$tmp/placement.ll" \
-   && grep -q '^  store i64 0, ptr @"zss\.boots"$' "$tmp/placement.ll" \
+   && ! grep -q '^  store i64 0, ptr @"zss\.boots"$' "$tmp/placement.ll" \
    && ! grep -q 'call ptr @"zs\.\$init\.' "$tmp/placement.ll"; then
-  echo "ok   tests/placement.zs: a table, two Buffers and a ref placed in the image"
+  echo "ok   tests/placement.zs: a table, two Buffers and a ref placed in the image (a .noinit ref's header loaded with it, written at startup on a chip alone)"
 else echo "FAIL tests/placement.zs: placement"; grep '^@"zs[sv]\.\|\$init' "$tmp/placement.ll" | cut -c1-120; fail=1; fi
 # the three small tools of examples/tools, built and run (track S's exit test)
 if diff <(tests/examples_tools.sh 2>&1) tests/examples_tools.expected >"$tmp/tools.diff"; then echo "ok   tests/examples_tools.sh (examples/tools: grep, jsonpp, tail -f)"

@@ -60,7 +60,7 @@ let dump (src: Source.Source) (toks: array<Token.Token>) (decls: list<Decl>) : l
     | PIdent(x, Some q) -> "(" + x + " " + pat q + ")" + at p.patAt
     | PInt n -> $"{n}"
     // a negative literal as written (-0 is one too, signed as -1 is)
-    | PNegInt n -> $"(neg {Int.wrappingSub (i64 0) n})"
+    | PNegInt n -> $"(neg {u64 (Int.wrappingSub (i64 0) n)})"
     | PChar c -> $"#{c}"
     | PStr s -> quote s
     | PBool b -> if b then "true" else "false"

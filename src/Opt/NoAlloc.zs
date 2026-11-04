@@ -246,11 +246,21 @@ let private stepsOf (v: Types.Vars.Vars) (types: Map<string, TypeInfo>) (word: i
       if heap el then
         own Frees "overwrites a Buffer element, which drops the old one (it may be the last reference)" "drops the element it overwrites" "" line
       if op = "array.set" && heap buf.ty && not (neverLast statics buf) then
+        // what the Buffer expression ends in, on any of its paths: one a call gave, a mutable
+        // moved in, or one taken out of a value it frees (a match's field, Option.get inlined)
         let rec fresh (b: CExpr) : option<string> =
           match b.k with
           | CLet(x, w, { k = CLocal y }) when x = y -> fresh w
           | CLine(_, a)
-          | CLet(_, _, a) -> fresh a
+          | CLet(_, _, a)
+          | CSeq(_, a) -> fresh a
+          | CIf(_, t, f) ->
+            match fresh t with
+            | Some what -> Some what
+            | None -> fresh f
+          | CMatch(_, cases) -> List.tryPick (fun (_, _, body) -> fresh body) cases
+          | CDropFields(_, _, _, _, _, { k = CLocal _ }) -> Some "writes a Buffer taken out of a value it frees, then drops the Buffer, which may free it"
+          | CDropFields(_, _, _, _, _, body) -> fresh body
           | CCallDirect _
           | CApplyClo _
           | CExtern _ -> Some "writes a Buffer a call gave and then drops it, which may free it"

@@ -561,6 +561,9 @@ let noinitSection (sec: string) : bool = String.startsWith ".noinit" sec
 /// [<Section>]: a section the boards' linker scripts load at reset with the data (`*(.data*)`).
 let dataSection (sec: string) : bool = String.startsWith ".data" sec
 
+/// [<Section>]: a section the boards' linker scripts zero at reset (`*(.bss*)`).
+let bssSection (sec: string) : bool = String.startsWith ".bss" sec
+
 /// [<Section>]: a section the boards' linker scripts put in flash with the code (`*(.text*)`,
 /// `*(.rodata*)`): in the image, read-only.
 let flashSection (sec: string) : bool = String.startsWith ".text" sec || String.startsWith ".rodata" sec

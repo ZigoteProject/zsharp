@@ -195,7 +195,7 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
     let mono1 =
       check "inline" (
         if asWritten then
-          (if noSimplify then mono0 else timedInto timedLines "inline" (fun () -> Compile.constantInits types.Value kept prog.values mono0))
+          (if noSimplify then mono0 else timedInto timedLines "inline" (fun () -> Compile.constantInits types.Value kept mayInline prog.values mono0))
         else
           timedInto timedLines "inline" (fun () -> Opt.Inline.runWith kept mayInline (Opt.Inline.uncurry fixedNames mono0)))
     let mono2 = check "simplify" (timedOn timedLines "simplify" (fun (fs: list<MFun>) -> if simple then fs else Opt.Simplify.run types.Value fs) mono1)

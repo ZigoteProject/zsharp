@@ -1,0 +1,1 @@
+tests/err_noalloc_buffer_taken.zs:4: error: w is [<NoAlloc>], but w writes a Buffer taken out of a value it frees, then drops the Buffer, which may free it
