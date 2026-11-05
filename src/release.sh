@@ -10,6 +10,12 @@
 set -eu
 cd "$(dirname "$0")/.."
 stage=$1; version=$2; shift 2
+# a numbered release is the one the compiler reports (zs --version, src/zs.toml's); CI's archives
+# are named otherwise ("ci")
+own=$(sed -n 's/^version = "\(.*\)"$/\1/p' src/zs.toml)
+case $version in
+  [0-9]*) [ "$version" = "$own" ] || { echo "release $version, but src/zs.toml's version is $own" >&2; exit 1; } ;;
+esac
 arch=$(uname -m); [ "$arch" = arm64 ] && arch=aarch64
 host=$(uname -s | tr A-Z a-z); [ "$host" = darwin ] && host=macos
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT

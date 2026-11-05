@@ -173,6 +173,9 @@ type Options =
     /// the architecture built for: the target's first part, or the host's (x86_64, aarch64,
     /// thumbv7em): it decides the C ABI and which intrinsics there are
     arch: string
+    /// the object file is Mach-O (macOS, the target's or a native build's host): a section there
+    /// is named `segment,section`, so a [<Section>]'s ELF name is dropped
+    machO: bool
     /// the program has weak references or arenas: its objects go through the runtime's checked
     /// allocation, and a cell Perceus reuses is reported
     checkedHeap: bool

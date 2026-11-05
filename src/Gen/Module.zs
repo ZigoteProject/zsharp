@@ -174,7 +174,7 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
   // name is dropped where names are the linker's (macOS, Windows), the storage static all the same
   let placement (v: string) : string * int =
     match Map.tryFind v placements with
-    | Some(sec, al) -> ((if isWindows g || String.contains "-apple" g.opts.target then "" else sec), al)
+    | Some(sec, al) -> ((if isWindows g || g.opts.machO then "" else sec), al)
     | None -> ("", 0)
   let placed (v: string) : string =
     let (sec, al) = placement v

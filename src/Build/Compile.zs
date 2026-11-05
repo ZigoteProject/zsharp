@@ -387,6 +387,7 @@ let generate (o: Options.Options) (prog0: Program) (testBuild: bool) : result<Pr
           optimizeSize = level = "-Os"
           target = o.target
           arch = Options.arch o
+          machO = Options.targetOs o = "macos"
           checkedHeap = usesPrim heapPrims funs
           library = o.isLib
           targets = prog.targets

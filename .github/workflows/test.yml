@@ -57,9 +57,15 @@ jobs:
           name: releases
           path: dist
       # clang and libclang from LLVM's release or Homebrew's llvm (Apple's clang lags), and zig
-      # and a bash newer than macOS's 3.2, whose set -u takes an empty array for an unset one
+      # and a bash newer than macOS's 3.2, whose set -u takes an empty array for an unset one;
+      # macOS has no timeout, which test.sh and its scripts call: coreutils' gtimeout under that
+      # name, and none of its other tools, whose GNU flags would shadow the BSD ones
       - if: runner.os == 'macOS'
-        run: brew install llvm zig bash && echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+        run: |
+          brew install llvm zig bash coreutils
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          mkdir -p "$RUNNER_TEMP/bin" && ln -sf "$(brew --prefix coreutils)/bin/gtimeout" "$RUNNER_TEMP/bin/timeout"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - if: runner.os == 'Windows'
         run: choco install -y llvm zig
       # the dev image's LLVM and zig, from their releases (Ubuntu's clang is too old for the IR,

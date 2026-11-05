@@ -891,7 +891,7 @@ let private capabilities : Json =
       ("renameProvider", JObject [ ("prepareProvider", JBool true) ])
       ("signatureHelpProvider", JObject [ ("triggerCharacters", JArray [ JString " "; JString "("; JString "," ]) ])
       ("codeActionProvider", JBool true) ]
-  JObject [ ("capabilities", JObject caps); ("serverInfo", JObject [ ("name", JString "zs"); ("version", JString "0.4") ]) ]
+  JObject [ ("capabilities", JObject caps); ("serverInfo", JObject [ ("name", JString "zs"); ("version", JString Build.Tools.version) ]) ]
 
 // one message's answer (and its notifications)
 let private answer (st: State) (msg: Json) : bool =

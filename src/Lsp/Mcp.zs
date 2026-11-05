@@ -286,7 +286,7 @@ let private answer (out: IO.Writer) (msg: Json) =
       | _ -> "2025-06-18"
     let caps = JObject [ ("tools", JObject [ ("listChanged", JBool false) ]); ("resources", JObject []) ]
     let instructions = "Z# compiler tools. Use check before build or run; use type_at and docs instead of guessing types and library names."
-    respond out id (JObject [ ("protocolVersion", JString version); ("capabilities", caps); ("serverInfo", JObject [ ("name", JString "zs"); ("version", JString "0.4") ]); ("instructions", JString instructions) ])
+    respond out id (JObject [ ("protocolVersion", JString version); ("capabilities", caps); ("serverInfo", JObject [ ("name", JString "zs"); ("version", JString Build.Tools.version) ]); ("instructions", JString instructions) ])
   else if meth = "ping" then
     respond out id (JObject [])
   else if meth = "tools/list" then

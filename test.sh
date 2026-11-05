@@ -279,10 +279,19 @@ if bin/zs build tests/placement.zs --emit-llvm -o "$tmp/placement" >/dev/null 2>
    && ! grep -q 'call ptr @"zs\.\$init\.' "$tmp/placement.ll"; then
   echo "ok   tests/placement.zs: a table, two Buffers and a ref placed in the image (a .noinit ref's header loaded with it, written at startup on a chip alone)"
 else echo "FAIL tests/placement.zs: placement"; grep '^@"zs[sv]\.\|\$init' "$tmp/placement.ll" | cut -c1-120; fail=1; fi
+# where the linker names sections its own way (Mach-O's segment,section; COFF's) the name is
+# dropped and the alignment kept: an ELF name on macOS stops clang's backend
+placed_os=""
+for t in aarch64-macos x86_64-windows-gnu; do
+  bin/zs build tests/placement.zs --target "$t" --emit-llvm -o "$tmp/placement-$t" >/dev/null 2>&1
+  if ! grep -q '^@"zss\.sine" = .*, align 64$' "$tmp/placement-$t.ll" || grep -q '^@"zss\..*, section "' "$tmp/placement-$t.ll"; then placed_os="$placed_os $t"; fi
+done
+if [ -z "$placed_os" ]; then echo "ok   tests/placement.zs on macOS and Windows: no section names, the alignment kept"
+else echo "FAIL tests/placement.zs: section names on$placed_os"; fail=1; fi
 # the three small tools of examples/tools, built and run (track S's exit test)
 if diff <(tests/examples_tools.sh 2>&1) tests/examples_tools.expected >"$tmp/tools.diff"; then echo "ok   tests/examples_tools.sh (examples/tools: grep, jsonpp, tail -f)"
 else echo "FAIL tests/examples_tools.sh"; cat "$tmp/tools.diff"; fail=1; fi
-# a panic's backtrace names the Z# functions (0011, debugging 3), on Linux
+# a panic's backtrace names the Z# functions (0011, debugging 5), on Linux
 if [ "$(uname -s)" = Linux ]; then
   if diff <(tests/backtrace/run.sh 2>&1) tests/backtrace/expected >"$tmp/bt.diff"; then echo "ok   tests/backtrace/run.sh (a panic's backtrace names the functions)"
   else echo "FAIL tests/backtrace/run.sh"; cat "$tmp/bt.diff"; fail=1; fi
@@ -322,9 +331,18 @@ if command -v gdb >/dev/null && [ $windows = 0 ]; then
   else echo "FAIL tests/debug/gdb.sh"; cat "$tmp/gdb.diff"; fail=1; fi
 else echo "skip tests/debug/gdb.sh (no gdb)"; fi
 # -g on every kind of value (closures, C pointers, a Buffer, unions that hold themselves through
-# a list, a ref or an array): it builds, runs, and its DWARF verifies, at -O0 and with --release
+# a list, a ref or an array): it builds, runs, and its DWARF verifies, at -O0 and with --release.
+# GNU ld merges .debug_str's strings by their tails, so a .debug_str_offsets entry may point
+# inside another string (the bytes from there are the string, as every debugger reads them);
+# LLVM 23's verifier reports that, and it isn't the compiler's, so it's the one error let by
+dwarf_verifies() {
+  ! command -v llvm-dwarfdump >/dev/null && return 0
+  llvm-dwarfdump --verify "$1" >"$tmp/dwarf.log" 2>&1 && return 0
+  ! grep '^error:' "$tmp/dwarf.log" | grep -v 'Aggregated error counts:' \
+    | grep -qv '\.debug_str_offsets: .* is neither zero nor immediately following a null character\|Section contribution contains invalid string offset occurred'
+}
 if bin/zs build -g tests/debug/kinds.zs -o "$tmp/kinds" 2>"$tmp/kinds.log" && [ "$("$tmp/kinds")" = "[2; 3] 42 7 2 5 1 2 5 4" ] \
-   && { ! command -v llvm-dwarfdump >/dev/null || llvm-dwarfdump --verify "$tmp/kinds" >/dev/null 2>&1; } \
+   && { dwarf_verifies "$tmp/kinds" || { cat "$tmp/dwarf.log" >>"$tmp/kinds.log"; false; }; } \
    && bin/zs build -g --release tests/debug/kinds.zs -o "$tmp/kinds2" 2>>"$tmp/kinds.log" && [ "$("$tmp/kinds2")" = "[2; 3] 42 7 2 5 1 2 5 4" ]; then echo "ok   tests/debug/kinds.zs (-g on every kind of value)"
 else echo "FAIL tests/debug/kinds.zs"; cat "$tmp/kinds.log"; fail=1; fi
 # -g alone on a chip is a build for stepping: -O0, the code as written (the call to sq stays)
@@ -343,7 +361,7 @@ fi
 if command -v gdb >/dev/null; then
   if diff <(tests/debug/gdb_heap.sh) tests/debug/gdb_heap.expected >"$tmp/gdb_heap.diff"; then echo "ok   tests/debug/gdb_heap.sh"
   else echo "FAIL tests/debug/gdb_heap.sh"; cat "$tmp/gdb_heap.diff"; fail=1; fi
-  # -g on an optimized build (0011, debugging 5): the lines stay
+  # -g on an optimized build (0011, debugging 3): the lines stay
   if diff <(tests/debug/opt.sh) tests/debug/opt.expected >"$tmp/gdb_opt.diff"; then echo "ok   tests/debug/opt.sh (-g --release)"
   else echo "FAIL tests/debug/opt.sh"; cat "$tmp/gdb_opt.diff"; fail=1; fi
 fi
@@ -617,6 +635,11 @@ else echo "FAIL tests/cst/roundtrip.sh"; echo "$out" | head; fail=1; fi
 if diff <(bin/zs fmt --stdin < tests/fmt/reflow.in 2>&1) tests/fmt/reflow.zs >"$tmp/reflow.diff"; then echo "ok   tests/fmt/reflow (zs fmt --stdin)"
 else echo "FAIL tests/fmt/reflow"; cat "$tmp/reflow.diff"; fail=1; fi
 
+# the release the compiler reports (zs --version, and to editors in LSP's and MCP's serverInfo) is
+# src/zs.toml's
+toml_version=$(sed -n 's/^version = "\(.*\)"$/\1/p' src/zs.toml)
+if [ "$(bin/zs --version)" = "zs $toml_version" ]; then echo "ok   zs --version (zs $toml_version, src/zs.toml's)"
+else echo "FAIL zs --version: '$(bin/zs --version)', src/zs.toml has $toml_version"; fail=1; fi
 # the language server: a scripted session (tests/lsp/session.sh) against its expected transcript
 actual=$(tests/lsp/session.sh bin/zs 2>&1); expected=$(cat tests/lsp/session.out)
 if [ "$actual" == "$expected" ]; then echo "ok   tests/lsp/session.sh"

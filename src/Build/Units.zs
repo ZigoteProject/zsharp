@@ -400,6 +400,7 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
       optimizeSize = level = "-Os"
       target = o.target
       arch = Options.arch o
+      machO = Options.targetOs o = "macos"
       checkedHeap = checkedHeap
       library = false
       targets = prog.targets

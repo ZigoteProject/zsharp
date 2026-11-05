@@ -239,6 +239,15 @@ let clangTriple (o: Options) : string =
   | [ a; "macos" ] -> a + "-apple-macos"
   | _ -> o.target
 
+/// The operating system built for: "macos", "windows", "linux", or "none" (a chip, WebAssembly);
+/// a native build's is the host's.
+let targetOs (o: Options) : string =
+  if o.target = "" then Tools.hostOs ()
+  else if String.contains "-macos" o.target then "macos"
+  else if String.contains "-windows" o.target then "windows"
+  else if String.contains "-linux" o.target then "linux"
+  else "none"
+
 /// What the runtime links on the target beyond the C library: on Windows, Winsock (the loop,
 /// sockets) and the API set with WaitOnAddress (Mutex).
 let systemLibs (o: Options) : list<string> =
@@ -269,11 +278,7 @@ let sectionFlags (o: Options) : list<string> = if dropsUnused o then [ "-ffuncti
 /// Link flags for that, by the target's linker (lld-link drops them by itself without -g); a
 /// debug build's -rdynamic instead, on the host.
 let unusedLinkFlags (o: Options) : list<string> =
-  let os =
-    if o.target = "" then Tools.hostOs ()
-    else if String.contains "-macos" o.target then "macos"
-    else if String.contains "-windows" o.target then "windows"
-    else "linux"
+  let os = targetOs o
   if not (dropsUnused o) then (if o.target = "" && os <> "windows" then [ "-rdynamic" ] else [])
   else if os = "macos" then [ "-Wl,-dead_strip" ]
   else if os = "windows" then []
