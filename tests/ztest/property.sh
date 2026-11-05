@@ -27,7 +27,8 @@ echo "saved:"; (cd .zs-cache/failures && find . -type f | sed 's|^\./||')
 echo "again: the saved case first"; "$zs" test evens.zs | sed -E 's/in [0-9]+ runs/in N runs/'
 write 200
 echo "fixed: the saved case passes and goes"; "$zs" test evens.zs
-find .zs-cache/failures -type f 2>/dev/null | wc -l
+# (tr: BSD's wc, macOS's, pads its count)
+find .zs-cache/failures -type f 2>/dev/null | wc -l | tr -d ' '
 cat > gives.zs <<'ZS'
 open Testing
 
@@ -43,7 +44,7 @@ let tests =
   ]
 ZS
 echo "a run that gives up on its discards fails, unshrunk:"; "$zs" test gives.zs; echo "exit $?"
-find .zs-cache/failures -type f 2>/dev/null | wc -l
+find .zs-cache/failures -type f 2>/dev/null | wc -l | tr -d ' '
 cat > deep.zs <<'ZS'
 open Testing
 

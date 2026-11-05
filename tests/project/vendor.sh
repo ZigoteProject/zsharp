@@ -29,7 +29,7 @@ echo "== vendored"
 ls vendor/text | tr '\n' ' '; echo
 rm -rf .zs-cache/deps
 "$zs" run --offline 2>&1 | sed "s|$t|…|g"
-ls .zs-cache/deps 2>/dev/null | wc -l | sed 's/^/checkouts made: /'
+ls .zs-cache/deps 2>/dev/null | wc -l | tr -d ' ' | sed 's/^/checkouts made: /' # (tr: BSD's wc, macOS's, pads its count)
 echo "== a vendored copy that was edited"
 echo 'let extra = 1' >> vendor/text/src/Text.zs
 "$zs" run 2>&1 | sed "s|$t|…|g" | head -1

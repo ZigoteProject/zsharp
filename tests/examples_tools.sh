@@ -5,7 +5,7 @@ set -u
 zs="$(pwd)/${1:-bin/zs}"; t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 for e in grep jsonpp tail; do
   "$zs" build examples/tools/$e.zs -o "$t/$e" || exit 1
-  echo "$e: $(wc -l < examples/tools/$e.zs) lines"
+  echo "$e: $(wc -l < examples/tools/$e.zs | tr -d ' ') lines" # (tr: BSD's wc, macOS's, pads its count)
 done
 printf 'Apple pie\nbanana split\ncherry tart\napple crumble\n' > "$t/a.txt"
 printf 'no fruit here\nAPPLE sauce\n' > "$t/b.txt"

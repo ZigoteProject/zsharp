@@ -132,9 +132,12 @@ if bin/zs build --strict tests/parallel/wake.zs -o "$tmp/wake" 2>"$tmp/wake.log"
    && [ "$(ZS_WORKERS=2 timeout 120 "$tmp/wake" 2>&1)" = "$(cat tests/parallel/wake.expected)" ]; then echo "ok   tests/parallel/wake.zs (one worker, woken for every job)"
 else echo "FAIL tests/parallel/wake.zs"; cat "$tmp/wake.log"; fail=1; fi
 
-# aarch64's intrinsics (Simd.Arm): built for it and run under qemu
-if command -v qemu-aarch64 >/dev/null && bin/zs build tests/simd/arm.zs --target aarch64-linux-musl -o "$tmp/arm" 2>"$tmp/arm.log" \
-   && [ "$(qemu-aarch64 "$tmp/arm" 2>&1)" = "$(cat tests/simd/arm.expected)" ]; then echo "ok   tests/simd/arm.zs (built for aarch64, under qemu)"
+# aarch64's intrinsics (Simd.Arm): built for it and run under qemu, or natively on an aarch64
+# Linux machine (the static musl binary runs there as it is)
+case $(uname -s)/$(uname -m) in Linux/aarch64 | Linux/arm64) armrun=(); armhow=natively ;; *) armrun=(qemu-aarch64); armhow="under qemu" ;; esac
+if [ ${#armrun[@]} -gt 0 ] && ! command -v qemu-aarch64 >/dev/null; then echo "skip tests/simd/arm.zs (no qemu-aarch64)"
+elif bin/zs build tests/simd/arm.zs --target aarch64-linux-musl -o "$tmp/arm" 2>"$tmp/arm.log" \
+   && [ "$("${armrun[@]}" "$tmp/arm" 2>&1)" = "$(cat tests/simd/arm.expected)" ]; then echo "ok   tests/simd/arm.zs (built for aarch64, $armhow)"
 else echo "FAIL tests/simd/arm.zs"; cat "$tmp/arm.log"; fail=1; fi
 
 # a 32-bit Arm Linux build has 32-bit words, as its runtime does (0027)
@@ -183,8 +186,11 @@ else echo "FAIL tests/fuzz.sh"; echo "$out" | tail -20; fail=1; fi
 
 # host benchmarks against C: a Z# program needing more than 5% more instructions than in
 # bench/host/baseline.txt fails (bench/host/run.sh shows times; --update after an improvement).
-# Counted as programs are built by default: with the pool, also under --valgrind
-if env -u ZS_NO_POOL bench/host/run.sh --check >"$tmp/bench.log" 2>&1; then echo "ok   bench/host (instruction counts within 5% of the baseline)"
+# Counted as programs are built by default: with the pool, also under --valgrind. The baseline is
+# x86-64 Linux's: another architecture's code, or another C library's, takes other counts
+if [ "$(uname -s)/$(uname -m)" != Linux/x86_64 ]; then echo "skip bench/host (its baseline counts x86-64 Linux's instructions)"
+elif ! command -v valgrind >/dev/null; then echo "skip bench/host (no valgrind to count instructions)"
+elif env -u ZS_NO_POOL bench/host/run.sh --check >"$tmp/bench.log" 2>&1; then echo "ok   bench/host (instruction counts within 5% of the baseline)"
 else echo "FAIL bench/host"; cat "$tmp/bench.log"; fail=1; fi
 
 # zs test: passing and failing [<Test>] functions, each in its own process (exit 1: some fail)
@@ -392,13 +398,15 @@ else echo "FAIL tests/mcu/std.zs"; echo "$actual"; fail=1; fi
 
 # effects on a microcontroller (no thread-local storage there: the yield state is a global),
 # under qemu
-if command -v qemu-system-arm >/dev/null && bin/zs build tests/mcu/effects.zs --target cortex-m0plus -o "$tmp/effects.elf" 2>"$tmp/effects.log" \
+if ! command -v qemu-system-arm >/dev/null; then echo "skip tests/mcu/effects.zs on cortex-m0plus (no qemu-system-arm)"
+elif bin/zs build tests/mcu/effects.zs --target cortex-m0plus -o "$tmp/effects.elf" 2>"$tmp/effects.log" \
    && [ "$(timeout 60 qemu-system-arm -M microbit -nographic -semihosting-config enable=on,target=native -kernel "$tmp/effects.elf" 2>&1 | grep -v '^#zs')" = "$(cat tests/mcu/effects.expected)" ]; then
   echo "ok   tests/mcu/effects.zs (effect handlers on a Cortex-M0+, under qemu)"
 else echo "FAIL tests/mcu/effects.zs"; cat "$tmp/effects.log"; fail=1; fi
 
 # layout facts on a 32-bit chip: sizeof<int> is the 32-bit word there (0004), under qemu
-if command -v qemu-system-arm >/dev/null && bin/zs build tests/mcu/layout.zs --target cortex-m4 -o "$tmp/layout.elf" 2>"$tmp/layout.log" \
+if ! command -v qemu-system-arm >/dev/null; then echo "skip tests/mcu/layout.zs (no qemu-system-arm)"
+elif bin/zs build tests/mcu/layout.zs --target cortex-m4 -o "$tmp/layout.elf" 2>"$tmp/layout.log" \
    && [ "$(timeout 60 qemu-system-arm -M mps2-an386 -nographic -semihosting-config enable=on,target=native -kernel "$tmp/layout.elf" 2>&1 | grep -v '^#zs')" = "$(cat tests/mcu/layout.expected)" ]; then
   echo "ok   tests/mcu/layout.zs (layout facts on a Cortex-M4, under qemu)"
 else echo "FAIL tests/mcu/layout.zs"; cat "$tmp/layout.log"; fail=1; fi
@@ -495,7 +503,8 @@ fi
 # a driver's receive side as a task (0016): it waits for the UART's receive interrupt
 # (Irq.wait); qemu's serial is fed once the program has turned its receiver on (input before
 # that, qemu's UART refuses and never asks for again)
-if command -v qemu-system-arm >/dev/null && bin/zs build examples/mcu/uart.zs --target cortex-m4 -o "$tmp/uart.elf" 2>"$tmp/uart.log" \
+if ! command -v qemu-system-arm >/dev/null; then echo "skip examples/mcu/uart.zs (no qemu-system-arm)"
+elif bin/zs build examples/mcu/uart.zs --target cortex-m4 -o "$tmp/uart.elf" 2>"$tmp/uart.log" \
    && [ "$( (sleep 1; printf 'hello there\n') | timeout 60 qemu-system-arm -M mps2-an386 -nographic -semihosting-config enable=on,target=native -kernel "$tmp/uart.elf" 2>/dev/null)" = "$(printf 'Hello from a Z# UART driver: type a line\nhello there\nyou typed 11 bytes: hello there')" ]; then
   echo "ok   examples/mcu/uart.zs (a task waiting for the UART's interrupt, under qemu)"
 else echo "FAIL examples/mcu/uart.zs"; cat "$tmp/uart.log"; fail=1; fi
@@ -507,7 +516,8 @@ done
 # allocate is an error naming it
 if [ "$(bin/zs build --strict tests/mcu/err_noheap.zs --target cortex-m4 --no-heap -o "$tmp/err.elf" 2>&1 | grep -v '^ [ 0-9]* | ')" = "$(cat tests/mcu/err_noheap.expected)" ]; then echo "ok   tests/mcu/err_noheap.zs"
 else echo "FAIL tests/mcu/err_noheap.zs"; fail=1; fi
-if command -v qemu-system-arm >/dev/null && bin/zs build tests/mcu/noheap.zs --target cortex-m0plus --no-heap -o "$tmp/noheap.elf" 2>"$tmp/noheap.log" \
+if ! command -v qemu-system-arm >/dev/null; then echo "skip tests/mcu/noheap.zs (no qemu-system-arm)"
+elif bin/zs build tests/mcu/noheap.zs --target cortex-m0plus --no-heap -o "$tmp/noheap.elf" 2>"$tmp/noheap.log" \
    && ! llvm-nm "$tmp/noheap.elf" | grep -q zs_alloc \
    && [ "$(timeout 60 qemu-system-arm -M microbit -nographic -semihosting-config enable=on,target=native -kernel "$tmp/noheap.elf" 2>&1 | grep -v '^#zs')" = "$(cat tests/mcu/noheap.expected)" ]; then
   echo "ok   tests/mcu/noheap.zs (--no-heap on a Cortex-M0+, under qemu)"
@@ -523,9 +533,10 @@ if command -v qemu-system-arm >/dev/null; then
     else echo "FAIL tests/mcu/bytes.zs on $chip"; cat "$tmp/bytes.log"; fail=1; fi
   done
 fi
-if command -v node >/dev/null && bin/zs build tests/mcu/bytes.zs --target wasm32 -o "$tmp/bytes.wasm" 2>"$tmp/bytes.log" \
+if ! command -v node >/dev/null; then echo "skip tests/mcu/bytes.zs on wasm32 (no node)"
+elif bin/zs build tests/mcu/bytes.zs --target wasm32 -o "$tmp/bytes.wasm" 2>"$tmp/bytes.log" \
    && [ "$(node bin/run-wasm.mjs "$tmp/bytes.wasm" 2>&1)" = "$(cat tests/mcu/bytes.expected)" ]; then echo "ok   tests/mcu/bytes.zs on wasm32 (under node)"
-elif command -v node >/dev/null; then echo "FAIL tests/mcu/bytes.zs on wasm32"; cat "$tmp/bytes.log"; fail=1; fi
+else echo "FAIL tests/mcu/bytes.zs on wasm32"; cat "$tmp/bytes.log"; fail=1; fi
 # Math where libm is compiler-rt's and the runtime's (pow, atan2, round: fdlibm's, checked against
 # the host's libm by tests/libm.sh), with a host's results: both chips under qemu, and wasm32
 if out=$(tests/libm.sh 2>&1); then echo "ok   tests/libm.sh (the runtime's pow, atan2 and round against the host's libm)"
@@ -539,14 +550,16 @@ if command -v qemu-system-arm >/dev/null; then
     else echo "FAIL tests/mcu/math.zs on $chip"; cat "$tmp/math.log"; fail=1; fi
   done
 fi
-if command -v node >/dev/null && bin/zs build tests/mcu/math.zs --target wasm32 -o "$tmp/math.wasm" 2>"$tmp/math.log" \
+if ! command -v node >/dev/null; then echo "skip tests/mcu/math.zs on wasm32 (no node)"
+elif bin/zs build tests/mcu/math.zs --target wasm32 -o "$tmp/math.wasm" 2>"$tmp/math.log" \
    && [ "$(node bin/run-wasm.mjs "$tmp/math.wasm" 2>&1)" = "$(cat tests/mcu/math.expected)" ]; then echo "ok   tests/mcu/math.zs on wasm32 (under node)"
-elif command -v node >/dev/null; then echo "FAIL tests/mcu/math.zs on wasm32"; cat "$tmp/math.log"; fail=1; fi
+else echo "FAIL tests/mcu/math.zs on wasm32"; cat "$tmp/math.log"; fail=1; fi
 # 32-bit words: a string length past one panics (String.replace's wrapped to a small string it
 # wrote gigabytes into), on wasm32 under node
-if command -v node >/dev/null && bin/zs build tests/security/replace32.zs --target wasm32 -o "$tmp/replace32.wasm" 2>"$tmp/replace32.log" \
+if ! command -v node >/dev/null; then echo "skip tests/security/replace32.zs on wasm32 (no node)"
+elif bin/zs build tests/security/replace32.zs --target wasm32 -o "$tmp/replace32.wasm" 2>"$tmp/replace32.log" \
    && [ "$(node bin/run-wasm.mjs "$tmp/replace32.wasm" 2>&1)" = "$(cat tests/security/replace32.expected)" ]; then echo "ok   tests/security/replace32.zs on wasm32 (under node)"
-elif command -v node >/dev/null; then echo "FAIL tests/security/replace32.zs on wasm32"; cat "$tmp/replace32.log"; fail=1; fi
+else echo "FAIL tests/security/replace32.zs on wasm32"; cat "$tmp/replace32.log"; fail=1; fi
 
 # C interop on a chip, both ways, under qemu: Z# calling C with structs by value in every shape
 # (AAPCS, hard and soft float), and a C firmware with its own startup calling a Z# library built
@@ -597,7 +610,8 @@ if command -v node >/dev/null; then
 fi
 
 # freestanding WebAssembly: the same effects test, run by the Node host
-if command -v node >/dev/null && bin/zs build tests/mcu/effects.zs --target wasm32 -o "$tmp/effects.wasm" 2>"$tmp/effects.log" \
+if ! command -v node >/dev/null; then echo "skip tests/mcu/effects.zs on wasm32 (no node)"
+elif bin/zs build tests/mcu/effects.zs --target wasm32 -o "$tmp/effects.wasm" 2>"$tmp/effects.log" \
    && [ "$(node bin/run-wasm.mjs "$tmp/effects.wasm" 2>&1)" = "$(cat tests/mcu/effects.expected)" ]; then
   echo "ok   tests/mcu/effects.zs (effect handlers on wasm32, under node)"
 else echo "FAIL tests/mcu/effects.zs (wasm32)"; cat "$tmp/effects.log"; fail=1; fi
@@ -697,9 +711,11 @@ else echo "FAIL tests/server.sh"; cat "$tmp/server.diff"; fail=1; fi
 
 # editors may start zs without arguments: it detects LSP or MCP from the first byte
 printf '#!/bin/sh\nexec %s/bin/zs\n' "$PWD" > "$tmp/zs-bare"; chmod +x "$tmp/zs-bare"
-if [ "$(tests/lsp/session.sh "$tmp/zs-bare" 2>&1)" == "$(cat tests/lsp/session.out)" ] \
-   && [ "$(tests/mcp/session.sh "$tmp/zs-bare" 2>&1)" == "$(cat tests/mcp/session.out)" ]; then echo "ok   zs without arguments (protocol detection)"
-else echo "FAIL zs without arguments (protocol detection)"; fail=1; fi
+lsp_bare=$(tests/lsp/session.sh "$tmp/zs-bare" 2>&1); lsp_expected=$(cat tests/lsp/session.out)
+mcp_bare=$(tests/mcp/session.sh "$tmp/zs-bare" 2>&1); mcp_expected=$(cat tests/mcp/session.out)
+if [ "$lsp_bare" == "$lsp_expected" ] && [ "$mcp_bare" == "$mcp_expected" ]; then echo "ok   zs without arguments (protocol detection)"
+else echo "FAIL zs without arguments (protocol detection)"; fail=1
+  diff <(echo "$lsp_expected") <(echo "$lsp_bare") | head -20; diff <(echo "$mcp_expected") <(echo "$mcp_bare") | head -20; fi
 
 # the MCP server: a scripted session (tests/mcp/session.sh) against its expected transcript
 actual=$(tests/mcp/session.sh bin/zs 2>&1); expected=$(cat tests/mcp/session.out)
@@ -768,7 +784,8 @@ done
 if [ -z "$target" ]; then
   ct="$tmp/ct"; mkdir -p "$ct"
   if bin/zs build tests/cthreads/lib.zs --lib -o "$ct/lib.a" 2>"$ct/log" && clang -I"$ct" tests/cthreads/main.c "$ct/lib.a" -lm -o "$ct/exe" 2>>"$ct/log"; then
-    if valgrind --tool=helgrind -q --error-exitcode=99 "$ct/exe" >"$ct/out" 2>"$ct/hg"; then echo "ok   tests/cthreads under Helgrind"
+    if ! command -v valgrind >/dev/null; then echo "skip tests/cthreads under Helgrind (no valgrind)"
+    elif valgrind --tool=helgrind -q --error-exitcode=99 "$ct/exe" >"$ct/out" 2>"$ct/hg"; then echo "ok   tests/cthreads under Helgrind"
     else echo "FAIL tests/cthreads under Helgrind"; head -30 "$ct/hg"; fail=1; fi
     actual=$("$ct/exe" other-thread 2>&1); code=$?
     expected="16 threads using a list's handle: every sum right
@@ -781,16 +798,21 @@ fi
 
 # shared libraries (host only): a C program links the library as a .so, and a C shared library
 # links a --lib archive whole (--whole-archive, so the archive needs position-independent code)
-# with a C program calling Z# through it (POSIX's: a Windows DLL is another test)
+# with a C program calling Z# through it (POSIX's: a Windows DLL is another test). On macOS the
+# linker takes an archive whole with -force_load, and leaves the archive's call to main.c's each
+# to the loader only when told (zs build tells it for a .so); libhost.so is linked by its path,
+# which every linker takes whatever the file's suffix
 if [ -z "$target" ] && [ $windows = 0 ]; then
   so="$tmp/so"; mkdir -p "$so"; run=(); [ $valgrind = 1 ] && run=(valgrind -q --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=all --error-exitcode=99)
+  whole=(-Wl,--whole-archive "$so/lib.a" -Wl,--no-whole-archive)
+  [ "$(uname -s)" = Darwin ] && whole=(-Wl,-force_load,"$so/lib.a" -Wl,-undefined,dynamic_lookup)
   for kind in so whole; do
     if [ $kind = so ]; then
       built=$(bin/zs build tests/cexport/lib.zs --lib -o "$so/lib.so" 2>&1 && clang -I"$so" tests/cexport/main.c "$so/lib.so" -Wl,-rpath,"$so" -o "$so/exe" 2>&1)
     else
       built=$(bin/zs build tests/cexport/lib.zs --lib -o "$so/lib.a" 2>&1 \
-        && clang -shared -I"$so" tests/cexport/host.c -Wl,--whole-archive "$so/lib.a" -Wl,--no-whole-archive -lm -o "$so/libhost.so" 2>&1 \
-        && clang -I"$so" tests/cexport/main.c -L"$so" -lhost -Wl,-rpath,"$so" -o "$so/exe" 2>&1)
+        && clang -shared -I"$so" tests/cexport/host.c "${whole[@]}" -lm -o "$so/libhost.so" 2>&1 \
+        && clang -I"$so" tests/cexport/main.c "$so/libhost.so" -Wl,-rpath,"$so" -o "$so/exe" 2>&1)
     fi
     if [ $? = 0 ]; then actual=$("${run[@]}" "$so/exe" 2>&1); [ $? = 99 ] && actual="$actual
 (valgrind reported memory errors or leaks)"; else actual=$built; fi

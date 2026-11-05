@@ -407,8 +407,8 @@ compiler is fuzzed in every run of the suite and stressed in every run on Linux
 (`tests/fuzz.sh`, `tests/stress.sh`), and what that found is fixed: a stack overflow is a panic,
 and programs as long or as deep as generated code makes them build (an array literal of 50,000
 elements, parentheses nested 10,000 deep). No archive of it is built yet. Its suite passes on
-Linux x86-64 but for three checks that depend on the machine it last ran on (`tests/pgo.sh`,
-`bench/host`'s `fib`, `tests/debug/lldb.sh`); the two that failed in CI's dev container on
+Linux x86-64 but for two checks that depend on the machine it last ran on (`tests/pgo.sh`,
+`bench/host`'s `fib`); the two that failed in CI's dev container on
 2026-11-05 (`tests/debug/kinds.zs`'s DWARF check under LLVM 23, and the tree-sitter grammar on a
 typed `_` parameter) are fixed. Linux arm64's under QEMU and Windows x64's under Wine, which 0.6.2
 ran, haven't been run for it.

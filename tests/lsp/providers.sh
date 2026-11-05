@@ -26,8 +26,10 @@ send '{"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocum
 send '{"jsonrpc":"2.0","id":3,"method":"textDocument/completion","params":{"textDocument":{"uri":"'"$uri"'"},"position":{"line":4,"character":22}}}'
 send '{"jsonrpc":"2.0","id":4,"method":"textDocument/rename","params":{"textDocument":{"uri":"'"$uri"'"},"position":{"line":4,"character":24},"newName":"town"}}'
 answered 4
-# the sample gains a key on disk, and the client reports the change
-sed -i 's/"city": "Oslo",/"city": "Oslo", "pressure": 1013,/' "$dir/weather.json"
+# the sample gains a key on disk (an edit in place as GNU's sed and BSD's, macOS's, both take it),
+# and the client reports the change
+sed 's/"city": "Oslo",/"city": "Oslo", "pressure": 1013,/' "$dir/weather.json" > "$dir/weather.new" \
+  && mv "$dir/weather.new" "$dir/weather.json"
 send '{"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles","params":{"changes":[{"uri":"file://'"$dir"'/weather.json","type":2}]}}'
 send '{"jsonrpc":"2.0","id":5,"method":"textDocument/completion","params":{"textDocument":{"uri":"'"$uri"'"},"position":{"line":4,"character":22}}}'
 send '{"jsonrpc":"2.0","id":6,"method":"shutdown"}'

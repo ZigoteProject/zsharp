@@ -243,12 +243,13 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
         | Ok here -> List.contains n here && listed (Path.combine dir n) rest
         | Error _ -> true
     let under (root: string) =
-      // each directory as named, or with its first letter lowered (an internal/ directory, 0018)
+      // each directory as named, or with its first letter lowered (an internal/ directory, 0018),
+      // as listed: where case is ignored, Internal exists for internal/ too, which listed refuses
       let rec descend (dir: string) (names: list<string>) (acc: list<string>) : option<string * list<string>> =
         match names with
         | [] -> Some(dir, List.rev acc)
         | n :: rest ->
-          match List.tryFind (fun (c: string) -> Directory.exists (Path.combine dir c)) [ n; lowerFirst n ] with
+          match List.tryFind (fun (c: string) -> Directory.exists (Path.combine dir c) && listed dir [ c ]) [ n; lowerFirst n ] with
           | Some c -> descend (Path.combine dir c) rest (c :: acc)
           | None -> None
       match descend root dirs [] with

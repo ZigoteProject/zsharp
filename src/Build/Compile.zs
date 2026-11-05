@@ -441,14 +441,17 @@ let make (o: Options.Options) (prog0: Program) (linked: Modules.Linked) (testBui
       // drops it, -S to ld.lld and ld64.lld; on Windows -s, which writes no .pdb either)
       let nodebug = if o.debugInfo then [] else if String.contains "-windows" o.target then [ "-g0"; "-s" ] else [ "-g0"; "-Wl,-S" ]
       let cc (args: list<string>) = if cross then Tools.run "zig" (List.concat [ [ "cc"; "-target"; o.target ]; nodebug; args ]) else Tools.run "clang" args
-      // zs fuzz: libFuzzer's runtime without its main (the runner drives it), which is C++
+      // zs fuzz: libFuzzer's runtime without its main (the runner drives it), which is C++; on
+      // macOS, as clang links -fsanitize=fuzzer there, its darwin/ archive and libc++
       let fuzzLink =
         if not o.fuzz then
           []
         else
-          match Tools.runSplit "clang" [ "-print-file-name=libclang_rt.fuzzer_no_main.a" ] with
-          | Ok r when String.contains "/" r.out -> [ String.trim r.out; "-lstdc++" ]
-          | _ -> [ "-lstdc++" ]
+          let mac = Options.targetOs o = "macos"
+          let cxx = if mac then "-lc++" else "-lstdc++"
+          match Tools.runSplit "clang" [ "-print-file-name=" + (if mac then "libclang_rt.fuzzer_no_main_osx.a" else "libclang_rt.fuzzer_no_main.a") ] with
+          | Ok r when String.contains "/" r.out -> [ String.trim r.out; cxx ]
+          | _ -> [ cxx ]
       let built =
         match o.mcu with
         | Some m when o.isLib && (m.board <> "" || String.endsWith ".a" o.out) ->
@@ -510,11 +513,15 @@ let make (o: Options.Options) (prog0: Program) (linked: Modules.Linked) (testBui
             let obj = Path.changeExtension ll ".o"
             let rto = Path.changeExtension ll ".rt.o"
             let pic = [ "-fPIC" ]
+            // a shared library's externs may be defined by the program that loads it (main.c's
+            // each, for tests/cexport/lib.zs): ELF leaves them to the loader, and macOS's linker
+            // does only when told
+            let lookup = if Options.targetOs o = "macos" then [ "-Wl,-undefined,dynamic_lookup" ] else []
             let r1 = Tools.run "clang" (List.concat [ opt; pic; tclang; [ "-c"; "-Wno-override-module" ]; san; [ ll; "-o"; obj ] ])
             let r2 = andThen (fun () -> cc (List.concat [ opt; pic; defines; [ "-c" ]; san; [ runtimeFile "rt.c"; "-o"; rto ] ])) r1
             let archive () =
               File.delete o.out |> ignore
-              if String.endsWith ".so" o.out then cc (List.concat [ opt; [ "-shared" ]; san; [ obj; rto ]; linkArgs linked; [ "-o"; o.out; "-lm" ] ]) else Tools.run "llvm-ar" [ "rcs"; o.out; obj; rto ]
+              if String.endsWith ".so" o.out then cc (List.concat [ opt; [ "-shared" ]; lookup; san; [ obj; rto ]; linkArgs linked; [ "-o"; o.out; "-lm" ] ]) else Tools.run "llvm-ar" [ "rcs"; o.out; obj; rto ]
             let r3 = andThen archive r2
             File.writeAllText (Path.changeExtension o.out ".h") header |> ignore
             File.delete obj |> ignore

@@ -7,6 +7,6 @@ zs="$(pwd)/${1:-bin/zs}"; t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 for f in examples/aoc/day*.zs; do
   name=$(basename "$f" .zs)
   "$zs" build "$f" -o "$t/$name" || exit 1
-  echo "== $name ($(wc -l < "$f") lines)"
+  echo "== $name ($(wc -l < "$f" | tr -d ' ') lines)" # (tr: BSD's wc, macOS's, pads its count)
   "$t/$name"
 done

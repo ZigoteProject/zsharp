@@ -17,25 +17,26 @@ items (`Int`'s checked, saturating and bit operations, ISO 8601, UDP and name lo
 Advent of Code puzzles and three small tools as its exit tests.
 
 It isn't built yet: the archives come from `src/release.sh`, as 0.6.2's did. Linux x86-64's suite
-passes, the chips' programs under QEMU and wasm32's under Node among it, but for three checks that
+passes, the chips' programs under QEMU and wasm32's under Node among it, but for two checks that
 depend on the machine it last ran on (Ubuntu 24.04, not the dev container): `tests/pgo.sh`, whose
-profile runtime there is LLVM 20's; `bench/host`, whose `fib` counts 5.3% more instructions than its
-baseline (2,464,794 against 2,339,907, past the 5% the check allows), as in every run on that
-machine; and `tests/debug/lldb.sh`, whose lldb lists a local in another order. CI's Linux x86-64
-job, in the dev container, failed two more on 2026-11-05, both fixed here: `tests/debug/kinds.zs`,
-whose DWARF LLVM 23's `llvm-dwarfdump --verify` rejected for a `.debug_str_offsets` entry inside a
-string GNU ld had merged by its tail (the one error the check now lets by; lld's output has none),
-and the tree-sitter grammar, which didn't parse a typed `_` parameter (`let check () (_: Source)`).
-What 0.7's plan put first is undone (ROADMAP, 0.7's item 1): the flagship isn't flashed to a
-Nucleo-F401RE yet (it runs under QEMU's STM32F405, which models none of the board's GPIO), the suite
-hasn't passed on the five CI runners (its last run to reach them, on 2026-11-04, failed on macOS and
-Linux arm64 and was cancelled on Windows; every run since stopped at the Linux x86-64 job), and no
-archive has been tried on a clean machine, so no macOS or Windows build has run on a real machine.
-Linux arm64's suite under QEMU and Windows x64's under Wine, which 0.6.2 ran, haven't been run for
-0.7, nor has the stress run over the pool, tasks and `Alt` under ThreadSanitizer (the suite's four
-programs under ThreadSanitizer pass). Of the plan's other items, the fuzzer's seed isn't rotated per
-run yet (it's 1 unless `ZS_FUZZ_SEED` says), and `[<Align>]` on a type, `Seq` pipelines as one loop
-(track S, item 9) and fixed point's vector forms are left.
+profile runtime there is LLVM 20's, and `bench/host`, whose `fib` counts 5.3% more instructions than
+its baseline (2,464,794 against 2,339,907, past the 5% the check allows), as in every run on that
+machine. CI's Linux x86-64 job, in the dev container, failed two more on 2026-11-05, both fixed
+here: `tests/debug/kinds.zs`, whose DWARF LLVM 23's `llvm-dwarfdump --verify` rejected for a
+`.debug_str_offsets` entry inside a string GNU ld had merged by its tail (the one error the check
+now lets by; lld's output has none), and the tree-sitter grammar, which didn't parse a typed `_`
+parameter (`let check () (_: Source)`). What 0.7's plan put first is undone (ROADMAP, 0.7's item 1):
+the flagship isn't flashed to a Nucleo-F401RE yet (it runs under QEMU's STM32F405, which models none
+of the board's GPIO), the suite hasn't passed on the five CI runners (at `fbf956d`, on 2026-11-05,
+Linux x86-64's passed and the others' failed: 23 and 24 checks on the Macs, the same 7 as before on
+Linux arm64, and the Windows suites printed nothing; what the Macs and Linux arm64 failed on is
+addressed after it, not yet confirmed in CI), and no archive has been tried on a clean machine, so
+no macOS or Windows build has run on a real machine. Linux arm64's suite under QEMU and Windows
+x64's under Wine, which 0.6.2 ran, haven't been run for 0.7, nor has the stress run over the pool,
+tasks and `Alt` under ThreadSanitizer (the suite's four programs under ThreadSanitizer pass). Of the
+plan's other items, the fuzzer's seed isn't rotated per run yet (it's 1 unless `ZS_FUZZ_SEED` says),
+and `[<Align>]` on a type, `Seq` pipelines as one loop (track S, item 9) and fixed point's vector
+forms are left.
 
 ### Upgrading from 0.6.2
 What a 0.6.2 program, project or script may have to change, and what behaves differently:
@@ -350,6 +351,9 @@ What a 0.6.2 program, project or script may have to change, and what behaves dif
   both chips, `tests/mcu/ints.zs`).
 
 ### Packages
+- On a file system that ignores case (macOS's), a package's module under `internal/` is found: the
+  resolver tried `Internal` first, which exists there for `internal/` too, and then refused it, so
+  a path dependency whose modules use its own internal ones didn't build.
 - Workspaces (0018, item 8): `[workspace] members = ["app", "libs/*"]` in a root `zs.toml` (a
   pattern ending in `/*` takes the directories under it that have a `zs.toml`). Its members
   resolve together into one `zs.lock`, one `.zs-cache/` and one `vendor/` at the root; a lock
@@ -379,6 +383,10 @@ What a 0.6.2 program, project or script may have to change, and what behaves dif
   cortex-m4 has none, so it can't depend on this package`, instead of an error deep in its code.
 
 ### Tooling
+- On macOS, `zs fuzz` links libFuzzer's runtime for macOS (`libclang_rt.fuzzer_no_main_osx.a`) and
+  libc++, and `zs build --lib -o x.so` leaves a function the program defines (an `extern` of the
+  library's) to the loader, as ELF's linkers do (`-undefined dynamic_lookup`): the one found
+  nothing, the other didn't link.
 - `zs --version` prints the compiler's release, and the language and MCP servers report it in
   `serverInfo` (they said `0.4`); `test.sh` checks it against `src/zs.toml`'s.
 - `zs build -g --release` (and `-g` with any `-O` level; 0011, debugging 3): the optimizer runs
@@ -493,6 +501,17 @@ What a 0.6.2 program, project or script may have to change, and what behaves dif
   them, were its absence. `test.sh` builds `tests/placement.zs` for macOS and Windows from any
   host and checks no section name is left, and expects the ELF names in a native build on Linux
   alone. `tests/debug/kinds.zs`'s DWARF check fails if `llvm-dwarfdump` crashes.
+- The scripts run with BSD's tools, as macOS has them (a `wc -l` count's padding, `sed -i`, `stat
+  -c` and `\|` in a `sed` pattern were GNU's), and two resolve their temporary directory as the
+  compiler names it (macOS's `/var` is `/private/var`). A check that needs QEMU, Node or valgrind
+  skips without it, as the others did; `tests/simd/arm.zs` runs natively on aarch64 Linux;
+  `bench/host`'s baseline counts x86-64 Linux's instructions and is checked only there;
+  `tests/debug/gdb.sh` and `lldb.sh` compare a frame's locals in name order, which debuggers list
+  differently by machine.
+- CI: the Intel Mac gets LLVM 23 from conda-forge (Homebrew's newest for Intel is 22, and LLVM's
+  releases have no build for it), both Macs `SDKROOT`, so clang and libclang find the SDK's
+  headers, and each native runner builds and runs one program first, each step bounded, and
+  stops after three hours, so a hang shows where it is.
 - `tests/lsp/providers.sh` edits its sample only once the server has answered the requests before
   it (a pipe the script writes as the server answers), so what the first hover and completion
   see no longer depends on who was faster; it failed one run in four under load.

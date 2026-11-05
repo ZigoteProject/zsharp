@@ -7,7 +7,8 @@
 # shows "-".
 # Time is the best of 3 runs at the full size, memory the peak RSS of those runs. Z#'s
 # instructions are counted by valgrind (cachegrind) at a small size, which is deterministic
-# and so can catch regressions.
+# and so can catch regressions. The baseline's counts are x86-64 Linux's (another architecture's
+# code, or another C library's, takes other counts), so --check and --update run only there.
 #   bench/host/run.sh [names]            Markdown tables of times and peak memory
 #   bench/host/run.sh --check [names]    Z# counts only; fails when a Z# program needs more than
 #                                        5% over bench/host/baseline.txt
@@ -16,6 +17,10 @@
 set -u
 cd "$(dirname "$0")/../.."
 mode=""; case ${1:-} in --check | --update) mode=$1; shift ;; esac
+if [ -n "$mode" ]; then
+  [ "$(uname -s)/$(uname -m)" = Linux/x86_64 ] || { echo "$mode: bench/host/baseline.txt counts x86-64 Linux's instructions, not $(uname -s) $(uname -m)'s"; exit 1; }
+  command -v valgrind >/dev/null || { echo "$mode: valgrind counts the instructions, and it isn't installed"; exit 1; }
+fi
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 # name, full size, counting size
 benches=$(cat <<'LIST'
@@ -90,6 +95,7 @@ while read -r b full small; do
     build c "$b" || { echo "$b: C doesn't build"; fail=1; continue; }
     if [ "$("$t/$b-zs" "$small")" != "$("$t/$b-c" "$small")" ]; then echo "$b: outputs differ"; fail=1; continue; fi
     iz=$(count "$t/$b-zs" "$small")
+    [ -n "$iz" ] || { echo "$b: valgrind counted no instructions"; fail=1; continue; }
     echo "$b $iz" >> "$t/counts"
     if [ "$mode" = --check ]; then
       base=$(awk -v b="$b" '$1 == b { print $2 }' bench/host/baseline.txt 2>/dev/null)

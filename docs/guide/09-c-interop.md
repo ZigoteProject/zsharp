@@ -236,6 +236,8 @@ zs build geo.zs --lib -o libgeo.so                     # a C program links libge
 cc -shared host.c -Wl,--whole-archive libgeo.a -Wl,--no-whole-archive -lm -o libhost.so
 ```
 
+An `extern` of the library's that the program defines (a callback's C side) is found by the loader in the program that loads the library: Linux's linker leaves it to the loader by itself, and on macOS `zs build` tells the linker to (`-undefined dynamic_lookup`). A C shared library holding the archive is linked there with `cc -shared host.c -Wl,-force_load,libgeo.a -Wl,-undefined,dynamic_lookup -lm -o libhost.so`.
+
 **Rules:**
 - An exported function can't be generic.
 - Its parameters and result must be C types, or Z# objects as handles (below).

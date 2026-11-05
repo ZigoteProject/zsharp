@@ -22,10 +22,11 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
   echo '{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"explain","arguments":{"file":"tests/mcp/sample.zs","line":5,"column":21}}}'
   echo '{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"explain","arguments":{"file":"tests/mcp/sample.zs","line":6,"column":3}}}'
 } | ZS_NO_SERVER=1 TMPDIR=$tmp "$zs" mcp | sed "s|$(pwd)|.|g" | while IFS= read -r line; do
+  # (isError's true or false as [a-z]*: BSD's sed, macOS's, has no \| in a basic regex)
   case "$line" in
     *'"tools":['*) printf '%s\n' "$line" | grep -o '"name":"[a-z_]*"' | tr '\n' ' '; echo ;;
-    *'"content"'*) printf '%s\n' "$line" | sed 's/.*"text":"\(.*\)"}\],"isError":\(true\|false\).*/[\2] \1/' ;;
+    *'"content"'*) printf '%s\n' "$line" | sed 's/.*"text":"\(.*\)"}[]],"isError":\([a-z]*\).*/[\2] \1/' ;;
     *) printf '%s\n' "$line" | grep -o '"protocolVersion":"[^"]*"' ;;
   esac
 done
-echo "left in TMPDIR: $(ls -A "$tmp" | wc -l)"; ls -A "$tmp" >&2
+echo "left in TMPDIR: $(ls -A "$tmp" | wc -l | tr -d ' ')"; ls -A "$tmp" >&2 # (tr: BSD's wc, macOS's, pads its count)

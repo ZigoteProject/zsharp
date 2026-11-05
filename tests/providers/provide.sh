@@ -16,7 +16,8 @@ echo "--- sql with named queries (one query's module)"
 "$zs" provide sql schema.sql --queries=nowhere.sql; echo "exit $?"
 printf -- '-- name: Bad :one\nSELECT nope FROM users;\n' > "$dir/bad.sql"; "$zs" provide sql schema.sql --queries="$dir/bad.sql" 2>&1 | sed "s|$dir/||"; echo "exit ${PIPESTATUS[0]}"
 echo "--- svd (GPIOA only; the module's head and one register)"
-"$zs" provide svd ../../examples/mcu/stm32f401-part.svd --only=GPIOA > "$dir/Gpio.zs"; echo "exit $?, $(wc -l < "$dir/Gpio.zs") lines"
+# (tr: BSD's wc, macOS's, pads its count)
+"$zs" provide svd ../../examples/mcu/stm32f401-part.svd --only=GPIOA > "$dir/Gpio.zs"; echo "exit $?, $(wc -l < "$dir/Gpio.zs" | tr -d ' ') lines"
 sed -n '1,8p' "$dir/Gpio.zs"; grep -n -A12 'type Bsrr' "$dir/Gpio.zs" | grep -E 'Bsrr|bs5|br15|read|write|modify' | head -8
 echo "--- c: a header's declarations as Z#"
 "$zs" provide c cshapes/shapes.h

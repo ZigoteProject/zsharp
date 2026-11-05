@@ -3,7 +3,7 @@
 # them at exit; the lines run and not run per file, and coverage.lcov for genhtml. The branches
 # no test reaches are reported by their lines; the library's lines aren't counted.
 set -u
-zs="$(pwd)/${1:-bin/zs}"; t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
+zs="$(pwd)/${1:-bin/zs}"; t=$(cd "$(mktemp -d)" && pwd -P); trap 'rm -rf "$t"' EXIT  # resolved, as the compiler names it (macOS: /var is /private/var)
 cat > "$t/cov.zs" <<'ZS'
 open Testing
 
@@ -90,6 +90,6 @@ dups=0
 for i in 1 2 3 4 5 6 7 8; do
   rm -f race.zscov
   ZS_WORKERS=4 timeout 20 ./race
-  [ -s race.zscov ] && [ "$(sort race.zscov | uniq -d | wc -l)" = 0 ] || dups=$((dups + 1))
+  [ -s race.zscov ] && [ -z "$(sort race.zscov | uniq -d)" ] || dups=$((dups + 1))
 done
 echo "runs with a copy too many or none: $dups"

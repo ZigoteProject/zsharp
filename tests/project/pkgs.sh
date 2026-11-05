@@ -3,7 +3,7 @@
 # remove takes one out, zs tree shows what was resolved; a module under an internal/ directory
 # is the package's own; a microcontroller build names a dependency that uses Std.
 set -u
-zs="$(pwd)/bin/zs"; t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
+zs="$(pwd)/bin/zs"; t=$(cd "$(mktemp -d)" && pwd -P); trap 'rm -rf "$t"' EXIT  # resolved, as the compiler names it (macOS: /var is /private/var)
 cp -r tests/project/two tests/project/alpha tests/project/beta tests/project/cwords tests/project/text "$t/"
 cd "$t/two"
 echo "== zs tree"

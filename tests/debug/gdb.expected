@@ -9,14 +9,14 @@ n = 1
 $1 = 1
 17	    let sq = square i
 18	    total <- total + sq
-range = {lo = 1, hi = 3}
-total = 0
 i = 1
-sq = 1
-ratio = 0
-ok = false
-summary = {case = Small, Small = 0, Large.0 = 0, Large.1 = 0}
 name = ADDR "squares"
+ok = false
+range = {lo = 1, hi = 3}
+ratio = 0
+sq = 1
+summary = {case = Small, Small = 0, Large.0 = 0, Large.1 = 0}
+total = 0
 Breakpoint 2 file prog.zs, line 22.
 Breakpoint 2, main () at prog.zs:22
 22	  println $"{name}: total {total} ratio {ratio} ok {ok} {summary}"

@@ -45,6 +45,8 @@ jobs:
           - { os: windows-11-arm, archive: zs-ci-windows-aarch64 }
           - { os: ubuntu-24.04-arm, archive: zs-ci-linux-aarch64 }
     runs-on: ${{ matrix.os }}
+    # a suite takes 15 to 80 minutes; one that stops making progress ends here, its log kept
+    timeout-minutes: 180
     defaults:
       run:
         shell: bash
@@ -56,16 +58,28 @@ jobs:
         with:
           name: releases
           path: dist
-      # clang and libclang from LLVM's release or Homebrew's llvm (Apple's clang lags), and zig
-      # and a bash newer than macOS's 3.2, whose set -u takes an empty array for an unset one;
+      # zig, and a bash newer than macOS's 3.2, whose set -u takes an empty array for an unset one;
       # macOS has no timeout, which test.sh and its scripts call: coreutils' gtimeout under that
-      # name, and none of its other tools, whose GNU flags would shadow the BSD ones
+      # name, and none of its other tools, whose GNU flags would shadow the BSD ones. SDKROOT is
+      # how an LLVM that isn't Apple's (clang, and libclang for import c) finds the SDK's headers
       - if: runner.os == 'macOS'
         run: |
-          brew install llvm zig bash coreutils
-          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          brew install zig bash coreutils
           mkdir -p "$RUNNER_TEMP/bin" && ln -sf "$(brew --prefix coreutils)/bin/gtimeout" "$RUNNER_TEMP/bin/timeout"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          echo "SDKROOT=$(xcrun --show-sdk-path)" >> "$GITHUB_ENV"
+      # clang and libclang 23 (Apple's clang lags): Homebrew's llvm on arm64; on Intel, where
+      # Homebrew's newest is 22 and LLVM's releases have no build, conda-forge's
+      - if: runner.os == 'macOS' && runner.arch == 'ARM64'
+        run: brew install llvm && echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+      - if: runner.os == 'macOS' && runner.arch == 'X64'
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/micromamba" https://github.com/mamba-org/micromamba-releases/releases/latest/download/micromamba-osx-64
+          chmod +x "$RUNNER_TEMP/micromamba"
+          # nocfg: upstream clang, without conda's configuration files (SDKROOT gives the SDK)
+          "$RUNNER_TEMP/micromamba" create -y -q -r "$RUNNER_TEMP/mamba" -p "$RUNNER_TEMP/llvm" -c conda-forge \
+            'clang=23.1.4=*nocfg*' 'clangxx=23.1.4=*nocfg*' libclang=23.1.4 lld=23.1.4 llvm-tools=23.1.4 compiler-rt=23.1.4
+          echo "$RUNNER_TEMP/llvm/bin" >> "$GITHUB_PATH"
       - if: runner.os == 'Windows'
         run: choco install -y llvm zig
       # the dev image's LLVM and zig, from their releases (Ubuntu's clang is too old for the IR,
@@ -81,4 +95,14 @@ jobs:
           curl -fsSL https://ziglang.org/download/0.16.0/zig-aarch64-linux-0.16.0.tar.xz | sudo tar -xJ -C /opt
           echo /opt/zig-aarch64-linux-0.16.0 >> "$GITHUB_PATH"
       - run: tar -xzf "dist/${{ matrix.archive }}.tar.gz" -C dist
+      # the compiler on its own first, each step bounded, so a hang (Windows's suites have printed
+      # nothing in six hours) shows where it is
+      - env:
+          ZS_NO_SERVER: 1
+        run: |
+          zs=dist/${{ matrix.archive }}/zs; out=$RUNNER_TEMP/simple; [ "$RUNNER_OS" = Windows ] && out=$out.exe
+          timeout 60 "$zs" --version
+          timeout 120 "$zs" doctor || true
+          timeout 1200 "$zs" build examples/simple.zs -o "$out"
+          timeout 60 "$out"
       - run: ./test.sh --zs "dist/${{ matrix.archive }}/zs"

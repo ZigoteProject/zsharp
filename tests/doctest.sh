@@ -12,5 +12,6 @@ rm -rf "$dir"
 # where another user could put .zs-doctest.zs first and change it before it's built and run
 tmp=$(mktemp -d)
 ZS_NO_SERVER=1 TMPDIR=$tmp "$zs" test --doc lib/core/Text/Utf8.zs | tail -1
-echo "left in TMPDIR: $(ls -A "$tmp" | wc -l)"; ls -A "$tmp" >&2
+# (tr: BSD's wc, macOS's, pads its count)
+echo "left in TMPDIR: $(ls -A "$tmp" | wc -l | tr -d ' ')"; ls -A "$tmp" >&2
 rm -rf "$tmp"
