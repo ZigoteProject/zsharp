@@ -11070,6 +11070,10 @@
           {
             "type": "identifier",
             "named": true
+          },
+          {
+            "type": "wildcard",
+            "named": true
           }
         ]
       }

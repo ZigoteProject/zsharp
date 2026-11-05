@@ -372,3 +372,18 @@ import csv ("stocks.csv", separator = ";", hasHeaders = true)
     (import_option
       name: (identifier)
       value: (boolean))))
+
+==================
+A typed parameter that names nothing
+==================
+
+let check () (_: Source) = None
+
+---
+
+(source_file
+  (let_declaration
+    name: (identifier)
+    (unit)
+    (typed_parameter name: (wildcard) (type_annotation (type_name (identifier))))
+    body: (identifier)))

@@ -125,8 +125,8 @@ module.exports = grammar({
     active_pattern_name: $ => seq('(', '|', sep1(choice($.identifier, '_'), '|'), '|', ')'),
 
     _parameter: $ => choice($.identifier, $.unit, $.wildcard, $.typed_parameter, $.parenthesized_pattern, $.list_pattern, $.record_pattern),
-    // (x: T), (?x: T = e); or F#'s tupled parameters, each with its type: (a: int, b: string)
-    typed_parameter: $ => seq('(', optional('?'), field('name', $.identifier), $.type_annotation, optional(seq('=', $._expression)), repeat(seq(',', field('name', $.identifier), $.type_annotation)), ')'),
+    // (x: T), (?x: T = e), (_: T); or F#'s tupled parameters, each with its type: (a: int, b: string)
+    typed_parameter: $ => seq('(', optional('?'), field('name', choice($.identifier, $.wildcard)), $.type_annotation, optional(seq('=', $._expression)), repeat(seq(',', field('name', choice($.identifier, $.wildcard)), $.type_annotation)), ')'),
     type_annotation: $ => seq(':', $._type),
 
     import_c_declaration: $ => seq('import', 'c', field('header', $.string)),
