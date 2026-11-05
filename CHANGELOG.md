@@ -489,8 +489,10 @@ What a 0.6.2 program, project or script may have to change, and what behaves dif
 
 ### Tests
 - CI's macOS runners get coreutils' `timeout`, which `./test.sh` and its scripts call and macOS
-  doesn't have: about 130 of each Mac's failures on 2026-11-04 were its absence. `test.sh` builds
-  `tests/placement.zs` for macOS and Windows and checks no section name is left.
+  doesn't have: most of each Mac's 130 or so failures on 2026-11-04, every guide example among
+  them, were its absence. `test.sh` builds `tests/placement.zs` for macOS and Windows from any
+  host and checks no section name is left, and expects the ELF names in a native build on Linux
+  alone. `tests/debug/kinds.zs`'s DWARF check fails if `llvm-dwarfdump` crashes.
 - `tests/lsp/providers.sh` edits its sample only once the server has answered the requests before
   it (a pipe the script writes as the server answers), so what the first hover and completion
   see no longer depends on who was faster; it failed one run in four under load.

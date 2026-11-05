@@ -27,6 +27,9 @@ XDG_CACHE_HOME=$t/cache1 "$stage" build src/Main.zs --release -o "$t/1/zs"
 XDG_CACHE_HOME=$t/cache2 "$t/1/zs" build src/Main.zs --release -o "$t/2/zs"
 XDG_CACHE_HOME=$t/cache3 "$t/2/zs" build src/Main.zs --release -o "$t/3/zs"
 cmp -s "$t/2/zs" "$t/3/zs" || { echo "the compiler doesn't build itself to the same binary" >&2; exit 1; }
+case $version in
+  [0-9]*) [ "$("$t/3/zs" --version)" = "zs $version" ] || { echo "release $version, but the compiler says $("$t/3/zs" --version) (src/Build/Tools.zs)" >&2; exit 1; } ;;
+esac
 archive() { # binary name
   src/install.sh "$1" "$t/$2"
   mkdir -p dist

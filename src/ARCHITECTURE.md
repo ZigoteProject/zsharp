@@ -7,7 +7,7 @@ what each optimizes, and how the compiler keeps itself fast. The language it com
 [DESIGN.md](../DESIGN.md); when it is built, [ROADMAP.md](../ROADMAP.md#phase-11-self-hosting-).
 The tables' line counts are the plan's estimates from the F# files each module replaced
 (`wc -l src/*.fs`: 23,700 at `v0.5`); the *As built* notes say where the code went another way,
-and §2's totals are what `src/` is today (36,559 lines of Z# on 2026-11-05, for 0.7.0;
+and §2's totals are what `src/` is today (36,575 lines of Z# on 2026-11-05, for 0.7.0;
 31,250 at 0.6.2).
 
 ## 1. Shape
@@ -39,15 +39,15 @@ and §2's totals are what `src/` is today (36,559 lines of Z# on 2026-11-05, for
 Z# modules form a DAG, so the directories below are in dependency order: a module uses only what is
 above it. As built (2026-11-05, 0.7.0; counted by
 `find src -name '*.zs' | xargs wc -l`, each directory's files summed): `Diag/` 97 lines, `Syntax/`
-5,726, `Types/` 1,360, `Infer/` 7,141, `Core/` 873, `Opt/` 5,002, `Gen/` 6,488, `Build/` 4,655,
-`Lsp/` 1,508, `Provide/` 1,844, and `Main`, `Commands` and `Server` 1,865: 36,559 in all, against
+5,726, `Types/` 1,360, `Infer/` 7,141, `Core/` 873, `Opt/` 5,002, `Gen/` 6,491, `Build/` 4,665,
+`Lsp/` 1,508, `Provide/` 1,844, and `Main`, `Commands` and `Server` 1,868: 36,575 in all, against
 the plan's 20,000. At 0.6.2 (2026-10-30) it was 31,250, most of the growth past the plan phase 12's:
 `Opt/NoAlloc` (360), `Gen/Debug`, `Build/DocTest`, `Infer/Snapshot` (the cache's interface), the
-layout facts, C unions, `[<Bits>]` and interrupt handlers in `Infer` and `Gen`. 0.7 added 5,309:
+layout facts, C unions, `[<Bits>]` and interrupt handlers in `Infer` and `Gen`. 0.7 added 5,325:
 `Provide/` (1,844, the type providers), `Commands` (950: `zs bench`, `zs fuzz`, `zs test`'s
 `--coverage`, `--stress` and `--target` and its replays of a property's failing case, `zs add`,
-`remove`, `tree` and `vendor`, workspaces), `Gen/` (723: constants in flash, placement, coverage's
-counters, debug info for every value, `Int`'s operations), `Build/` (593: workspaces, the lock's
+`remove`, `tree` and `vendor`, workspaces), `Gen/` (726: constants in flash, placement, coverage's
+counters, debug info for every value, `Int`'s operations), `Build/` (603: workspaces, the lock's
 hashes, vendoring, providers' modules, coverage), `Opt/` (525: constant folding, `Literals`, Buffer
 writes in `NoAlloc` and `Rc`, `use` under effects) and `Infer/` (245); the other directories less
 than 200 each.

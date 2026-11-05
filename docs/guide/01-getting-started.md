@@ -7,8 +7,8 @@ Each [release](https://github.com/ZigoteProject/zsharp/releases) has an archive 
 runtime in one folder. Unpack it and put the folder on `PATH`:
 
 ```sh
-tar -xzf zs-0.7.0-linux-x86_64.tar.gz
-export PATH="$PWD/zs-0.7.0-linux-x86_64:$PATH"
+tar -xzf zs-0.6.2-linux-x86_64.tar.gz
+export PATH="$PWD/zs-0.6.2-linux-x86_64:$PATH"
 zs doctor                # what's here, and how to get what's missing
 ```
 

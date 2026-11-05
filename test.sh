@@ -268,13 +268,18 @@ else echo "FAIL tests/static.zs: static tables"; grep '^@"zs[sv]\.' "$tmp/static
 # [<Section>] and [<Align>] (0014 item 12): the table's object in its section, padded so its data
 # is at a multiple of 64 and the value's global pointing past the padding; the Buffer's bytes
 # aligned, its cell static; the .noinit ref's header in the image the host loads (a chip writes
-# it at startup: tests/mcu/noinit.zs); nothing computed at startup for any of them
+# it at startup: tests/mcu/noinit.zs); nothing computed at startup for any of them. The names
+# are ELF's, kept on Linux; a native build on macOS or Windows drops them (the check below
+# builds for both from any host)
+if [ "$(uname -s)" = Linux ]; then tables=', section "\.tables"'; logs=', section "\.logs"'; noinit=', section "\.noinit"'
+else tables=""; logs=""; noinit=""; fi
 if bin/zs build tests/placement.zs --emit-llvm -o "$tmp/placement" >/dev/null 2>&1 \
-   && grep -q '^@"zss\.sine" = .* { \[48 x i8\], i64, i64, \[4 x i64\] } .*, section "\.tables", align 64$' "$tmp/placement.ll" \
+   && grep -q '^@"zss\.sine" = .* { \[48 x i8\], i64, i64, \[4 x i64\] } .*'"$tables"', align 64$' "$tmp/placement.ll" \
    && grep -q '^@"zsv\.sine" = internal global ptr getelementptr (i8, ptr @"zss\.sine", i64 48)$' "$tmp/placement.ll" \
    && grep -q '^@"zss\.frame\.data" = .* global \[8 x i8\] .*, align 32$' "$tmp/placement.ll" \
-   && grep -q '^@"zss\.log\.data" = .* global \[4 x ptr\] .*, section "\.logs"$' "$tmp/placement.ll" \
-   && grep -q '^@"zss\.boots" = .* global { i64, i64 } { i64 0, i64 0 }, section "\.noinit"$' "$tmp/placement.ll" \
+   && grep -q '^@"zss\.log\.data" = .* global \[4 x ptr\] .*'"$logs"'$' "$tmp/placement.ll" \
+   && grep -q '^@"zss\.boots" = .* global { i64, i64 } { i64 0, i64 0 }'"$noinit"'$' "$tmp/placement.ll" \
+   && { [ -n "$tables" ] || ! grep -q '^@"zss\..*, section "' "$tmp/placement.ll"; } \
    && ! grep -q '^  store i64 0, ptr @"zss\.boots"$' "$tmp/placement.ll" \
    && ! grep -q 'call ptr @"zs\.\$init\.' "$tmp/placement.ll"; then
   echo "ok   tests/placement.zs: a table, two Buffers and a ref placed in the image (a .noinit ref's header loaded with it, written at startup on a chip alone)"
@@ -337,9 +342,13 @@ else echo "skip tests/debug/gdb.sh (no gdb)"; fi
 # LLVM 23's verifier reports that, and it isn't the compiler's, so it's the one error let by
 dwarf_verifies() {
   ! command -v llvm-dwarfdump >/dev/null && return 0
-  llvm-dwarfdump --verify "$1" >"$tmp/dwarf.log" 2>&1 && return 0
-  ! grep '^error:' "$tmp/dwarf.log" | grep -v 'Aggregated error counts:' \
-    | grep -qv '\.debug_str_offsets: .* is neither zero nor immediately following a null character\|Section contribution contains invalid string offset occurred'
+  local status=0
+  llvm-dwarfdump --verify "$1" >"$tmp/dwarf.log" 2>&1 || status=$?
+  [ "$status" = 0 ] && return 0
+  # the verifier finished (1, with its errors listed: not a crash), and every error is that one
+  [ "$status" = 1 ] && grep -q '^error:' "$tmp/dwarf.log" \
+    && ! grep '^error:' "$tmp/dwarf.log" | grep -v 'Aggregated error counts:' \
+      | grep -qv '\.debug_str_offsets: .* is neither zero nor immediately following a null character\|Section contribution contains invalid string offset occurred'
 }
 if bin/zs build -g tests/debug/kinds.zs -o "$tmp/kinds" 2>"$tmp/kinds.log" && [ "$("$tmp/kinds")" = "[2; 3] 42 7 2 5 1 2 5 4" ] \
    && { dwarf_verifies "$tmp/kinds" || { cat "$tmp/dwarf.log" >>"$tmp/kinds.log"; false; }; } \
@@ -638,8 +647,10 @@ else echo "FAIL tests/fmt/reflow"; cat "$tmp/reflow.diff"; fail=1; fi
 # the release the compiler reports (zs --version, and to editors in LSP's and MCP's serverInfo) is
 # src/zs.toml's
 toml_version=$(sed -n 's/^version = "\(.*\)"$/\1/p' src/zs.toml)
-if [ "$(bin/zs --version)" = "zs $toml_version" ]; then echo "ok   zs --version (zs $toml_version, src/zs.toml's)"
-else echo "FAIL zs --version: '$(bin/zs --version)', src/zs.toml has $toml_version"; fail=1; fi
+mcp_info=$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | timeout 20 bin/zs mcp 2>&1 | grep -o '"serverInfo":{[^}]*}')
+if [ "$(bin/zs --version)" = "zs $toml_version" ] && [ "$mcp_info" = '"serverInfo":{"name":"zs","version":"'"$toml_version"'"}' ]; then
+  echo "ok   zs --version and MCP's serverInfo (zs $toml_version, src/zs.toml's; LSP's is in tests/lsp/session.out)"
+else echo "FAIL zs --version: '$(bin/zs --version)', MCP's $mcp_info; src/zs.toml has $toml_version"; fail=1; fi
 # the language server: a scripted session (tests/lsp/session.sh) against its expected transcript
 actual=$(tests/lsp/session.sh bin/zs 2>&1); expected=$(cat tests/lsp/session.out)
 if [ "$actual" == "$expected" ]; then echo "ok   tests/lsp/session.sh"

@@ -125,7 +125,7 @@ property tests.
 | **A server** | The [echo server](examples/echo/server.zs) held 10,000 connections for an hour: 33.1 million round trips, none failed, its memory flat at 26 MB. |
 | **A program** | [logstat](examples/logstat/README.md) counts 1 million log lines (50 MB) in 0.72 s on one thread and 0.20 s on 16, from a 357 KB binary. |
 | **Binary size** | A hello world is 16 KB on Linux x86-64, 13 KB stripped. |
-| **The compiler** | 36,559 lines of Z# (`src/`, 2026-11-05: `wc -l` of the `.zs` files git tracks). When it replaced the F# compiler (27,815 lines then), a debug build of itself took 14.9 s from nothing (the F# compiler: 15.2 s) and 0.43 s after a one-function change; its own passes have since gone from 8.1 s to 3.7 s. [Report](docs/reports/self-hosting.md) |
+| **The compiler** | 36,575 lines of Z# (`src/`, 2026-11-05: `wc -l` of the `.zs` files git tracks). When it replaced the F# compiler (27,815 lines then), a debug build of itself took 14.9 s from nothing (the F# compiler: 15.2 s) and 0.43 s after a one-function change; its own passes have since gone from 8.1 s to 3.7 s. [Report](docs/reports/self-hosting.md) |
 | **The rest** | The library is 8,257 lines of Z# (`lib/`), the tests 9,872 in 386 files (`tests/`) and the examples 2,638 (`examples/`), counted the same way; the runtime is 6,388 lines of C (`runtime/rt.c` and `rt-embedded.c`). |
 
 Desktop numbers come from an AMD Ryzen 7 PRO 8840U laptop running Linux x86-64, but for the two
@@ -341,8 +341,8 @@ Each [release](https://github.com/ZigoteProject/zsharp/releases) has an archive 
 runtime in one folder. Unpack it and put the folder on `PATH`:
 
 ```sh
-tar -xzf zs-0.7.0-linux-x86_64.tar.gz
-export PATH="$PWD/zs-0.7.0-linux-x86_64:$PATH"
+tar -xzf zs-0.6.2-linux-x86_64.tar.gz
+export PATH="$PWD/zs-0.6.2-linux-x86_64:$PATH"
 ```
 
 With `zs` on your PATH (in the dev container below, it's `bin/zs`):
