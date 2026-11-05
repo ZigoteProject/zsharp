@@ -22,14 +22,14 @@ itself from an earlier release (stage 0: 0.6.1, pinned in `dev`).
 
  done: 0–11, L, V, the third design review, 12's release (0.6.2 on 2026-10-30), and 0.7's
        items 2 to 4 but for what their statuses leave
- now: 0.7.0 prepared for release (unreleased; its date is the maintainer's), with 0.7's first
+ now: 0.7.0 released (2026-11-05), with 0.7's first
       item open: what 11.5 and 12 have left (the suites in CI, clean machines, the board)
 ```
 
 - **v1 (phases 0–6, L and V):** the complete single-threaded language. It is fast, memory-safe, has C interop, and runs async on one event loop.
 - **v2 (phases 7–9.6, done):** threads and parallelism, SIMD and the final performance work, incremental builds, and what F#, systems and C programmers miss first.
 - **v3 (phases 10 and 11, done):** effect handlers, then the compiler in Z#, which builds itself. The F# compiler as phase 10 left it is tagged `v0.5`, and `v0.6` is the last version with both compilers: its release is stage 0 now (tags of the repository; the first public release, 0.6.2, is below).
-- **v1, v2 and v3 are stages of the language, not release numbers.** The first public release is 0.6.2 (phase 12, numbered on from the tags before it; `CHANGELOG.md` has what each release changed and what to rewrite). 0.7.0, the second, is prepared for release and unreleased: the maintainer builds and publishes it (`src/release.sh`). 1.0 is the release that freezes the language and the library's names.
+- **v1, v2 and v3 are stages of the language, not release numbers.** The first public release is 0.6.2 (phase 12, numbered on from the tags before it; `CHANGELOG.md` has what each release changed and what to rewrite). 0.7.0, the second, came out on 2026-11-05 (its archives from `src/release.sh`). 1.0 is the release that freezes the language and the library's names.
 - **Tracks:** editor tooling (E), testing, profiling and debugging (D), microcontrollers (M), more targets (T), type providers (P), the library (S) and packages (K) run alongside the main line. Items marked *done in 0.7* are what 0.7 took from them; items marked *after 0.7* (they were *after 0.6.2* until then) weren't needed for either release, and what follows 0.7 picks from them once users ask.
 
 ## Where things stand
@@ -59,7 +59,7 @@ itself from an earlier release (stage 0: 0.6.1, pinned in `dev`).
 ## Next
 
 ### After 0.7
-0.6.2 is out (2026-10-30), and 0.7.0 is prepared for release (unreleased). Phases 11.5 and 12
+0.6.2 is out (2026-10-30), and 0.7.0 (2026-11-05). Phases 11.5 and 12
 stay here until their last exit tests close: the suite green on the five CI runners, which run
 now and fail on what 0.7's item 1 lists, and the clean-machine installs (11.5), and the flagship
 on its Nucleo-F401RE (12); they are 0.7's first item, still open. What follows 0.7 isn't planned
@@ -101,7 +101,7 @@ user asking. Optimization still waits for profiles of real programs.
 
 **Exit:** 1 to 3 done and 4's exit tests met is 0.7; 4's items ship in it as they come. The release
 notes list what each change asks a 0.6.2 program to rewrite, as `CHANGELOG.md` does today.
-- **Status (2026-11-05): prepared for release, 0.7.0 (unreleased).** 2 to 4 are done but for what their statuses leave, and 4's exit tests are met; 1 isn't, so the exit isn't met in full. 0.7.0 goes out with item 1 open, as 0.6.2 did with phases 11.5 and 12; the maintainer builds and publishes it (`src/release.sh <zs> 0.7.0 …`), so its date is theirs. `CHANGELOG.md` has its notes.
+- **Status (2026-11-05): released, 0.7.0.** 2 to 4 are done but for what their statuses leave, and 4's exit tests are met; 1 isn't, so the exit isn't met in full. 0.7.0 goes out with item 1 open, as 0.6.2 did with phases 11.5 and 12; its archives are `src/release.sh <zs> 0.7.0 …`'s. `CHANGELOG.md` has its notes.
 
 ### Phase 11.5: cross-platform: macOS, Windows and Linux on arm64 and x86-64
 Z# builds programs for, and runs its compiler on, the platforms people develop on: macOS arm64

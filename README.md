@@ -341,8 +341,8 @@ Each [release](https://github.com/ZigoteProject/zsharp/releases) has an archive 
 runtime in one folder. Unpack it and put the folder on `PATH`:
 
 ```sh
-tar -xzf zs-0.6.2-linux-x86_64.tar.gz
-export PATH="$PWD/zs-0.6.2-linux-x86_64:$PATH"
+tar -xzf zs-0.7.0-linux-x86_64.tar.gz
+export PATH="$PWD/zs-0.7.0-linux-x86_64:$PATH"
 ```
 
 With `zs` on your PATH (in the dev container below, it's `bin/zs`):
@@ -387,12 +387,12 @@ Z# is pre-1.0: the language and the library still change between releases, each 
 the compiler in Z#, which builds itself to the same bytes, and the ports to macOS, Windows and
 Linux arm64.
 
-**Released:** 0.6.2 (2026-10-30), the first public release, with firmware for a microcontroller
+**Before it:** 0.6.2 (2026-10-30), the first public release, with firmware for a microcontroller
 board as its flagship. Of its archives, Linux x86-64's suite passes natively, Linux arm64's under
 QEMU and Windows x64's under Wine; the macOS builds and arm64 Windows haven't run on a real
 machine yet, and the flagship has run under QEMU, not on its board.
 
-**0.7.0 (unreleased), as of 2026-11-05:** type providers (a JSON sample, a CSV file, a SQL
+**Released:** 0.7.0 (2026-11-05): type providers (a JSON sample, a CSV file, a SQL
 schema and its queries, a chip's SVD file, a C header, and providers of your own); properties,
 `zs fuzz`, `zs bench`, coverage, `zs test --stress` and tests on a chip; constants in flash,
 placement, fixed-point numbers, and weak references and arenas on a chip; debug info for every
@@ -406,9 +406,8 @@ frees itself taking a later object at the same address for it (`tests/weak_runti
 compiler is fuzzed in every run of the suite and stressed in every run on Linux
 (`tests/fuzz.sh`, `tests/stress.sh`), and what that found is fixed: a stack overflow is a panic,
 and programs as long or as deep as generated code makes them build (an array literal of 50,000
-elements, parentheses nested 10,000 deep). No archive of it is built yet. Its suite passes on
-Linux x86-64 but for two checks that depend on the machine it last ran on (`tests/pgo.sh`,
-`bench/host`'s `fib`); the two that failed in CI's dev container on
+elements, parentheses nested 10,000 deep). Its archives are built on Linux x86-64, where its
+suite passes in the dev container; the two that failed in CI's dev container on
 2026-11-05 (`tests/debug/kinds.zs`'s DWARF check under LLVM 23, and the tree-sitter grammar on a
 typed `_` parameter) are fixed. Linux arm64's under QEMU and Windows x64's under Wine, which 0.6.2
 ran, haven't been run for it.

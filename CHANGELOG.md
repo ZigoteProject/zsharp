@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.0 (unreleased)
+## 0.7.0 (2026-11-05)
 
 The second public release: what the flagship and the first users asked for, from 0.7's plan
 (ROADMAP), without that plan's first item, the checks on machines (below). The compiler is fuzzed in
@@ -16,12 +16,12 @@ and providers of your own), properties with shrinking and `zs fuzz`, `zs bench` 
 items (`Int`'s checked, saturating and bit operations, ISO 8601, UDP and name lookup), with ten
 Advent of Code puzzles and three small tools as its exit tests.
 
-It isn't built yet: the archives come from `src/release.sh`, as 0.6.2's did. Linux x86-64's suite
-passes, the chips' programs under QEMU and wasm32's under Node among it, but for two checks that
-depend on the machine it last ran on (Ubuntu 24.04, not the dev container): `tests/pgo.sh`, whose
-profile runtime there is LLVM 20's, and `bench/host`, whose `fib` counts 5.3% more instructions than
-its baseline (2,464,794 against 2,339,907, past the 5% the check allows), as in every run on that
-machine. CI's Linux x86-64 job, in the dev container, failed two more on 2026-11-05, both fixed
+Archives for Linux, macOS and Windows on x86-64 and arm64, each built on Linux x86-64 by
+`src/release.sh`, whose compiler builds itself to the same bytes. Linux x86-64's suite passes in
+the dev container (Fedora 44, LLVM 23), the chips' programs under QEMU and wasm32's under Node
+among it, `tests/pgo.sh` and `bench/host` too. On Ubuntu 24.04 those two fail on that machine's
+tools: `tests/pgo.sh` on LLVM 20's profile runtime, and `bench/host`'s `fib` at 5.3% over its
+instruction baseline (2,464,794 against 2,339,907, past the 5% the check allows). CI's Linux x86-64 job, in the dev container, failed two more on 2026-11-05, both fixed
 here: `tests/debug/kinds.zs`, whose DWARF LLVM 23's `llvm-dwarfdump --verify` rejected for a
 `.debug_str_offsets` entry inside a string GNU ld had merged by its tail (the one error the check
 now lets by; lld's output has none), and the tree-sitter grammar, which didn't parse a typed `_`
@@ -383,6 +383,12 @@ What a 0.6.2 program, project or script may have to change, and what behaves dif
   cortex-m4 has none, so it can't depend on this package`, instead of an error deep in its code.
 
 ### Tooling
+- Completion in the language server lists what a program declares, not only its functions and
+  types: effects and their operations, traits, type aliases, union cases and modules, with a
+  declaration's `///` comment as its documentation; a library module's private names are left
+  out. After a module's name and a dot (`Weather.`, `List.`, `Collections.List.`) it lists that
+  module's members, a provided module's among them (`parse`, `print`, `Root` for a JSON sample),
+  where it listed nothing (`tests/lsp/providers.sh`).
 - On macOS, `zs fuzz` links libFuzzer's runtime for macOS (`libclang_rt.fuzzer_no_main_osx.a`) and
   libc++, and `zs build --lib -o x.so` leaves a function the program defines (an `extern` of the
   library's) to the loader, as ELF's linkers do (`-undefined dynamic_lookup`): the one found
