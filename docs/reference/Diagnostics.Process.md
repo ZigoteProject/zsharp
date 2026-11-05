@@ -45,6 +45,16 @@ A pipe: the `Process` record's `stdin`, `stdout` or `stderr`.
 
 Nothing: reading gets the end at once, and what's written is dropped.
 
+#### `ToOutput`
+
+```zsharp
+| ToOutput
+```
+
+`stderr` only: where standard output goes (its pipe, when that's `Piped`), as a shell's
+`2>&1`. One reader then sees both, in the order they were written, and neither can fill
+while the other waits to be read.
+
 ### `ProcessStart`
 
 ```zsharp

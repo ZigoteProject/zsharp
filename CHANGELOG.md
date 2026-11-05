@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Library
+- `Diagnostics.ToOutput`: a started process's standard error where its standard output goes
+  (`stderr = ToOutput`, its pipe when that's `Piped`), as a shell's `2>&1`, so one reader sees
+  both in order and neither fills while the other waits (`tests/process.zs`).
+
+### Tooling
+- On Windows, a build no longer waits for ever before it starts: its check for the target runs
+  `zig cc -v`, whose search list on standard error filled the pipe while `zs` read standard
+  output to its end (0.7.0's CI on Windows stopped there, printing nothing). The runtime's pipes
+  there hold a megabyte, where Windows' default is a page or so; the compiler moves to
+  `ToOutput`, which no amount of errors fills, once it's built by a release whose library has
+  it (stage 0 is 0.6.1's).
+
+### Tests
+- CI upgrades Windows's LLVM and zig (`choco upgrade`): Windows x64's image has LLVM 20, which
+  `choco install` kept.
+
 ## 0.7.0 (2026-11-05)
 
 The second public release: what the flagship and the first users asked for, from 0.7's plan
