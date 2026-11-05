@@ -3,5 +3,7 @@
 {"jsonrpc":"2.0","id":3,"result":[{"label":"city"},{"label":"temp"},{"label":"humidity"},{"label":"readings"},{"label":"wind"},{"label":"station"},{"label":"backup"},{"label":"tags"},{"label":"mixed"},{"label":"first-name"}]}
 {"jsonrpc":"2.0","id":4,"error":{"code":-32602,"message":"city is provided by json from weather.json; change it there"}}
 {"jsonrpc":"2.0","id":5,"result":[{"label":"city"},{"label":"pressure"},{"label":"temp"},{"label":"humidity"},{"label":"readings"},{"label":"wind"},{"label":"station"},{"label":"backup"},{"label":"tags"},{"label":"mixed"},{"label":"first-name"}]}
+{"jsonrpc":"2.0","id":7,"result":[{"label":"parse"},{"label":"print"},{"label":"Reading"},{"label":"Root"},{"label":"Station"}]}
+{"jsonrpc":"2.0","id":8,"result":[{"position":{"line":4,"character":8},"label":": Weather.Root","kind":1},{"position":{"line":5,"character":11},"label":": string","kind":1},{"position":{"line":2,"character":13},"label":"// unit -\u003E int","kind":1,"paddingLeft":true}]}
 {"jsonrpc":"2.0","id":6,"result":null}
 asked to watch: 1, with weather.json: 1

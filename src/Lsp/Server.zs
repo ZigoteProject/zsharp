@@ -728,6 +728,77 @@ let private codeActions (st: State) (path: string) (fromLine: int) (toLine: int)
 
 // after `x.`: the fields and members of x's type; otherwise names in scope (approximately: library
 // and project functions, types, constructors, this file's own names) and keywords
+// every name a program declares at a top level, a provided module's among them (0001): its full
+// name, its kind (LSP's CompletionItemKind) and its detail. Functions and values, types and their
+// cases, effects and their operations, traits and type aliases.
+let private declared (a: Analysis) : list<string * int * string> =
+  let cx = a.checked.cx
+  let globals = List.map (fun (p: string * Infer.Cx.Global) -> (fst p, 3, show a (snd p).ty)) (Map.toList cx.globals.Value)
+  let typeItems (p: string * Types.Ty.TypeInfo) : list<string * int * string> =
+    let (n, info) = p
+    let cases (cs: list<string>) = List.map (fun (c: string) -> (c, 20, lastPart n)) cs
+    match info.def with
+    | Types.Ty.RecordDef _ -> [ (n, 22, "record") ]
+    | Types.Ty.UnionDef cs -> (n, 13, "union") :: cases (List.map fst cs)
+    | Types.Ty.CUnionDef cs -> (n, 13, "union") :: cases (List.map fst cs)
+  let effects = List.map (fun (p: string * Core.Ir.EffectInfo) -> (fst p, 23, "effect")) (Map.toList cx.effects.Value)
+  let ops = List.map (fun (p: string * (string * int)) -> (fst p, 3, "operation of " + lastPart (fst (snd p)))) (Map.toList cx.effectOps.Value)
+  let traits = List.map (fun (n: string) -> (n, 8, "trait")) (Set.toList cx.traitNames.Value)
+  let aliases = List.map (fun (p: string * (int * Types.Ty.Ty)) -> (fst p, 22, "type alias")) (Map.toList cx.aliases.Value)
+  let all = List.concat [ globals; List.collect typeItems (Map.toList cx.types.Value); effects; ops; traits; aliases ]
+  let shown (t: string * int * string) =
+    let (n, _, _) = t
+    // not what the compiler made: an impl's method (Show<int>#show), a lifted function ($)
+    not (String.contains "$" n || String.contains "#" n || String.contains "<" n)
+  List.filter shown all
+
+// the completion items of the declared names `name` gives a label for (the part after a module's
+// name, say): one per label, a name the label's first part leads into as a module, and a
+// declaration's /// comment as its documentation. A module's private name only in its own file.
+let private declaredItems (st: State) (path: string) (a: Analysis) (name: string -> option<string>) : list<Json> =
+  let defs = Map.ofList (List.map (fun (h: Spot) -> (h.h.key, h)) (List.filter (fun (h: Spot) -> h.h.isDef && h.h.key <> "") (Array.toList a.spots)))
+  let files = ref Map.empty
+  let lines (file: string) =
+    match Map.tryFind file files.Value with
+    | Some ls -> ls
+    | None ->
+      let ls = linesOf st file
+      files.Value <- Map.add file ls files.Value
+      ls
+  let doc (full: string) =
+    match Map.tryFind full defs with
+    | Some h -> Build.Doc.docAbove (lines h.path) h.line
+    | None ->
+      match Map.tryFind ("type:" + full) defs with
+      | Some h -> Build.Doc.docAbove (lines h.path) h.line
+      | None -> None
+  let hidden (full: string) =
+    match Map.tryFind full a.checked.cx.privates.Value with
+    | Some(Some _) ->
+      match Map.tryFind full defs with
+      | Some h -> h.path <> path
+      | None -> true
+    | _ -> false
+  let seen = ref Set.empty
+  let one (t: string * int * string) : list<Json> =
+    let (full, kind0, detail0) = t
+    match name full with
+    | Some label0 when label0 <> "" && not (hidden full) ->
+      let (label, kind, detail) =
+        match String.indexOf "." label0 with
+        | Some k -> (String.sub label0 0 k, 9, "module")
+        | None -> (label0, kind0, detail0)
+      if Set.contains (label, kind) seen.Value then
+        []
+      else
+        seen.Value <- Set.add (label, kind) seen.Value
+        let common = [ ("label", JString label); ("kind", num kind); ("detail", JString detail) ]
+        match (if kind = 9 then None else doc full) with
+        | Some d -> [ JObject(List.append common [ ("documentation", JObject [ ("kind", JString "markdown"); ("value", JString d) ]) ]) ]
+        | None -> [ JObject common ]
+    | _ -> []
+  List.collect one (declared a)
+
 let private completion (st: State) (path: string) (line: int) (ch: int) : Json =
   let text = lineText st path (line + 1)
   let upto = upToChar text (min ch (chars text))
@@ -753,34 +824,29 @@ let private completion (st: State) (path: string) (line: int) (ch: int) : Json =
         | Some ms -> List.map (fun (m, _) -> item m 2 n) ms
         | None -> []
       JArray(List.append fields members)
-    | _ -> JArray []
+    | _ ->
+      // a module's name before the dot (a provided one's among them, 0001): what it declares
+      let mutable j = i - 1
+      while j >= 0 && (isIdentByte (String.byte upto j) || String.byte upto j = u8 46) do
+        j <- j - 1
+      let qual = String.sub upto (j + 1) (i - j - 1)
+      let inside (full: string) =
+        let dotted = "." + full
+        match String.indexOf ("." + qual + ".") dotted with
+        | Some k when qual <> "" -> Some(String.sub dotted (k + String.length qual + 2) (String.length dotted - k - String.length qual - 2))
+        | _ -> None
+      JArray(declaredItems st path a inside)
   | Some a ->
-    let cx = a.checked.cx
     let firstByName (xs: list<Spot>) = List.fold (fun (acc: list<Spot>) (h: Spot) -> if List.exists (fun (o: Spot) -> o.h.name = h.h.name) acc then acc else List.append acc [ h ]) [] xs
-    let global (h: Spot) =
-      // as programs write it: List.map, not Collections.List.map
-      let label = Types.Ty.shortName h.h.name
-      match Build.Doc.docAbove (linesOf st h.path) h.line with
-      | Some d -> JObject [ ("label", JString label); ("kind", num 3); ("detail", JString(show a h.h.ty)); ("documentation", JObject [ ("kind", JString "markdown"); ("value", JString d) ]) ]
-      | None -> item label 3 (show a h.h.ty)
-    let globals = List.map global (firstByName (List.filter (fun (h: Spot) -> h.h.decl && not (String.contains "$" h.h.name)) (Array.toList a.spots)))
     let cName (p: string * Build.CImport.CInfo) =
       let (n, ci) = p
       let kind = if String.startsWith "typedef struct" ci.csig then 22 else if String.contains "(" ci.csig then 3 else 21
       JObject [ ("label", JString n); ("kind", num kind); ("detail", JString ci.csig); ("documentation", JObject [ ("kind", JString "markdown"); ("value", JString ci.cdoc) ]) ]
     let cNames = List.map cName (Map.toList a.cInfos)
     let locals = List.map (fun (h: Spot) -> item h.h.name 6 (show a h.h.ty)) (firstByName (List.filter (fun (h: Spot) -> h.h.isDef && not h.h.decl && not (String.startsWith "type:" h.h.key)) (hoversAt st path)))
-    let typeItems (p: string * Types.Ty.TypeInfo) : list<Json> =
-      let (n, info) = p
-      if String.contains "$" n then
-        []
-      else
-        match info.def with
-        | Types.Ty.RecordDef _ -> [ item (Types.Ty.shortName n) 22 "" ]
-        | Types.Ty.UnionDef cs -> item (Types.Ty.shortName n) 13 "" :: List.map (fun (c, _) -> item (Types.Ty.shortName c) 20 (Types.Ty.shortName n)) cs
-        | Types.Ty.CUnionDef cs -> item (Types.Ty.shortName n) 13 "" :: List.map (fun (c, _) -> item (Types.Ty.shortName c) 20 (Types.Ty.shortName n)) cs
-    let typesAndCases = List.collect typeItems (Map.toList cx.types.Value)
-    JArray(List.concat [ locals; globals; cNames; typesAndCases; keywordItems ])
+    // as programs write them: List.map, not Collections.List.map
+    let reachable (full: string) = Some(Types.Ty.shortName full)
+    JArray(List.concat [ locals; declaredItems st path a reachable; cNames; keywordItems ])
   | None -> JArray keywordItems
 
 let private inlayHints (st: State) (path: string) (fromLine: int) (toLine: int) : Json =
