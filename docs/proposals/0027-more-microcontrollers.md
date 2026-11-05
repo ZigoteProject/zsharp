@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft; the first board is built (phase 12, 0.6.2: `--target nucleo-f401`, RTT output, `zs run` through probe-rs, run under QEMU's STM32F405 and not yet on the board itself), the others are not |
+| **Status** | Implemented in part, the rest a draft: the first board is built (phase 12, 0.6.2: `--target nucleo-f401`, RTT output, `zs run` through probe-rs, and in 0.7 `zs test` through it too; run under QEMU's STM32F405 and, on 2026-11-05, not yet on the board itself), the others are not |
 | **Decided at** | a design review, before phase 12's M4 (one real board) is built, since M4 is the first item that needs the split this proposal makes |
 | **Builds** | track M, items 4 (more boards) and 5 (RISC-V); the flagship's board (phase 12, the Nucleo-F401RE) |
 | **Rests on** | decisions 26 (cross-compilation through `zig cc`), 29 (target order), 42 (`[<NoAlloc>]`), 60 (interrupt handlers) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §10](../../DESIGN.md#10-targets) (tiers, bare metal), [§11](../../DESIGN.md#11-c-interop) (the C ABI) |

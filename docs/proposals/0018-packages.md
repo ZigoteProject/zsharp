@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Implemented in part. Items 1 (namespaced dependencies, `tests/project/two`), 2 (versions, phase 12: `tests/project/git.sh`; a second major in a `v2/` directory isn't read yet, only tags at the root), 4 (the `[c]` section, `tests/project/cwords`; `[c.<target>]` with 0022) and 9 (the orphan rule, decision 84, phase 12) are built, and internal modules, targets and the commands (items 3, 5, 6, 7 and 8; `zs add` by name waits for the index), 2026-11-04. Draft for the index |
+| **Status** | Implemented in part. Items 1 (namespaced dependencies, `tests/project/two`), 2 (versions, phase 12: `tests/project/git.sh`; a second major in a `v2/` directory isn't read yet, only tags at the root), 4 (the `[c]` section, `tests/project/cwords`; `[c.<target>]` with 0022) and 9 (the orphan rule, decision 84, phase 12) are built, and in 0.7 (2026-11-04) items 3 (internal modules), 5 (a chip build naming a dependency that uses Std), 6 (the lock's hashes, `zs vendor` and `--offline`), 7 (`zs add`, `zs remove` and `zs tree`) and 8 (workspaces), with `tests/project/pkgs.sh`, `vendor.sh` and `workspace.sh`. Left, after 0.7: `zs add` by name, which waits for the index, and a second major in a `v2/` directory. Draft for the index |
 | **Decided at** | track K's plan ([ROADMAP](../../ROADMAP.md#packages-k)); phase 12's "before 0.1" list takes item 2 ([ROADMAP](../../ROADMAP.md#phase-12-release-062)); the index at a later design review |
 | **Builds** | track K: packages |
 | **Rests on** | decisions 26 (`zig cc`), 27 (source packages, `zs.lock`), 37 (Core and Std) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §12](../../DESIGN.md#12-tooling) Projects |
@@ -10,7 +10,7 @@
 
 - [x] Approved in principle (items 1–8)
 - [ ] Discussion (the index)
-- [ ] Implementation
+- [x] Implementation (items 1–9, but `zs add` by name and a second major's `v2/` directory)
 
 ## Summary
 

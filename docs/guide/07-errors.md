@@ -1,7 +1,7 @@
 # 7. Errors
 
 Z# separates two kinds of failure:
-- **Expected failures:** a missing file, bad input. These are values, `result<'a, 'e>`, that the caller has to handle. Inside a module, a function may instead throw a typed exception, the `Throw` effect, which its type shows and `Throw.catch` turns back into a `result` ([chapter 16](16-effects.md#typed-exceptions-throw)).
+- **Expected failures:** a missing file, bad input. These are values, `result<'a, 'e>`, that the caller has to handle. Inside a module, a function may instead throw a typed exception, the `Throw` effect, which its type shows and `Throw.catch` turns back into a `result`; a throw disposes the `use` values it passes over, newest first ([chapter 16](16-effects.md#typed-exceptions-throw)).
 - **Bugs:** an index out of bounds, an overflow, a failed assertion. These are **panics**, which stop the program at once.
 
 ## result and `?`
@@ -91,15 +91,13 @@ panic: List.head: empty list
 
 **In a C program:** a panic in a Z# library ends the host process too. The host can set a hook that runs first ([C interop](09-c-interop.md)).
 
-**Backtraces:** a panic also prints a backtrace. Set `ZS_BACKTRACE=0` to leave it out, as these examples do. In a test run with `zs test`, a panic fails that one test only ([Programs](08-programs.md#tests)).
+**Backtraces:** a panic also prints a backtrace. On Linux it names the Z# functions the panic came through, an `at` line each, the program's `main` last (a function inlined into another is part of it). A release build's is shorter: often only the function the panic is in, and sometimes no `at` line at all. Set `ZS_BACKTRACE=0` to leave it out, as these examples do. In a test run with `zs test`, a panic fails that one test only ([Programs](08-programs.md#tests)).
 
 ## Overflow
 
 **Integer arithmetic is checked:** `+`, `-`, `*`, negation and `MIN / -1` panic on overflow, in optimized builds too, as in Swift. A silently wrong number is worse than a stopped program.
 
 **Wrap-around on purpose:** for hashes, checksums and random number generators, use `Int.wrappingAdd`, `Int.wrappingSub` and `Int.wrappingMul`.
-
-**Checked and saturating:** when an overflow is an input's fault rather than a bug (a parsed size, a timestamp plus a duration), `Int.checkedAdd a b` is `Some` the sum or `None`, with `checkedSub` and `checkedMul` beside it. `Int.saturatingAdd`, `saturatingSub` and `saturatingMul` stop at the type's bounds instead (`Int.saturatingSub (u8 3) (u8 5)` is `0`), as a gain control or a counter that must not wrap does. The bit operations are `Int.popCount`, `leadingZeros`, `trailingZeros`, `rotateLeft`, `rotateRight` and `byteSwap`.
 
 ```zsharp
 let main () =
@@ -133,4 +131,19 @@ let main () =
 
 ```text
 1335831723 933488787
+```
+
+**Checked and saturating:** when an overflow is an input's fault rather than a bug (a parsed size, a timestamp plus a duration), `Int.checkedAdd a b` is `Some` the sum or `None`, with `checkedSub` and `checkedMul` beside it. `Int.saturatingAdd`, `saturatingSub` and `saturatingMul` stop at the type's bounds instead (`Int.saturatingSub (u8 3) (u8 5)` is `0`), as a gain control or a counter that must not wrap does. Each works on `int` and every sized integer; the bit operations beside them in `Int` are in [Basics](02-basics.md#bitwise-operators).
+
+```zsharp
+let main () =
+  let size = u8 200
+  println $"{Int.checkedAdd size (u8 100)} {Int.checkedAdd size (u8 50)} {Int.checkedMul 3 4}"
+  println $"{Int.saturatingAdd size (u8 100)} {Int.saturatingSub (u8 3) (u8 5)} {Int.saturatingMul (i8 -100) (i8 2)}"
+  0
+```
+
+```text
+None Some 250 Some 12
+255 0 -128
 ```

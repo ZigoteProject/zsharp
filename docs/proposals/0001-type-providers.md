@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved in principle (decision 56), after 0.6.2 (the first release, numbered 0.6.2 rather than 0.1) |
+| **Status** | Implemented (decision 56) in 0.7, 2026-11-03 and 2026-11-04: `zs provide`, the `import` form (both spellings, the cache, the hidden module), the editor's side (checked by a scripted session, `tests/lsp/providers.sh`; not yet in Zed itself), `json`, `csv`, `sql` with typed queries (question 5), `svd`, providers on PATH and from packages (question 3), and `import c` on the protocol (question 2); `tests/providers/`, `examples/providers`, guide chapter 18. Left, after 0.7: a JSON Schema as `json`'s input (a schema is read as a sample), and `rows = "sqlite"`, which waits for the `zsharp/sqlite` package |
 | **Decided at** | the third design review ([ROADMAP](../../ROADMAP.md#third-design-review-)): spelling as proposed; `import c` joins the protocol when phase 11's libclang work touches it |
 | **Builds** | track P ([ROADMAP](../../ROADMAP.md#type-providers-p)), after phase 11 |
 | **Rests on** | decisions 20 (no compile-time code), 27 (source packages), 34 (new syntax needs a design discussion) and 39 ("Simple") in [DESIGN §13](../../DESIGN.md#13-decisions) |
@@ -10,7 +10,7 @@
 
 - [x] Approved in principle
 - [ ] Discussion
-- [x] Implementation (2026-11-03): `zs provide`, the `import` form (both spellings, the cache, the hidden module), the editor's side (watched inputs, rename's refusal), `svd`, `sql` and providers on PATH with the cache fallback (`src/Provide/`, `Build/Modules.provided`, `tests/providers/`, `examples/providers`, guide chapter 18). Then providers from packages (`[provider] main = …`, built by zs as a process; question 3) and `svd`'s enumerated values as unions. Then `import c` on the protocol (question 2: the named form and `zs provide c`; the bare form keeps its path). Then typed SQL queries (question 5, the subset a schema can type: `queries = …`, a module per named query with its text, `Params` and `Row`; a driver package runs them). Nothing of the proposal is left open; `rows = "sqlite"` waits for the package
+- [x] Implementation (2026-11-03): `zs provide`, the `import` form (both spellings, the cache, the hidden module), the editor's side (watched inputs, rename's refusal), `svd`, `sql` and providers on PATH with the cache fallback (`src/Provide/`, `Build/Modules.provided`, `tests/providers/`, `examples/providers`, guide chapter 18). Then providers from packages (`[provider] main = …`, built by zs as a process; question 3) and `svd`'s enumerated values as unions. Then `import c` on the protocol (question 2: the named form and `zs provide c`; the bare form keeps its path). Then typed SQL queries (question 5, the subset a schema can type: `queries = …`, a module per named query with its text, `Params` and `Row`; a driver package runs them). Left: a JSON Schema as `json`'s input, read as a sample today, and `rows = "sqlite"`, which waits for the package
 
 ## Summary
 
@@ -138,7 +138,7 @@ A provider is a program that turns its arguments into Z# source. The whole proto
 - **Where providers come from:**
   1. **`zs`'s own:** `c`, `json`, `csv`, `svd` and `sql`. In a build they run in-process; `zs provide json weather.json` runs the same code and prints the source.
   2. **A program on PATH:** `zs-provider-<name>`, in any language. Nothing is loaded into the compiler: the provider is a process, as clang is for `import c`.
-  3. **A dependency** *(later)*: a package with a `[provider]` section in `zs.toml`, built by `zs` before use, as Cargo builds a `build.rs`. The shape is in *Unresolved questions*; the first implementation has the two above.
+  3. **A dependency** *(built in 0.7)*: a package with a `[provider] main = …` section in `zs.toml`, built by `zs` before use and run as a process, as Cargo builds a `build.rs` (question 3).
 - **Why text, and not a plugin API or an AST format:** the parser exists; the output is readable, diffable and ejectable; the protocol is a few lines and survives the compiler's rewrite in Z# (phase 11), where an API over the compiler's types wouldn't; and it's what the two precedents do: `import c` turns clang's `-ast-dump=json` into declarations, and C#'s source generators add C# source text to the compilation.
 
 ### What the compiler does
@@ -418,4 +418,5 @@ keeps the checked result.
 ## History
 
 - **2026-10-22:** drafted. Track P's sketch (ROADMAP, commit 6d15ae5) and DESIGN §3.1's "a later generalization of `import c`" are what it replaces.
-- **Next:** the third design review approves it in principle or declines it, with a row in DESIGN §13 either way.
+- **The third design review:** approved in principle, decision 56.
+- **2026-11-03 and 2026-11-04:** built for 0.7 (the status says what, and what's left).

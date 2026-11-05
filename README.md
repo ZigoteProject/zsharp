@@ -65,9 +65,11 @@ The example at the top is F#, but for `effect`, `handle` and `main` (F# writes
 Indentation; `let`, `let rec` and `let mutable`; `|>`, `>>` and partial application; records and
 `{ r with … }`; unions; `match` with guards, nested patterns and `as`; `function`; active
 patterns; units of measure; `option`, `result`, `list`, `Map` and `Set`; `option { }`,
-`result { }` and `task { }`; `$"…"` strings; list and array expressions; `module`, `namespace`
-and `open`; members with named and optional arguments; structural equality, comparison and
-printing; Hindley–Milner inference.
+`result { }` and `task { }`; `$"…"` strings; list and array expressions and ranges
+(`[ 1 .. 10 ]`, `[ 1 .. 2 .. 9 ]`, `[| 0 .. n |]`); `module`, `namespace` and `open`; members
+with named and optional arguments; typed tuple parameters (`let f (a: int, b: string)`, one
+parameter of type `int * string`); structural equality, comparison and printing; Hindley–Milner
+inference.
 
 ### Different from F#
 
@@ -77,9 +79,9 @@ printing; Hindley–Milner inference.
 | `[<EntryPoint>] let main argv` | `let main () = …` returns the exit code; `Environment.args ()` gives the arguments |
 | `int` is 32 bits | `int` is the machine word: 64 bits on a desktop, 32 on a Cortex-M. `i32`, `i64`, `u8`, … keep their size |
 | `float`, `float32` | `f64`, `f32`; `float` still works, as a name for `f64` and as the conversion |
-| integer overflow wraps | it panics; `[<Wrapping>]` on a function, or `Int.wrappingAdd`, wraps |
+| integer overflow wraps | it panics; `[<Wrapping>]` on a function, or `Int.wrappingAdd`, wraps; `Int.checkedAdd` gives an `option`, `Int.saturatingAdd` stops at the type's bound |
 | `null`, `opt.Value` | no null; read an `option` with `match` or `Option.defaultValue` |
-| `failwith`, `raise`, `try … with` | return a `result` (`?` returns early), or perform `Throw`, which shows in the type; a panic is a bug and can't be caught |
+| `failwith`, `raise`, `try … with` | return a `result` (`?` returns early), or perform `Throw`, which shows in the type and, as an exception does, disposes the `use` values it passes over (not yet one inside a `task { }` body); a panic is a bug and can't be caught |
 | classes, interfaces, inheritance | records, unions and modules; members on records and unions; traits |
 | `inline` with SRTP, `static member (+)` | `impl Add<T>`, resolved at compile time, no `inline` |
 | `async { }`, which is cold, and `task { }`, which is hot | one `Task<'a>`, cold, written `task { }`, compiled to a state machine |
@@ -87,11 +89,10 @@ printing; Hindley–Milner inference.
 | `mutable` record fields | none: `{ r with x = … }`, a `let mutable` record, or a `ref` field |
 | a closure captures a `let mutable` as a hidden ref cell | it's an error: make the `ref` yourself |
 | a `.fsproj` listing the files in order | a `zs.toml`; each file is a module named by its path, and nothing is listed |
-| NuGet and the .NET library | C libraries through `import c`, and Z# packages by path or git |
+| NuGet and the .NET library | C libraries through `import c`, and Z# packages by path or git (`zs add`) |
 | `List.map (fun s -> s.Length) names` needs an annotation | it compiles: a lambda is typed after the call's other arguments |
-
-**Also as in F#:** list and array ranges (`[ 1 .. 10 ]`, `[ 1 .. 2 .. 9 ]`, `[| 0 .. n |]`), and
-typed tuple parameters (`let f (a: int, b: int)`, one tuple parameter; each part takes its type).
+| Expecto or xUnit, FsCheck, BenchmarkDotNet, coverlet | in Core and `zs`: tests as values, `testProperty` with `[<Derive(Arbitrary)>]`, `zs fuzz`, `zs bench`, `zs test --coverage` |
+| type providers as compiler plugins (`JsonProvider<"weather.json">`) | `module Weather = import json "weather.json"`, and `import csv`, `sql`, `svd` and `c`: Z# source written from the file at compile time, which `zs provide` prints to keep ([the guide](docs/guide/18-type-providers.md)) |
 
 ### Stricter than F#
 
@@ -106,9 +107,8 @@ typed tuple parameters (`let f (a: int, b: int)`, one tuple parameter; each part
 - **Thread safety in the type.** `Array.Parallel.map` takes a `share<'a -> 'b>`: what the function captures must be immutable, or an `Atomic`, a `Mutex` or a `Channel`.
 - **Traits instead of SRTP and interfaces,** resolved at compile time, with `dyn` values for mixed lists. `derive` writes impls by walking a type's fields, as `[<Derive(Json)>]` does.
 - **Record fields with defaults:** with `type Config = { host: string = "localhost"; port: int = 8080 }`, the literal `{ port = 9000 }` is a whole `Config`.
-- **Types for systems code:** `u8` to `u64`, `usize`, `f32x8`, `fixed<u8, 16>`, `[<CLayout>]` records, `span<'a>`, and `ptr<'a>` inside `unsafe`.
+- **Types for systems code:** `u8` to `u64`, `usize`, `f32x8`, `fixed<u8, 16>` arrays, `q15` and the other fixed-point numbers, `[<CLayout>]` records, `span<'a>`, and `ptr<'a>` inside `unsafe`.
 - **Four kinds of function:** `'a -> 'b`; `share<'a -> 'b>`, which another thread may run; `callback<'a -> 'b>`, which C calls back; `fnptr<'a -> 'b>`, a bare C function pointer. The errors name the one you need ([the table](docs/guide/12-memory.md#which-reference-which-function)).
-- **Type providers:** `module Weather = import json "weather.json"` declares the sample's records, `import csv`, `import sql` and `import svd` a CSV file's rows, a schema's tables and a microcontroller's registers, each checked against the file at compile time and ordinary Z# underneath ([examples/providers](examples/providers), [the guide](docs/guide/18-type-providers.md)).
 
 The tour is [examples/logstat](examples/logstat/README.md): a log summary tool written for F#
 developers, with effects as dependency injection, tasks with timeouts, checked parallelism and
@@ -123,11 +123,13 @@ property tests.
 | **Against F# on .NET** | 3.9× faster on `binarytrees` and 3.7× on a red-black tree; F# uses 3.6–4.7× the memory on both. [Report](docs/reports/host.md) |
 | **Real programs** | A JSON round trip (parse, typed decode, re-encode) in 1.3× C's time with 13% less memory; word counts, an interpreter, Dijkstra and SHA-256 at 1.5–3.5× C, the gaps measured and named. [Report](docs/reports/realworld.md) |
 | **A server** | The [echo server](examples/echo/server.zs) held 10,000 connections for an hour: 33.1 million round trips, none failed, its memory flat at 26 MB. |
-| **A program** | [logstat](examples/logstat/README.md) counts 1 million log lines (50 MB) in 0.72 s on one thread and 0.20 s on 16, from a 394 KB binary. |
-| **Binary size** | A hello world is 17 KB on Linux x86-64, 11.7 KB stripped. |
-| **The compiler** | 31,250 lines of Z# (`src/`, 2026-11-01). When it replaced the F# compiler (27,815 lines then), a debug build of itself took 14.9 s from nothing (the F# compiler: 15.2 s) and 0.43 s after a one-function change; its own passes have since gone from 8.1 s to 3.7 s. [Report](docs/reports/self-hosting.md) |
+| **A program** | [logstat](examples/logstat/README.md) counts 1 million log lines (50 MB) in 0.72 s on one thread and 0.20 s on 16, from a 357 KB binary. |
+| **Binary size** | A hello world is 16 KB on Linux x86-64, 13 KB stripped. |
+| **The compiler** | 36,559 lines of Z# (`src/`, 2026-11-05: `wc -l` of the `.zs` files git tracks). When it replaced the F# compiler (27,815 lines then), a debug build of itself took 14.9 s from nothing (the F# compiler: 15.2 s) and 0.43 s after a one-function change; its own passes have since gone from 8.1 s to 3.7 s. [Report](docs/reports/self-hosting.md) |
+| **The rest** | The library is 8,257 lines of Z# (`lib/`), the tests 9,872 in 386 files (`tests/`) and the examples 2,638 (`examples/`), counted the same way; the runtime is 6,388 lines of C (`runtime/rt.c` and `rt-embedded.c`). |
 
-Desktop numbers come from an AMD Ryzen 7 PRO 8840U laptop running Linux x86-64; Cortex-M numbers
+Desktop numbers come from an AMD Ryzen 7 PRO 8840U laptop running Linux x86-64, but for the two
+binary sizes, built with `--release` on Ubuntu 24.04 and clang 23 on 2026-11-05; Cortex-M numbers
 are instructions executed under QEMU, each program written in both languages. Each report gives
 its method.
 
@@ -138,9 +140,10 @@ its method.
 The compiler inserts reference counting, then removes most of it, as Koka and Lean 4 do
 (Perceus). A value is freed at its last use, a function that only reads a value borrows it with
 no count traffic, and rebuilding a unique list or tree reuses its cells in place. Small unions
-such as `option<int>` are never allocated. Arrays are values with copy-on-write, so a write to a
-unique array happens in place. Weak references break cycles, arenas free in bulk, and raw
-pointers work inside `unsafe`.
+such as `option<int>` are never allocated, and a one-case union over a plain value is that value
+(`type UserId = UserId of int` is an `int`). Arrays are values with copy-on-write, so a write to
+a unique array happens in place, and `m <- HashMap.add k v m` updates the map in place too. Weak
+references break cycles, arenas free in bulk, and raw pointers work inside `unsafe`.
 
 | Program, Linux x86-64 | Z# | C | Rust | F# (.NET 10) |
 |---|---:|---:|---:|---:|
@@ -177,6 +180,10 @@ let main () =
   0
 ```
 
+`module Ray = import c "raylib.h"` puts the header's names in a module instead (`Ray.InitWindow`),
+each with its C signature as its doc, the library linked by `zs.toml`'s `[c]` section;
+`zs provide c raylib.h` prints that binding as Z# to keep.
+
 The other way, `[<Export>]` functions and `zs build --lib` make a static library (or a `.so`) and
 its header:
 
@@ -199,7 +206,7 @@ library from Zig, each on an OS and on a Cortex-M4. More:
 
 ### Tasks, threads and SIMD
 
-- **Tasks:** `task { }` compiles to a state machine, so a wait allocates nothing: a task that waits 200,000 times makes the same 7 allocations as one that waits 10 times. Cancellation disposes what a task bound with `use`.
+- **Tasks:** `task { }` compiles to a state machine, so a wait allocates nothing: a task that waits 200,000 times makes the same 7 allocations as one that waits 10 times. Cancellation disposes what a task bound with `use`. TCP, UDP and Unix sockets wait on the event loop, and `Dns.lookup` looks a name up off the event loop's thread.
 - **Threads:** a work-stealing pool (`Parallel.for`, `Array.Parallel.map`, …), `Atomic`, `Mutex` and `Channel`. What crosses threads is checked at compile time, so a data race doesn't compile, and only objects actually shared pay for atomic counts. Mandelbrot at 8000×8000 takes 2,213 ms on one thread and 243 ms on 16; C with pthreads, 2,070 ms and 245 ms.
 - **SIMD:** portable vectors (`f32x8`, `u8x16`, …) with masks and shuffles, and x86-64 and arm64 intrinsics. Against C with AVX intrinsics: 65 ms against 63 for a dot product, 83 against 82 for n-body, 77 against 74 for a blur. The same source, on arm64 under qemu-user, is within 4% of C with NEON.
 
@@ -222,7 +229,8 @@ Cross builds link through `zig cc`, so there's no SDK or sysroot to install.
 
 Z# runs bare-metal on ARM Cortex-M, with no operating system and no C library. Core comes along
 (lists, arrays, maps, strings, options, results, effects, `Mmio`); using Std, the part that needs
-an OS (files, processes, sockets), is a compile error that says so.
+an OS (files, processes, sockets), is a compile error that says so, and a dependency that uses it
+is named as the build starts.
 
 ```fsharp
 type Mode =
@@ -250,7 +258,7 @@ let buttonDown () = Mmio.read32 gpiocIdr &&& bit 13 = u32 0
 
 This is part of [examples/mcu/nucleo-f401.zs](examples/mcu/nucleo-f401.zs): an LED with three
 modes, a debounced button and a serial command line, for an ST Nucleo-F401RE. Built with
-`zs build --target nucleo-f401 -Os`, the whole firmware is 5,124 bytes of flash. `Mode` is a plain
+`zs build --target nucleo-f401 -Os`, the whole firmware is 5,156 bytes of flash. `Mode` is a plain
 value that never touches the heap, and in the machine code `setLed` is one store instruction and
 `buttonDown` one load. `zs run --target nucleo-f401` flashes it through
 [probe-rs](https://probe.rs), and its `println` comes back over RTT.
@@ -280,6 +288,7 @@ normally written ([bench/mcu](bench/mcu)). The ratios are instructions executed,
 |---|---:|---:|---:|---:|
 | `crc32`: CRC-32 of 4 KB, 10 times | 1.00 | 1.00 | 1.00 | 2,304 / 2,084 B |
 | `fir`: a 32-tap filter over 1,024 `f32` samples | 1.06 | 1.12 | 1.01 | 2,564 / 2,356 B |
+| `firq15`: the same filter in `q15` fixed point, against C in CMSIS-DSP's style | 1.05 | 1.43 | 1.49 | 3,012 / 2,364 B |
 | `isort`: insertion sort of 512 `i32`, in place | 1.04 | 1.00 | 0.90 | 2,720 / 2,112 B |
 | `pipeline`: `List.init 200 \|> map \|> filter \|> sum`, against a C loop | 1.26 | 1.00 | 1.28 | 2,348 / 2,024 B |
 | `fib64`: recursion on Z#'s `int`, against C's `int64_t` | 0.62 | 0.72 | 0.57 | |
@@ -287,15 +296,15 @@ normally written ([bench/mcu](bench/mcu)). The ratios are instructions executed,
 | `tokens`: a tokenizer state machine over 2 KB | 1.39 | 1.25 | 2.52 | 2,716 / 2,192 B |
 
 - **Where the speed comes from:** `int` is the chip's 32-bit word; reading an array doesn't touch its reference count; bounds checks are proved once per loop; a pipeline of pure lambdas becomes one loop that builds no list; small unions are plain values, and an enum is one byte.
-- **Where it's slower:** every `+` and `-` the compiler can't prove safe is checked for overflow, which C doesn't do (`fib`); `[<Wrapping>]` on a function turns the checks off. The tokenizer's tuples and checked arithmetic cost the most on the M0's few registers.
+- **Where it's slower:** every `+` and `-` the compiler can't prove safe is checked for overflow, which C doesn't do (`fib`); `[<Wrapping>]` on a function turns the checks off. The tokenizer's tuples and checked arithmetic cost the most on the M0's few registers. At `-Os`, the bounds of a loop whose body is large (`firq15`'s, with its multiply-add inlined) aren't proved once for the loop, so each tap checks them.
 - **RAM:** the programs built on lists and unions peak at 32 bytes of heap, and stack use is within 10% of C's on all but `isort` at `-O2`. A program that allocates nothing links no heap at all.
 - **Also there:** interrupt handlers (`[<Interrupt "USART2">]`), `[<NoAlloc>]` and `--no-heap` (a compile error naming the chain that may allocate), `[<Bits>]` records for registers, `Cpu.critical` and the other intrinsics, and tasks on the runtime's loop with the core asleep between events.
-- **Constants in flash:** a top-level array or list literal of numbers, bools or strings (a CRC table, a font, a list of commands) is a static object in the image, read in place: no startup code, no RAM, and a write to it copies it; so is a tree of union cases, and a record, tuple or plain union of constants is written into its global, tables and all.
-- **Tests on the chip:** `zs test firmware.zs --target cortex-m4` builds the file's `[<Tests>]` into one image and runs them under QEMU (or on the board), each named as it passes.
-- **Fixed-point numbers:** `q7`, `q15` and `q31` in Core, saturating, with rounding products and `mulAdd`, as CMSIS-DSP has them: a `q15` filter is plain arithmetic, printed as decimals with no float.
+- **Constants in flash:** a top-level array or list literal of numbers, bools or strings (a CRC table, a font, a list of commands) is a static object in the image, read in place: no startup code, no RAM, and a write to it copies it; so is a tree of union cases, and a record, tuple or plain union of constants is written into its global, tables and all. Arithmetic and conversions on literals are computed at compile time first, so a table of `Q15.ofFloat` values is one too, and a library built with `--lib`, which has no startup code, may hold such constants.
+- **Tests on the chip:** `zs test firmware.zs --target cortex-m4` builds the file's `[<Tests>]` into one image and runs them under QEMU (`--target nucleo-f401` on the board through probe-rs, not yet run on one), each named as it passes; a property runs its cases there too, though a case that panics isn't shrunk and nothing is saved.
+- **Fixed-point numbers:** `q7`, `q15` and `q31` in Core, saturating, with rounding products and `mulAdd`, as CMSIS-DSP has them: a `q15` filter is plain arithmetic (`firq15` above), printed as decimals with no float.
 - **Placement:** `[<Section ".noinit">]` on a top-level `ref` or `Buffer` keeps it where a reset neither copies nor zeroes (a boot counter, a crash log), any other section name puts it where the linker script says (a DMA region), and `[<Align 32>]` aligns its storage; a constant table takes them too (`[<Section ".data">]` for one read from RAM). The storage is in the image: no startup code, and nothing allocated.
 - **Weak references and arenas** work on a chip as on the host: an arena's blocks are an eighth of the heap each, and go back at once when its last object has died.
-- **Not yet:** `[<Align>]` on a type, RISC-V, and boards beyond the Nucleo-F401RE. The flagship has run under QEMU's STM32F405, not yet on the board itself. They're track M of the [roadmap](ROADMAP.md).
+- **Not yet:** `[<Align>]` on a type, fixed-point arithmetic on SIMD vectors, RISC-V, and boards beyond the Nucleo-F401RE. The flagship has run under QEMU's STM32F405, not yet on the board itself. They're track M of the [roadmap](ROADMAP.md).
 
 The registers can come from the chip's SVD file: `import svd ("stm32f401-part.svd", only = "GPIOA,RCC")` gives a module per peripheral with each register a `[<Bits>]` record ([examples/mcu/nucleo-f401-svd.zs](examples/mcu/nucleo-f401-svd.zs) is the firmware written that way, compiled to the same accesses).
 
@@ -309,33 +318,34 @@ One `zs` binary holds the compiler and its tools.
 | Command | What it does |
 |---|---|
 | `zs new`, `zs build`, `zs run`, `zs check` | projects in a `zs.toml`, with path and git dependencies (versions by minimal version selection, a `[c]` section for C sources); builds cached by module, and a build server that keeps the compiler warm |
+| `zs add`, `zs remove`, `zs tree`, `zs vendor` | a dependency written into `zs.toml` and fetched, or taken out; the dependencies as resolved; copied into `vendor/`; `--offline` makes a fetch an error. `zs.lock` hashes each git dependency's files, a `[workspace]` resolves its packages into one lock, and a package's `internal/` modules are its own |
 | `zs build --release` | optimized, with ThinLTO; `--profile-generate` and `--profile-use` for PGO |
-| `zs build -g` | DWARF for gdb and lldb: breakpoints on lines; strings, records and plain unions shown as values, lists, arrays, trees and refs through their objects (`print *xs`); `-g --release` keeps the lines in an optimized build |
-| `zs test` | tests as values, each in its own process; expect tests that `zs test --update` rewrites; `--doc` runs the examples in `///` comments |
+| `zs build -g` | DWARF for gdb and lldb: breakpoints on lines; strings, records and plain unions shown as values, lists, arrays, trees and refs through their objects (`print *xs`); `-g --release` keeps the lines in an optimized build. On Linux, a panic's backtrace names the Z# functions, with or without `-g` |
+| `zs test` | tests as values, each in its own process; expect tests that `zs test --update` rewrites; `--doc` runs the examples in `///` comments; `--stress 10m` runs them at random on every core for that long; `--target cortex-m4` runs them in one image under QEMU (`--target nucleo-f401` on the board through probe-rs, not yet run on one) |
 | `zs bench` | `bench` values timed with a median and a confidence interval, a change from the last saved run reported; `testFaster` for a performance claim |
 | `zs test --coverage` | the lines run and not run per file, and `coverage.lcov` for `genhtml` |
-| properties | `testProperty "name" (fun (xs: list<int>) -> …)`: cases drawn with `Arbitrary` (derived for your types), a failure shrunk to a smallest case and shown with its seed |
+| properties | `testProperty "name" (fun (xs: list<int>) -> …)`: cases drawn with `Arbitrary` (derived for your types), a failure shrunk to a smallest case and shown with its seed; `prop { }` draws as it goes, and `Prop.model` checks a system against a model with a sequence of commands |
 | `zs fuzz` | a property under libFuzzer, guided by coverage; a crash shrunk and saved for `zs test` to replay first |
 | `zs doctor` | what builds need (clang 23 or later, zig, libclang, …), found or not, and how to get what's missing |
 | `zs fmt`, `zs doc` | one canonical format; Markdown docs from `///` comments |
-| `zs provide`, `import json "weather.json"` | type providers ([the guide's chapter](docs/guide/18-type-providers.md)): the types of a JSON sample, a CSV file, a SQL schema or a chip's SVD file, declared from the file when the program is compiled and checked against it; `zs provide` prints the module to keep instead; a `zs-provider-<name>` on PATH is one of your own |
-| `zs lsp`, `zs mcp` | a language server (types on hover, rename, code actions, allocation hints per line) and an MCP server for AI agents |
+| `zs provide`, `import json "weather.json"` | type providers ([the guide's chapter](docs/guide/18-type-providers.md)): the types of a JSON sample, a CSV file, a SQL schema and its queries, a chip's SVD file or a C header, declared from the file when the program is compiled and checked against it; `zs provide` prints the module to keep instead; a `zs-provider-<name>` on PATH is one of your own |
+| `zs lsp`, `zs mcp` | a language server (types on hover, rename, code actions, allocation hints per line) and an MCP server for AI agents (`check`, `type_at`, `definition`, `explain`, `build`, `run`, …) |
 
 Editors: the [Zed extension](editors/zed), the [VS Code extension](editors/vscode), the
 [Rider plugin](editors/rider), and the [tree-sitter grammar](editors/tree-sitter-zsharp) for the others.
 
 ## Getting started
 
-The compiler is written in Z# and builds itself, starting from the previous release (stage 0,
-pinned in `dev`). The dev container has everything it needs: clang and LLVM 23, zig, QEMU, gdb
-and valgrind. It needs [podman](https://podman.io).
+Each [release](https://github.com/ZigoteProject/zsharp/releases) has an archive per platform
+(`linux`, `macos` or `windows`, on `x86_64` or `aarch64`): the compiler, its library and its
+runtime in one folder. Unpack it and put the folder on `PATH`:
 
 ```sh
-./dev ./test.sh                        # build the compiler, then run every test
-./dev bin/zs run examples/simple.zs    # run a program with it
+tar -xzf zs-0.7.0-linux-x86_64.tar.gz
+export PATH="$PWD/zs-0.7.0-linux-x86_64:$PATH"
 ```
 
-With `zs` on your PATH (in the container, it's `bin/zs`):
+With `zs` on your PATH (in the dev container below, it's `bin/zs`):
 
 ```sh
 zs doctor                              # what builds need: clang 23 or later, zig, libclang, …
@@ -343,6 +353,15 @@ zs run hello.zs                        # build and run a debug build
 zs build hello.zs --release            # optimized
 zs new greeter                         # a project: zs.toml, src/main.zs and a test
 zs build blink.zs --target cortex-m4 -Os -o blink.elf
+```
+
+The compiler is written in Z# and builds itself, starting from an earlier release (stage 0,
+pinned in `dev`). The dev container has everything it needs: clang and LLVM 23, zig, QEMU, gdb
+and valgrind. It needs [podman](https://podman.io).
+
+```sh
+./dev ./test.sh                        # build the compiler, then run every test
+./dev bin/zs run examples/simple.zs    # run a program with it
 ```
 
 `./dev` fetches stage 0 from this repository's
@@ -353,11 +372,11 @@ without the container, see [the guide](docs/guide/01-getting-started.md).
 
 | To | Read |
 |---|---|
-| learn the language | [the guide](docs/guide/README.md): 17 chapters, every example compiled and run by the tests, the last [for F# programmers](docs/guide/17-from-fsharp.md) |
-| read whole programs | [examples/logstat](examples/logstat/README.md), the [Nucleo-F401RE firmware](examples/nucleo/README.md), and the rest of [examples](examples) |
+| learn the language | [the guide](docs/guide/README.md): 18 chapters, one [for F# programmers](docs/guide/17-from-fsharp.md); the tests compile and run their examples but for fragments, errors shown on purpose and those that need a C library, a chip or a data file |
+| read whole programs | [examples/logstat](examples/logstat/README.md), the [Nucleo-F401RE firmware](examples/nucleo/README.md), [ten Advent of Code puzzles](examples/aoc/README.md), [grep, a JSON pretty-printer and `tail -f`](examples/tools/README.md), and the rest of [examples](examples) |
 | look up a function | [the library reference](docs/reference/README.md), generated by `zs doc` |
 | know why it's designed this way | [DESIGN.md](DESIGN.md) |
-| check a number | [docs/reports](docs/reports): the host, microcontrollers, effects and self-hosting; and the posts on the strongest results: [Perceus on a Cortex-M](docs/posts/perceus-on-a-cortex-m.md), [atomic counts only where threads meet](docs/posts/atomic-counts-only-where-threads-meet.md), [SIMD next to C](docs/posts/simd-next-to-c.md) |
+| check a number | [docs/reports](docs/reports): the host, real programs, microcontrollers, effects and self-hosting; and the posts on the strongest results: [Perceus on a Cortex-M](docs/posts/perceus-on-a-cortex-m.md), [atomic counts only where threads meet](docs/posts/atomic-counts-only-where-threads-meet.md), [SIMD next to C](docs/posts/simd-next-to-c.md) |
 | see what's next | [ROADMAP.md](ROADMAP.md), and [docs/proposals](docs/proposals/README.md) for designs under discussion |
 | find your way around the compiler | [src/ARCHITECTURE.md](src/ARCHITECTURE.md) |
 
@@ -366,12 +385,39 @@ without the container, see [the guide](docs/guide/01-getting-started.md).
 Z# is pre-1.0: the language and the library still change between releases, each change listed in
 [CHANGELOG.md](CHANGELOG.md) with what to rewrite. Done: the language through effect handlers,
 the compiler in Z#, which builds itself to the same bytes, and the ports to macOS, Windows and
-Linux arm64. Released: 0.6.2 (2026-10-30), the first public release, with firmware for a
-microcontroller board as its flagship. Of its archives, Linux x86-64's suite passes natively,
-Linux arm64's under QEMU and Windows x64's under Wine; the macOS builds and arm64 Windows haven't
-run on a real machine yet, and the flagship has run under QEMU, not on its board. Next: the
-platforms' suites in CI and on clean machines, the board itself, then what 0.7 takes from the
-tracks. The [roadmap](ROADMAP.md) has the details.
+Linux arm64.
+
+**Released:** 0.6.2 (2026-10-30), the first public release, with firmware for a microcontroller
+board as its flagship. Of its archives, Linux x86-64's suite passes natively, Linux arm64's under
+QEMU and Windows x64's under Wine; the macOS builds and arm64 Windows haven't run on a real
+machine yet, and the flagship has run under QEMU, not on its board.
+
+**0.7.0 (unreleased), as of 2026-11-05:** type providers (a JSON sample, a CSV file, a SQL
+schema and its queries, a chip's SVD file, a C header, and providers of your own); properties,
+`zs fuzz`, `zs bench`, coverage, `zs test --stress` and tests on a chip; constants in flash,
+placement, fixed-point numbers, and weak references and arenas on a chip; debug info for every
+value, `-g` on optimized builds and Z# names in a panic's backtrace; workspaces, `zs add`,
+`zs remove`, `zs tree`, `zs vendor` and a lock that hashes its git dependencies; UDP, name
+lookup, ISO 8601 dates and `Int`'s checked, saturating and bit operations; F#'s ranges and typed
+tuple parameters, and a `use` disposed when a throw passes it, but for one in a `task { }` body.
+Two memory errors 0.6.2 had are fixed: a value lent to a read or a call that another of its
+arguments freed first (`tests/buffer_lend.zs`), and a weak reference to an object the runtime
+frees itself taking a later object at the same address for it (`tests/weak_runtime.zs`). The
+compiler is fuzzed in every run of the suite and stressed in every run on Linux
+(`tests/fuzz.sh`, `tests/stress.sh`), and what that found is fixed: a stack overflow is a panic,
+and programs as long or as deep as generated code makes them build (an array literal of 50,000
+elements, parentheses nested 10,000 deep). No archive of it is built yet. Its suite passes on
+Linux x86-64 but for three checks that depend on the machine it last ran on (`tests/pgo.sh`,
+`bench/host`'s `fib`, `tests/debug/lldb.sh`); the two that failed in CI's dev container on
+2026-11-05 (`tests/debug/kinds.zs`'s DWARF check under LLVM 23, and the tree-sitter grammar on a
+typed `_` parameter) are fixed. Linux arm64's under QEMU and Windows x64's under Wine, which 0.6.2
+ran, haven't been run for it.
+
+**Left of 0.7's plan:** its first item, which needs machines, not code: the suites on the five CI
+runners, the archives on clean machines, and the flagship on its board. Also `[<Align>]` on a
+type, `Seq` pipelines as one loop, fixed point's vector forms, a new seed for `tests/fuzz.sh` on each run (it takes 1 unless
+`ZS_FUZZ_SEED` says otherwise), and the stress run over the pool, tasks and `Alt` under
+ThreadSanitizer. The [roadmap](ROADMAP.md) has the details.
 
 ## License
 

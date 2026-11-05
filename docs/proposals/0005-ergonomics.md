@@ -2,15 +2,15 @@
 
 | | |
 |---|---|
-| **Status** | Implemented (phase 9.6); list expressions over any `Iter` wait with 0017's last steps, after 0.6.2 |
+| **Status** | Implemented (phase 9.6); list expressions over any `Iter` work (pinned 2026-11-04 by `tests/iter/comprehensions.zs`), and 0.7 adds F#'s ranges as lists and arrays, `[ 1 .. 10 ]`, `[ 1 .. 2 .. 9 ]` and `[\| 0 .. n \|]` (2026-11-04, `tests/ranges.zs`) |
 | **Decided at** | the phase 9.6 design review (decisions 54 and 55; the rest in DESIGN §2.1 as planned) |
-| **Builds** | phase 9.6 ([ROADMAP](../../ROADMAP.md#phase-96-ergonomics-spans-and-c-structs)) |
+| **Builds** | phase 9.6 ([ROADMAP](../../ROADMAP.md#phase-96-ergonomics-spans-and-c-structs-)) |
 | **Rests on** | decisions 19 (`?`), 34 (new syntax needs a discussion: compound assignment had it), 36 (evaluation order), 41 (lambda arguments typed last), 54 (generic constants), 55 (compound assignment) in [DESIGN §13](../../DESIGN.md#13-decisions) |
 | **Related** | [0003 spans](0003-spans-and-slices.md) (slices), [0006 anonymous records](0006-anonymous-records.md) (phase 12's deferred forms) |
 
 - [x] Approved in principle
 - [ ] Discussion
-- [ ] Implementation
+- [x] Implementation
 
 ## Summary
 

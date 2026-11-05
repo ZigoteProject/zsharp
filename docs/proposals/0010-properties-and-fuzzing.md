@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Implemented in part (2026-11-04): step 1, `Source`, `Gen`, `gen { }`, `Arbitrary` with Core's impls and the derive (`Shape.cases`), `testProperty` over one parameter (a tuple for several; the function rule on `Outcome` is left), and in-process shrinking of a case that returns `false` or an `Error` (shorter bytes, then smaller), shown with its seed; steps 3 and 4, `Prop`, `prop { }` with `assume`, `label`, `classify` and `collect`, the distribution report, and `Prop.model` (an `Error` result, so it shrinks); `tests/property/basic.zs`, `tests/property/model.zs`. Step 2 too: the runner's record and replay protocol (`--record`, `--replay`), a case that panics shrunk by replays of the binary, the failures directory and replay-first (`tests/ztest/property.sh`). Step 5 too, `zs fuzz` (2026-11-04: libFuzzer through the runtime's `zs_fuzz_drive`, `Gen.bytes` for an input whole, the corpus beside the file, a crash shrunk and saved; `tests/fuzz/fuzz.sh`). The microcontroller step too: a property runs its cases under `zs test --target` from Core's PCG, nothing recorded (`tests/mcu/ztest.zs`) |
+| **Status** | Implemented in 0.7 (2026-11-04), steps 1 to 6. Step 1: `Source`, `Gen`, `gen { }`, `Arbitrary` with Core's impls and the derive (`Shape.cases`), `testProperty` over one parameter (a tuple for several), and in-process shrinking of a case that returns `false` or an `Error` (shorter bytes, then smaller), shown with its seed (`tests/property/basic.zs`, `recursive.zs`). Step 2: the runner's record and replay protocol (`--record`, `--replay`), a case that panics shrunk by replays of the binary, the failures directory and replay-first (`tests/ztest/property.sh`). Steps 3 and 4: `Prop`, `prop { }` with `assume`, `label`, `classify` and `collect`, the distribution report, and `Prop.model` (an `Error` result, so it shrinks; `tests/property/labels.zs`, `model.zs`). Step 5, `zs fuzz`: libFuzzer through the runtime's `zs_fuzz_drive`, `Gen.bytes` for an input whole, the corpus beside the file, a crash shrunk and saved (`tests/fuzz/fuzz.sh`). Step 6: a property runs its cases under `zs test --target` from Core's PCG, nothing recorded (`tests/mcu/ztest.zs`). Left, after 0.7: the function rule on `Outcome` (a property of two curried parameters is a type error), `Arbitrary` for `Map`, `Set`, `HashMap`, `Buffer` and `span<u8>`, `zs test --seed`, the `shrinkTime` setting, and `Prop.model` on its first users, `HashMap`, `Channel` and the pool (its test checks a stack) |
 | **Decided at** | track D's plan ([ROADMAP](../../ROADMAP.md#testing-profiling-and-debugging-d)): items 5 and 6, after phase 11 |
 | **Builds** | track D: properties (item 5) and fuzzing (item 6) |
 | **Rests on** | decisions 5 (panics), 10 (structural printing), 20 (derive, no macros) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §3.1](../../DESIGN.md#31-derive) |
@@ -10,7 +10,7 @@
 
 - [x] Approved in principle
 - [ ] Discussion
-- [ ] Implementation
+- [x] Implementation (2026-11-04: steps 1 to 6)
 
 ## Summary
 

@@ -43,7 +43,8 @@ heap = "16K"
 - **Heap:** a fixed-size heap inside the image, 64 KB on `cortex-m4` and `nucleo-f401` and 8 KB on `cortex-m0plus` unless `[target.<chip>]` sets `heap`. When a program exits, it prints its heap peak and stack use. C's `malloc`, `free`, `calloc` and `realloc` are there too, over the same heap, for C, Rust or Zig code linked in.
 - **Output:** `println` and panics go through semihosting, the debug channel to a debugger or QEMU. A panic stops the chip and reports exit status 134.
 - **Output on a real board:** RTT, a ring in RAM that the probe reads while the chip runs (probe-rs, a J-Link or OpenOCD find it by its symbol, `_SEGGER_RTT`); nothing to wire, no pins or clocks taken. A board with no probe attached never waits: output that doesn't fit in the ring (1 KB) is dropped, and an exit or a panic leaves the core asleep, since semihosting's breakpoint without a debugger would fault.
-- **Not available:** Std, the part of the library that needs an operating system: `Console`, `Environment`, `IO` (`File`, `Directory`, `Path`) and `Diagnostics`. Using it is a compile error that says so. Core (lists, arrays, maps, strings, `Mmio`, …) is all there.
+- **Not available:** Std, the part of the library that needs an operating system: `Console`, `Environment`, `IO` (`File`, `Directory`, `Path`), `Diagnostics`, `Threading` (`Mutex`, `Channel`, `Alt`, `Parallel`) and `Net` (`Tcp`, `Udp`, `Unix`). Using it is a compile error that says so (`Ch.make`, `Dns.lookup` and `DateTime.utcNow` are an unknown function there instead), and a dependency that uses it is named when the build starts: `package 'logger' uses File, part of Std, which needs an operating system; a build for cortex-m4 has none, so it can't depend on this package`. Core (lists, arrays, maps, strings, `Mmio`, `Weak`, `Arena`, …) is all there.
+- **Debug info:** `-g` alone builds the code as written, at `-O0`, for stepping; on the Cortex-M0+ and wasm32, whose `-O0` can't lower Z#'s tail calls, it stays the optimized build, with its lines. `-g` with `-Os` or `-O2` is that optimized build with its lines ([Tools](10-tools.md#debugging)).
 
 ## Hardware registers
 
@@ -67,7 +68,9 @@ let putString (s: string) =
     putByte (String.byte s i)
 ```
 
-A constant like `uart` is inlined, so `Mmio.write32 ctrl …` compiles to a store to an immediate address. Values computed at startup (an `Array.init` table, say) live in RAM.
+A constant like `uart` is inlined, so `Mmio.write32 ctrl …` compiles to a store to an immediate address. A table written as a literal is a constant too: a top-level array or list of numbers, bools or strings, or a tree of a union's cases, is an object in the image, its bytes in flash, and a record or a tuple of constants is written into its global. They nest (an array of records, a record holding an array), with no startup code and nothing on the heap (`tests/static.zs`, `tests/mcu/static.zs`), but for a record holding a list, which is computed at startup. A write to such an array copies it first. Values computed at startup (an `Array.init` table, say) live in RAM.
+
+`--no-heap` and `[<NoAlloc>]` take reading these tables only in part yet. An element of an array of numbers, strings or records of numbers used in place (`String.length words.[i]`), a `for` over an array of numbers or of such records, a record's or a tuple's numbers and arrays, and the first cell of a list or a tree pass. A list or a tree read past its first cell (a walk, `List.length`, a nested match), a string bound to a name (`let w = words.[1]`, a `for`'s variable), and a record or a tuple holding a string, alone or in an array, are refused, as dropping what may be the last reference: `main drops a C it holds, which may free it`.
 
 **Registers as records:** a `[<Bits>]` record is one unsigned integer whose fields are ranges of its bits, so a register is written with its fields' names instead of masks:
 
@@ -174,9 +177,10 @@ let reply (n: int) : int = report n + 1
 main.zs:2: error: reply is [<NoAlloc>], but reply -> describe builds a string
 ```
 
-- **What passes:** numbers, records, tuples and small unions, `option<int>`, parameters it only reads (strings, arrays and lists it borrows), `Mmio`, `Cpu`, `Irq`, `Atomic`, `Spsc.push` and `pop`, `Signal.set`, C functions, a fused pipeline, a literal string, a panic.
-- **What doesn't:** building an object (a string, a list's cell, an array, a closure that captures), dropping a reference that may be the last (a parameter it owns), writing an array something else may hold (it's copied first), and calling a function value, whose code the check can't see.
-- **Where:** checked on the code after Z#'s optimizations, so the verdict is the same at `-Os` and `-O2`; inlining can change it, and the chain says what changed. `-g` alone and `--coverage` keep the code as written, so there a function that passes a lambda to a library's higher-order function (`Array.fold`, `List.iter`) can be refused where `-O2` accepts it.
+- **What passes:** numbers, records, tuples and small unions, `option<int>`, parameters it only reads (strings, arrays and lists it borrows), `Mmio`, `Cpu`, `Irq`, `Atomic`, `Spsc.push` and `pop`, `Signal.set`, C functions, a fused pipeline, a literal string, a panic. And writing a Buffer's element when its type isn't counted (a number, a bool, a record of those): the write borrows the Buffer as a read does, so a parameter's, a field's, an element's or a top-level Buffer is written in place and nothing is freed.
+- **What doesn't:** building an object (a string, a list's cell, an array, a closure that captures), dropping a reference that may be the last (a parameter it owns), writing an array something else may hold (it's copied first), and calling a function value, whose code the check can't see. A Buffer's write is refused when it drops what it overwrites (a `Buffer<string>`'s element may be the last reference to its string), and when the Buffer may go with the write: one a call gave, or one taken out of a value the write frees (`(Option.get o).[0] <- 7`), on any path of a match or an if.
+- **Printing:** a literal string, or a string interpolated, passes; a number interpolated (`println $"{n}"`) builds its text, a small string, so it doesn't.
+- **Where:** checked on the code after Z#'s optimizations, so the verdict is the same at `-Os` and `-O2`; inlining can change it, and the chain says what changed. A `[<NoAlloc>]` function the program never calls isn't in that code, so it isn't checked. `-g` alone and `--coverage` keep the code as written, so there a function that passes a lambda to a library's higher-order function (`Array.fold`, `List.iter`) can be refused where `-O2` accepts it.
 - **Interrupt handlers** and `Cpu.critical`'s bodies are checked the same way, without the attribute.
 
 **`--no-heap`** checks the whole program, its startup values included, and builds the image with no heap at all: the exit report has only the stack. A top-level value computed at startup into the heap is an error naming it.
@@ -187,20 +191,80 @@ zs build firmware.zs --target cortex-m0plus --no-heap -Os -o firmware.elf
 
 ## Memory with an address
 
-A top-level constant table, `Buffer.create n x` or `ref x` with constant arguments can say where its storage goes. `[<Section ".noinit">]` (or any section named `.noinit…`, as the boards' linker scripts take them) puts a ref or a Buffer in memory the reset handler neither copies nor zeroes, so it holds what the last run left: a boot counter, a crash log, validated by a magic word before it's trusted. What it holds must be plain values (numbers, bools, chars, records and unions of those): a string or other object there would point into memory the reset left, and a constant table would never be loaded, so those are errors. Any other name goes where the board's linker script puts that section (a DMA region, a second SRAM); on a chip, a ref's or Buffer's storage in a section the script doesn't name is copied from a flash image at startup. A constant table alone in a section of its own is read-only, and the linker keeps it in flash; one in a section that also holds a ref or Buffer would be RAM never loaded, and one in `.bss…` would be zeroed, so those are errors. A ref or Buffer in `.bss…` must start at zero, which the reset leaves there, and one in flash (`.text…`, `.rodata…`) is an error; the board's own `.vectors` (the vector table, which starts the image) and `.ARM…` take nothing. `[<Align 32>]` aligns the storage as a DMA controller or a cache line asks. A section's name is letters, digits, `.`, `_` and `$`. The storage is in the image and nothing is allocated, so it passes `--no-heap`; startup only writes a `.noinit` ref's header or copies that flash image, both on a chip alone, and a chip's library (`--lib`) has no startup for them, so there a placed value must need neither.
+A top-level constant table, `Buffer.create n x` or `ref x` with constant arguments can say where its storage goes. `[<Section ".noinit">]` (or any section named `.noinit…`, as the boards' linker scripts take them) puts a ref or a Buffer in memory the reset handler neither copies nor zeroes, so it holds what the last run left: a boot counter, a crash log, validated by a magic word before it's trusted. What it holds must be plain values (numbers, bools, chars, records and unions of those): a string or other object there would point into memory the reset left, and a constant table would never be loaded, so those are errors. Any other name goes where the board's linker script puts that section (a DMA region, a second SRAM); on a chip, a ref's or Buffer's storage in a section the script doesn't name is copied from a flash image at startup. A constant table alone in a section of its own is read-only, and the linker keeps it in flash; one in a section that also holds a ref or Buffer would be RAM never loaded, and one in `.bss…` would be zeroed, so those are errors. A ref or Buffer in `.bss…` must start at zero, which the reset leaves there, and one in flash (`.text…`, `.rodata…`) is an error; the board's own `.vectors` (the vector table, which starts the image) and `.ARM…` take nothing. `[<Align 32>]` aligns the storage as a DMA controller or a cache line asks. A section's name is letters, digits, `.`, `_` and `$`. On a function, on a value computed at startup, or with an alignment that isn't a power of two from 8 to 4096, the attribute is an error that says what it takes. The storage is in the image and nothing is allocated, so it passes `--no-heap`; startup only writes a `.noinit` ref's header or copies that flash image, both on a chip alone, and a chip's library (`--lib`) has no startup for them, so there a placed value must need neither.
 
 ```fsharp
+[<Section ".noinit">]
+let magic = ref (u32 0)
+
 [<Section ".noinit">]
 let boots = ref 0
 
 [<Section ".noinit"; Align 32>]
 let frame = Buffer.create 1536 (u8 0)
 
+let countBoot () =
+  if magic.Value <> u32 0xB007C0DE then           // after power-on the memory is noise
+    magic.Value <- u32 0xB007C0DE
+    boots.Value <- 0
+  boots.Value <- boots.Value + 1                  // after a reset, the last run's count plus one
+
 [<Section ".data">]
 let sine = [| 0; 49; 97; 142 |]   // a table read from RAM, for a hot loop on a chip with flash wait states
 ```
 
-A push past a placed Buffer's room moves its contents to the heap and leaves the storage. `[<Align>]` on a type isn't there yet.
+A push past a placed Buffer's room moves its contents to the heap and leaves the storage. `tests/mcu/noinit.zs` counts boots this way across resets under QEMU, on both chips. `[<Align>]` on a type isn't there yet.
+
+## Weak references and arenas
+
+`Weak` and `Arena` work on a chip as on a computer ([Memory](12-memory.md)), over the chip's
+heap. The weak references' table is heap memory, and so are an arena's blocks: an eighth of the
+heap each (4 KB at most), bumped through, and given back once the arena's last object has died.
+Neither is an object, so the exit report's `live` counts the program's own. A block an arena
+gave back is kept for the next arena, and the heap takes those back before it runs out
+(`tests/mcu/weak.zs`, `tests/mcu/arena.zs`, `tests/mcu/arena_rounds.zs`, both chips). With no
+system allocator under the heap, `Runtime.mallocs ()` counts every object the heap gave.
+
+## Fixed point
+
+A chip without an FPU, as the Cortex-M0+ is, does DSP in fixed point: `q7`, `q15` and `q31` in
+`Numerics` ([Basics](02-basics.md#numbers)) are numbers in [-1, 1) held in an `i8`, `i16` or
+`i32`, the formats of CMSIS-DSP and the chips' saturating instructions. Each is its integer's
+size and allocates nothing; `+`, `-`, `*` and `/` saturate at the ends of the range instead of
+panicking (a division by zero still panics); and `Q15.mulAdd a b acc` is a filter's step,
+rounded once. `Q7` and `Q15` compute in 32 bits, the chips' word, and `Q15.ofFloat` on a
+literal is a constant, so a table of them is in flash:
+
+```zsharp
+open Numerics
+
+/// A smoothing filter's taps: constants, in flash on a chip.
+let taps = [| Q15.ofFloat 0.25; Q15.ofFloat 0.5; Q15.ofFloat 0.25 |]
+
+/// The filter at sample i: a quarter of each neighbour and half of itself.
+[<NoAlloc>]
+let smoothAt (x: array<q15>) (i: int) =
+  let mutable acc = Q15.zero
+  for k in 0 .. 2 do
+    acc <- Q15.mulAdd taps.[k] x.[i + k] acc
+  acc
+
+let main () =
+  let x = [| Q15.ofFloat 0.0; Q15.ofFloat 0.5; Q15.ofFloat 0.9; Q15.ofFloat 0.9; Q15.ofFloat -1.0 |]
+  println $"{smoothAt x 0} {smoothAt x 1} {smoothAt x 2}"
+  println $"{Q15.max + Q15.ofFloat 0.5} {Q15.min * Q15.min} {Q15.raw (Q15.ofFloat 0.5)} {sizeof<q15>}"
+  0
+```
+
+```text
+0.47501 0.80002 0.42502
+0.99997 0.99997 16384 2
+```
+
+`bench/mcu/firq15.zs`, a 32-tap `q15` filter, executes 1.05 times the instructions of C in
+CMSIS-DSP's style on the Cortex-M4 and 1.01 times on the Cortex-M0+, at `-O2`
+([the measurements](../reports/microcontrollers.md)). The vector forms (a `q15` multiply on
+every lane of an `i16x8`) aren't there yet.
 
 ## Writing fast, small code
 
@@ -210,7 +274,7 @@ The compiler does most of the work. These habits help it:
   - **Bounds checks:** in a `for` loop that reads `a.[i]`, `a.[i + c]` or `a.[c - i]`, they are checked once before the loop instead of on every iteration.
 - **Pipelines:** a chain like `List.init n f |> List.map g |> List.filter p |> List.sum` with pure lambdas is compiled into one loop that builds no list. So is one from a list or an array, or into `List.iter`.
 - **Small unions:** `option<int>`, enums and state machines with small number fields are plain values, never heap-allocated, and an enum is a single byte.
-- **Printing:** `println $"…{x}…"` prints the pieces one after another, without building the string.
+- **Printing:** `println $"…{x}…"` prints the pieces one after another, without building the whole string; a number's text is still a small string of its own.
 - **`-Os`:** for size. At `-O2`, the compiler may unroll loops and version them for speed.
 
 **What still costs more than C:**
@@ -228,6 +292,49 @@ println $"took {Runtime.ticks () - t0} ticks"
 ```
 
 `bench/mcu/run.sh` builds each benchmark program in both Z# and C, runs them under QEMU, and prints a table of instructions, flash, heap and stack.
+
+## Tests on the chip
+
+`zs test file.zs --target cortex-m4` builds a file's `[<Tests>]` into one image and runs it on
+the chip's QEMU board, or on a real board through probe-rs (`--target nucleo-f401`), so code that
+depends on the chip (its 32-bit `int`, its runtime, its instructions) is tested where it runs:
+
+```zsharp
+open Testing
+
+/// The CRC-8 of the bytes (polynomial 0x07), as a sensor's frames carry it.
+let crc8 (bytes: list<u8>) =
+  let step (crc: u8) (b: u8) =
+    let mutable c = crc ^^^ b
+    for _ in 1 .. 8 do
+      c <- if c &&& u8 0x80 <> u8 0 then (c <<< u8 1) ^^^ u8 0x07 else c <<< u8 1
+    c
+  List.fold step (u8 0) bytes
+
+let ascii (s: string) = List.init (String.length s) (fun i -> String.byte s i)
+
+[<Tests>]
+let tests =
+  testList "crc8" [
+    test "of nothing" (fun () -> assert (crc8 [] = u8 0))
+    test "of 123456789" (fun () -> assert (crc8 (ascii "123456789") = u8 0xF4))
+    testProperty "is 0 with the crc appended" (fun (bytes: list<u8>) -> crc8 (bytes @ [ crc8 bytes ]) = u8 0)
+  ]
+```
+
+On the Cortex-M0+ under QEMU's micro:bit:
+
+```text
+$ zs test crc.zs --target cortex-m0plus
+ok   crc8/of nothing
+ok   crc8/of 123456789
+ok   crc8/is 0 with the crc appended
+3 passed, 0 failed
+```
+
+- **One process:** a chip has no processes, so the tests run one after another in the image (Core's `Testing.runAll`). A failing test's panic ends the run: `zs test` names the test with what it printed, and the tests after it don't run.
+- **Properties** run their cases there, with nothing recorded or shrunk; a test that returns a task runs on the chip's event loop.
+- **Not yet:** path filters (every test in the file runs) and `--stress` aren't taken with `--target`; `--coverage` is an error, since the chip has no file to write the counts to; and `--target wasm32` has no board to run on.
 
 ## C on a chip
 

@@ -223,7 +223,7 @@ let main () =
 - **Optional:** an argument declared `?name` may be left out. With `= default` it gets that value; without one it's an `option`.
 - **Defaults:** a default can use the arguments before it.
 
-These apply to members only. Ordinary curried functions keep positional arguments. A function may take a tuple as F# writes it, `let distance (x: float, y: float) = …`: one parameter, a tuple whose parts each take their type, called as `distance (3.0, 4.0)` and passed where an `int * int -> int` is wanted.
+These apply to members only. Ordinary curried functions keep positional arguments.
 
 ```zsharp
 type Http =
@@ -242,4 +242,21 @@ let main () =
 GET a.org timeout=30 retries=3 tag=none
 GET b.org timeout=50 retries=5 tag=x
 GET c.org timeout=30 retries=7 tag=none
+```
+
+**Tuple parameters:** a function may take a tuple as F# writes it, `let distance (x: float, y: float) = …`: one parameter, a tuple whose parts each take their type (each needs one: `(a: int, b)` is an error that says so), called as `distance (3.0, 4.0)` or with a pair, and passed where a `float * float -> float` is wanted.
+
+```zsharp
+let distance (x: float, y: float) = Math.sqrt (x * x + y * y)
+
+let label (name: string, n: int) = $"{name} #{n}"
+
+let main () =
+  let p = (6.0, 8.0)
+  println $"{distance (3.0, 4.0)} {distance p} {List.map label [ ("a", 1); ("b", 2) ]}"
+  0
+```
+
+```text
+5 10 [a #1; b #2]
 ```

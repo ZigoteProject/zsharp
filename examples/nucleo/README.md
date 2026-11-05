@@ -9,6 +9,7 @@ cd examples/nucleo
 zs build          # build/nucleo, for the board: zs.toml says target = "nucleo-f401"
 zs run            # flashed through probe-rs (https://probe.rs), which shows the log
 zs test           # the shell's logic, on this computer
+zs test --target cortex-m4   # the same tests in one image, under QEMU
 ```
 
 Then, in a terminal on the ST-Link's serial port at 115200 baud (`screen /dev/tty.usbmodem* 115200`
@@ -43,9 +44,10 @@ Three tasks on the runtime's event loop, the core asleep (`wfi`) between their e
 - **[src/main.zs](src/main.zs):** the tasks, which share the mode in a `ref`: they run on one loop,
   in turn. `println` goes over RTT, the probe's channel, so the log needs no pins.
 
-52 KB of the board's 512 KB of flash at `-Os`, and 66 KB of its 96 KB of RAM, 64 KB of it the
-heap. [examples/mcu/nucleo-f401.zs](../mcu/nucleo-f401.zs) is the same firmware written as one
-polling loop, in 5 KB: the tasks' combinators and their cancellation are most of the difference.
+47 KB of the board's 512 KB of flash at `-Os` (52 KB with 0.6.2), and 66 KB of its 96 KB of RAM,
+64 KB of it the heap (`llvm-size`'s text and data, and data and bss).
+[examples/mcu/nucleo-f401.zs](../mcu/nucleo-f401.zs) is the same firmware written as one polling
+loop, in 5 KB: the tasks' combinators and their cancellation are most of the difference.
 
 ## Without the board
 

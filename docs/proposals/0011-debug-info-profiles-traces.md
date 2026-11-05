@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved in principle. Built: gdb and lldb on strings, records and plain unions (debugging 2, phase 12), `ZS_STATS=1` (profiling 3, phase 11), the editor's allocation hints (profiling 1, phase 12, with 0026). DWARF for every value (debugging 1, 2026-11-04: heap values as pointers to their objects, `tests/debug/gdb_heap.sh`; variant parts and pretty-printers left); Z# names in a panic's backtrace (debugging 3 in part, 2026-11-04: the executable's symbol table read at the panic on Linux, `tests/backtrace/run.sh`; lines left); `-g` on optimized builds (debugging 5, 2026-11-04: `-g --release` keeps the lines, `tests/debug/opt.sh`). After 0.6.2: Z# names in panics and profiles (`zs profile`), traces, editors' debugging, and the microcontroller items |
+| **Status** | Implemented in part. Built: gdb and lldb on strings, records and plain unions (debugging 2, phase 12), `ZS_STATS=1` (profiling 3, phase 11), the editor's allocation hints (profiling 1, phase 12, with 0026); and in 0.7 (2026-11-04) DWARF for every value (debugging 1 in part: heap values as pointers to their objects, which gdb and lldb both print; `tests/debug/gdb_heap.sh`, `tests/debug/kinds.zs`), `-g` on optimized builds (debugging 3: `-g` with any `-O` level runs the optimizer and keeps the lines, `tests/debug/opt.sh`; `-g` alone is `-O0`, the code as written, but on the Cortex-M0+ and wasm32, `tests/mcu/stepping.zs`) and Z# names in a panic's backtrace (debugging 5 in part: on Linux, from the executable's own symbol table; `tests/backtrace/run.sh`). Left, after 0.7: variant parts and the pretty-printers, a backtrace's lines, its Z# names on macOS (the C library's `backtrace_symbols_fd` stands there) and any backtrace on Windows and musl, `--profile` and `zs profile`, `--stats`, traces, editors' debugging, `zs tasks`, rr, and the microcontroller items |
 | **Decided at** | track D's plan ([ROADMAP](../../ROADMAP.md#testing-profiling-and-debugging-d)), closing known gap 3 ([where things stand](../../ROADMAP.md#where-things-stand)) |
 | **Builds** | track D: profiling and debugging |
 | **Rests on** | decisions 2 (Perceus), 5 (panics), 32 (editor support), 42 (`[<NoAlloc>]`) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §12](../../DESIGN.md#12-tooling) Debugging and Profiling |
@@ -10,7 +10,7 @@
 
 - [x] Approved in principle
 - [ ] Discussion
-- [ ] Implementation
+- [x] Implementation (in part)
 
 ## Summary
 

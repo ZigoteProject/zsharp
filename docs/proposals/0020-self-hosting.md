@@ -4,7 +4,7 @@
 |---|---|
 | **Status** | Implemented (phase 11, decision 65): the compiler is `src/`, built by the previous release and building itself to the same bytes; the unresolved questions settled at the phase 11 review (decisions 73–79); [the report](../reports/self-hosting.md) |
 | **Decided at** | the third design review ([ROADMAP](../../ROADMAP.md#third-design-review-)): criteria 1 and 3 hold; criterion 2 (the 1,000-line program within 1.5× of F#) is phase 11's first step, and a miss is the no-go path |
-| **Builds** | phase 11 ([ROADMAP](../../ROADMAP.md#phase-11-self-hosting)), after phase 10 and the tracks' *before phase 11* items |
+| **Builds** | phase 11 ([ROADMAP](../../ROADMAP.md#phase-11-self-hosting-)), after phase 10 and the tracks' *before phase 11* items |
 | **Rests on** | decisions 20 (derive, no macros), 27 (source packages, no binary IR format), 39 ("Simple"), 47 (`share<F>`), 51 (textual IR stays) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §9](../../DESIGN.md#9-compiler) |
 | **Related** | [the compiler's architecture](../../src/ARCHITECTURE.md) (modules, data flow, where each step runs, the passes); [0007 incremental builds](0007-incremental-builds.md) (carried over), [0019 the syntax tree](0019-syntax-tree.md), [0021 warnings](0021-warnings.md) (the diagnostic record), [0009 tests as values](0009-tests-as-values.md), [0023 JSON in Core](0023-json-in-core.md), [0018 packages](0018-packages.md), [0003 spans](0003-spans-and-slices.md), [0024 the library's API](0024-library-api.md), [0002 effect handlers](0002-effect-handlers.md) |
 
@@ -44,7 +44,7 @@ deleted, and `./dev` downloads the previous release's binary, as Go and Rust do.
 
 ### The roadmap's items
 
-Each row cites [phase 11](../../ROADMAP.md#phase-11-self-hosting). Line numbers are the main checkout's and approximate; the tree is being edited.
+Each row cites [phase 11](../../ROADMAP.md#phase-11-self-hosting-). Line numbers are the main checkout's and approximate; the tree is being edited.
 
 | Roadmap item | What this proposal decides |
 |---|---|
@@ -236,7 +236,7 @@ derive Binary =
 
 ### Go or no-go
 
-The third design review decides with its "before 0.1" list in hand ([ROADMAP](../../ROADMAP.md#third-design-review)). Go when all hold:
+The third design review decides with its "before 0.1" list in hand ([ROADMAP](../../ROADMAP.md#third-design-review-)). Go when all hold:
 
 1. **Nothing to design first:** every replacement in the table exists or is scheduled before phase 11 in its track: 0019, 0021, 0009's items 1–3 and 7, 0023, the 0024 items named above, 0018's two packages, 0003. Up to two missing are the rewrite's own first steps; more is a no-go.
 2. **The targets are reachable:** a Z# program of the compiler's shape (a parser and a type checker for a small language, about 1,000 lines, an estimate, written for the review) runs within 1.5× of the same program in F# on .NET, so *Performance*'s targets hold with the headroom parallelism gives.

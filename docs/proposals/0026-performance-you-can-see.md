@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| **Status** | Draft; the allocation hints are built (phase 12, 0.6.2: `allocates`, `reuses`, `copies on write` per line, a function's summary on hover, `tests/lsp/hints.sh`), atomic counts and the rest are not |
+| **Status** | Implemented in part, the rest a draft: the allocation hints are built (phase 12, 0.6.2: `allocates`, `reuses`, `copies on write` per line, a function's summary on hover, `tests/lsp/hints.sh`), and in 0.7 (2026-11-04) arenas on a chip (track M item 8, half of step 8; `tests/mcu/arena.zs`) and a leak at a test's exit failing the test under `ZS_LEAKCHECK=1` (part of step 3; `tests/ztest/stress.sh`), which `zs test` doesn't set itself and which names no objects; atomic counts, `Arena.withLimit`, `Testing.allocations` and the rest are not |
 | **Decided at** | a design review, with the flagship's first profiles (phase 12: "optimization waits for profiles of real programs") |
 | **Builds** | track D (profiling 1, 3), track E (hints, code lenses, MCP), track M (`[<NoAlloc>]` on local functions, arenas on a chip); the optimizer items only after a measurement asks for them |
-| **Rests on** | decisions 2 (Perceus), 4 (overflow traps), 20 (no comptime), 26 (from Zig: a checked opt-in, not explicit allocators), 42 (`[<NoAlloc>]`), 44 (arenas), 61 (warnings) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §5.2](../../DESIGN.md#52-perceus-reference-counting), [§9](../../DESIGN.md#9-optimizer), [§12](../../DESIGN.md#12-tooling) |
+| **Rests on** | decisions 2 (Perceus), 4 (overflow traps), 20 (no comptime), 26 (from Zig: a checked opt-in, not explicit allocators), 42 (`[<NoAlloc>]`), 44 (arenas), 61 (warnings) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §5.2](../../DESIGN.md#52-perceus-reference-counting), [§9.1](../../DESIGN.md#91-optimization-strategy), [§12](../../DESIGN.md#12-tooling) |
 | **Related** | [0011 debug info, profiles and traces](0011-debug-info-profiles-traces.md) (the allocation hints, `--stats`, `--profile`), [0012 interrupts, `[<NoAlloc>]` and intrinsics](0012-interrupts-noalloc-intrinsics.md) (the allocation analysis), [0014 placement](0014-placement.md) (static objects with count 0), [0007 incremental builds](0007-incremental-builds.md) (per-module caches), [0021 warnings](0021-warnings.md) (hints aren't warnings), [0009 tests as values](0009-tests-as-values.md), [0017 iteration](0017-iteration.md) (fusion) |
 
 - [ ] Discussion

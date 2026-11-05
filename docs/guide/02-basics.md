@@ -31,7 +31,8 @@ let main () =
 
 A `let` without parameters at the top of a file is a value.
 - **Constants:** built from literals, operators, constructors (`[]` too), records, tuples and other constants. They're inlined where used, so they cost nothing. A number constant without an annotation takes the type each use needs, like a literal, and one whose type has type variables is generic, as F#'s values are: `Map.empty` is an empty map of any type, at each use its own.
-- **Other values:** anything that allocates or calls a function, such as an array, a list of elements or `Map.ofList …`. These are computed once when the program starts, in the order they're declared (dependencies' modules first), so each has one type; a generic one is an error that says to make it a function.
+- **Tables:** an array or list literal of constants (`[| 2; 3; 5 |]`, `[ "on"; "off" ]`, or `[| 4 * 1024 |]`, which the compiler computes) is built into the program's image, as is a constant holding one (a record with a table in a field) and a tree of union cases of constants: nothing runs at startup or allocates, and on a microcontroller the bytes are in flash. A write to such an array copies it, as arrays are values.
+- **Other values:** anything that calls a function or is computed otherwise, such as `Array.init 5 f`, a list of computed elements or `Map.ofList …`. These are computed once when the program starts, in the order they're declared (dependencies' modules first), so each has one type; a generic one is an error that says to make it a function.
 - **Patterns:** `let (rows, cols) = …` binds each name in the pattern, as a `let` inside a function does, and the pattern must match every value. A tuple against a tuple splits, so each part that's a constant stays one; anything else is computed once at startup and the names are taken from it.
 - **Order:** declarations are in order, as in F#, so a value can only use what's declared above it.
 
@@ -40,17 +41,18 @@ let width = 8
 let area = width * width
 let mask = 0xFF
 let banner = "== report =="
+let primes = [| 2; 3; 5; 7 |]                 // a table in the image
 let squares = Array.init 5 (fun i -> i * i)   // computed once, at startup
 let (rows, cols) = (2, width / 2)             // two constants
 
 let main () =
   let low: u8 = mask
-  println $"{banner} {area} {low} {mask * 1000} {squares.[3]} {(mask: int) + 1} {rows}x{cols}"
+  println $"{banner} {area} {low} {mask * 1000} {squares.[3]} {(mask: int) + 1} {rows}x{cols} {primes.[2]}"
   0
 ```
 
 ```text
-== report == 64 255 255000 9 256 2x4
+== report == 64 255 255000 9 256 2x4 5
 ```
 
 `(e: T)` gives an expression a type, here making `mask` an `int` for the addition.
@@ -68,10 +70,12 @@ let main () =
 
 **Literals and conversions:**
 - **Integer literals:** take whatever integer type the context needs, so `let x: u8 = 200` is fine.
+- **Negative literals:** `-7` is one constant, a signed integer, so `-128` is an `i8`'s least and `let x: u8 = -1` is an error (`expected u8, got int`): write the value itself, `255`.
 - **Float literals:** work the same way with `f64` and `f32`.
 - **Converting:** done explicitly with the type's name used as a function, e.g. `float n`, `int 3.9` (which truncates), `u8 n`, `f32 x`.
 - **Math:** `Math.sqrt`, `floor`, `ceil`, `round` (halves to the even number, as F#'s), `trunc`, `exp`, `log`, `log2`, `log10`, `sin`, `cos`, `tan`, `pow` and `atan2` for `f64` and `f32` (an instruction where the target has one, else libm's function), `Math.abs`, `Math.clamp low high x`, and `Math.pi` and `Math.e`, which take the float type the use needs.
 - **Random numbers:** `Random.create seed` is a generator (PCG32) whose seed gives the same numbers on every target, a microcontroller's included; `Random.shared ()` is one seeded from the operating system. `Random.nextInt 1 7 r` is a die (each face as likely), `nextFloat` is in [0, 1), and `nextU32`, `nextBytes` and `shuffle` are there too.
+- **Fixed point:** `q7`, `q15` and `q31` are numbers in [-1, 1) held in an `i8`, `i16` or `i32` (the value times 2^7, 2^15 or 2^31), the formats CMSIS-DSP and a chip's saturating instructions use. `Q15.ofFloat 0.75` makes one, and `+`, `-`, `*` (rounded) and `/` saturate at the ends instead of overflowing; `Q15.raw` is the integer underneath, `Q15.toFloat` the value, and `Show` prints the digits the format needs. Each is its integer's size and allocates nothing, and `Q15.ofFloat` on a literal is computed by the compiler, so a top-level table of them is built into the image ([the reference](../reference/Numerics.Fixed.md)).
 
 ```zsharp
 let main () =
@@ -82,6 +86,18 @@ let main () =
 
 ```text
 2 1024 10 a15c02b7
+```
+
+```zsharp
+let main () =
+  let gain = Q15.ofFloat 0.75
+  let x = Q15.ofFloat 0.5
+  println $"{gain * x} {gain + x} {Q15.raw gain} {Q15.toFloat (gain * x)}"
+  0
+```
+
+```text
+0.37500 0.99997 24576 0.375
 ```
 
 ```zsharp
@@ -102,7 +118,7 @@ let main () =
 
 **Operators:**
 - **Arithmetic:** `+ - * / %`. Integer `/` rounds toward zero.
-- **Overflow:** integer arithmetic that overflows stops the program with a panic, in every build. [Errors](07-errors.md#overflow) shows the wrapping operations to use when wrap-around is what you want.
+- **Overflow:** integer arithmetic that overflows stops the program with a panic, in every build. [Errors](07-errors.md#overflow) shows the wrapping operations to use when wrap-around is what you want, and the checked and saturating ones.
 - **Width of `int`:** `int` is as wide as the machine's word, as in Swift and Go. That's 64 bits on a desktop or phone, and 32 bits on a microcontroller, where 64-bit arithmetic costs two instructions per operation. Use `i64` when a value needs 64 bits everywhere.
 
 ## Bitwise operators
@@ -110,6 +126,7 @@ let main () =
 `&&&` (and), `|||` (or), `^^^` (xor), `<<<` and `>>>` (shifts) and `~~~` (not) work on every integer type, as in F#.
 - **Precedence:** they bind tighter than comparison, so `flags &&& mask <> 0` needs no parentheses.
 - **Shifts:** `>>>` keeps the sign for signed types and fills with zeros for unsigned ones. The shift amount is taken modulo the width.
+- **Bit operations:** `Int.popCount` (the bits set), `leadingZeros`, `trailingZeros`, `rotateLeft`, `rotateRight` and `byteSwap` work on `int` and every sized integer, an instruction each where the target has one.
 
 ```zsharp
 let main () =
@@ -117,12 +134,14 @@ let main () =
   println $"{flags &&& 0b0100 <> 0} {flags ||| 0b0010} {flags ^^^ 0xF} {1 <<< 10} {-16 >>> 2} {~~~0}"
   let b = u8 0xF0
   println $"{b >>> u8 4} {~~~b} {(b <<< u8 1) &&& u8 0xFF}"
+  println $"{Int.popCount b} {Int.leadingZeros (u8 1)} {Int.trailingZeros b} {Int.rotateLeft (u8 0b1001_0001) 1:B8} {Int.byteSwap (u16 0x1234):X4}"
   0
 ```
 
 ```text
 true 7 10 1024 -4 -1
 15 15 224
+4 7 4 00100011 3412
 ```
 
 ## Booleans and comparison

@@ -73,7 +73,7 @@ Rect (2, 3) 2
 | F# | Z# |
 |---|---|
 | `int` is 32 bits | `int` is the machine word: 64 bits on a 64-bit target, 32 on a Cortex-M; `i32`, `i64`, `u8`… are fixed |
-| arithmetic wraps silently | overflow panics; `[<Wrapping>]` on a function, or `Int.wrappingAdd`, for wrapping |
+| arithmetic wraps silently, `Checked.(+)` throws | overflow panics; `[<Wrapping>]` on a function, or `Int.wrappingAdd`, for wrapping; `Int.checkedAdd` for an `option`, `Int.saturatingAdd` to stop at the type's bounds |
 | `printfn "%d %s" n s`, `sprintf` | `println $"{n} {s}"`; `{x:F2}` and `{n:X8}` for formats |
 | `string` is UTF-16 | `string` is UTF-8 bytes: `String.length` counts bytes, `char` is a Unicode scalar, `for c in s` decodes |
 | `x.ToString()`, `%A` | `$"{x}"` through `Show`, which records, unions, lists and tuples have without a line of code |
@@ -82,6 +82,7 @@ Rect (2, 3) 2
 
 - **No `null`:** a value that may be missing is an `option`.
 - **Arrays are values:** `let b = a` and a change to `b` leave `a` alone (the copy happens only if both are still used, copy-on-write). `Buffer<'a>` is the mutable array every name shares, as a .NET array is.
+- **A one-case union over plain values is its field:** `type UserId = UserId of int` is an `int`, with no tag and nothing allocated, as F#'s `[<Struct>]` one is; one over a string is an object holding it ([Data](03-data.md#unions)).
 - **No classes, inheritance or interfaces:** records and unions hold data, modules hold functions, and a type can have members (`member p.Norm = …`). One member per name: no overloading.
 - **Equality, ordering, hashing and printing** are derived for records and unions when they're first needed, as F#'s structural equality is, and an `impl` replaces one.
 
@@ -106,9 +107,9 @@ Rect (2, 3) 2
 
 ## Errors
 
-- **No exceptions:** no `raise`, `try … with` or `failwith`. An expected failure is a `result`, passed on with `?` (or `result { }`'s `let!`); a bug (an index out of range, an overflow, `panic "…"`) stops the program.
+- **No exceptions:** no `raise` or `try … with`, and `failwith "…"` is a panic, as `panic "…"` is. An expected failure is a `result`, passed on with `?` (or `result { }`'s `let!`); a bug (an index out of range, an overflow, `panic "…"`) stops the program.
 - **`?` returns from the function it's in,** and a `for` loop's body is a function of its own: recurse or fold where a loop would stop at the first error.
-- **Typed exceptions inside a module:** `Throw.throw e` performs the `Throw<E>` effect, which the function's type shows, and `Throw.catch` turns it back into a `result` ([chapter 16](16-effects.md)).
+- **Typed exceptions inside a module:** `Throw.throw e` performs the `Throw<E>` effect, which the function's type shows, and `Throw.catch` turns it back into a `result` ([chapter 16](16-effects.md)). A throw disposes the `use`s it passes over, as an exception passing F#'s `use` does.
 
 ## Async, tasks and threads
 
@@ -133,4 +134,8 @@ Rect (2, 3) 2
 | files in compilation order | a file is a module named by its path, found from its uses; an import cycle is an error |
 | `[<DllImport>]` | `import c "header.h"`: the header's functions, structs and constants, typed |
 | Expecto | the same model in the library: `test`, `testList`, `[<Tests>]`, run by `zs test` |
+| FsCheck, Expecto's `testProperty` | `testProperty` in the library, with `Gen`, `gen { }`, `[<Derive(Arbitrary)>]` and `prop { }`; every generator shrinks, and a case that panics is saved and replayed first ([Tools](10-tools.md#properties)) |
+| BenchmarkDotNet | `bench "name" (fun () -> …)` among the tests, timed by `zs bench` |
+| FSharp.Data's `JsonProvider<"weather.json">`, `CsvProvider` | `module Weather = import json "weather.json"`, `import csv`, `sql` and `svd`: the provided module is ordinary Z#, written to `.zs-cache/providers/`, and a provider of your own is a program the compiler runs, not a plug-in ([chapter 18](18-type-providers.md)) |
+| `dotnet add package`, a `.sln` | `zs add`, from a path or a git URL; `[workspace] members = [ … ]` in a root `zs.toml`, with one `zs.lock` ([Programs](08-programs.md#projects)) |
 | `dotnet fsi` | `zs run file.zs` |

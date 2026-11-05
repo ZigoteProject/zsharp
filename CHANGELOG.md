@@ -1,6 +1,188 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 (unreleased)
+
+The second public release: what the flagship and the first users asked for, from 0.7's plan
+(ROADMAP), without that plan's first item, the checks on machines (below). The compiler is fuzzed in
+every run of the suite (the same 300 programs each time) and builds programs as long and as deep as
+generated code writes them; a stack overflow is a panic, a throw disposes the `use`s it passes over,
+every value has debug info, and `-g` keeps the lines of an optimized build. Two memory errors 0.6.2
+had are fixed: a value lent to a read or a call that another of its arguments freed first, and a
+weak reference taking a later object for the one it pointed to. For the chip: constants in flash,
+values placed in named sections (`.noinit`, a DMA region), fixed-point numbers, weak references and
+arenas, and a file's tests run on it. Beside them: type providers (JSON, CSV, SQL, SVD, C headers
+and providers of your own), properties with shrinking and `zs fuzz`, `zs bench` and `zs test
+--coverage`, workspaces, `zs vendor` and a lock that hashes its dependencies, and track S's small
+items (`Int`'s checked, saturating and bit operations, ISO 8601, UDP and name lookup), with ten
+Advent of Code puzzles and three small tools as its exit tests.
+
+It isn't built yet: the archives come from `src/release.sh`, as 0.6.2's did. Linux x86-64's suite
+passes, the chips' programs under QEMU and wasm32's under Node among it, but for three checks that
+depend on the machine it last ran on (Ubuntu 24.04, not the dev container): `tests/pgo.sh`, whose
+profile runtime there is LLVM 20's; `bench/host`, whose `fib` counts 5.3% more instructions than its
+baseline (2,464,794 against 2,339,907, past the 5% the check allows), as in every run on that
+machine; and `tests/debug/lldb.sh`, whose lldb lists a local in another order. CI's Linux x86-64
+job, in the dev container, failed two more on 2026-11-05, both fixed here: `tests/debug/kinds.zs`,
+whose DWARF LLVM 23's `llvm-dwarfdump --verify` rejected for a `.debug_str_offsets` entry inside a
+string GNU ld had merged by its tail (the one error the check now lets by; lld's output has none),
+and the tree-sitter grammar, which didn't parse a typed `_` parameter (`let check () (_: Source)`).
+What 0.7's plan put first is undone (ROADMAP, 0.7's item 1): the flagship isn't flashed to a
+Nucleo-F401RE yet (it runs under QEMU's STM32F405, which models none of the board's GPIO), the suite
+hasn't passed on the five CI runners (its last run to reach them, on 2026-11-04, failed on macOS and
+Linux arm64 and was cancelled on Windows; every run since stopped at the Linux x86-64 job), and no
+archive has been tried on a clean machine, so no macOS or Windows build has run on a real machine.
+Linux arm64's suite under QEMU and Windows x64's under Wine, which 0.6.2 ran, haven't been run for
+0.7, nor has the stress run over the pool, tasks and `Alt` under ThreadSanitizer (the suite's four
+programs under ThreadSanitizer pass). Of the plan's other items, the fuzzer's seed isn't rotated per
+run yet (it's 1 unless `ZS_FUZZ_SEED` says), and `[<Align>]` on a type, `Seq` pipelines as one loop
+(track S, item 9) and fixed point's vector forms are left.
+
+### Upgrading from 0.6.2
+What a 0.6.2 program, project or script may have to change, and what behaves differently:
+- A negative integer literal is a signed integer: `let a : u8 = -1`, a `-1` passed where a `u8` is
+  wanted and a pattern `| -1` at an unsigned type are errors (`expected u8, got int`; `a negative
+  pattern is a signed integer; u8 has no -1`), where 0.6.2 negated the positive literal at run
+  time, which overflowed, and matched a pattern's value wrapped to the type with nothing said
+  (`| -1` at `u8` matched 255). **To rewrite:** the value itself (`let a : u8 = 255`, `| 255`).
+- A one-case union over plain values has no tag (decision 66): `type UserId = UserId of int` is
+  an `int`, 8 bytes on a 64-bit target, where 0.6.2 put a 4-byte tag before it (16), so `sizeof`
+  and `alignof` give its field's, and the records and arrays holding it are smaller. **To
+  rewrite:** an `assert` on such a size.
+- A throw, or a handler clause that stops without resuming, runs `Dispose.dispose` on what the
+  `use`s it passes over bound, newest first, before the clause runs; 0.6.2 freed them without it.
+- A stack overflow on Linux and macOS (in a program, not under a sanitizer) is a panic,
+  `panic: stack overflow (recursion too deep)` with exit status 134, where it was a SIGSEGV (139
+  in a shell).
+- A dependency's module under a directory named `internal` (at any depth, in either case) is the
+  package's own: naming it from another package is an error that lists the package's public
+  modules. **To rewrite:** the import, to one of those.
+- `zs.lock` gains a hash of each git dependency's files at the next build or fetch (a 0.6.2 lock
+  is read as it is, and rewritten then). From then on a checkout edited under `.zs-cache/deps/` is
+  restored from its commit at the next build, and one that still differs is an error. **To
+  rewrite:** a dependency patched in place, as a path dependency (`zs add ../json`).
+- `Testing.Test` has two more cases, `Bench` and `Property`. **To rewrite:** a match over a
+  `Test` (a runner of your own), with their arms or `| _ ->`. A test binary's `--list` gives a
+  fifth field, the entry's kind (`test`, `bench` or `property`).
+- With `ZS_LEAKCHECK=1`, a test that leaks at its exit fails under `zs test`; 0.6.2 reported the
+  leak and passed it.
+- `zs build -g --release`, and `-g` with any `-O` level, is an optimized build that keeps the
+  lines; 0.6.2 built it at `-O0`. `-g` alone is still `-O0` but on the Cortex-M0+ and wasm32,
+  where it's now the optimized build with lines.
+
+### Language
+- A negative integer literal is one constant, a signed integer: `i32 -2147483648` on a 32-bit
+  `int` target (a chip) was the positive literal, past the type's range, negated, and panicked
+  with an overflow (`tests/mcu/ints.zs`). So `let a : u8 = -1` is an error (it overflowed at run
+  time), and so is a pattern `| -1` at `u8`, which says so; `-0x8000_0000_0000_0000` is i64's
+  least, as a value and as a pattern (`tests/err_neg_unsigned.zs`, `tests/err_neg_pattern.zs`,
+  `tests/fold_edges.zs`).
+- One-case unions without a tag (decision 66, built): a plain union with one case that has
+  fields is the field itself (`type UserId = UserId of int` is an `int` in registers, arrays and
+  records; `sizeof<q15>` is 2), or a struct of its fields; matching, equality, show, hash and
+  the debug info follow (`tests/onecase.zs`). One over a heap value (`Wrap of string`) stays
+  boxed, its count in the object. A `[<CLayout>]` record can't hold one yet (C's view of a
+  one-case union is left).
+- F#'s list and array ranges: `[ 1 .. 10 ]`, `[ 1 .. 2 .. 9 ]` (a step, negative too) and
+  `[| 0 .. n |]`, the list expression over the range, so one loop and the list built once, empty
+  when the range is (`tests/ranges.zs`). The README called them not there yet.
+- Typed tuple parameters as F# writes them: `let f (a: int, b: string) = …` is one parameter of
+  type `int * string`, called `f (1, "x")`; each part takes its type (the error says so when one
+  is missing). The other not-there-yet of the README.
+- `use` under effects (track S, item 10): a throw, or any handler clause that stops without
+  resuming, disposes what the `use`s it passes over bound, newest first, before the clause runs,
+  as a cancelled task does (`tests/effects/use.zs`). It freed them without their `Dispose.dispose`.
+  Code without effects compiles exactly as before. A resumption a clause keeps and never calls,
+  and a stop inside a `task { }` body, still dispose nothing; a consumer that leaves a generator
+  early (`Seq.take`, `Seq.tryFind`) stops it, and that disposes.
+- `[<Section ".noinit">]` and `[<Align 32>]` on a top-level value (0014 item 12, decision 69):
+  a constant table, `Buffer.create n x` or `ref x` with constant arguments has its storage in
+  the image, in the named section and so aligned (a table's data at a multiple of it after its
+  header), with no startup code and nothing allocated. `.noinit` is neither copied nor zeroed by
+  the chip's reset handler (`runtime/boards/cortex-m.ld`), so a boot counter or a crash log
+  survives a reset; a push past a placed Buffer's room moves it to the heap and leaves the
+  storage. On a function, a computed value or an alignment that isn't a power of two from 8 to
+  4096, an error says what the attribute takes. A section named `.noinit…` (as the boards'
+  scripts' `*(.noinit*)` takes it) holds a ref or Buffer of plain values only (a string or array
+  there would point into memory a reset left), and not a constant (never loaded); a section's
+  name is letters, digits, '.', '_' and '$'. The element may be any constant (a fixed-point
+  number, a tuple, an option, a table), its own objects constants outside the section. On a
+  chip, a ref's or Buffer's storage in a section the board's script doesn't name (a DMA region)
+  is copied from flash at startup; a constant table alone in such a section is read-only and
+  stays in flash, but one sharing it with a ref or Buffer (RAM, never loaded) or in `.bss…`
+  (zeroed) is an error, as is a ref or Buffer in flash (`.text…`, `.rodata…`) or one in `.bss…`
+  that doesn't start at zero (a plain union's first case does), and anything in the board's own
+  `.vectors` or `.ARM…`. A chip's library has no startup, so its placed values mustn't need that
+  copy or a `.noinit` ref's header (a host's or wasm32's loads its sections like any other). A
+  placed Buffer's slots are dropped at exit whatever it did since (written, grown into the heap,
+  shortened). A program with placed values builds as one module, so they're placed wherever
+  they're declared (`tests/placement.zs`, `tests/placement_drops.zs`, `tests/err_placement.zs`,
+  `tests/mcu/placement_errors.sh`; on both chips, a boot counter across SYSRESETREQ resets under
+  QEMU, `tests/mcu/noinit.zs`, `tests/mcu/sections.zs`, and with `--no-heap`,
+  `tests/mcu/noheap_placed.zs`). On macOS, where Mach-O names a section
+  `segment,section`, the name is dropped and the alignment kept, as on Windows (it was emitted,
+  and stopped clang's backend). `[<Align>]` on a type is left.
+- Writing a Buffer's element is no allocation for `[<NoAlloc>]` and `--no-heap` (it was taken for
+  an array's copy-on-write), and the write borrows the Buffer as a read does, so writing a
+  parameter's, a field's, an element's or a top-level Buffer frees nothing; the element it
+  overwrites is a drop when its type is counted, and so is a Buffer a call gave or a mutable
+  moved into the write, or one taken out of a value the write frees: a write is accepted only
+  where the Buffer is provably held elsewhere (a variable's, a top-level value's, a field's or an
+  element's), on every path of a match or an if (`tests/noalloc.zs`,
+  `tests/err_noalloc_buffer.zs`, `tests/err_noalloc_buffer_call.zs`,
+  `tests/err_noalloc_buffer_taken.zs`, `tests/err_noalloc_buffer_arms.zs`,
+  `tests/err_noalloc_buffer_alias.zs`).
+- A library (`--lib`) may hold top-level constants: a table, a record, a tree of union cases
+  are static objects with no startup code, which a library doesn't have; only a value really
+  computed at startup is an error, from the code generator, and so is a startup assert
+  wherever it is among the values. Whether a value is a constant doesn't depend on the build:
+  `-g` and `--coverage` keep the code as written, but a value whose initializer folds to a
+  constant (`[| 1 + 2 |]`, `[| Q15.ofFloat 0.5 |]`) is that constant there too
+  (`tests/libstatic.zs`, from C, with `-g` and `--coverage`).
+- `module Weather = import json "weather.json"` and the bare `import csv ("stocks.csv", separator = ";")`
+  (0001): the provider's module, written to `.zs-cache/providers/<importing module>/<Name>.zs`
+  and loaded as a dependency of the file, so `Weather.Root`, `Weather.parse` and hover, definition
+  and completion on them are a module's; the bare form opens a hidden module named after the file
+  and the provider (`StocksCsv`), so `Row`, `parse` and `print` are in scope, the module's own
+  names before the prelude's. Options are constants after the string, in a member call's syntax.
+  An import of a provider zs doesn't have, a file that isn't beside the importing file, or an
+  option the provider doesn't take is an error at the import. In the editor the types follow
+  the sample: the language server watches the files providers read and re-checks the documents
+  made from one that changes, and a rename of a provided name says where it comes from
+  (`tests/providers/import_use.zs`, `tests/lsp/providers.sh`).
+- `import sql "schema.sql"`: a record per `CREATE TABLE` (`INTEGER` `int`, `REAL` `f64`, `TEXT`
+  `string`, `BLOB` `array<u8>`, `BOOLEAN` `bool`; a column an option unless `NOT NULL` or in the
+  primary key) with `table` and `columns` in a module of its name. `import svd ("chip.svd", only =
+  "GPIOA,RCC")`: a module per peripheral, each register a `[<Bits>]` record whose defaults are
+  its reset value and a module with `read`, `write` and `modify` as the file allows;
+  `examples/mcu/nucleo-f401-svd.zs` is the Nucleo firmware on the STM32F401's SVD, compiled to the
+  same register accesses as the one with addresses by hand (`tests/providers/sql_use.zs`,
+  `tests/providers/svd_use.zs`, `tests/providers/svd_nucleo.sh`).
+- Providers of your own: `zs-provider-<name>` on PATH, run in the importing file's directory
+  with the string and `--name=value` options, its standard output the module (`// provided by`,
+  `// input:` lines first), its standard error the errors. The output is cached with a hash of
+  each input, so a machine without the provider builds from the last output, with a `stale-input`
+  warning at the import naming an input that changed since. A dependency package with a
+  `[provider] main = "Main.zs"` section is the provider of its name: the compiler builds its
+  program into `.zs-cache/providers/bin` when its sources change and runs it the same way
+  (`tests/providers/pkg`, `tests/providers/shout`). `examples/providers` and the guide's chapter
+  18 show all of it.
+- `import c` on the providers' protocol: `module Ray = import c "raylib.h"` is the header's
+  declarations as a module, each with its C signature and comment as its doc, and
+  `zs provide c raylib.h` prints that binding as Z# to keep (externs, `[<CLayout>]` records and
+  unions, constants from macros; the names left out listed with why). The bare `import c` keeps
+  its path, `[<Link>]` and the editor's C hover (`tests/providers/cshapes`).
+- `sql`'s `queries = "queries.sql"`: named queries (`-- name: GetUser :one` before each, as sqlc
+  writes them) as a module each, typed against the schema: the text with `?` for each parameter,
+  the parameters' names, a `Params` record typed from the columns they meet (compared with, or
+  inserted into by position), and a `Row` record for a select's columns (`SELECT *` a table's,
+  a join's by table or alias, an expression `AS name`). A column or table not in the schema is an
+  error naming the query (`tests/providers/sql_queries_use.zs`).
+- `M.f` names the extern `f` declared in module `M` (a C function is one global name, and was
+  reachable only bare): `Shapes.rect_area` on a `module Shapes = import c "shapes.h"`
+  (`tests/providers/cshapes`).
+- `svd`: a field's enumerated values that are 0 to n-1 are a union of cases, named after the list
+  (`Value` added when a register's record has the name), shared by the fields with the same
+  values; sparse values stay a number (`tests/providers/svd_enum_use.zs`).
 
 ### Compiler
 - Constants folded (0015 step 4): arithmetic, comparisons, bit operations, conversions and
@@ -12,39 +194,34 @@
   is kept (`-0.0`, `Math.round -0.3`), a NaN result isn't folded, and a conversion nested in
   another wraps as the code does. A static's `f32` literal is single precision (so widening it
   is exact), and an `int` or `usize` past 32 bits converted to a wider integer or a float is
-  left to the code, as a chip wraps it. A negative literal is signed in a pattern too (`| -1` at `u8` is an error, as `let
-  x : u8 = -1` is, and says so; `| -0x8000_0000_0000_0000` matches i64's least), and a match
-  with a pattern literal, at any depth, that isn't a value of its type (`| Some 256` at
-  `option<u8>`) is neither decided at compile time nor made a decision tree, so the code's
-  comparison at the type's width decides it, in order. So `Q15.ofFloat 0.5` is a constant once inlined, and a table
-  of them a static object (`tests/fold.zs`, `tests/fold_edges.zs`, `tests/static.zs`,
-  `tests/err_neg_pattern.zs`).
+  left to the code, as a chip wraps it. A match with a pattern literal, at any depth, that isn't
+  a value of its type (`| Some 256` at `option<u8>`) is neither decided at compile time nor made
+  a decision tree, so the code's comparison at the type's width decides it, in order. So
+  `Q15.ofFloat 0.5` is a constant once inlined, and a table of them a static object
+  (`tests/fold.zs`, `tests/fold_edges.zs`, `tests/static.zs`).
 - Constants in flash, the rest of item 3 (0014): a top-level record, tuple or plain union of
   constants is written into its global, a boxed union case (a tree's node) is a static cell, and
   they nest any way (an array of records, a list of shapes, a record holding a table). A boxed
   case of constants was a constant built at each use and is a value now, so it's static too.
   Nothing of these runs at startup (`tests/static.zs`, `tests/mcu/static.zs`).
 - Constants in flash (0014, item 1, for arrays and lists): a top-level array or list literal of
-  numbers, bools or strings is a static object in the image (count 0, never unique: a write copies it), the value's
-  global pointing at it, with no startup code and no heap; on a chip its bytes are in flash
-  (`tests/static.zs`, `tests/mcu/static.zs`: three tables on a Cortex-M4, 64 bytes of heap and
-  three allocations gone, and the image 496 bytes smaller without their startup code). `--no-heap` takes such a value.
+  numbers, bools or strings is a static object in the image (count 0, never unique: a write
+  copies it), the value's global pointing at it, with no startup code and no heap; on a chip its
+  bytes are in flash (`tests/static.zs`, `tests/mcu/static.zs`: three tables on a Cortex-M4, 64
+  bytes of heap and three allocations gone, and the image 496 bytes smaller without their
+  startup code). `--no-heap` takes such a value.
 - A union with a case holding a list of itself (a tree) builds for the Cortex-M0+: its drop
   function's last call is a plain call there, where Thumb1 can't tail-call another function (a
   loop still, as a list's drop is a call to itself); LLVM refused the image before
   (`tests/mcu/tree.zs`).
-- `use` under effects (track S, item 10): a throw, or any handler clause that stops without
-  resuming, disposes what the `use`s it passes over bound, newest first, before the clause runs,
-  as a cancelled task does (`tests/effects/use.zs`). It freed them without their `Dispose.dispose`.
-  Code without effects compiles exactly as before.
 - A record field's default resolves its names in the record's declaring module, not where the
   record is built: a provided register's `mode0: ModeValue = Alternate` holds for a literal in
-  another module (it was "unknown name 'Alternate'" there).
+  another module (it was "unknown name 'Alternate'" there; `tests/providers/svd_enum_use.zs`).
 - Long and deep programs, as generated code writes them, build: a flat list literal of 20,000
   elements, 10,000 statements or `let`s in one function, an `else if` chain or nested parentheses
   10,000 deep each crashed the compiler (its stack overflowed); its threads now have 256 MB of
   stack where the system's hard limit allows, and the pool's threads the soft `ulimit -s` when
-  that's over 8 MB.
+  that's over 8 MB (`tests/stress.sh`).
 - Nothing quadratic in what was: an array literal of 100,000 elements checked in over two minutes
   (each element's type variable was bound to the one before, and unification walked the whole
   chain: variables are now bound straight to the end of a chain once it's walked, trailed so a
@@ -57,16 +234,18 @@
   of its members crashed the compiler (`panic: Map.find: key not found`; `tests/fuzz.sh`'s seed 1
   found it): the member that can't be is reported and left out, and the type's other members
   stand, so the call checks. A call to a member whose function never got defined is an error
-  naming it, never a crash.
+  naming it, never a crash (`tests/err_member_twice.zs`).
 - A UTF-8 byte order mark at the start of a file is skipped, as `\r\n` is read as `\n`; it was
-  "expected 'let'".
+  "expected 'let'" (`tests/stress.sh`).
 
 ### Runtime
-- A panic's backtrace names the Z# functions on the way (0011, debugging 3), the runtime's own
+- A panic's backtrace names the Z# functions on the way (0011, debugging 5), the runtime's own
   frames left out and the program's `main` last: on Linux the runtime reads the executable's
   own symbol table at the panic (a build keeps it; the functions are internal, so nothing else
-  names them), in release builds too. `ZS_BACKTRACE=0` keeps the panic to its message, as
-  before (`tests/backtrace/run.sh`). Lines need `-g`'s DWARF and are left.
+  names them), in release builds too, and names the function of each call (not the one after
+  it). On macOS, and in a library built into a C program, it's the C library's symbolizer, as
+  in 0.6.2. `ZS_BACKTRACE=0` keeps the panic to its message, as before (`tests/backtrace/run.sh`).
+  Lines need `-g`'s DWARF and are left.
 - Weak references and arenas on a chip (track M, item 8, known gap 3): the embedded runtime
   has the host's table of weak cells and its arenas, over the chip's heap. An arena's blocks are
   an eighth of the heap each (4 KB at most), bumped through, and go back at once when the
@@ -78,51 +257,97 @@
   a block is a multiple of 8, so a heap size that isn't a multiple of 64 keeps the heap aligned
   (`tests/mcu/weak.zs`, `tests/mcu/arena.zs`, `tests/mcu/arena_rounds.zs`,
   `tests/mcu/arena_big.zs`, `tests/mcu/odd_heap.sh`, both chips).
-- A weak reference to an object the runtime frees itself (a weak cell, an `Spsc`, a `Channel`)
-  sees it die: those frees go through the checked path, so a later object at the same address
-  isn't mistaken for it (`tests/weak_runtime.zs`, on both chips too).
 - Panics on several threads at once give one report: the others wait for its stop, and a panic
-  inside a panic stops at once. `Environment.exit` writes the coverage counts first, as a panic
-  does. A panic's backtrace names the function of each call (not the one after it), and in a
-  library built into a C program it falls back to the C library's symbolizer.
+  inside a panic stops at once (`tests/backtrace/run.sh`: four threads at once). A panic's
+  message is printed by its length, so a NUL in it doesn't cut it short.
 - A stack overflow is a panic: `panic: stack overflow (recursion too deep)`, exit status 134, what
   was printed before it flushed, on whichever thread overflows (the pool's, a task's loop's;
   two at once say so once). It was a SIGSEGV with nothing said. On Linux and macOS, in programs
-  (a library leaves its C host's signals alone), not under a sanitizer, which reports one itself.
+  (a library leaves its C host's signals alone), not under a sanitizer, which reports one itself
+  (`tests/panic_stack_overflow.zs`, `tests/panic_stack_overflow_thread.zs`).
 
-### Tests
-- `tests/lsp/providers.sh` edits its sample only once the server has answered the requests before
-  it (a pipe the script writes as the server answers), so what the first hover and completion
-  see no longer depends on who was faster; it failed one run in four under load.
-- `./test.sh --sanitize` builds every program with the address and undefined-behaviour sanitizers
-  (`zs build --sanitize`) and runs it, a report failing the test as valgrind's does, beside
-  `--valgrind` and `--release`. A `.plain-only` file beside a test gives the reason it runs only as
-  built (it measures the pool, or the runtime's stack guard), skipped under both.
-- `tests/stress.sh`: long literals, long runs of statements and lets, deep nesting and a byte
-  order mark build in time and run; a statement failing after a long literal is one error, the
-  next statements checked; deeper than any stack is the panic above, not a crash.
-- `tests/fuzz.sh`: 300 programs broken at random (seeded; `ZS_FUZZ_SEED`, `ZS_FUZZ_COUNT`) through
-  `zs check` and `zs fmt --stdin`: errors, never a crash, a panic or a hang.
-- `./test.sh --release` builds every program optimized: what LLVM may assume of the IR is tested
-  too (every program prints the same at `--release` and at `-O3`).
+### Security
+- A value reached through a pattern variable is lent to a read, to a call that borrows it or to
+  a closure's application only when no other argument takes the value it was matched from: one
+  that did (handing it to a function that frees it) freed it before the read or the call used
+  it, in 0.6.2 too. And a `let mutable` passed to a function that borrows it, which another
+  argument reassigns, is read where it stands, the arguments bound left to right, and kept alive
+  through the call; the assignment freed it first (`tests/buffer_lend.zs`, clean under valgrind).
+- A weak reference to an object the runtime frees itself (a weak cell, an `Spsc`, a `Channel`)
+  sees it die: those frees go through the checked path, so a later object at the same address
+  isn't taken for it (`tests/weak_runtime.zs`; on both chips, `tests/mcu/weak_runtime.zs`).
 
-### Performance
-- `x <- f … x …` hands the call x's own reference when the other arguments only read x, so
-  `counts <- HashMap.add w (Option.defaultValue 0 (HashMap.tryFind w counts) + 1) counts`
-  updates the map in place instead of copying it on every update (a word count of 1M words: 84 s,
-  now 0.23 s); the same for arrays (`a <- Array.set a i (a.[i] + 1)`).
-- Only a program that can put a SIMD vector in a heap object has its objects 64-byte aligned by
-  the system allocator; one with vectors in locals only keeps the pool. Calling
-  `Bytes.appendJsonString` no longer costs a whole program the pool (a JSON round trip of 200k
-  records: 3.5 s and 935 MB, now 1.4 s and 368 MB).
-
-### Examples
-- `examples/aoc`: ten Advent of Code puzzles (2015 to 2021's first days), each solved on the
-  puzzle's example input with only the prelude, Core and Std, 203 lines in all: track S's exit
-  test that the library is enough for a day's puzzle (`tests/examples_aoc.sh` checks the
-  answers).
-- `examples/tools`: grep (38 lines), a JSON pretty-printer (16) and `tail -f` (49), each with the
-  prelude, Core and Std alone (track S's exit test), built and run by `tests/examples_tools.sh`.
+### Library
+- Properties (0010, track D item 5): `testProperty "name" (fun (xs: list<int>) -> …)` runs
+  the property on 100 cases drawn with `Arbitrary` at the parameter's type (a tuple for
+  several), growing from size 0 to 100; `unit`, `true` or `Ok` passes a case, `false` or an
+  `Error` fails it, and the failing case is shrunk to a smallest one (its bytes shorter, then
+  smaller, as Hypothesis shrinks) and shown with the seed that replays the run through
+  `testPropertyWith { seed = Some s }`; `{ runs; maxSize; maxDiscardRatio; shrink }` are the
+  other settings. A generator (`Gen<'a>`) reads a stream of bytes, so every one shrinks:
+  `Gen.int ()`, the sized integers, `float`, `bool`, `char` and `string` (each a function of
+  unit), `range`, `elements`, `frequency`, `oneOf`, `map`, `bind`, `filter`, `list`, `array`,
+  `listOfLength`, `option`, `sized`, `scale`, `constant`, the `gen { }` builder, and
+  `Gen.sample seed n g` to look at one. `Arbitrary` has impls for Core's types, lists, arrays,
+  options, results and tuples, and `[<Derive(Arbitrary)>]` for records and unions: a union's
+  cases are ranked by how readily a value ends (0 when no field can hold the type, 1 when only
+  lists, arrays and options do, which are empty at size 0, 2 when only a type parameter might, 3
+  when a field is or reaches the type), drawn in that order, and at size 0 or past a replayed
+  stream's end the lowest rank's with the fewest fields are the only choice. So a tree whose
+  leaves carry values, one with a way out through a list, and a generic one (`Expr<'v>`'s
+  `Lit of 'v`, a `Labeled<'a>` holding the type) end; a type whose every case holds it outright
+  (through a `result`, say) may not past a replayed stream's end, and a generic union's
+  type-parameter cases come after those that hold nothing and before those that hold the type
+  (the derives gain `Shape.cases`, each case's `rank` among its facts). `Gen.option` is `None`
+  at size 0; `Gen.range` spans all of `int` without overflowing and
+  `Gen.frequency` sums its weights in u64; and `Gen.char` draws any scalar value but a
+  surrogate, the controls last, so a case shrinks to a printable one
+  (`tests/property/recursive.zs`). `prop { let! x = Gen.int () … do! Prop.assume (y <> 0)
+  … return … }` draws as it goes, discards a case (`Prop.assume`) or labels it (`Prop.label`,
+  `classify`, `collect`): a passing property reports how its cases were labelled, a failure
+  shows the failing case's labels. `Prop.model commands { init; step }` checks a system
+  against a model with a derived sequence of commands, which shrinks to the fewest with the
+  smallest arguments. Under `zs test`, a case that panics is recorded as drawn (each case from
+  its own seed), shrunk by replays of the test binary (`--replay`) to a smallest case that
+  still panics, shown, and saved beside the file in `.zs-cache/failures/<file>/`, keyed by
+  the test file and the property's path; the next run replays it first, and once it passes
+  it's deleted. A panic the case doesn't reproduce alone, and a run that gave up on its
+  discards, are reported as they happened, nothing shrunk or saved; a shrink keeps the failure
+  it started with (its panic or sanitizer report with its values left out, an assert's place and
+  the function it panicked in kept; a program's own case names count as the message's words, as
+  `Some`, `None`, `Ok` and `Error` don't), so a candidate that trips another bug, another assert,
+  or ends in a stack overflow, isn't taken (`tests/property/basic.zs`, `tests/property/labels.zs`,
+  `tests/property/model.zs`, `tests/ztest/property.sh`).
+- `Numerics.Fixed` (0015, track M item 10): `q7`, `q15` and `q31`, each a one-case union over
+  its integer (its size, by decision 66), with saturating `+`, `-`, `*` (rounded half up), `/`,
+  `%` (computed wider, so `min % -step` is 0) and negation, `mulAdd`, `abs`, `clamp`,
+  `ofFloat`/`toFloat`/`toF32`, `ofInt`, `raw`/`ofRaw`, the conversions between the formats, and
+  `Show` as the decimal with the digits the format needs (`0.99997` for `Q15.max`), in integer
+  arithmetic. `List.sum` over them saturates like `+`. `Q7` and `Q15`
+  compute in 32 bits, the chips' word, their products and quotients `[<Wrapping>]` (they can't
+  overflow): `bench/mcu/firq15.zs`, a 32-tap `q15` filter, executes 1.05 times the instructions
+  of C in CMSIS-DSP's style on the Cortex-M4 and 1.01 times on the Cortex-M0+, at `-O2`. `ofFloat` on a literal folds to a constant
+  (Compiler, above); the vector forms are left (`tests/fixedpoint.zs`, `tests/panic_fixed_div.zs`,
+  `tests/mcu/fixed.zs`).
+- `Net.Udp` (track S, item 8): `Udp.bind host port` (0 for a port the system picks, `Udp.port`
+  says which), `Udp.send` and `sendText` to a host and port, and `Udp.receive`, which gives the
+  bytes (a longer datagram cut to the buffer) and the sender's address and port, each waiting on
+  the event loop as `Tcp` does; `use` closes the socket. `Dns.lookup host`: a host's addresses,
+  looked up off the loop's thread with `Task.blocking`, an empty list for a name that has none
+  (`tests/task/udp.zs`).
+- `DateTime.parseIso` (track S, item 6): the moment ISO 8601 writes, `2026-11-04T08:30:00Z`, with
+  a fraction (`.25`, to nanoseconds), an offset (`+02:00`, taken off) or no zone (UTC), without
+  the seconds, or a date alone, a space for the `T` too; `None` for anything else, a day its
+  month hasn't and a year outside 1678 to 2262 included; a moment after
+  2262-04-11T23:47:16.854775807Z, past what an `i64` of nanoseconds holds, panics with an
+  overflow instead. And `DateTime.ofParts year month day hour minute second nanos`, `None` out
+  of range, with the same exception (`tests/datetime.zs`).
+- `Int`'s checked, saturating and bit operations (track S, item 3): `Int.checkedAdd`, `checkedSub`
+  and `checkedMul` give an `option`; `saturatingAdd`, `saturatingSub` and `saturatingMul` stop at
+  the type's bounds; `popCount`, `leadingZeros`, `trailingZeros`, `rotateLeft`, `rotateRight` and
+  `byteSwap` are the bit operations, on `int` and every sized integer, an instruction each where
+  the target has one (`CLZ`, ARM's saturating `QADD`), on the chips too (`tests/int_ops.zs`; on
+  both chips, `tests/mcu/ints.zs`).
 
 ### Packages
 - Workspaces (0018, item 8): `[workspace] members = ["app", "libs/*"]` in a root `zs.toml` (a
@@ -130,20 +355,21 @@
   resolve together into one `zs.lock`, one `.zs-cache/` and one `vendor/` at the root; a lock
   inside a member is an error naming the root. `zs build`, `zs test`, `zs fetch`, `zs update`,
   `zs tree` and `zs vendor` at the root run over every member (a library member isn't built on
-  its own); `zs run`, `zs add` and `zs remove` there say to run them in a member.
+  its own); `zs run`, `zs add` and `zs remove` there say to run them in a member
+  (`tests/project/workspace.sh`).
 - `zs.lock` hashes each git dependency's files (0018, item 6): a checkout that was edited is
-  restored from its commit at the next fetch, and one whose files still differ is an error
+  restored from its commit at the next build or fetch, and one whose files still differ is an error
   naming it (`zs update` accepts the new files). `zs vendor` copies the dependencies into
   `vendor/`, where the project reads them from and never fetches, their hashes checked; `zs
   build --offline` (any command's `--offline`, or `ZS_OFFLINE=1`) is an error instead of a
   fetch. `zs new` puts `.zs-cache/` in `.gitignore`. The hash is the compiler's xxhash until
-  stage 0's library has `Sha256`.
+  stage 0's library has `Sha256` (`tests/project/vendor.sh`).
 - `zs add ../text`, `zs add https://…/json.git@1.2` (a release) or `@v1` (a rev), `--rev main`:
   the dependency written into `zs.toml`'s `[dependencies]` (the name from the package's
   `zs.toml`, or the URL's last part) and fetched; `zs remove json` takes one out, the lock
   rewritten, naming the ones there when it isn't; `zs tree` shows the dependencies as resolved,
   each with its version, where it comes from and its locked commit, its own under it (0018,
-  item 7; `zs add json@1.2` by name waits for the index).
+  item 7; `zs add json@1.2` by name waits for the index; `tests/project/pkgs.sh`).
 - Internal modules (0018, item 3): a file under a package's `internal/` directory (any depth)
   is for the package's own files; from another package its name is an error naming the package
   and its public modules. A module's directory may start in lower case now (`internal/` for
@@ -153,7 +379,9 @@
   cortex-m4 has none, so it can't depend on this package`, instead of an error deep in its code.
 
 ### Tooling
-- `zs build -g --release` (and `-g` with any `-O` level; 0011, debugging 5): the optimizer runs
+- `zs --version` prints the compiler's release, and the language and MCP servers report it in
+  `serverInfo` (they said `0.4`); `test.sh` checks it against `src/zs.toml`'s.
+- `zs build -g --release` (and `-g` with any `-O` level; 0011, debugging 3): the optimizer runs
   and the DWARF lines stay, so gdb and lldb break on a line of an optimized build and show its
   backtrace with Z# files and lines; a value the optimizer keeps is shown, an inlined call's
   lines are its caller's frame's. `-g` alone is `-O0` with the code as written, for stepping,
@@ -161,6 +389,15 @@
   can't lower Z#'s tail calls: there `-g` alone stays the optimized build with lines. Code as
   written is what `[<NoAlloc>]` checks then, so a function passing a lambda to a library's
   higher-order function may need `-O2` (`tests/debug/opt.sh`, `tests/mcu/stepping.zs`).
+- Debug info for every value (track D, item 1, known gap 4): a list, array, boxed union, `ref`
+  or `Buffer` has its type's name over a pointer to its object, so gdb's `print *xs` shows a
+  cell's count, head and tail, an array's count, length and elements, a node's case (where the
+  cells carry one) and each case's fields over the cell, a ref's value; an option over a string
+  is the string's pointer, a closure or one of the runtime's cells an address, and a `fixed` an
+  array. Nothing is left out of `info locals` for its type now, and a type that holds itself
+  through a list, a ref or an array is described once; a SIMD vector has no DWARF type of its
+  own, but its size lays out the fields after it, as each target aligns it (`tests/debug/gdb_heap.sh`,
+  `tests/debug/kinds.zs`, whose DWARF `llvm-dwarfdump --verify` checks).
 - `zs test --coverage` (track D, item 10): the test binary is built with a counter per line of
   the file's directory's sources (`--coverage` on any build: the program writes the counts to
   `<program>.zscov` at exit, a panic's included), and the command reports the lines run and
@@ -177,34 +414,39 @@
   `Test` value among a file's `[<Tests>]`, timed in a process of its own after three warm-up
   runs: the median of 30 runs (or `--runs`) and its 95% confidence interval from the order
   statistics. The results are saved beside the file (`.zs-cache/bench/<file>.tsv`), and a
-  benchmark whose interval doesn't overlap the saved one's by 10% or more is reported slower or
-  faster; `zs test` runs a benchmark once, as a test of its body. `testFaster "name" fast slow`
-  is a test that passes when `fast` wins 19 of 25 paired rounds (a sign test at 1%), so a
-  performance claim can't silently regress (`tests/ztest/bench.sh`).
-- Debug info for every value (track D, item 1, known gap 4): a list, array, boxed union, `ref`
-  or `Buffer` has its type's name over a pointer to its object, so gdb's `print *xs` shows a
-  cell's count, head and tail, an array's count, length and elements, a node's case (where the
-  cells carry one) and each case's fields over the cell, a ref's value; an option over a string
-  is the string's pointer, a closure or one of the runtime's cells an address, and a `fixed` an
-  array. Nothing is left out of `info locals` for its type now, and a type that holds itself
-  through a list, a ref or an array is described once; a SIMD vector has no DWARF type of its
-  own, but its size lays out the fields after it, as each target aligns it (`tests/debug/gdb_heap.sh`,
-  `tests/debug/kinds.zs`, whose DWARF `llvm-dwarfdump --verify` checks).
+  benchmark whose interval doesn't overlap the saved one's, its median 10% or more away, is
+  reported slower or faster; `zs test` runs a benchmark once, as a test of its body.
+  `testFaster "name" fast slow` is a test that passes when `fast` wins 19 of 25 paired rounds (a
+  sign test at 1%), so a performance claim can't silently regress (`tests/ztest/bench.sh`).
+- `zs fuzz file.zs path [--for n] [-- flags]` (track D, item 6) runs one property under
+  libFuzzer (the tests built with its instrumentation and the sanitizers; a panic aborts, so
+  it's a crash), each input the property's bytes (`Gen.bytes ()` takes an input whole, so a
+  property over bytes fuzzes a parser as it is), the corpus kept beside the file in
+  `.zs-cache/fuzz/<file>/`, keyed by the property's path, so a run resumes (for `--for`'s
+  seconds, or as long as libFuzzer's own flags say), the flags after `--` libFuzzer's but for
+  those that start other processes (`-jobs`, `-fork`: it runs in one), its output read apart from
+  the property's so neither stream blocks the other; a crash is shrunk by replays, shown, and
+  saved as the failure `zs test` replays first (`tests/fuzz/fuzz.sh`).
 - `zs test file.zs --target cortex-m4` (track D, item 11): the file's `[<Tests>]` built into one
   image and run under the chip's QEMU board (or a real board through probe-rs, as `zs run` does),
-  every test in one process in order: Core's `Testing.runAll` prints `ok path` as each passes and
-  `skip path` for a pending one, a failing test's panic ends the run and `zs test` names it, with
-  what it printed; the counts as on the host. A test returning a task isn't run on a chip.
+  every test in one process in order: Core's `Testing.runAll` prints `test path` before each,
+  `ok path` after it and `skip path` for a pending one, and a failing test's panic ends the run,
+  `zs test` naming it with what it printed, every line of the panic kept (blank ones, a
+  property's case and replay seed); the counts as on the host. A property runs its cases there
+  too, nothing recorded or shrunk, and a test returning a task runs on the chip's event loop
+  (`tests/mcu/ztest.zs`, `tests/mcu/ztest_fail.zs`, both chips; neither has a task's test yet,
+  so that one was checked by hand on both).
 - `zs mcp` has `definition` (where the name at a position is defined: `file:line:column` and the
   defining line, in the program's files or the library's) and `explain` (its type with
   constraints, its effects in words, where it's defined, and its doc comment, a built-in's
   included) beside `check`, `type_at`, `docs`, `build`, `run`, `emit_llvm` and `format` (track E,
-  item 3).
+  item 3; `tests/mcp/session.sh`).
 - `zs test --stress 10m` (track D, item 4): the tests at random on every core, over and over for
   that long (`30s`, `10m`, `1h`), each run its own process as always; a failure one run hides (a
   race, a leak on a rare path, a timeout under load) shows, each failing test shown once with its
   first failure. With `ZS_LEAKCHECK=1`, a leak at a test's exit (`leak check: n object(s) still
-  allocated`) fails the test, in one run too; it was reported and the test passed.
+  allocated`) fails the test, in one run too; it was reported and the test passed
+  (`tests/ztest/stress.sh`).
 - `zs provide json <file>` and `zs provide csv <file>` print a module from a data source, to keep
   beside the program ([proposal 0001](docs/proposals/0001-type-providers.md), track P's first
   step): `json` gives a document's records with the `Json` derive and `parse` and `print`, an
@@ -214,117 +456,57 @@
   `--types=temp:f64,readings.value:f32`; `csv` gives a `Row` record from the header and the rows
   (`int`, `f64`, `bool`, else `string`; an empty cell makes a column an option) with `parse` and
   `print` that read and write quoted cells, with `--separator=;`, `--hasHeaders=false` and
-  `--types=volume:f64`. `zs provide --list` names the providers.
+  `--types=volume:f64`. `zs provide sql`, `svd` and `c` print the other providers' modules the
+  same way, and `zs provide <name>` a provider of your own on PATH; `zs provide --list` names the
+  five and those on PATH (`tests/providers/provide.sh`).
+- The tree-sitter grammar, and so Zed, parses the providers' imports (named, bare, with
+  options), list and array ranges and typed tuple parameters; the Zed extension pins the
+  grammar's commit with them.
 
-### Language
-- `[<Section ".noinit">]` and `[<Align 32>]` on a top-level value (0014 item 12, decision 69):
-  a constant table, `Buffer.create n x` or `ref x` with constant arguments has its storage in
-  the image, in the named section and so aligned (a table's data at a multiple of it after its
-  header), with no startup code and nothing allocated. `.noinit` is neither copied nor zeroed by
-  the chip's reset handler (`cortex-m.ld`), so a boot counter or a crash log survives a reset; a
-  push past a placed Buffer's room moves it to the heap and leaves the storage. On a function,
-  a computed value or an alignment that isn't a power of two from 8 to 4096, an error says what
-  the attribute takes. A section named `.noinit…` (as the boards' scripts' `*(.noinit*)` takes
-  it) holds a ref or Buffer of plain values only (a string or array there would point into
-  memory a reset left), and not a constant (never loaded); a section's name is letters,
-  digits, '.', '_' and '$'. The element may be any constant (a fixed-point number, a tuple, an
-  option, a table), its own objects constants outside the section. On a chip, a ref's or
-  Buffer's storage in a section the board's script doesn't name (a DMA region) is copied from
-  flash at startup; a constant table alone in such a section is read-only and stays in flash,
-  but one sharing it with a ref or Buffer (RAM, never loaded) or in `.bss…` (zeroed) is an
-  error, as is a ref or Buffer in flash (`.text…`, `.rodata…`) or one in `.bss…` that doesn't
-  start at zero (a plain union's first case does), and anything in the board's own `.vectors`
-  or `.ARM…`. A chip's library has no startup, so its placed values mustn't need that copy
-  or a `.noinit` ref's header (a host's or wasm32's loads its sections like any other). A
-  placed Buffer's slots are dropped at exit whatever it did since (written, grown into the
-  heap, shortened). A program with placed values builds as one module, so they're placed
-  wherever they're declared (`tests/placement.zs`, `tests/placement_drops.zs`,
-  `tests/err_placement.zs`, `tests/mcu/placement_errors.sh`; on both chips, a boot counter
-  across SYSRESETREQ resets under QEMU, `tests/mcu/noinit.zs`, `tests/mcu/sections.zs`, and
-  with `--no-heap`, `tests/mcu/noheap_placed.zs`). `[<Align>]` on a type is left. Writing a
-  Buffer's element is no allocation for `[<NoAlloc>]` and `--no-heap` (it was taken for an
-  array's copy-on-write), and the write borrows the Buffer as a read does, so writing a
-  parameter's, a field's, an element's or a top-level Buffer frees nothing; the element it
-  overwrites is a drop when its type is counted, and so is a Buffer a call gave or a mutable
-  moved into the write, or one taken out of a value the write frees: a write is accepted only
-  where the Buffer is provably held elsewhere (a variable's, a top-level value's, a field's or
-  an element's), on every path of a match or an if. A Buffer (or array, string or closure)
-  reached through a pattern variable is lent to a read, a write, a call that borrows it or an
-  application only when nothing else in it takes the value it was matched from, which could
-  free it first; and a mutable passed to a call that borrows it, which another argument
-  reassigns, is read where it stands and kept alive through the call (`tests/noalloc.zs`, `tests/buffer_lend.zs`,
-  `tests/err_noalloc_buffer.zs`, `tests/err_noalloc_buffer_call.zs`,
-  `tests/err_noalloc_buffer_taken.zs`, `tests/err_noalloc_buffer_arms.zs`,
-  `tests/err_noalloc_buffer_alias.zs`).
-- A library (`--lib`) may hold top-level constants: a table, a record, a tree of union cases
-  are static objects with no startup code, which a library doesn't have; only a value really
-  computed at startup is an error, from the code generator, and so is a startup assert
-  wherever it is among the values. Whether a value is a constant doesn't depend on the build:
-  `-g` and `--coverage` keep the code as written, but a value whose initializer folds to a
-  constant (`[| 1 + 2 |]`, `[| Q15.ofFloat 0.5 |]`) is that constant there too
-  (`tests/libstatic.zs`, from C, with `-g` and `--coverage`).
-- One-case unions without a tag (decision 66, built): a plain union with one case that has
-  fields is the field itself (`type UserId = UserId of int` is an `int` in registers, arrays and
-  records; `sizeof<q15>` is 2), or a struct of its fields; matching, equality, show, hash and
-  the debug info follow (`tests/onecase.zs`). One over a heap value (`Wrap of string`) stays
-  boxed, its count in the object. A `[<CLayout>]` record still takes the field's type, not the
-  union (C's view of a one-case union is left).
-- A negative integer literal is one constant: `i32 -2147483648` on a 32-bit `int` target (a
-  chip) was the positive literal, past the type's range, negated, and panicked with an overflow
-  (`tests/mcu/ints.zs`). It's a signed integer: `let a : u8 = -1` is an error (it overflowed
-  at run time), and `-0x8000_0000_0000_0000` is i64's least (`tests/err_neg_unsigned.zs`,
-  `tests/fold_edges.zs`).
-- F#'s list and array ranges: `[ 1 .. 10 ]`, `[ 1 .. 2 .. 9 ]` (a step, negative too) and
-  `[| 0 .. n |]`, the list expression over the range, so one loop and the list built once, empty
-  when the range is (`tests/ranges.zs`). The README called them not there yet.
-- Typed tuple parameters as F# writes them: `let f (a: int, b: string) = …` is one parameter of
-  type `int * string`, called `f (1, "x")`; each part takes its type (the error says so when one
-  is missing). The other not-there-yet of the README.
-- `module Weather = import json "weather.json"` and the bare `import csv ("stocks.csv", separator = ";")`
-  (0001): the provider's module, written to `.zs-cache/providers/<importing module>/<Name>.zs`
-  and loaded as a dependency of the file, so `Weather.Root`, `Weather.parse` and hover, definition
-  and completion on them are a module's; the bare form opens a hidden module named after the file
-  and the provider (`StocksCsv`), so `Row`, `parse` and `print` are in scope, the module's own
-  names before the prelude's. Options are constants after the string, in a member call's syntax.
-  An import of a provider zs doesn't have, a file that isn't beside the importing file, or an
-  option the provider doesn't take is an error at the import. In the editor the types follow
-  the sample: the language server watches the files providers read and re-checks the documents
-  made from one that changes, and a rename of a provided name says where it comes from.
-- `import sql "schema.sql"`: a record per `CREATE TABLE` (`INTEGER` `int`, `REAL` `f64`, `TEXT`
-  `string`, `BLOB` `array<u8>`, `BOOLEAN` `bool`; a column an option unless `NOT NULL` or in the
-  primary key) with `table` and `columns` in a module of its name. `import svd ("chip.svd", only =
-  "GPIOA,RCC")`: a module per peripheral, each register a `[<Bits>]` record whose defaults are
-  its reset value and a module with `read`, `write` and `modify` as the file allows;
-  `examples/mcu/nucleo-f401-svd.zs` is the Nucleo firmware on the STM32F401's SVD, compiled to the
-  same register accesses as the one with addresses by hand (`tests/providers/svd_nucleo.sh`).
-- Providers of your own: `zs-provider-<name>` on PATH, run in the importing file's directory
-  with the string and `--name=value` options, its standard output the module (`// provided by`,
-  `// input:` lines first), its standard error the errors. The output is cached with a hash of
-  each input, so a machine without the provider builds from the last output, with a `stale-input`
-  warning at the import naming an input that changed since. A dependency package with a
-  `[provider] main = "Main.zs"` section is the provider of its name: the compiler builds its
-  program into `.zs-cache/providers/bin` when its sources change and runs it the same way.
-  `examples/providers` and the guide's chapter 18 show all of it.
-- `import c` on the providers' protocol: `module Ray = import c "raylib.h"` is the header's
-  declarations as a module, each with its C signature and comment as its doc, and
-  `zs provide c raylib.h` prints that binding as Z# to keep (externs, `[<CLayout>]` records and
-  unions, constants from macros; the names left out listed with why). The bare `import c` keeps
-  its path, `[<Link>]` and the editor's C hover.
-- `sql`'s `queries = "queries.sql"`: named queries (`-- name: GetUser :one` before each, as sqlc
-  writes them) as a module each, typed against the schema: the text with `?` for each parameter,
-  the parameters' names, a `Params` record typed from the columns they meet (compared with, or
-  inserted into by position), and a `Row` record for a select's columns (`SELECT *` a table's,
-  a join's by table or alias, an expression `AS name`). A column or table not in the schema is an
-  error naming the query.
-- `M.f` names the extern `f` declared in module `M` (a C function is one global name, and was
-  reachable only bare): `Shapes.rect_area` on a `module Shapes = import c "shapes.h"`.
-- `svd`: a field's enumerated values that are 0 to n-1 are a union of cases, named after the list
-  (`Value` added when a register's record has the name), shared by the fields with the same
-  values; sparse values stay a number. The tree-sitter grammar (and so Zed) parses the imports.
+### Performance
+- `x <- f … x …` hands the call x's own reference when the other arguments only read x, so
+  `counts <- HashMap.add w (Option.defaultValue 0 (HashMap.tryFind w counts) + 1) counts`
+  updates the map in place instead of copying it on every update (a word count of 1M words: 84 s,
+  now 0.23 s); the same for arrays (`a <- Array.set a i (a.[i] + 1)`). An argument that assigns
+  x, or writes its array in place, keeps the copy (`tests/cow_args.zs`, `tests/cow_split.zs`).
+- Only a program that can put a SIMD vector in a heap object has its objects 64-byte aligned by
+  the system allocator; one with vectors in locals only keeps the pool. Calling
+  `Bytes.appendJsonString` no longer costs a whole program the pool (a JSON round trip of 200k
+  records: 3.5 s and 935 MB, now 1.4 s and 368 MB; `tests/simd/pool.zs`,
+  `tests/simd/pool_locals.zs`, `tests/simd/pool_wide.zs`, `tests/simd/pool_wide_indirect.zs`).
+
+### Examples
+- `examples/aoc`: ten Advent of Code puzzles (2015 to 2021's first days), each solved on the
+  puzzle's example input with only the prelude, Core and Std, 203 lines in all: track S's exit
+  test that the library is enough for a day's puzzle (`tests/examples_aoc.sh` checks the
+  answers).
+- `examples/tools`: grep (38 lines), a JSON pretty-printer (16) and `tail -f` (49), each with the
+  prelude, Core and Std alone (track S's exit test), built and run by `tests/examples_tools.sh`.
 
 ### Benchmarks
 - `bench/host` has five small real programs beside its kernels, in Z#, C and Rust: `wordfreq`,
   `json`, `interp`, `pathfind` and `sha256` ([the report](docs/reports/realworld.md)).
+
+### Tests
+- CI's macOS runners get coreutils' `timeout`, which `./test.sh` and its scripts call and macOS
+  doesn't have: about 130 of each Mac's failures on 2026-11-04 were its absence. `test.sh` builds
+  `tests/placement.zs` for macOS and Windows and checks no section name is left.
+- `tests/lsp/providers.sh` edits its sample only once the server has answered the requests before
+  it (a pipe the script writes as the server answers), so what the first hover and completion
+  see no longer depends on who was faster; it failed one run in four under load.
+- `./test.sh --sanitize` builds every program with the address and undefined-behaviour sanitizers
+  (`zs build --sanitize`) and runs it, a report failing the test as valgrind's does, beside
+  `--valgrind` and `--release`. A `.plain-only` file beside a test gives the reason it runs only as
+  built (it measures the pool, or the runtime's stack guard), skipped under both.
+- `./test.sh --release` builds every program optimized (`zs build --release`), so what LLVM may
+  assume of the IR the compiler writes (no overflow where it says `nsw`, no aliasing where it says
+  `noalias`) is tested too: each program must print the same.
+- `tests/stress.sh`: long literals, long runs of statements and lets, deep nesting and a byte
+  order mark build in time and run; a statement failing after a long literal is one error, the
+  next statements checked; deeper than any stack is the panic above, not a crash.
+- `tests/fuzz.sh`: 300 programs broken at random (seeded: `ZS_FUZZ_SEED` picks them, 1 unless
+  it says, `ZS_FUZZ_COUNT` how many) through `zs check` and `zs fmt --stdin`: errors, never a
+  crash, a panic or a hang.
 
 ## 0.6.2 (2026-10-30)
 
@@ -513,78 +695,6 @@ a real machine. The flagship runs under QEMU's STM32F405, not yet on the board i
   object it compiles.
 
 ### Library
-- Properties (0010, track D item 5): `testProperty "name" (fun (xs: list<int>) -> …)` runs
-  the property on 100 cases drawn with `Arbitrary` at the parameter's type (a tuple for
-  several), growing from size 0 to 100; `unit`, `true` or `Ok` passes a case, `false` or an
-  `Error` fails it, and the failing case is shrunk to a smallest one (its bytes shorter, then
-  smaller, as Hypothesis shrinks) and shown with the seed that replays the run through
-  `testPropertyWith { seed = Some s }`; `{ runs; maxSize; maxDiscardRatio; shrink }` are the
-  other settings. A generator (`Gen<'a>`) reads a stream of bytes, so every one shrinks:
-  `Gen.int`, the sized integers, `float`, `bool`, `char`, `string`, `range`, `elements`,
-  `frequency`, `oneOf`, `map`, `bind`, `filter`, `list`, `array`, `listOfLength`, `option`,
-  `sized`, `scale`, `constant`, the `gen { }` builder, and `Gen.sample seed n g` to look at
-  one. `Arbitrary` has impls for Core's types, lists, arrays, options, results and tuples, and
-  `[<Derive(Arbitrary)>]` for records and unions: a union's cases are ranked by how readily a
-  value ends (0 when no field can hold the type, 1 when only lists, arrays and options do,
-  which are empty at size 0, 2 when only a type parameter might, 3 when a field is or reaches
-  the type), drawn in that order, and at size 0 or past a replayed stream's end the lowest
-  rank's with the fewest fields are the only choice. So a tree whose leaves carry values, one
-  with a way out through a list, and a generic one (`Expr<'v>`'s `Lit of 'v`, a `Labeled<'a>`
-  holding the type) end; a type whose every case holds it outright (through a `result`, say)
-  may not past a replayed stream's end, and a generic union's type-parameter cases come after
-  those that hold nothing and before those that hold the type (the derives gain `Shape.cases`, each case's `rank` among its facts).
-  `Gen.option` is `None` at size 0; `Gen.range` spans all of `int` without overflowing and
-  `Gen.frequency` sums its weights in u64; and `Gen.char` draws any scalar value but a
-  surrogate, the controls last, so a case shrinks to a printable one (a panic's message is
-  printed by its length, so a NUL in one doesn't cut it) (`tests/property/recursive.zs`). `prop { let! x = Gen.int … do! Prop.assume (y <> 0)
-  … return … }` draws as it goes, discards a case (`Prop.assume`) or labels it (`Prop.label`,
-  `classify`, `collect`): a passing property reports how its cases were labelled, a failure
-  shows the failing case's labels. `Prop.model commands { init; step }` checks a system
-  against a model with a derived sequence of commands, which shrinks to the fewest with the
-  smallest arguments. Under `zs test`, a case that panics is recorded as drawn (each case from
-  its own seed), shrunk by replays of the test binary (`--replay`) to a smallest case that
-  still panics, shown, and saved beside the file in `.zs-cache/failures/<file>/`, keyed by
-  the test file and the property's path; the next run replays it first, and once it passes
-  it's deleted. A panic the case doesn't reproduce alone, and a run that gave up on its
-  discards, are reported as they happened, nothing shrunk or saved; a shrink keeps the failure
-  it started with (its panic or sanitizer report with its values left out, an assert's place and
-  the function it panicked in kept; a program's own case names count as the message's words, as
-  `Some`, `None`, `Ok` and `Error` don't), so a candidate that trips another bug, another assert,
-  or ends in a stack overflow, isn't taken. `zs fuzz file.zs path [--for n] [--
-  flags]` (track D, item 6) runs one property under libFuzzer (the tests built with its
-  instrumentation and the sanitizers; a panic aborts, so it's a crash), each input the
-  property's bytes (`Gen.bytes ()` takes an input whole, so a property over bytes fuzzes a
-  parser as it is), the corpus kept beside the file in `.zs-cache/fuzz/<file>/<path>/` so a
-  run resumes (for `--for`'s seconds, or as long as libFuzzer's own flags say), the flags after
-  `--` libFuzzer's but for those that start other processes
-  (`-jobs`, `-fork`: it runs in one), its output read apart from the property's so neither
-  stream blocks the other; a crash is shrunk by replays, shown, and saved as the failure `zs
-  test` replays first. `zs test --target` shows every line of a failing test's panic, blank
-  ones among them, a property's case and replay seed included (`tests/property/basic.zs`, `model.zs`, `tests/ztest/property.sh`,
-  `tests/fuzz/fuzz.sh`).
-- `Numerics.Fixed` (0015, track M item 10): `q7`, `q15` and `q31`, each a one-case union over
-  its integer (its size, by decision 66), with saturating `+`, `-`, `*` (rounded half up), `/`, `%` (computed wider, so `min % -step` is 0) and negation,
-  `mulAdd`, `abs`, `clamp`, `ofFloat`/`toFloat`/`toF32`, `ofInt`, `raw`/`ofRaw`, the conversions
-  between the formats, and `Show` as the decimal with the digits the format needs (`0.99997` for
-  `Q15.max`), in integer arithmetic. `List.sum` over them saturates like `+`. `Q7` and `Q15`
-  compute in 32 bits, the chips' word, their products and quotients `[<Wrapping>]` (they can't
-  overflow): `bench/mcu/firq15.zs`, a 32-tap `q15` filter, executes as many instructions as C
-  in CMSIS-DSP's style at `-O2` on both chips. Folding `ofFloat` on a literal and the vector
-  forms are left.
-- `Net.Udp` (track S, item 8): `Udp.bind host port` (0 for a port the system picks, `Udp.port`
-  says which), `Udp.send` and `sendText` to a host and port, and `Udp.receive`, which gives the
-  bytes (a longer datagram cut to the buffer) and the sender's address and port, each waiting on
-  the event loop as `Tcp` does; `use` closes the socket. `Dns.lookup host`: a host's addresses,
-  looked up off the loop's thread with `Task.blocking`, an empty list for a name that has none.
-- `DateTime.parseIso` (track S, item 6): the moment ISO 8601 writes, `2026-11-04T08:30:00Z`, with
-  a fraction (`.25`, to nanoseconds), an offset (`+02:00`, taken off) or no zone (UTC), without
-  the seconds, or a date alone; `None` for anything else, a day its month hasn't included. And
-  `DateTime.ofParts year month day hour minute second nanos`, `None` out of range.
-- `Int`'s checked, saturating and bit operations (track S, item 3): `Int.checkedAdd`, `checkedSub`
-  and `checkedMul` give an `option`; `saturatingAdd`, `saturatingSub` and `saturatingMul` stop at
-  the type's bounds; `popCount`, `leadingZeros`, `trailingZeros`, `rotateLeft`, `rotateRight` and `byteSwap`
-  are the bit operations, on `int` and every sized integer, an instruction each where the target
-  has one (`CLZ`, ARM's saturating `QADD`), on the chips too.
 - `Threading.Alt`: Concurrent ML's events for tasks, on one event loop, as F#'s Hopac has them.
   `Alt.choose` commits exactly one branch and takes the others back, `withNack` tells the
   branches that lost, `guard` builds an event at each sync, and `Ch` and `Mailbox` are its

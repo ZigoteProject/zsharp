@@ -51,7 +51,7 @@ Both versions print the same result.
 | isort | 1.04 | **1.00** | **0.97** | **0.90** |
 | pipeline | 1.26 | **1.00** | 1.48 | 1.28 |
 
-`firq15` at `-O2` executes as many instructions as C on both chips: the `q15` multiply-add is a 32-bit product, a shift and a saturation, as C's is, and loop versioning proves the taps' and samples' bounds once per loop. At `-Os` the versioning is off for a loop body over 40 Core nodes (the inlined multiply-add is one), so every tap pays two bounds checks and a checked subtraction: 1.43 and 1.49. (`firq15` is not in the bitcode table below: it was added after that measurement.)
+`firq15` at `-O2` executes 1.05 times C's instructions on the M4 and 1.01 on the M0+: the `q15` multiply-add is a 32-bit product, a shift and a saturation, as C's is, and loop versioning proves the taps' and samples' bounds once per loop. At `-Os` the versioning is off for a loop body over 40 Core nodes (the inlined multiply-add is one), so every tap pays two bounds checks and a checked subtraction: 1.43 and 1.49. (`firq15` is not in the bitcode table below: it was added after that measurement.)
 | tokens | 1.39 | 1.25 | 2.86 | 2.52 |
 
 **Flash, bytes** (Z# / C, including the shared runtime):

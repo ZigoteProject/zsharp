@@ -387,7 +387,7 @@ first part, so the parts weren't the same file as the whole.
 reports the best of 3 runs and the peak RSS on 1, 2, 4, 8 and 16 workers. Measured in the dev
 container, on an AMD Ryzen 7 PRO 8840U laptop: 8 cores, 16 threads.
 
-Binary: 394 KB, or 369 KB stripped. It's one self-contained file, with no runtime to install.
+Binary: 357 KB, or 330 KB stripped (built with `--release` on Ubuntu 24.04 and clang 23, 2026-11-05). It's one self-contained file, with no runtime to install.
 
 1,000,000 lines (50 MB):
 

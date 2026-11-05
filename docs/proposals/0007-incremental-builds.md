@@ -3,14 +3,14 @@
 | | |
 |---|---|
 | **Status** | Implemented (phase 9.5; the build server and the Z# compiler's caches in phase 11) |
-| **Decided at** | the phase 9.5 plan ([ROADMAP](../../ROADMAP.md#phase-95-incremental-builds-and-threads)) |
+| **Decided at** | the phase 9.5 plan ([ROADMAP](../../ROADMAP.md#phase-95-incremental-builds-and-threads-)) |
 | **Builds** | phase 9.5 |
 | **Rests on** | decisions 27 (source packages, checked modules cached), 32 (editor support through `zs lsp` and `zs mcp`) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §9](../../DESIGN.md#9-compiler) |
 | **Related** | [0001 type providers](0001-type-providers.md) (a provided module is a module here), [0019 the syntax tree](0019-syntax-tree.md), [0020 the compiler in Z#](0020-self-hosting.md) (carries this design over) |
 
 - [x] Approved in principle
 - [ ] Discussion
-- [x] Implementation (in progress; this document records the design as the working tree builds it)
+- [x] Implementation (phase 9.5; the build server and the Z# compiler's caches in phase 11)
 
 ## Summary
 

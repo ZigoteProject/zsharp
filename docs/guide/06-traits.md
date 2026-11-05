@@ -216,4 +216,4 @@ let main () =
 [name; age; admin] [Banned]
 ```
 
-Core's `Text.Json` (`lib/core/Text/Json.zs`) has a fuller example: `[<Derive(Json)>]`, a JSON encoder and decoder written as two derives and a group of them. `Binary` (`lib/core/Binary.zs`) is another: `[<Derive(Binary)>]` writes a value as compact bytes and reads it back (`Binary.toBytes`, `Binary.ofBytes`), for a cache or a message between processes.
+Core's `Text.Json` (`lib/core/Text/Json.zs`) has a fuller example: `[<Derive(Json)>]`, a JSON encoder and decoder written as two derives and a group of them. `Binary` (`lib/core/Binary.zs`) is another: `[<Derive(Binary)>]` writes a value as compact bytes and reads it back (`Binary.toBytes`, `Binary.ofBytes`), for a cache or a message between processes. `Arbitrary` (`lib/core/Testing.zs`) is a third: `[<Derive(Arbitrary)>]` gives a record or union the generator a property test draws its cases from ([Tools](10-tools.md#properties)): it picks a union's case from `Shape.cases`, the list of its cases a derive gets with no value in hand (each one's name, index, field count and rank), and builds it with `Shape.buildCase`.

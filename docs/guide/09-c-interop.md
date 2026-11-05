@@ -39,6 +39,8 @@ let main () =
 hello has 5 letters; abs -5 = 5
 ```
 
+**In a module:** an `extern` declared in a module is named through it too, `Libc.abs` for one in `module Libc =`, as an `import c` module's are (`Ray.InitWindow`). A C function is one name in the whole program, so it's also reachable bare.
+
 ## import c
 
 **Importing a header:** `import c "header.h"` reads a C header with clang and declares everything it can.
@@ -99,6 +101,8 @@ extern vec_length : Vec2 -> f32     // float vec_length(Vec2 v);
 - **Out of registers:** on x86-64, a struct whose parts don't all fit in the registers left goes on the stack whole, and the arguments after it still take the registers left, as C does.
 
 `tests/cimport/abi.zs` checks every shape, unions included, on x86-64, aarch64, the Cortex-M chips and WebAssembly.
+
+A one-case union over a number ([Data](03-data.md#unions)) is laid out as the number, but isn't a C type yet: a `[<CLayout>]` record can't hold one (`type UserId cannot cross the C boundary`).
 
 **Checking a layout:** `sizeof<T>`, `alignof<T>` and `offsetof<T> "field"` are `int` constants for the target the build is for, a `[<CLayout>]` type's as C lays it out. A top-level `assert` on constants is checked when compiling, so a record that drifts from its C struct stops the build instead of corrupting memory at a call:
 
@@ -236,6 +240,7 @@ cc -shared host.c -Wl,--whole-archive libgeo.a -Wl,--no-whole-archive -lm -o lib
 - An exported function can't be generic.
 - Its parameters and result must be C types, or Z# objects as handles (below).
 - C passes strings in as `cstr`, and `String.ofCStr` copies one into a Z# string.
+- A library has no startup, so its top-level values are constants: a table, a record or a tree of union cases of constants is a static object in it. One computed at startup is an error: `top-level value 'ages' is computed at startup, which a library doesn't have; make it a constant (a literal table, record or union of constants is one) or a function`.
 
 ### Handles
 
@@ -266,7 +271,7 @@ zs_release(bigger);
 
 `tests/chandle` builds a tree and keeps a closure from C, and valgrind checks that everything is freed.
 
-**Panics:** a panic in the library ends the whole program, C side included. So report the errors a caller can handle as a result the C side can check, and keep panics for bugs. The header declares a hook that runs before the program stops, to log or save state:
+**Panics:** a panic in the library ends the whole program, C side included. So report the errors a caller can handle as a result the C side can check, and keep panics for bugs. A library leaves its host's signals alone, so a stack overflow there is a SIGSEGV, as in C, not a panic. The header declares a hook that runs before the program stops, to log or save state:
 
 ```c
 static void on_panic(const char *message) {

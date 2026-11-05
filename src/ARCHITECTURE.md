@@ -4,10 +4,11 @@ The compiler written in Z# (phase 11, [proposal 0020](../docs/proposals/0020-sel
 decisions 65 and 73–79 in [DESIGN §13](../DESIGN.md#13-decisions)). This document is the map of
 `src/`: its modules, what flows between them, where each piece of work runs, the passes and
 what each optimizes, and how the compiler keeps itself fast. The language it compiles is
-[DESIGN.md](../DESIGN.md); when it is built, [ROADMAP.md](../ROADMAP.md#phase-11-self-hosting).
+[DESIGN.md](../DESIGN.md); when it is built, [ROADMAP.md](../ROADMAP.md#phase-11-self-hosting-).
 The tables' line counts are the plan's estimates from the F# files each module replaced
 (`wc -l src/*.fs`: 23,700 at `v0.5`); the *As built* notes say where the code went another way,
-and §2's totals are what `src/` is today (31,250 lines of Z# on 2026-11-01, 0.6.2).
+and §2's totals are what `src/` is today (36,559 lines of Z# on 2026-11-05, for 0.7.0;
+31,250 at 0.6.2).
 
 ## 1. Shape
 
@@ -35,13 +36,21 @@ and §2's totals are what `src/` is today (31,250 lines of Z# on 2026-11-01, 0.6
 
 ## 2. Modules
 
-Z# modules form a DAG, so the directories below are in dependency order: a module uses only
-what is above it. As built (2026-11-01): `Diag/` 97 lines, `Syntax/` 5,606, `Types/` 1,320,
-`Infer/` 6,896, `Core/` 704, `Opt/` 4,477, `Gen/` 5,765, `Build/` 4,062, `Lsp/` 1,415, and
-`Main`, `Commands` and `Server` 908: 31,250 in all, against the plan's 20,000. Most of the
-growth is phase 12's: `Opt/NoAlloc` (360), `Gen/Debug`, `Build/DocTest`, `Infer/Snapshot` (the
-cache's interface), the layout facts, C unions, `[<Bits>]` and interrupt handlers in `Infer` and
-`Gen`.
+Z# modules form a DAG, so the directories below are in dependency order: a module uses only what is
+above it. As built (2026-11-05, 0.7.0; counted by
+`find src -name '*.zs' | xargs wc -l`, each directory's files summed): `Diag/` 97 lines, `Syntax/`
+5,726, `Types/` 1,360, `Infer/` 7,141, `Core/` 873, `Opt/` 5,002, `Gen/` 6,488, `Build/` 4,655,
+`Lsp/` 1,508, `Provide/` 1,844, and `Main`, `Commands` and `Server` 1,865: 36,559 in all, against
+the plan's 20,000. At 0.6.2 (2026-10-30) it was 31,250, most of the growth past the plan phase 12's:
+`Opt/NoAlloc` (360), `Gen/Debug`, `Build/DocTest`, `Infer/Snapshot` (the cache's interface), the
+layout facts, C unions, `[<Bits>]` and interrupt handlers in `Infer` and `Gen`. 0.7 added 5,309:
+`Provide/` (1,844, the type providers), `Commands` (950: `zs bench`, `zs fuzz`, `zs test`'s
+`--coverage`, `--stress` and `--target` and its replays of a property's failing case, `zs add`,
+`remove`, `tree` and `vendor`, workspaces), `Gen/` (723: constants in flash, placement, coverage's
+counters, debug info for every value, `Int`'s operations), `Build/` (593: workspaces, the lock's
+hashes, vendoring, providers' modules, coverage), `Opt/` (525: constant folding, `Literals`, Buffer
+writes in `NoAlloc` and `Rc`, `use` under effects) and `Infer/` (245); the other directories less
+than 200 each.
 
 ### 2.1 `Diag/`: diagnostics
 
@@ -63,6 +72,8 @@ cache's interface), the layout facts, C unions, `[<Bits>]` and interrupt handler
 | `Ast` | 200 | the AST the checker reads, in the F# compiler's shapes (`zs ast` prints it): `Expr`, `Pat`, `Decl`, `SType`, each node with its place, a token's index in the tree (-1: none of its own, the nearest one around it is meant). `Literal` turns literal tokens into values. |
 | `Format` | 400 | `zs fmt` on the tree: reflow to 100 columns, comments kept, ranges, `--stdin`. Replaces `Format.fs`'s token pass. |
 
+*In 0.7:* `Parser` reads F#'s list and array ranges (`[ a .. step .. b ]`, a `Range` node: the list expression over the range), typed tuple parameters (`let f (a: int, b: string)`, one parameter of the tuple type), `module X = import <provider> …` and the bare provider import (`Ast.Import`), and a negative integer pattern (`PNegInt`); it marks a `use`'s scope (`Native.useScope`) for `Evidence`. `Source` drops a byte order mark. The compiler recurses as deep as a program nests, so `host.c` asks for 256 MB of stack where the hard limit allows (`tests/stress.sh`: a 20,000-element list, 10,000 nested parentheses, and deeper than any stack a `panic: stack overflow`).
+
 ### 2.3 `Types/`: types, unification, traits
 
 | Module | Lines | What it is |
@@ -74,6 +85,8 @@ cache's interface), the layout facts, C unions, `[<Bits>]` and interrupt handler
 | `Fail` | 30 | the checker's two effects: `Fails` (what it can't go on from in a declaration, with a place when known) and `Mismatched` (unification's one way out: the types differ, or one lacks an impl). |
 | `Unify` | 220 | `unify v hooks c a b`: kinds met, occurs check, rows, units as Kennedy's; what it asks of the checker (a user impl, a trait's other parameters) through `Hooks<'c>`, which take the checker's context as an argument rather than capturing it. |
 | `Repr` | 145 | how values are held: `needsRc`, plain unions, `unionRep` (plain, niche, boxed), `cellShape`, and `shareBlocker` (what keeps a type from crossing threads). |
+
+*In 0.7:* `Vars` follows a chain of variables bound to variables (an array literal's elements, each unified with the one before) once, binding each on it straight to the end, trailed so a trial undoes that too; `Repr` holds a plain union of one case with fields without a tag (decision 66); `Ty` says what a negative literal may be (a signed integer); `Fail` has `reportLine`, which reports a failure at a token's line with no column and goes on (`failLine` stops).
 
 ### 2.4 `Infer/`: checking, to Core
 
@@ -97,6 +110,16 @@ parameter's default) is *foreign*: it records no hovers and its places aren't us
 record literal keeps the record it built where it's defined (keyed by the constant and the
 literal's first field name).
 
+*In 0.7:* `Decls` reports a member that can't be declared (declared twice, or named as a field)
+and leaves it out, the type's other members standing (`tests/err_member_twice.zs`); makes a boxed
+union case of constants a value, which the image holds; checks `[<Section>]` and `[<Align>]` (what
+a value may be, a section's name, `.noinit`'s rules; `tests/err_placement.zs`); ranks a union's
+cases for `Shape.cases`; and makes a chip's test entry run every test through Core's
+`Testing.runAll`. `Exprs` makes a negative integer literal one signed constant, names an extern
+declared in module `M` as `M.f`, and resolves a record field's default in the record's declaring
+module. `Derive` gives a derive `Shape.cases`, a union's cases without a value, which `Arbitrary`
+draws from.
+
 ### 2.5 `Build/`'s checking half
 
 | Module | Lines | What it is |
@@ -114,6 +137,8 @@ literal's first field name).
 | `Hash` | 100 | the content hash of a function's Core and of a module's IR (`zsharp/xxhash`): names, cache keys, the byte-identical test. |
 | `Check` | 450 | the IR checks between passes in test builds (`--check-ir`): every expression's type matches its use, every owned variable consumed once on every path after `Rc`, no type variable after `Mono`, every join point reached with the same types. A failure is an internal error naming the pass, the function and the node. |
 
+*As built:* `Ir` (Core, its printer for `ZS_DUMP_CORE`, node numbers and free variables), `Program` (a checked program as the passes take it) and `Check` (`--check-ir`); the hashes are the `xxhash` package's (`Xxhash.hex`). *In 0.7:* `Ir` says which top-level values the image holds (`staticElem`: a literal, its negation or conversion, and arrays, lists, records, tuples and union cases of those, nested; 0014 items 1 and 3) and what `[<Section>]` or `[<Align>]` can place (`placedInit`: such a constant, or `Buffer.create n x` or `ref x` of constants; item 12), with the boards' scripts' section kinds (`.noinit`, `.data`, `.bss`, flash's).
+
 ### 2.7 `Opt/`: the passes
 
 | Module | Lines | What it is |
@@ -130,6 +155,8 @@ literal's first field name).
 
 *As built (step 4, first part):* `Mono` (with the share check and fusion), `Inline`, `Evidence`, `Lift` and `Rc` are the F# compiler's ported, one function at a time and no `Cx` yet: each pass takes and returns a list of `Core.Program.MFun`, and a pass's error is the `Stops` effect (`Evidence`'s collected and stopped at the end, so its own code stays pure). `Build/Compile.lower` runs them in the F# compiler's order. Their Core is the F# compiler's (`ZS_NO_SIMPLIFY=1 ZS_NO_DECIDE=1`): the same text after `Rc` on the 101 programs with an `.out` that don't import C (`ZS_DUMP_CORE='*'` in both compilers; `ZS_DUMP_STAGE=mono|inline|effects|lift` shows an earlier stage's). *Second part:* `Simplify` (without the F# compiler's set of finished nodes: moved code is simplified again) and `Decide` ported; a Core node has an `id` (`Ir.number`), so `Rc` caches free variables by node (`cachedFreeVars`), 3.5 times faster on the compiler. *Step 6:* `Lift`, `Simplify`, `Decide` and `Rc` run each function on the pool (`Array.Parallel.map`), each job with tables of its own (a `Vars`, its counters), `Rc` across the modules too, and `Gen` each LLVM module; borrowing's rounds stay on the driving thread, since each reads every function's code.
 
+*In 0.7:* `Simplify` folds constants (0015 step 4): arithmetic, comparisons, bit operations, conversions and `Math.round` and `sqrt` on literals, as the code computes them (an integer that wouldn't fit its type left to overflow at run time, `f32` rounded at each step, a NaN not folded), and a `let` of a float literal goes into its uses (`tests/fold.zs`, `tests/fold_edges.zs`). `Literals` (new, 60 lines) says whether a pattern's integer literal is a value of its type (`| 256` at `u8` isn't), so `Simplify` and `Decide` leave a match holding one to the code's comparison at the type's width. `NoAlloc` (444 lines) takes a `Buffer`'s element write as no allocation: the element it overwrites is a drop, and so is the Buffer where it isn't shown held elsewhere on every path (`tests/noalloc.zs`, `tests/err_noalloc_buffer*.zs`). `Rc` lends a Buffer to a write as to a read, gives the call in `x <- f … x …` x's own reference when the other arguments only read x, and lends a pattern variable to an operation only when nothing else in it can free what it was matched from (`tests/buffer_lend.zs`). `Inline` finds cycles of calls with Tarjan's components on a stack of its own and caps a copy at four times a small body. `Evidence` has a stop dispose the `use` scopes it passes over, newest first (track S, item 10; `tests/effects/use.zs`).
+
 ### 2.8 `Emit/`: Core to LLVM IR
 
 | Module | Lines | What it is |
@@ -142,7 +169,9 @@ literal's first field name).
 | `Simd` | 400 | vector types, lane operations, shuffles, masks, the target intrinsics, `[<Multiversion>]` dispatchers. |
 | `Debug` | 400 | DWARF: lines, locals, unions as variant parts, Z# names in symbols. |
 
-*As built:* `Gen/` (`Prelude`, `Emit`, `Layout`, `Helpers`, `Debug`, `Fun`, `Module`, 3,500 lines): the F# `Codegen` ported, its IR byte for byte the F# compiler's on every program of the suite (the module's text compared with `--emit-llvm`, with and without `Decide`).
+*As built:* `Gen/` (`Prelude`, `Emit`, `Layout`, `Helpers`, `Debug`, `Fun`, `Module`, 3,500 lines when ported, 6,488 now): the F# `Codegen` ported, its IR byte for byte the F# compiler's on every program of the suite (the module's text compared with `--emit-llvm`, with and without `Decide`).
+
+*In 0.7:* `Module` writes the constants the image holds (0014 items 1 and 3): tables, a list's cells and boxed cases as static objects (count 0), a record, tuple or plain union into its value's global, with no startup code; and placement (item 12): a placed value's global in its section and aligned, a placed `Buffer`'s or `ref`'s storage static, a section a chip's reset doesn't load copied from flash at startup, a `.noinit` ref's header written then, a placed Buffer's slots dropped at exit (`tests/placement.zs`, `tests/mcu/noinit.zs`). With `--coverage`, `Module` adds a counter per line of the covered files and a table the runtime writes at exit (`<program>.zscov`), and `Fun` adds one to a line's counter as its code runs, atomically. `Debug` gives every value a DWARF type (a heap value as its type's name over a pointer to its object, a type that holds itself described once; `tests/debug/gdb_heap.sh`), but unions aren't DWARF's variant parts yet and there are no pretty-printers (the rest of track D's item 1); `Layout` holds a one-case union with fields without a tag (decision 66); `Fun` makes `Int`'s checked, saturating and bit operations LLVM's intrinsics; `Helpers` makes a drop's last call a plain call on the Cortex-M0+, where Thumb1 can't tail-call another function.
 
 ### 2.9 `CImport/`: C headers
 
@@ -152,7 +181,7 @@ literal's first field name).
 | `CTypes` | 300 | C declarations to Z# types: structs as `[<CLayout>]` records, unions as `[<CLayout>]` unions, enums, function pointers as `fnptr`, typedefs. |
 | `Macros` | 100 | object-like macros through `clang_tokenize`: constants, no regular expressions. |
 
-*As built:* one module, `Build/CImport` (650 lines): the translation unit's cursors through `zsharp/libclang`, C types as strings as the F# compiler read clang's JSON, a macro's body from `clang_tokenize` (no regular expressions); its declarations are the F# compiler's on every header in the repository (`.zs-cache/cimport`'s JSON the same). `zsharp/libclang` opens libclang at its first call (`dlopen`), so the compiler starts where libclang isn't installed and reads the saved import there.
+*As built:* one module, `Build/CImport` (650 lines when ported, 693 now): the translation unit's cursors through `zsharp/libclang`, C types as strings as the F# compiler read clang's JSON, a macro's body from `clang_tokenize` (no regular expressions); its declarations are the F# compiler's on every header in the repository (`.zs-cache/cimport`'s JSON the same). `zsharp/libclang` opens libclang at its first call (`dlopen`), so the compiler starts where libclang isn't installed and reads the saved import there.
 
 ### 2.10 `Build/`: from a project to a binary
 
@@ -170,6 +199,8 @@ literal's first field name).
 
 *As built:* `Options`, `Project` (with `Package`), `Tools` (processes, the cache's paths and keys, whole-file writes), `Modules` (loading, packages, `import c`), `Check` (the checked modules' cache: `Infer/Snapshot`'s `[<Derive(Binary)>]` interface, keyed as the F# compiler's), `Units` (the build by module: worlds, ABIs, the module and object caches, clang in parallel, ThinLTO), `Compile` (the one-module builds: a library, another target, a microcontroller, `--emit-llvm`, `-g`), `Make` (which of the two) and, at the top, `Server` (`zs server` on `Net.Unix`, a request's build run in the server with its output captured). `tests/cache.sh` gives the F# compiler's transcript line for line.
 
+*In 0.7:* `Project` has workspaces (a member's root is the `zs.toml` above it that lists it, with one lock, its checkouts and `vendor/`), the lock's hashes of each checkout's files, `zs vendor` and `--offline`; `Modules` loads providers' modules (§2.11), keeps a package's `internal/` modules to its own files, and names a dependency that uses Std where a chip's build starts; `Options` has `--coverage`, `--offline`, `zs fuzz`'s build and `stepping` (`-g` alone at `-O0`, but on the Cortex-M0+ and wasm32); `Compile` keeps a value that folds to a constant static in a build of the code as written (`-g`, `--coverage`), counts the covered files' functions no entry reaches as never run, and takes a program off the pool only when a SIMD vector can be in a heap object (`wideVectors`); `Make` builds a program with a `[<NoAlloc>]` function or placed values as one module; `Tools.runSplit` reads a process's output and errors apart, so libFuzzer's or a benchmark's log can't block it.
+
 ### 2.11 `Tools/`: the commands around the compiler
 
 | Module | Lines | What it is |
@@ -181,7 +212,9 @@ literal's first field name).
 | `Test` | 400 | `zs test`: finds `[<Tests>]` values ([0009](../docs/proposals/0009-tests-as-values.md)), builds the test binary, runs each test in its own process with a timeout, `--update` for inline expectations through the tree. |
 | `Main` | 400 | the commands, flags to `Options`, exit codes. |
 
-*As built:* `Lsp/Rpc` (framing, and JSON written as System.Text.Json wrote it, so the F# compiler's transcripts hold), `Lsp/Server`, `Lsp/Mcp`, `Build/Doc` (`docs/reference` byte for byte), `Commands` (build, run, test with `--update`, new, fetch, update, check) and `Main` (with protocol detection when started without arguments). `Provide/` (0001, track P's first step): `JsonProvider` (a document's shape unified over every occurrence, to records with the `Json` derive), `CsvProvider` (columns typed from every row, a module with its own cell reader so it needs Core only), `SqlProvider` (records from `CREATE TABLE`s), `SvdProvider` (a module per peripheral of `[<Bits>]` registers, over `Xml`, a small reader), `Names` (fields in backticks where a key isn't a name, types in PascalCase) and `Command` (`zs provide`, and `provide` for the loader: zs's own in-process, else `zs-provider-<name>` on PATH as a process). `Build/Modules.provided` turns `module X = import …` and a bare `import <provider> …` into a module file in `.zs-cache/providers/<importing module>/` and a dependency of the file (the bare form an `open` of a hidden module), after `import c`'s expansion and before the file's uses are resolved; the module's inputs are hashed beside it, so a provider that isn't here builds from the last output with a `stale-input` warning, and `Lsp/Server` has the client watch them.
+*As built:* `Lsp/Rpc` (framing, and JSON written as System.Text.Json wrote it, so the F# compiler's transcripts hold), `Lsp/Server`, `Lsp/Mcp`, `Build/Doc` (`docs/reference` byte for byte), `Commands` (build, run, test with `--update`, new, fetch, update, check) and `Main` (with protocol detection when started without arguments). `Provide/` (0001, track P, 0.7): `JsonProvider` (a document's shape unified over every occurrence, to records with the `Json` derive), `CsvProvider` (columns typed from every row, a module with its own cell reader so it needs Core only), `SqlProvider` (records from `CREATE TABLE`s, and typed queries), `CProvider` (`import c` on the protocol: `Build/CImport`'s declarations printed as Z#), `SvdProvider` (a module per peripheral of `[<Bits>]` registers, over `Xml`, a small reader), `Names` (fields in backticks where a key isn't a name, types in PascalCase) and `Command` (`zs provide`, and `provide` for the loader: zs's own in-process, else a dependency's `[provider]` program, which `Build/Modules` builds into `.zs-cache/providers/bin`, else `zs-provider-<name>` on PATH, each as a process). `Build/Modules.provided` turns `module X = import …` and a bare `import <provider> …` into a module file in `.zs-cache/providers/<importing module>/` and a dependency of the file (the bare form an `open` of a hidden module), after `import c`'s expansion and before the file's uses are resolved; the module's inputs are hashed beside it, so a provider that isn't here builds from the last output with a `stale-input` warning, and `Lsp/Server` has the client watch them.
+
+*In 0.7:* `Commands` grew from 488 lines to 1,438: `zs bench` (each benchmark timed in a process of its own, the median and its interval from the order statistics, the last results in `.zs-cache/bench`), `zs fuzz` (the tests built with libFuzzer and the sanitizers, a crash shrunk by replays and saved), `zs test`'s `--coverage` (the report and `coverage.lcov`), `--stress` and `--target` (the tests in one image under QEMU or on the board), and a property's case that panics shrunk by replays of the test binary, saved in `.zs-cache/failures` and replayed first; `zs add`, `remove`, `tree` and `vendor`; and the commands over a workspace's members. `Lsp/Mcp` has `definition` and `explain` (`tests/mcp/session.sh`).
 
 ## 3. What flows between them
 
@@ -243,8 +276,9 @@ Nothing else: no `Task` on an effect (decision 72), no handlers of the compiler'
 
 Every optimization in [DESIGN §9.1](../DESIGN.md#91-optimization-strategy) is carried over; this
 table says where. The rewrite adds none until gen 2 equals gen 3: `.same-ir` tests and
-`bench/host`'s contract pin the output while the compiler changes under it. New ones (track S's
-generator fusion, item 9; `use` under effects, item 10) come after.
+`bench/host`'s contract pin the output while the compiler changes under it. New ones came after
+it, in 0.7: constant folding in `Simplify` (0015 step 4) and `use` under effects in `Evidence`
+(track S's item 10); track S's generator fusion (item 9) is still to come.
 
 | Pass | In | Out | Optimizes | `Check` verifies after it |
 |---|---|---|---|---|
@@ -252,12 +286,12 @@ generator fusion, item 9; `use` under effects, item 10) come after.
 | `Mono` | Core | Core, monomorphic | fusion: `map`/`filter` from `init`, a list or an array into `sum`/`fold`/`length`/`iter` as one loop (pure lambdas, decision 36); trait calls to known functions; units erased; a pure instance of an effect-polymorphic function under the name it always had | no type variable, no trait call, no row variable |
 | `Share` | Core | Core, with the Share marks | the top-level values a thread may reach marked for startup, and only those | each `share<F>` reaches Share values only |
 | `Inline` | Core | Core | uncurrying (a function whose body is a lambda takes its parameters; a closure applied to its arity calls its full entry); inlining of small functions, `keep` as a parameter | arities match the calls |
-| `Simplify` | Core | Core | known constructors (a match on a value built or bound in sight takes its case); case of case with join points; a `let`-bound lambda only called is applied in place; so an inlined `Option.map` builds no `option` | no unreachable case left by a known constructor |
+| `Simplify` | Core | Core | known constructors (a match on a value built or bound in sight takes its case); case of case with join points; a `let`-bound lambda only called is applied in place; so an inlined `Option.map` builds no `option`; constants folded on literals as the code would compute them (0.7) | no unreachable case left by a known constructor |
 | `Evidence` | Core with `handle`/`perform` | Core without them | a clause that resumes last or stops runs where the operation is performed, nothing captured; other paths yield through closures per waiting function; loops with yielding calls run from a driver; pure functions untouched, so their IR is byte-identical to a compiler without effects | no `perform` left; every function's frames match its row |
 | `Decide` | Core with patterns | Core with tag tests and join points | decision trees: no value tested twice, shared bodies as join points reuse tokens pass through | every join point reached with the same types |
 | `Lift` | Core with lambdas | Core with closures | closure conversion; a top-level function's closure goes through a function of its maker's module, so borrowing is per function whatever makes closures of it | no free variable |
 | `Rc` | Core | Core with `dup`, `drop`, `reuse`, `isUnique` | Perceus: ownership and borrowing (summaries in the ABI across modules), moves out of mutables, drop specialization (fields kept out of a dying cell), reuse of a dying cell for a new one of the same size, copy-on-write checks, re-matching | every owned variable consumed once on every path; a borrowed one never dropped |
-| `Codegen` | Core | LLVM IR | representation (`Layout`): unions as plain values, static cells, `option` of a pointer as the pointer, the one-word header and the inlined pool; overflow through `llvm.*.with.overflow`; `!range` on lengths, `inbounds nuw`; copy-on-write checks hoisted out of loops; loop versioning for innermost call-free loops; `musttail` self-calls; `print` of an interpolation as pieces | none: clang parses the module (`-O0` in a debug build catches a malformed one at once) |
+| `Codegen` | Core | LLVM IR | representation (`Layout`): unions as plain values, static cells, `option` of a pointer as the pointer, the one-word header and the inlined pool; overflow through `llvm.*.with.overflow`; `!range` on lengths, `inbounds nuw`; copy-on-write checks hoisted out of loops; loop versioning for innermost call-free loops; `musttail` self-calls; `print` of an interpolation as pieces; top-level constants in the image, with no startup code (0.7) | none: clang parses the module (`-O0` in a debug build catches a malformed one at once) |
 | `Clang`, link | IR | binary | `-O2`/`-Os` per module, ThinLTO with the runtime, PGO, `--cpu`, `[<Target>]`, `[<Multiversion>]` | `tests/*.same-ir` and `bench/host`'s instruction counts |
 
 - **Why this order:** `Mono` first so every later pass sees concrete types and known calls; `Inline` and `Simplify` before `Evidence` so handlers are resolved on simplified code and a `Throw.catch` of a lambda is applied in place (no closure); `Decide` after `Simplify` so known constructors have removed what they can; `Lift` after `Evidence` since yielding makes closures; `Rc` last, on the final shape, so every reuse and borrow is decided on what runs.
@@ -298,6 +332,7 @@ itself in no more than the gen 1 build takes; peak memory at most the F# compile
 - **From `Typed` and the `Tree`:** hover (types with rows, constraints, doc comments), completion, definition and references (resolved names per node id), rename and code actions (edits on the lossless tree, so comments and layout survive), inlay hints (parameter types, inferred effects before `=`), document symbols, formatting, signature help.
 - **All of a file's errors:** error nodes and the error type, so one mistake doesn't hide the next; sorted; the same list `zs check` prints. *As built:* every failed statement of each declaration, in the file's order (`tests/err_many.zs`; the same from `zs build` and `zs lsp`, `tests/lsp/many.sh`).
 - **`import c` in the editor:** `CImport` runs libclang in the server's process, so a C name has its type in Zed with no build run and no `clang` on PATH; the header's result is cached under its text and flags.
+- **Providers in the editor** (0.7): a check loads a provided module as a build does (`Build/Modules.provided`, zs's own providers in the server's process), and the server has the client watch the providers' inputs, so a changed sample re-checks the documents made from it.
 - **One session, one cache:** the server's session holds the 512 most recent checked results and shares `~/.cache/zs/checked` with the CLI and the build server, so a build after editing restores what the editor checked.
 
 ## 8. Testing the compiler
@@ -307,6 +342,7 @@ itself in no more than the gen 1 build takes; peak memory at most the F# compile
 - **The compiler's own tests** are values ([0009](../docs/proposals/0009-tests-as-values.md)) in `src/tests/` (to come): a session per test, in-process, under `Parallel.for`; the lexer and parser on every `.zs` file in the repository (a parse, a print of the tree, byte-identical to the source); `Unify` on tables of pairs; `attempt`'s rollback; `Decide` against `ZS_NO_DECIDE=1`; `Binary` round trips of `Checked`.
 - **Determinism:** `tests/cache.sh` across `ZS_WORKERS=1` and the cores; `tests/bootstrap.sh` comparing gen 2 and gen 3 and naming the first differing function from `ZS_DUMP_IR` when they differ.
 - **Sanitizers and valgrind:** `./test.sh --valgrind` and `--sanitize=thread` over the parallel passes, as over the parallel tests today; `ZS_LEAKCHECK=1` on the compiler building itself.
+- **Broken, long and deep programs** (0.7): `tests/fuzz.sh` gives `zs check` and `zs fmt --stdin` 300 programs broken at random from the tests and examples, each to be errors, never a crash, a panic or a hang (seeded: seed 1 unless `ZS_FUZZ_SEED` picks another; the 0.7 plan's seed per run isn't in `./test.sh` yet); `tests/stress.sh` builds programs as long and deep as generated code makes them, and a nesting deeper than any stack must end in the compiler's `panic: stack overflow`. `./test.sh --sanitize` and `--release` build the suite's programs under the address and undefined-behaviour sanitizers, and optimized.
 - **Differential, while both compilers existed:** `tests/differential.sh` built every test program with both and compared the `.out` and `.err` results and the benchmarks' instruction counts; the IR itself was allowed to differ (the rewrite lowers differently) until the F# compiler went, with `v0.6`. Since then the contract is the suite, `tests/bootstrap.sh` and `bench/host`'s instruction counts against `baseline.txt`.
 
 ## 9. Order and what is still measured

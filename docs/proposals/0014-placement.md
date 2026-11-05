@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved in principle. Built: the heap (track M item 7, phase 12: blocks over 256 bytes reused, `[target.<chip>] heap` in `zs.toml`); constants in flash (item 3, 2026-11-04: arrays, lists, records, tuples and unions of constants, nested; `tests/static.zs`). `[<Section>]` and `[<Align>]` on values (decision 69, item 12, 2026-11-04: `tests/placement.zs`, `tests/mcu/noinit.zs`). Left: `[<Align>]` on a type |
+| **Status** | Implemented in part. Built: the heap (track M item 7, phase 12: blocks over 256 bytes reused, `[target.<chip>] heap` in `zs.toml`); and in 0.7 (2026-11-04) constants in flash (item 3: arrays, lists, records, tuples and unions of constants, nested, in a library too; `tests/static.zs`, `tests/mcu/static.zs`, `tests/libstatic.zs`) and `[<Section>]` and `[<Align>]` on top-level values (decision 69, item 12: a constant table, `Buffer.create n x` or `ref x`; `tests/placement.zs`, `tests/err_placement.zs`, `tests/mcu/noinit.zs`, `tests/mcu/sections.zs`). On macOS and Windows the section's name is dropped and the alignment kept (Where it applies, below). Left, after 0.7: `[<Align>]` on a type |
 | **Decided at** | track M's plan ([ROADMAP](../../ROADMAP.md#microcontrollers-m)) for items 3 and 7; the third design review ([ROADMAP](../../ROADMAP.md#third-design-review-)) for item 12 |
 | **Builds** | track M: items 3 and 7 next, item 12 after phase 11 |
 | **Rests on** | decisions 2 (Perceus), 7 (arrays are values, `Buffer` is shared), 8 (static cells with count 0), 26 (`zig cc`) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §5.1](../../DESIGN.md#51-representation), [§5.2](../../DESIGN.md#52-perceus-reference-counting), [§10](../../DESIGN.md#10-targets) |
@@ -10,7 +10,7 @@
 
 - [x] Approved in principle (constants in flash, the heap)
 - [x] Approved in principle (`[<Section>]`, `[<Align>]`)
-- [ ] Implementation
+- [x] Implementation (the heap in phase 12; constants in flash and the placement of values in 0.7)
 
 ## Summary
 
@@ -98,7 +98,7 @@ stack = "4K"       # the board's default when absent (microbit 4K, mps2-an386 32
 - **Too much:** `cortex-m.ld`'s `ASSERT` fails when data, bss, the heap and the stack don't fit the RAM; the driver turns the linker's line into its own, with the numbers (*Diagnostics*).
 - **What to set:** the exit report's `#zs heap_peak=… heap_reserved=… stack=…` line (`report`, `rt-embedded.c` ~345) is the measurement; `heap` a little above `heap_reserved`, and `stack` above `stack`, is the setting.
 
-### `[<Section>]` *(after phase 11)*
+### `[<Section>]` *(built in 0.7, for values)*
 
 - **Form:** `[<Section ".noinit">] let v = e` on a top-level value, with `e` one of: `Buffer.create n x` with `n` and `x` constants; `ref x` with `x` a constant; a constant.
 - **Meaning:** the value's object is a static object with count 0 (never freed, never unique) in the named section, instead of a heap object made at startup. For a `Buffer` or a `ref` it's a `global`, written through as any `Buffer` or `ref` is; for a constant it's the `constant` of the previous section, placed in that section instead of `.rodata`.
@@ -108,7 +108,7 @@ stack = "4K"       # the board's default when absent (microbit 4K, mps2-an386 32
 - **Where it applies:** top-level values only; functions (code in RAM, `.ramfunc`) are in *Unresolved questions*. On hosted ELF targets the name is emitted as given; macOS and Windows ([0022](0022-targets-macos-windows.md)) name sections differently, so the name is dropped there, and the storage is static all the same, which keeps a firmware module building and testing on the host.
 - **With `--no-heap` and `[<NoAlloc>]`** ([0012](0012-interrupts-noalloc-intrinsics.md)): a static object is not an allocation, so a program with no heap at all can have tables, a `.noinit` log and a DMA buffer; the allocation analysis gives such a site the verdict *static*. A `Buffer` in a section is the natural thing to share with an interrupt handler, since `Buffer` is `Share`.
 
-### `[<Align>]` *(after phase 11)*
+### `[<Align>]` *(on values built in 0.7; on a type not yet)*
 
 - **On a value:** `[<Align 32>] let frame = Buffer.create 1536 (u8 0)` aligns the static storage so (`align 32` on the global), with the element data starting at a multiple of it after the header. It applies to the values `[<Section>]` applies to, with or without a section.
 - **On a type:** `[<Align 32>] type Frame = { … }` gives every value of the type that alignment wherever it sits: a stack slot, a field, an array or `Buffer` element (the stride rounds up, as C's `_Alignas` makes it), and a heap cell of a boxed union. `alignof<Frame>` and `sizeof` ([0004](0004-c-layout.md)) say so, and a `[<CLayout>]` record with it matches a struct declared with `_Alignas`.

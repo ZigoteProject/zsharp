@@ -103,6 +103,8 @@ the slow server closed
 gave up after 20 ms
 ```
 
+**Throws inside a task:** a task's body can't perform an effect ([chapter 16](16-effects.md#effect-types)), but it can call `Throw.catch`. A throw that passes a `use` written in a function of its own disposes what it bound, as everywhere ([chapter 16](16-effects.md#typed-exceptions-throw)); one that passes a `use` written inside the `task { }`, a lambda's there included, frees what it bound without disposing it. Put the code that throws, with its `use`s, in a function outside the task.
+
 **Blocking calls:** `Task.blocking (fun () -> …)` runs a function on a helper thread, for a C call that blocks (a database's, say), while the event loop goes on. The function crosses threads, so what it captures must be shareable ([chapter 14](14-parallel.md#what-can-cross-to-another-thread)), as its result must. `File.readAllTextAsync` and `File.writeAllTextAsync` work this way.
 
 ### Choosing between events
@@ -171,7 +173,7 @@ the client gave up
 
 ## Sockets
 
-`Udp` has UDP: `Udp.bind host port` (port 0 for one the system picks, `Udp.port` says which), `Udp.send` and `Udp.sendText` to a host and port, and `Udp.receive`, which gives the bytes and the sender's address and port; `Dns.lookup host` gives a host's addresses, looked up off the loop's thread. `Tcp` has TCP for tasks: `Tcp.listen`, then `Tcp.accept` for each connection; `Tcp.connect`; and `Tcp.read`, `Tcp.write` and `Tcp.writeText`. Each gives a `result`, and `use` closes a connection. An echo server, with a task per connection (the whole program is `examples/echo/server.zs`):
+`Tcp` has TCP for tasks: `Tcp.listen`, then `Tcp.accept` for each connection; `Tcp.connect`; and `Tcp.read`, `Tcp.write` and `Tcp.writeText`. Each gives a `result`, and `use` closes a connection. An echo server, with a task per connection (the whole program is `examples/echo/server.zs`):
 
 ```fsharp
 let rec echo (c: TcpStream) (buf: Buffer<u8>) : Task<unit> =
@@ -200,3 +202,33 @@ let rec accepting (l: TcpListener) (s: Scope) : Task<unit> =
 ```
 
 `return!` last in a task gives the task it names what waits for this one, so `echo` and `accepting` loop with one state machine, not one per round (in a `use`'s scope, `return!` waits, so `c` is closed after `echo`). It holds 10,000 connections in 26 MB, and its memory stays flat under traffic: the same 26,428 KB at every minute of an hour-long soak test (`bench/echo/soak.sh`), through 33.1 million round trips.
+
+`Udp` has UDP: `Udp.bind host port` (port 0 for one the system picks, `Udp.port` says which), `Udp.send` and `Udp.sendText` to a host and port, and `Udp.receive`, which waits for a datagram and gives its length (one longer than the buffer is cut to it) and the sender's address and port. `use` closes a socket. `Dns.lookup host` gives a host's addresses, looked up off the loop's thread (`Task.blocking`), and an empty list for a name that has none:
+
+```zsharp
+let bound () =
+  match Udp.bind "127.0.0.1" 0 with
+  | Ok s -> s
+  | Error e -> panic $"bind: {e}"
+
+let main () =
+  use a = bound ()
+  use b = bound ()
+  let buf = Buffer.create 64 (u8 0)
+  Task.run (task {
+    let! _ = Udp.sendText a "127.0.0.1" (Udp.port b) "ping"
+    let! got = Udp.receive b buf
+    match got with
+    | Ok (n, from, port) -> println $"{String.ofBytes (Buffer.toArray buf).[0..n - 1]} from {from}, a's port: {port = Udp.port a}"
+    | Error e -> println e
+    let! hosts = Dns.lookup "localhost"
+    println $"localhost is this machine: {List.exists (fun h -> h = "127.0.0.1" || h = "::1") hosts}"
+    return ()
+  })
+  0
+```
+
+```text
+ping from 127.0.0.1, a's port: true
+localhost is this machine: true
+```

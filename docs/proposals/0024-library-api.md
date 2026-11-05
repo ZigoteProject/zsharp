@@ -2,15 +2,15 @@
 
 | | |
 |---|---|
-| **Status** | Implemented in part (track S items 2–4 and 6–8): collections, parsing, text functions, format specifiers, time, streams, files, processes and Unix sockets are built, and the integers' checked, saturating and bit operations ISO 8601 parsing, UDP and name lookup (2026-11-04) |
+| **Status** | Implemented in part (track S items 2–4 and 6–8): collections, parsing, `Math`, `Random`, `Bytes`, text functions, `Text.Utf8`, format specifiers, `DateTime` and `utcNow`, streams, files, processes and Unix sockets are built; and in 0.7 (2026-11-04) the integers' checked, saturating and bit operations (`tests/int_ops.zs`, on both chips `tests/mcu/ints.zs`), ISO 8601 parsing as `DateTime.parseIso` and `ofParts` (`tests/datetime.zs`), and UDP and name lookup as `Udp.bind`, `send`, `receive` and `Dns.lookup` (`tests/task/udp.zs`). Left, after 0.7: the time table's `Duration` functions, `DateTime.add`, `diff`, `ofUnixSeconds`, `toUnixSeconds` and the fields, and `Stopwatch.Elapsed`; and `Endpoint` (a datagram's sender is an address and a port) |
 | **Decided at** | track S's plan ([ROADMAP](../../ROADMAP.md#library-s)); the names at the 1.0 freeze review |
-| **Builds** | track S: library, phase 11's "Library (track S)" list first ([ROADMAP](../../ROADMAP.md#phase-11-self-hosting)) |
+| **Builds** | track S: library, phase 11's "Library (track S)" list first ([ROADMAP](../../ROADMAP.md#phase-11-self-hosting-)) |
 | **Rests on** | decisions 3 (`int` is the machine word), 4 (overflow: checked by default, wrapping explicit; saturating added here), 28 (UTF-8 strings), 37 (prelude, Core and Std; .NET module names, F# function names) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §9](../../DESIGN.md#9-compiler) "The library" |
 | **Related** | [0003 spans](0003-spans-and-slices.md) (`Bytes` over spans), [0017 iteration](0017-iteration.md) (the `ofIter` functions), [0023 JSON in Core](0023-json-in-core.md), [0020 self-hosting](0020-self-hosting.md) (what the compiler needs first), [0005 ergonomics](0005-ergonomics.md) (`Map.empty` as a value), [0015 fixed point](0015-fixed-point.md) (the saturating operations at `i16`), [0021 warnings](0021-warnings.md) (`deprecated` is a warning kind), [0022 macOS and Windows](0022-targets-macos-windows.md) (`Path` on Windows), [0016 async on bare metal](0016-async-bare-metal.md) (`Task` in Core), [0012 interrupts](0012-interrupts-noalloc-intrinsics.md) (`Atomic`, `Spsc`), [0009 tests as values](0009-tests-as-values.md) and [0010 properties](0010-properties-and-fuzzing.md) (`Testing`) |
 
 - [x] Approved in principle
 - [ ] Discussion
-- [ ] Implementation (phase 11's list done; `Math`, `Random`, the collections and `Text.Utf8` in phase 12: `Random` in a namespace of its own, `Numerics`, as `DateTime` is in `Time`; `PriorityQueue` a leftist heap, not an array's, since `match dequeue q with Some(x, rest) -> q <- rest` keeps the old queue alive through the call and an array heap would copy at every step; the rest after phase 11)
+- [x] Implementation (phase 11's list done; `Math`, `Random`, the collections and `Text.Utf8` in phase 12: `Random` in a namespace of its own, `Numerics`, as `DateTime` is in `Time`; `PriorityQueue` a leftist heap, not an array's, since `match dequeue q with Some(x, rest) -> q <- rest` keeps the old queue alive through the call and an array heap would copy at every step; the integers' operations, ISO 8601 parsing, UDP and name lookup in 0.7, under the names the status gives; the rest of the time table and `Endpoint` left)
 
 ## Summary
 

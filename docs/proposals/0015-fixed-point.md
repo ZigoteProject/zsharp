@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Implemented (steps 1 to 3, 2026-11-04: one-case unions without a tag, decision 66, `tests/onecase.zs`; `Numerics.Fixed`, `tests/fixedpoint.zs`, `tests/mcu/fixed.zs`); the `fir` benchmark in `q15` (step 5, 2026-11-04: `bench/mcu/firq15.zs` against C in CMSIS-DSP's style, as many instructions as C at `-O2` on both chips, 1.43 and 1.49 at `-Os`, where loop versioning is off for its body; the filter is `[<NoAlloc>]`); folding `ofFloat` on literals done too (2026-11-04: the simplifier folds constants, so a table of `Q15.ofFloat` values is a static object, `tests/static.zs`); the vector functions left |
+| **Status** | Implemented in 0.7 (2026-11-04): steps 1 to 3 (one-case unions without a tag, decision 66, `tests/onecase.zs`; `Numerics.Fixed`, `tests/fixedpoint.zs`, `tests/mcu/fixed.zs`); step 4's folding of `ofFloat` on literals (the simplifier folds constants, so a table of `Q15.ofFloat` values is a static object; `tests/fold.zs`, `tests/static.zs`); and step 5, the `fir` benchmark in `q15` (`bench/mcu/firq15.zs` against C in CMSIS-DSP's style: 1.05 and 1.01 times C's instructions at `-O2` (M4, M0+), 1.43 and 1.49 at `-Os`, where loop versioning is off for its body; the filter is `[<NoAlloc>]`). Left, after 0.7: step 1's C view (a `q15` in a `[<CLayout>]` record or an `[<Export>]` signature is an error, "cannot cross the C boundary"), step 4's `raws` builtins and the vector functions |
 | **Decided at** | the third design review ([ROADMAP](../../ROADMAP.md#third-design-review-)): it passes decision 39 (it replaces hand-written shifts, rounding and saturation, and needs no runtime), and nothing in the language but untagged one-case unions |
 | **Builds** | track M item 10 ([ROADMAP](../../ROADMAP.md#microcontrollers-m)), after phase 11 |
 | **Rests on** | decisions 4 (overflow traps; wrapping is explicit), 25 (the SIMD API) and 53 (no type-level numbers beyond `fixed`) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §8](../../DESIGN.md#8-simd) |
@@ -10,7 +10,7 @@
 
 - [x] Approved in principle
 - [ ] Discussion
-- [ ] Implementation
+- [x] Implementation (2026-11-04: steps 1 to 3 and 5, and step 4's folding)
 
 ## Summary
 

@@ -28,6 +28,10 @@ let main () =
 5050
 ```
 
+**Panics:** a panic on any thread stops the whole program, with one report even when several
+threads panic at once. On Linux and macOS, a stack overflow on one of the pool's threads, or on
+a task's loop, is such a panic: `panic: stack overflow (recursion too deep)`.
+
 ## What can cross to another thread
 
 A function another thread runs has the type `share<F>`, as `Parallel.both`'s arguments do: a
@@ -123,7 +127,7 @@ Results come back without marking: `Parallel.both`'s results, and an array that
 ## Tasks on every core
 
 `Task.spawn (fun () -> t)` runs the task `t` on another thread, each of which has an event loop
-of its own, and gives its result (the next chapter's tasks share one loop). The task stays on
+of its own, and gives its result (the tasks of [chapter 13](13-tasks.md#tasks) share one loop). The task stays on
 that thread until it finishes. `Task.blocking (fun () -> …)` runs a function on a helper thread,
 for a C call that blocks. Both functions are `share<…>`, and their results must be Share.
 
@@ -153,4 +157,6 @@ let main () =
 
 `zs build --sanitize=thread` builds with ThreadSanitizer, which reports two threads touching the
 same memory without synchronizing. Code without `unsafe` can't race; C code, and C callbacks
-called from other threads, can.
+called from other threads, can. `zs test --stress 10m` ([Tools](10-tools.md#the-zs-command))
+runs a file's tests at random on every core, over and over for that long, each run its own
+process, so a failure that one run hides (a race in C code, a timeout under load) shows.

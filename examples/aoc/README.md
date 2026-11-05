@@ -11,7 +11,7 @@ maps, folds and scans, string splitting and parsing, records with `with`, and tu
 | [day03_houses.zs](day03_houses.zs) | Perfectly Spherical Houses in a Vacuum (2015, 3) | `Set` of tuples, `List.partition`, `List.indexed` |
 | [day04_nice.zs](day04_nice.zs) | Doesn't He Have Intern-Elves For This? (2015, 5) | `String.chars`, `String.sub`, `String.contains`, `List.zip` |
 | [day05_taxicab.zs](day05_taxicab.zs) | No Time for a Taxicab (2016, 1) | a record with `with`, `List.fold`, `Set` |
-| [day06_captcha.zs](day06_captcha.zs) | Inverse Captcha (2017, 1) | `Array.ofList`, `List.init`, char arithmetic |
+| [day06_captcha.zs](day06_captcha.zs) | Inverse Captcha (2017, 1) | `Array.ofList`, `List.init`, `int c - int '0'` |
 | [day07_checksum.zs](day07_checksum.zs) | Corruption Checksum (2017, 2) | `List.collect`, `List.max`, `List.min` |
 | [day08_calibration.zs](day08_calibration.zs) | Chronal Calibration (2018, 1) | `HashSet`, `String.replace`, a tail-recursive loop |
 | [day09_expenses.zs](day09_expenses.zs) | Report Repair (2020, 1) | `List.choose` over pairs and triples |

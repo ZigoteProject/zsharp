@@ -82,6 +82,27 @@ Rect (4, 1): 4
 Dot: 0
 ```
 
+**One case:** a union with one case gives a value a type of its own, so a `UserId` can't be passed where an `int` is wanted, or the other way round. Over plain values (numbers, bools, records and tuples of them, in four fields at most) it has no tag: it's the value itself, so `UserId` below is an `int` in registers, arrays and records, 8 bytes on a 64-bit target. One over a string or another counted value, or with more than four fields, is an object holding them. A pattern takes one apart, in a `match` or in a parameter.
+
+```zsharp
+type UserId = UserId of int
+
+let next (UserId n) = UserId (n + 1)
+
+let main () =
+  let id = UserId 41
+  println $"{next id} {[ UserId 1; next id ]} {next id = UserId 42} {sizeof<UserId>}"
+  match id with
+  | UserId n when n > 40 -> println $"big {n}"
+  | UserId _ -> println "small"
+  0
+```
+
+```text
+UserId 42 [UserId 1; UserId 42] true 8
+big 41
+```
+
 Unions can be generic and recursive:
 
 ```zsharp
@@ -192,7 +213,7 @@ Some 36 None
 `match` tries each case in order and takes the first that matches.
 
 **What a pattern can be:**
-- a literal (a number, character, string or bool), or `_` for anything;
+- a literal (a number, character, string or bool), or `_` for anything; a negative number is a signed integer, so `| -1` at a `u8` is an error (`a negative pattern is a signed integer; u8 has no -1`);
 - a variable, which binds the value;
 - a tuple, a record (`{ x = 0; y = y }`, where the fields left out match anything), a union case, or a list (`[]`, `x :: rest`, `[ a; b ]`);
 - an or-pattern (`|`);

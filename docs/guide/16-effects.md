@@ -87,6 +87,33 @@ Error not a digit: x
 - **Between the two:** `Throw.ofResult r` throws a `result`'s error, `Throw.ofOption e o` throws `e` for `None`, and `Throw.recover f g` gives `f e` for an error.
 - **Panics are separate:** a panic (a bug) isn't an effect and can't be caught.
 
+**`use` and a throw:** a throw disposes what the `use`s it passes over bound, newest first,
+before the handler gets the error, as a cancelled task does:
+
+```zsharp
+type Connection = Connection of string
+
+impl Dispose<Connection> =
+  let dispose (Connection name) = println $"{name} closed"
+
+let fetch (name: string) =
+  use c = Connection name
+  if name = "down" then Throw.throw $"{name} isn't answering"
+  $"{name}'s data"
+
+let main () =
+  println $"{Throw.catch (fun () -> fetch "up")}"
+  println $"{Throw.catch (fun () -> fetch "down")}"
+  0
+```
+
+```text
+up closed
+Ok up's data
+down closed
+Error down isn't answering
+```
+
 ## Effects and handlers
 
 `effect` declares operations; `handle e with` runs `e` and gives meaning to the operations it
@@ -210,7 +237,7 @@ effects didn't exist.
 - **Generators** allocate nothing per element: a pipeline of `Seq` functions is a loop calling each stage's clause in turn.
 
 **Limits:**
-- **`use` and stopping:** a throw, or any clause that stops without resuming, disposes what the `use`s it passes over bound, newest first, before the clause runs, as a cancelled task does. A clause that resumes later runs the rest, which disposes at the scope's end as always; a resumption never called (a generator its consumer left) disposes nothing, and neither does a stop inside a `task { }` body.
+- **`use` and stopping:** a throw, or any clause that stops without resuming, disposes what the `use`s it passes over bound, newest first, before the clause runs; so does a consumer that leaves a generator early (`Seq.take`, `Seq.tryFind`), whose clause stops. A clause that resumes later runs the rest, which disposes at the scope's end as always. A resumption a clause keeps and never calls disposes nothing, and neither does a stop that passes a `use` written inside a `task { }` body ([chapter 13](13-tasks.md#tasks)): what was bound is freed, but its `Dispose.dispose` doesn't run.
 - **A resumption kept for later** runs under the handlers that were around its `handle`, wherever it's called from.
 - **An operation's own type variable** may appear in its result only (`throw : 'e -> 'a`), not in its parameters.
 

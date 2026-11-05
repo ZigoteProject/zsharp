@@ -4,13 +4,13 @@
 |---|---|
 | **Status** | Implemented (phase 9.6, decision 52); `Span.indexOf`, `startsWith`, `equalsIgnoreCase`, `trim` and `parseInt` on bytes came with 0.6.2 |
 | **Decided at** | the phase 9.6 design review (decision 52) |
-| **Builds** | phase 9.6 ([ROADMAP](../../ROADMAP.md#phase-96-ergonomics-spans-and-c-structs)) |
+| **Builds** | phase 9.6 ([ROADMAP](../../ROADMAP.md#phase-96-ergonomics-spans-and-c-structs-)) |
 | **Rests on** | decisions 2 (Perceus), 7 (copy-on-write arrays, `Buffer`), 28 (strings are UTF-8 bytes), 43 (a value becomes a `dyn` where one is expected), 52 (spans) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §5.1](../../DESIGN.md#51-representation) |
 | **Related** | [0004 C layout](0004-c-layout.md), [0005 ergonomics](0005-ergonomics.md), [0024 the library's API](0024-library-api.md) (`Bytes` over spans) |
 
 - [x] Approved in principle
 - [ ] Discussion
-- [ ] Implementation
+- [x] Implementation
 
 ## Summary
 

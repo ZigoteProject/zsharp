@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved; items 1–3 and 7 built before phase 11 (`tests/ztest/`), doc tests (item 8) in phase 12 (`tests/doctest.sh`); stress, properties, fuzzing, benchmarks, coverage and tests on a chip after 0.6.2 |
+| **Status** | Implemented (track D's testing items 1–4 and 7–11; 5 and 6 are [0010](0010-properties-and-fuzzing.md)'s): items 1–3 and 7 before phase 11 (`tests/ztest/`), doc tests (item 8) in phase 12 (`tests/doctest.sh`), and in 0.7 (2026-11-04) stress (item 4, `zs test --stress`; `tests/ztest/stress.sh`), benchmarks (item 9, `bench` a `Test` value that `zs bench` times, and `testFaster`; `tests/ztest/bench.sh`), coverage by lines (item 10, `zs test --coverage` writing `coverage.lcov`; `tests/ztest/coverage.sh`) and tests on a chip (item 11, a file's tests in one image, run in order under QEMU, or through probe-rs for the board's target; `tests/mcu/ztest.zs`). Left, after 0.7: coverage by LLVM's regions through `llvm-cov` (and its `--html`), so two branches on one line are told apart, `zs bench --instructions`, `zs test --debug`, and the MCP server's `test` tool |
 | **Decided at** | track D's plan ([ROADMAP](../../ROADMAP.md#testing-profiling-and-debugging-d)): items 1–3 and 7 before phase 11, the rest after |
 | **Builds** | track D: testing |
 | **Rests on** | decisions 5 (panics), 10 (structural printing), 20 (derive, no macros), 33 (the lossless syntax tree) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §12](../../DESIGN.md#12-tooling) |
@@ -10,7 +10,7 @@
 
 - [x] Approved in principle
 - [x] Discussion
-- [ ] Implementation: steps 1–3 (tests as values, the runner, assertions that explain with `Diff`, expect tests and `--update`); step 4 after phase 11
+- [x] Implementation: steps 1–3 (tests as values, the runner, assertions that explain with `Diff`, expect tests and `--update`) before phase 11; step 4's doc tests in phase 12, and its stress, benchmarks, coverage and microcontrollers in 0.7
 
 ## Summary
 
@@ -84,17 +84,21 @@ A fenced `zsharp` block in a `///` comment is a doc test: compiled as a module t
 
 Built as written, `// =>` lines settling *Unresolved questions* 3: the block is `main`'s body, its `// =>` lines the lines it prints, in order; the program is written beside the package's main (so the documented file's module is named as the program names it) and removed after; `--update` puts what was printed where the first `// =>` line was. The library's examples run in `./test.sh`.
 
-### Benchmarks *(after phase 11)*
+### Benchmarks *(built in 0.7)*
 
 - **`bench "name" (fun () -> …)`** and `benchList` are values of type `Bench`, found by `[<Benches>]`. **`zs bench [filters]`** warms up, then runs until the median's confidence interval is within 2% or a time cap, and reports median and interval. Results are saved in `.zs-cache/bench/`; a run compares with the last saved one and reports only changes beyond the noise.
 - **`testFaster "name" fast slow`** is a `Test` that passes when `fast`'s interval lies below `slow`'s, so a performance claim ("reuse beats copying") can't regress silently.
 - **Instruction counts:** `zs bench --instructions` counts instructions (Linux `perf_event`) instead of time, deterministic as `bench/host/run.sh --check` is.
 
-### Stress, coverage, microcontrollers *(after phase 11)*
+Built otherwise than written: `bench` is a `Test` among a file's `[<Tests>]` (which `zs test` runs once), and there's no `Bench` type, `benchList` or `[<Benches>]`. `zs bench` times each in a process of its own, three warm-up runs and then a fixed count, 30 unless `--runs n` says, and shows the median and its 95% interval; one whose interval misses the saved one's by at least 10% is reported slower or faster. `testFaster` is a sign test: the two run in 25 paired rounds, and `fast` must win 19. `--instructions` isn't built (`tests/ztest/bench.sh`).
+
+### Stress, coverage, microcontrollers *(built in 0.7)*
 
 - **`zs test --stress 10m`** runs the tests in random order on every core, over and over for that long; with `ZS_LEAKCHECK=1` and `--sanitize=thread` it finds a growing leak, a race, a deadlock.
 - **`zs test --coverage`** builds with LLVM's source-based coverage: the compiler emits `llvm.instrprof.increment` per region (functions, match cases, branches) and the coverage mapping for Z#'s source, as `--profile-generate` already emits profiling; after the run, `llvm-profdata merge` and `llvm-cov report` print lines and branches, match cases included, and `--html` writes a report.
 - **`zs test --target cortex-m4`** builds one test image, runs each test under QEMU with the test's path as a semihosting argument, and reads results over semihosting; `--probe` runs on a board through probe-rs with RTT or semihosting.
+
+Stress is built as written, each run a process of its own; its test finds a failure one run in five and a leak one in seven under `ZS_LEAKCHECK=1` (`tests/ztest/stress.sh`), not a race or a deadlock. The other two are built otherwise. Coverage counts lines, not LLVM's regions: a counter per line of the test's files, written at each test's exit, the lines run and not run per file, and `coverage.lcov` for genhtml; no `--html` (`tests/ztest/coverage.sh`). On a chip, a file's tests are one image run in one process, Core's runner printing each, and a panic fails its test and ends the run; a board is a target whose runner is probe-rs (`--target nucleo-f401`), with no `--probe` (`tests/mcu/ztest.zs`).
 
 ### Order of implementation
 

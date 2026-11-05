@@ -47,12 +47,14 @@ let main () =
   let xs = [ 5; 3; 8; 1 ]
   println $"{[ for x in xs -> x * 10 ]} {[ for x in xs do if x > 2 then yield x * x ]}"
   println $"{[ for i in 1 .. 3 do for j in 1 .. i -> (i, j) ]} {Array.toList [| for i in 0 .. 3 -> i * i |]}"
+  println $"{[ 1 .. 5 ]} {[ 10 .. -3 .. 1 ]} {Array.sum [| 0 .. 100 |]} {List.length [ 5 .. 1 ]}"
   0
 ```
 
 ```text
 [50; 30; 80; 10] [25; 9; 64]
 [(1, 1); (2, 1); (2, 2); (3, 1); (3, 2); (3, 3)] [0; 1; 4; 9]
+[1; 2; 3; 4; 5] [10; 7; 4; 1] 5050 0
 ```
 
 **Performance:**
@@ -226,7 +228,7 @@ let main () =
 
 **What it is:** a hash table. Keys need `Hash` and `Eq`, which the same types have.
 
-**A value, like an array:** `HashMap.add` returns the changed map. The old map is unchanged, and when nothing else refers to it, the update happens in place. The usual pattern is a `let mutable` map updated in a loop, which costs no copies.
+**A value, like an array:** `HashMap.add` returns the changed map. The old map is unchanged, and when nothing else refers to it, the update happens in place. The usual pattern is a `let mutable` map updated in a loop, which costs no copies, even when the update reads the map in its own arguments: `counts <- HashMap.add w (Option.defaultValue 0 (HashMap.tryFind w counts) + 1) counts` changes `counts` in place, as `a <- Array.set a i (a.[i] + 1)` does an array.
 
 ```zsharp
 let main () =

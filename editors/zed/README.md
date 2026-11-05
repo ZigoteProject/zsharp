@@ -33,8 +33,9 @@ hints, document symbols and formatting. Zed's agent gets the `zs mcp` context se
    `curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --target wasm32-wasip2`,
    then restart Zed so it picks up `~/.cargo/bin` from your shell.
 
-4. Zed's agent gets the `zs` context server (`zs mcp`): `check`, `type_at`, `docs`, `build`,
-   `run`, `emit_llvm` and `format`. Enable it in the agent panel's settings.
+4. Zed's agent gets the `zs` context server (`zs mcp`): `check`, `type_at`, `definition`,
+   `explain`, `docs`, `build`, `run`, `emit_llvm` and `format`. Enable it in the agent panel's
+   settings.
 
 5. Open a `.zs` file. `zed: open log` shows the extension's and the server's messages.
 
@@ -59,7 +60,8 @@ The Flatpak's sandbox has `PATH=/app/bin:/usr/bin` and no clang, so:
   extension isn't asked). Without arguments, `zs` detects LSP or MCP from the first byte, but
   giving them is clearer.
 - The agent's `build` and `run` tools need clang, which the sandbox lacks. `check`, `type_at`,
-  `docs`, `format` and `emit_llvm` work. Run programs from a terminal (`./dev bin/zs run …`).
+  `definition`, `explain`, `docs`, `format` and `emit_llvm` work. Run programs from a terminal
+  (`./dev bin/zs run …`).
 
 Checked: the published `zs` runs inside the sandbox (`flatpak run --command=sh dev.zed.Zed`).
 The dev container has Fedora's `wasm32-wasip1` target only, so it checks that the Rust part

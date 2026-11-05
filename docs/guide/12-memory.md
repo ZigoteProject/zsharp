@@ -18,7 +18,8 @@ list.zs:1:6: warning: 'Node' can reach itself through 'next: ref<option<Node>>' 
 
 **Weak references:** a `weak<T>` refers to an object without keeping it alive, so a back-pointer (a child's parent, a list of observers) made weak isn't part of a cycle.
 - **Making one:** `Weak.create x`, for an object: a union's cell, a `ref`, an array, a string, a closure or a `dyn` value.
-- **Using one:** `Weak.get w` is `Some x` while the object lives, and `None` once it has gone.
+- **Using one:** `Weak.get w` is `Some x` while the object lives, and `None` once it has gone, whether the program or the runtime freed it (a weak reference itself, an `Spsc`): a later object at the same address isn't taken for it (`tests/weak_runtime.zs`).
+- **On a chip** too, over the chip's heap ([Microcontrollers](11-microcontrollers.md#weak-references-and-arenas)).
 
 ```zsharp
 type Node = Node of name: string * parent: ref<option<weak<Node>>> * children: ref<list<Node>>
@@ -67,6 +68,7 @@ the root has 1 child
 **Bulk allocation:** `Arena.with (fun () -> …)` runs the function with an arena. What it allocates comes from the arena's large blocks, bumped through, and the blocks are freed at once, back to the system. (Without an arena, small objects come from the runtime's pool, which keeps the memory of those that die for the next ones.)
 - **When:** for many short-lived objects built together, such as a tree that is built, used and dropped.
 - **Safe:** an object made in the arena that lives on (returned, or stored in a `ref`) keeps the arena's blocks until it goes too, so nothing outlives its memory.
+- **On a chip:** the blocks come from the chip's heap, an eighth of it each (4 KB at most), and go back to it ([Microcontrollers](11-microcontrollers.md#weak-references-and-arenas)). There's no system allocator under that heap, so `Runtime.mallocs ()` counts every object there: the example below counts 1023 on a Cortex-M4.
 
 ```zsharp
 type Tree =
@@ -100,7 +102,7 @@ errors name the one to use; this table is the same answer in one place.
 | You want | Write | Because |
 |---|---|---|
 | a value that changes, on this thread | `let mutable x`, or `ref` when a closure or a record holds it | arrays and records are values; a `ref` is the one cell several names share |
-| an array several names write, or a scratch buffer handed to C | `Buffer<'a>` | arrays copy on write; a `Buffer` is shared mutable memory, so it stays on its thread |
+| an array several names write, or a scratch buffer handed to C | `Buffer<'a>` | arrays copy on write; a `Buffer` is shared mutable memory, so it stays on its thread; a number written into one is written in place, nothing allocated or freed (`[<NoAlloc>]` accepts it) |
 | a window into an array, a string or a `Buffer`, without a copy | `span<'a>`, or a slice `a.[i..j]` | it holds a reference to its owner, so it can't dangle; read-only unless over a `Buffer` |
 | a back-pointer that mustn't keep its target alive | `weak<'a>` | a cycle of `ref`s leaks; a `weak` is a pointer the count doesn't see |
 | memory C owns | `ptr<'a>`, inside `unsafe` | nothing checks its lifetime, so the block says so |

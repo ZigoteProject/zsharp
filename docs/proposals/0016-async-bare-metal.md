@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Implemented (decision 71, phase 12: the flagship is a microcontroller; `Task` in Core, the embedded runtime's loop, `Irq.wait`, `Signal`, `Runtime.setClock`; `tests/mcu/task.zs`, `examples/mcu/uart.zs`, `examples/nucleo`). `zs test --target` is still to come |
+| **Status** | Implemented (decision 71, phase 12: the flagship is a microcontroller; `Task` in Core, the embedded runtime's loop, `Irq.wait`, `Signal`, `Runtime.setClock`; `tests/mcu/task.zs`, `examples/mcu/uart.zs`, `examples/nucleo`). Step 5, `zs test --target`, in 0.7 (2026-11-04, `tests/mcu/ztest.zs`): a test whose body is a task runs on the chip's loop, checked by hand under QEMU; no test in the suite has one yet. Left, after 0.7: the `clock` key in `zs.toml` |
 | **Decided at** | the third design review ([ROADMAP](../../ROADMAP.md#third-design-review-)). Phase 12's note applies: picking microcontrollers as 0.1's niche moves this item into the "before 0.1" list ([ROADMAP](../../ROADMAP.md#phase-12-release-062)) |
 | **Builds** | track M, "Later" ([ROADMAP](../../ROADMAP.md#microcontrollers-m)), after [0012](0012-interrupts-noalloc-intrinsics.md)'s handlers and `Spsc` |
 | **Rests on** | decisions 21 (one cold `Task`, a state machine), 42 (`[<NoAlloc>]`), 48 (a loop per thread; tasks don't move) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §6](../../DESIGN.md#6-concurrency-task) and [§10](../../DESIGN.md#10-targets) |
@@ -10,7 +10,7 @@
 
 - [x] Approved in principle
 - [ ] Discussion
-- [x] Implementation (phase 12: steps 1 to 4. Handlers wake tasks through bitmasks, not an `Spsc` of tokens (*Unresolved questions*, 3), at most 32 signals; `Task.fromCallback` is what `Irq.wait` and `Signal.wait` are written with; on a computer `Irq.wait` and `Signal` panic instead of failing the build, since host programs are compiled per module; the `clock` key in `zs.toml` and step 5, `zs test --target`, aren't done)
+- [x] Implementation (phase 12: steps 1 to 4. Handlers wake tasks through bitmasks, not an `Spsc` of tokens (*Unresolved questions*, 3), at most 32 signals; `Task.fromCallback` is what `Irq.wait` and `Signal.wait` are written with; on a computer `Irq.wait` and `Signal` panic instead of failing the build, since host programs are compiled per module; the `clock` key in `zs.toml` isn't done; step 5, `zs test --target`, came in 0.7)
 
 ## Summary
 

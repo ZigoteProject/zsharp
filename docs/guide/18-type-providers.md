@@ -1,4 +1,4 @@
-# Type providers
+# 18. Type providers
 
 A type provider reads a data source when the program is compiled and declares the types and
 functions for it, so code against a JSON document, a CSV file, a database schema or a
@@ -117,8 +117,9 @@ With `queries = "queries.sql"`, a file of named queries in sqlc's style gives a 
 typed against the schema: its text with `?` where each parameter goes, the parameters' names,
 a `Params` record typed from the columns the parameters are compared with (or inserted into), and
 a `Row` record for what it selects (`SELECT *` is the table's columns; a join's columns by their
-table or alias; an expression needs `AS name` and is an `int` for a count, else a `string`).
-A column or table the schema doesn't have is an error naming the query.
+table or alias; an expression needs `AS name` and is an `int` for `COUNT`, `SUM`, `TOTAL` or
+`LENGTH`, else a `string`). A column or table the schema doesn't have is an error naming the
+query.
 
 ```sql
 -- name: GetUser :one
@@ -204,17 +205,18 @@ main = "Main.zs"
 main = "Main.zs"
 ```
 
-The program The compiler runs
-it in the importing file's directory with the string and each option as `--name=value`. Its
-standard output is the declarations of one module, starting with `// provided by <name>
-<version> from <string>` and one `// input: <path>` per file it read (relative to that
-directory); its standard error has errors, one per line, `file:line:col: message` where there is
-a position; a non-zero exit fails the import with those lines. The compiler caches the output
-with a hash of each input, so a machine without the provider (an editor's sandbox) still gets
-the types, with a warning at the import when an input changed since. Nothing is loaded into the
-compiler: the provider is a process, as clang is for `import c`.
+The compiler runs it in the importing file's directory with the string and each option as
+`--name=value`. Its standard output is the declarations of one module, starting with `//
+provided by <name> <version> from <string>` and one `// input: <path>` per file it read
+(relative to that directory); its standard error has errors, one per line, `file:line:col:
+message` where there is a position; a non-zero exit fails the import with those lines. The
+compiler caches the output with a hash of each input, so a machine without the provider (an
+editor's sandbox) still gets the types from the last output, with a `stale-input` warning at the
+import that says so. Nothing is loaded into the compiler: the provider is a process, as clang is
+for `import c`.
 
-Errors name the problem and what to write: `no provider 'jsn': zs has json, csv, sql and svd,
-and no zs-provider-jsn is on PATH`, `csv: unknown option 'seperator' (separator, hasHeaders,
-types)`, `json: weather.json not found next to main.zs`, `csv: wide.csv: a row has 3 cells, the
-header 2`. The design is [proposal 0001](../proposals/0001-type-providers.md).
+Errors name the problem and what to write: `no provider 'jsn': zs has c, json, csv, sql and svd,
+no zs-provider-jsn is on PATH, and no dependency named jsn has a [provider] section`, `csv:
+unknown option 'seperator' (separator, hasHeaders, types)`, `json: weather.json not found next
+to main.zs`, `csv: wide.csv: a row has 3 cells, the header 2`. The design is [proposal
+0001](../proposals/0001-type-providers.md).

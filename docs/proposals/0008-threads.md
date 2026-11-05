@@ -3,14 +3,14 @@
 | | |
 |---|---|
 | **Status** | Implemented (phase 9.5; crossings move since phase 11, decision 75) |
-| **Decided at** | the phase 9.5 plan ([ROADMAP](../../ROADMAP.md#phase-95-incremental-builds-and-threads)), closing known gap 1 |
+| **Decided at** | the phase 9.5 plan ([ROADMAP](../../ROADMAP.md#phase-95-incremental-builds-and-threads-)), closing known gap 1 |
 | **Builds** | phase 9.5 |
 | **Rests on** | decisions 22 (threads), 45 (Z# objects in C as handles), 47 (`share<F>`), 48 (a loop per thread) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §7](../../DESIGN.md#7-parallelism) and §7.1 |
 | **Related** | [0002 effect handlers](0002-effect-handlers.md) (handlers are per thread), [0016 async on bare metal](0016-async-bare-metal.md) |
 
 - [x] Approved in principle
 - [ ] Discussion
-- [x] Implementation (in progress: the pool's spare threads are in `rt.c` already; this document records the design as the working tree builds it)
+- [x] Implementation (phase 9.5; crossings move since phase 11, decision 75)
 
 ## Summary
 

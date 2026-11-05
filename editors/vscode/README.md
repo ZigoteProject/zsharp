@@ -30,10 +30,10 @@ The same grammar and language configuration give the Rider plugin (`../rider`) i
 
    Or, for development, open `editors/vscode` in VS Code and press F5.
 
-3. The agent gets the `zs` MCP server (`zs mcp`): `check`, `type_at`, `docs`, `build`, `run`,
-   `emit_llvm` and `format`. Enable it in the chat's tool picker (**MCP: List Servers** shows it).
-   Its tools take only files inside the workspace, but `run` runs the program it builds with your
-   full rights, unsandboxed.
+3. The agent gets the `zs` MCP server (`zs mcp`): `check`, `type_at`, `definition`, `explain`,
+   `docs`, `build`, `run`, `emit_llvm` and `format`. Enable it in the chat's tool picker
+   (**MCP: List Servers** shows it). Its tools take only files inside the workspace, but `run` runs
+   the program it builds with your full rights, unsandboxed.
 
 4. Open a `.zs` file. **Output → Z#** shows the server's messages; **Z#: Restart Language Server**
    restarts it (changing a `zsharp.*` setting restarts it too).

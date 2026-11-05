@@ -6,7 +6,7 @@ A SIMD vector holds a few numbers that one instruction works on at once. `f32x8`
 (256 bits), `u8x16` 16 bytes (128 bits), and every number type has one at 128, 256 and 512 bits.
 A CPU without 256-bit vectors does a `f32x8`'s work as two 128-bit halves, and one without SIMD
 lane by lane, so the same code runs everywhere.
-- **Arithmetic:** `+ - * / %` work lane by lane. Integer vectors wrap around on overflow, as SIMD instructions do (integer division still panics on a zero lane).
+- **Arithmetic:** `+ - * / %` work lane by lane. Integer vectors wrap around on overflow, as SIMD instructions do (integer division still panics on a zero lane). Saturating lanes, and a `q15` multiply on each lane for [fixed point](11-microcontrollers.md#fixed-point), aren't there yet.
 - **Bits:** `&&& ||| ^^^` on integer vectors, and `<<<` and `>>>` by an `int` for every lane.
 - **Functions:** each type's are in a module named after it (`F32x8.splat`, `I32x4.load`): `splat` and `init` make one, `load` and `store` move lanes from and into an array of its numbers, `get` and `set` a lane, and `sum`, `reduceMin` and `reduceMax` combine the lanes.
 
@@ -55,6 +55,13 @@ let main () =
 **Bounds:** `load` and `store` check that every lane is in the array. In a `for` loop over an
 index (`for x in 0 .. 8 .. last`), loads at the index plus or minus values the loop doesn't
 change are checked once, before the loop.
+
+**In heap objects:** a vector kept in a heap object (a list's cell, an array of vectors, a
+closure that captures one, a union's case) is read at its own alignment, so a program that can
+put one there allocates every object with the system allocator, 64-byte aligned, one call each,
+instead of the runtime's pool. Vectors in locals, parameters and records passed by value keep
+the pool: a program that loads its vectors from arrays of numbers, as these examples do,
+allocates as it would without them (`tests/simd/pool.zs`, `tests/simd/pool_wide.zs`).
 
 ## Masks
 
