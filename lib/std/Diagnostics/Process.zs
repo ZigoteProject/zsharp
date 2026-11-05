@@ -101,7 +101,8 @@ module Process =
     let dir = Option.defaultValue "" s.directory
     match refused s.program (dir :: List.append s.args vars) with
     | Some e -> Error e
-    | None when toOutput s.stdin || toOutput s.stdout -> Error $"cannot run {s.program}: ToOutput is for stderr"
+    | None when toOutput s.stdin || toOutput s.stdout ->
+      Error $"cannot run {s.program}: ToOutput is for stderr"
     | None ->
       let env = Option.map (fun _ -> String.join (nul ()) vars) s.environment
       let pid =

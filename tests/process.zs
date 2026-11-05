@@ -37,7 +37,8 @@ let main () =
     stderr = ToOutput } with
   | Ok p ->
     use proc = p
-    let out = match proc.stdout with | Some r -> Result.defaultValue "" (Reader.readToEnd r) | None -> ""
+    let out =
+      match proc.stdout with | Some r -> Result.defaultValue "" (Reader.readToEnd r) | None -> ""
     let lines = String.split "\n" (String.trim out)
     println $"{List.head lines} {List.head (List.tail lines)} {List.length lines} {List.last lines} {Option.isNone proc.stderr} {Task.run (Process.wait proc)}"
   | Error e -> println e
