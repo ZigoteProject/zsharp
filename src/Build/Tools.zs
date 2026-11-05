@@ -89,17 +89,14 @@ let runSplit (program: string) (args: list<string>) : result<Ran, string> =
 /// pipe fills while the other is read); Error when it can't start.
 let runMerged (program: string) (args: list<string>) : result<Ran, string> =
   if hostOs () = "windows" then
-    // no sh: standard error into standard output's pipe, as 2>&1 (read apart, one after the
-    // other, a tool writing a pipe's worth of errors before it ends would wait forever: `zig cc
-    // -v`'s search list, which every check for a target reads, did)
-    let s : Diagnostics.ProcessStart = { program = program; args = args; stdin = Diagnostics.Null; stdout = Diagnostics.Piped; stderr = Diagnostics.ToOutput }
-    match Diagnostics.Process.start s with
+    // no sh: the two streams captured apart, then joined. Read one after the other, a tool that
+    // writes more errors than a pipe holds before it ends waits for ever (`zig cc -v`'s search
+    // list, which every check for a target reads, did at Windows' default size): the runtime's
+    // pipes hold a megabyte there. ponytail: Diagnostics.ToOutput (2>&1) once stage 0's library
+    // has it (0.7.0), which no amount of errors fills
+    match runSplit program args with
+    | Ok r -> Ok { r with out = r.out + r.err; err = "" }
     | Error e -> Error e
-    | Ok p ->
-      let out = drain p.stdout
-      let code = Task.run (Diagnostics.Process.wait p)
-      Dispose.dispose p
-      Ok { code = code; out = out; err = "" }
   else
     // sh only joins the streams: the program and its arguments are its positional parameters
     let s : Diagnostics.ProcessStart = { program = "sh"; args = List.append [ "-c"; "exec \"$0\" \"$@\" 2>&1"; program ] args; stdin = Diagnostics.Null; stdout = Diagnostics.Piped }

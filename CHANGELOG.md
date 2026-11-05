@@ -387,9 +387,10 @@ What a 0.6.2 program, project or script may have to change, and what behaves dif
 ### Tooling
 - On Windows, a build no longer waits forever before it starts: its check for the target runs
   `zig cc -v`, whose search list on standard error filled the pipe while `zs` read standard
-  output to its end. A tool's errors now go into its output's pipe there (`ToOutput`), and the
-  runtime's pipes hold a megabyte where Windows' default is a page or so. It was the Windows
-  suites' hang in CI (nothing printed in six hours).
+  output to its end. The runtime's pipes there hold a megabyte, where Windows' default is a page
+  or so; the compiler moves to `ToOutput` (below), which no amount of errors fills, once it's
+  built by a release whose library has it. It was the Windows suites' hang in CI (nothing
+  printed in six hours).
 - On macOS, `zs fuzz` links libFuzzer's runtime for macOS (`libclang_rt.fuzzer_no_main_osx.a`) and
   libc++, and `zs build --lib -o x.so` leaves a function the program defines (an `extern` of the
   library's) to the loader, as ELF's linkers do (`-undefined dynamic_lookup`): the one found
