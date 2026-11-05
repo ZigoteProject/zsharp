@@ -80,8 +80,10 @@ jobs:
           "$RUNNER_TEMP/micromamba" create -y -q -r "$RUNNER_TEMP/mamba" -p "$RUNNER_TEMP/llvm" -c conda-forge \
             'clang=23.1.4=*nocfg*' 'clangxx=23.1.4=*nocfg*' libclang=23.1.4 lld=23.1.4 llvm-tools=23.1.4 compiler-rt=23.1.4
           echo "$RUNNER_TEMP/llvm/bin" >> "$GITHUB_PATH"
+      # upgrade, not install: it installs what's missing and upgrades what the image has (Windows
+      # x64's came with LLVM 20, which install leaves as it is)
       - if: runner.os == 'Windows'
-        run: choco install -y llvm zig
+        run: choco upgrade -y llvm zig
       # the dev image's LLVM and zig, from their releases (Ubuntu's clang is too old for the IR,
       # and it packages no zig)
       - if: runner.os == 'Linux'
