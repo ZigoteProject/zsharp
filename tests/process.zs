@@ -29,4 +29,19 @@ let main () =
     let out = match proc.stdout with | Some r -> Reader.readToEnd r | None -> Ok ""
     println $"{out} {Task.run (Process.wait proc)}"
   | Error e -> println e
+  // standard error into standard output's pipe (2>&1): both in the order written, and errors
+  // past a pipe's worth before the output ends don't block the program (read apart, they would)
+  match Process.start { program = "sh"
+    args = [ "-c"; "echo one; echo two >&2; i=0; while [ $i -lt 3000 ]; do echo 'an error line, long enough to fill a pipe' >&2; i=$((i+1)); done; echo three" ]
+    stdout = Piped
+    stderr = ToOutput } with
+  | Ok p ->
+    use proc = p
+    let out = match proc.stdout with | Some r -> Result.defaultValue "" (Reader.readToEnd r) | None -> ""
+    let lines = String.split "\n" (String.trim out)
+    println $"{List.head lines} {List.head (List.tail lines)} {List.length lines} {List.last lines} {Option.isNone proc.stderr} {Task.run (Process.wait proc)}"
+  | Error e -> println e
+  match Process.start { program = "sh"; stdout = ToOutput } with
+  | Ok _ -> println "unexpected"
+  | Error e -> println e
   0

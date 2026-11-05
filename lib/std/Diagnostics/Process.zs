@@ -17,6 +17,10 @@ type Pipe =
   | Piped
   /// Nothing: reading gets the end at once, and what's written is dropped.
   | Null
+  /// `stderr` only: where standard output goes (its pipe, when that's `Piped`), as a shell's
+  /// `2>&1`. One reader then sees both, in the order they were written, and neither can fill
+  /// while the other waits to be read.
+  | ToOutput
 
 /// What `Process.start` runs, naming only what it changes from the defaults:
 /// `Process.start { program = "clang"; args = [ "-c"; f ]; stderr = Piped }`.
@@ -77,12 +81,18 @@ module Process =
       else
         Error (Native.ioError ())
 
-  // a stream's mode for the runtime: 0 inherited, 1 piped, 2 /dev/null
+  // a stream's mode for the runtime: 0 inherited, 1 piped, 2 /dev/null, 3 standard output's
   let private mode (p: Pipe) =
     match p with
     | Inherit -> 0
     | Piped -> 1
     | Null -> 2
+    | ToOutput -> 3
+
+  let private toOutput (p: Pipe) =
+    match p with
+    | ToOutput -> true
+    | _ -> false
 
   /// Starts the program (looked up on PATH unless it has a `/`), without a shell; each stream
   /// that is `Piped` is the `Process`'s to use. `Process.wait` gives its exit code.
@@ -91,6 +101,7 @@ module Process =
     let dir = Option.defaultValue "" s.directory
     match refused s.program (dir :: List.append s.args vars) with
     | Some e -> Error e
+    | None when toOutput s.stdin || toOutput s.stdout -> Error $"cannot run {s.program}: ToOutput is for stderr"
     | None ->
       let env = Option.map (fun _ -> String.join (nul ()) vars) s.environment
       let pid =

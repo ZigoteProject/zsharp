@@ -27,16 +27,15 @@ here: `tests/debug/kinds.zs`, whose DWARF LLVM 23's `llvm-dwarfdump --verify` re
 now lets by; lld's output has none), and the tree-sitter grammar, which didn't parse a typed `_`
 parameter (`let check () (_: Source)`). What 0.7's plan put first is undone (ROADMAP, 0.7's item 1):
 the flagship isn't flashed to a Nucleo-F401RE yet (it runs under QEMU's STM32F405, which models none
-of the board's GPIO), the suite hasn't passed on the five CI runners (at `fbf956d`, on 2026-11-05,
-Linux x86-64's passed and the others' failed: 23 and 24 checks on the Macs, the same 7 as before on
-Linux arm64, and the Windows suites printed nothing; what the Macs and Linux arm64 failed on is
-addressed after it, not yet confirmed in CI), and no archive has been tried on a clean machine, so
-no macOS or Windows build has run on a real machine. Linux arm64's suite under QEMU and Windows
-x64's under Wine, which 0.6.2 ran, haven't been run for 0.7, nor has the stress run over the pool,
-tasks and `Alt` under ThreadSanitizer (the suite's four programs under ThreadSanitizer pass). Of the
-plan's other items, the fuzzer's seed isn't rotated per run yet (it's 1 unless `ZS_FUZZ_SEED` says),
-and `[<Align>]` on a type, `Seq` pipelines as one loop (track S, item 9) and fixed point's vector
-forms are left.
+of the board's GPIO), the suite hasn't passed on the five CI runners (at `e427966`, on 2026-11-05,
+it passed on Linux x86-64 and arm64 and on both Macs, and the Windows suites stopped at their first
+build, which waited forever on `zig cc`: fixed after it, not yet confirmed in CI), and no archive
+has been tried on a clean machine. Windows x64's suite under Wine, which 0.6.2 ran, hasn't been run
+for 0.7 (Linux arm64's ran natively in CI), nor has the stress run over the pool, tasks and `Alt`
+under ThreadSanitizer (the suite's four programs under ThreadSanitizer pass). Of the plan's other
+items, the fuzzer's seed isn't rotated per run yet (it's 1 unless `ZS_FUZZ_SEED` says), and
+`[<Align>]` on a type, `Seq` pipelines as one loop (track S, item 9) and fixed point's vector forms
+are left.
 
 ### Upgrading from 0.6.2
 What a 0.6.2 program, project or script may have to change, and what behaves differently:
@@ -279,6 +278,9 @@ What a 0.6.2 program, project or script may have to change, and what behaves dif
   isn't taken for it (`tests/weak_runtime.zs`; on both chips, `tests/mcu/weak_runtime.zs`).
 
 ### Library
+- `Diagnostics.ToOutput`: a started process's standard error where its standard output goes
+  (`stderr = ToOutput`, its pipe when that's `Piped`), as a shell's `2>&1`, so one reader sees
+  both in order and neither fills while the other waits (`tests/process.zs`).
 - Properties (0010, track D item 5): `testProperty "name" (fun (xs: list<int>) -> …)` runs
   the property on 100 cases drawn with `Arbitrary` at the parameter's type (a tuple for
   several), growing from size 0 to 100; `unit`, `true` or `Ok` passes a case, `false` or an
@@ -383,6 +385,11 @@ What a 0.6.2 program, project or script may have to change, and what behaves dif
   cortex-m4 has none, so it can't depend on this package`, instead of an error deep in its code.
 
 ### Tooling
+- On Windows, a build no longer waits forever before it starts: its check for the target runs
+  `zig cc -v`, whose search list on standard error filled the pipe while `zs` read standard
+  output to its end. A tool's errors now go into its output's pipe there (`ToOutput`), and the
+  runtime's pipes hold a megabyte where Windows' default is a page or so. It was the Windows
+  suites' hang in CI (nothing printed in six hours).
 - On macOS, `zs fuzz` links libFuzzer's runtime for macOS (`libclang_rt.fuzzer_no_main_osx.a`) and
   libc++, and `zs build --lib -o x.so` leaves a function the program defines (an `extern` of the
   library's) to the loader, as ELF's linkers do (`-undefined dynamic_lookup`): the one found

@@ -2189,7 +2189,10 @@ zs_int zs_process_start(zs_str *prog, zs_str *args, zs_str *env, bool hasEnv, zs
         started[k + 1] = -1;
         if (modes[k] == 1) {
             HANDLE r, w;
-            if (!CreatePipe(&r, &w, &sa, 0)) continue;
+            // a megabyte, where the default is a page or so: a caller reading one pipe to its end
+            // before the other (a program's output, then its errors) blocks the program only past
+            // that. ponytail: a stream read on a thread of its own if one writes more
+            if (!CreatePipe(&r, &w, &sa, 1 << 20)) continue;
             HANDLE mine = k == 0 ? w : r;
             theirs[k] = k == 0 ? r : w;
             SetHandleInformation(mine, HANDLE_FLAG_INHERIT, 0);
@@ -2198,6 +2201,9 @@ zs_int zs_process_start(zs_str *prog, zs_str *args, zs_str *env, bool hasEnv, zs
         } else if (modes[k] == 2) {
             theirs[k] = CreateFileA("NUL", k == 0 ? GENERIC_READ : GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, NULL);
             *std[k] = theirs[k];
+        } else if (modes[k] == 3 && k == 2) {
+            // standard error where standard output goes (2>&1): the same handle, closed with it
+            *std[k] = si.hStdOutput;
         } else {
             *std[k] = GetStdHandle(which[k]);
         }
@@ -2386,6 +2392,9 @@ zs_int zs_process_start(zs_str *prog, zs_str *args, zs_str *env, bool hasEnv, zs
             posix_spawn_file_actions_adddup2(&fa, pipes[k][k == 0 ? 0 : 1], k);
         } else if (modes[k] == 2) {
             posix_spawn_file_actions_addopen(&fa, k, "/dev/null", k == 0 ? O_RDONLY : O_WRONLY, 0);
+        } else if (modes[k] == 3 && k == 2) {
+            // standard error where standard output goes (2>&1), after standard output's own action
+            posix_spawn_file_actions_adddup2(&fa, 1, 2);
         }
     }
     if (rc == 0 && dir->len > 0) rc = posix_spawn_file_actions_addchdir_np(&fa, dir->data);

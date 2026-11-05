@@ -410,11 +410,12 @@ elements, parentheses nested 10,000 deep). No archive of it is built yet. Its su
 Linux x86-64 but for two checks that depend on the machine it last ran on (`tests/pgo.sh`,
 `bench/host`'s `fib`); the two that failed in CI's dev container on
 2026-11-05 (`tests/debug/kinds.zs`'s DWARF check under LLVM 23, and the tree-sitter grammar on a
-typed `_` parameter) are fixed. Linux arm64's under QEMU and Windows x64's under Wine, which 0.6.2
-ran, haven't been run for it.
+typed `_` parameter) are fixed. In CI (2026-11-05, `e427966`) it passes on Linux x86-64 and
+arm64 and on macOS arm64 and x86-64; on Windows a build waited forever on `zig cc`, which is fixed
+since, not yet confirmed there.
 
-**Left of 0.7's plan:** its first item, which needs machines, not code: the suites on the five CI
-runners, the archives on clean machines, and the flagship on its board. Also `[<Align>]` on a
+**Left of 0.7's plan:** its first item, which needs machines, not code: the suites on Windows's
+two CI runners, the archives on clean machines, and the flagship on its board. Also `[<Align>]` on a
 type, `Seq` pipelines as one loop, fixed point's vector forms, a new seed for `tests/fuzz.sh` on each run (it takes 1 unless
 `ZS_FUZZ_SEED` says otherwise), and the stress run over the pool, tasks and `Alt` under
 ThreadSanitizer. The [roadmap](ROADMAP.md) has the details.
