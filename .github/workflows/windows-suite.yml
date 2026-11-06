@@ -1,5 +1,5 @@
-# Temporary: which zig release works on Windows (0.16.0 broke `zig rc` on arm64; Chocolatey's
-# 0.17.0 broke linking against a DLL's import library on x64), with an earlier run's archives
+# Temporary: Windows' LLVM from its release archive and zig 0.17.0, then the doctor and an
+# import c build, with an earlier run's archives
 name: windows-suite
 on:
   push:
@@ -8,12 +8,11 @@ permissions:
   contents: read
   actions: read
 jobs:
-  zig:
+  setup:
     strategy:
       fail-fast: false
       matrix:
         os: [windows-2025, windows-11-arm]
-        zig: [0.16.0, 0.17.0]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     defaults:
@@ -27,14 +26,26 @@ jobs:
           path: dist
           run-id: 42044795228
           github-token: ${{ github.token }}
-      - run: choco upgrade -y llvm
-      - shell: pwsh
+      # LLVM's own release, the version the other runners have: Chocolatey's package is the x64
+      # build on Windows on Arm too, whose libclang an arm64 zs.exe can't load (import c, and the
+      # compiler's own build); zig from its release, 0.17.0 (0.16.0's `zig rc` fails on Windows
+      # arm64, reading its cache's files short)
+      - if: runner.os == 'Windows'
+        run: |
+          a=$([ "$RUNNER_ARCH" = ARM64 ] && echo aarch64 || echo x86_64)
+          dir=clang+llvm-23.1.4-$a-pc-windows-msvc
+          # tar takes D:\... for a remote host's path: the temporary directory as MSYS names it
+          t=$(cygpath -u "$RUNNER_TEMP")
+          curl -fsSL "https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.4/$dir.tar.xz" \
+            | tar -xJ -C "$t" --wildcards "$dir/bin/*" "$dir/lib/clang/*" "$dir/include/clang-c/*"
+          cygpath -w "$t/$dir/bin" >> "$GITHUB_PATH"
+      - if: runner.os == 'Windows'
+        shell: pwsh
         run: |
           $a = if ($env:RUNNER_ARCH -eq 'ARM64') { 'aarch64' } else { 'x86_64' }
-          $v = '${{ matrix.zig }}'
-          Invoke-WebRequest "https://ziglang.org/download/$v/zig-$a-windows-$v.zip" -OutFile "$env:RUNNER_TEMP\zig.zip"
+          Invoke-WebRequest "https://ziglang.org/download/0.17.0/zig-$a-windows-0.17.0.zip" -OutFile "$env:RUNNER_TEMP\zig.zip"
           Expand-Archive "$env:RUNNER_TEMP\zig.zip" -DestinationPath $env:RUNNER_TEMP
-          "$env:RUNNER_TEMP\zig-$a-windows-$v" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          "$env:RUNNER_TEMP\zig-$a-windows-0.17.0" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
       - env:
           ZS_NO_SERVER: 1
         run: |
@@ -42,13 +53,7 @@ jobs:
           a=$([ "$RUNNER_ARCH" = ARM64 ] && echo aarch64 || echo x86_64)
           tar -xzf "dist/zs-ci-windows-$a.tar.gz" -C dist
           zs=$PWD/dist/zs-ci-windows-$a/zs
-          step() { local t=$1; shift; echo "::group::$*"; timeout "$t" "$@"; local c=$?; echo "=> exit $c"; echo "::endgroup::"; echo "SUMMARY $c: $*" >> "$RUNNER_TEMP/summary"; }
-          step 30 zig version
-          step 1200 "$zs" build examples/simple.zs -o "$RUNNER_TEMP/simple.exe"
-          step 30 "$RUNNER_TEMP/simple.exe"
-          for i in 1 2 3; do step 600 "$zs" build tests/basics.zs -o "$RUNNER_TEMP/b$i.exe"; step 30 "$RUNNER_TEMP/b$i.exe"; done
-          step 600 "$zs" build tests/cthreads/callbacks.zs -o "$RUNNER_TEMP/cb.exe"
-          step 30 "$RUNNER_TEMP/cb.exe"
-          step 600 "$zs" build tests/cimport/ops.zs -o "$RUNNER_TEMP/ops.exe"
-          step 30 "$RUNNER_TEMP/ops.exe"
-          echo; cat "$RUNNER_TEMP/summary"
+          clang --version; zig version; command -v clang opt llvm-ar
+          timeout 120 "$zs" doctor
+          timeout 900 "$zs" build tests/cimport/ops.zs -o "$RUNNER_TEMP/ops.exe" && timeout 30 "$RUNNER_TEMP/ops.exe"
+          echo "ops: $?"
