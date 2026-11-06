@@ -576,6 +576,7 @@ static _Thread_local heap_state *heap_mine;
 static heap_state *spare_states;
 static pthread_key_t heap_key;
 static pthread_once_t heap_once = PTHREAD_ONCE_INIT;
+static bool heap_keyed; // heap_key made, and not deleted yet
 
 static void heap_end(void *arg) {
     heap_state *h = arg;
@@ -589,12 +590,22 @@ static void heap_end(void *arg) {
 
 static void heap_key_make(void) {
     if (pthread_key_create(&heap_key, heap_end) != 0) zs_panic_c("pthread_key_create failed");
+    __atomic_store_n(&heap_keyed, true, __ATOMIC_RELEASE);
+}
+
+// The key's destructor is code in this image: a host that unloads a library holding this runtime
+// (dlclose, FreeLibrary) while threads that called it live on would have each of them run it, in
+// unmapped code, when it ends. So the key goes with the image (at exit too), and a thread ending
+// after that keeps its state.
+__attribute__((destructor)) static void heap_unload(void) {
+    if (__atomic_exchange_n(&heap_keyed, false, __ATOMIC_ACQ_REL)) pthread_key_delete(heap_key);
 }
 
 __attribute__((noinline)) static heap_state *heap_new(void) {
     pthread_once(&heap_once, heap_key_make);
+    bool keyed = __atomic_load_n(&heap_keyed, __ATOMIC_ACQUIRE);
     // this thread's own, when its thread-locals went before its destructors ran (macOS)
-    heap_state *h = pthread_getspecific(heap_key);
+    heap_state *h = keyed ? pthread_getspecific(heap_key) : NULL;
     if (h) return heap_mine = h;
     pthread_mutex_lock(&counts_mu);
     h = spare_states;
@@ -614,7 +625,7 @@ __attribute__((noinline)) static heap_state *heap_new(void) {
     }
     h->spare = NULL;
     heap_mine = h;
-    pthread_setspecific(heap_key, h);
+    if (keyed) pthread_setspecific(heap_key, h);
     return h;
 }
 
@@ -2973,6 +2984,7 @@ static zs_int win_start(zs_str *prog, zs_str *args, zs_str *env, bool hasEnv, zs
     char *block = NULL;
     if (hasEnv) {
         block = calloc((size_t)env->len + 2, 1);
+        if (!block) zs_panic_c("out of memory");
         memcpy(block, env->data, (size_t)env->len);
     }
     console_flush();
