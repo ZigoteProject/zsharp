@@ -214,8 +214,30 @@ let min a b = if a < b then a else b
 /// Lists print as `[1; 2; 3]`.
 impl Show<list<'a>> =
   let show xs =
-    let rec go acc first xs =
-      match xs with
-      | [] -> acc
-      | x :: rest -> go (acc + (if first then "" else "; ") + show x) false rest
-    "[" + go "" true xs + "]"
+    match xs with
+    | [] -> "[]"
+    | _ ->
+      // the elements' texts, then each copied once into bytes of the whole length (a string
+      // added to at each element is copied whole each time)
+      let rec texts acc (total: int) xs =
+        match xs with
+        | [] -> (acc, total)
+        | x :: rest ->
+          let t = show x
+          texts (t :: acc) (total + String.length t + 2) rest
+      let (backwards, total) = texts [] 0 xs
+      let b = Buffer.create total (u8 32)
+      b.[0] <- u8 91
+      b.[total - 1] <- u8 93
+      // from the last text: each one's start is the end of the "; " before it
+      let rec fill (at: int) ts =
+        match ts with
+        | [] -> ()
+        | t :: rest ->
+          let start = at - String.length t
+          Buffer.blit (String.bytes t) 0 b start (String.length t)
+          if start > 1 then
+            b.[start - 2] <- u8 59
+          fill (start - 2) rest
+      fill (total - 1) backwards
+      String.ofBytes b

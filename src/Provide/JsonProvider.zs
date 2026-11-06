@@ -68,7 +68,6 @@ let rec shapeOf (j: Json) : Shape =
   | JNull -> SNull
   | JBool _ -> SBool
   | JInt _ -> SInt
-  | JNumber _ -> SFloat
   | JString _ -> SString
   | JArray xs -> SList (List.fold (fun acc x -> unify acc (shapeOf x)) SUnknown xs)
   | JObject kvs ->
@@ -79,6 +78,9 @@ let rec shapeOf (j: Json) : Shape =
       if List.exists (fun (n, _) -> n = k) acc then List.map (fun (n, t) -> if n = k then (n, unify t s) else (n, t)) acc
       else List.append acc [ (k, s) ]
     SRecord (List.fold add [] kvs)
+  // a JNumber, and a JUInt (past i64's range) where the library has one: stage 0's hasn't, and
+  // the compiler builds with both
+  | _ -> SFloat
 
 /// A record the module declares: its name, its fields as written, and the path of keys it was
 /// found at (empty for the document itself).

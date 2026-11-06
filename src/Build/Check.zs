@@ -37,7 +37,7 @@ let private funsFile (key: string) = Path.combine (Path.combine (Tools.cacheRoot
 let private loadChecked (key: string) : option<Infer.Snapshot.Saved> =
   match File.readAllBytes (checkedFile key) with
   | Ok bytes ->
-    let read : result<Infer.Snapshot.Saved, string> = Binary.ofBytes bytes
+    let read : result<Infer.Snapshot.Saved, string> = Tools.ofCacheBytes bytes
     match read with
     | Ok saved when saved.key = key ->
       File.touch (checkedFile key) |> ignore
@@ -49,7 +49,7 @@ let private loadChecked (key: string) : option<Infer.Snapshot.Saved> =
 let private loadFuns (key: string) : list<Core.Ir.FunDef> =
   match File.readAllBytes (funsFile key) with
   | Ok bytes ->
-    let read : result<list<Core.Ir.FunDef>, string> = Binary.ofBytes bytes
+    let read : result<list<Core.Ir.FunDef>, string> = Tools.ofCacheBytes bytes
     Result.defaultValue [] read
   | Error _ -> []
 

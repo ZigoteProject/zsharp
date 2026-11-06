@@ -44,15 +44,24 @@ let length (c: 'c) : int = fold (fun n _ -> n + 1) 0 c
 let toList (c: 'c) : list<'a> = List.rev (fold (fun acc x -> x :: acc) [] c)
 
 /// The integers `start`, `start + step`, … up to `stop` (included when a step reaches it), or
-/// down to it for a negative step: `{ start = 10; stop = 0; step = -2 }`.
+/// down to it for a negative step: `{ start = 10; stop = 0; step = -2 }`. A step of 0 is a bug,
+/// which panics (it would count forever), as F#'s throws.
 type Range = { start: int; stop: int; step: int }
 
 /// A range's integers, counted.
 impl Iter<Range, int> =
   let forEach (r: Range) f =
+    if r.step = 0 then
+      panic "Iter.Range: a step of 0"
     let mutable i = r.start
     let mutable ok = true
-    while ok && (if r.step > 0 then i <= r.stop else i >= r.stop) do
+    let mutable more = if r.step > 0 then i <= r.stop else i >= r.stop
+    while ok && more do
       ok <- f i
-      i <- i + r.step
+      // a next past int's end is past stop too: the range ends there, not in an overflow
+      match Int.checkedAdd i r.step with
+      | Some next ->
+        i <- next
+        more <- if r.step > 0 then next <= r.stop else next >= r.stop
+      | None -> more <- false
     ok

@@ -42,7 +42,7 @@ let private loadWorld (pre: string) : option<World> =
   else
     match File.readAllBytes (worldFile pre) with
     | Ok bytes ->
-      let read : result<World, string> = Binary.ofBytes bytes
+      let read : result<World, string> = Tools.ofCacheBytes bytes
       match read with
       | Ok w ->
         File.touch (worldFile pre) |> ignore
@@ -430,7 +430,7 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
   let compileOne (p: string * string * Set<string> * list<MFun> * list<MFun> * list<AbiFun> * list<string * int>) : result<string, PassError> / <> =
     let (file, kind, own, defined, others, calls, seeds) = p
     let typesHere : Map<string, TypeInfo> =
-      match Binary.ofBytes typesBytes with
+      match Tools.ofCacheBytes typesBytes with
       | Ok t -> t
       | Error e -> panic $"the types' copy: {e}"
     let part : option<Gen.Emit.Part> =

@@ -67,4 +67,10 @@ let main () =
   let ys: result<list<f64>, string> = fromJson (JArray [ JInt 1; JNumber 2.5; JString "3" ])
   println $"{ys}"
   println (Json.print (toJson (u64 0xFFFF_FFFF_FFFF_FFFF)))
+  // a u64 past i64's range keeps its value both ways (a double had 53 bits of it)
+  let past = "[9223372036854775809, 18446744073709551615, 12345678901234567891]"
+  let ids: result<list<u64>, string> = Result.bind fromJson (Json.parse past)
+  let top: result<u64, string> = fromJson (toJson (u64 0xFFFF_FFFF_FFFF_FFFF))
+  let tooBig: result<u64, string> = Result.bind fromJson (Json.parse "18446744073709551616")
+  println $"{ids} {top} {tooBig}"
   0

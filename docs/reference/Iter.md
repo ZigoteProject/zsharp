@@ -13,7 +13,8 @@ type Range
 ```
 
 The integers `start`, `start + step`, … up to `stop` (included when a step reaches it), or
-down to it for a negative step: `{ start = 10; stop = 0; step = -2 }`.
+down to it for a negative step: `{ start = 10; stop = 0; step = -2 }`. A step of 0 is a bug,
+which panics (it would count forever), as F#'s throws.
 
 ## Derives and impls
 

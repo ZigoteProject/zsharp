@@ -1226,8 +1226,10 @@ zs_str *zs_str_of_i64(int64_t v) {
     return str_of(buf, n);
 }
 
-// ponytail: integers exactly, others with 6 significant digits (no shortest round-trip, which
-// needs a much bigger algorithm); enough for output on a device
+// ponytail: integers to 1e15 exactly, others with 6 significant digits (no shortest round-trip,
+// which needs a much bigger algorithm); enough for output on a device. Past 1e15 and below 1e-4
+// a mantissa and an exponent, as C's %g writes them (2.5e+15, 3e-07): a number still, which
+// Json.print's text must be, not inf or 0
 zs_str *zs_str_of_f64(double v) {
     char buf[40];
     int n = 0;
@@ -1236,7 +1238,45 @@ zs_str *zs_str_of_f64(double v) {
         buf[n++] = '-';
         v = -v;
     }
-    if (v > 1e15) return str_of(n ? "-inf" : "inf", n ? 4 : 3); // ponytail: no exponent form
+    if (v > 1.7976931348623157e308) return str_of(n ? "-inf" : "inf", n ? 4 : 3);
+    if (v > 1e15 || (v > 0 && v < 1e-4)) {
+        // v as m * 10^e, m in [1, 10), by tens (some 330 at most; the error they add is far
+        // below the sixth digit); then m to six digits, the trailing zeros dropped
+        int e = 0;
+        while (v >= 10) {
+            v /= 10;
+            e++;
+        }
+        while (v < 1) {
+            v *= 10;
+            e--;
+        }
+        uint64_t f = (uint64_t)(v * 100000 + 0.5);
+        if (f >= 1000000) {
+            f /= 10;
+            e++;
+        }
+        buf[n++] = (char)('0' + f / 100000);
+        f %= 100000;
+        int k = 5;
+        while (k > 0 && f % 10 == 0) {
+            f /= 10;
+            k--;
+        }
+        if (k > 0) {
+            buf[n++] = '.';
+            char tmp[24];
+            int m = u64_text(f, tmp);
+            for (int i = m; i < k; i++) buf[n++] = '0';
+            for (int i = 0; i < m; i++) buf[n++] = tmp[i];
+        }
+        buf[n++] = 'e';
+        buf[n++] = e < 0 ? '-' : '+';
+        if (e < 0) e = -e;
+        if (e < 10) buf[n++] = '0';
+        n += u64_text((uint64_t)e, buf + n);
+        return str_of(buf, n);
+    }
     uint64_t whole = (uint64_t)v;
     double frac = v - (double)whole;
     n += u64_text(whole, buf + n);

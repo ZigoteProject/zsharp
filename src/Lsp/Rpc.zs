@@ -59,7 +59,6 @@ let rec write (j: Json) : string =
   | JNull -> "null"
   | JBool b -> if b then "true" else "false"
   | JInt n -> $"{n}"
-  | JNumber x -> $"{x}"
   | JString s -> quote s
   | JArray xs -> "[" + String.join "," (List.map write xs) + "]"
   | JObject kvs ->
@@ -67,6 +66,9 @@ let rec write (j: Json) : string =
       let (k, v) = kv
       quote k + ":" + write v
     "{" + String.join "," (List.map field kvs) + "}"
+  // a JNumber, and a JUInt (past i64's range) where the library has one: stage 0's hasn't, and
+  // the compiler builds with both
+  | number -> Json.print number
 
 /// A number.
 let num (n: int) : Json = JInt(i64 n)

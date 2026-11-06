@@ -5,3 +5,7 @@ f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8
 Some -2147483648 None
 len=-2147483648 "a \"quoted\" line of more than sixteen bytes\n"
 1.5 3.14159
+2147483647 true false
+Ok [1073741824; 2147483647; -2147483648; -1073741825] Ok 5000000000 Error 5000000000 doesn't fit an int
+[2.5e+15,3e-07,-1.25e-05,1e+300,0.5]
+ok 1:33: nesting deeper than 32 levels

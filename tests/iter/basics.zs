@@ -24,4 +24,10 @@ let main () =
   println $"{total b} {total b.[1..2]} {Iter.toList down}"
   Iter.iter (fun x -> print $"{x} ") t
   println ""
+  // a range that ends at int's end, or would step past it: the last element, then no overflow
+  let top: Iter.Range = { start = 9223372036854775805; stop = 9223372036854775807; step = 1 }
+  let bottom: Iter.Range =
+    { start = -9223372036854775806; stop = -9223372036854775807 - 1; step = -1 }
+  let wide: Iter.Range = { start = 1; stop = 10; step = 9223372036854775807 }
+  println $"{Iter.toList top} {Iter.toList bottom} {Iter.toList wide} {Iter.exists (fun x -> x = 9223372036854775807) top}"
   0

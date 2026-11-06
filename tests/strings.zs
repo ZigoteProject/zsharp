@@ -10,4 +10,7 @@ let main () =
   println $"{at "" 0} {at "" 6} {at "" 7} {at "abd" 0} {at "d" 5} {at "d" 6} {at "abdx" 0} {at "abx" 0} {at "a" -3} {at "c" 3}"
   println $"{String.split ", " "a, b,, c, "} {String.replace s "ab" "-"} {String.lastIndexOf "ab" s} {String.contains "ca" s}"
   println $"{Int.wrappingAdd 9223372036854775807 1} {9223372036854775807} {0} {-7} {Int.wrappingSub (u64 0) (u64 1)} {i32 -2147483648}"
+  // repeat into one buffer (none for a count of 0 or less), and lists' text built the same way
+  println $"[{String.repeat 3 "ab"}] [{String.repeat 0 "x"}] [{String.repeat -2 "x"}] [{String.repeat 4 ""}] [{String.repeat 2 "é"}] {String.length (String.padRight 100000 "x")}"
+  println $"{[ [ 1; 2 ]; []; [ 3 ] ]} {[ "" ]} {[ ""; "" ]} {[ "é"; "ab" ]}"
   0

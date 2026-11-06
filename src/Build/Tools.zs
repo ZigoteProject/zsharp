@@ -258,3 +258,11 @@ let writeWhole (path: string) (bytes: array<u8>) : unit =
     | Ok () -> File.move tmp path |> ignore
     | Error _ -> File.delete tmp |> ignore
   | Error _ -> ()
+
+/// The value a cache's bytes hold (`Binary`'s), its records and unions nested as deep as they
+/// are: `Binary.ofBytes` stops at a depth, for bytes from elsewhere, and a long function's Core
+/// nests as deep as it is long.
+let ofCacheBytes (bytes: span<u8>) : result<'a, string> =
+  let r = BinaryReader.create bytes
+  let x = (read r)?
+  if r.pos.Value = Span.length bytes then Ok x else Error "bytes after the value"

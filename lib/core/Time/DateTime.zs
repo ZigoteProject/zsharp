@@ -21,8 +21,11 @@ module DateTime =
   /// 1970-01-01T00:00:00Z.
   let unixEpoch : DateTime = { sinceEpoch = 0<ns> }
 
-  // a / b rounded down (toward minus infinity), for moments before the epoch
-  let private floorDiv (a: i64) (b: i64) = if a >= i64 0 then a / b else (a - b + i64 1) / b
+  // a / b rounded down (toward minus infinity), for moments before the epoch; b > 0 (a - b + 1,
+  // the way round it was, overflowed within b of i64's least)
+  let private floorDiv (a: i64) (b: i64) =
+    let q = a / b
+    if a < i64 0 && a % b <> i64 0 then q - i64 1 else q
 
   let private twoDigits (n: i64) = if n < i64 10 then "0" + string n else string n
 
@@ -32,7 +35,9 @@ module DateTime =
     let total = t.sinceEpoch / 1<ns>
     let perDay: i64 = 86400000000000 // typed, so the literal is 64 bits on every target
     let days = floorDiv total perDay
-    let inDay = total - days * perDay
+    // the remainder made positive: days * perDay is past i64's least within a day of it
+    let r = total % perDay
+    let inDay = if r < i64 0 then r + perDay else r
     // the civil date of a day number (Howard Hinnant's days_from_civil, inverted)
     let z = days + i64 719468
     let era = floorDiv z (i64 146097)
@@ -63,10 +68,9 @@ module DateTime =
         string year
     $"{yearText}-{twoDigits month}-{twoDigits day}T{twoDigits (secs / i64 3600)}:{twoDigits (secs / i64 60 % i64 60)}:{twoDigits (secs % i64 60)}{fraction}Z"
 
-  /// The moment of a civil date and time in UTC: `DateTime.ofParts 2026 11 4 8 30 0 0` (year,
-  /// month, day, hour, minute, second, nanoseconds), or `None` when a part is out of its range
-  /// (the day's, for its month and year; the year's, 1678 to 2262).
-  let ofParts (year: int) (month: int) (day: int) (hour: int) (minute: int) (second: int) (nanos: int) : option<DateTime> =
+  // the seconds since the epoch of a civil date and time in UTC, or None when a part is out of
+  // its range: some 9.3e9 at most, which nothing here overflows
+  let private secondsOf (year: int) (month: int) (day: int) (hour: int) (minute: int) (second: int) : option<i64> =
     let leap = year % 4 = 0 && (year % 100 <> 0 || year % 400 = 0)
     let daysIn =
       match month with
@@ -76,7 +80,7 @@ module DateTime =
       | 9
       | 11 -> 30
       | _ -> 31
-    if year < 1678 || year > 2262 || month < 1 || month > 12 || day < 1 || day > daysIn || hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59 || nanos < 0 || nanos > 999999999 then
+    if year < 1678 || year > 2262 || month < 1 || month > 12 || day < 1 || day > daysIn || hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59 then
       None
     else
       // the day number of a civil date (Howard Hinnant's days_from_civil)
@@ -88,14 +92,34 @@ module DateTime =
         (i64 153 * (if m > i64 2 then m - i64 3 else m + i64 9) + i64 2) / i64 5 + i64 day - i64 1
       let doe = yoe * i64 365 + yoe / i64 4 - yoe / i64 100 + doy
       let days = era * i64 146097 + doe - i64 719468
-      let secs = days * i64 86400 + i64 hour * i64 3600 + i64 minute * i64 60 + i64 second
-      Some { sinceEpoch = (secs * i64 1000000000 + i64 nanos) * 1<ns> }
+      Some (days * i64 86400 + i64 hour * i64 3600 + i64 minute * i64 60 + i64 second)
+
+  // the moment secs and nanos after the epoch, or None past what i64 nanoseconds hold (2262's
+  // dates after the 11th of April)
+  let private ofSeconds (secs: i64) (nanos: int) : option<DateTime> =
+    match Int.checkedMul secs (i64 1000000000) with
+    | Some whole ->
+      match Int.checkedAdd whole (i64 nanos) with
+      | Some total -> Some { sinceEpoch = total * 1<ns> }
+      | None -> None
+    | None -> None
+
+  /// The moment of a civil date and time in UTC: `DateTime.ofParts 2026 11 4 8 30 0 0` (year,
+  /// month, day, hour, minute, second, nanoseconds), or `None` when a part is out of its range
+  /// (the day's, for its month and year; the year's, 1678 to 2262) or the moment is past the
+  /// last a `DateTime` holds, 2262-04-11T23:47:16.854775807Z.
+  let ofParts (year: int) (month: int) (day: int) (hour: int) (minute: int) (second: int) (nanos: int) : option<DateTime> =
+    if nanos < 0 || nanos > 999999999 then
+      None
+    else
+      let secs = (secondsOf year month day hour minute second)?
+      ofSeconds secs nanos
 
   /// The moment ISO 8601 writes: `2026-11-04T08:30:00Z`, `2026-11-04T08:30:00.25Z`, with
   /// `+02:00` or `-05:30` instead of `Z` (the offset taken off, the moment in UTC) or no zone at
   /// all (taken as UTC), without the seconds (`2026-11-04T08:30Z`), or a date alone
   /// (`2026-11-04`, midnight UTC); a space may stand for the `T`. `None` for anything else, a
-  /// part out of its range included.
+  /// part out of its range or a moment past 2262-04-11T23:47:16.854775807Z included.
   let parseIso (s: string) : option<DateTime> =
     let n = String.length s
     let at (i: int) = if i < n then int (String.byte s i) else -1
@@ -156,9 +180,10 @@ module DateTime =
         if not ok || i <> n then
           None
         else
-          match ofParts year month day hour minute second nanos with
-          | Some t -> Some { sinceEpoch = t.sinceEpoch - i64 offset * 1000000000<ns> }
-          | None -> None
+          // the offset taken off in seconds, before nanoseconds: a moment that fits in UTC may be
+          // past the range as written
+          let secs = (secondsOf year month day hour minute second)?
+          ofSeconds (secs - i64 offset) nanos
 
 /// A moment prints in ISO 8601 (`DateTime.toIso`).
 impl Show<DateTime> =
