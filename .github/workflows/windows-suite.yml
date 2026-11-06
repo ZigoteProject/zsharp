@@ -1,5 +1,5 @@
-# Temporary: the suite on Windows alone, with the archives an earlier run built (its compiler is
-# this tree's), so a change to the tests or the setup is tried in half an hour, not two
+# Temporary: which zig release works on Windows (0.16.0 broke `zig rc` on arm64; Chocolatey's
+# 0.17.0 broke linking against a DLL's import library on x64), with an earlier run's archives
 name: windows-suite
 on:
   push:
@@ -8,22 +8,19 @@ permissions:
   contents: read
   actions: read
 jobs:
-  suite:
+  zig:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { os: windows-2025, archive: zs-ci-windows-x86_64 }
-          - { os: windows-11-arm, archive: zs-ci-windows-aarch64 }
+        os: [windows-2025, windows-11-arm]
+        zig: [0.16.0, 0.17.0]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 150
+    timeout-minutes: 40
     defaults:
       run:
         shell: bash
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          fetch-depth: 0
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: releases
@@ -34,8 +31,24 @@ jobs:
       - shell: pwsh
         run: |
           $a = if ($env:RUNNER_ARCH -eq 'ARM64') { 'aarch64' } else { 'x86_64' }
-          Invoke-WebRequest "https://ziglang.org/download/0.16.0/zig-$a-windows-0.16.0.zip" -OutFile "$env:RUNNER_TEMP\zig.zip"
+          $v = '${{ matrix.zig }}'
+          Invoke-WebRequest "https://ziglang.org/download/$v/zig-$a-windows-$v.zip" -OutFile "$env:RUNNER_TEMP\zig.zip"
           Expand-Archive "$env:RUNNER_TEMP\zig.zip" -DestinationPath $env:RUNNER_TEMP
-          "$env:RUNNER_TEMP\zig-$a-windows-0.16.0" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
-      - run: tar -xzf "dist/${{ matrix.archive }}.tar.gz" -C dist
-      - run: zig version && ./test.sh --zs "dist/${{ matrix.archive }}/zs"
+          "$env:RUNNER_TEMP\zig-$a-windows-$v" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+      - env:
+          ZS_NO_SERVER: 1
+        run: |
+          set +e
+          a=$([ "$RUNNER_ARCH" = ARM64 ] && echo aarch64 || echo x86_64)
+          tar -xzf "dist/zs-ci-windows-$a.tar.gz" -C dist
+          zs=$PWD/dist/zs-ci-windows-$a/zs
+          step() { local t=$1; shift; echo "::group::$*"; timeout "$t" "$@"; local c=$?; echo "=> exit $c"; echo "::endgroup::"; echo "SUMMARY $c: $*" >> "$RUNNER_TEMP/summary"; }
+          step 30 zig version
+          step 1200 "$zs" build examples/simple.zs -o "$RUNNER_TEMP/simple.exe"
+          step 30 "$RUNNER_TEMP/simple.exe"
+          for i in 1 2 3; do step 600 "$zs" build tests/basics.zs -o "$RUNNER_TEMP/b$i.exe"; step 30 "$RUNNER_TEMP/b$i.exe"; done
+          step 600 "$zs" build tests/cthreads/callbacks.zs -o "$RUNNER_TEMP/cb.exe"
+          step 30 "$RUNNER_TEMP/cb.exe"
+          step 600 "$zs" build tests/cimport/ops.zs -o "$RUNNER_TEMP/ops.exe"
+          step 30 "$RUNNER_TEMP/ops.exe"
+          echo; cat "$RUNNER_TEMP/summary"
