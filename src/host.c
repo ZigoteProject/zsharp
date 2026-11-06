@@ -141,17 +141,20 @@ extern size_t zs_thread_stack;
 
 // The compiler recurses as deep as the program it reads nests (a long list literal, a long run of
 // lets, a chain of calls inlined): 256 MB of stack, not the usual 8 MB. The pool's threads get it
-// from the runtime, whatever the limit (an unlimited one too, which the runtime takes as 8 MB);
-// Linux grows the main thread's stack up to the soft RLIMIT_STACK, so that is raised to it where
-// the hard limit allows, before main, within the room the kernel left below the stack at exec
-// (128 MB at least), where macOS keeps the main thread's 8 MB. The processes the compiler runs
-// inherit the limit: their threads reserve more address space, not more memory, and take 8 MB
-// where the address space has no room for more.
+// from the runtime, whatever the soft limit (an unlimited one too, which the runtime takes as
+// 8 MB), and a hard limit below it is theirs too, as an administrator set it; Linux grows the
+// main thread's stack up to the soft RLIMIT_STACK, so that is raised to it where the hard limit
+// allows, before main, within the room the kernel left below the stack at exec (128 MB at least),
+// where macOS keeps the main thread's 8 MB. The processes the compiler runs inherit the limit:
+// their threads reserve more address space, not more memory, and take 8 MB where the address
+// space has no room for more.
 __attribute__((constructor(101))) static void zs_host_stack(void) {
     rlim_t want = (rlim_t)256 << 20;
-    zs_thread_stack = (size_t)want;
     struct rlimit rl;
-    if (getrlimit(RLIMIT_STACK, &rl) != 0 || rl.rlim_cur == RLIM_INFINITY || rl.rlim_cur >= want) return;
+    int got = getrlimit(RLIMIT_STACK, &rl) == 0;
+    zs_thread_stack = (size_t)want;
+    if (got && rl.rlim_max != RLIM_INFINITY && rl.rlim_max < want) zs_thread_stack = (size_t)rl.rlim_max;
+    if (!got || rl.rlim_cur == RLIM_INFINITY || rl.rlim_cur >= want) return;
     rl.rlim_cur = rl.rlim_max == RLIM_INFINITY || rl.rlim_max >= want ? want : rl.rlim_max;
     setrlimit(RLIMIT_STACK, &rl);
 }

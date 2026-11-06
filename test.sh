@@ -189,14 +189,17 @@ elif diff <(tests/stress.sh 2>&1) tests/stress.expected >"$tmp/stress.diff"; the
 else echo "FAIL tests/stress.sh"; cat "$tmp/stress.diff"; fail=1; fi
 # and with the stack unlimited (ulimit -s unlimited), which the runtime takes as 8 MB a thread: the
 # compiler's pool threads, which run its passes over each function, still get their 256 MB
-# (src/host.c), for a long list literal and deep parentheses
+# (src/host.c). stress.sh's long list literal, run of lets and else-if chain (the last two as
+# deep in the IR those passes walk; parentheses are gone by then), which build with 256 MB
 if [ "$(uname -s)" != Linux ] || ! (ulimit -S -s unlimited) 2>/dev/null; then echo "skip the compiler with ulimit -s unlimited (Linux's, where the hard limit allows it)"
 else
   { echo 'let main () ='; echo "  let x = [ $(seq 0 19999 | paste -sd ';' -) ]"; echo '  println $"{List.length x}"'; echo '  0'; } > "$tmp/ulist.zs"
-  { echo 'let main () ='; printf '  let x = '; printf '(%.0s' $(seq 10000); printf 1; printf ')%.0s' $(seq 10000); echo
-    echo '  println $"{x}"'; echo '  0'; } > "$tmp/uparen.zs"
-  if (ulimit -S -s unlimited && bin/zs build "$tmp/ulist.zs" -o "$tmp/ulist" && bin/zs build "$tmp/uparen.zs" -o "$tmp/uparen") >"$tmp/unlimited.log" 2>&1 \
-     && [ "$("$tmp/ulist")" = 20000 ] && [ "$("$tmp/uparen")" = 1 ]; then echo "ok   the compiler with ulimit -s unlimited (its pool threads' stacks)"
+  { echo 'let main () ='; seq 0 4999 | sed 's/.*/  let a& = &/'; echo '  println $"{a0 + a4999}"'; echo '  0'; } > "$tmp/ulets.zs"
+  { echo 'let main () ='; echo '  let x = 4321'
+    printf '  let y = '; for i in $(seq 0 4999); do printf 'if x = %d then %d else ' $i $((i * 2)); done; echo '0'
+    echo '  println $"{y}"'; echo '  0'; } > "$tmp/uifs.zs"
+  if (ulimit -S -s unlimited && for p in ulist ulets uifs; do bin/zs build "$tmp/$p.zs" -o "$tmp/$p" || exit 1; done) >"$tmp/unlimited.log" 2>&1 \
+     && [ "$("$tmp/ulist")" = 20000 ] && [ "$("$tmp/ulets")" = 4999 ] && [ "$("$tmp/uifs")" = 8642 ]; then echo "ok   the compiler with ulimit -s unlimited (its pool threads' stacks)"
   else echo "FAIL the compiler with ulimit -s unlimited"; grep -v '^ *[0-9]* | ' "$tmp/unlimited.log" | head -3; fail=1; fi
 fi
 # programs broken at random: errors, never a crash, a panic or a hang of zs check or zs fmt
