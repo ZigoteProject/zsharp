@@ -72,7 +72,9 @@ let provide (header: string) (dir: string) (flags: list<string>) (cacheDir: stri
   match Build.CImport.importHeader header dir flags cacheDir (-1) with
   | Error e -> Error e
   | Ok r ->
-    let input = if r.headerFile = "" then header else Path.getRelativePath dir r.headerFile
+    // with `/`, so the module names its input as one written on any OS (Windows reads it too)
+    let input =
+      if r.headerFile = "" then header else Diag.Render.path (Path.getRelativePath dir r.headerFile)
     let skipped = List.map (fun (nw: string * string) -> "// left out: " + fst nw + " (" + snd nw + ")") r.skipped
     let header = List.concat [ [ "// provided by c 0.1 from " + header; "// input: " + input; "" ]; skipped; (if List.isEmpty skipped then [] else [ "" ]) ]
     Ok(String.join "\n" (List.append header (List.collect (declText r.infos) r.decls)))

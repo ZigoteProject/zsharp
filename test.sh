@@ -61,6 +61,11 @@ arch=$(uname -m); [ -n "$target" ] && arch=${target%%-*}
 # Windows on Arm runs Git Bash as an x86-64 program, whose uname says x86_64: the processor is
 # the system's own (emulation leaves it as it is), and zs.exe is built for it
 [ $windows = 1 ] && [ -z "$target" ] && case ${PROCESSOR_IDENTIFIER:-} in ARM*) arch=aarch64 ;; esac
+# the C checks' compiler (C programs linking a Z# library, tests/libm.sh): clang, or zig cc for
+# another target, and for MinGW on Windows (clang alone targets MSVC there, whose C library the
+# runtime isn't built for)
+cc=(clang); [ -n "$target" ] && cc=(zig cc -target "$target")
+[ $windows = 1 ] && [ -z "$target" ] && cc=(zig cc -target "$arch-windows-gnu")
 for t in $(find tests -name '*.zs' | sort); do
   base=${t%.zs}
   [ -f "$base.out" ] || [ -f "$base.err" ] || continue
@@ -170,14 +175,22 @@ else echo "FAIL tests/doctest.sh"; cat "$tmp/doctest.diff"; fail=1; fi
 # zs provide (0001): the providers' modules, and a program built with them beside it
 if diff <(tests/providers/provide.sh bin/zs 2>&1) tests/providers/provide.expected >"$tmp/provide.diff"; then echo "ok   tests/providers/provide.sh (zs provide json, csv, sql and svd, and one on PATH)"
 else echo "FAIL tests/providers/provide.sh"; cat "$tmp/provide.diff"; fail=1; fi
-# the Nucleo firmware on the chip's SVD compiles to the same register accesses as the Mmio one
-if out=$(tests/providers/svd_nucleo.sh bin/zs 2>&1); then echo "ok   tests/providers/svd_nucleo.sh ($out)"
+# the Nucleo firmware on the chip's SVD compiles to the same register accesses as the Mmio one,
+# counted in the IR as LLVM's opt optimizes it (LLVM's Windows installer has no opt; its release
+# archive, which CI unpacks, has)
+if ! command -v opt >/dev/null; then echo "skip tests/providers/svd_nucleo.sh (no opt, LLVM's optimizer)"
+elif out=$(tests/providers/svd_nucleo.sh bin/zs 2>&1); then echo "ok   tests/providers/svd_nucleo.sh ($out)"
 else echo "FAIL tests/providers/svd_nucleo.sh"; echo "$out"; fail=1; fi
 
-# the checked library and modules, cached between builds: the same program from the cache
-if diff <(tests/cache.sh 2>&1) tests/cache.expected >"$tmp/cache.diff"; then echo "ok   tests/cache.sh (checked library, modules and compiled modules cached)"
+# the checked library and modules, cached between builds: the same program from the cache.
+# Windows' builds are one module, through mingw-w64's path (Options.nativeTarget) and not the
+# host's module per file, so they report no module cache and no clang jobs: the rest is the same
+cacheexp=tests/cache.expected
+[ $windows = 1 ] && { sed 's/ module cache .*//' tests/cache.expected >"$tmp/cache.expected"; cacheexp=$tmp/cache.expected; }
+if diff <(tests/cache.sh 2>&1) "$cacheexp" >"$tmp/cache.diff"; then echo "ok   tests/cache.sh (checked library, modules and compiled modules cached)"
 else echo "FAIL tests/cache.sh"; cat "$tmp/cache.diff"; fail=1; fi
-if diff <(tests/pgo.sh 2>&1) tests/pgo.expected >"$tmp/pgo.diff"; then echo "ok   tests/pgo.sh (profile-guided optimization finds its profile)"
+if [ $windows = 1 ]; then echo "skip tests/pgo.sh (no profile runtime for mingw-w64: zig cc links Windows' programs, and zs build refuses --profile-generate there)"
+elif diff <(tests/pgo.sh 2>&1) tests/pgo.expected >"$tmp/pgo.diff"; then echo "ok   tests/pgo.sh (profile-guided optimization finds its profile)"
 else echo "FAIL tests/pgo.sh"; cat "$tmp/pgo.diff"; fail=1; fi
 
 # programs as big and as deep as generated code makes them build in time (nothing quadratic, no
@@ -343,11 +356,20 @@ if [ -f /usr/include/raylib.h ]; then
   else echo "FAIL examples/raylib"; head -5 "$tmp/raylib.log"; fail=1; fi
 else echo "skip examples/raylib (no raylib.h)"; fi
 
-# debug info: gdb on a zs build -g program (breakpoints, arguments, locals, stepping, backtrace)
-if command -v gdb >/dev/null && [ $windows = 0 ]; then
+# debug info: gdb on a zs build -g program (breakpoints, arguments, locals, stepping, backtrace);
+# not on Windows on Arm, whose gdb is x86-64's and debugs no arm64 program. Where one fails on
+# Windows, gdb's own words on the program follow its diff
+gdbskip=""; command -v gdb >/dev/null || gdbskip="no gdb"
+[ $windows = 1 ] && [ "$arch" = aarch64 ] && gdbskip="its gdb is x86-64's and debugs no arm64 program"
+gdb_raw() {
+  [ $windows = 1 ] || return 0
+  bin/zs build -g tests/debug/prog.zs -o "$tmp/gdbraw.exe" >/dev/null 2>&1 \
+    && timeout 60 gdb -q -batch -ex "break square" -ex run -ex bt -ex "info source" "$tmp/gdbraw.exe" 2>&1 | head -30
+}
+if [ -z "$gdbskip" ]; then
   if diff <(tests/debug/gdb.sh) tests/debug/gdb.expected >"$tmp/gdb.diff"; then echo "ok   tests/debug/gdb.sh"
-  else echo "FAIL tests/debug/gdb.sh"; cat "$tmp/gdb.diff"; fail=1; fi
-else echo "skip tests/debug/gdb.sh (no gdb)"; fi
+  else echo "FAIL tests/debug/gdb.sh"; cat "$tmp/gdb.diff"; gdb_raw; fail=1; fi
+else echo "skip tests/debug/gdb.sh ($gdbskip)"; fi
 # -g on every kind of value (closures, C pointers, a Buffer, unions that hold themselves through
 # a list, a ref or an array): it builds, runs, and its DWARF verifies, at -O0 and with --release.
 # GNU ld merges .debug_str's strings by their tails, so a .debug_str_offsets entry may point
@@ -380,13 +402,13 @@ if command -v qemu-system-arm >/dev/null && command -v node >/dev/null; then
 fi
 # heap values under gdb (track D, item 1): a list's cells, an array's elements, a tree's nodes
 # with their case, an option over a string, a ref's value
-if command -v gdb >/dev/null; then
+if [ -z "$gdbskip" ]; then
   if diff <(tests/debug/gdb_heap.sh) tests/debug/gdb_heap.expected >"$tmp/gdb_heap.diff"; then echo "ok   tests/debug/gdb_heap.sh"
-  else echo "FAIL tests/debug/gdb_heap.sh"; cat "$tmp/gdb_heap.diff"; fail=1; fi
+  else echo "FAIL tests/debug/gdb_heap.sh"; cat "$tmp/gdb_heap.diff"; gdb_raw; fail=1; fi
   # -g on an optimized build (0011, debugging 3): the lines stay
   if diff <(tests/debug/opt.sh) tests/debug/opt.expected >"$tmp/gdb_opt.diff"; then echo "ok   tests/debug/opt.sh (-g --release)"
   else echo "FAIL tests/debug/opt.sh"; cat "$tmp/gdb_opt.diff"; fail=1; fi
-fi
+else echo "skip tests/debug/gdb_heap.sh and tests/debug/opt.sh ($gdbskip)"; fi
 # the same under lldb, the debugger on macOS
 if command -v lldb >/dev/null && [ $windows = 0 ]; then
   if diff <(tests/debug/lldb.sh) tests/debug/lldb.expected >"$tmp/lldb.diff"; then echo "ok   tests/debug/lldb.sh"
@@ -546,7 +568,7 @@ elif bin/zs build tests/mcu/bytes.zs --target wasm32 -o "$tmp/bytes.wasm" 2>"$tm
 else echo "FAIL tests/mcu/bytes.zs on wasm32"; cat "$tmp/bytes.log"; fail=1; fi
 # Math where libm is compiler-rt's and the runtime's (pow, atan2, round: fdlibm's, checked against
 # the host's libm by tests/libm.sh), with a host's results: both chips under qemu, and wasm32
-if out=$(tests/libm.sh 2>&1); then echo "ok   tests/libm.sh (the runtime's pow, atan2 and round against the host's libm)"
+if out=$(tests/libm.sh "${cc[@]}" 2>&1); then echo "ok   tests/libm.sh (the runtime's pow, atan2 and round against the host's libm)"
 else echo "FAIL tests/libm.sh"; echo "$out"; fail=1; fi
 if command -v qemu-system-arm >/dev/null; then
   for chip in cortex-m4 cortex-m0plus; do
@@ -712,8 +734,11 @@ else echo "FAIL tests/lsp/providers.sh"; cat "$tmp/lspp.diff"; fail=1; fi
 # code actions (tests/lsp/edits.sh)
 if diff <(tests/lsp/edits.sh bin/zs 2>&1) tests/lsp/edits.expected >"$tmp/lspx.diff"; then echo "ok   tests/lsp/edits.sh"
 else echo "FAIL tests/lsp/edits.sh"; cat "$tmp/lspx.diff"; fail=1; fi
-# the build server: the binary an in-process build makes, errors and exit codes back
-if diff <(tests/server.sh 2>&1) tests/server.expected >"$tmp/server.diff"; then echo "ok   tests/server.sh (the build server)"
+# the build server: the binary an in-process build makes, errors and exit codes back; not on
+# Windows, which has no build server yet, as its socket's directory can't be made this user's
+# alone there (src/Server.zs)
+if [ $windows = 1 ]; then echo "skip tests/server.sh (no build server on Windows: its socket's directory can't be made this user's alone yet)"
+elif diff <(tests/server.sh 2>&1) tests/server.expected >"$tmp/server.diff"; then echo "ok   tests/server.sh (the build server)"
 else echo "FAIL tests/server.sh"; cat "$tmp/server.diff"; fail=1; fi
 
 # editors may start zs without arguments: it detects LSP or MCP from the first byte
@@ -752,10 +777,6 @@ else echo "skip editors/tree-sitter-zsharp (no tree-sitter CLI; rebuild the dev 
 
 fi
 
-# C programs linking a Z# library: clang, or zig cc for another target, and for MinGW on Windows
-# (clang alone targets MSVC there, whose C library the runtime isn't built for)
-cc=(clang); [ -n "$target" ] && cc=(zig cc -target "$target")
-[ $windows = 1 ] && [ -z "$target" ] && cc=(zig cc -target "$arch-windows-gnu")
 # a library's constants are static (0014): a tree of union cases, a table and a record, read by an
 # export that C calls, with no startup code (a library has none); a C program's output is text,
 # \r\n on Windows

@@ -191,7 +191,7 @@ and parseManifest (root: string) (file: string) (lines: list<string>) : result<M
                       for d in List.sort names do
                         if File.exists (Path.combine (Path.combine dir d) "zs.toml") then
                           Buffer.push (Path.combine dir d) members
-                    | Error _ -> fail n $"[workspace] members: no directory {dir}"
+                    | Error _ -> fail n $"[workspace] members: no directory {Diag.Render.path dir}"
                   else
                     Buffer.push (Path.getFullPath (Path.combine root pat)) members
               | ("members", Error msg) -> fail n $"[workspace] members: {msg}"
@@ -318,24 +318,25 @@ let packageOf (file: string) : result<Package, Problem> =
       | [] -> Ok(List.rev acc)
       | (name, dep) :: more ->
         let path = depPath top name dep
+        let shown = Diag.Render.path path
         if not (File.exists (Path.combine path "zs.toml")) then
           match dep with
           | GitDep _
           | GitVersion _ ->
-            if Directory.exists path then fail $"dependency '{name}': no zs.toml in {path}" else fail $"git dependency '{name}' isn't fetched yet: run zs fetch"
-          | PathDep _ -> fail $"dependency '{name}': no zs.toml in {path}"
+            if Directory.exists path then fail $"dependency '{name}': no zs.toml in {shown}" else fail $"git dependency '{name}' isn't fetched yet: run zs fetch"
+          | PathDep _ -> fail $"dependency '{name}': no zs.toml in {shown}"
         else
           let key = modulePrefix name
           match Map.tryFind key given.Value with
-          | Some(other, otherName) when other <> path -> fail $"dependency '{name}' is {path}, and '{otherName}' is {other}: one name is one package in a build"
+          | Some(other, otherName) when other <> path -> fail $"dependency '{name}' is {shown}, and '{otherName}' is {Diag.Render.path other}: one name is one package in a build"
           | _ ->
             given.Value <- Map.add key (path, name) given.Value
             match Map.tryFind path made.Value with
             | Some p ->
-              if p.prefix <> Some key then fail $"the package in {path} is a dependency under two names, {Option.defaultValue "" p.prefix} and {key}; give it one" else deps more (PackageDep(key, p) :: acc)
+              if p.prefix <> Some key then fail $"the package in {shown} is a dependency under two names, {Option.defaultValue "" p.prefix} and {key}; give it one" else deps more (PackageDep(key, p) :: acc)
             | None ->
               if Set.contains path reading.Value then
-                fail $"dependency '{name}' depends on itself through {path}"
+                fail $"dependency '{name}' depends on itself through {shown}"
               else
                 reading.Value <- Set.add path reading.Value
                 match readManifest path with
@@ -440,7 +441,7 @@ let fetchDeps (top: Manifest) (update: bool) (offline0: bool) : list<string> =
   // a member's lock: the workspace has the one (0018 item 8)
   match workspaceOf top with
   | Some w when File.exists (Path.combine top.root "zs.lock") ->
-    Buffer.push $"{Path.getRelativePath (Environment.currentDirectory ()) (Path.combine top.root "zs.lock")} belongs to the workspace at {Path.getRelativePath (Environment.currentDirectory ()) (Path.combine w.root "zs.toml")}, which has the one lock; delete it and run zs fetch at the root" errors
+    Buffer.push $"{Diag.Render.path (Path.getRelativePath (Environment.currentDirectory ()) (Path.combine top.root "zs.lock"))} belongs to the workspace at {Diag.Render.path (Path.getRelativePath (Environment.currentDirectory ()) (Path.combine w.root "zs.toml"))}, which has the one lock; delete it and run zs fetch at the root" errors
   | _ -> ()
   // a workspace's members resolve together, into the one lock (0018 item 8)
   let projects =
@@ -463,10 +464,12 @@ let fetchDeps (top: Manifest) (update: bool) (offline0: bool) : list<string> =
         Directory.create (Path.combine root ".zs-cache") |> ignore
         Directory.create (Path.getDirectoryName dir) |> ignore
         eprintln $"fetching {name} from {url}"
-        Result.map (fun _ -> dir) (git [ "clone"; "--quiet"; "--"; url; dir ])
+        // its files as committed, on every OS, so zs.lock's hash of them is one: git for Windows
+        // would write CRLF for LF (its core.autocrlf, and a text attribute's native eol)
+        Result.map (fun _ -> dir) (git [ "clone"; "--quiet"; "-c"; "core.autocrlf=false"; "-c"; "core.eol=lf"; "--"; url; dir ])
     let fetchOrigin (dir: string) (what: string) : result<string, string> =
       if offline then noNetwork what else git [ "-C"; dir; "fetch"; "--quiet"; "--tags"; "--force"; "origin" ]
-    let mismatch (name: string) (where: string) = $"{name} doesn't match zs.lock's hash: the tag moved, or {where} was edited; zs fetch restores the locked files, zs update accepts the new ones"
+    let mismatch (name: string) (where: string) = $"{name} doesn't match zs.lock's hash: the tag moved, or {Diag.Render.path where} was edited; zs fetch restores the locked files, zs update accepts the new ones"
     let checkout (name: string) (url: string) (rev: string) (isVersion: bool) : bool =
       let dir = gitDir top name
       let entry = Map.tryFind name lock
@@ -615,14 +618,14 @@ let fetchDeps (top: Manifest) (update: bool) (offline0: bool) : list<string> =
               visited.Value <- Set.add dir visited.Value
               match readManifest dir with
               | Ok dm -> visit dm
-              | Error p -> Buffer.push $"{p.file}: {p.message}" errors
+              | Error p -> Buffer.push $"{Diag.Render.path p.file}: {p.message}" errors
         | GitVersion(url, least) -> Buffer.push (name, url, (if m.root = top.root then raise name url least else least)) wanted
         | PathDep p ->
           if File.exists (Path.combine p "zs.toml") && not (Set.contains p visited.Value) then
             visited.Value <- Set.add p visited.Value
             match readManifest p with
             | Ok dm -> visit dm
-            | Error pr -> Buffer.push $"{pr.file}: {pr.message}" errors
+            | Error pr -> Buffer.push $"{Diag.Render.path pr.file}: {pr.message}" errors
     visit top
     // the releases: the lock's while it gives each at least what's asked, else selected
     let asked = Array.toList (Buffer.toArray wanted)
@@ -669,7 +672,7 @@ let fetchDeps (top: Manifest) (update: bool) (offline0: bool) : list<string> =
                       match d with
                       | GitVersion(u2, l2) -> require k u2 l2
                       | _ -> ()
-                  | Error p -> Buffer.push $"{p.file}: {p.message}" errors
+                  | Error p -> Buffer.push $"{Diag.Render.path p.file}: {p.message}" errors
                 | Error _ -> ()
       for (name, url, least) in asked do
         require name url least
@@ -680,7 +683,7 @@ let fetchDeps (top: Manifest) (update: bool) (offline0: bool) : list<string> =
         visited.Value <- Set.add dir visited.Value
         match readManifest dir with
         | Ok dm -> visit dm
-        | Error p -> Buffer.push $"{p.file}: {p.message}" errors
+        | Error p -> Buffer.push $"{Diag.Render.path p.file}: {p.message}" errors
   if Buffer.length errors = 0 then
     for p in projects do
       forProject p
@@ -719,7 +722,7 @@ let vendor (top: Manifest) : list<string> =
           if dirHash into <> l.hash then
             Buffer.push $"vendor {name}: the copy's hash differs from the lock's" errors
           else
-            println $"vendored {name} {l.rev} into {Path.getRelativePath top.root into}"
+            println $"vendored {name} {l.rev} into {Diag.Render.path (Path.getRelativePath top.root into)}"
     Array.toList (Buffer.toArray errors)
   | errors -> errors
 

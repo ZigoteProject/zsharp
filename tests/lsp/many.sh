@@ -4,7 +4,10 @@
 set -u
 zs=${1:-bin/zs}
 f=tests/err_many.zs
-uri="file://$(pwd)/$f"
+# this checkout as zs reads it: on Windows its own path (cygpath -m: D:/a/b, where Git Bash's pwd
+# says /d/a/b), and a file URI's path then starts with the drive (file:///D:/a/b)
+here=$(cygpath -m "$PWD" 2>/dev/null || pwd); root="file:///${here#/}"
+uri="$root/$f"
 text=$(sed 's/\\/\\\\/g; s/"/\\"/g' "$f" | awk '{printf "%s\\n", $0}')
 frame() { printf 'Content-Length: %d\r\n\r\n%s' "$(printf '%s' "$1" | wc -c)" "$1"; }
 check=$("$zs" check "$f" 2>&1 | sed -n "s|^$f:\([0-9]*\)[:0-9]*: error: |\1: |p")

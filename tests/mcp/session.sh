@@ -6,6 +6,9 @@ zs=${1:-bin/zs}
 # the docs tool's probe goes in this user's cache, not the shared temporary directory, where
 # another user could make it a link to one of this user's files first
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+# this checkout as zs names it: on Windows its own path (cygpath -m: D:/a/b, where Git Bash's pwd
+# says /d/a/b)
+here=$(cygpath -m "$PWD" 2>/dev/null || pwd)
 {
   echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}'
   echo '{"jsonrpc":"2.0","method":"notifications/initialized"}'
@@ -21,7 +24,7 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
   echo '{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"definition","arguments":{"file":"tests/mcp/sample.zs","line":5,"column":17}}}'
   echo '{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"explain","arguments":{"file":"tests/mcp/sample.zs","line":5,"column":21}}}'
   echo '{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"explain","arguments":{"file":"tests/mcp/sample.zs","line":6,"column":3}}}'
-} | ZS_NO_SERVER=1 TMPDIR=$tmp "$zs" mcp | sed "s|$(pwd)|.|g" | while IFS= read -r line; do
+} | ZS_NO_SERVER=1 TMPDIR=$tmp "$zs" mcp | sed "s|$here|.|g" | while IFS= read -r line; do
   # (isError's true or false as [a-z]*: BSD's sed, macOS's, has no \| in a basic regex)
   case "$line" in
     *'"tools":['*) printf '%s\n' "$line" | grep -o '"name":"[a-z_]*"' | tr '\n' ' '; echo ;;

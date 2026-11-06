@@ -191,10 +191,10 @@ the edit, and a renamed provided name is refused with where it comes from
 
 ## A provider of your own
 
-A provider is a program named `zs-provider-<name>` on PATH, in any language, or a package: a
-dependency whose `zs.toml` has a `[provider]` section naming its program is the provider of
-its name, built by the compiler into `.zs-cache/providers/bin` when its sources change and run
-the same way:
+A provider is a program named `zs-provider-<name>` on PATH, in any language (on Windows an
+executable, `zs-provider-<name>.exe`, not a script), or a package: a dependency whose `zs.toml`
+has a `[provider]` section naming its program is the provider of its name, built by the compiler
+into `.zs-cache/providers/bin` when its sources change and run the same way:
 
 ```toml
 [package]

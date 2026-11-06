@@ -35,7 +35,10 @@ cd "$t"
 "$zs" test cov.zs --coverage
 echo "lcov:"
 grep -c '^DA:' coverage.lcov
-grep '^SF:' coverage.lcov | sed "s|$t/||"
+# the file under the directory as the compiler has it: on Windows its own form (C:\…\cov.zs),
+# compared with / for \ (cygpath -m), as Git Bash's /tmp isn't a path the compiler knows
+dir=$t; command -v cygpath >/dev/null && dir=$(cygpath -m "$t")
+grep '^SF:' coverage.lcov | tr '\\' / | sed "s|$dir/||"
 echo "a program that ends with Environment.exit writes its counts too:"
 cat > ex.zs <<'ZS'
 let check n =

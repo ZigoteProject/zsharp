@@ -58,7 +58,7 @@ than 200 each.
 |---|---|---|
 | `Diagnostic` | 100 | [0021](../docs/proposals/0021-warnings.md)'s record: severity, name, span, message, notes. `Span` is a file index, an offset and a length. |
 | `Report` | 50 | the effect (`Report.diagnostic : Diagnostic -> unit`) and `collect : (unit -> 'a / Report) -> 'a * array<Diagnostic>`, the handler every job and task boundary wraps its work in. |
-| `Render` | 200 | text for the terminal (file, line and column from a `Source`'s line index), [0023](../docs/proposals/0023-json-in-core.md)'s `Json` for LSP and MCP; sorts by file and position. |
+| `Render` | 200 | text for the terminal (file, line and column from a `Source`'s line index), [0023](../docs/proposals/0023-json-in-core.md)'s `Json` for LSP and MCP; sorts by file and position. `path` is a file's path as the compiler's messages name it, `/` between its parts on every OS. |
 
 ### 2.2 `Syntax/`: text to tree
 

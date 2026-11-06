@@ -3,6 +3,9 @@
 # on a chip and on WebAssembly) against the host's libm: the special values, and the largest
 # difference over random arguments in units in the last place. fdlibm's pow and atan2 are faithful
 # (within 1 ulp of the true value), so they may be 1 ulp from a correctly rounded host's.
+# The arguments: the C compiler, clang unless given (test.sh's: zig cc for MinGW on Windows, where
+# clang alone targets MSVC, which has no libm).
+cc=("$@"); [ $# = 0 ] && cc=(clang)
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 { echo '#include <stdint.h>'; sed -n '/ZS_LIBM_BEGIN/,/ZS_LIBM_END/p' runtime/rt-embedded.c; } > "$tmp/libm.c"
 cat > "$tmp/main.c" <<'C'
@@ -62,4 +65,4 @@ int main(void) {
 }
 C
 renames="-Droundeven=zs_roundeven -Droundevenf=zs_roundevenf -Datan=zs_atan -Datan2=zs_atan2 -Dpow=zs_pow -Datanf=zs_atanf -Datan2f=zs_atan2f -Dpowf=zs_powf"
-clang -O2 -ffp-contract=off $renames -c "$tmp/libm.c" -o "$tmp/libm.o" && clang -O2 "$tmp/main.c" "$tmp/libm.o" -lm -o "$tmp/check" && "$tmp/check"
+"${cc[@]}" -O2 -ffp-contract=off $renames -c "$tmp/libm.c" -o "$tmp/libm.o" && "${cc[@]}" -O2 "$tmp/main.c" "$tmp/libm.o" -lm -o "$tmp/check" && "$tmp/check"

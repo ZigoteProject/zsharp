@@ -100,6 +100,10 @@ jobs:
           Invoke-WebRequest "https://ziglang.org/download/0.17.0/zig-$a-windows-0.17.0.zip" -OutFile "$env:RUNNER_TEMP\zig.zip"
           Expand-Archive "$env:RUNNER_TEMP\zig.zip" -DestinationPath $env:RUNNER_TEMP
           "$env:RUNNER_TEMP\zig-$a-windows-0.17.0" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+      # pkg-config, which a package's [c] runs (tests/project/cwords), as apt gives Linux's: a
+      # native one, a program zs.exe can start (the images list none)
+      - if: runner.os == 'Windows'
+        run: choco install -y --no-progress pkgconfiglite
       # the dev image's LLVM and zig, from their releases (Ubuntu's clang is too old for the IR,
       # and it packages no zig)
       - if: runner.os == 'Linux'

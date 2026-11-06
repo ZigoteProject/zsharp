@@ -5,7 +5,10 @@
 # edit. Prints the server's responses.
 set -u
 zs=${1:-bin/zs}
-uri="file://$(pwd)/tests/lsp/hints.zs"
+# this checkout as zs reads it: on Windows its own path (cygpath -m: D:/a/b, where Git Bash's pwd
+# says /d/a/b), and a file URI's path then starts with the drive (file:///D:/a/b)
+here=$(cygpath -m "$PWD" 2>/dev/null || pwd); root="file:///${here#/}"
+uri="$root/tests/lsp/hints.zs"
 src=$(sed 's/\\/\\\\/g; s/"/\\"/g' tests/lsp/hints.zs | awk '{printf "%s\\n", $0}')
 # the report's line built from one string: one concatenation
 edited=$(printf '%s' "$src" | sed 's/out <- out + \$\\"{name}: {qty}\\\\n\\"/out <- out + name/')
@@ -24,4 +27,4 @@ frame() { printf 'Content-Length: %d\r\n\r\n%s' "$(printf '%s' "$1" | wc -c)" "$
   frame '{"jsonrpc":"2.0","id":6,"method":"textDocument/inlayHint","params":{"textDocument":{"uri":"'"$uri"'"},"range":{"start":{"line":16,"character":0},"end":{"line":16,"character":0}}}}'
   frame '{"jsonrpc":"2.0","id":7,"method":"shutdown"}'
   frame '{"jsonrpc":"2.0","method":"exit"}'
-} | "$zs" lsp | tr -d '\r' | sed 's/Content-Length: [0-9]*//' | grep -o '{.*}' | grep -v '"method"' | sed "s|$uri|URI|g; s|$(pwd)|.|g"
+} | "$zs" lsp | tr -d '\r' | sed 's/Content-Length: [0-9]*//' | grep -o '{.*}' | grep -v '"method"' | sed "s|$uri|URI|g; s|$here|.|g"

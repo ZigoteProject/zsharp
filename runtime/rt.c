@@ -435,7 +435,8 @@ static void coverage_dump(void) {
     FILE *f = NULL;
     if (path) {
         snprintf(path, len, "%s.zscov", exe);
-        f = fopen(path, "a");
+        // as bytes: Windows' text mode would end each line \r\n, which zs test doesn't read
+        f = fopen(path, "ab");
         free(path);
     }
     if (f) {

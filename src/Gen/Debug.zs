@@ -43,7 +43,8 @@ let diFile (g: G) (file: string) : string =
   | Some id -> id
   | None ->
     let full = Path.getFullPath file
-    let id = meta g $"!DIFile(filename: \"{Path.getFileName full}\", directory: \"{Path.getDirectoryName full}\")"
+    // escaped as LLVM reads a string: Windows' \ would start an escape (tests\debug a byte 0xDE)
+    let id = meta g $"!DIFile(filename: \"{encoded (Path.getFileName full)}\", directory: \"{encoded (Path.getDirectoryName full)}\")"
     g.diFiles.Value <- Map.add file id g.diFiles.Value
     id
 
