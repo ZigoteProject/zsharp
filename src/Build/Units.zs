@@ -639,7 +639,7 @@ let link (o: Options.Options) (built: Built) (linked: Modules.Linked) : result<l
     evict (modulesDir ()) ".o" 256
     let partObjects = List.map (fun (p: Part) -> match p with | Cached obj -> obj | Fresh(_, key) -> (List.find (fun (j: Job) -> j.keep = Some key) jobs).obj) built.parts
     let files = List.concat [ [ runtime.obj ]; partObjects; List.map (fun (c: string) -> (ofC c).obj) cSources ]
-    let libs = List.map (fun (l: string) -> if String.startsWith "-" l || String.contains "/" l then l else "-l" + l) (List.filter (fun (l: string) -> not (String.endsWith ".c" l)) linked.links)
+    let libs = List.map (fun (l: string) -> if String.startsWith "-" l || Tools.isFile l then l else "-l" + l) (List.filter (fun (l: string) -> not (String.endsWith ".c" l)) linked.links)
     let ltoLink =
       if useLto o then
         // ld64.lld (macOS) names the ThinLTO cache its own way

@@ -334,7 +334,7 @@ let cpuFlags (o: Options.Options) : list<string> =
 // what the link takes for the packages' [c] sections: their C flags (for the C sources among
 // them), then the sources, libraries and files (a name is a library's)
 let linkArgs (linked: Modules.Linked) : list<string> =
-  List.append linked.cflags (List.map (fun (l: string) -> if String.startsWith "-" l || String.contains "/" l then l else "-l" + l) linked.links)
+  List.append linked.cflags (List.map (fun (l: string) -> if String.startsWith "-" l || Tools.isFile l then l else "-l" + l) linked.links)
 
 /// What stops a build after checking: a pass's error (at a line), or a tool's failure.
 type Failure =
@@ -450,7 +450,7 @@ let make (o: Options.Options) (prog0: Program) (linked: Modules.Linked) (testBui
           let mac = Options.targetOs o = "macos"
           let cxx = if mac then "-lc++" else "-lstdc++"
           match Tools.runSplit "clang" [ "-print-file-name=" + (if mac then "libclang_rt.fuzzer_no_main_osx.a" else "libclang_rt.fuzzer_no_main.a") ] with
-          | Ok r when String.contains "/" r.out -> [ String.trim r.out; cxx ]
+          | Ok r when Tools.isFile r.out -> [ String.trim r.out; cxx ]
           | _ -> [ cxx ]
       let built =
         match o.mcu with

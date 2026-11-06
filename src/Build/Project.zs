@@ -218,7 +218,7 @@ and parseManifest (root: string) (file: string) (lines: list<string>) : result<M
     | None ->
       let get (k: string) (d: string) = Option.defaultValue d (Map.tryFind k package.Value)
       let full (p: string) = Path.getFullPath (Path.combine root p)
-      let linkItem (l: string) = if String.contains "/" l || List.contains (Path.getExtension l) [ ".a"; ".so"; ".o" ] then full l else l
+      let linkItem (l: string) = if Tools.isFile l || List.contains (Path.getExtension l) [ ".a"; ".so"; ".o" ] then full l else l
       let config (keys: Map<string, list<string>>) : CConfig =
         let items (k: string) : list<string> = Option.defaultValue [] (Map.tryFind k keys)
         { sources = List.map full (items "sources"); includes = List.map full (items "include"); link = List.map linkItem (items "link"); pkgConfig = items "pkg-config" }
