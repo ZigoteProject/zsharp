@@ -89,6 +89,10 @@ and CxData =
     impls: ref<Map<string * string, Map<string, string>>>
     /// (trait, type): the traits each type argument needs
     implRequires: ref<Map<string * string, list<Set<string>>>>
+    /// (trait, type) of an impl whose methods are being checked, its requirements not known yet
+    /// (none meanwhile): each use of it then, its type arguments and the statement, checked once
+    /// they are (Decls.finishImpl)
+    implUses: ref<Map<string * string, list<list<Ty> * int>>>
     /// (trait, type): the trait's other parameters, over the head's variables (0017)
     implOthers: ref<Map<string * string, list<Ty>>>
     /// by full name, as traits
@@ -289,6 +293,9 @@ type Cx with
   member c.implRequires =
     match c with
     | Cx { implRequires = x } -> x
+  member c.implUses =
+    match c with
+    | Cx { implUses = x } -> x
   member c.implOthers =
     match c with
     | Cx { implOthers = x } -> x
@@ -528,6 +535,7 @@ let create (requireMain: bool) (collect: bool) (allModules: list<string>) (manua
       effectOps = ref Map.empty
       impls = ref Map.empty
       implRequires = ref Map.empty
+      implUses = ref Map.empty
       implOthers = ref Map.empty
       derives = ref Map.empty
       deriveGroups = ref Map.empty
@@ -945,6 +953,11 @@ let rec private userImpl (cx: Cx) (tr: string) (t: Ty) : bool / <Mismatched, Fai
   let reqsOf (key: string * string) (args: list<Ty>) =
     match Map.tryFind key cx.implRequires.Value with
     | Some reqs ->
+      // an impl whose methods are being checked requires nothing yet: what this use gives it is
+      // checked again once its requirements are known
+      match Map.tryFind key cx.implUses.Value with
+      | Some uses -> cx.implUses.Value <- Map.add key ((args, cx.currentStmt.Value) :: uses) cx.implUses.Value
+      | None -> ()
       for (a, trs) in List.zip args reqs do
         for tr2 in Set.toList trs do
           unify cx (fresh cx.v (kTrait tr2)) a

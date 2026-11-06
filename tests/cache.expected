@@ -31,4 +31,6 @@ a stopped build's files kept: new.o.zs-2.ll
 a package's C: scale 2 2
 its header changed in its include directory: scale 3 3
 a header added beside it: scale 4 3
+a C function called bare: 0 3
+its signature changed: error: 'abs' expects 2 argument(s), got 1
 every test program from the cache: the same binary as from nothing

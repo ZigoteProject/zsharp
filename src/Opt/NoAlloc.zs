@@ -168,6 +168,47 @@ let private stepsOf (v: Types.Vars.Vars) (types: Map<string, TypeInfo>) (word: i
     | CLocal x -> Set.contains x statics
     | CLine(_, a) -> neverLast statics a
     | _ -> false
+  // a value a primitive drops, which frees nothing only when that reference is provably not the
+  // last: a dup of a variable that holds its own, a top-level value's, or one read out of a
+  // container (a field, an element, a ref's value) that holds one too (where the container's own
+  // last reference goes, its drop is reported). On every path of an if or a match; anything else
+  // is taken as last. st: the locals within that are never the last (as statics), a value matched
+  // from one giving its pattern's variables too
+  let reads (op: string) = op = "array.get" || op = "array.get#b" || op = "ref.get" || op = "ref.get#b"
+  let rec held (st: Set<string>) (b: CExpr) : bool =
+    match b.k with
+    | CDup(y, _, { k = CLocal z }) -> y = z
+    | CLocal x -> Set.contains x st
+    | CField _ -> true
+    | CPrim(op, _) when reads op -> true
+    | CLet(x, w, body) -> held (if held st w then Set.add x st else st) body
+    // a path that panics gives nothing to drop
+    | CPrim("panic", _) -> true
+    | CLine(_, a)
+    | CSeq(_, a)
+    | CDrop(_, _, a)
+    | CDropFields(_, _, _, _, _, a) -> held st a
+    | CIf(_, t, f) -> held st t && held st f
+    | CMatch(sc, cases) ->
+      let fromHeld = held st sc
+      let arm (c: CPat * option<CExpr> * CExpr) =
+        let (p, _, body) = c
+        held (if fromHeld then Set.union st (Set.ofList (List.map fst (patVars p))) else st) body
+      List.forall arm cases
+    | _ -> neverLast st b
+  // the local an argument is, as written ("" for none, or the compiler's own)
+  let named (a: CExpr) : string =
+    match a.k with
+    | CLocal x -> subjectOf x
+    | CDup(y, _, { k = CLocal z }) when y = z -> subjectOf y
+    | _ -> ""
+  // a Buffer argument's elements, when they hold a reference count
+  let heapElements (args: list<CExpr>) : option<Ty> =
+    let elements (a: CExpr) =
+      match bufferElement a.ty with
+      | Some t when heap t -> Some t
+      | _ -> None
+    List.tryPick elements args
   // statics: the locals holding objects that are never freed (literals, cases without fields, a
   // scrutinee matched to one); tokens: each reuse token's matched cell
   let rec go (line: int) (statics: Set<string>) (tokens: Map<string, string>) (e: CExpr) =
@@ -247,35 +288,8 @@ let private stepsOf (v: Types.Vars.Vars) (types: Map<string, TypeInfo>) (word: i
         own Frees "overwrites a Buffer element, which drops the old one (it may be the last reference)" "drops the element it overwrites" "" line
       if op = "array.set" && heap buf.ty && not (neverLast statics buf) then
         // a Buffer the write doesn't borrow is dropped by it, which frees nothing only when that
-        // reference is provably not the last: a dup of a variable that holds its own, a
-        // top-level value's, or one read out of a container (a field, an element, a ref's value)
-        // that holds one too (where the container's own last reference goes, its drop is
-        // reported). On every path of an if or a match; anything else is taken as last
-        let reads (op: string) = op = "array.get" || op = "array.get#b" || op = "ref.get" || op = "ref.get#b"
-        // st: the locals within that are never the last (as statics), a value matched from one
-        // giving its pattern's variables too
-        let rec held (st: Set<string>) (b: CExpr) : bool =
-          match b.k with
-          | CDup(y, _, { k = CLocal z }) -> y = z
-          | CLocal x -> Set.contains x st
-          | CField _ -> true
-          | CPrim(op, _) when reads op -> true
-          | CLet(x, w, body) -> held (if held st w then Set.add x st else st) body
-          // a path that panics gives no Buffer to write
-          | CPrim("panic", _) -> true
-          | CLine(_, a)
-          | CSeq(_, a)
-          | CDrop(_, _, a)
-          | CDropFields(_, _, _, _, _, a) -> held st a
-          | CIf(_, t, f) -> held st t && held st f
-          | CMatch(sc, cases) ->
-            let fromHeld = held st sc
-            let arm (c: CPat * option<CExpr> * CExpr) =
-              let (p, _, body) = c
-              held (if fromHeld then Set.union st (Set.ofList (List.map fst (patVars p))) else st) body
-            List.forall arm cases
-          | _ -> neverLast st b
-        // what the write may free, said by where the Buffer came from
+        // reference is provably not the last (held). What the write may free, said by where the
+        // Buffer came from
         let rec source (b: CExpr) : string =
           match b.k with
           | CLet(x, w, { k = CLocal y }) when x = y -> source w
@@ -302,6 +316,31 @@ let private stepsOf (v: Types.Vars.Vars) (types: Map<string, TypeInfo>) (word: i
           | _ ->
             let what = source buf
             own Frees what what "" line
+      rest ()
+    // what primitives drop, copy or build in their own code (Gen), none of it a node here
+    | CPrim("ignore", [ a ]) when heap a.ty && not (held statics a) ->
+      // the value discarded is dropped there
+      let x = named a
+      let what = if x = "" then $"drops the {show a.ty} it discards, which may free it" else $"drops '{x}' : {show a.ty}, which it discards, and may free it"
+      own Frees what what x line
+      rest ()
+    | CPrim("ref.set", [ _; w ]) when heap w.ty ->
+      own Frees "overwrites a ref's value, which drops the old one (it may be the last reference)" "drops the value it overwrites" "" line
+      rest ()
+    | CPrim(op, args) when (op = "buffer.truncate" || op = "buffer.removeLast") && Option.isSome (heapElements args) ->
+      // the elements past the new end (and what a shared storage's cut left past it) are dropped
+      let what = $"shortens a Buffer of {show (Option.get (heapElements args))}, which drops the elements past its end (each may be the last reference)"
+      own Frees what "drops the elements it cuts" "" line
+      rest ()
+    | CPrim("vec.store", a :: _) ->
+      // the array written is made unique first, as a.[i] <- v's is
+      let x = named a
+      let what = if x = "" then "writes an array, which is copied first when anything else holds it" else $"writes the array '{x}', which is copied first when anything else holds it"
+      own Copies what what x line
+      rest ()
+    | CPrim("window.slice", _) when Option.isSome (bufferElement e.ty) ->
+      // a Buffer's slice is a Buffer of its own over the same storage
+      own Allocates "slices a Buffer, which builds a Buffer of its own" "builds a Buffer over the same storage" "" line
       rest ()
     | CPrim(op, args) ->
       if waits op then

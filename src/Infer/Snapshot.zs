@@ -56,14 +56,16 @@ type Iface =
     enclosingOf: list<string * list<string>> }
 
 /// What the modules that don't name a module still see of it: its impls and automatic derives
-/// for traits and types neither of which are its own, and the members it gave others' types.
+/// for traits and types neither of which are its own, the members it gave others' types, and its
+/// C functions (one name in the whole program, called bare).
 [<Derive(Binary)>]
 type Seen =
   { simpls: list<(string * string) * Map<string, string>>
     srequires: list<(string * string) * list<Set<string>>>
     sothers: list<(string * string) * list<Ty>>
     sderived: list<string * string>
-    smembers: list<string * list<string * MemberInfo>> }
+    smembers: list<string * list<string * MemberInfo>>
+    sexterns: list<string * ExternSig> }
 
 /// A module's result as the cache keeps it: under its key; its interface and the hashes of what
 /// the modules after it see (all of it, or only what's seen without naming it); its functions'
@@ -323,7 +325,8 @@ let seen (i: Iface) : Seen =
     srequires = List.filter (fun (k, _) -> others k) i.implRequires
     sothers = List.filter (fun (k, _) -> others k) i.implOthers
     sderived = List.filter others i.autoDerived
-    smembers = List.filter (fun (t, _) -> not (Set.contains t own)) i.members }
+    smembers = List.filter (fun (t, _) -> not (Set.contains t own)) i.members
+    sexterns = i.externs }
 
 let private into (table: ref<Map<'k, 'v>>) (entries: list<'k * 'v>) = table.Value <- List.fold (fun m (k, v) -> Map.add k v m) table.Value entries
 

@@ -368,7 +368,11 @@ let private throughLink (root: string) (parts: list<string>) : bool =
   let rec go (dir: string) (rest: list<string>) =
     match rest with
     | [] -> false
-    | x :: more -> Native.isSymlink (Path.combine dir x) || go (Path.combine dir x) more
+    | x :: more ->
+      let here = Path.combine dir x
+      // the runtime's hook: stage 0's library (0.6.1) has no public function for it
+      let link = unsafe (Native.isSymlink here)
+      link || go here more
   go root parts
 
 // where a dependency is for a project whose checkouts and vendor/ are in root (its lock root)

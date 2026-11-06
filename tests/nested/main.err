@@ -1,0 +1,2 @@
+tests/nested/main.zs:6:6: warning: 'Loop' can reach itself through 'back: Tree<ref<option<Loop>>>' and 'forth: ref<option<Loop>>', so its objects can form a cycle that reference counting never frees; make the back-pointer 'weak<Loop>', or mark the type [<Cyclic>] when the program breaks its cycles, or [<NoWarn "cycle">] when it can't form one [cycle]
+1 warning, an error under --strict

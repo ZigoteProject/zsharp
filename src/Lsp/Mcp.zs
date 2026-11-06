@@ -38,7 +38,11 @@ let private projectFile (p: string) : result<string, string> =
   let rec linked (dir: string) (parts: list<string>) =
     match parts with
     | [] -> false
-    | x :: rest -> Native.isSymlink (Path.combine dir x) || linked (Path.combine dir x) rest
+    | x :: rest ->
+      let here = Path.combine dir x
+      // the runtime's hook: stage 0's library (0.6.1) has no public function for it
+      let link = unsafe (Native.isSymlink here)
+      link || linked here rest
   if not (String.startsWith (root + sep) full) then Error $"{p} is outside the project ({root})"
   else if linked root (String.split sep (Path.getRelativePath root full)) then Error $"{p} is reached through a symbolic link"
   else if not (File.exists full) then Error $"{p} does not exist"

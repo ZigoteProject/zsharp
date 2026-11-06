@@ -79,6 +79,15 @@ bin/zs build "$t/geo/src/main.zs" -o "$t/geo/exe" && echo "its header changed in
 # still finds the include directory's)
 printf '#define GEO_SCALE 4\nint geo_scale(void);\n' > "$t/geo/c/src/geo.h"
 bin/zs build "$t/geo/src/main.zs" -o "$t/geo/exe" && echo "a header added beside it: $("$t/geo/exe")"
+# a C function one module declares and another calls bare, without naming the first: its
+# signature changed, the caller is checked again (and fails), not restored
+mkdir -p "$t/ext"
+printf 'extern abs : c_int -> c_int\n\nlet ready () = 0\n' > "$t/ext/ffi.zs"
+printf 'let run () = int (abs (c_int (-3)))\n' > "$t/ext/calls.zs"
+printf 'let main () =\n  let a = Ffi.ready ()\n  let b = Calls.run ()\n  println $"{a} {b}"\n  0\n' > "$t/ext/main.zs"
+bin/zs build "$t/ext/main.zs" -o "$t/ext/exe" && echo "a C function called bare: $("$t/ext/exe")"
+edit 's/c_int -> c_int/c_int -> c_int -> c_int/' "$t/ext/ffi.zs"
+echo "its signature changed: $(bin/zs build "$t/ext/main.zs" -o "$t/ext/exe" 2>&1 | grep -o 'error: .*' | head -1)"
 # every test program: a build that restores what the cache has (the library's results, others'
 # code) makes the binary a build of everything from nothing makes
 differ=""

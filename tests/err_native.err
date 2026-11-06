@@ -1,0 +1,3 @@
+tests/err_native.zs:4:13: error: 'Native.parFork' is the library's, a runtime hook nothing checks the arguments of: use it inside `unsafe`
+tests/err_native.zs:8:17: error: 'Native.loopFulfill' is the library's, a runtime hook nothing checks the arguments of: use it inside `unsafe`
+2 errors

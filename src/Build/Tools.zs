@@ -124,7 +124,8 @@ let private append (buf: Buffer<u8>) (n: int) (got: Buffer<u8>) =
 let rec private gather (fd: int) (buf: Buffer<u8>) (got: Buffer<u8>) : Task<unit> =
   task {
     do! Task.waitFor fd false
-    let n = Native.fdRead fd buf 0 (Buffer.length buf)
+    // the runtime's hook: what the loop says is ready, read without a Reader's buffer
+    let n = unsafe (Native.fdRead fd buf 0 (Buffer.length buf))
     if n > 0 then
       append buf n got
       return! gather fd buf got

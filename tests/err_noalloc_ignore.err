@@ -1,0 +1,1 @@
+tests/err_noalloc_ignore.zs:4: error: drain is [<NoAlloc>], but drain drops the option<string> it discards, which may free it

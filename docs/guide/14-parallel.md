@@ -71,6 +71,12 @@ let main () =
 100 121 144
 ```
 
+**Functions a call makes:** a function a call returns may capture what the call made (a counter
+built by a factory holds its `ref`), and its type doesn't say, so it crosses threads only when
+the call gives a `share<…>`: `let adder (n: int) : share<int -> int> = fun i -> i + n`, whose
+lambda is checked where it's returned. A top-level function given some of its arguments
+(`scale 3`) crosses when what it's given can be shared.
+
 ## What threads change together
 
 **`Atomic<T>`:** a number, `bool` or `char` that threads change without a lock: `Atomic.get`,

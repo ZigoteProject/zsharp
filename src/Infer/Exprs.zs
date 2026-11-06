@@ -229,14 +229,60 @@ and toShare (cx: Cx) (c: CExpr) (hint: Ty) : CExpr =
   | (TFun _, TCon("share", [ f ])) ->
     let rule (s: string) = "a function run on another thread must have no effects: this one performs " + s + "; handle it inside"
     expectNoEffects cx rule "function crossing threads" f c.ty
-    checkCaptures cx c
+    checkCaptures cx c f
     mk (CPrim("share.fn", [ c ])) hint
   | _ -> c
 
-/// What a function crossing threads captures must be Share: each local it refers to, and through
-/// a local function it refers to, what that one captures.
-and checkCaptures (cx: Cx) (c: CExpr) =
+/// What a function crossing threads captures must be Share: each local it refers to, through a
+/// local function it refers to what that one captures, and what a partial application is given.
+/// A function made where this can't look (what a call returns, a field's) may capture anything,
+/// so it crosses only as a share<F> already.
+and checkCaptures (cx: Cx) (c: CExpr) (f: Ty) =
   let seen = ref Set.empty
+  // a value the function holds (what names it) must be Share
+  let shareable (what: string) (via: list<string>) (t: Ty) =
+    let through =
+      match via with
+      | [] -> ""
+      | fs -> " (through " + quoted (List.rev fs) + ")"
+    let blocked =
+      handle
+        unify cx (fresh cx.v (kTrait "Share")) t
+        None
+      with
+      | Mismatched.throw m, _ -> Some m
+    match blocked with
+    | Some(NoImpl(_, part0)) ->
+      let part =
+        match Types.Repr.shareBlocker cx.v (fun _ -> ()) cx.types.Value Set.empty t with
+        | Some p -> p
+        | None -> part0
+      let holds = if prune cx.v part = prune cx.v t then "" else $", which holds {show cx part}"
+      match prune cx.v t with
+      | TFun _ ->
+        fail $"this function crosses threads, but it captures {what}{through}, a function that may capture what can't be shared: declare it share<{show cx t}>"
+      | _ ->
+        fail $"this function crosses threads, but it captures {what}{through} : {show cx t}{holds}, which can't be shared between threads; share state through Atomic, Mutex or Channel, or return a result per job"
+    | Some Differ ->
+      fail $"this function crosses threads, but it captures {what}{through} : {show cx t}, which can't be shared between threads; share state through Atomic, Mutex or Channel, or return a result per job"
+    | None -> ()
+  // how many parameters a function a call names takes (0: not known, as a parameter's)
+  let arity (h: CExpr) : int =
+    let rec lam (d: CExpr) =
+      match d.k with
+      | CLine(_, x) -> lam x
+      | CLam(ps, _) -> List.length ps
+      | _ -> 0
+    match h.k with
+    | CGlobal(g, _) ->
+      match Map.tryFind g cx.globals.Value with
+      | Some info -> info.arity
+      | None -> 0
+    | CLocal x ->
+      match Map.tryFind x cx.localValues.Value with
+      | Some d -> lam d
+      | None -> 0
+    | _ -> 0
   let rec go (e: CExpr) (via: list<string>) =
     let bound = Set.ofList (binders e)
     for (x, t) in refs e do
@@ -246,35 +292,44 @@ and checkCaptures (cx: Cx) (c: CExpr) =
           match beforeLastDot x with
           | Some n -> n
           | None -> x
+        // a builtin applied to fewer arguments binds what it's given to names of its own ($a)
+        let what = if String.startsWith "$" name then "a value it's given" else "'" + name + "'"
         match (prune cx.v t, Map.tryFind x cx.localValues.Value) with
-        | (TFun _, Some def) -> go def (name :: via)
-        | _ ->
-          let through =
-            match via with
-            | [] -> ""
-            | fs -> " (through " + quoted (List.rev fs) + ")"
-          let blocked =
-            handle
-              unify cx (fresh cx.v (kTrait "Share")) t
-              None
-            with
-            | Mismatched.throw m, _ -> Some m
-          match blocked with
-          | Some(NoImpl(_, part0)) ->
-            let part =
-              match Types.Repr.shareBlocker cx.v (fun _ -> ()) cx.types.Value Set.empty t with
-              | Some p -> p
-              | None -> part0
-            let holds = if prune cx.v part = prune cx.v t then "" else $", which holds {show cx part}"
-            match prune cx.v t with
-            | TFun _ ->
-              fail $"this function crosses threads, but it captures '{name}'{through}, a function that may capture what can't be shared: declare it share<{show cx t}>"
-            | _ ->
-              fail $"this function crosses threads, but it captures '{name}'{through} : {show cx t}{holds}, which can't be shared between threads; share state through Atomic, Mutex or Channel, or return a result per job"
-          | Some Differ ->
-            fail $"this function crosses threads, but it captures '{name}'{through} : {show cx t}, which can't be shared between threads; share state through Atomic, Mutex or Channel, or return a result per job"
-          | None -> ()
-  go c []
+        | (TFun _, Some def) when known def (name :: via) -> ()
+        | _ -> shareable what via t
+  // whether a function's captures are seen here, each checked: a lambda's and a local function's
+  // free locals, a top-level function's (none: what it reaches is checked after
+  // monomorphization), each branch's, and a partial application's function and what it's given
+  and known (e: CExpr) (via: list<string>) : bool =
+    match e.k with
+    | CLine(_, x)
+    | CPrim("eff.open", [ x ])
+    | CLet(_, _, x)
+    | CSeq(_, x) -> known x via
+    | CLam _
+    | CLocal _ ->
+      go e via
+      true
+    | CGlobal _
+    | CGlobalVal _
+    | CPrim("share.as", _) -> true
+    | CIf(_, a, b) -> known a via && known b via
+    | CMatch(_, cases) -> List.forall (fun (_, _, b) -> known b via) cases
+    | CApp(h, args) when List.length args < arity h ->
+      for a in args do
+        match (prune cx.v a.ty, a.k) with
+        | (_, CLocal _) -> go a via
+        | (TFun _, _) when known a via -> ()
+        | (t, _) -> shareable "a value it's given" via t
+      known h via
+    | _ -> false
+  if not (known c []) then
+    let rec made (e: CExpr) =
+      match e.k with
+      | CLine(_, x) -> made x
+      | CField _ -> "it's a field's value, which may capture what can't be shared: declare the field"
+      | _ -> "it's what a call returns, which may capture what can't be shared: declare that function's result"
+    fail $"this function crosses threads, but {made c} share<{show cx f}>"
 
 /// A value where a dyn Trait is expected: as it is when it's one already (or its type isn't known
 /// yet), else with its type's impl of the trait.
@@ -1570,6 +1625,18 @@ and resolveName (cx: Cx) (x: string) : option<string> =
     cx.resolved.Value <- Map.add x r cx.resolved.Value
     r
 
+/// The runtime's hooks (Native) are the library's: nothing checks what one is given (a job's
+/// handle, a loop's token), so a program uses one, x resolved to r, only inside unsafe. A
+/// desugaring's name (global::) and a library constant's body or field default (foreign) are the
+/// library's own; libraryNames is empty while the library is checked. Checked where a name is
+/// used, not where it's resolved: the declarations' analyses resolve a library constant's names
+/// too (Decls.makesBuffer).
+and nativeHook (cx: Cx) (x: string) (r: option<string>) =
+  match r with
+  | Some q when String.startsWith "Native." q && Map.containsKey q builtins && not (String.startsWith "global::" x) && not cx.unsafeOn.Value && not cx.foreign.Value && not (Set.isEmpty cx.libraryNames.Value) ->
+    fail $"'{q}' is the library's, a runtime hook nothing checks the arguments of: use it inside `unsafe`"
+  | _ -> ()
+
 and resolveAnew (cx: Cx) (x: string) : option<string> =
   // M.f, where f is an extern declared in module M: the extern (one global name)
   let qualifiedExtern (q: string) : option<string> =
@@ -1592,7 +1659,9 @@ and resolveAnew (cx: Cx) (x: string) : option<string> =
 /// A name's value.
 and value (cx: Cx) (env: Map<string, Local>) (depth: int) (x: string) : CExpr =
   // a local shadows the names of modules (it's not resolved: a private one would fail)
-  match (if Map.containsKey x env then None else resolveName cx x) with
+  let r = if Map.containsKey x env then None else resolveName cx x
+  nativeHook cx x r
+  match r with
   | Some q when q <> x -> valueQ cx env depth q
   | _ -> valueQ cx env depth x
 
@@ -1665,7 +1734,9 @@ and call (cx: Cx) (env: Map<string, Local>) (depth: int) (f: string) (args: list
 /// A call; argHints: the type expected of each argument where the callee's says nothing (a list
 /// literal's elements).
 and callWith (cx: Cx) (env: Map<string, Local>) (depth: int) (f: string) (args: list<Expr>) (argHints: list<option<Ty>>) : CExpr =
-  match (if Map.containsKey f env then None else resolveName cx f) with
+  let r = if Map.containsKey f env then None else resolveName cx f
+  nativeHook cx f r
+  match r with
   | Some q when q <> f -> callQ cx env depth q args argHints
   | _ -> callQ cx env depth f args argHints
 

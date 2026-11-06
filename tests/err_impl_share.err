@@ -1,0 +1,1 @@
+tests/err_impl_share.zs:15:7: error: impl Run<Box>, used by its own methods (or an impl checked with it), needs Share of its type argument: ref<string> can't be shared between threads (it isn't Share)

@@ -177,7 +177,7 @@ draws from.
 
 | Module | Lines | What it is |
 |---|---|---|
-| `Clang` | 250 | the translation unit and its cursors through `zsharp/libclang` (the one place `unsafe` is called from, inside the package). |
+| `Clang` | 250 | the translation unit and its cursors through `zsharp/libclang` (the one place `unsafe` code handles C memory, inside the package). |
 | `CTypes` | 300 | C declarations to Z# types: structs as `[<CLayout>]` records, unions as `[<CLayout>]` unions, enums, function pointers as `fnptr`, typedefs. |
 | `Macros` | 100 | object-like macros through `clang_tokenize`: constants, no regular expressions. |
 

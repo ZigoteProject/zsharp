@@ -72,12 +72,17 @@ let rec shareBlocker (v: Vars) (onVar: Ty -> unit / 'e) (types: Map<string, Type
     if Set.contains key visiting then
       // recursive: Share if the rest of it is
       None
+    else if Set.contains ("#" + n) visiting then
+      // a nested type (Perfect<'a> holding a Perfect<'a * 'a>) met again at other arguments,
+      // which looking through would never end: its fields but for the arguments were looked at
+      // already, so the arguments are what's left
+      List.tryPick (inner visiting) args
     else
+      let below = Set.add ("#" + n) (Set.add key visiting)
       match Map.tryFind n types with
-      | Some { def = RecordDef fs } -> List.tryPick (fun (_, ft) -> inner (Set.add key visiting) (Norm.substGen v args ft)) fs
-      | Some { def = UnionDef cs } ->
-        List.tryPick (fun (_, fs) -> List.tryPick (fun ft -> inner (Set.add key visiting) (Norm.substGen v args ft)) fs) cs
-      | Some { def = CUnionDef cs } -> List.tryPick (fun (_, ft) -> inner (Set.add key visiting) ft) cs
+      | Some { def = RecordDef fs } -> List.tryPick (fun (_, ft) -> inner below (Norm.substGen v args ft)) fs
+      | Some { def = UnionDef cs } -> List.tryPick (fun (_, fs) -> List.tryPick (fun ft -> inner below (Norm.substGen v args ft)) fs) cs
+      | Some { def = CUnionDef cs } -> List.tryPick (fun (_, ft) -> inner below ft) cs
       | None -> Some(TCon(n, args))
   | TTuple ts -> List.tryPick (inner visiting) ts
   | x -> Some x
