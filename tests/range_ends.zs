@@ -5,7 +5,7 @@
 // whose variable stays in the range its test proved
 let lastBytes (lo: u8) = seq { for c in lo .. u8 255 do yield int c }
 
-let firstInts (hi: int) = seq { for i in hi .. -1 .. -9223372036854775808 do yield i }
+let firstInts (hi: int) = seq { for i in hi .. -1 .. -0x8000_0000_0000_0000 do yield i }
 
 let main () =
   let mutable bytes = 0
@@ -22,14 +22,14 @@ let main () =
   for i in 9223372036854775805 .. 9223372036854775807 do
     top <- i :: top
   let mutable bottom = []
-  for i in -9223372036854775806 .. -1 .. -9223372036854775808 do
+  for i in -9223372036854775806 .. -1 .. -0x8000_0000_0000_0000 do
     bottom <- i :: bottom
   println $"{top} {bottom}"
   let mutable up = []
   for i in 9223372036854775800 .. 5 .. 9223372036854775807 do
     up <- i :: up
   let mutable down = []
-  for i in -9223372036854775800 .. -5 .. -9223372036854775808 do
+  for i in -9223372036854775800 .. -5 .. -0x8000_0000_0000_0000 do
     down <- i :: down
   let mutable hundreds = []
   for c in u8 0 .. u8 100 .. u8 255 do

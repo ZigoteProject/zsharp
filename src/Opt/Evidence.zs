@@ -548,10 +548,15 @@ let private lowerAll (types0: Map<string, TypeInfo>) (effects: Map<string, Effec
             | [ a2; s2; b2 ] ->
               let sv = fresh "$step"
               let bv = fresh "$to"
+              // as genPlain decides: an unsigned step is never below 0 (a literal is its bits)
+              let uns =
+                match a.ty with
+                | TCon(n, []) -> Set.contains n unsigned
+                | _ -> false
               let down =
                 match s.k with
-                | CInt n -> n < i64 0
-                | CNeg _ -> true
+                | CInt n -> not uns && n < i64 0
+                | CNeg _ -> not uns
                 | _ -> false
               let it = ev a.ty
               let iv = local x it
