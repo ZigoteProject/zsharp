@@ -7,7 +7,8 @@
 /// pops it.
 namespace Threading
 
-/// A doorbell between interrupt handlers and a task: the runtime's number for it.
+/// A doorbell between interrupt handlers and a task: the runtime's number for it, which only
+/// `Signal.create` gives (a record built with another panics where it's used).
 type Signal = { id: int }
 
 /// Functions on signals: `create` (a program has at most 32), `set` and `wait`.

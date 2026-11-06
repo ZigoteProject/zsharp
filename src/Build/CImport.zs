@@ -526,8 +526,8 @@ let private importUncached (header: string) (dir: string) (flags: list<string>) 
       let args = List.concat [ [ "-x"; "c"; "-I"; dir ]; (if resources = "" then [] else [ "-resource-dir"; resources ]); flags ]
       let r =
         match Libclang.parse index tmp args (u32 CXTranslationUnit_DetailedPreprocessingRecord) with
-        | None -> Error "libclang couldn't parse it"
-        | Some tu ->
+        | Error e -> Error e
+        | Ok tu ->
           let r =
             match Libclang.errors tu with
             | e :: _ -> Error(String.replace e (tmp + ":1:10: ") "")

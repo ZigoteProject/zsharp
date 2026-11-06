@@ -48,6 +48,7 @@ double roundeven(double x) { return nearbyint(x); }
 float roundevenf(float x) { return nearbyintf(x); }
 #endif
 
+#include <errno.h>
 #include <pthread.h>
 #ifndef _WIN32
 #include <signal.h>
@@ -177,10 +178,15 @@ static void *spawned_main(void *p) {
     return r;
 }
 
+// The stack a program's threads get at least, whatever RLIMIT_STACK says (unlimited included):
+// 0, but the compiler's own, 256 MB (src/host.c), for passes as deep as the program it reads nests
+size_t zs_thread_stack;
+
 // A thread's stack: the main thread's usual 8 MB at least (macOS gives a new thread 512 KB, which
 // deep recursion, a compiler's passes over a long list literal, runs out of where Linux's 8 MB
 // doesn't), or the soft RLIMIT_STACK when that's more, as glibc sizes its threads (ulimit -s
-// raises it; the compiler raises its own, src/host.c). At most 1 GB, and 8 MB with 32-bit words.
+// raises it; the compiler raises its own, src/host.c), or zs_thread_stack. At most 1 GB, and
+// 8 MB with 32-bit words.
 static size_t thread_stack_size(void) {
     size_t size = (size_t)8 << 20;
 #ifndef _WIN32
@@ -188,10 +194,14 @@ static size_t thread_stack_size(void) {
     struct rlimit rl;
     if (getrlimit(RLIMIT_STACK, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY && rl.rlim_cur > size)
         size = rl.rlim_cur > most ? most : (size_t)rl.rlim_cur;
+    if (zs_thread_stack > size) size = zs_thread_stack > most ? most : zs_thread_stack;
 #endif
     return size;
 }
 
+// a thread whose large stack the address space has no room for (ulimit -v, many cores, each
+// thread's stack the 256 MB a compiler running it left in RLIMIT_STACK) gets the usual 8 MB
+// instead of failing
 static int spawn(pthread_t *t, void *(*body)(void *), void *arg) {
     spawned *s = malloc(sizeof *s);
     if (!s) return -1;
@@ -199,8 +209,13 @@ static int spawn(pthread_t *t, void *(*body)(void *), void *arg) {
     s->arg = arg;
     pthread_attr_t attr;
     pthread_attr_init(&attr);
-    pthread_attr_setstacksize(&attr, thread_stack_size());
+    size_t size = thread_stack_size();
+    pthread_attr_setstacksize(&attr, size);
     int r = pthread_create(t, &attr, spawned_main, s);
+    if ((r == EAGAIN || r == ENOMEM) && size > ((size_t)8 << 20)) {
+        pthread_attr_setstacksize(&attr, (size_t)8 << 20);
+        r = pthread_create(t, &attr, spawned_main, s);
+    }
     pthread_attr_destroy(&attr);
     if (r != 0) free(s);
     return r;
@@ -4026,6 +4041,10 @@ void zs_loop_irq_wait(zs_int n, void *cb) {
 }
 
 void zs_loop_irq_unwait(zs_int n) { (void)n; }
+
+// Irq.enable, disable and pend's lines (lib/core/Irq.zs): none, rather than a store to an NVIC
+// a computer doesn't have
+zs_int zs_irq_lines(void) { zs_panic_c("Irq needs a microcontroller's interrupt controller: build with --target cortex-m4"); }
 
 zs_int zs_signal_new(void) { zs_panic_c("a Signal needs a microcontroller's interrupt handlers: build with --target cortex-m4"); }
 

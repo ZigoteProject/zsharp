@@ -187,6 +187,18 @@ else echo "FAIL tests/pgo.sh"; cat "$tmp/pgo.diff"; fail=1; fi
 if [ "$(uname -s)" != Linux ]; then echo "skip tests/stress.sh (the compiler's deep stack is Linux's)"
 elif diff <(tests/stress.sh 2>&1) tests/stress.expected >"$tmp/stress.diff"; then echo "ok   tests/stress.sh (long literals, long runs of statements, deep nesting)"
 else echo "FAIL tests/stress.sh"; cat "$tmp/stress.diff"; fail=1; fi
+# and with the stack unlimited (ulimit -s unlimited), which the runtime takes as 8 MB a thread: the
+# compiler's pool threads, which run its passes over each function, still get their 256 MB
+# (src/host.c), for a long list literal and deep parentheses
+if [ "$(uname -s)" != Linux ] || ! (ulimit -S -s unlimited) 2>/dev/null; then echo "skip the compiler with ulimit -s unlimited (Linux's, where the hard limit allows it)"
+else
+  { echo 'let main () ='; echo "  let x = [ $(seq 0 19999 | paste -sd ';' -) ]"; echo '  println $"{List.length x}"'; echo '  0'; } > "$tmp/ulist.zs"
+  { echo 'let main () ='; printf '  let x = '; printf '(%.0s' $(seq 10000); printf 1; printf ')%.0s' $(seq 10000); echo
+    echo '  println $"{x}"'; echo '  0'; } > "$tmp/uparen.zs"
+  if (ulimit -S -s unlimited && bin/zs build "$tmp/ulist.zs" -o "$tmp/ulist" && bin/zs build "$tmp/uparen.zs" -o "$tmp/uparen") >"$tmp/unlimited.log" 2>&1 \
+     && [ "$("$tmp/ulist")" = 20000 ] && [ "$("$tmp/uparen")" = 1 ]; then echo "ok   the compiler with ulimit -s unlimited (its pool threads' stacks)"
+  else echo "FAIL the compiler with ulimit -s unlimited"; grep -v '^ *[0-9]* | ' "$tmp/unlimited.log" | head -3; fail=1; fi
+fi
 # programs broken at random: errors, never a crash, a panic or a hang of zs check or zs fmt
 if out=$(tests/fuzz.sh 2>&1); then echo "ok   tests/fuzz.sh ($(echo "$out" | tail -1))"
 else echo "FAIL tests/fuzz.sh"; echo "$out" | tail -20; fail=1; fi
@@ -265,7 +277,7 @@ else echo "FAIL tests/iter/loops.sh"; diff <(tests/iter/loops.sh bin/zs 2>&1) te
 # the first-party packages: their own tests, with their C through [c] (0018 item 4)
 pk=$( (cd packages/xxhash && "$zs" test | tail -1; cd ../libclang && "$zs" test | tail -1) 2>&1 )
 if [ "$pk" = "1 passed, 0 failed
-1 passed, 0 failed" ]; then echo "ok   packages (xxhash, libclang)"
+2 passed, 0 failed" ]; then echo "ok   packages (xxhash, libclang)"
 else echo "FAIL packages"; echo "$pk"; fail=1; fi
 
 # git dependencies against a local repository: tags, branches, zs.lock, zs update, re-fetching
@@ -433,6 +445,30 @@ if command -v qemu-system-arm >/dev/null; then
         echo "ok   tests/mcu/$t.zs on $chip (under qemu)"
       else echo "FAIL tests/mcu/$t.zs on $chip"; cat "$tmp/$t.log"; fail=1; fi
     done
+  done
+fi
+# the embedded runtime's checks, on both chips under qemu: C's malloc, calloc and realloc past the
+# heap are NULL (cmalloc), Float.parse's exponent saturates (float_exp); and panics that say what's
+# wrong where memory was overwritten: a stack overflow, which faults below RAM (overflow), a line
+# past the board's table (irq_line), a Signal record Signal.create didn't make (signal_id). The two
+# that need no chip on wasm32 too, under node (its malloc and Float.parse are the same runtime's)
+if command -v qemu-system-arm >/dev/null; then
+  for chip in cortex-m4 cortex-m0plus; do
+    board=$([ $chip = cortex-m4 ] && echo mps2-an386 || echo microbit)
+    for t in cmalloc float_exp overflow irq_line signal_id; do
+      if bin/zs build tests/mcu/$t.zs --target $chip -o "$tmp/$t.elf" 2>"$tmp/$t.log" \
+         && [ "$(timeout 60 qemu-system-arm -M $board -nographic -semihosting-config enable=on,target=native -kernel "$tmp/$t.elf" 2>&1 | grep -v '^#zs')" = "$(cat tests/mcu/$t.expected)" ]; then
+        echo "ok   tests/mcu/$t.zs on $chip (under qemu)"
+      else echo "FAIL tests/mcu/$t.zs on $chip"; cat "$tmp/$t.log"; fail=1; fi
+    done
+  done
+fi
+if ! command -v node >/dev/null; then echo "skip tests/mcu/cmalloc.zs and float_exp.zs on wasm32 (no node)"
+else
+  for t in cmalloc float_exp; do
+    if bin/zs build tests/mcu/$t.zs --target wasm32 -o "$tmp/$t.wasm" 2>"$tmp/$t.log" \
+       && [ "$(node bin/run-wasm.mjs "$tmp/$t.wasm" 2>&1)" = "$(cat tests/mcu/$t.expected)" ]; then echo "ok   tests/mcu/$t.zs on wasm32 (under node)"
+    else echo "FAIL tests/mcu/$t.zs on wasm32"; cat "$tmp/$t.log"; fail=1; fi
   done
 fi
 # .noinit on a chip (0014 item 12): the section is NOBITS in RAM (the reset handler neither copies

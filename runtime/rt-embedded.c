@@ -631,9 +631,30 @@ static struct {
 // taken by an object only when the heap has nothing else left
 static void *arena_free;
 
+// the heap's changes with interrupts masked (a few cycles: mrs, cpsid, msr), so an allocation
+// from a handler (C's malloc, a callback<share<F>> C calls there, a library's export) can't land
+// in the middle of the program's; they nest. WebAssembly has no interrupts
+static uint32_t heap_enter(void) {
+#if defined(__ARM_ARCH)
+    return masked();
+#else
+    return 0;
+#endif
+}
+
+static void heap_leave(uint32_t m) {
+#if defined(__ARM_ARCH)
+    unmasked(m);
+#else
+    (void)m;
+#endif
+}
+
 // a block of the heap that isn't an object (a weak table, an arena's block): counted in the
-// bytes used, not as an allocation
+// bytes used, not as an allocation. A size past the heap's is never there (and its rounding
+// would wrap)
 static void *heap_take(size_t need) {
+    if (need > (size_t)ZS_HEAP_SIZE) zs_panic_c("out of memory");
     need = (need + 7) & ~(size_t)7; // every block 8-aligned, so the next one is too
     size_t cls = need / 8;
     uint64_t *block = 0;
@@ -651,7 +672,7 @@ static void *heap_take(size_t need) {
                     *at = *(void **)*at;
                     break;
                 }
-        if (!block && H.top + need + 8 <= ZS_HEAP_SIZE) {
+        if (!block && need + 8 <= (size_t)ZS_HEAP_SIZE - H.top) { // top <= the heap's size
             block = (uint64_t *)(heap + H.top);
             H.top += need + 8;
             *block = need;
@@ -681,16 +702,21 @@ static void heap_give(void *p) {
     *list = p;
 }
 
+// (a negative size is one past the heap's, as heap_take sees it)
 void *zs_alloc(zs_int size) {
-    void *p = heap_take(((size_t)size + 7) & ~(size_t)7);
+    uint32_t m = heap_enter();
+    void *p = heap_take((size_t)size);
     H.live++;
     H.allocations++;
+    heap_leave(m);
     return p;
 }
 
 void zs_free(void *p) {
+    uint32_t m = heap_enter();
     H.live--;
     heap_give(p);
+    heap_leave(m);
 }
 
 zs_int zs_allocations(void) { return H.allocations; }
@@ -782,7 +808,9 @@ typedef struct {
     void *target;
 } zs_weak;
 
+// the weak table is the heap's too, changed with interrupts masked
 zs_weak *zs_weak_new(void *target) {
+    uint32_t m = heap_enter();
     bool dies = *(int32_t *)target != 0; // a static object never does: its cells aren't in the table
     zs_weak *w = dies ? tab_get(&weaks, target) : NULL;
     if (w) {
@@ -793,6 +821,7 @@ zs_weak *zs_weak_new(void *target) {
         w->target = dies ? target : (void *)((uintptr_t)target | 1); // the low bit: static
         if (dies) tab_put(&weaks, target, w);
     }
+    heap_leave(m);
     return w;
 }
 
@@ -802,6 +831,7 @@ zs_weak *zs_weak_new(void *target) {
 // is taken atomically, and only while its count isn't 0
 void *zs_weak_target(zs_weak *w) {
     if ((uintptr_t)w->target & 1) return (void *)((uintptr_t)w->target & ~(uintptr_t)1);
+    uint32_t m = heap_enter();
     int32_t *t = w->target;
     if (t) {
         int32_t c = __atomic_load_n(t, __ATOMIC_RELAXED);
@@ -817,19 +847,24 @@ void *zs_weak_target(zs_weak *w) {
             }
         }
     }
+    heap_leave(m);
     return t;
 }
 
 // the cell's last reference has gone
 void zs_weak_free(zs_weak *w) {
+    uint32_t m = heap_enter();
     if (w->target && !((uintptr_t)w->target & 1)) tab_remove(&weaks, w->target);
     zs_free_checked(w);
+    heap_leave(m);
 }
 
 // a cell Perceus reuses for another object: the object it held has died
 void zs_reused(void *p) {
+    uint32_t m = heap_enter();
     zs_weak *w = weaks.count ? tab_remove(&weaks, p) : NULL;
     if (w) w->target = NULL;
+    heap_leave(m);
 }
 
 // arenas (Arena.with): what a function allocates comes from blocks of the heap, bumped through,
@@ -879,11 +914,13 @@ static char *arena_block(zs_arena *a) {
 }
 
 void zs_arena_open(void) {
+    uint32_t m = heap_enter();
     char *b = arena_block(NULL);
     zs_arena *a = (zs_arena *)(b + ARENA_HEAD);
     *a = (zs_arena){arena, arenas, b, b + ARENA_HEAD + ((sizeof(zs_arena) + 7) & ~(size_t)7), b + ARENA_BLOCK, 0, true};
     arenas = a;
     arena = a;
+    heap_leave(m);
 }
 
 static void arena_release(zs_arena *a) {
@@ -905,10 +942,12 @@ static void arena_release(zs_arena *a) {
 }
 
 void zs_arena_close(void) {
+    uint32_t m = heap_enter();
     zs_arena *a = arena;
     arena = a->parent;
     a->open = false;
     if (a->live == 0) arena_release(a);
+    heap_leave(m);
 }
 
 static zs_arena *arena_of(const void *p) {
@@ -919,33 +958,41 @@ static zs_arena *arena_of(const void *p) {
 }
 
 void *zs_alloc_checked(zs_int size) {
+    uint32_t m = heap_enter();
     zs_arena *a = arena;
-    if (!a || (size_t)size > ARENA_BLOCK / 4) return zs_alloc(size); // a big object is the heap's
-    size_t n = ((size_t)size + 7) & ~(size_t)7;
-    if (a->next + n > a->end) {
-        char *b = arena_block(a);
-        a->blocks = b;
-        a->next = b + ARENA_HEAD;
-        a->end = b + ARENA_BLOCK;
+    void *p;
+    if (!a || (size_t)size > ARENA_BLOCK / 4) { // a big object is the heap's
+        p = heap_take((size_t)size);
+    } else {
+        size_t n = ((size_t)size + 7) & ~(size_t)7;
+        if (a->next + n > a->end) {
+            char *b = arena_block(a);
+            a->blocks = b;
+            a->next = b + ARENA_HEAD;
+            a->end = b + ARENA_BLOCK;
+        }
+        p = a->next;
+        a->next += n;
+        a->live++;
     }
-    void *p = a->next;
-    a->next += n;
-    a->live++;
     H.live++;
     H.allocations++;
+    heap_leave(m);
     return p;
 }
 
 void zs_free_checked(void *p) {
+    uint32_t m = heap_enter();
     zs_weak *w = weaks.count ? tab_remove(&weaks, p) : NULL;
     if (w) w->target = NULL;
     zs_arena *a = arenas ? arena_of(p) : NULL;
+    H.live--;
     if (a) {
-        H.live--;
         if (--a->live == 0 && !a->open) arena_release(a);
     } else {
-        zs_free(p);
+        heap_give(p);
     }
+    heap_leave(m);
 }
 #endif
 // objects marked shared: with an interrupt handler (0012), the values it can reach, at startup
@@ -954,26 +1001,30 @@ zs_int zs_marks(void) { return zs_marked; }
 
 // ---- C's allocator, over the same heap: weak, so C, Rust or Zig code in a program or library
 // without a C library allocates where Z# does (a firmware with its own C library keeps its own).
-// Running out panics, as it does for Z#.
+// Running out panics, as it does for Z#; a size no heap this size could give (past the heap, or a
+// count times a size that overflows: a length off the wire) is NULL, as a C library's is.
 
-__attribute__((weak)) void *malloc(size_t n) { return zs_alloc((zs_int)(n ? n : 1)); }
+__attribute__((weak)) void *malloc(size_t n) { return n > (size_t)ZS_HEAP_SIZE ? NULL : zs_alloc((zs_int)(n ? n : 1)); }
 
 __attribute__((weak)) void free(void *p) {
     if (p) zs_free(p);
 }
 
 __attribute__((weak)) void *calloc(size_t n, size_t size) {
-    if (size && n > (size_t)-1 / size) zs_panic_c("calloc: too large");
+    if (size && n > (size_t)-1 / size) return NULL;
     uint8_t *p = malloc(n * size);
-    for (size_t i = 0; i < n * size; i++) p[i] = 0;
+    if (p)
+        for (size_t i = 0; i < n * size; i++) p[i] = 0;
     return p;
 }
 
+// NULL leaves p as it was
 __attribute__((weak)) void *realloc(void *p, size_t n) {
     if (!p) return malloc(n);
     size_t have = (size_t)((uint64_t *)p)[-1];
     if (n <= have) return p;
     uint8_t *q = malloc(n), *from = p;
+    if (!q) return NULL;
     for (size_t i = 0; i < have; i++) q[i] = from[i];
     free(p);
     return q;
@@ -984,7 +1035,9 @@ __attribute__((weak, noreturn)) void abort(void) { zs_panic_c("abort"); }
 // Ptr.alloc / Ptr.free: C memory for n elements of a size, zeroed
 void *zs_ptr_alloc(zs_int n, zs_int size) {
     if (n < 0) zs_panic_c("Ptr.alloc: negative count");
-    return calloc((size_t)(n ? n : 1), (size_t)size);
+    void *p = calloc((size_t)(n ? n : 1), (size_t)size);
+    if (!p) zs_panic_c("out of memory");
+    return p;
 }
 
 void zs_ptr_free(void *p) { free(p); }
@@ -1382,10 +1435,14 @@ bool zs_parse_float(zs_str *s, double *out) {
         i++;
         bool eneg = false;
         if (i < n && (s->data[i] == '-' || s->data[i] == '+')) { eneg = s->data[i] == '-'; i++; }
+        // the exponent saturated (any past a double's range is as good as another), and applied
+        // until the value is 0 or infinite, which takes some 650 steps at most: the mantissa's
+        // digits move where that is, so no fixed count is right
         int e = 0, ed = 0;
-        for (; i < n && s->data[i] >= '0' && s->data[i] <= '9'; i++, ed++) e = e * 10 + (s->data[i] - '0');
+        for (; i < n && s->data[i] >= '0' && s->data[i] <= '9'; i++, ed++)
+            if (e < 100000) e = e * 10 + (s->data[i] - '0');
         if (ed == 0) return false;
-        for (int k = 0; k < e && k < 400; k++) v = eneg ? v / 10 : v * 10;
+        for (int k = 0; k < e && v != 0 && !__builtin_isinf(v); k++) v = eneg ? v / 10 : v * 10;
     }
     if (i != n) return false;
     *out = neg ? -v : v;
@@ -1724,6 +1781,9 @@ void _start(void) { stop(main(0, 0)); }
 
 /// Runtime.ticks (): the host's count.
 int64_t zs_ticks(void) { return host_ticks(); }
+
+// Irq.enable, disable and pend's lines (lib/core/Irq.zs): no interrupt controller here
+zs_int zs_irq_lines(void) { return 0; }
 #elif defined(ZS_LIB)
 // ---- a library: no startup. Runtime.ticks (): the DWT's cycle counter on a core with one
 // (Cortex-M3 and up), started at the first call; a firmware with its own time base defines
@@ -1745,6 +1805,16 @@ __attribute__((weak)) int64_t zs_ticks(void) {
     return (int64_t)high << 32 | now;
 #else
     return 0;
+#endif
+}
+
+// Irq.enable, disable and pend's lines (lib/core/Irq.zs): the firmware's table is its own, so
+// the NVIC's, 32 on an ARMv6-M and ICTR's count on an ARMv7-M
+zs_int zs_irq_lines(void) {
+#if defined(__ARM_ARCH_6M__)
+    return 32;
+#else
+    return 32 * (zs_int)((*(volatile uint32_t *)0xE000E004 & 0xFu) + 1);
 #endif
 }
 #else
@@ -1787,6 +1857,19 @@ __attribute__((noreturn)) void Reset_Handler(void) {
     __asm__ volatile("dsb\n isb");
 #endif
 
+#if defined(__ARM_ARCH_7M__) || defined(__ARM_ARCH_7EM__)
+    // the stack is at the bottom of RAM (cortex-m.ld), so past its base is below RAM, which faults
+    // on a chip; the 4 KB there no access in the MPU too (its region 0, the rest as without it),
+    // so the fault doesn't hang on what a board maps there
+    if ((*(volatile uint32_t *)0xE000ED90 >> 8 & 0xFFu) && !((uint32_t)&_sstack & 0xFFFu)) { // MPU_TYPE
+        *(volatile uint32_t *)0xE000ED98 = 0;                             // RNR: region 0
+        *(volatile uint32_t *)0xE000ED9C = (uint32_t)&_sstack - 0x1000;   // RBAR
+        *(volatile uint32_t *)0xE000EDA0 = 1u << 28 | 11u << 1 | 1u;      // RASR: no execute, no access, 4 KB, on
+        *(volatile uint32_t *)0xE000ED94 = 5;                             // CTRL: on, the default map elsewhere
+        __asm__ volatile("dsb\n isb");
+    }
+#endif
+
     // SysTick counts processor cycles (with QEMU -icount: instructions); its interrupt counts wraps
     *(volatile uint32_t *)0xE000E014 = 0xFFFFFF; // reload
     *(volatile uint32_t *)0xE000E018 = 0;        // current value
@@ -1800,7 +1883,33 @@ __attribute__((noreturn)) void Reset_Handler(void) {
     stop(main(0, 0));
 }
 
-static void fault(void) { zs_panic_c("hard fault"); }
+__attribute__((used, noreturn)) static void fault_report(uint32_t sp) {
+    zs_panic_c(sp <= (uint32_t)&_sstack ? "stack overflow (recursion too deep)" : "hard fault");
+}
+
+// a fault. A stack that ran past its base faulted below RAM (cortex-m.ld), and the core pushed
+// the fault's frame below the base too, so nothing may push on that stack (a fault in this
+// handler would lock the core up): with the stack pointer below or near the base (the panic's
+// own frames would cross it) the handler takes a fresh stack first (the program is over), then
+// names the fault
+__attribute__((naked)) static void fault(void) {
+    __asm__ volatile("mrs r0, msp\n"
+                     "ldr r1, =_sstack + 1024\n"
+                     "cmp r0, r1\n"
+                     "bhs 1f\n"
+                     "ldr r1, =_estack\n"
+                     "mov sp, r1\n"
+#if defined(__ARM_FP)
+                     // and floats' state, if its saving is pending (FPCCR's LSPACT), not saved
+                     // below RAM at the handler's first float instruction
+                     "ldr r1, =0xE000EF34\n"
+                     "ldr r2, [r1]\n"
+                     "bic r2, r2, #1\n"
+                     "str r2, [r1]\n"
+#endif
+                     "1: bl fault_report\n"
+                     ".ltorg\n");
+}
 
 static void nothing(void) {}
 
@@ -1857,6 +1966,17 @@ static void systick_period(uint32_t cycles) {
 #ifndef ZS_IRQ_COUNT
 #define ZS_IRQ_COUNT 0
 #endif
+
+// the lines Irq.enable, disable, pend (lib/core/Irq.zs) and wait take: those the vector table
+// holds, and an ARMv6-M's NVIC has 32. Past them a line's bit is in another register of the
+// System Control Space, or its vector is code
+zs_int zs_irq_lines(void) {
+#if defined(__ARM_ARCH_6M__)
+    return ZS_IRQ_COUNT < 32 ? ZS_IRQ_COUNT : 32;
+#else
+    return ZS_IRQ_COUNT;
+#endif
+}
 
 // the lines that fired since the loop last looked, for the tasks waiting for them (Irq.wait)
 static volatile uint32_t lines_fired[(ZS_IRQ_COUNT + 31) / 32 + 1];
@@ -2099,7 +2219,7 @@ static uint32_t signal_count;
 static void *signal_waiter[32];
 
 void zs_loop_irq_wait(zs_int n, void *cb) {
-    if (n < 0 || n >= ZS_IRQ_COUNT) zs_panic_c("Irq.wait: the line is past the board's table");
+    if (n < 0 || n >= zs_irq_lines()) zs_panic_c("Irq.wait: the line is past the board's table");
     if (vectors[16 + n] != (void *)irq_default) zs_panic_c("Irq.wait: the line has a handler of its own, which wakes no task: set a Signal from it");
     if (line_waiter[n]) zs_panic_c("two tasks wait for one interrupt line (one Irq.wait per line at a time)");
     line_waiter[n] = cb;
@@ -2125,7 +2245,15 @@ zs_int zs_signal_new(void) {
     return (zs_int)signal_count++;
 }
 
+// a Signal is a record ({ id: int }), so one can be built with any number: only Signal.create's
+// index the waiters, and only theirs are bits the loop drains (a bit past them would keep it
+// from ever sleeping)
+static void signal_check(zs_int s) {
+    if (s < 0 || s >= (zs_int)signal_count) zs_panic_c("not a Signal from Signal.create");
+}
+
 void zs_signal_set(zs_int s) {
+    signal_check(s);
     uint32_t m = masked();
     signals_set |= 1u << s;
     unmasked(m);
@@ -2133,6 +2261,7 @@ void zs_signal_set(zs_int s) {
 
 // whether the signal was set, clearing it
 bool zs_signal_take(zs_int s) {
+    signal_check(s);
     uint32_t m = masked();
     bool was = signals_set >> s & 1;
     signals_set &= ~(1u << s);
@@ -2141,12 +2270,14 @@ bool zs_signal_take(zs_int s) {
 }
 
 void zs_signal_wait(zs_int s, void *cb) {
+    signal_check(s);
     if (signal_waiter[s]) zs_panic_c("two tasks wait on one Signal");
     signal_waiter[s] = cb;
     L.waits++;
 }
 
 void zs_signal_unwait(zs_int s) {
+    signal_check(s);
     void *cb = signal_waiter[s];
     if (!cb) return;
     signal_waiter[s] = NULL;

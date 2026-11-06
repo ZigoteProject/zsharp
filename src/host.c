@@ -136,16 +136,21 @@ const char *zs_host_replace(const char *path, const char *data, int64_t len) {
 
 #ifndef _WIN32
 #include <sys/resource.h>
+// the runtime's floor under its threads' stacks (rt.c)
+extern size_t zs_thread_stack;
+
 // The compiler recurses as deep as the program it reads nests (a long list literal, a long run of
-// lets, a chain of calls inlined): 256 MB of stack where the hard limit allows, not the usual
-// 8 MB. Set before main, so the pool's threads have it too (the runtime sizes its threads by this
-// limit); Linux grows the main thread's stack up to it as well, within the room the kernel left
-// below the stack at exec (128 MB at least), where macOS keeps the main thread's 8 MB. The
-// processes the compiler runs inherit the limit: their threads reserve more address space, not
-// more memory.
+// lets, a chain of calls inlined): 256 MB of stack, not the usual 8 MB. The pool's threads get it
+// from the runtime, whatever the limit (an unlimited one too, which the runtime takes as 8 MB);
+// Linux grows the main thread's stack up to the soft RLIMIT_STACK, so that is raised to it where
+// the hard limit allows, before main, within the room the kernel left below the stack at exec
+// (128 MB at least), where macOS keeps the main thread's 8 MB. The processes the compiler runs
+// inherit the limit: their threads reserve more address space, not more memory, and take 8 MB
+// where the address space has no room for more.
 __attribute__((constructor(101))) static void zs_host_stack(void) {
-    struct rlimit rl;
     rlim_t want = (rlim_t)256 << 20;
+    zs_thread_stack = (size_t)want;
+    struct rlimit rl;
     if (getrlimit(RLIMIT_STACK, &rl) != 0 || rl.rlim_cur == RLIM_INFINITY || rl.rlim_cur >= want) return;
     rl.rlim_cur = rl.rlim_max == RLIM_INFINITY || rl.rlim_max >= want ? want : rl.rlim_max;
     setrlimit(RLIMIT_STACK, &rl);

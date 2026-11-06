@@ -16,7 +16,8 @@ pops it.
 type Signal
 ```
 
-A doorbell between interrupt handlers and a task: the runtime's number for it.
+A doorbell between interrupt handlers and a task: the runtime's number for it, which only
+`Signal.create` gives (a record built with another panics where it's used).
 
 ## Functions
 

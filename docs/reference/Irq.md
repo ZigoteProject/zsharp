@@ -12,7 +12,8 @@ board's names, runtime/boards/<board>.irq); or a task waits for the line with `I
 Irq.enable : int -> unit
 ```
 
-Enables line `n`: its handler runs when the device raises it.
+Enables line `n`: its handler runs when the device raises it. A line past the board's table
+panics.
 
 ### `Irq.disable`
 
@@ -20,7 +21,7 @@ Enables line `n`: its handler runs when the device raises it.
 Irq.disable : int -> unit
 ```
 
-Disables line `n`.
+Disables line `n`. A line past the board's table panics.
 
 ### `Irq.pend`
 
@@ -29,7 +30,7 @@ Irq.pend : int -> unit
 ```
 
 Sets line `n` pending, as its device would: its handler runs once the line is enabled. A test
-needs no device.
+needs no device. A line past the board's table panics.
 
 ### `Irq.wait`
 
