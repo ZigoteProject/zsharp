@@ -88,9 +88,11 @@ jobs:
         run: |
           a=$([ "$RUNNER_ARCH" = ARM64 ] && echo aarch64 || echo x86_64)
           dir=clang+llvm-23.1.4-$a-pc-windows-msvc
+          # tar takes D:\... for a remote host's path: the temporary directory as MSYS names it
+          t=$(cygpath -u "$RUNNER_TEMP")
           curl -fsSL "https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.4/$dir.tar.xz" \
-            | tar -xJ -C "$RUNNER_TEMP" --wildcards "$dir/bin/*" "$dir/lib/clang/*" "$dir/include/clang-c/*"
-          cygpath -w "$RUNNER_TEMP/$dir/bin" >> "$GITHUB_PATH"
+            | tar -xJ -C "$t" --wildcards "$dir/bin/*" "$dir/lib/clang/*" "$dir/include/clang-c/*"
+          cygpath -w "$t/$dir/bin" >> "$GITHUB_PATH"
       - if: runner.os == 'Windows'
         shell: pwsh
         run: |
