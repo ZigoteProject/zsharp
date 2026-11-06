@@ -160,6 +160,16 @@ mkdir -p "$tmp/oldclang" && printf '#!/bin/sh\necho "Apple clang version 21.0.0 
 if ! PATH="$tmp/oldclang:$PATH" bin/zs doctor >"$tmp/doctor-old.log" 2>&1 && grep -q '^--   clang .*: too old, LLVM 23 or later is needed' "$tmp/doctor-old.log"; then echo "ok   zs doctor (an old clang)"
 else echo "FAIL zs doctor (an old clang)"; cat "$tmp/doctor-old.log"; fail=1; fi
 
+# src/install.sh: its paths are the caller's, a prefix's directory or the checkout is refused with
+# nothing deleted, a binary that isn't there fails it
+if diff <(tests/install.sh 2>&1) tests/install.expected >"$tmp/install.diff"; then echo "ok   tests/install.sh (src/install.sh refuses what isn't its own)"
+else echo "FAIL tests/install.sh"; cat "$tmp/install.diff"; fail=1; fi
+# src/release.sh's archive: root's, written by its owner only, whoever built it; a numbered
+# release of a tree with files git doesn't have refused (Linux's and macOS's script)
+if [ $windows = 1 ]; then echo "skip tests/release.sh (src/release.sh is Linux's and macOS's)"
+elif diff <(tests/release.sh 2>&1) tests/release.expected >"$tmp/release.diff"; then echo "ok   tests/release.sh (release archives owned by root, modes normalised)"
+else echo "FAIL tests/release.sh"; cat "$tmp/release.diff"; fail=1; fi
+
 # doc tests (0009, D8): the library's examples in its /// comments, and zs test --doc --update
 # rewriting a block's expectations
 if out=$(bin/zs test --doc $(grep -rl '/// ```zsharp' lib) 2>&1); then echo "ok   the library's doc tests ($(echo "$out" | tail -1))"

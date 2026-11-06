@@ -21,6 +21,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0 # the whole history: test.sh diffs the grammar against Zed's pinned commit
+          persist-credentials: false # nothing after it uses git's credentials: not left in .git/config
       # stage 0: this repository's release v0.6.1, into dist/ where ./dev looks first (a private
       # repository's releases need the job's token)
       - run: gh release download v0.6.1 -p 'zs-0.6.1-linux-x86_64.tar.gz' -D dist
@@ -54,6 +55,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0 # the whole history: test.sh diffs the grammar against Zed's pinned commit
+          persist-credentials: false # nothing after it uses git's credentials: not left in .git/config
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: releases
@@ -74,25 +76,36 @@ jobs:
         run: brew install llvm && echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
       - if: runner.os == 'macOS' && runner.arch == 'X64'
         run: |
-          curl -fsSL -o "$RUNNER_TEMP/micromamba" https://github.com/mamba-org/micromamba-releases/releases/latest/download/micromamba-osx-64
-          chmod +x "$RUNNER_TEMP/micromamba"
+          # micromamba 2.10.0, conda-forge's package (whose binary micromamba's own releases copy),
+          # checked against its sha256 before it runs
+          curl -fsSL -o "$RUNNER_TEMP/micromamba.tar.bz2" https://conda.anaconda.org/conda-forge/osx-64/micromamba-2.10.0-0.tar.bz2
+          echo "17b20c4271d65c030a5c86788f5ca86eb575187209f626edabdb8c6a875c6838  $RUNNER_TEMP/micromamba.tar.bz2" | shasum -a 256 -c -
+          mkdir -p "$RUNNER_TEMP/micromamba"
+          tar -xjf "$RUNNER_TEMP/micromamba.tar.bz2" -C "$RUNNER_TEMP/micromamba" bin/micromamba
           # nocfg: upstream clang, without conda's configuration files (SDKROOT gives the SDK)
-          "$RUNNER_TEMP/micromamba" create -y -q -r "$RUNNER_TEMP/mamba" -p "$RUNNER_TEMP/llvm" -c conda-forge \
+          "$RUNNER_TEMP/micromamba/bin/micromamba" create -y -q -r "$RUNNER_TEMP/mamba" -p "$RUNNER_TEMP/llvm" -c conda-forge \
             'clang=23.1.4=*nocfg*' 'clangxx=23.1.4=*nocfg*' libclang=23.1.4 lld=23.1.4 llvm-tools=23.1.4 compiler-rt=23.1.4
           echo "$RUNNER_TEMP/llvm/bin" >> "$GITHUB_PATH"
       # upgrade, not install: it installs what's missing and upgrades what the image has (Windows
-      # x64's came with LLVM 20, which install leaves as it is)
+      # x64's came with LLVM 20, which install leaves as it is); each at the version the other jobs
+      # use (a package checks the installer it downloads against the checksum it was published with)
       - if: runner.os == 'Windows'
-        run: choco upgrade -y llvm zig
+        run: |
+          choco upgrade -y llvm --version=23.1.4 --allow-downgrade
+          choco upgrade -y zig --version=0.16.0 --allow-downgrade
       # the dev image's LLVM and zig, from their releases (Ubuntu's clang is too old for the IR,
-      # and it packages no zig)
+      # and it packages no zig); the LLVM archive checked against its sha256 (the Containerfile's
+      # LLVM_SHA256_ARM64) before anything of it is unpacked
       - if: runner.os == 'Linux'
         run: |
           sudo apt-get update && sudo apt-get install -y zstd valgrind gdb pkg-config
           dir=LLVM-23.1.4-Linux-ARM64
-          curl -fsSL https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.4/$dir.tar.zst | zstd -dc --long=31 \
+          curl -fsSL -o "$RUNNER_TEMP/llvm.tar.zst" https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.4/$dir.tar.zst
+          echo "0975f753e0f9b5f83146a7a2f4678bc143e713496b56520716a4de047a63f99f  $RUNNER_TEMP/llvm.tar.zst" | sha256sum -c --quiet -
+          zstd -dc --long=31 "$RUNNER_TEMP/llvm.tar.zst" \
             | sudo tar -x -C /opt --wildcards "$dir/lib/clang/*" "$dir/include/clang-c/*" "$dir/lib/libclang.so*" \
                 $(for t in clang clang-23 clang++ lld ld.lld llvm-ar llvm-nm llvm-objdump llvm-strip llvm-profdata llvm-symbolizer llvm-dis llvm-as opt llc; do echo "$dir/bin/$t"; done)
+          rm "$RUNNER_TEMP/llvm.tar.zst"
           sudo mv /opt/$dir /opt/llvm && echo /opt/llvm/bin >> "$GITHUB_PATH"
           curl -fsSL https://ziglang.org/download/0.16.0/zig-aarch64-linux-0.16.0.tar.xz | sudo tar -xJ -C /opt
           echo /opt/zig-aarch64-linux-0.16.0 >> "$GITHUB_PATH"

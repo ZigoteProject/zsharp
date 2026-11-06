@@ -14,7 +14,12 @@ stage=$1; version=$2; shift 2
 # are named otherwise ("ci")
 own=$(sed -n 's/^version = "\(.*\)"$/\1/p' src/zs.toml)
 case $version in
-  [0-9]*) [ "$version" = "$own" ] || { echo "release $version, but src/zs.toml's version is $own" >&2; exit 1; } ;;
+  [0-9]*)
+    [ "$version" = "$own" ] || { echo "release $version, but src/zs.toml's version is $own" >&2; exit 1; }
+    # what's archived is the tree as it is (src/ built, lib/ and runtime/ copied): a numbered
+    # release has nothing there that git doesn't, changed, added or ignored
+    dirty=$(git status --porcelain --untracked-files=all --ignored -- src lib runtime)
+    [ -z "$dirty" ] || { printf 'release %s, but src/, lib/ or runtime/ differ from what git has (commit or remove it):\n%s\n' "$version" "$dirty" >&2; exit 1; } ;;
 esac
 arch=$(uname -m); [ "$arch" = arm64 ] && arch=aarch64
 host=$(uname -s | tr A-Z a-z); [ "$host" = darwin ] && host=macos
@@ -30,10 +35,17 @@ cmp -s "$t/2/zs" "$t/3/zs" || { echo "the compiler doesn't build itself to the s
 case $version in
   [0-9]*) [ "$("$t/3/zs" --version)" = "zs $version" ] || { echo "release $version, but the compiler says $("$t/3/zs" --version) (src/Build/Tools.zs)" >&2; exit 1; } ;;
 esac
+# owned by root and written by no one else, whoever built it: tar keeps each file's owner and
+# mode, and tar -x as root restores them (GNU tar's flags, else bsdtar's: macOS's)
+case $(tar --version) in
+  *GNU*) owner=(--owner=0 --group=0 --numeric-owner) ;;
+  *) owner=(--uid 0 --gid 0 --numeric-owner) ;;
+esac
 archive() { # binary name
   src/install.sh "$1" "$t/$2"
+  chmod -R u+rwX,go+rX,go-w "$t/$2"
   mkdir -p dist
-  tar -czf "dist/$2.tar.gz" -C "$t" "$2"
+  tar "${owner[@]}" -czf "dist/$2.tar.gz" -C "$t" "$2"
   echo "dist/$2.tar.gz"
 }
 archive "$t/3/zs" "zs-$version-$host-$arch"
