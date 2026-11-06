@@ -7,7 +7,9 @@
 set -u
 cd "$(dirname "$0")/../.."
 dir=$(mktemp -d); trap 'rm -rf "$dir"' EXIT
-port=$((20000 + RANDOM % 20000))
+# below every system's ephemeral ports (Linux's from 32768, macOS's and Windows's from 49152), so
+# no client socket of an earlier run, still closing, holds the port the server listens on
+port=$((10000 + RANDOM % 20000))
 timeout 60 bin/zs build tests/task/emfile.zs -o "$dir/server" || exit 1
 (ulimit -n 64 && exec timeout 30 "$dir/server" $port) > "$dir/server.log" 2>&1 & srv=$!
 sleep 0.5

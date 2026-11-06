@@ -29,7 +29,7 @@ let main () =
   let narrow: result<int, string> = Binary.ofBytes (Binary.toBytes wide)
   println $"{ints} {big} {narrow}"
   // numbers past 1e15 and below 1e-4 print as JSON numbers (an exponent), not inf or 0
-  let numbers = [ JNumber 2.5e15; JNumber 3e-7; JNumber (-1.25e-5); JNumber 1e300; JNumber 0.5 ]
+  let numbers = [ JNumber 2.5e15; JNumber 3.0e-7; JNumber (-1.25e-5); JNumber 1.0e300; JNumber 0.5 ]
   println (Json.print (JArray numbers))
   // nesting at most 32 levels deep, where int is 32 bits: a 4 KB stack holds it
   let depth (n: int) =

@@ -7,7 +7,9 @@
 set -u
 cd "$(dirname "$0")/../.."
 dir=$(mktemp -d); trap 'rm -rf "$dir"' EXIT
-port=$((20000 + RANDOM % 20000))
+# below every system's ephemeral ports (Linux's from 32768, macOS's and Windows's from 49152), so
+# no client socket of an earlier run, still closing, holds the port the server listens on
+port=$((10000 + RANDOM % 20000))
 timeout 60 bin/zs build examples/echo/server.zs -o "$dir/server" && timeout 60 bin/zs build examples/echo/client.zs -o "$dir/client" || exit 1
 run=(); [ "${1:-}" = --valgrind ] && run=(valgrind -q --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=all --error-exitcode=99)
 # on the main thread's event loop, then (--threads) on every core's (Task.spawn)
