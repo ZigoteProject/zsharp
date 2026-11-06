@@ -210,7 +210,9 @@ let private targetFlags (target: string) (chip: option<Options.Mcu>) : list<stri
 /// dependencies. An import cycle is an error at the file that closes it. target: --target's
 /// triple, "" for this machine (where pkg-config runs). trusted: a package's type provider may be
 /// built and run (not for zs lsp and zs mcp without --trust, which open projects nobody vetted).
-let program (texts: Map<string, string>) (first: int) (mainPath: string) (target: string) (chip: option<Options.Mcu>) (trusted: bool) : result<list<Loaded> * Linked, Diagnostic * option<Source.Source>> =
+/// home: for a package's provider, the lock root of the project it's built for (zs build
+/// --deps-of), whose checkouts its git dependencies are and where its caches go.
+let program (texts: Map<string, string>) (first: int) (mainPath: string) (target: string) (chip: option<Options.Mcu>) (trusted: bool) (home: option<string>) : result<list<Loaded> * Linked, Diagnostic * option<Source.Source>> =
   let hosted = target = ""
   let forTarget = targetFlags target chip
   let targetName = Options.targetName chip target
@@ -220,6 +222,51 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
   let finished = ref Map.empty
   let failure = ref None
   let mainFull = Path.getFullPath mainPath
+  // the project a package's directory is a checkout or a vendored copy for: <project>/.zs-cache/
+  // deps/<name>, or <project>/vendor/<name> that the project's zs.lock has. An editor that opens
+  // a dependency's file checks it as a program, and what that writes goes to the project too
+  let fetchedFor (root: string) : option<string> =
+    let parent = Path.getDirectoryName root
+    let up = Path.getDirectoryName parent
+    if Path.getFileName parent = "deps" && Path.getFileName up = ".zs-cache" then
+      Some(Path.getDirectoryName up)
+    else if Path.getFileName parent = "vendor" then
+      match Project.readManifest up with
+      | Ok outer -> if Option.isSome (Project.lockedCommit outer (Path.getFileName root)) then Some up else None
+      | Error _ -> None
+    else
+      None
+  // the project built: its lock root (its workspace's, for a member), where its git dependencies
+  // are checked out and its dependencies' caches go; for a package's provider, home; for a
+  // dependency's file, the project it was fetched for
+  let topRoot : option<string> =
+    match home with
+    | Some h -> Some h
+    | None ->
+      match Project.findProject (Path.getDirectoryName mainFull) with
+      | Some(Ok tm) -> Some(Option.defaultValue (Project.lockRoot tm) (fetchedFor tm.root))
+      | _ -> None
+  // where the caches of a file of pkg (in dir) go: its saved C imports, provided modules and
+  // providers' programs. The program's own are in its project's .zs-cache (or one beside the
+  // file, outside a project); a dependency's in the project built, under its name and a hash of
+  // its directory, never in its checkout or vendored copy, whose hash the lock checks and whose
+  // symbolic links could point anywhere. A directory and the parts below it, each made a real
+  // directory (Tools.realDirectory) before anything is written there.
+  let cacheAt (pkg: Project.Package) (dir: string) : string * list<string> =
+    let ofDependency (mf: Project.Manifest) : string * list<string> =
+      let id = mf.name + "-" + String.sub (Tools.hashOf [ mf.root ]) 0 16
+      match topRoot with
+      | Some t -> (t, [ ".zs-cache"; "pkgs"; id ])
+      | None -> (Tools.cacheRoot (), [ "pkgs"; id ])
+    match (pkg.prefix, home, pkg.manifest) with
+    | (None, None, _)
+    | (_, _, None) ->
+      match Project.findProject dir with
+      | Some(Ok pm) -> if Option.isSome (fetchedFor pm.root) then ofDependency pm else (pm.root, [ ".zs-cache" ])
+      | _ -> (dir, [ ".zs-cache" ])
+    | (_, _, Some mf) -> ofDependency mf
+  // a cache's directory (cacheAt's, then sub), its path as it will be made
+  let cachePath (at: string * list<string>) (sub: list<string>) : string = List.fold (fun (d: string) (p: string) -> Path.combine d p) (fst at) (List.append (snd at) sub)
   let display (p: string) = Path.getRelativePath (Environment.currentDirectory ()) p
   let cflags = Buffer.empty
   let links = Buffer.empty
@@ -350,15 +397,12 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
           if not (List.contains l (Array.toList (Buffer.toArray links))) then
             Buffer.push l links
       flags
-  // import c: each replaced by the header's declarations, saved in the project's
-  // .zs-cache/cimport (or one next to the file); a [<Link>] on one is the build's
-  let imports (m: Loaded) (path: string) (flags: list<string>) : result<Loaded, Diagnostic> =
+  // import c: each replaced by the header's declarations, saved in the cache's cimport/
+  // (cacheAt); a [<Link>] on one is the build's
+  let imports (m: Loaded) (path: string) (pkg: Project.Package) (flags: list<string>) : result<Loaded, Diagnostic> =
     let dir = Path.getDirectoryName (Path.getFullPath path)
-    let root =
-      match Project.findProject dir with
-      | Some(Ok pm) -> pm.root
-      | _ -> dir
-    let cacheDir = Path.combine (Path.combine root ".zs-cache") "cimport"
+    let at = cacheAt pkg dir
+    let cacheDir = cachePath at [ "cimport" ]
     let lineOf (d: Ast.Decl) : Span =
       let offset = if d.dat >= 0 && d.dat < Array.length m.tree.tokens then m.tree.tokens.[d.dat].offset else 0
       { file = m.source.file; offset = offset; length = -1 }
@@ -370,7 +414,8 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
     let infos = Buffer.empty
     let gave = Buffer.empty
     let imported (header: string) (d: Ast.Decl) : list<Ast.Decl> =
-      match CImport.importHeader header dir flags cacheDir d.dat with
+      let saving = Result.mapError (fun (e: string) -> $"import c \"{header}\": {e}") (Tools.realDirectory (fst at) (List.append (snd at) [ "cimport" ]))
+      match Result.bind (fun (_: string) -> CImport.importHeader header dir flags cacheDir d.dat) saving with
       | Ok r ->
         Buffer.push (header + "\n" + Result.defaultValue "" (File.readAllText (CImport.savedFile header flags cacheDir))) gave
         for x in r.skipped do
@@ -401,22 +446,19 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
     match problem.Value with
     | Some p -> Error p
     | None -> Ok { m with decls = decls; skippedC = Array.toList (Buffer.toArray skipped); cInfos = Array.toList (Buffer.toArray infos); imported = String.join "\n" (Array.toList (Buffer.toArray gave)) }
-  // import <provider> (0001): each provided module is written to the project's
-  // .zs-cache/providers/<importing module>/<Name>.zs and loaded as a dependency of the file, so
+  // import <provider> (0001): each provided module is written to the cache's
+  // providers/<importing module>/<Name>.zs (cacheAt) and loaded as a dependency of the file, so
   // its names, positions and docs are a module's. `module Name = import …` names it; a bare
   // import opens a hidden one named after its file and the provider.
   let provided (m: Loaded) (path: string) (pkg: Project.Package) (cflags: list<string>) : result<Loaded * list<string * string>, Diagnostic> =
     let dir = Path.getDirectoryName (Path.getFullPath path)
-    let root =
-      match Project.findProject dir with
-      | Some(Ok pm) -> pm.root
-      | _ -> dir
+    let at = cacheAt pkg dir
     let importer =
       match m.modName with
       | Some n -> n
       | None -> Path.getFileNameWithoutExtension path
-    let cacheDir = Path.combine (Path.combine (Path.combine root ".zs-cache") "providers") importer
-    let cimportDir = Path.combine (Path.combine root ".zs-cache") "cimport"
+    let cacheDir = cachePath at [ "providers"; importer ]
+    let cimportDir = cachePath at [ "cimport" ]
     let lineOf (d: Ast.Decl) : Span =
       let offset = if d.dat >= 0 && d.dat < Array.length m.tree.tokens then m.tree.tokens.[d.dat].offset else 0
       { file = m.source.file; offset = offset; length = -1 }
@@ -439,39 +481,53 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
     // run, so opening one in an editor runs nothing of it
     let notTrusted (name: string) = "provider " + name + " not run: the project is not trusted (start the language server with --trust)"
     // a dependency with a [provider] section that an import names: its program, built into the
-    // project's .zs-cache/providers/bin when its sources changed (by zs itself, as a process), so
-    // a provider is a package like any other (0001)
+    // cache's providers/bin (cacheAt) when what it's built from changed (by zs itself, as a
+    // process), so a provider is a package like any other (0001)
     let packagedProviders : list<string * result<string, string>> =
-      let binDir = Path.combine (Path.combine (Path.combine root ".zs-cache") "providers") "bin"
-      let rec zsFiles (dir: string) : list<string> =
-        match Directory.list dir with
-        | Ok names ->
-          List.collect (fun (n: string) ->
-            let full = Path.combine dir n
-            if String.startsWith "." n then []
-            else if String.endsWith ".zs" n then [ full ]
-            else
-              match Directory.list full with
-              | Ok _ -> zsFiles full
-              | Error _ -> []) names
+      let binDir = cachePath at [ "providers"; "bin" ]
+      // the provider's package and those it depends on, each once, by their directories
+      let rec packages (ps: list<Project.Package>) (seen: list<string>) : list<string> =
+        match ps with
+        | [] -> List.rev seen
+        | p :: rest ->
+          let under = List.map (fun (pd: Project.PackageDep) -> match pd with | Project.PackageDep(_, dp) -> dp) p.deps
+          match p.manifest with
+          | Some mf when not (List.contains mf.root seen) -> packages (List.append rest under) (mf.root :: seen)
+          | _ -> packages rest seen
+      // what a package's program is built from in its directory: its zs.toml, Z# and C files (a
+      // directory named with a dot left out: .git, .zs-cache); listed as Directory.listRecursive
+      // lists them, sorted, "/" between the parts
+      let sourcesIn (root: string) : list<string> =
+        match Directory.listRecursive root with
+        | Ok rels ->
+          let hidden (r: string) = List.exists (fun (part: string) -> String.startsWith "." part) (String.split "/" r)
+          let source (r: string) = r = "zs.toml" || String.endsWith ".zs" r || String.endsWith ".c" r || String.endsWith ".h" r
+          List.map (fun (r: string) -> Path.combine root r) (List.filter (fun (r: string) -> source r && not (hidden r) && not (Directory.exists (Path.combine root r))) rels)
         | Error _ -> []
-      let build (name: string) (main: string) (pkgRoot: string) : result<string, string> =
+      let build (name: string) (main: string) (d: Project.Package) : result<string, string> =
         let out = Path.combine binDir ("zs-provider-" + name)
-        let sources = List.sortWith (fun (a: string) (b: string) -> compare a b) (zsFiles pkgRoot)
-        let key = Tools.hashOf (Tools.compilerId () :: main :: List.map (fun (f: string) -> Result.defaultValue "" (File.readAllText f)) sources)
+        let pkgRoot = Option.defaultValue d.root (Option.map (fun (mf: Project.Manifest) -> mf.root) d.manifest)
+        // the compiler, the provider's main, and every file of the packages it's built from, each
+        // with its path: an edit to any of them is a new program
+        let files = List.collect sourcesIn (packages [ d ] [])
+        let key = Tools.hashOf (Tools.compilerId () :: main :: List.collect (fun (f: string) -> [ f; Result.defaultValue "" (File.readAllText f) ]) files)
         if File.exists out && Result.defaultValue "" (File.readAllText (out + ".key")) = key then Ok out
         else
-          Tools.makeDirectory binDir
-          // in that process (--no-server): this may be the build server's own build, which would
-          // wait for the server, and the server for it
-          match Tools.runSplit (Tools.selfPath ()) [ "build"; "--no-server"; main; "-o"; out ] with
-          | Ok r when r.code = 0 ->
-            File.writeAllText (out + ".key") key |> ignore
-            Ok out
-          | Ok r ->
-            let lines = List.filter (fun (l: string) -> String.trim l <> "") (String.split "\n" (r.err + "\n" + r.out))
-            Error $"{name}: its provider ({Path.getRelativePath pkgRoot main}) didn't build: {(if List.isEmpty lines then $"exit code {r.code}" else List.head lines)}"
-          | Error e -> Error $"{name}: its provider didn't build: {e}"
+          match Tools.realDirectory (fst at) (List.append (snd at) [ "providers"; "bin" ]) with
+          | Error e -> Error $"{name}: its provider isn't built: {e}"
+          | Ok _ ->
+            // in that process (--no-server): this may be the build server's own build, which would
+            // wait for the server, and the server for it. --deps-of: its dependencies are this
+            // project's checkouts, fetched already, and its caches go here, not into the package
+            let depsOf = Option.defaultValue pkgRoot topRoot
+            match Tools.runSplit (Tools.selfPath ()) [ "build"; "--no-server"; "--deps-of"; depsOf; main; "-o"; out ] with
+            | Ok r when r.code = 0 ->
+              Tools.writeWhole (out + ".key") (Array.ofSpan (String.bytes key))
+              Ok out
+            | Ok r ->
+              let lines = List.filter (fun (l: string) -> String.trim l <> "") (String.split "\n" (r.err + "\n" + r.out))
+              Error $"{name}: its provider ({Path.getRelativePath pkgRoot main}) didn't build: {(if List.isEmpty lines then $"exit code {r.code}" else List.head lines)}"
+            | Error e -> Error $"{name}: its provider didn't build: {e}"
       // a dependency is keyed by its module prefix (Shout); the import names it as the manifest
       // does (shout)
       List.choose (fun (pd: Project.PackageDep) ->
@@ -483,7 +539,7 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
             match d.manifest with
             | Some mf ->
               match mf.provider with
-              | Some main -> Some(name, (if trusted then build name main d.root else Error(notTrusted name)))
+              | Some main -> Some(name, (if trusted then build name main d else Error(notTrusted name)))
               | None -> None
             | None -> None) pkg.deps
     // the files a provided module names as its inputs (// input: lines), beside the importer
@@ -515,7 +571,7 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
           // import c on the protocol (question 2): the header's declarations as Z#
           let ran =
             if withheld then Error(notTrusted provider)
-            else if provider = "c" then Provide.CProvider.provide arg dir cflags cimportDir
+            else if provider = "c" then Result.bind (fun (_: string) -> Provide.CProvider.provide arg dir cflags cimportDir) (Tools.realDirectory (fst at) (List.append (snd at) [ "cimport" ]))
             else Provide.Command.provide provider dir $"next to {Path.getFileName path}" arg opts packaged
           // a provider that isn't run here: not on this machine, or the untrusted project's own
           let notRun (e: string) = withheld || String.startsWith "no provider" e
@@ -539,20 +595,26 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
         report d msg
         None
       | Ok text ->
-        Tools.makeDirectory cacheDir
-        // written only when it changed: an editor watching the cache isn't woken for nothing
-        if Result.defaultValue "" (Provide.Input.read out) <> text then
-          match File.writeAllText out text with
-          | Ok _ -> ()
-          | Error e -> report d $"{provider}: can't write {out}: {e}"
-        let ins = inputsOf text
-        let hashes = hashesOf ins
-        if Result.defaultValue "" (Provide.Input.read (out + ".inputs")) <> hashes then
-          File.writeAllText (out + ".inputs") hashes |> ignore
-        for i in ins do
-          Buffer.push i inputs
-        Buffer.push (modName, out) deps
-        Some modName
+        match Tools.realDirectory (fst at) (List.append (snd at) [ "providers"; importer ]) with
+        | Error e ->
+          report d $"{provider}: can't write {out}: {e}"
+          None
+        | Ok _ ->
+          // written only when it changed: an editor watching the cache isn't woken for nothing;
+          // beside and moved over its name, so a symbolic link there is replaced, not written
+          // through
+          if Result.defaultValue "" (Provide.Input.read out) <> text then
+            Tools.writeWhole out (Array.ofSpan (String.bytes text))
+            if Result.defaultValue "" (Provide.Input.read out) <> text then
+              report d $"{provider}: can't write {out}"
+          let ins = inputsOf text
+          let hashes = hashesOf ins
+          if Result.defaultValue "" (Provide.Input.read (out + ".inputs")) <> hashes then
+            Tools.writeWhole (out + ".inputs") (Array.ofSpan (String.bytes hashes))
+          for i in ins do
+            Buffer.push i inputs
+          Buffer.push (modName, out) deps
+          Some modName
     let expand (d: Ast.Decl) : list<Ast.Decl> =
       match d.d with
       | Ast.Import(provider, arg, opts) ->
@@ -585,7 +647,7 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
       | Ok loaded ->
         // the package's [c] is the build's; its include directories and pkg-config's flags are
         // its import c's
-        match Result.bind (fun (m0: Loaded) -> Result.mapError (fun d -> (d, Some m0.source)) (provided m0 path pkg (List.append (cOf pkg) forTarget))) (Result.mapError (fun d -> (d, Some loaded.source)) (imports loaded path (List.append (cOf pkg) forTarget))) with
+        match Result.bind (fun (m0: Loaded) -> Result.mapError (fun d -> (d, Some m0.source)) (provided m0 path pkg (List.append (cOf pkg) forTarget))) (Result.mapError (fun d -> (d, Some loaded.source)) (imports loaded path pkg (List.append (cOf pkg) forTarget))) with
         | Error d -> fail d
         | Ok(m, providedDeps) ->
           // a dependency's file is named by its place in the package; a header may only agree
@@ -632,7 +694,9 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
                   finished.Value <- Map.add n true finished.Value
             let usedFiles = List.map (fun (_, f, _) -> display f) deps
             Buffer.push { m with modName = modName; uses = usedFiles; package = pkg.prefix } order
-  match Project.packageOf mainPath with
+  // the git dependencies the project built's checkouts (a dependency's file opened as a program
+  // has its own there too)
+  match Project.packageIn mainPath topRoot with
   | Error p ->
     failProblem p
     Error(Option.get failure.Value)

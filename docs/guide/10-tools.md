@@ -7,7 +7,7 @@
 | `zs new <name>` | create a project |
 | `zs build [file.zs] [-o out]` | build an executable (the project's, without a file) |
 | `zs run [file.zs [--]] [args…]` | build and run |
-| `zs check <file.zs>` | type-check only, reporting every error and warning |
+| `zs check <file.zs>` | type-check only, reporting every error and warning; as a build, it fetches the project's git dependencies first, asks pkg-config for a `[c]` section's flags, and builds and runs a package's type provider ([Trust](#trust)) |
 | `zs test [file.zs] [paths…] [--update] [--summary]` | run `[<Tests>]` values (tests, [properties](#properties) and benchmarks), each test in its own process; `--update` rewrites failing `expect` literals |
 | `zs test --doc [files…] [--update]` | run the examples in `///` comments (the project's files without any); `--update` rewrites their expectations |
 | `zs add ../text`, `zs add https://…/json.git@1.2`, `zs add <url> --rev main` | write a dependency into `zs.toml`'s `[dependencies]` (a path, or a git URL at a release or a rev; the name from the package's `zs.toml`, or the URL's last part) and fetch it |
@@ -20,7 +20,7 @@
 | `zs test --coverage file.zs` | the test binary built with a counter per line of the file's directory's sources (not the library's), each test's process writing them at exit; then the lines run and not run per file (`cov.zs: 7 of 9 lines (77%), not run: 5, 7`) and `coverage.lcov` in the current directory, which `genhtml -o coverage coverage.lcov` renders and coverage services read. `zs build --coverage` and `zs run --coverage` write the counts to `<program>.zscov` the same way |
 | `zs test --stress 10m [file.zs] [paths…]` | the tests at random on every core, over and over for that long (`30s`, `10m`, `1h`), each run its own process: a failure one run hides (a race, a leak on a rare path, a timeout under load) shows, each failing test shown once. With `ZS_LEAKCHECK=1`, a leak at a test's exit fails it, in one run too |
 | `zs fmt [--check] <files…>` | format files in place (`--check`: list unformatted ones; `--stdin`: standard input to standard output) |
-| `zs doc <file.zs>` | print a Markdown reference of a file's documented items |
+| `zs doc <file.zs>` | print a Markdown reference of a file's documented items; checking the file builds and runs a package's type provider, as `zs check` does ([Trust](#trust)) |
 | `zs fetch` / `zs update` | check out / update git dependencies |
 | `zs --version` | the compiler's release (`zs 0.7.0`), which the language and MCP servers report to an editor too |
 | `zs doctor` | what builds need (clang, zig, libclang, and the tools some commands run), found or not, and how to get what's missing |
@@ -283,7 +283,7 @@ A list, an array, a tree (a boxed union), a `ref` or a `Buffer` is a pointer to 
 
 ### Trust
 
-Checking a program can run code of the project's own: a dependency with a `[provider]` section is a type provider the compiler builds and runs for its import ([Type providers](18-type-providers.md#a-provider-of-your-own)). `zs build`, `zs check`, `zs test` and the other commands do that, since you run them on the project on purpose. An editor opens whatever you open, so `zs lsp` and `zs mcp` don't, unless started with `--trust`: without it, such an import uses the module the last build wrote (with a `stale-input` warning), or is an error at the import, `provider shout not run: the project is not trusted (start the language server with --trust)`. zs's own providers (`json`, `csv`, `sql`, `svd`, `c`) and the `zs-provider-<name>` programs on your `PATH`, which you installed, run either way.
+Checking a program can run code of the project's own: a dependency with a `[provider]` section is a type provider the compiler builds and runs for its import ([Type providers](18-type-providers.md#a-provider-of-your-own)). `zs build`, `zs check`, `zs doc`, `zs test` and the other commands do that, since you run them on the project on purpose, as `cargo check` runs a package's build script: `zs check` and `zs doc` on a project you don't trust run its code. The provider is built with the project's checkouts of its dependencies, so it fetches nothing of its own. An editor opens whatever you open, so `zs lsp` and `zs mcp` don't, unless started with `--trust`: without it, such an import uses the module the last build wrote (with a `stale-input` warning), or is an error at the import, `provider shout not run: the project is not trusted (start the language server with --trust)`. zs's own providers (`json`, `csv`, `sql`, `svd`, `c`) and the `zs-provider-<name>` programs on your `PATH`, which you installed, run either way.
 
 The VS Code extension passes `--trust`, as it runs only in a trusted workspace; the Rider plugin passes it in a trusted project; the Zed extension doesn't, and you add it to the arguments in Zed's settings ([Zed](#zed)). An MCP client starts `zs mcp` with the `args` you give it.
 

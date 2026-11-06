@@ -175,7 +175,9 @@ C hover; the library a named module needs is linked by the package's `[c]` secti
 ## Where the module is, and keeping it
 
 A provided module is written to `.zs-cache/providers/<importing module>/<Name>.zs` and loaded
-as a dependency of the file, so errors inside it, hover and definition point into that file.
+as a dependency of the file, so errors inside it, hover and definition point into that file (a
+dependency's import is written to the project's `.zs-cache/pkgs/<name>-<hash>/providers/`, not
+into the dependency).
 `.zs-cache` is ignored by git, so a clone runs the providers once. To keep the module in the
 project instead, print it and drop the import:
 
@@ -193,8 +195,11 @@ the edit, and a renamed provided name is refused with where it comes from
 
 A provider is a program named `zs-provider-<name>` on PATH, in any language, or a package: a
 dependency whose `zs.toml` has a `[provider]` section naming its program is the provider of
-its name, built by the compiler into `.zs-cache/providers/bin` when its sources change and run
-the same way:
+its name, built by the compiler into `.zs-cache/providers/bin` and run the same way. It's built
+again when a file it's built from changes: its package's `zs.toml`, Z# and C files, those of
+the packages it depends on, or the compiler. It's built with the project's checkouts of its
+dependencies (the build that needs it fetched them), so it fetches nothing and writes nothing
+into its package:
 
 ```toml
 [package]
@@ -225,7 +230,10 @@ A package's provider is the project's own code, so the language server and the M
 and run it only when started with `--trust` ([Trust](10-tools.md#trust)); without it, the import
 gets the module from the last build, with the `stale-input` warning, or the error `provider shout
 not run: the project is not trusted (start the language server with --trust)`. `zs build`, `zs
-check` and the other commands run it, and so does every server for zs's own providers and for a
+check`, `zs doc`, `zs test` and the other commands build and run it, as a build of the project
+does (`cargo check` runs a package's build script the same way): checking a project, or
+printing its reference, runs code of its own, so check one you don't trust in the language
+server without `--trust`. Every command and server runs zs's own providers and a
 `zs-provider-<name>` on PATH, which you installed.
 
 A provider's file must be a regular file (or a link to one): a pipe or a device named by an

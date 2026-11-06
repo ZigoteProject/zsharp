@@ -637,11 +637,14 @@ let private save (file: string) (r: Imported) : unit =
     JArray [ JString n; JString why ]
   let fields = [ ("decls", JArray(List.map declJson r.decls)); ("skipped", JArray(List.map skip r.skipped)); ("infos", JArray(List.map info r.infos)) ]
   let o = JObject fields
-  Tools.makeDirectory (Path.getDirectoryName file)
-  File.writeAllText file (Json.print o) |> ignore
+  // each file written beside and moved over its name: a symbolic link there is replaced, never
+  // written through
+  Tools.writeWhole file (Array.ofSpan (String.bytes (Json.print o)))
   // a copy of the header, for go-to-definition where the header isn't installed
   if File.exists r.headerFile then
-    File.copy r.headerFile (String.sub file 0 (String.length file - 5)) |> ignore
+    match File.readAllBytes r.headerFile with
+    | Ok bytes -> Tools.writeWhole (String.sub file 0 (String.length file - 5)) bytes
+    | Error _ -> ()
 
 let private load (file: string) (at: int) : result<Imported, string> =
   // raylib.h.json beside raylib.h

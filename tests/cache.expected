@@ -26,4 +26,7 @@ program: main.zs module cache (4 of 6) clang (1 of 7 new)
   runs: area => 6 9 6 area => 1 40 
 after the edits: the same binary as from an empty cache
 unreadable results: area => 6 9 6 area => 1 40 
+beside another build's IR: area => 6 9 6 area => 1 40 
+a package's C: scale 2 2
+its header changed in its include directory: scale 3 3
 every test program from the cache: the same binary as from nothing

@@ -342,6 +342,11 @@ else echo "FAIL tests/project/vendor.sh"; cat "$tmp/vendor.diff"; fail=1; fi
 if [ $windows = 1 ]; then echo "skip tests/project/links.sh (symbolic links and pipes are POSIX's)"
 elif diff <(tests/project/links.sh 2>&1) tests/project/links.expected >"$tmp/links.diff"; then echo "ok   tests/project/links.sh (links hashed and vendored as links, pipes and devices refused)"
 else echo "FAIL tests/project/links.sh"; cat "$tmp/links.diff"; fail=1; fi
+# what zs writes for a dependency (import c, a provider's build) kept out of its directory, and
+# no cache written through a symbolic link (Git Bash's ln -s copies)
+if [ $windows = 1 ]; then echo "skip tests/project/depcache.sh (symbolic links, which Git Bash's ln -s copies)"
+elif diff <(tests/project/depcache.sh 2>&1) tests/project/depcache.expected >"$tmp/depcache.diff"; then echo "ok   tests/project/depcache.sh (dependencies' caches in the project, none through a link)"
+else echo "FAIL tests/project/depcache.sh"; cat "$tmp/depcache.diff"; fail=1; fi
 # zs add, zs remove and zs tree, internal modules, and Std in a chip build's dependency (0018)
 if diff <(tests/project/pkgs.sh 2>&1) tests/project/pkgs.expected >"$tmp/pkgs.diff"; then echo "ok   tests/project/pkgs.sh (zs add, remove, tree; internal modules; Std on a chip)"
 else echo "FAIL tests/project/pkgs.sh"; cat "$tmp/pkgs.diff"; fail=1; fi

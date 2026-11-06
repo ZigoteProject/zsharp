@@ -83,7 +83,7 @@ The repository's `examples/raylib` is a complete demo, a ball you push around wi
 
 **Finding headers:**
 - **Where:** the header is found next to the importing file, then on the system include path.
-- **Saved imports:** each successful import is saved in the project's `.zs-cache/cimport/`, with a copy of the header. An editor whose language server can't run clang still gets the C names, with types and the header's comments on hover.
+- **Saved imports:** each successful import is saved in the project's `.zs-cache/cimport/`, with a copy of the header (a dependency's in the project's `.zs-cache/pkgs/<name>-<hash>/cimport/`, not in the dependency). An editor whose language server can't run clang still gets the C names, with types and the header's comments on hover.
 
 ## Structs by value
 

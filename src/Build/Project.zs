@@ -370,11 +370,14 @@ let private throughLink (root: string) (parts: list<string>) : bool =
     | x :: more -> Native.isSymlink (Path.combine dir x) || go (Path.combine dir x) more
   go root parts
 
-let private depPath (top: Manifest) (name: string) (d: Dep) : string =
+// where a dependency is for a project whose checkouts and vendor/ are in root (its lock root)
+let private depPathIn (root: string) (name: string) (d: Dep) : string =
   match d with
   | PathDep p -> p
   | GitDep _
-  | GitVersion _ -> if vendored top name then vendorDir top name else gitDir top name
+  | GitVersion _ ->
+    let v = Path.combine (Path.combine root "vendor") name
+    if File.exists (Path.combine v "zs.toml") then v else Path.combine (Path.combine (Path.combine root ".zs-cache") "deps") name
 
 /// The module a dependency's code is seen under (0018 K1): its key with the first letter
 /// upper-cased, each `-` dropped and the letter after it upper-cased (`tree-sitter`: TreeSitter).
@@ -396,8 +399,10 @@ and PackageDep = PackageDep of string * Package
 /// in tests/ or beside the code) names modules from the main's directory, as the program does,
 /// so `Domain.Stats` is the same module in both; Modules.fileIn looks in the file's own
 /// directory after it. Git dependencies must have been fetched (zs
-/// fetch, or any zs build, run, test or check).
-let packageOf (file: string) : result<Package, Problem> =
+/// fetch, or any zs build, run, test or check). home: the lock root whose checkouts the git
+/// dependencies are, the project's that fetched them (that a package's provider is built for,
+/// or that a dependency's file opened as a program was fetched for); None: the file's project's.
+let packageIn (file: string) (home: option<string>) : result<Package, Problem> =
   let full = Path.getFullPath file
   // a dependency's directory: its package; a prefix: the directory and key giving it; the
   // directories being read (a dependency of itself is a cycle)
@@ -411,7 +416,7 @@ let packageOf (file: string) : result<Package, Problem> =
       match rest with
       | [] -> Ok(List.rev acc)
       | (name, dep) :: more ->
-        let path = depPath top name dep
+        let path = depPathIn (Option.defaultValue (lockRoot top) home) name dep
         if not (File.exists (Path.combine path "zs.toml")) then
           match dep with
           | GitDep _
@@ -451,6 +456,9 @@ let packageOf (file: string) : result<Package, Problem> =
     | Error e -> Error e
   | Some(Error e) -> Error e
   | None -> Ok { prefix = None; root = dir; main = full; deps = []; manifest = None }
+
+/// The program around a file, its git dependencies the project's own checkouts (packageIn).
+let packageOf (file: string) : result<Package, Problem> = packageIn file None
 
 // runs git, failing instead of asking for a password: its output, or Error with its message
 let private git (args: list<string>) : result<string, string> =
@@ -645,7 +653,8 @@ let fetchDeps (top: Manifest) (update: bool) (offline0: bool) : list<string> =
                   match git [ "-C"; dir; "checkout"; "--quiet"; "--force"; "--detach"; c ] with
                   | Error e -> Error e
                   | Ok _ ->
-                    git [ "-C"; dir; "clean"; "-fdq" ] |> ignore
+                    // ignored files too (-x): a checkout's .zs-cache an older zs wrote is in the hash
+                    git [ "-C"; dir; "clean"; "-ffdxq" ] |> ignore
                     if Result.defaultValue "" (dirHash dir) = l.hash then Ok h else Error(mismatch name (Path.getRelativePath top.root dir))
             | None ->
               // the rev resolved on the remote's current state: a branch means origin's branch

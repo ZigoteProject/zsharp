@@ -53,6 +53,23 @@ XDG_CACHE_HOME=$t/empty bin/zs build "$t/main.zs" -o "$t/fresh/exe" && cmp -s "$
 # an unreadable result is ignored: checked again
 for f in "$t"/cache/zs/checked/*.bin; do head -c 100 "$f" > "$f.cut" && mv "$f.cut" "$f"; done
 bin/zs build "$t/main.zs" -o "$t/f" && echo "unreadable results: $("$t/f" | tr '\n' ' ')"
+# a module's IR is compiled from a file of this build's own: one another build writes and deletes
+# at the same time, at the name the object's key gives, is no matter (here a directory there)
+rm -rf "$t/cache/zs/modules"
+for o in "$t"/cache/zs/objects/*.o; do mkdir "${o%.o}.ll"; done
+rm -f "$t"/cache/zs/objects/*.o
+bin/zs build "$t/main.zs" -o "$t/g" && echo "beside another build's IR: $("$t/g" | tr '\n' ' ')"
+rmdir "$t"/cache/zs/objects/*.ll
+# a package's C source is kept under a key of every header it includes, not only those beside it:
+# one in the package's include directory changed is a new object, as it is a new import c
+mkdir -p "$t/geo/src" "$t/geo/c/src" "$t/geo/c/include"
+printf '[package]\nname = "geo"\n\n[c]\nsources = ["c/src/geo.c"]\ninclude = ["c/include"]\n' > "$t/geo/zs.toml"
+printf '#define GEO_SCALE 2\nint geo_scale(void);\n' > "$t/geo/c/include/geo.h"
+printf '#include "geo.h"\n\nint geo_scale(void) { return GEO_SCALE; }\n' > "$t/geo/c/src/geo.c"
+printf 'import c "geo.h"\n\nlet main () =\n  println $"scale {geo_scale ()} {GEO_SCALE}"\n  0\n' > "$t/geo/src/main.zs"
+bin/zs build "$t/geo/src/main.zs" -o "$t/geo/exe" && echo "a package's C: $("$t/geo/exe")"
+edit 's/GEO_SCALE 2/GEO_SCALE 3/' "$t/geo/c/include/geo.h"
+bin/zs build "$t/geo/src/main.zs" -o "$t/geo/exe" && echo "its header changed in its include directory: $("$t/geo/exe")"
 # every test program: a build that restores what the cache has (the library's results, others'
 # code) makes the binary a build of everything from nothing makes
 differ=""

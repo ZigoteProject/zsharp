@@ -109,8 +109,10 @@ let run (args: list<string>) : int =
       println $"{name,-6} zs-provider-{name}, on PATH"
     0
   | [ "c"; header ] ->
-    // the header beside the working directory or on the system's path, with this machine's flags
-    match Provide.CProvider.provide header (Environment.currentDirectory ()) [] (Path.combine ".zs-cache" "cimport") with
+    // the header beside the working directory or on the system's path, with this machine's flags;
+    // the import saved in .zs-cache/cimport there, not through a symbolic link
+    let here = Environment.currentDirectory ()
+    match Result.bind (fun (_: string) -> Provide.CProvider.provide header here [] (Path.combine ".zs-cache" "cimport")) (Build.Tools.realDirectory here [ ".zs-cache"; "cimport" ]) with
     | Ok text ->
       print text
       0

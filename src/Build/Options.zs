@@ -126,6 +126,10 @@ type Options =
     sanitize: bool
     /// --offline: an error instead of fetching a dependency (0018 item 6)
     offline: bool
+    /// --deps-of <dir>: the build of a package's type provider that zs starts for a project that
+    /// depends on it: its git dependencies are that project's checkouts (dir is its lock root),
+    /// fetched already, and its caches go there, not into the package
+    depsOf: option<string>
     /// --no-heap: the whole program checked as [<NoAlloc>], and a chip's image with no heap (0012)
     noHeap: bool
     threadSanitizer: bool
@@ -175,6 +179,7 @@ let defaults : Options =
     strict = false
     sanitize = false
     offline = false
+    depsOf = None
     noHeap = false
     threadSanitizer = false
     profileGenerate = false
@@ -212,6 +217,7 @@ let parse (args: list<string>) : result<Options * list<string>, string> =
     | "--strict" :: more -> go { o with strict = true } others more
     | "--sanitize" :: more -> go { o with sanitize = true } others more
     | "--offline" :: more -> go { o with offline = true } others more
+    | "--deps-of" :: d :: more -> go { o with depsOf = Some d } others more
     | "--no-heap" :: more -> go { o with noHeap = true } others more
     | "--sanitize=thread" :: more -> go { o with sanitize = true; threadSanitizer = true } others more
     | "--profile-generate" :: more -> go { o with profileGenerate = true; release = true } others more
@@ -221,7 +227,7 @@ let parse (args: list<string>) : result<Options * list<string>, string> =
     | a :: more ->
       if Set.contains a levels then go { o with opt = Some a } others more
       else if String.startsWith "--cpu=" a then go { o with cpu = Some(String.sub a 6 (String.length a - 6)) } others more
-      else if List.contains a [ "-o"; "--target"; "--cpu"; "--profile-use" ] then Error $"zs: {a} needs a value"
+      else if List.contains a [ "-o"; "--target"; "--cpu"; "--profile-use"; "--deps-of" ] then Error $"zs: {a} needs a value"
       else go o (a :: others) more
   go { defaults with target = nativeTarget () } [] args
 

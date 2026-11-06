@@ -554,8 +554,23 @@ let cachedModule (o: Options.Options) (key: string) : option<string> =
     None
 
 // an object to have: from the cache when it has one for exactly its source and flags, else
-// compiled from its input (the IR written to a file of its own, or the C file) and kept there
-type private Job = { obj: string; input: string; written: bool; flags: list<string>; keep: option<string>; size: int }
+// compiled from its input (the IR written to a file of its own, or the C file) and kept there.
+// A C file's is keyed by the headers it includes too: deps is the key of its path, text and
+// flags, under which the headers its last compile read are listed; its obj is "" until a
+// compile has listed them
+type private Job = { obj: string; input: string; written: bool; flags: list<string>; keep: option<string>; size: int; deps: option<string> }
+
+// the files of a rule clang's -MD wrote for the target x (-MT x): split at spaces, lines joined
+// where a backslash ends one; a space in a name is escaped (\ ), as are # (\#) and $ ($$)
+let private depFiles (rule: string) : list<string> =
+  let joined = String.replace (String.replace rule "\\\r\n" " ") "\\\n" " "
+  let space = String.ofByte (u8 1)
+  let body =
+    match String.indexOf ":" joined with
+    | Some i -> String.sub joined (i + 1) (String.length joined - i - 1)
+    | None -> ""
+  let words = String.split " " (String.replace (String.replace (String.replace (String.replace body "\\ " space) "\t" " ") "\r" " ") "\n" " ")
+  List.map (fun (w: string) -> String.replace (String.replace (String.replace w space " ") "\\#" "#") "$$" "$") (List.filter (fun (w: string) -> w <> "") words)
 
 /// Compiles the program's modules to objects in parallel (each one the caches haven't seen), the
 /// runtime too and the C of the program's packages, and links them into the executable: Error with
@@ -566,22 +581,51 @@ let link (o: Options.Options) (built: Built) (linked: Modules.Linked) : result<l
   let dir = objectsDir ()
   Tools.makeDirectory dir
   let sw = Diagnostics.Stopwatch.startNew ()
+  // a name of its own beside a file of the cache, lent by a temporary file deleted at once (as
+  // writeWhole's: kept, each build left an empty one in the shared temporary directory)
+  let unique (stem: string) (ext: string) =
+    match File.createTemp "zs-" with
+    | Ok t ->
+      File.delete t |> ignore
+      stem + "." + Path.getFileName t + ext
+    | Error _ -> stem + ".tmp" + ext
   // what an object is made from: its source's text and the flags
+  let keyOf (source: string) (isC: bool) (fs: list<string>) = Tools.hashOf (List.concat [ [ "object"; (if isC then "true" else "false"); profileKey ]; fs; [ source ] ])
+  // the headers a C file's last compile read, one a line, kept under the key of its path, text
+  // and flags
+  let depsFile (base: string) = Path.combine dir (base + ".deps")
+  // a C file's object: under that key and each header listed with its text, so a header changed
+  // anywhere (beside it, in an include directory, the system's) is another object; "" before a
+  // compile has listed them
+  let cObject (base: string) : string =
+    match File.readAllText (depsFile base) with
+    | Ok listed ->
+      File.touch (depsFile base) |> ignore
+      let headers = List.filter (fun (h: string) -> h <> "") (String.split "\n" listed)
+      Path.combine dir (Tools.hashOf (base :: List.collect (fun (h: string) -> [ h; Result.defaultValue "" (File.readAllText h) ]) headers) + ".o")
+    | Error _ -> ""
   let job (source: string) (cFile: option<string>) (fs: list<string>) (keep: option<string>) : Job =
-    let key = Tools.hashOf (List.concat [ [ "object"; (if Option.isSome cFile then "true" else "false"); profileKey ]; fs; [ source ] ])
-    let obj = Path.combine dir (key + ".o")
-    // one there is recently used: kept longest
-    if File.exists obj then
-      File.touch obj |> ignore
     match cFile with
-    | Some c -> { obj = obj; input = c; written = false; flags = fs; keep = keep; size = String.length source }
+    | Some c ->
+      let base = keyOf (c + "\n" + source) true fs
+      let obj = cObject base
+      // one there is recently used: kept longest
+      if obj <> "" && File.exists obj then
+        File.touch obj |> ignore
+      { obj = obj; input = c; written = false; flags = fs; keep = keep; size = String.length source; deps = Some base }
     | None ->
+      let obj = Path.combine dir (keyOf source false fs + ".o")
       if File.exists obj then
-        { obj = obj; input = ""; written = false; flags = fs; keep = keep; size = String.length source }
+        File.touch obj |> ignore
+        { obj = obj; input = ""; written = false; flags = fs; keep = keep; size = String.length source; deps = None }
       else
-        let input = Path.combine dir (key + ".ll")
-        File.writeAllText input source |> ignore
-        { obj = obj; input = input; written = true; flags = fs; keep = keep; size = String.length source }
+        // the IR in a file of this build's own: another build making the same object at the same
+        // time writes and deletes its own, so neither compiles the other's half written
+        let input = unique obj ".ll"
+        match File.writeAllText input source with
+        | Ok _ -> ()
+        | Error _ -> File.delete input |> ignore
+        { obj = obj; input = input; written = true; flags = fs; keep = keep; size = String.length source; deps = None }
   // the runtime optimized in a debug build too (a program debugs its own code)
   let rt = Options.runtimeDir ()
   let rtFile = Path.combine rt "rt.c"
@@ -592,35 +636,41 @@ let link (o: Options.Options) (built: Built) (linked: Modules.Linked) : result<l
     match p with
     | Cached _ -> None
     | Fresh(ir, key) -> Some(job ir None flags (Some key))
-  // the C sources of [<Link>]s and [c] sections, cached as the runtime is, by their text and the
-  // headers beside them (which they may include)
-  let ofC (c: string) =
-    let d = Path.getDirectoryName c
-    let headers =
-      match Directory.list d with
-      | Ok names -> List.map (fun (h: string) -> Result.defaultValue "" (File.readAllText (Path.combine d h))) (List.filter (fun (h: string) -> String.endsWith ".h" h) names)
-      | Error _ -> []
-    job (String.join "\n" (Result.defaultValue "" (File.readAllText c) :: headers)) (Some c) (List.append flags linked.cflags) None
-  let cSources = List.filter (fun (l: string) -> String.endsWith ".c" l) linked.links
-  let jobs = List.concat [ [ runtime ]; List.choose ofPart built.parts; List.map ofC cSources ]
+  // the C sources of [<Link>]s and [c] sections, cached as the runtime is
+  let cJobs = List.map (fun (c: string) -> job (Result.defaultValue "" (File.readAllText c)) (Some c) (List.append flags linked.cflags) None) (List.filter (fun (l: string) -> String.endsWith ".c" l) linked.links)
+  let jobs = List.concat [ [ runtime ]; List.choose ofPart built.parts; cJobs ]
   // the biggest first: clang takes at least as long as its biggest job, which mustn't start last
-  let fresh = List.sortBy (fun (j: Job) -> 0 - j.size) (List.filter (fun (j: Job) -> not (File.exists j.obj)) jobs)
-  // a name of its own beside the object, lent by a temporary file deleted at once (as writeWhole's:
-  // kept, each build left an empty one in the shared temporary directory)
-  let unique (j: Job) =
-    match File.createTemp "zs-" with
-    | Ok t ->
-      File.delete t |> ignore
-      j.obj + "." + Path.getFileName t + ".o"
-    | Error _ -> j.obj + ".tmp.o"
-  let tmps = List.map unique fresh
-  let cmds = List.map2 (fun (j: Job) (t: string) -> ("clang", List.concat [ j.flags; [ "-c"; "-Wno-override-module"; j.input; "-o"; t ] ])) fresh tmps
+  let fresh = List.sortBy (fun (j: Job) -> 0 - j.size) (List.filter (fun (j: Job) -> j.obj = "" || not (File.exists j.obj)) jobs)
+  // each compiled to a name of its own beside the object (a C file's, beside its key's)
+  let tmps = List.map (fun (j: Job) -> unique (match j.deps with | Some base -> Path.combine dir base | None -> j.obj) ".o") fresh
+  // a C file's compile lists the headers it reads (-MD), for its key
+  let cmds = List.map2 (fun (j: Job) (t: string) -> ("clang", List.concat [ j.flags; (if Option.isSome j.deps then [ "-MD"; "-MF"; t + ".d"; "-MT"; "x" ] else []); [ "-c"; "-Wno-override-module"; j.input; "-o"; t ] ])) fresh tmps
   let results = Tools.runMany cmds
   for (j, t) in List.zip fresh tmps do
-    if File.exists t then
-      File.move t j.obj |> ignore
+    match j.deps with
+    | Some base ->
+      // the headers it read listed for the next build (full paths: that one may run elsewhere),
+      // and the object kept under the key they give
+      let rule = Result.defaultValue "" (File.readAllText (t + ".d"))
+      File.delete (t + ".d") |> ignore
+      let headers = List.map Path.getFullPath (depFiles rule)
+      if File.exists t && not (List.isEmpty headers) then
+        Tools.writeWhole (depsFile base) (Array.ofSpan (String.bytes (String.join "\n" headers)))
+        File.move t (cObject base) |> ignore
+      else
+        File.delete t |> ignore
+    | None ->
+      if File.exists t then
+        File.move t j.obj |> ignore
+  // every IR file this build wrote, its object compiled or another build's there meanwhile
+  for j in jobs do
     if j.written then
       File.delete j.input |> ignore
+  // the object a job has now: a C file compiled here is under the key its list gives
+  let objectOf (j: Job) : string =
+    match j.deps with
+    | Some base when j.obj = "" || not (File.exists j.obj) -> cObject base
+    | _ -> j.obj
   // a module's object kept under its key for the next build
   for j in jobs do
     match j.keep with
@@ -636,9 +686,10 @@ let link (o: Options.Options) (built: Built) (linked: Modules.Linked) : result<l
   | Some e -> Error e
   | None ->
     evict dir ".o" 256
+    evict dir ".deps" 256
     evict (modulesDir ()) ".o" 256
     let partObjects = List.map (fun (p: Part) -> match p with | Cached obj -> obj | Fresh(_, key) -> (List.find (fun (j: Job) -> j.keep = Some key) jobs).obj) built.parts
-    let files = List.concat [ [ runtime.obj ]; partObjects; List.map (fun (c: string) -> (ofC c).obj) cSources ]
+    let files = List.concat [ [ objectOf runtime ]; partObjects; List.map objectOf cJobs ]
     let libs = List.map (fun (l: string) -> if String.startsWith "-" l || String.contains "/" l then l else "-l" + l) (List.filter (fun (l: string) -> not (String.endsWith ".c" l)) linked.links)
     let ltoLink =
       if useLto o then

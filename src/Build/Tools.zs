@@ -220,6 +220,22 @@ let rec makeDirectory (path: string) : unit =
     makeDirectory (Path.getDirectoryName path)
     Directory.create path |> ignore
 
+/// The directory `parts` below root, for zs to write in: each part made inside the one before it
+/// when it isn't there, and Error naming one that is a symbolic link, which a repository may hold,
+/// pointing anywhere, for what zs writes there to land outside it. One that can't be made is left
+/// for the write there to fail, as a cache's does quietly.
+let realDirectory (root: string) (parts: list<string>) : result<string, string> =
+  let rec down (dir: string) (rest: list<string>) : result<string, string> =
+    match rest with
+    | [] -> Ok dir
+    | p :: more ->
+      let path = Path.combine dir p
+      if not (Native.isSymlink path) && not (Directory.exists path) then
+        Directory.create path |> ignore
+      if Native.isSymlink path then Error $"{path} is a symbolic link, which zs doesn't write through" else down path more
+  makeDirectory root
+  down root parts
+
 /// Where zs caches what it builds: $XDG_CACHE_HOME/zs, else ~/.cache/zs.
 let cacheRoot () : string =
   match Environment.getVariable "XDG_CACHE_HOME" with

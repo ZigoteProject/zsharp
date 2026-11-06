@@ -109,7 +109,9 @@ let build (served: bool) (args: list<string>) : int =
                 0) (membersOf m)
           List.fold max 0 codes
     | file :: _ ->
-      if not (fetched o.offline (dirOf file)) then 1 else Make.build { o with main = file; out = (if o.out = "" then Path.getFileNameWithoutExtension file else o.out) } false
+      // a package's provider built for a project (--deps-of): that project fetched its
+      // dependencies, and nothing is fetched into the package
+      if Option.isNone o.depsOf && not (fetched o.offline (dirOf file)) then 1 else Make.build { o with main = file; out = (if o.out = "" then Path.getFileNameWithoutExtension file else o.out) } false
 
 /// zs run [file.zs] … [-- arguments]: the program built and run with the arguments; its exit code.
 let run (args: list<string>) : int =
