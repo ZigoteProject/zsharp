@@ -108,6 +108,93 @@ let runMerged (program: string) (args: list<string>) : result<Ran, string> =
       Dispose.dispose p
       Ok { code = code; out = out; err = "" }
 
+// a piped stream's descriptor, -1 for none
+let private fdOf (r: option<IO.Reader>) : int =
+  match r with
+  | Some reader -> reader.fd
+  | None -> -1
+
+// the first n bytes of buf, appended to got
+let private append (buf: Buffer<u8>) (n: int) (got: Buffer<u8>) =
+  for j in 0 .. n - 1 do
+    Buffer.push buf.[j] got
+
+// a pipe's bytes as they come, on the event loop, until it ends (POSIX: the loop can wait for a
+// pipe there)
+let rec private gather (fd: int) (buf: Buffer<u8>) (got: Buffer<u8>) : Task<unit> =
+  task {
+    do! Task.waitFor fd false
+    let n = Native.fdRead fd buf 0 (Buffer.length buf)
+    if n > 0 then
+      append buf n got
+      return! gather fd buf got
+    else
+      return ()
+  }
+
+// a descriptor read to its end, as Task.blocking's thread reads it ("" for none)
+let private drainFd (fd: int) : string =
+  if fd < 0 then
+    ""
+  else
+    match IO.Reader.readToEnd (IO.Reader.ofFd fd) with
+    | Ok text -> text
+    | Error _ -> ""
+
+/// Runs the program in `dir` (None: here), its standard output and standard error captured apart;
+/// one that hasn't ended after `seconds` is killed, and Error says so. For a program that may
+/// never end (a type provider in the language server). On POSIX both pipes are read as they come,
+/// on the event loop, so neither fills and blocks the program, and at the limit the reads stop
+/// even while something it started holds the pipes open. Windows' loop can't wait for a pipe:
+/// they're read in turn on Task.blocking's thread (the runtime's pipes hold a megabyte there),
+/// and killing the program at the limit ends them.
+let runFor (program: string) (args: list<string>) (dir: option<string>) (seconds: int) : result<Ran, string> =
+  let s : Diagnostics.ProcessStart = { program = program; args = args; directory = dir; stdin = Diagnostics.Null; stdout = Diagnostics.Piped; stderr = Diagnostics.Piped }
+  match Diagnostics.Process.start s with
+  | Error e -> Error e
+  | Ok p ->
+    let outFd = fdOf p.stdout
+    let errFd = fdOf p.stderr
+    let limit = seconds * 1000
+    let streams : option<string * string> =
+      if hostOs () = "windows" then
+        let killed = ref false
+        // at the limit the program is killed, which ends its pipes and so the reads
+        let watchdog =
+          task {
+            do! Task.sleep limit
+            killed.Value <- true
+            Diagnostics.Process.kill p |> ignore
+            return ()
+          }
+        // ponytail: a process the program started that keeps the pipes open keeps the reads
+        // waiting after the kill; reading both at once there (overlapped reads in the runtime)
+        // would end them at the limit, as on POSIX
+        let got =
+          Task.run (
+            Task.scope (fun sc ->
+              task {
+                Task.start sc watchdog |> ignore
+                let! texts = Task.blocking (fun () -> (drainFd outFd, drainFd errFd))
+                Task.cancel sc
+                return texts
+              }))
+        if killed.Value then None else Some got
+      else
+        let out = Buffer.empty
+        let err = Buffer.empty
+        let reading (fd: int) (got: Buffer<u8>) : Task<unit> = if fd < 0 then Task.ret () else gather fd (Buffer.create 65536 (u8 0)) got
+        match Task.run (Task.timeout limit (Task.both (reading outFd out) (reading errFd err))) with
+        | Some _ -> Some(String.ofBytes (Buffer.toArray out), String.ofBytes (Buffer.toArray err))
+        | None ->
+          Diagnostics.Process.kill p |> ignore
+          None
+    let code = Task.run (Diagnostics.Process.wait p)
+    Dispose.dispose p
+    match streams with
+    | Some(out, err) -> Ok { code = code; out = out; err = err }
+    | None -> Error $"didn't finish in {seconds} seconds, so it was stopped"
+
 /// Runs a tool: Error with its name and output when it fails or can't start.
 let run (program: string) (args: list<string>) : result<unit, string> =
   match runMerged program args with

@@ -2,6 +2,9 @@
 //!
 //! `zs` is found on PATH, or set explicitly in Zed's settings:
 //!   "lsp": { "zs": { "binary": { "path": "/path/to/zs", "arguments": ["lsp"] } } }
+//! The extension never adds `--trust` (it can't ask Zed whether the project is trusted), so the
+//! server doesn't build or run the project's own type providers until the settings' arguments
+//! give it: ["lsp", "--trust"].
 
 use zed_extension_api::{
     self as zed,
@@ -45,7 +48,8 @@ impl zed::Extension for ZSharp {
     }
 
     // `zs mcp` for Zed's agent. Its tools take only files inside the project, but `run` runs the
-    // program it builds with the user's full rights, unsandboxed.
+    // program it builds with the user's full rights, unsandboxed; with `--trust` in the settings'
+    // args, every tool that checks or builds a file also runs the project's own type providers.
     // The command comes from the context server's settings, else `zs` on PATH:
     //   "context_servers": { "zs": { "command": { "path": "/path/to/zs", "args": ["mcp"] } } }
     fn context_server_command(&mut self, id: &ContextServerId, project: &Project) -> Result<zed::Command> {

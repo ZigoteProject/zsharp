@@ -204,8 +204,9 @@ let private targetFlags (target: string) (chip: option<Options.Mcu>) : list<stri
 /// Parser.zs. A file names the package's modules as the checker resolves names, in the modules
 /// enclosing its own, in the modules it opens, then globally; only its package's files see its
 /// dependencies. An import cycle is an error at the file that closes it. target: --target's
-/// triple, "" for this machine (where pkg-config runs).
-let program (texts: Map<string, string>) (first: int) (mainPath: string) (target: string) (chip: option<Options.Mcu>) : result<list<Loaded> * Linked, Diagnostic * option<Source.Source>> =
+/// triple, "" for this machine (where pkg-config runs). trusted: a package's type provider may be
+/// built and run (not for zs lsp and zs mcp without --trust, which open projects nobody vetted).
+let program (texts: Map<string, string>) (first: int) (mainPath: string) (target: string) (chip: option<Options.Mcu>) (trusted: bool) : result<list<Loaded> * Linked, Diagnostic * option<Source.Source>> =
   let hosted = target = ""
   let forTarget = targetFlags target chip
   let targetName = Options.targetName chip target
@@ -430,6 +431,9 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
         | Ast.NestedModule(_, inner) -> namedBy inner
         | _ -> []) ds
     let named = namedBy m.decls
+    // a package's provider is the project's own code: in a project not trusted, neither built nor
+    // run, so opening one in an editor runs nothing of it
+    let notTrusted (name: string) = "provider " + name + " not run: the project is not trusted (start the language server with --trust)"
     // a dependency with a [provider] section that an import names: its program, built into the
     // project's .zs-cache/providers/bin when its sources changed (by zs itself, as a process), so
     // a provider is a package like any other (0001)
@@ -454,7 +458,9 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
         if File.exists out && Result.defaultValue "" (File.readAllText (out + ".key")) = key then Ok out
         else
           Tools.makeDirectory binDir
-          match Tools.runSplit (Tools.selfPath ()) [ "build"; main; "-o"; out ] with
+          // in that process (--no-server): this may be the build server's own build, which would
+          // wait for the server, and the server for it
+          match Tools.runSplit (Tools.selfPath ()) [ "build"; "--no-server"; main; "-o"; out ] with
           | Ok r when r.code = 0 ->
             File.writeAllText (out + ".key") key |> ignore
             Ok out
@@ -473,7 +479,7 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
             match d.manifest with
             | Some mf ->
               match mf.provider with
-              | Some main -> Some(name, build name main d.root)
+              | Some main -> Some(name, (if trusted then build name main d.root else Error(notTrusted name)))
               | None -> None
             | None -> None) pkg.deps
     // the files a provided module names as its inputs (// input: lines), beside the importer
@@ -482,7 +488,7 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
     // each input with a hash of its content, one per line, so a build where the provider can't
     // run knows whether the cached module is from these inputs
     let hashesOf (files: list<string>) : string =
-      String.join "\n" (List.map (fun (f: string) -> f + "\t" + Tools.hashOf [ Result.defaultValue "" (File.readAllText f) ]) files)
+      String.join "\n" (List.map (fun (f: string) -> f + "\t" + Tools.hashOf [ Result.defaultValue "" (Provide.Input.read f) ]) files)
     // the module provided, written to the cache and named: given, or hidden
     let provide (name: option<string>) (provider: string) (arg: string) (opts: list<string * string>) (d: Ast.Decl) : option<string> =
       let modName =
@@ -491,10 +497,12 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
         | None -> Provide.Names.typeName (Path.getFileNameWithoutExtension arg) + Provide.Names.typeName provider
       let out = Path.combine cacheDir (modName + ".zs")
       let packaged = List.choose (fun (kr: string * result<string, string>) -> match snd kr with | Ok program -> Some(fst kr, program) | Error _ -> None) packagedProviders
+      // a package's provider in a project not trusted: not run, as one not on this machine
+      let withheld = not trusted && List.exists (fun (kr: string * result<string, string>) -> fst kr = provider) packagedProviders
       // a package's provider that didn't build is that error; else the provider's own result
       let failedBuild =
         match List.tryFind (fun (kr: string * result<string, string>) -> fst kr = provider && Result.isError (snd kr)) packagedProviders with
-        | Some(_, Error e) -> Some e
+        | Some(_, Error e) when not withheld -> Some e
         | _ -> None
       let written =
         match failedBuild with
@@ -502,22 +510,26 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
         | None ->
           // import c on the protocol (question 2): the header's declarations as Z#
           let ran =
-            if provider = "c" then Provide.CProvider.provide arg dir cflags cimportDir
+            if withheld then Error(notTrusted provider)
+            else if provider = "c" then Provide.CProvider.provide arg dir cflags cimportDir
             else Provide.Command.provide provider dir $"next to {Path.getFileName path}" arg opts packaged
+          // a provider that isn't run here: not on this machine, or the untrusted project's own
+          let notRun (e: string) = withheld || String.startsWith "no provider" e
           match ran with
           | Ok s -> Ok s
-          | Error e when String.startsWith "no provider" e && File.exists out ->
+          | Error e when notRun e && File.exists out ->
             // a provider that isn't here (an editor's sandbox, a machine without it) and the module
             // from the last build: that one, with a word on whether its inputs changed since
-            let cached = Result.defaultValue "" (File.readAllText out)
-            let before = Result.defaultValue "" (File.readAllText (out + ".inputs"))
-            let changed = List.filter (fun (f: string) -> not (String.contains (f + "\t" + Tools.hashOf [ Result.defaultValue "" (File.readAllText f) ]) before)) (inputsOf cached)
+            let cached = Result.defaultValue "" (Provide.Input.read out)
+            let before = Result.defaultValue "" (Provide.Input.read (out + ".inputs"))
+            let changed = List.filter (fun (f: string) -> not (String.contains (f + "\t" + Tools.hashOf [ Result.defaultValue "" (Provide.Input.read f) ]) before)) (inputsOf cached)
+            let why = if withheld then "the project is not trusted, so provider " + provider + " is not run" else "zs-provider-" + provider + " isn't on PATH"
             let note =
-              if List.isEmpty changed then $"zs-provider-{provider} isn't on PATH; the module from the last build is used"
-              else $"{String.join ", " (List.map (fun (f: string) -> Path.getFileName f) changed)} changed since the last build, and zs-provider-{provider} isn't on PATH; the types shown are from that build"
+              if List.isEmpty changed then $"{why}; the module from the last build is used"
+              else $"{String.join ", " (List.map (fun (f: string) -> Path.getFileName f) changed)} changed since the last build, and {why}; the types shown are from that build"
             Buffer.push (warning "stale-input" (lineOf d) note) warnings
             Ok cached
-          | Error e -> Error(if String.startsWith "no provider" e then e else provider + ": " + e)
+          | Error e -> Error(if notRun e then e else provider + ": " + e)
       match written with
       | Error msg ->
         report d msg
@@ -525,13 +537,13 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
       | Ok text ->
         Tools.makeDirectory cacheDir
         // written only when it changed: an editor watching the cache isn't woken for nothing
-        if Result.defaultValue "" (File.readAllText out) <> text then
+        if Result.defaultValue "" (Provide.Input.read out) <> text then
           match File.writeAllText out text with
           | Ok _ -> ()
           | Error e -> report d $"{provider}: can't write {out}: {e}"
         let ins = inputsOf text
         let hashes = hashesOf ins
-        if Result.defaultValue "" (File.readAllText (out + ".inputs")) <> hashes then
+        if Result.defaultValue "" (Provide.Input.read (out + ".inputs")) <> hashes then
           File.writeAllText (out + ".inputs") hashes |> ignore
         for i in ins do
           Buffer.push i inputs

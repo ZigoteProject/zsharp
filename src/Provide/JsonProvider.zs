@@ -84,7 +84,9 @@ let rec shapeOf (j: Json) : Shape =
 /// found at (empty for the document itself).
 type Record = { name: string; fields: string; path: list<string> }
 
-type private Naming = { root: string; overrides: list<string * string>; records: ref<list<Record>> }
+// the root record's name, the types given by path, the records so far, and every key written as
+// a field (each must be one: Names.unnamed)
+type private Naming = { root: string; overrides: list<string * string>; records: ref<list<Record>>; keys: ref<list<string>> }
 
 let private pathText (path: list<string>) = String.join "." path
 
@@ -113,6 +115,7 @@ and private register (cx: Naming) (path: list<string>) (key: string) (inList: bo
       | Some(_, t) -> t
       | None -> typeOf cx fieldPath k false s
     let dflt = if String.startsWith "option<" t then " = None" else ""
+    cx.keys.Value <- k :: cx.keys.Value
     Names.fieldName k + ": " + t + dflt
   let text = String.join "; " (List.map field fs)
   match List.tryFind (fun (r: Record) -> r.fields = text) cx.records.Value with
@@ -174,20 +177,23 @@ let provide (file: string) (text: string) (opts: list<string * string>) : result
       match Json.parse text with
       | Error e -> Error (file + ": " + e)
       | Ok doc ->
-        let cx = { root = root; overrides = overrides; records = ref [] }
+        let cx = { root = root; overrides = overrides; records = ref []; keys = ref [] }
         let top = typeOf cx [] "" false (shapeOf doc)
-        let decl (r: Record) : list<string> =
-          let from = if List.isEmpty r.path then file else List.item (List.length r.path - 1) r.path
-          let sample =
-            match sampleAt doc r.path with
-            | Some j -> Names.clip 100 (Json.print j)
-            | None -> ""
-          [ "/// From \"" + from + "\": " + sample; "[<Derive(Json)>]"; "type " + r.name + " = { " + r.fields + " }"; "" ]
-        let header = [ "// provided by json 0.1 from " + file; "// input: " + file; "" ]
-        let functions =
-          [ "/// Parses a document of " + top + "'s shape."
-            "let parse (text: string) : result<" + top + ", string> = Result.bind fromJson (Json.parse text)"
-            ""
-            "/// Prints a " + top + " as a document."
-            "let print (value: " + top + ") : string = Json.print (toJson value)" ]
-        Ok(String.join "\n" (List.concat [ header; List.collect decl cx.records.Value; functions ]) + "\n")
+        match Names.unnamed (List.rev cx.keys.Value) with
+        | Some e -> Error (file + ": " + e)
+        | None ->
+          let decl (r: Record) : list<string> =
+            let from = if List.isEmpty r.path then file else List.item (List.length r.path - 1) r.path
+            let sample =
+              match sampleAt doc r.path with
+              | Some j -> Names.clip 100 (Json.print j)
+              | None -> ""
+            [ Names.oneLine ("/// From \"" + from + "\": " + sample); "[<Derive(Json)>]"; "type " + r.name + " = { " + r.fields + " }"; "" ]
+          let header = [ Names.oneLine ("// provided by json 0.1 from " + file); Names.oneLine ("// input: " + file); "" ]
+          let functions =
+            [ "/// Parses a document of " + top + "'s shape."
+              "let parse (text: string) : result<" + top + ", string> = Result.bind fromJson (Json.parse text)"
+              ""
+              "/// Prints a " + top + " as a document."
+              "let print (value: " + top + ") : string = Json.print (toJson value)" ]
+          Ok(String.join "\n" (List.concat [ header; List.collect decl cx.records.Value; functions ]) + "\n")

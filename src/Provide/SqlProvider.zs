@@ -15,27 +15,28 @@ type Column = { name: string; ty: string; nullable: bool }
 /// A table: its name and its columns in order.
 type Table = { name: string; columns: list<Column> }
 
-// the text without comments: -- to the line's end, and /* … */
+// the text without comments: -- to the line's end, and /* … */; the pieces kept joined once, and
+// each comment's end found in the text itself (a copy per comment would be quadratic)
 let private stripComments (s: string) : string =
   let n = String.length s
-  let mutable out = ""
+  let kept = Buffer.empty
   let mutable from = 0
   let mutable i = 0
   while i < n do
     if i + 1 < n && String.byte s i = u8 45 && String.byte s (i + 1) = u8 45 then
-      out <- out + String.sub s from (i - from)
+      Buffer.push (String.sub s from (i - from)) kept
       while i < n && String.byte s i <> u8 10 do
         i <- i + 1
       from <- i
     else if i + 1 < n && String.byte s i = u8 47 && String.byte s (i + 1) = u8 42 then
-      out <- out + String.sub s from (i - from)
-      match String.indexOf "*/" (String.sub s i (n - i)) with
-      | Some k -> i <- i + k + 2
-      | None -> i <- n
+      Buffer.push (String.sub s from (i - from)) kept
+      let k = String.indexOfFrom s "*/" (i + 2)
+      i <- (if k < 0 then n else k + 2)
       from <- i
     else
       i <- i + 1
-  out + String.sub s from (n - from)
+  Buffer.push (String.sub s from (n - from)) kept
+  String.concat (Array.toList (Buffer.toArray kept))
 
 // the pieces of `s` split at `sep` outside parentheses and quotes
 let private splitTop (sep: u8) (s: string) : list<string> =
@@ -372,17 +373,20 @@ let provideWith (file: string) (text: string) (opts: list<string * string>) (que
   | Error e -> Error (file + ": " + e)
   | Ok [] -> Error (file + ": no CREATE TABLE")
   | Ok ts ->
+    // a column's name is a field's
+    let unnamed = Names.unnamed (List.collect (fun (t: Table) -> List.map (fun (c: Column) -> c.name) t.columns) ts)
     let queryModules =
-      match queryText with
-      | None -> Ok []
-      | Some(qfile, qtext) ->
+      match (unnamed, queryText) with
+      | (Some e, _) -> Error (file + ": " + e)
+      | (None, None) -> Ok []
+      | (None, Some(qfile, qtext)) ->
         match queries ts qtext with
         | Error e -> Error (qfile + ": " + e)
         | Ok qs ->
-          let literal (s: string) = "\"" + String.replace s "\"" "\\\"" + "\""
+          let literal = Names.literal
           let one (q: Query) : list<string> =
             let field (nt: string * string) = Names.fieldName (fst nt) + ": " + snd nt + (if String.startsWith "option<" (snd nt) then " = None" else "")
-            List.concat [ [ "/// From \"" + qfile + "\": " + q.name + " (:" + q.kind + "): " + q.sql
+            List.concat [ [ Names.oneLine ("/// From \"" + qfile + "\": " + q.name + " (:" + q.kind + "): " + q.sql)
                   "module " + q.name + " ="
                   "  /// The query, with ? where each parameter goes, in order."
                   "  let sql = " + literal q.sql
@@ -393,7 +397,10 @@ let provideWith (file: string) (text: string) (opts: list<string * string>) (que
                 (if List.isEmpty q.parameters then [] else [ "  /// Its parameters, typed from the columns they meet."; "  type Params = { " + String.join "; " (List.map field q.parameters) + " }" ])
                 (if List.isEmpty q.row then [] else [ "  /// A row it gives."; "  type Row = { " + String.join "; " (List.map field q.row) + " }" ])
                 [ "" ] ]
-          Ok(List.collect one qs)
+          // a parameter's or a column's name is a field's
+          match Names.unnamed (List.collect (fun (q: Query) -> List.append (List.map fst q.parameters) (List.map fst q.row)) qs) with
+          | Some e -> Error (qfile + ": " + e)
+          | None -> Ok(List.collect one qs)
     match queryModules with
     | Error e -> Error e
     | Ok queryLines ->
@@ -405,8 +412,8 @@ let provideWith (file: string) (text: string) (opts: list<string * string>) (que
             | Some(_, over) -> over
             | None -> c.ty
           if c.nullable then Names.fieldName c.name + ": option<" + ty + "> = None" else Names.fieldName c.name + ": " + ty
-        let literal (s: string) = "\"" + String.replace s "\"" "\\\"" + "\""
-        [ "/// From \"" + file + "\": " + t.name + " (" + String.join ", " (List.map (fun (c: Column) -> c.name) t.columns) + ")"
+        let literal = Names.literal
+        [ Names.oneLine ("/// From \"" + file + "\": " + t.name + " (" + String.join ", " (List.map (fun (c: Column) -> c.name) t.columns) + ")")
           "type " + typeName + " = { " + String.join "; " (List.map field t.columns) + " }"
           ""
           "module " + typeName + " ="
@@ -415,8 +422,8 @@ let provideWith (file: string) (text: string) (opts: list<string * string>) (que
           "  /// Its columns, in order."
           "  let columns = [ " + String.join "; " (List.map (fun (c: Column) -> literal c.name) t.columns) + " ]"
           "" ]
-      let inputs = List.append [ "// input: " + file ] (match queryText with | Some(q, _) -> [ "// input: " + q ] | None -> [])
-      let header = List.concat [ [ "// provided by sql 0.1 from " + file ]; inputs; [ "" ] ]
+      let inputs = List.append [ Names.oneLine ("// input: " + file) ] (match queryText with | Some(q, _) -> [ Names.oneLine ("// input: " + q) ] | None -> [])
+      let header = List.concat [ [ Names.oneLine ("// provided by sql 0.1 from " + file) ]; inputs; [ "" ] ]
       Ok(String.join "\n" (List.concat [ header; List.collect decl ts; queryLines ]))
 
 /// As `provideWith`, the `queries` option's file read from beside the schema: `file` is the
@@ -426,7 +433,8 @@ let provide (dir: string) (file: string) (text: string) (opts: list<string * str
   | Some(_, q) when q <> "" ->
     let schemaDir = Path.getDirectoryName (Path.combine dir file)
     let path = Path.combine schemaDir q
-    match File.readAllText path with
+    match Input.read path with
     | Ok qtext -> provideWith file text opts (Some(q, qtext))
-    | Error _ -> Error $"queries: {q} not found beside {file}"
+    | Error "not found" -> Error $"queries: {q} not found beside {file}"
+    | Error why -> Error $"queries: {q} {why}"
   | _ -> provideWith file text opts None

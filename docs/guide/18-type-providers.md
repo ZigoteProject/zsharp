@@ -209,11 +209,27 @@ The compiler runs it in the importing file's directory with the string and each 
 `--name=value`. Its standard output is the declarations of one module, starting with `//
 provided by <name> <version> from <string>` and one `// input: <path>` per file it read
 (relative to that directory); its standard error has errors, one per line, `file:line:col:
-message` where there is a position; a non-zero exit fails the import with those lines. The
+message` where there is a position; a non-zero exit fails the import with those lines. A
+provider that hasn't finished after 60 seconds (`ZS_PROVIDER_TIMEOUT=<seconds>` changes that) is
+stopped, and the import fails saying so. The
 compiler caches the output with a hash of each input, so a machine without the provider (an
 editor's sandbox) still gets the types from the last output, with a `stale-input` warning at the
 import that says so. Nothing is loaded into the compiler: the provider is a process, as clang is
 for `import c`.
+
+A package's provider is the project's own code, so the language server and the MCP server build
+and run it only when started with `--trust` ([Trust](10-tools.md#trust)); without it, the import
+gets the module from the last build, with the `stale-input` warning, or the error `provider shout
+not run: the project is not trusted (start the language server with --trust)`. `zs build`, `zs
+check` and the other commands run it, and so does every server for zs's own providers and for a
+`zs-provider-<name>` on PATH, which you installed.
+
+A provider's file must be a regular file (or a link to one): a pipe or a device named by an
+import (`/dev/stdin`, `/dev/zero`) is an error, not a read that never ends. What a provider takes
+from its file and writes into the module is quoted: a key, a column or a register's name becomes
+a field in double backticks (a key holding a line break, a control character or two backticks is
+an error, as no name can hold it), a string literal has its `\`, `"` and control characters
+escaped, and a comment its line breaks removed, so no sample can add code to the program.
 
 Errors name the problem and what to write: `no provider 'jsn': zs has c, json, csv, sql and svd,
 no zs-provider-jsn is on PATH, and no dependency named jsn has a [provider] section`, `csv:

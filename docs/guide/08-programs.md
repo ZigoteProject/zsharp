@@ -175,7 +175,7 @@ members = ["app", "tool", "libs/*"]   # libs/*: each folder under libs/ with a z
 
 **Rebuilds:** only what an edit reaches is checked and compiled again. A module whose code didn't change comes from the cache in `~/.cache/zs`, which the editor's language server shares. `zs build --time` names the modules it checked and the files it compiled.
 
-**The build server:** `zs build` hands its work to a compiler that stays running between builds, so a rebuild skips starting it. The first build starts one and builds on its own; the server ends after ten idle minutes, or with `zs server stop`. Each cache directory and environment has its own, and `ZS_NO_SERVER=1` builds in the process instead.
+**The build server:** `zs build` hands its work to a compiler that stays running between builds, so a rebuild skips starting it. The first build starts one and builds on its own; the server ends after ten idle minutes, or with `zs server stop`. Each cache directory and environment has its own, and `ZS_NO_SERVER=1` builds in the process instead. It builds one program at a time, in the order the builds ask: two `zs build`s at once take turns. A client that connects and sends nothing, or doesn't read its answer, is dropped after a few seconds, so it holds up no build after it.
 
 ## Arguments, files and processes
 

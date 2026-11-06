@@ -29,6 +29,9 @@ type State =
     hints: ref<bool>
     /// the providers' input files the client watches for the server (0001)
     watched: ref<Set<string>>
+    /// started with --trust: a package's type provider is built and run (else the module from
+    /// the last build, or an error at the import)
+    trusted: bool
     out: IO.Writer }
 
 let private num (n: int) = Rpc.num n
@@ -121,7 +124,7 @@ let private watchInputs (st: State) =
 /// doesn't get to checking (a syntax error) keeps the last analysis's hovers.
 let private analyze (st: State) (path: string) =
   let (diags, sources) =
-    match Build.Check.programWith st.texts.Value path false true None "" with
+    match Build.Check.programWith st.texts.Value path false true None "" st.trusted with
     | Ok c ->
       let spots = spotsOf c
       let infos = Map.ofList (List.collect (fun (m: Build.Modules.Loaded) -> m.cInfos) c.modules)
@@ -213,7 +216,7 @@ let private summaryOf (fs: list<Core.Program.MFun>) (touched: Core.Program.MFun 
 let private heapProgram (st: State) (path: string) (a: Analysis) : option<Build.Check.Checked> =
   match Build.Project.findProject (Path.getDirectoryName path) with
   | Some(Ok m) when Path.getFullPath m.main <> path && File.exists m.main ->
-    match Build.Check.programWith st.texts.Value m.main true true None "" with
+    match Build.Check.programWith st.texts.Value m.main true true None "" st.trusted with
     | Ok c -> Some c
     | Error _ -> None
   | _ -> Some a.checked
@@ -1059,9 +1062,10 @@ let private answer (st: State) (msg: Json) : bool =
   running
 
 /// Serves the editor on standard input (`input`) and output until it says exit (or the input
-/// ends). `first`: a header line protocol detection already read.
-let serve (input: IO.Reader) (first: option<string>) : int =
-  let st : State = { texts = ref Map.empty; results = ref Map.empty; madeOf = ref Map.empty; docCache = ref Map.empty; watched = ref Set.empty; hints = ref false; out = Console.openStandardOutput () }
+/// ends). `first`: a header line protocol detection already read; `trusted`: --trust, the
+/// project's own type providers built and run.
+let serve (input: IO.Reader) (first: option<string>) (trusted: bool) : int =
+  let st : State = { texts = ref Map.empty; results = ref Map.empty; madeOf = ref Map.empty; docCache = ref Map.empty; watched = ref Set.empty; hints = ref false; trusted = trusted; out = Console.openStandardOutput () }
   let mutable pending = first
   let mutable running = true
   while running do

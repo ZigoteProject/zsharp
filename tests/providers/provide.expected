@@ -61,11 +61,9 @@ let private cells (text: string) : list<list<string>> =
     if quoted then
       if b = quote then
         if i + 1 < n && String.byte text (i + 1) = quote then
-          cell.Value <- cell.Value + String.sub text from (i + 1 - from)
           i <- i + 2
-          from <- i
         else
-          cell.Value <- cell.Value + String.sub text from (i - from)
+          cell.Value <- cell.Value + String.replace (String.sub text from (i - from)) "\"\"" "\""
           quoted <- false
           i <- i + 1
           from <- i
@@ -92,7 +90,8 @@ let private cells (text: string) : list<list<string>> =
     else
       i <- i + 1
   if from < n || cell.Value <> "" || not (List.isEmpty row.Value) then
-    cell.Value <- cell.Value + String.sub text from (n - from)
+    let rest = String.sub text from (n - from)
+    cell.Value <- cell.Value + (if quoted then String.replace rest "\"\"" "\"" else rest)
     endCell ()
     endRow ()
   List.rev rows.Value
@@ -317,3 +316,37 @@ lines
 printed and read back: true
 doesn't fit: row 2: volume: expected an integer, got "many"
 doesn't fit: expected the header date;open;close;volume;note;active, got date;open
+--- what a file holds stays data: a key, a header, a column, a register's name
+json: hostile.json: "a``: int }\nlet pwned = 1\ntype Junk = { ``b" can't be a field's name: in double backticks a name is not empty, and holds no control character (a line break), no two backticks running and none at its end
+exit 1
+csv: hostile.csv: "x\ny" can't be a field's name: in double backticks a name is not empty, and holds no control character (a line break), no two backticks running and none at its end
+exit 1
+/// From "odd.json": {"q\"$\"{1}\"`b\\":"it's"}
+type Root = { ``q"$"{1}"`b\``: string }
+{"q\"$\"{1}\"`b\\":"it's"}
+/// From "odd.csv": a"b,c
+type Row = { ``a"b``: string; c: int }
+let private header : list<string> = [ "a\"b"; "c" ]
+// provided by sql 0.1 from odd.sql
+// input: odd.sql
+
+/// From "odd.sql": t (a\)
+type T = { ``a\``: string }
+
+module T =
+  /// The table's name.
+  let table = "t"
+  /// Its columns, in order.
+  let columns = [ "a\\" ]
+exit 0; the name in a comment: 1, as code: 0
+  ///  (CR let pwned = 1 //, offset 0x0, read-write, reset 0x0)
+json: /dev/zero isn't a regular file: a provider reads a file, not a pipe or a device
+exit 1
+import c "/dev/zero": it isn't a regular file but a pipe or a device
+exit 1
+--- a provider writing much to standard error, and one that doesn't end
+// provided by chatty 1.0 from x
+let chatty = 1
+exit 0
+stuck: zs-provider-stuck didn't finish in 2 seconds, so it was stopped (ZS_PROVIDER_TIMEOUT=<seconds> gives it longer)
+exit 1

@@ -25,8 +25,8 @@
 | `zs --version` | the compiler's release (`zs 0.7.0`), which the language and MCP servers report to an editor too |
 | `zs doctor` | what builds need (clang, zig, libclang, and the tools some commands run), found or not, and how to get what's missing |
 | `zs provide <provider> <file> [--option=value]…` | a module from a data source, printed to keep beside the program ([proposal 0001](../proposals/0001-type-providers.md)): `json` gives a document's records with the `Json` derive and `parse` and `print` (`--root`, `--types=temp:f64`), `csv` a `Row` record with `parse` and `print` from the header and the rows (`--separator`, `--hasHeaders`, `--types`), `sql` a record per table from a schema's `CREATE TABLE`s (`--types`, `--queries`), `svd` a module per peripheral from a chip's SVD file (`--only`), `c` a header's declarations as `import c` reads them, and another name runs `zs-provider-<name>` from PATH ([Type providers](18-type-providers.md#a-provider-of-your-own)); `--list` names the providers. The same module comes from an import in the program: `module Weather = import json "weather.json"`, or bare, `import csv ("stocks.csv", separator = ";")`, which opens it; it's written to `.zs-cache/providers/` and loaded as a module of the build |
-| `zs lsp` | the language server (stdio) |
-| `zs mcp` | the MCP server for AI agents (stdio), with the tools `check`, `type_at`, `definition` (where a name is defined, with the defining line), `explain` (a name's type with its constraints, its effects in words, where it's defined and its doc comment), `docs`, `build`, `run`, `emit_llvm` and `format` |
+| `zs lsp [--trust]` | the language server (stdio); `--trust` builds and runs the project's own type providers ([Trust](#trust)) |
+| `zs mcp [--trust]` | the MCP server for AI agents (stdio), with the tools `check`, `type_at`, `definition` (where a name is defined, with the defining line), `explain` (a name's type with its constraints, its effects in words, where it's defined and its doc comment), `docs`, `build`, `run`, `emit_llvm` and `format`; `--trust` as for `zs lsp` |
 
 **Build options:**
 
@@ -76,9 +76,9 @@ main.zs:11:3: warning: this statement's value (int) is discarded: use it, or pip
 |---|---|
 | `unused-value` | a statement whose value isn't `unit` is dropped; `x \|> ignore` says it's on purpose |
 | `cycle` | a type whose objects can form a reference cycle through a cell, at its declaration with the path ([memory](12-memory.md#cycles-and-weak-references)); `[<Cyclic>]` marks a type whose cycles the program breaks |
-| `stale-input` | a type provider that isn't on PATH, at its import: the module is the one an earlier build wrote, which an input changed since then would make stale ([Type providers](18-type-providers.md#a-provider-of-your-own)) |
+| `stale-input` | a type provider that isn't on PATH, or a project's own that an editor's server started without `--trust` doesn't run ([Trust](#trust)), at its import: the module is the one an earlier build wrote, which an input changed since then would make stale ([Type providers](18-type-providers.md#a-provider-of-your-own)) |
 
-- **Silencing:** `[<NoWarn "unused-value">]` on a declaration silences that kind in it; a name that isn't a kind is an error. `unused-value` and `cycle` are a declaration's; `stale-input` isn't, and goes once the provider is on PATH.
+- **Silencing:** `[<NoWarn "unused-value">]` on a declaration silences that kind in it; a name that isn't a kind is an error. `unused-value` and `cycle` are a declaration's; `stale-input` isn't, and goes once the provider is on PATH (or runs).
 - **Notes:** a warning about several places names the others under it (`note: 'Parent.kids: ref<list<Child>>' is on the cycle`), and an editor shows them as related places.
 - **`--strict`** makes warnings errors: `2 warnings, errors under --strict`, exit code 1. CI passes it, and `./test.sh` does for the repository's own code; a build on your machine doesn't stop for one.
 - **Editors** underline a warning in the warning color with its kind as the code.
@@ -281,6 +281,12 @@ A list, an array, a tree (a boxed union), a `ref` or a `Buffer` is a pointer to 
 
 ## Editors
 
+### Trust
+
+Checking a program can run code of the project's own: a dependency with a `[provider]` section is a type provider the compiler builds and runs for its import ([Type providers](18-type-providers.md#a-provider-of-your-own)). `zs build`, `zs check`, `zs test` and the other commands do that, since you run them on the project on purpose. An editor opens whatever you open, so `zs lsp` and `zs mcp` don't, unless started with `--trust`: without it, such an import uses the module the last build wrote (with a `stale-input` warning), or is an error at the import, `provider shout not run: the project is not trusted (start the language server with --trust)`. zs's own providers (`json`, `csv`, `sql`, `svd`, `c`) and the `zs-provider-<name>` programs on your `PATH`, which you installed, run either way.
+
+The VS Code extension passes `--trust`, as it runs only in a trusted workspace; the Rider plugin passes it in a trusted project; the Zed extension doesn't, and you add it to the arguments in Zed's settings ([Zed](#zed)). An MCP client starts `zs mcp` with the `args` you give it.
+
 ### Zed
 
 `editors/zed` is a Zed extension. Install it with **Extensions → Install Dev Extension** and choose that folder. It needs Rust, with the `wasm32-wasip2` target installed through rustup.
@@ -299,20 +305,22 @@ The extension finds `zs` on your `PATH`. Or set the path in Zed's settings:
 "context_servers": { "zs": { "command": "/path/to/zs", "args": ["mcp"] } }
 ```
 
+To have the servers run the project's own type providers ([Trust](#trust)), add `--trust` to both argument lists: `["lsp", "--trust"]` and `["mcp", "--trust"]`. The settings are yours, so that trusts every project you open in Zed.
+
 Allocation hints are off until the settings turn them on, since the server compiles the program's code for them after each change: `"lsp": { "zs": { "initialization_options": { "allocationHints": true } } }`. They come from the code the compiler makes, after inlining, so a small function's allocations show at the line that calls it too. A module of a project (a `zs.toml` above it naming another main file) gets them from the project's program, so opening any of its files shows them; code that no entry reaches (`main`, a test, an export) has none.
 
 ### VS Code
 
 `editors/vscode` is a VS Code extension (1.101 or later). Package it with `npx @vscode/vsce package` in that folder and install the `.vsix`, or open the folder and press F5. It gives what the Zed extension does: TextMate highlighting, the language server's features, and the `zs mcp` server for the agent (Copilot's agent mode).
 
-It finds `zs` on your `PATH`, or set `"zsharp.path": "/path/to/zs"`; `zsharp.lsp.arguments` and `zsharp.mcp.arguments` change the arguments, and `"zsharp.allocationHints": true` turns on the allocation hints. It stays off in an untrusted workspace, whose settings could point it at another program.
+It finds `zs` on your `PATH`, or set `"zsharp.path": "/path/to/zs"`; `zsharp.lsp.arguments` and `zsharp.mcp.arguments` change the arguments, and `"zsharp.allocationHints": true` turns on the allocation hints. It stays off in an untrusted workspace, whose settings could point it at another program, and in a trusted one starts both servers with `--trust`.
 
 ### Rider
 
-`editors/rider` is a plugin for Rider and the other JetBrains IDEs, 2025.2 or later. Build it with `./gradlew buildPlugin` in that folder (it needs a JDK 25) and install `build/distributions/zsharp-rider-0.1.0.zip` from disk. It gives the same highlighting (the VS Code extension's grammar) and the language server through the IDE's LSP support, with the structure view, quick fixes and parameter info. **Settings → Tools → Z#** sets the path to `zs`.
+`editors/rider` is a plugin for Rider and the other JetBrains IDEs, 2025.2 or later. Build it with `./gradlew buildPlugin` in that folder (it needs a JDK 25) and install `build/distributions/zsharp-rider-0.1.0.zip` from disk. It gives the same highlighting (the VS Code extension's grammar) and the language server through the IDE's LSP support, with the structure view, quick fixes and parameter info. **Settings → Tools → Z#** sets the path to `zs`. It starts the server with `--trust` in a trusted project, and without it in one opened in safe mode.
 
-JetBrains' AI Assistant and Junie take MCP servers from their own settings: add `zs` with the argument `mcp` there.
+JetBrains' AI Assistant and Junie take MCP servers from their own settings: add `zs` with the argument `mcp` there (and `--trust` for projects you trust).
 
 ### Other editors
 
-Run `zs lsp` over stdio as the language server for `.zs` files. The tree-sitter grammar is in `editors/tree-sitter-zsharp`, with highlight, indent and outline queries. `zs mcp` works with any MCP client.
+Run `zs lsp` over stdio as the language server for `.zs` files, with `--trust` when the editor trusts the project. The tree-sitter grammar is in `editors/tree-sitter-zsharp`, with highlight, indent and outline queries. `zs mcp` works with any MCP client.

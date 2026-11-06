@@ -682,12 +682,17 @@ let savedFile (header: string) (flags: list<string>) (cacheDir: string) : string
 
 let importHeader (header: string) (dir: string) (flags: list<string>) (cacheDir: string) (at: int) : result<Imported, string> =
   let saved = savedFile header flags cacheDir
-  match importUncached header dir flags at with
-  | Ok r ->
-    save saved r
-    Ok r
-  | Error msg ->
-    if File.exists saved then
-      load saved at
-    else
-      Error $"import c \"{header}\": {msg}. Build once where libclang and the header are installed (e.g. ./dev zs build); that saves the import in {cacheDir} for editors"
+  // a header beside the importer (or named by its path) that's a pipe or a device: libclang
+  // would read it to an end that never comes (/dev/stdin is the language server's own input)
+  if Provide.Input.special (Path.combine dir header) then
+    Error $"import c \"{header}\": it isn't a regular file but a pipe or a device"
+  else
+    match importUncached header dir flags at with
+    | Ok r ->
+      save saved r
+      Ok r
+    | Error msg ->
+      if File.exists saved then
+        load saved at
+      else
+        Error $"import c \"{header}\": {msg}. Build once where libclang and the header are installed (e.g. ./dev zs build); that saves the import in {cacheDir} for editors"

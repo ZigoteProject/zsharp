@@ -136,6 +136,8 @@ type Options =
     time: bool
     /// built by the build server (--time says so)
     served: bool
+    /// a package's type provider may be built and run: not for zs mcp without --trust
+    trusted: bool
     /// --check-ir: the IR checked after each pass (Core.Check), as ./test.sh does
     checkIr: bool
     /// a chip's heap in bytes, from the project's [target.<name>] (the chip's default when None)
@@ -179,6 +181,7 @@ let defaults : Options =
     profileUse = None
     time = false
     served = false
+    trusted = true
     checkIr = false
     heap = None
     rest = [] }

@@ -711,6 +711,14 @@ else echo "FAIL tests/lsp/hints.sh"; cat "$tmp/lsph.diff"; fail=1; fi
 # sample watched and completion following an edit to it (tests/lsp/providers.sh)
 if diff <(tests/lsp/providers.sh bin/zs 2>&1) tests/lsp/providers.expected >"$tmp/lspp.diff"; then echo "ok   tests/lsp/providers.sh (a provided module's fields, the sample watched)"
 else echo "FAIL tests/lsp/providers.sh"; cat "$tmp/lspp.diff"; fail=1; fi
+# a package's provider in the editor: built and run only by a server started with --trust, the
+# module from the last build otherwise (tests/lsp/trust.sh)
+if diff <(tests/lsp/trust.sh bin/zs 2>&1) tests/lsp/trust.expected >"$tmp/lsptrust.diff"; then echo "ok   tests/lsp/trust.sh (a package's provider runs only with --trust)"
+else echo "FAIL tests/lsp/trust.sh"; cat "$tmp/lsptrust.diff"; fail=1; fi
+# document URIs as the files they name: a localhost authority, a percent-encoded space, a path
+# through .. (tests/lsp/uris.sh)
+if diff <(tests/lsp/uris.sh bin/zs 2>&1) tests/lsp/uris.expected >"$tmp/lspuri.diff"; then echo "ok   tests/lsp/uris.sh (document URIs read as their files)"
+else echo "FAIL tests/lsp/uris.sh"; cat "$tmp/lspuri.diff"; fail=1; fi
 # editing through the server (0019): renaming a record field across modules, signature help,
 # code actions (tests/lsp/edits.sh)
 if diff <(tests/lsp/edits.sh bin/zs 2>&1) tests/lsp/edits.expected >"$tmp/lspx.diff"; then echo "ok   tests/lsp/edits.sh"

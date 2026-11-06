@@ -35,9 +35,28 @@ hints, document symbols and formatting. Zed's agent gets the `zs mcp` context se
 
 4. Zed's agent gets the `zs` context server (`zs mcp`): `check`, `type_at`, `definition`,
    `explain`, `docs`, `build`, `run`, `emit_llvm` and `format`. Enable it in the agent panel's
-   settings.
+   settings. Its tools take only files inside the project, but `run` runs the program it builds
+   with your full rights, unsandboxed.
 
 5. Open a `.zs` file. `zed: open log` shows the extension's and the server's messages.
+
+## Trusting a project
+
+A project's own type providers (a dependency with a `[provider]` section, 0001) are programs from
+the project, so the language server and the context server build and run them only when started
+with `--trust`. The extension doesn't add it, since it can't ask Zed whether you trust the
+project: without it, an import of such a provider uses the module from the last build, with a
+warning, or is an error saying the project isn't trusted. zs's own providers (json, csv, sql, svd,
+c) and `zs-provider-<name>` programs on your `PATH` run either way. When you trust the projects
+you open, add the flag to the arguments in your settings (`lsp.zs.binary.arguments`, and the
+context server's `args`):
+
+```json
+{
+  "lsp": { "zs": { "binary": { "path": "/path/to/zs", "arguments": ["lsp", "--trust"] } } },
+  "context_servers": { "zs": { "command": "/path/to/zs", "args": ["mcp", "--trust"] } }
+}
+```
 
 The queries in `languages/zsharp/` are copies of `../tree-sitter-zsharp/queries/`; keep them in
 step (`./test.sh` checks).

@@ -29,16 +29,18 @@ let private limit (n: int) (s: string) =
     String.sub s 0 b + $"\n… ({String.charCount s - n} more characters)"
 
 // a tool's file: inside the directory the server was started in, reached through no symbolic
-// link (getFullPath works on the text, so a link could lead out of it), and there
+// link (getFullPath works on the text, so a link could lead out of it), and there. Full paths
+// have the platform's separator (Windows's \), each part checked for a link
 let private projectFile (p: string) : result<string, string> =
   let full = Path.getFullPath p
   let root = Path.getFullPath (Environment.currentDirectory ())
+  let sep = string Path.separator
   let rec linked (dir: string) (parts: list<string>) =
     match parts with
     | [] -> false
     | x :: rest -> Native.isSymlink (Path.combine dir x) || linked (Path.combine dir x) rest
-  if not (String.startsWith (root + "/") full) then Error $"{p} is outside the project ({root})"
-  else if linked root (String.split "/" (Path.getRelativePath root full)) then Error $"{p} is reached through a symbolic link"
+  if not (String.startsWith (root + sep) full) then Error $"{p} is outside the project ({root})"
+  else if linked root (String.split sep (Path.getRelativePath root full)) then Error $"{p} is reached through a symbolic link"
   else if not (File.exists full) then Error $"{p} does not exist"
   else Ok(Path.getRelativePath root full)
 
@@ -55,9 +57,10 @@ let private formatErrors (sources: list<Syntax.Source.Source>) (ds: list<Diagnos
     | None -> msg
   String.join "\n" (List.map one ds)
 
-// a file checked with every module it uses, or its errors as text
-let private check (file: string) : result<Build.Check.Checked, string> =
-  match Build.Check.program file false true None "" with
+// a file checked with every module it uses, or its errors as text; trusted: the project's own
+// type providers built and run (--trust)
+let private check (file: string) (trusted: bool) : result<Build.Check.Checked, string> =
+  match Build.Check.programWith Map.empty file false true None "" trusted with
   | Ok c -> Ok c
   | Error(ds, sources) -> Error(formatErrors sources (Array.toList ds))
 
@@ -131,8 +134,9 @@ let private definitionText (c: Build.Check.Checked) (h: Infer.Cx.Hover) : option
 let private withWarnings (b: Build.Make.Built) (text: string) =
   if Array.length b.diagnostics = 0 then text else formatErrors b.sources (Array.toList b.diagnostics) + "\n" + text
 
-// a tool's answer: its text, or Error with the text of what went wrong
-let private call (name: string) (args: Json) : result<string, string> =
+// a tool's answer: its text, or Error with the text of what went wrong; trusted: started with
+// --trust, so a package's type provider is built and run (by check as by build)
+let private call (name: string) (args: Json) (trusted: bool) : result<string, string> =
   let arg (k: string) : result<Json, string> =
     match Rpc.field k args with
     | JNull -> Error $"missing argument '{k}'"
@@ -141,12 +145,12 @@ let private call (name: string) (args: Json) : result<string, string> =
     match arg "file" with
     | Ok v -> projectFile (Rpc.text v)
     | Error e -> Error e
-  let options (file: string) (out: string) : Build.Options.Options = { Build.Options.defaults with main = file; out = out }
+  let options (file: string) (out: string) : Build.Options.Options = { Build.Options.defaults with main = file; out = out; trusted = trusted }
   if name = "check" then
     match fileOf () with
     | Error e -> Error e
     | Ok file ->
-      match check file with
+      match check file trusted with
       | Error e -> Error e
       | Ok c ->
         let ds = Array.toList (Buffer.toArray c.cx.diagnostics)
@@ -156,7 +160,7 @@ let private call (name: string) (args: Json) : result<string, string> =
     | (Ok file, Ok l, Ok k) ->
       let line = Rpc.intOf l
       let col = Rpc.intOf k
-      match check file with
+      match check file trusted with
       | Error e -> Error e
       | Ok c ->
         match hoverAt c file line col with
@@ -242,7 +246,7 @@ let private call (name: string) (args: Json) : result<string, string> =
     match fileOf () with
     | Error e -> Error e
     | Ok file ->
-      match Build.Check.program file true true None "" with
+      match Build.Check.programWith Map.empty file true true None "" trusted with
       | Error(ds, sources) -> Error(formatErrors sources (Array.toList ds))
       | Ok c ->
         let sources = List.map (fun (m: Build.Modules.Loaded) -> m.source) c.modules
@@ -275,7 +279,7 @@ let private documents () : list<string * string> =
   List.filter (fun (p, _) -> File.exists p) (List.map (fun (f, title) -> (Path.getFullPath f, title)) [ ("DESIGN.md", "Z# design"); ("ROADMAP.md", "Z# roadmap") ])
 
 // one message's answer
-let private answer (out: IO.Writer) (msg: Json) =
+let private answer (out: IO.Writer) (trusted: bool) (msg: Json) =
   let id = Rpc.field "id" msg
   let ps = Rpc.field "params" msg
   let meth = Rpc.text (Rpc.field "method" msg)
@@ -299,7 +303,7 @@ let private answer (out: IO.Writer) (msg: Json) =
       match Rpc.field "arguments" ps with
       | JNull -> JObject []
       | a -> a
-    match call (Rpc.text (Rpc.field "name" ps)) args with
+    match call (Rpc.text (Rpc.field "name" ps)) args trusted with
     | Ok text -> respond out id (textResult text false)
     | Error text -> respond out id (textResult text true)
   else if meth = "resources/list" then
@@ -318,13 +322,14 @@ let private answer (out: IO.Writer) (msg: Json) =
     failWith out id -32601 "method not found"
 
 /// Serves on standard input (`input`) and output, a message a line, until the input ends. `first`:
-/// a line protocol detection already read.
-let serve (input: IO.Reader) (first: option<string>) : int =
+/// a line protocol detection already read; `trusted`: --trust, the project's own type providers
+/// built and run.
+let serve (input: IO.Reader) (first: option<string>) (trusted: bool) : int =
   let out = Console.openStandardOutput ()
   let one (line: string) =
     if String.trim line <> "" then
       match Json.parse line with
-      | Ok msg -> answer out msg
+      | Ok msg -> answer out trusted msg
       | Error _ -> failWith out JNull -32700 "parse error"
   match first with
   | Some l -> one l

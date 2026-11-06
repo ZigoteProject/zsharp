@@ -171,9 +171,10 @@ let command (args: list<string>) : int =
   | [ "check-time"; path ] -> checkTime path
   | "fmt" :: args -> fmt args
   | [ "doc"; path ] -> Build.Doc.doc path
-  // editors may add flags such as --stdio
-  | "lsp" :: _ -> Lsp.Server.serve (Console.openStandardInput ()) None
-  | "mcp" :: _ -> Lsp.Mcp.serve (Console.openStandardInput ()) None
+  // editors may add flags such as --stdio; --trust: the project's own type providers (its
+  // packages') are built and run, which an editor asks for only in a project the user trusts
+  | "lsp" :: flags -> Lsp.Server.serve (Console.openStandardInput ()) None (List.contains "--trust" flags)
+  | "mcp" :: flags -> Lsp.Mcp.serve (Console.openStandardInput ()) None (List.contains "--trust" flags)
   | [ "check"; path ] -> Commands.check path false
   | [ "check"; "--strict"; path ] -> Commands.check path true
   | "run" :: args -> Commands.run args
@@ -212,11 +213,11 @@ let command (args: list<string>) : int =
 extern isatty : i32 -> i32
 
 // started by an editor with no arguments: an LSP message starts with a Content-Length header, an
-// MCP message with '{'
+// MCP message with '{'; without --trust, the project's own type providers aren't run
 let detect () : int =
   let input = Console.openStandardInput ()
   match IO.Reader.readLine input with
-  | Ok(Some line) -> if String.startsWith "{" line then Lsp.Mcp.serve input (Some line) else Lsp.Server.serve input (Some line)
+  | Ok(Some line) -> if String.startsWith "{" line then Lsp.Mcp.serve input (Some line) false else Lsp.Server.serve input (Some line) false
   | _ -> 2
 
 // one command's work: as zs runs it, or as the build server does for a request (served)
@@ -227,6 +228,9 @@ let rec run (served: bool) (args: list<string>) : int =
     Server.viaServer [ "stop" ] |> ignore
     0
   | [ "server"; path ] -> Server.serve path (run true)
+  // --no-server first: built in this process, as ZS_NO_SERVER=1 has it (a build the compiler
+  // starts for a package's provider, which the server's own build may be waiting for)
+  | "build" :: "--no-server" :: rest -> Commands.build served rest
   | "build" :: rest ->
     if served || Option.isSome (Environment.getVariable "ZS_NO_SERVER") then
       Commands.build served rest

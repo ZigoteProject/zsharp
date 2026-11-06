@@ -27,6 +27,11 @@ code actions (quick fixes) and formatting (Reformat Code).
 3. Open a `.zs` file. The language server's status is in the status bar's language services widget,
    which can restart it; changing the settings restarts it too.
 
+In a project you trust the plugin starts the server with `--trust`, so it builds and runs the
+project's own type providers (a dependency's `[provider]`), as `zs build` does. In a project
+opened in safe mode it doesn't: an import of such a provider uses the module from the last build,
+or is an error saying so. Trusting the project later takes a restart of the server.
+
 ## The agent (MCP)
 
 JetBrains' AI Assistant and Junie take MCP servers from their settings, not from plugins. Add
@@ -38,4 +43,5 @@ Junie: `.junie/mcp/mcp.json` in the project, or `~/.junie/mcp/mcp.json`):
 ```
 
 Its tools take only files inside the project, but `run` runs the program it builds with your full
-rights, unsandboxed.
+rights, unsandboxed. Without `--trust` in `args` no tool builds or runs the project's own type
+providers; with it, every tool that checks or builds a file does: add it for projects you trust.

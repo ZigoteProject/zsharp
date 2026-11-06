@@ -1,9 +1,12 @@
 /// The build server (zs server): zs build hands its work to one that stays running, a Unix socket
 /// in the cache (one per compiler and environment), which builds in its own process, in the
 /// request's directory, and sends the output back. The first build starts it and builds on its
-/// own; it ends after ten idle minutes, or with zs server stop. ZS_NO_SERVER=1 builds in the
-/// process that's asked. A message is its length in bytes, a newline, then its fields separated
-/// by NULs: a request is the directory and the arguments, a reply the exit code and the output.
+/// own; it ends after ten idle minutes, or with zs server stop. ZS_NO_SERVER=1 (or zs build
+/// --no-server) builds in the process that's asked. A message is its length in bytes, a newline,
+/// then its fields separated by NULs: a request is the directory and the arguments, a reply the
+/// exit code and the output. Builds are served one at a time, in the order they come: a build
+/// waits for the one before it (a client that sends nothing, or reads no reply, is dropped after a
+/// few seconds, so it holds up no one).
 // ponytail: no warm cache to keep yet (0007's would live here); the server spares a process start
 
 extern dup : i32 -> i32
@@ -143,19 +146,46 @@ let serve (path: string) (run: list<string> -> int) : int =
         match Task.run (Task.timeout 600000 (Unix.accept l)) with
         | Some(Ok conn) ->
           use c = conn
-          match Task.run (readFields c) with
+          // the request comes at once (a client sends it as it connects): one that stalls isn't
+          // waited for, or every build after it would wait too
+          let request =
+            match Task.run (Task.timeout 5000 (readFields c)) with
+            | Some r -> r
+            | None -> None
+          match request with
           | Some [ _; "stop" ] -> going <- false
           | Some [ _; "ping" ] -> ()
           | Some(cwd :: argv) ->
             let code = captured cwd out err (fun () -> run argv)
             let text (p: string) = Result.defaultValue "" (File.readAllText p)
-            Task.run (sendFields c [ $"{code}"; text out; text err ]) |> ignore
+            // nor is a client that doesn't read its reply
+            Task.run (Task.timeout 10000 (sendFields c [ $"{code}"; text out; text err ])) |> ignore
             File.delete out |> ignore
             File.delete err |> ignore
           | _ -> ()
         | Some(Error _) -> ()
         | None -> going <- false
-      File.delete path |> ignore
+      // the socket deleted only while it's still this listener's: two servers started together
+      // can both find none and both listen, the second taking the path, and the first, ending,
+      // must not delete the second's. A connection to the path reaches this listener or the
+      // other's (which drops it, as it sends nothing)
+      let owned =
+        Task.run (
+          task {
+            let! got = Unix.connect path
+            match got with
+            | Ok s ->
+              use probe = s
+              let! reached = Task.timeout 1000 (Unix.accept l)
+              match reached with
+              | Some(Ok c) ->
+                Dispose.dispose c
+                return true
+              | _ -> return false
+            | Error _ -> return false
+          })
+      if owned then
+        File.delete path |> ignore
       0
 
 /// Asks the build server to run the arguments: its exit code, with its output written here; None

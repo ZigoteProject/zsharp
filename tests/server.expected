@@ -2,4 +2,8 @@ its directory: 700
 the server built it
 the same binary as built in-process
 an error: exit 1, tests/err_yield.zs:2:3: error: yield belongs in [ … ], [| … |] or seq { }
+a package's provider under the server: exit 0, served 1, ALPHA BETA
+a build after a client that sends nothing: exit 0
+two servers on one path, the first stopped: the second's socket kept
+the second stopped: its own socket deleted
 stopped: 0 sockets left

@@ -3,6 +3,7 @@ package zsharp;
 import com.intellij.execution.ExecutionException;
 import com.intellij.execution.configurations.GeneralCommandLine;
 import com.intellij.execution.configurations.PathEnvironmentVariableUtil;
+import com.intellij.ide.trustedProjects.TrustedProjects;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.platform.lsp.api.LspServerSupportProvider;
@@ -55,6 +56,11 @@ public final class ZSharpLsp implements LspServerSupportProvider {
         path = found.getPath();
       }
       GeneralCommandLine command = new GeneralCommandLine(path).withParameters(settings.getLspArguments());
+      // the project's own type providers (its packages' programs) are built and run only in a
+      // project the user trusts
+      if (TrustedProjects.isProjectTrusted(getProject()) && !command.getParametersList().hasParameter("--trust")) {
+        command.addParameter("--trust");
+      }
       String base = getProject().getBasePath();
       return base == null ? command : command.withWorkDirectory(base);
     }
