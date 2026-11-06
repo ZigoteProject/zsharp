@@ -60,7 +60,7 @@ let main () =
   let l1: result<list<unit>, string> = Binary.ofBytes [| u8 1 |]
   let l2: result<list<unit>, string> = Binary.ofBytes half.[1..]
   let l3: result<array<int>, string> = Binary.ofBytes [| u8 0xD0; u8 0x0F; u8 2 |]
-  println $"{l1} {l2} {l3} {same [ (); (); () ]}"
+  println $"{l1} {l2} {Result.map (fun (x: array<int>) -> Array.toList x) l3} {same [ (); (); () ]}"
   // nesting: past the limit an Error, not a stack run out (after "Node" once, a level is a byte)
   let deep = Buffer.ofArray [| u8 0; u8 4; u8 78; u8 111; u8 100; u8 101 |]
   for _ in 1 .. 2000 do
@@ -75,5 +75,6 @@ let main () =
   // numbers: i64 and int as the same bytes, i64's ends; one too big for its type an Error
   let narrow: result<i8, string> = Binary.ofBytes (Binary.toBytes 300)
   let small: result<u16, string> = Binary.ofBytes (Binary.toBytes (u64 70000))
-  println $"{Binary.toBytes (i64 -5) = Binary.toBytes -5} {same (i64 -9223372036854775807 - i64 1, i64 9223372036854775807)} {narrow} {small}"
+  let sameBytes = Array.toList (Binary.toBytes (i64 -5)) = Array.toList (Binary.toBytes -5)
+  println $"{sameBytes} {same (i64 -9223372036854775807 - i64 1, i64 9223372036854775807)} {narrow} {small}"
   0

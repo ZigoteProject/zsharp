@@ -141,7 +141,7 @@ let written (w: Writer) : span<u8> =
 /// How many more bytes fit: the most an `int` holds for a growing Writer.
 let remaining (w: Writer) : int =
   match w with
-  | Growing _ -> ~~~(1 <<< (8 * sizeof<int> - 1)) // all bits but the sign's: no overflow
+  | Growing _ -> ~~~ (1 <<< (8 * sizeof<int> - 1)) // all bits but the sign's: no overflow
   | Fixed m -> m.capacity - m.length
 
 /// The Writer emptied (its Buffer cleared, or its memory to be written again from the start).

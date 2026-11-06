@@ -34,9 +34,10 @@ let run () : result<unit, string> =
   let secret = (File.createTemp "zssecret")?
   (File.writeAllText secret "token\n")?
   (File.copy secret (at "copy"))?
+  let copied = mode (at "copy")
   Process.run "chmod" [ "700"; at "copy" ] |> ignore
   (File.copy (at "copy") (at "tool"))?
-  println $"copies: {mode (at "copy")} {mode (at "tool")}"
+  println $"copies: {copied} {mode (at "tool")}"
   let target = "zs-file-links.tmp"
   (File.writeAllText target "old\n")?
   (File.move secret target)?
