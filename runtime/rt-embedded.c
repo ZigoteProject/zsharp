@@ -1467,52 +1467,90 @@ _Noreturn void zs_panic(zs_str *msg) { panic_with(msg->data, (size_t)msg->len); 
 
 _Noreturn void zs_exit(zs_int code) { stop((int)code); }
 
-// ---- Spsc (0012): a ring between one producer and one consumer, an interrupt handler and the
-// program, or two threads, neither waiting or locking: the producer alone moves the tail and the
-// consumer alone the head, each after the value it wrote or read. One slot stays empty, so a full
-// ring isn't an empty one. A Z# object: the drop function it was made with drops what's still in
-// it when it's freed.
+// ---- Spsc (0012): a ring between a producer and a consumer, an interrupt handler and the program,
+// neither waiting or locking. Spsc is Share, so safe code can push or pop from more than one
+// handler a side, and that stays safe: each slot has a sequence number (Vyukov's bounded queue,
+// as rt.c's). A push or a pop claims its position with a CAS on the tail or the head (on a
+// Cortex-M0, the __atomic function above, interrupts masked around it), copies the value, then
+// moves the slot's number on, which hands the slot to the other side. A pop finds nothing while
+// the value at the head is still being pushed (by the code it interrupted), and a push finds the
+// queue full while the slot it needs is still being popped: neither ever waits for the other.
+// The slots are a power of two (positions wrap with the word), the capacity or more: past the
+// capacity, a push finds the queue full. A Z# object: the drop function it was made with drops
+// what's still in it when it's freed.
 typedef struct {
     zs_int rc;
-    zs_int cap, size;
-    zs_int head, tail; // each written by its side alone, read by the other atomically
+    zs_int cap, size;     // the values it holds at most; a value's bytes
+    uintptr_t mask;       // the slots, less one
+    uintptr_t head, tail; // positions: the next to pop, the next to push
     void (*drop)(void *slot);
-    char slots[];
+    // a slot's number: its position while it waits for that position's push, the position + 1
+    // once it holds its value. The values' bytes come after.
+    uintptr_t seq[];
 } zs_spsc;
+
+static char *spsc_value(zs_spsc *q, uintptr_t pos) { return (char *)(q->seq + q->mask + 1) + (pos & q->mask) * (size_t)q->size; }
 
 void *zs_spsc_new(zs_int cap, zs_int size, void (*drop)(void *)) {
     if (cap < 1) zs_panic_c("an Spsc holds at least one value");
-    zs_int bytes; // cap + 1 slots after the header, past what can be allocated a panic
-    if (__builtin_add_overflow(cap, 1, &bytes) || __builtin_mul_overflow(bytes, size ? size : 1, &bytes) || __builtin_add_overflow(bytes, (zs_int)sizeof(zs_spsc), &bytes)) zs_panic_c("out of memory");
+    zs_int n = 2, slot, bytes; // past what can be allocated a panic
+    while (n < cap)
+        if (__builtin_mul_overflow(n, 2, &n)) zs_panic_c("out of memory");
+    if (__builtin_add_overflow(size, (zs_int)sizeof(uintptr_t), &slot) || __builtin_mul_overflow(n, slot, &bytes) || __builtin_add_overflow(bytes, (zs_int)sizeof(zs_spsc), &bytes)) zs_panic_c("out of memory");
     zs_spsc *q = zs_alloc(bytes);
     q->rc = 1;
-    q->cap = cap + 1;
+    q->cap = cap;
     q->size = size;
+    q->mask = (uintptr_t)n - 1;
     q->head = q->tail = 0;
     q->drop = drop;
+    for (zs_int i = 0; i < n; i++) q->seq[i] = (uintptr_t)i;
     return q;
 }
 
 bool zs_spsc_push(zs_spsc *q, const void *v) {
-    zs_int t = q->tail;
-    zs_int next = (t + 1) % q->cap;
-    if (next == __atomic_load_n(&q->head, __ATOMIC_ACQUIRE)) return false; // full
-    memcpy(q->slots + t * q->size, v, (size_t)q->size);
-    __atomic_store_n(&q->tail, next, __ATOMIC_RELEASE);
-    return true;
+    uintptr_t t = __atomic_load_n(&q->tail, __ATOMIC_RELAXED);
+    for (;;) {
+        uintptr_t *s = &q->seq[t & q->mask];
+        intptr_t d = (intptr_t)(__atomic_load_n(s, __ATOMIC_ACQUIRE) - t);
+        if (d < 0) return false; // full: the value a lap before isn't popped yet
+        if (d > 0) {             // another push took t
+            t = __atomic_load_n(&q->tail, __ATOMIC_RELAXED);
+            continue;
+        }
+        // full at the capacity, when the slots are more (a head read late finds it full sooner,
+        // never later)
+        if ((uintptr_t)q->cap <= q->mask && (intptr_t)(t - __atomic_load_n(&q->head, __ATOMIC_RELAXED)) >= q->cap) return false;
+        if (__atomic_compare_exchange_n(&q->tail, &t, t + 1, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+            memcpy(spsc_value(q, t), v, (size_t)q->size);
+            __atomic_store_n(s, t + 1, __ATOMIC_RELEASE); // the value, to a pop
+            return true;
+        }
+    }
 }
 
 bool zs_spsc_pop(zs_spsc *q, void *out) {
-    zs_int h = q->head;
-    if (h == __atomic_load_n(&q->tail, __ATOMIC_ACQUIRE)) return false; // empty
-    memcpy(out, q->slots + h * q->size, (size_t)q->size);
-    __atomic_store_n(&q->head, (h + 1) % q->cap, __ATOMIC_RELEASE);
-    return true;
+    uintptr_t h = __atomic_load_n(&q->head, __ATOMIC_RELAXED);
+    for (;;) {
+        uintptr_t *s = &q->seq[h & q->mask];
+        intptr_t d = (intptr_t)(__atomic_load_n(s, __ATOMIC_ACQUIRE) - (h + 1));
+        if (d < 0) return false; // empty, or its value is still being pushed
+        if (d > 0) {             // another pop took h
+            h = __atomic_load_n(&q->head, __ATOMIC_RELAXED);
+            continue;
+        }
+        if (__atomic_compare_exchange_n(&q->head, &h, h + 1, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+            memcpy(out, spsc_value(q, h), (size_t)q->size);
+            __atomic_store_n(s, h + q->mask + 1, __ATOMIC_RELEASE); // the slot, to the push a lap on
+            return true;
+        }
+    }
 }
 
 void zs_spsc_free(zs_spsc *q) {
+    // what's between the head and the tail (no push or pop is under way: each holds a reference)
     if (q->drop)
-        for (zs_int i = q->head; i != q->tail; i = (i + 1) % q->cap) q->drop(q->slots + i * q->size);
+        for (uintptr_t p = q->head; p != q->tail; p++) q->drop(spsc_value(q, p));
     zs_free_checked(q);
 }
 

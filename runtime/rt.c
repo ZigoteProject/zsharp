@@ -2991,6 +2991,17 @@ static void boxes_sweep(void) {
 
 // ---- loop threads (Task.spawn): a thread per core, each running an event loop of its own for
 // the tasks spawned onto it, which stay on it to the end. They stop when the program does.
+
+// the loop threads and the thread pool, once started, stop at exit in one handler (the first of
+// them to start registers it), the loop threads first whichever started first: one may be running
+// a task that forks, and one that forked gives its deque back into the pool's arrays as it ends
+static atomic_bool loopsUp, poolUp;
+static void threads_stop(void);
+static void stop_at_exit(void) {
+    static atomic_flag registered = ATOMIC_FLAG_INIT;
+    if (!atomic_flag_test_and_set(&registered)) atexit(threads_stop);
+}
+
 static struct {
     int n;
     pthread_t *threads;
@@ -3056,7 +3067,8 @@ static void loops_start(void) {
     pthread_mutex_lock(&T.mu);
     while (T.ready < T.n) pthread_cond_wait(&T.cv, &T.mu);
     pthread_mutex_unlock(&T.mu);
-    atexit(loops_stop);
+    atomic_store(&loopsUp, true);
+    stop_at_exit();
 }
 
 // starts work (a closure whose objects the compiler marked shared) on the next loop thread;
@@ -3536,7 +3548,8 @@ zs_str *zs_error_text(zs_int e) {
 // channel tells the pool, which starts a spare worker while fewer threads than it has cores are
 // left to run jobs (Java's ForkJoinPool does this for a managed blocker): a job waiting for what
 // another job sends isn't left waiting for a thread to run that one. A spare that finds nothing
-// to do while enough others can sleeps until it's needed again.
+// to do while enough others can sleeps until it's needed again. Spares are at most twice the
+// cores: past that, a job waits without one.
 
 typedef struct {
     void (*run)(void *clo, void *out);
@@ -3545,10 +3558,17 @@ typedef struct {
     _Alignas(64) char result[]; // what run stores (a SIMD vector, say)
 } par_job;
 
+// a deque's ring of jobs, with its capacity in it: a thief loads the ring once and indexes it by
+// that ring's own capacity, so a resize between its loads can't pair one ring with another's
+// (Lê et al. keep the size in the array for this)
+typedef struct {
+    long long cap; // a power of two, written before the ring is published and never after
+    _Atomic(par_job *) slot[];
+} par_ring;
+
 typedef struct {
     atomic_llong top, bottom;
-    _Atomic(_Atomic(par_job *) *) buf;
-    atomic_llong cap; // a power of two
+    _Atomic(par_ring *) ring;
 } par_deque;
 
 #define PAR_OTHERS 1024 // deques for threads that aren't workers: forking threads and spares
@@ -3572,7 +3592,7 @@ static struct {
     pthread_cond_t sparecv;
     pthread_t *spareThreads; // every spare started, joined at exit (under mu)
     int nspare;
-    void **old; // buffers replaced by bigger ones (a thief may still read one), freed at exit
+    void **old; // rings replaced by bigger ones (a thief may still read one), freed at exit
     size_t nold;
     pthread_mutex_t oldmu;
 } P;
@@ -3582,50 +3602,50 @@ static _Thread_local int me = -1;         // this thread's deque, -1 for a threa
 static _Thread_local bool runsJobs;      // a worker or a spare: what the pool counts on
 static pthread_key_t slotKey;            // gives a forking thread's deque back when it ends
 
+static par_ring *ring_new(long long cap) {
+    par_ring *r = calloc(1, sizeof(par_ring) + (size_t)cap * sizeof(_Atomic(par_job *)));
+    if (!r) zs_panic_c("out of memory");
+    r->cap = cap;
+    return r;
+}
+
 static void dq_init(par_deque *q) {
     atomic_init(&q->top, 0);
     atomic_init(&q->bottom, 0);
-    atomic_init(&q->cap, 64);
-    _Atomic(par_job *) *b = calloc(64, sizeof *b);
-    if (!b) zs_panic_c("out of memory");
-    atomic_init(&q->buf, b);
+    atomic_init(&q->ring, ring_new(64));
 }
 
 static void dq_push(par_deque *q, par_job *j) {
     long long b = atomic_load_explicit(&q->bottom, memory_order_relaxed);
     long long t = atomic_load_explicit(&q->top, memory_order_acquire);
-    long long cap = atomic_load_explicit(&q->cap, memory_order_relaxed);
-    _Atomic(par_job *) *a = atomic_load_explicit(&q->buf, memory_order_relaxed);
-    if (b - t >= cap - 1) { // full: twice as big, the old one kept for thieves still reading it
-        _Atomic(par_job *) *n = calloc((size_t)cap * 2, sizeof *n);
-        if (!n) zs_panic_c("out of memory");
+    par_ring *a = atomic_load_explicit(&q->ring, memory_order_relaxed);
+    if (b - t >= a->cap - 1) { // full: twice as big, the old one kept for thieves still reading it
+        par_ring *n = ring_new(a->cap * 2);
         for (long long i = t; i < b; i++)
-            atomic_store_explicit(&n[i & (cap * 2 - 1)], atomic_load_explicit(&a[i & (cap - 1)], memory_order_relaxed), memory_order_relaxed);
+            atomic_store_explicit(&n->slot[i & (n->cap - 1)], atomic_load_explicit(&a->slot[i & (a->cap - 1)], memory_order_relaxed), memory_order_relaxed);
         pthread_mutex_lock(&P.oldmu);
         void **o = realloc(P.old, (P.nold + 1) * sizeof(void *));
         if (!o) zs_panic_c("out of memory");
         P.old = o;
-        P.old[P.nold++] = (void *)a;
+        P.old[P.nold++] = a;
         pthread_mutex_unlock(&P.oldmu);
-        atomic_store_explicit(&q->buf, n, memory_order_release);
-        atomic_store_explicit(&q->cap, cap * 2, memory_order_release);
+        // one store publishes the jobs copied and the capacity with them
+        atomic_store_explicit(&q->ring, n, memory_order_release);
         a = n;
-        cap *= 2;
     }
-    atomic_store_explicit(&a[b & (cap - 1)], j, memory_order_relaxed);
+    atomic_store_explicit(&a->slot[b & (a->cap - 1)], j, memory_order_relaxed);
     // publishes the job; seq_cst, as is zs_par_fork's look for sleepers after it (see run_jobs)
     atomic_store_explicit(&q->bottom, b + 1, memory_order_seq_cst);
 }
 
 static par_job *dq_pop(par_deque *q) {
     long long b = atomic_load_explicit(&q->bottom, memory_order_relaxed) - 1;
-    _Atomic(par_job *) *a = atomic_load_explicit(&q->buf, memory_order_relaxed);
-    long long cap = atomic_load_explicit(&q->cap, memory_order_relaxed);
+    par_ring *a = atomic_load_explicit(&q->ring, memory_order_relaxed);
     atomic_store_explicit(&q->bottom, b, memory_order_seq_cst);
     long long t = atomic_load_explicit(&q->top, memory_order_seq_cst);
     par_job *x = NULL;
     if (t <= b) {
-        x = atomic_load_explicit(&a[b & (cap - 1)], memory_order_relaxed);
+        x = atomic_load_explicit(&a->slot[b & (a->cap - 1)], memory_order_relaxed);
         if (t == b) { // the last one: a thief may be taking it too
             if (!atomic_compare_exchange_strong_explicit(&q->top, &t, t + 1, memory_order_seq_cst, memory_order_relaxed)) x = NULL;
             atomic_store_explicit(&q->bottom, b + 1, memory_order_relaxed);
@@ -3640,9 +3660,9 @@ static par_job *dq_steal(par_deque *q) {
     long long t = atomic_load_explicit(&q->top, memory_order_seq_cst);
     long long b = atomic_load_explicit(&q->bottom, memory_order_seq_cst);
     if (t >= b) return NULL;
-    _Atomic(par_job *) *a = atomic_load_explicit(&q->buf, memory_order_acquire);
-    long long cap = atomic_load_explicit(&q->cap, memory_order_acquire);
-    par_job *x = atomic_load_explicit(&a[t & (cap - 1)], memory_order_relaxed);
+    // the ring current when job t was pushed, or a later one it was copied into
+    par_ring *a = atomic_load_explicit(&q->ring, memory_order_acquire);
+    par_job *x = atomic_load_explicit(&a->slot[t & (a->cap - 1)], memory_order_relaxed);
     if (!atomic_compare_exchange_strong_explicit(&q->top, &t, t + 1, memory_order_seq_cst, memory_order_relaxed)) return NULL;
     return x;
 }
@@ -3688,12 +3708,13 @@ static void slot_take(void) {
     me = k;
 }
 
-// a thread that forked ends: its deque (empty: it joined what it forked) is handed out again
+// a thread that forked ends: its deque (empty: it joined what it forked) is handed out again,
+// unless the pool has stopped (a thread ending after exit has freed the pool's arrays)
 static void slot_give(void *arg) {
     (void)arg;
     if (me < 0) return;
     pthread_mutex_lock(&P.mu);
-    P.freed[P.nfreed++] = me;
+    if (!atomic_load(&P.stop)) P.freed[P.nfreed++] = me;
     pthread_mutex_unlock(&P.mu);
     me = -1;
 }
@@ -3714,13 +3735,12 @@ static void par_block(void) {
     if (free_runners() >= wanted_runners()) return;
     pthread_mutex_lock(&P.mu);
     if (P.parked == 0 && P.nspare >= 2 * P.n) {
-        // at most twice the cores: with none left free, every job waits for another, for good
-        int blocked = atomic_load(&P.blocked);
+        // at most twice the cores: it waits without one. That's no deadlock to end the program
+        // for: what it waits for may be a thread outside the pool (the main thread holding the
+        // lock, a task's loop thread receiving), which no count here tells from a job that no
+        // thread is left to run
         pthread_mutex_unlock(&P.mu);
-        if (free_runners() > 0) return;
-        char msg[160];
-        snprintf(msg, sizeof msg, "the thread pool's spare threads are exhausted (%d blocked jobs): jobs wait for each other in channels or mutexes", blocked);
-        zs_panic_c(msg);
+        return;
     }
     atomic_fetch_add(&P.spares, 1);
     if (P.parked > 0) {
@@ -3804,13 +3824,18 @@ static void pool_stop(void) {
     for (int k = 0; k < P.n - 1; k++) pthread_join(P.threads[k], NULL);
     for (int k = 0; k < nspare; k++) pthread_join(P.spareThreads[k], NULL);
     int used = atomic_load(&P.slots);
-    for (int k = 0; k < used; k++) free((void *)atomic_load(&P.deques[k].buf));
+    for (int k = 0; k < used; k++) free(atomic_load(&P.deques[k].ring));
     for (size_t k = 0; k < P.nold; k++) free(P.old[k]);
     free(P.old);
     free(P.deques);
     free(P.freed);
     free(P.threads);
     free(P.spareThreads);
+}
+
+static void threads_stop(void) {
+    if (atomic_load(&loopsUp)) loops_stop();
+    if (atomic_load(&poolUp)) pool_stop();
 }
 
 static void pool_start(void) {
@@ -3834,7 +3859,8 @@ static void pool_start(void) {
     me = P.n - 1; // the thread starting the pool runs jobs with the last deque
     for (int k = 0; k < P.n - 1; k++)
         if (spawn(&P.threads[k], worker_main, (void *)(intptr_t)k) != 0) zs_panic_c("pthread_create failed");
-    atexit(pool_stop);
+    atomic_store(&poolUp, true);
+    stop_at_exit();
 }
 
 // a thread forking without a deque (a task's loop thread, Task.blocking's helper) takes one,
@@ -4046,52 +4072,95 @@ void zs_chan_free(zs_chan *c) {
     zs_free_checked(c);
 }
 
-// ---- Spsc (0012): a ring between one producer and one consumer, an interrupt handler and the
-// program, or two threads, neither waiting or locking: the producer alone moves the tail and the
-// consumer alone the head, each after the value it wrote or read. One slot stays empty, so a full
-// ring isn't an empty one. A Z# object: the drop function it was made with drops what's still in
-// it when it's freed.
+// ---- Spsc (0012): a ring between a producer and a consumer, an interrupt handler and the program,
+// or two threads, neither waiting or locking. Spsc is Share, so safe code can push or pop from
+// more threads than one a side, and that stays safe: each slot has a sequence number (Vyukov's
+// bounded queue). A push or a pop claims its position with a CAS on the tail or the head, copies
+// the value, then moves the slot's number on, which hands the slot to the other side. A pop finds
+// nothing while the value at the head is still being pushed, and a push finds the queue full
+// while the slot it needs is still being popped: neither ever waits for the other. The slots are
+// a power of two (positions wrap with the word), the capacity or more: past the capacity, a push
+// finds the queue full. A Z# object: the drop function it was made with drops what's still in it
+// when it's freed.
 typedef struct {
     ZS_HEADER;
-    zs_int cap, size;
-    zs_int head, tail; // each written by its side alone, read by the other atomically
+    zs_int cap, size; // the values it holds at most; a value's bytes
+    uintptr_t mask;   // the slots, less one
     void (*drop)(void *slot);
-    char slots[];
+    // positions: the next to pop, the next to push, each on a cache line of its own (the two
+    // sides write them, and read the fields above)
+    char apart[64];
+    uintptr_t head;
+    char apart2[64 - sizeof(uintptr_t)];
+    uintptr_t tail;
+    char apart3[64 - sizeof(uintptr_t)];
+    // a slot's number: its position while it waits for that position's push, the position + 1
+    // once it holds its value. The values' bytes come after.
+    uintptr_t seq[];
 } zs_spsc;
+
+static char *spsc_value(zs_spsc *q, uintptr_t pos) { return (char *)(q->seq + q->mask + 1) + (pos & q->mask) * (size_t)q->size; }
 
 void *zs_spsc_new(zs_int cap, zs_int size, void (*drop)(void *)) {
     if (cap < 1) zs_panic_c("an Spsc holds at least one value");
-    zs_int bytes; // cap + 1 slots after the header, past what can be allocated a panic
-    if (__builtin_add_overflow(cap, 1, &bytes) || __builtin_mul_overflow(bytes, size ? size : 1, &bytes) || __builtin_add_overflow(bytes, (zs_int)sizeof(zs_spsc), &bytes)) zs_panic_c("out of memory");
+    zs_int n = 2, slot, bytes; // past what can be allocated a panic
+    while (n < cap)
+        if (__builtin_mul_overflow(n, 2, &n)) zs_panic_c("out of memory");
+    if (__builtin_add_overflow(size, (zs_int)sizeof(uintptr_t), &slot) || __builtin_mul_overflow(n, slot, &bytes) || __builtin_add_overflow(bytes, (zs_int)sizeof(zs_spsc), &bytes)) zs_panic_c("out of memory");
     zs_spsc *q = zs_alloc(bytes);
     q->rc = 1;
-    q->cap = cap + 1;
+    q->cap = cap;
     q->size = size;
+    q->mask = (uintptr_t)n - 1;
     q->head = q->tail = 0;
     q->drop = drop;
+    for (zs_int i = 0; i < n; i++) q->seq[i] = (uintptr_t)i;
     return q;
 }
 
 bool zs_spsc_push(zs_spsc *q, const void *v) {
-    zs_int t = q->tail;
-    zs_int next = (t + 1) % q->cap;
-    if (next == __atomic_load_n(&q->head, __ATOMIC_ACQUIRE)) return false; // full
-    memcpy(q->slots + t * q->size, v, (size_t)q->size);
-    __atomic_store_n(&q->tail, next, __ATOMIC_RELEASE);
-    return true;
+    uintptr_t t = __atomic_load_n(&q->tail, __ATOMIC_RELAXED);
+    for (;;) {
+        uintptr_t *s = &q->seq[t & q->mask];
+        intptr_t d = (intptr_t)(__atomic_load_n(s, __ATOMIC_ACQUIRE) - t);
+        if (d < 0) return false; // full: the value a lap before isn't popped yet
+        if (d > 0) {             // another push took t
+            t = __atomic_load_n(&q->tail, __ATOMIC_RELAXED);
+            continue;
+        }
+        // full at the capacity, when the slots are more (a head read late finds it full sooner,
+        // never later)
+        if ((uintptr_t)q->cap <= q->mask && (intptr_t)(t - __atomic_load_n(&q->head, __ATOMIC_RELAXED)) >= q->cap) return false;
+        if (__atomic_compare_exchange_n(&q->tail, &t, t + 1, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+            memcpy(spsc_value(q, t), v, (size_t)q->size);
+            __atomic_store_n(s, t + 1, __ATOMIC_RELEASE); // the value, to a pop
+            return true;
+        }
+    }
 }
 
 bool zs_spsc_pop(zs_spsc *q, void *out) {
-    zs_int h = q->head;
-    if (h == __atomic_load_n(&q->tail, __ATOMIC_ACQUIRE)) return false; // empty
-    memcpy(out, q->slots + h * q->size, (size_t)q->size);
-    __atomic_store_n(&q->head, (h + 1) % q->cap, __ATOMIC_RELEASE);
-    return true;
+    uintptr_t h = __atomic_load_n(&q->head, __ATOMIC_RELAXED);
+    for (;;) {
+        uintptr_t *s = &q->seq[h & q->mask];
+        intptr_t d = (intptr_t)(__atomic_load_n(s, __ATOMIC_ACQUIRE) - (h + 1));
+        if (d < 0) return false; // empty, or its value is still being pushed
+        if (d > 0) {             // another pop took h
+            h = __atomic_load_n(&q->head, __ATOMIC_RELAXED);
+            continue;
+        }
+        if (__atomic_compare_exchange_n(&q->head, &h, h + 1, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+            memcpy(out, spsc_value(q, h), (size_t)q->size);
+            __atomic_store_n(s, h + q->mask + 1, __ATOMIC_RELEASE); // the slot, to the push a lap on
+            return true;
+        }
+    }
 }
 
 void zs_spsc_free(zs_spsc *q) {
+    // what's between the head and the tail (no push or pop is under way: each holds a reference)
     if (q->drop)
-        for (zs_int i = q->head; i != q->tail; i = (i + 1) % q->cap) q->drop(q->slots + i * q->size);
+        for (uintptr_t p = q->head; p != q->tail; p++) q->drop(spsc_value(q, p));
     zs_free_checked(q);
 }
 

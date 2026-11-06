@@ -118,8 +118,9 @@ vg=(); [ $valgrind = 1 ] && vg=(--valgrind)
 if diff <(tests/task/echo.sh "${vg[@]}" 2>&1) tests/task/echo.expected >"$tmp/echo.diff"; then echo "ok   tests/task/echo.sh (an echo server, 1,000 connections)"
 else echo "FAIL tests/task/echo.sh"; cat "$tmp/echo.diff"; fail=1; fi
 
-# threads under ThreadSanitizer: the pool, Atomic, Mutex, Channel and Task.spawn race on nothing
-for t in tests/parallel/basics tests/parallel/anythread tests/task/spawn tests/task/cancel; do
+# threads under ThreadSanitizer: the pool, Atomic, Mutex, Channel, Spsc and Task.spawn race on
+# nothing, and at exit nothing is used after it's freed
+for t in tests/parallel/basics tests/parallel/anythread tests/parallel/spsc tests/parallel/exit tests/task/spawn tests/task/cancel; do
   [ $windows = 1 ] && { echo "skip $t.zs under ThreadSanitizer (none for mingw-w64)"; continue; }
   if bin/zs build $t.zs -o "$tmp/tsan" --sanitize=thread 2>"$tmp/tsan.log" && actual=$(timeout 120 "$tmp/tsan" 2>"$tmp/tsan.log") \
      && [ "$actual" = "$(cat $t.out)" ] && ! grep -q ThreadSanitizer "$tmp/tsan.log"; then echo "ok   $t.zs under ThreadSanitizer"
