@@ -60,6 +60,11 @@ for o in "$t"/cache/zs/objects/*.o; do mkdir "${o%.o}.ll"; done
 rm -f "$t"/cache/zs/objects/*.o
 bin/zs build "$t/main.zs" -o "$t/g" && echo "beside another build's IR: $("$t/g" | tr '\n' ' ')"
 rmdir "$t"/cache/zs/objects/*.ll
+# what a build stopped while clang ran leaves (its IR, a depfile) is removed an hour on, not before
+touch -t 200001010000 "$t/cache/zs/objects/old.o.zs-1.ll" "$t/cache/zs/objects/old.o.zs-1.o.d"
+touch "$t/cache/zs/objects/new.o.zs-2.ll"
+bin/zs build "$t/main.zs" -o "$t/g" && echo "a stopped build's files kept: $(cd "$t/cache/zs/objects" && ls old.* new.* 2>/dev/null | tr '\n' ' ')"
+rm -f "$t/cache/zs/objects/new.o.zs-2.ll"
 # a package's C source is kept under a key of every header it includes, not only those beside it:
 # one in the package's include directory changed is a new object, as it is a new import c
 mkdir -p "$t/geo/src" "$t/geo/c/src" "$t/geo/c/include"
@@ -70,6 +75,10 @@ printf 'import c "geo.h"\n\nlet main () =\n  println $"scale {geo_scale ()} {GEO
 bin/zs build "$t/geo/src/main.zs" -o "$t/geo/exe" && echo "a package's C: $("$t/geo/exe")"
 edit 's/GEO_SCALE 2/GEO_SCALE 3/' "$t/geo/c/include/geo.h"
 bin/zs build "$t/geo/src/main.zs" -o "$t/geo/exe" && echo "its header changed in its include directory: $("$t/geo/exe")"
+# a header added beside it, which its #include "geo.h" finds first: a new object too (import c
+# still finds the include directory's)
+printf '#define GEO_SCALE 4\nint geo_scale(void);\n' > "$t/geo/c/src/geo.h"
+bin/zs build "$t/geo/src/main.zs" -o "$t/geo/exe" && echo "a header added beside it: $("$t/geo/exe")"
 # every test program: a build that restores what the cache has (the library's results, others'
 # code) makes the binary a build of everything from nothing makes
 differ=""

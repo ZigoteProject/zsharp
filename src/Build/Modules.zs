@@ -222,20 +222,6 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
   let finished = ref Map.empty
   let failure = ref None
   let mainFull = Path.getFullPath mainPath
-  // the project a package's directory is a checkout or a vendored copy for: <project>/.zs-cache/
-  // deps/<name>, or <project>/vendor/<name> that the project's zs.lock has. An editor that opens
-  // a dependency's file checks it as a program, and what that writes goes to the project too
-  let fetchedFor (root: string) : option<string> =
-    let parent = Path.getDirectoryName root
-    let up = Path.getDirectoryName parent
-    if Path.getFileName parent = "deps" && Path.getFileName up = ".zs-cache" then
-      Some(Path.getDirectoryName up)
-    else if Path.getFileName parent = "vendor" then
-      match Project.readManifest up with
-      | Ok outer -> if Option.isSome (Project.lockedCommit outer (Path.getFileName root)) then Some up else None
-      | Error _ -> None
-    else
-      None
   // the project built: its lock root (its workspace's, for a member), where its git dependencies
   // are checked out and its dependencies' caches go; for a package's provider, home; for a
   // dependency's file, the project it was fetched for
@@ -244,7 +230,7 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
     | Some h -> Some h
     | None ->
       match Project.findProject (Path.getDirectoryName mainFull) with
-      | Some(Ok tm) -> Some(Option.defaultValue (Project.lockRoot tm) (fetchedFor tm.root))
+      | Some(Ok tm) -> Some(Option.defaultValue (Project.lockRoot tm) (Project.fetchedFor tm.root))
       | _ -> None
   // where the caches of a file of pkg (in dir) go: its saved C imports, provided modules and
   // providers' programs. The program's own are in its project's .zs-cache (or one beside the
@@ -254,7 +240,9 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
   // directory (Tools.realDirectory) before anything is written there.
   let cacheAt (pkg: Project.Package) (dir: string) : string * list<string> =
     let ofDependency (mf: Project.Manifest) : string * list<string> =
-      let id = mf.name + "-" + String.sub (Tools.hashOf [ mf.root ]) 0 16
+      // the name is the dependency's to choose, and one part of the path: "package" for one that
+      // isn't a directory's name (`../x`, `/abs`), which would lead out of .zs-cache/pkgs
+      let id = (if Project.depName mf.name then mf.name else "package") + "-" + String.sub (Tools.hashOf [ mf.root ]) 0 16
       match topRoot with
       | Some t -> (t, [ ".zs-cache"; "pkgs"; id ])
       | None -> (Tools.cacheRoot (), [ "pkgs"; id ])
@@ -262,7 +250,7 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
     | (None, None, _)
     | (_, _, None) ->
       match Project.findProject dir with
-      | Some(Ok pm) -> if Option.isSome (fetchedFor pm.root) then ofDependency pm else (pm.root, [ ".zs-cache" ])
+      | Some(Ok pm) -> if Option.isSome (Project.fetchedFor pm.root) then ofDependency pm else (pm.root, [ ".zs-cache" ])
       | _ -> (dir, [ ".zs-cache" ])
     | (_, _, Some mf) -> ofDependency mf
   // a cache's directory (cacheAt's, then sub), its path as it will be made
@@ -507,9 +495,10 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
       let build (name: string) (main: string) (d: Project.Package) : result<string, string> =
         let out = Path.combine binDir ("zs-provider-" + name)
         let pkgRoot = Option.defaultValue d.root (Option.map (fun (mf: Project.Manifest) -> mf.root) d.manifest)
-        // the compiler, the provider's main, and every file of the packages it's built from, each
-        // with its path: an edit to any of them is a new program
-        let files = List.collect sourcesIn (packages [ d ] [])
+        // the compiler, the provider's main, and every file of the packages it's built from and of
+        // the library and runtime it's built with (ZS_LIB's, ZS_RUNTIME's), each with its path: an
+        // edit to any of them is a new program
+        let files = List.collect sourcesIn (List.append (packages [ d ] []) [ libraryDir (); Options.runtimeDir () ])
         let key = Tools.hashOf (Tools.compilerId () :: main :: List.collect (fun (f: string) -> [ f; Result.defaultValue "" (File.readAllText f) ]) files)
         if File.exists out && Result.defaultValue "" (File.readAllText (out + ".key")) = key then Ok out
         else

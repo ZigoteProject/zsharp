@@ -90,9 +90,10 @@ let private listOf (value: string) : result<list<string>, string> =
 
 let private cKeys : list<string> = [ "sources"; "include"; "link"; "pkg-config" ]
 
-// a dependency's name, also its directory under .zs-cache/deps (fetch replaces what is there):
-// letters, digits, - and _, so never `..`, a `/` or an absolute path
-let private depName (key: string) =
+/// Whether a name is one a directory may be named by: a dependency's, its directory under
+/// .zs-cache/deps (fetch replaces what is there), and a package's name in a cache's (Modules):
+/// letters, digits, - and _, so never `..`, a `/` or an absolute path.
+let depName (key: string) =
   key <> "" && List.forall (fun (c: char) -> Char.isLetterOrDigit c || c = '-' || c = '_') (String.chars key)
 
 // a file a manifest names (its main, its provider's): a relative path inside the package once `..`
@@ -531,6 +532,22 @@ let private withVersion (line: string) (v: string) : string =
 /// The commit zs.lock has for a git dependency, by its name in zs.toml (`zs tree`).
 let lockedCommit (top: Manifest) (name: string) : option<string> =
   Option.map (fun (l: Locked) -> l.commit) (Map.tryFind name (readLock (lockRoot top)))
+
+/// The project a package's directory is a checkout or a vendored copy for, its lock root:
+/// <project>/.zs-cache/deps/<name>, or <project>/vendor/<name> that the project's zs.lock has. A
+/// dependency's file opened as a program (an editor's go-to-definition, zs check on it) is that
+/// project's: it fetched the dependencies, and what the build writes goes to it.
+let fetchedFor (root: string) : option<string> =
+  let parent = Path.getDirectoryName root
+  let up = Path.getDirectoryName parent
+  if Path.getFileName parent = "deps" && Path.getFileName up = ".zs-cache" then
+    Some(Path.getDirectoryName up)
+  else if Path.getFileName parent = "vendor" then
+    match readManifest up with
+    | Ok outer -> if Option.isSome (lockedCommit outer (Path.getFileName root)) then Some up else None
+    | Error _ -> None
+  else
+    None
 
 /// Checks out every git dependency of the project (and of its dependencies) at the commit in
 /// zs.lock. A new dependency, a changed URL or rev, or update resolves the rev again (fetching

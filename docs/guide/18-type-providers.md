@@ -197,9 +197,9 @@ A provider is a program named `zs-provider-<name>` on PATH, in any language, or 
 dependency whose `zs.toml` has a `[provider]` section naming its program is the provider of
 its name, built by the compiler into `.zs-cache/providers/bin` and run the same way. It's built
 again when a file it's built from changes: its package's `zs.toml`, Z# and C files, those of
-the packages it depends on, or the compiler. It's built with the project's checkouts of its
-dependencies (the build that needs it fetched them), so it fetches nothing and writes nothing
-into its package:
+the packages it depends on, the library's and the runtime's (`ZS_LIB`, `ZS_RUNTIME`), or the
+compiler. It's built with the project's checkouts of its dependencies (the build that needs it
+fetched them), so it fetches nothing and writes nothing into its package:
 
 ```toml
 [package]

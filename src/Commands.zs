@@ -41,6 +41,9 @@ let private membersText (m: Project.Manifest) : string =
 // failure, with the reasons shown
 let private fetched (offline: bool) (dir: string) : bool =
   match Project.findProject dir with
+  // a checkout or a vendored copy (a dependency's file built or checked): the project it's for
+  // fetched what it needs, and nothing is fetched into it, whose hash the lock checks
+  | Some(Ok m) when Option.isSome (Project.fetchedFor m.root) -> true
   | Some(Ok m) ->
     let errors = Project.fetchDeps m false offline
     for e in errors do

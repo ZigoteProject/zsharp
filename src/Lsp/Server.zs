@@ -443,6 +443,12 @@ let private lastPart (name: string) =
   | Some i -> String.sub name (i + 1) (String.length name - i - 1)
   | None -> name
 
+// a provided module's file: in providers/ of a .zs-cache, the program's or a dependency's
+// (.zs-cache/pkgs/<name>-<hash>/providers/)
+let private providedFile (file: string) : bool =
+  let full = Path.getFullPath file
+  String.contains "/.zs-cache/providers/" full || (String.contains "/.zs-cache/pkgs/" full && String.contains "/providers/" full)
+
 // what a rename at a position changes: the name there and every reference to it, in the programs
 // of the open documents (a field's uses too: its key is field:Record.name), or why it can't be
 // renamed. A name's key depends on the program it's checked in, so another program's references
@@ -472,7 +478,7 @@ let private renameTarget (st: State) (path: string) (line: int) (ch: int) : resu
       Error $"{h.h.name} is declared in a C header; rename it there"
     else
       match List.tryFind (fun (o: Spot) -> o.h.isDef) all with
-      | Some d when String.contains "/.zs-cache/providers/" (Path.getFullPath d.path) -> Error $"{Types.Ty.shortName h.h.name} is {provenance d.path}; change it there"
+      | Some d when providedFile d.path -> Error $"{Types.Ty.shortName h.h.name} is {provenance d.path}; change it there"
       | Some d when not (editable d.path) -> Error $"{Types.Ty.shortName h.h.name} is defined in {Path.getFileName d.path}, outside the program"
       | def ->
         let samePlace (a: Spot) (b: Spot) = a.path = b.path && a.line = b.line && a.col = b.col

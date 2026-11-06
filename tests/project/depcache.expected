@@ -12,6 +12,10 @@ files in vendor: 3
 == a dependency whose .zs-cache/cimport is a symbolic link
 size 5
   files where the link leads: 0
+== a dependency whose name is a path
+size 6
+its cache: pkgs/package-<hash>/cimport/esc.h pkgs/package-<hash>/cimport/esc.h.json 
+  files where the name leads: 0
 == the project's own .zs-cache, a symbolic link
 src/main.zs:1: error: import c "own.h": …/own/.zs-cache is a symbolic link, which zs doesn't write through
   files where the link leads: 0
@@ -25,3 +29,11 @@ hi, world
 gen: Provider.zs zs.toml 
 helper: src zs.toml 
 the checkout of words: .git src zs.toml 
+-- the library it's built with changed (ZS_LIB)
+hi, world
+  the provider built again
+== a git dependency's own file, with a git dependency of its own: checked, and opened in an editor
+world
+the checkout, its file checked: .git src zs.toml 
+  city is provided by json from w.json; change it there
+the checkout, its file opened: .git src zs.toml 

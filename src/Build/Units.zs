@@ -521,6 +521,22 @@ let private evict (dir: string) (ext: string) (n: int) =
         File.delete p |> ignore
   | Error _ -> ()
 
+// what a build stopped while clang ran leaves in a cache directory (its IR, a depfile), which no
+// build reuses: removed an hour on, when no build still running is writing or compiling it
+let private sweep (dir: string) (exts: list<string>) =
+  match Directory.list dir with
+  | Ok names ->
+    let now = DateTime.utcNow ()
+    let hourAgo = now.sinceEpoch - 3600000000000<ns>
+    for f in List.filter (fun (n: string) -> List.exists (fun (e: string) -> String.endsWith e n) exts) names do
+      let p = Path.combine dir f
+      match File.modifiedAt p with
+      | Ok t ->
+        if t.sinceEpoch < hourAgo then
+          File.delete p |> ignore
+      | Error _ -> ()
+  | Error _ -> ()
+
 /// The flags for a profile, and what the object cache keys on (the profile's contents).
 let private profileFlags (o: Options.Options) : list<string> * string =
   if o.profileGenerate then
@@ -607,7 +623,13 @@ let link (o: Options.Options) (built: Built) (linked: Modules.Linked) : result<l
   let job (source: string) (cFile: option<string>) (fs: list<string>) (keep: option<string>) : Job =
     match cFile with
     | Some c ->
-      let base = keyOf (c + "\n" + source) true fs
+      // the names of the headers beside it too: one added there takes the place of one it
+      // includes from an include directory ("geo.h" is looked for beside it first)
+      let beside =
+        match Directory.list (Path.getDirectoryName c) with
+        | Ok names -> List.sort (List.filter (fun (h: string) -> String.endsWith ".h" h) names)
+        | Error _ -> []
+      let base = keyOf (String.join "\n" (c :: source :: beside)) true fs
       let obj = cObject base
       // one there is recently used: kept longest
       if obj <> "" && File.exists obj then
@@ -687,6 +709,7 @@ let link (o: Options.Options) (built: Built) (linked: Modules.Linked) : result<l
   | None ->
     evict dir ".o" 256
     evict dir ".deps" 256
+    sweep dir [ ".ll"; ".d" ]
     evict (modulesDir ()) ".o" 256
     let partObjects = List.map (fun (p: Part) -> match p with | Cached obj -> obj | Fresh(_, key) -> (List.find (fun (j: Job) -> j.keep = Some key) jobs).obj) built.parts
     let files = List.concat [ [ objectOf runtime ]; partObjects; List.map objectOf cJobs ]
