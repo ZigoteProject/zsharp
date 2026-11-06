@@ -40,7 +40,8 @@ let private drain (r: option<IO.Reader>) : string =
   | None -> ""
 
 // the program run with both streams piped, read one after the other: a program that writes over
-// a pipe's worth to standard error while its standard output is open blocks (Windows' way)
+// a pipe's worth to standard error while its standard output is open blocks (on Windows, where
+// this is how runSplit runs everything, the runtime's pipes hold a megabyte)
 let private runPiped (program: string) (args: list<string>) : result<Ran, string> =
   let s : Diagnostics.ProcessStart = { program = program; args = args; stdin = Diagnostics.Null; stdout = Diagnostics.Piped; stderr = Diagnostics.Piped }
   match Diagnostics.Process.start s with
@@ -88,9 +89,11 @@ let runSplit (program: string) (args: list<string>) : result<Ran, string> =
 /// pipe fills while the other is read); Error when it can't start.
 let runMerged (program: string) (args: list<string>) : result<Ran, string> =
   if hostOs () = "windows" then
-    // no sh: the two streams captured apart, then joined
-    // ponytail: read one after the other, so a tool writing over a pipe's worth to standard error
-    // before it ends blocks; read both at once if one does
+    // no sh: the two streams captured apart, then joined. Read one after the other, a tool that
+    // writes more errors than a pipe holds before it ends waits for ever (`zig cc -v`'s search
+    // list, which every check for a target reads, did at Windows' default size): the runtime's
+    // pipes hold a megabyte there. ponytail: Diagnostics.ToOutput (2>&1) once stage 0's library
+    // has it (0.7.0), which no amount of errors fills
     match runSplit program args with
     | Ok r -> Ok { r with out = r.out + r.err; err = "" }
     | Error e -> Error e

@@ -1,0 +1,41 @@
+# Temporary: the suite on Windows alone, with the archives an earlier run built (its compiler is
+# this tree's), so a change to the tests or the setup is tried in half an hour, not two
+name: windows-suite
+on:
+  push:
+    branches: [claude/windows-diag]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  suite:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-2025, archive: zs-ci-windows-x86_64 }
+          - { os: windows-11-arm, archive: zs-ci-windows-aarch64 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: releases
+          path: dist
+          run-id: 42044795228
+          github-token: ${{ github.token }}
+      - run: choco upgrade -y llvm
+      - shell: pwsh
+        run: |
+          $a = if ($env:RUNNER_ARCH -eq 'ARM64') { 'aarch64' } else { 'x86_64' }
+          Invoke-WebRequest "https://ziglang.org/download/0.16.0/zig-$a-windows-0.16.0.zip" -OutFile "$env:RUNNER_TEMP\zig.zip"
+          Expand-Archive "$env:RUNNER_TEMP\zig.zip" -DestinationPath $env:RUNNER_TEMP
+          "$env:RUNNER_TEMP\zig-$a-windows-0.16.0" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+      - run: tar -xzf "dist/${{ matrix.archive }}.tar.gz" -C dist
+      - run: zig version && ./test.sh --zs "dist/${{ matrix.archive }}/zs"

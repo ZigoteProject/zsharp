@@ -5,3 +5,5 @@ cannot run no-such-program-zs: No such file or directory
 Ok /
 1
  0
+one two 3003 three true 0
+cannot run sh: ToOutput is for stderr

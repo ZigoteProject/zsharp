@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # A scripted LSP session on a provided module (0001): hover and completion on the sample's
-# fields with no build run, a rename of a provided name refused with where it comes from, and
+# fields with no build run, the module's members after its name, a binding's provided type as a hint, a rename of a provided name refused with where it comes from, and
 # the sample edited on disk: the client, told to watch it, says so, and completion has the new
 # key. Prints the server's responses, then how many times it asked the client to watch files.
 set -u
@@ -32,11 +32,14 @@ sed 's/"city": "Oslo",/"city": "Oslo", "pressure": 1013,/' "$dir/weather.json" >
   && mv "$dir/weather.new" "$dir/weather.json"
 send '{"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles","params":{"changes":[{"uri":"file://'"$dir"'/weather.json","type":2}]}}'
 send '{"jsonrpc":"2.0","id":5,"method":"textDocument/completion","params":{"textDocument":{"uri":"'"$uri"'"},"position":{"line":4,"character":22}}}'
+# the provided module's members after its name, and its types in inlay hints
+send '{"jsonrpc":"2.0","id":7,"method":"textDocument/completion","params":{"textDocument":{"uri":"'"$uri"'"},"position":{"line":3,"character":16}}}'
+send '{"jsonrpc":"2.0","id":8,"method":"textDocument/inlayHint","params":{"textDocument":{"uri":"'"$uri"'"},"range":{"start":{"line":0,"character":0},"end":{"line":8,"character":0}}}}'
 send '{"jsonrpc":"2.0","id":6,"method":"shutdown"}'
 send '{"jsonrpc":"2.0","method":"exit"}'
 exec 3>&-
 wait $server
 tr -d '\r' < "$dir/raw" | sed 's/Content-Length: [0-9]*//' | grep -o '{.*}' > "$dir/transcript"
-grep -v '"method"' "$dir/transcript" | sed "s|$uri|URI|g; s|$dir|DIR|g" | sed -E 's/("label":"[a-z`-]+")[^}]*\}/\1}/g'
+grep -v '"method"' "$dir/transcript" | sed "s|$uri|URI|g; s|$dir|DIR|g" | sed -E 's/,"documentation":\{"kind":"markdown","value":"[^"]*"\}//g; s/("label":"[A-Za-z`-]+")[^}]*\}/\1}/g'
 echo "asked to watch: $(grep -c 'client/registerCapability' "$dir/transcript"), with weather.json: $(grep -c 'weather.json' <(grep 'client/registerCapability' "$dir/transcript"))"
 rm -rf "$dir"
