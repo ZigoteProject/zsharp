@@ -1720,13 +1720,36 @@ zs_str *zs_read_line(void) {
 
 bool zs_eof(void) { return at_eof; }
 
-void zs_eprintln(zs_str *s) {
-    fflush(stdout);
-    fwrite(s->data, 1, (size_t)s->len, stderr);
-    fputc('\n', stderr);
+// A program ignores SIGPIPE (zs_set_args), so writing to a pipe whose reader has gone (a child's
+// standard input) is an Error, not the end of the program. Standard output or error gone (`| head`
+// has read what it wants) still ends it as SIGPIPE did: console_failed after a failed write. A
+// library leaves its host's signals alone.
+#include <errno.h>
+#ifndef _WIN32
+static bool sigpipe_ignored;
+#endif
+
+static void console_failed(void) {
+#ifndef _WIN32
+    if (!sigpipe_ignored || errno != EPIPE) return;
+    signal(SIGPIPE, SIG_DFL);
+    raise(SIGPIPE);
+    _exit(128 + SIGPIPE); // blocked in this thread: the status it would have ended with
+#endif
 }
 
-void zs_print(zs_str *s) { fwrite(s->data, 1, (size_t)s->len, stdout); }
+static void console_flush(void) {
+    if (fflush(stdout) != 0) console_failed();
+}
+
+void zs_eprintln(zs_str *s) {
+    console_flush();
+    if (fwrite(s->data, 1, (size_t)s->len, stderr) != (size_t)s->len || fputc('\n', stderr) == EOF) console_failed();
+}
+
+void zs_print(zs_str *s) {
+    if (fwrite(s->data, 1, (size_t)s->len, stdout) != (size_t)s->len) console_failed();
+}
 
 void zs_println(zs_str *s) {
     // a short line and its newline in one write: one lock of stdout, and no other thread's
@@ -1735,10 +1758,9 @@ void zs_println(zs_str *s) {
     if (s->len < (zs_int)sizeof line) {
         memcpy(line, s->data, (size_t)s->len);
         line[s->len] = '\n';
-        fwrite(line, 1, (size_t)s->len + 1, stdout);
-    } else {
-        fwrite(s->data, 1, (size_t)s->len, stdout);
-        fputc('\n', stdout);
+        if (fwrite(line, 1, (size_t)s->len + 1, stdout) != (size_t)s->len + 1) console_failed();
+    } else if (fwrite(s->data, 1, (size_t)s->len, stdout) != (size_t)s->len || fputc('\n', stdout) == EOF) {
+        console_failed();
     }
 }
 
@@ -1774,6 +1796,15 @@ void zs_set_args(int32_t argc, char **argv) {
     setvbuf(stderr, NULL, _IONBF, 0); // unbuffered, as C has it (the UCRT buffers a pipe)
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
+#else
+    // a write to a pipe whose reader has gone is an Error (standard output's ends the program
+    // still: console_failed, and at exit console_flush); SIGCHLD as the system has it, which
+    // waitpid needs (ignored, as a parent may hand it down, children are reaped unasked and
+    // waitpid fails). Children start with both as the system has them (spawn_attr).
+    signal(SIGPIPE, SIG_IGN);
+    signal(SIGCHLD, SIG_DFL);
+    sigpipe_ignored = true;
+    atexit(console_flush); // after the exit handlers registered later; C's own flush is quiet
 #endif
     const char *stats = getenv("ZS_STATS");
     if (stats && *stats && strcmp(stats, "0") != 0) atexit(print_stats);
@@ -1827,6 +1858,7 @@ zs_str *zs_env_get(zs_str *name) {
 // written first (_exit skips atexit's)
 _Noreturn void zs_exit(zs_int code) {
     coverage_dump();
+    console_flush();
     fflush(NULL);
     _exit((int)code);
 }
@@ -1977,36 +2009,144 @@ void zs_file_touch(zs_str *path) {
 #endif
 }
 
+// whether snprintf's n bytes fitted in size (a path cut short names another file)
+static bool fits(int n, size_t size) { return n >= 0 && (size_t)n < size; }
+
+// what failed, with its own words: "<what> <path>: <why>"
+static void set_error_why(const char *what, zs_str *path, const char *why) {
+    char buf[1024];
+    snprintf(buf, sizeof buf, "%s %s: %s", what, path ? path->data : "", why);
+    if (io_error) zs_free(io_error);
+    io_error = zs_str_from_c(buf);
+}
+
+// whether descriptors a and b are one file (two names for it, or one spelt two ways): its device
+// and inode, or on Windows (whose stat has no inode) its volume and index
+static bool same_file(int a, int b) {
+#ifdef _WIN32
+    BY_HANDLE_FILE_INFORMATION x, y;
+    return GetFileInformationByHandle((HANDLE)_get_osfhandle(a), &x) && GetFileInformationByHandle((HANDLE)_get_osfhandle(b), &y) &&
+           x.dwVolumeSerialNumber == y.dwVolumeSerialNumber && x.nFileIndexHigh == y.nFileIndexHigh && x.nFileIndexLow == y.nFileIndexLow;
+#else
+    struct stat x, y;
+    return fstat(a, &x) == 0 && fstat(b, &y) == 0 && x.st_dev == y.st_dev && x.st_ino == y.st_ino;
+#endif
+}
+
+// in's bytes to its end, written to out: false with errno set
+static bool copy_bytes(int in, int out) {
+    char buf[65536];
+    for (;;) {
+        ssize_t n = read(in, buf, sizeof buf);
+        if (n == 0) return true;
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return false;
+        }
+        for (ssize_t done = 0; done < n;) {
+            ssize_t w = write(out, buf + done, (size_t)(n - done));
+            if (w < 0 && errno != EINTR) return false;
+            if (w > 0) done += w;
+        }
+    }
+}
+
+// File.copy: from's bytes into to, replacing what's there. A new file gets from's permission
+// bits (less the umask, as cp gives them), so a file only its owner may read isn't copied to one
+// anyone may. to is emptied only once it's known not to be from (a link to it, or its path spelt
+// another way), which opening it emptied before a byte was read.
 static bool copy_file(zs_str *from, zs_str *to) {
+    struct stat st;
     int in = os_name(from) ? open(from->data, O_RDONLY | O_CLOEXEC) : -1;
-    if (in < 0) {
+    if (in < 0 || fstat(in, &st) != 0) {
         set_error("cannot open", from);
+        if (in >= 0) close(in);
         return false;
     }
-    int out = os_name(to) ? open(to->data, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666) : -1;
+#ifdef _WIN32
+    int mode = 0666; // the directory's ACL decides
+#else
+    int mode = st.st_mode & 0777;
+#endif
+    int out = os_name(to) ? open(to->data, O_WRONLY | O_CREAT | O_CLOEXEC, mode) : -1;
     if (out < 0) {
         set_error("cannot create", to);
         close(in);
         return false;
     }
-    char buf[65536];
-    ssize_t n;
-    bool ok = true;
-    while (ok && (n = read(in, buf, sizeof buf)) > 0)
-        for (ssize_t done = 0; ok && done < n;) {
-            ssize_t w = write(out, buf + done, (size_t)(n - done));
-            if (w < 0) ok = false; else done += w;
-        }
-    if (n < 0 || !ok) set_error("cannot copy to", to);
+    bool ok = false;
+    if (same_file(in, out)) set_error_why("cannot copy to", to, "it's the file copied");
+#ifdef _WIN32
+    else if (_chsize(out, 0) != 0 || !copy_bytes(in, out)) set_error("cannot copy to", to);
+#else
+    else if (ftruncate(out, 0) != 0 || !copy_bytes(in, out)) set_error("cannot copy to", to);
+#endif
+    else ok = true;
     close(in);
-    if (close(out) != 0 && ok) { set_error("cannot copy to", to); ok = false; }
-    return ok && n >= 0;
+    if (close(out) != 0 && ok) {
+        set_error("cannot copy to", to);
+        ok = false;
+    }
+    return ok;
 }
 
 void zs_file_copy(zs_str *from, zs_str *to) {
     clear_error();
     copy_file(from, to);
 }
+
+#ifndef _WIN32
+// File.move across file systems: from copied into a new file beside to (made 0600, then given
+// from's owner where that's allowed and its permission bits, as mv gives them: the set-user and
+// set-group bits only with the owner), which is renamed over to, so a failure (a full disk)
+// leaves to as it was and no one reads it half written; then from deleted. A file moved onto
+// itself (rename gives EXDEV across two mounts of one file system) stays as it is, as rename has it.
+static void move_across(zs_str *from, zs_str *to) {
+    struct stat st, at;
+    if (lstat(from->data, &st) != 0) {
+        set_error("cannot move", from);
+        return;
+    }
+    if (!S_ISREG(st.st_mode)) { // a directory or a link moves by rename alone
+        errno = EXDEV;
+        set_error("cannot move", from);
+        return;
+    }
+    if (stat(to->data, &at) == 0 && at.st_dev == st.st_dev && at.st_ino == st.st_ino) return;
+    const char *slash = strrchr(to->data, '/');
+    char tmp[4096];
+    if (!fits(snprintf(tmp, sizeof tmp, "%.*s.zs-move-XXXXXX", slash ? (int)(slash - to->data + 1) : 0, to->data), sizeof tmp)) {
+        errno = ENAMETOOLONG;
+        set_error("cannot move", from);
+        return;
+    }
+    int in = open(from->data, O_RDONLY | O_CLOEXEC | O_NOFOLLOW); // what lstat saw, not a link
+    if (in < 0) {
+        set_error("cannot open", from);
+        return;
+    }
+    int out = mkostemp(tmp, O_CLOEXEC);
+    if (out < 0) {
+        set_error("cannot move to", to);
+        close(in);
+        return;
+    }
+    mode_t bits = fchown(out, st.st_uid, st.st_gid) == 0 ? 07777 : 0777;
+    bool ok = copy_bytes(in, out) && fchmod(out, st.st_mode & bits) == 0 && fsync(out) == 0;
+    if (!ok) set_error("cannot move to", to);
+    close(in);
+    if (close(out) != 0 && ok) {
+        set_error("cannot move to", to);
+        ok = false;
+    }
+    if (ok && rename(tmp, to->data) != 0) {
+        set_error("cannot move to", to);
+        ok = false;
+    }
+    if (!ok) unlink(tmp);
+    else if (remove(from->data) != 0) set_error("cannot delete", from);
+}
+#endif
 
 // a rename, or across file systems a copy and a delete
 void zs_file_move(zs_str *from, zs_str *to) {
@@ -2021,14 +2161,14 @@ void zs_file_move(zs_str *from, zs_str *to) {
         errno = EACCES;
         set_error("cannot move", from);
     }
-    return;
-#endif
+#else
     if (rename(from->data, to->data) == 0) return;
     if (errno != EXDEV) {
         set_error("cannot move", from);
         return;
     }
-    if (copy_file(from, to) && remove(from->data) != 0) set_error("cannot delete", from);
+    move_across(from, to);
+#endif
 }
 
 // a new empty file (mode 0600) or directory in the temporary directory ($TMPDIR, else /tmp),
@@ -2091,6 +2231,243 @@ void zs_dir_delete(zs_str *path) {
     if (!os_name(path) || rmdir(path->data) != 0) set_error("cannot delete", path);
 }
 
+// ---- Directory.deleteRecursive: path and everything under it, no symbolic link followed: a link
+// (path itself, or one in the tree) is deleted as itself, never what it points to.
+
+// the error of a step of the walk, at where's entry name (or where itself)
+static void tree_failed(const char *what, const char *where, const char *name) {
+    int e = errno;
+    char buf[4096];
+    snprintf(buf, sizeof buf, "%s%s%s", where, name ? "/" : "", name ? name : "");
+    zs_str *p = zs_str_from_c(buf);
+    errno = e;
+    set_error(what, p);
+    zs_free(p);
+}
+
+#ifndef _WIN32
+// The walk goes by descriptors: each directory opened from its parent's with O_NOFOLLOW, each
+// entry deleted by its name in its directory's (unlinkat), so a directory swapped for a link
+// meanwhile can't lead the walk, or its deletes, out of the tree (CVE-2022-21658's fix, Rust's).
+// A directory is read again after a pass that deleted something, as a file system may skip an
+// entry when the one before it is deleted.
+typedef struct {
+    DIR *d;
+    char *name;     // its name in the directory below it (NULL for path's)
+    size_t at;      // where's length without it (path's: with it)
+    bool removed;   // something in it was deleted this pass
+} tree_dir;
+
+void zs_dir_delete_tree(zs_str *path) {
+    clear_error();
+    if (!os_name(path)) {
+        set_error("cannot delete", path);
+        return;
+    }
+    size_t n = 1, cap = 16, wcap = (size_t)path->len + 256;
+    tree_dir *st = malloc(cap * sizeof(tree_dir));
+    char *where = malloc(wcap); // the path of the directory on top, for an error's message
+    if (!st || !where) zs_panic_c("out of memory");
+    // without a trailing slash, which would have a link followed
+    size_t len = (size_t)path->len;
+    while (len > 1 && path->data[len - 1] == '/') len--;
+    memcpy(where, path->data, len);
+    where[len] = 0;
+    int fd = open(where, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    DIR *root = fd < 0 ? NULL : fdopendir(fd);
+    if (!root) {
+        struct stat s;
+        // a link (O_NOFOLLOW's ELOOP; EMLINK on the BSDs): deleted as itself
+        if (fd < 0 && (errno == ELOOP || errno == EMLINK || errno == ENOTDIR) && lstat(where, &s) == 0 && S_ISLNK(s.st_mode)) {
+            if (unlink(where) != 0) set_error("cannot delete", path);
+        } else {
+            set_error("cannot delete", path);
+            if (fd >= 0) close(fd);
+        }
+        free(st);
+        free(where);
+        return;
+    }
+    st[0] = (tree_dir){root, NULL, len, false};
+    bool ok = true;
+    while (ok && n > 0) {
+        tree_dir *top = &st[n - 1];
+        errno = 0;
+        struct dirent *e = readdir(top->d);
+        if (!e) {
+            if (errno != 0) {
+                ok = false;
+                tree_failed("cannot read", where, NULL);
+            } else if (top->removed) {
+                top->removed = false;
+                rewinddir(top->d);
+            } else {
+                // empty: deleted from its parent's descriptor (path's by its path)
+                closedir(top->d);
+                char *name = top->name;
+                where[top->at] = 0;
+                n--;
+                if (n > 0 && unlinkat(dirfd(st[n - 1].d), name, AT_REMOVEDIR) != 0) ok = false, tree_failed("cannot delete", where, name);
+                else if (n > 0) st[n - 1].removed = true;
+                else if (rmdir(where) != 0) ok = false, set_error("cannot delete", path);
+                free(name);
+            }
+            continue;
+        }
+        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+        int dfd = dirfd(top->d);
+        bool isdir = e->d_type == DT_DIR;
+        if (e->d_type == DT_UNKNOWN) {
+            struct stat s;
+            isdir = fstatat(dfd, e->d_name, &s, AT_SYMLINK_NOFOLLOW) == 0 && S_ISDIR(s.st_mode);
+        }
+        if (isdir) {
+            int cfd = openat(dfd, e->d_name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+            DIR *c = cfd < 0 ? NULL : fdopendir(cfd);
+            if (c) {
+                size_t at = strlen(where), len = strlen(e->d_name);
+                if (n == cap && !(st = realloc(st, (cap *= 2) * sizeof(tree_dir)))) zs_panic_c("out of memory");
+                if (at + len + 2 > wcap && !(where = realloc(where, wcap = 2 * (at + len + 2)))) zs_panic_c("out of memory");
+                where[at] = '/';
+                memcpy(where + at + 1, e->d_name, len + 1);
+                st[n++] = (tree_dir){c, strdup(e->d_name), at, false};
+                if (!st[n - 1].name) zs_panic_c("out of memory");
+                continue;
+            }
+            if (cfd >= 0) close(cfd);
+            // swapped for a link or a file since it was read: deleted as itself, below
+            if (errno != ELOOP && errno != EMLINK && errno != ENOTDIR) {
+                ok = false;
+                tree_failed("cannot delete", where, e->d_name);
+                continue;
+            }
+        }
+        if (unlinkat(dfd, e->d_name, 0) != 0) ok = false, tree_failed("cannot delete", where, e->d_name);
+        else top->removed = true;
+    }
+    for (; n > 0; n--) { // what's left open after a failure
+        closedir(st[n - 1].d);
+        free(st[n - 1].name);
+    }
+    free(st);
+    free(where);
+}
+#else
+// Windows has no calls relative to a directory's handle here, so the walk goes by paths; a
+// reparse point (a symbolic link, a junction) is deleted as itself (RemoveDirectory takes a
+// directory's, DeleteFile a file's) and never walked into.
+// ponytail: a directory swapped for a junction between its listing and its walk is walked;
+// handle-relative deletes (NtCreateFile, FILE_FLAG_OPEN_REPARSE_POINT) if that matters
+typedef struct {
+    HANDLE find; // INVALID_HANDLE_VALUE until it's read
+    char *dir;
+} tree_dir;
+
+static int win_errno(void) {
+    switch (GetLastError()) {
+    case ERROR_FILE_NOT_FOUND:
+    case ERROR_PATH_NOT_FOUND:
+        return ENOENT;
+    case ERROR_DIR_NOT_EMPTY:
+        return ENOTEMPTY;
+    case ERROR_DIRECTORY:
+        return ENOTDIR;
+    default:
+        return EACCES;
+    }
+}
+
+// dir's entry name, as a path
+static char *tree_path(const char *dir, const char *name) {
+    size_t a = strlen(dir), b = strlen(name);
+    char *p = malloc(a + b + 2);
+    if (!p) zs_panic_c("out of memory");
+    memcpy(p, dir, a);
+    p[a] = '\\';
+    memcpy(p + a + 1, name, b + 1);
+    return p;
+}
+
+void zs_dir_delete_tree(zs_str *path) {
+    clear_error();
+    if (!os_name(path)) {
+        set_error("cannot delete", path);
+        return;
+    }
+    DWORD a = GetFileAttributesA(path->data);
+    if (a == INVALID_FILE_ATTRIBUTES || (a & FILE_ATTRIBUTE_REPARSE_POINT)) {
+        if (a == INVALID_FILE_ATTRIBUTES || !((a & FILE_ATTRIBUTE_DIRECTORY) ? RemoveDirectoryA(path->data) : DeleteFileA(path->data))) {
+            errno = win_errno();
+            set_error("cannot delete", path);
+        }
+        return;
+    }
+    if (!(a & FILE_ATTRIBUTE_DIRECTORY)) {
+        errno = ENOTDIR;
+        set_error("cannot delete", path);
+        return;
+    }
+    size_t n = 1, cap = 16;
+    tree_dir *st = malloc(cap * sizeof(tree_dir));
+    char *root = strdup(path->data);
+    if (!st || !root) zs_panic_c("out of memory");
+    st[0] = (tree_dir){INVALID_HANDLE_VALUE, root};
+    bool ok = true;
+    while (ok && n > 0) {
+        tree_dir *top = &st[n - 1];
+        WIN32_FIND_DATAA f;
+        bool got;
+        if (top->find == INVALID_HANDLE_VALUE) {
+            char *pattern = tree_path(top->dir, "*");
+            top->find = FindFirstFileA(pattern, &f);
+            free(pattern);
+            got = top->find != INVALID_HANDLE_VALUE;
+        } else {
+            got = FindNextFileA(top->find, &f);
+        }
+        if (!got) {
+            DWORD why = GetLastError();
+            if (why != ERROR_NO_MORE_FILES && why != ERROR_FILE_NOT_FOUND) {
+                errno = win_errno();
+                tree_failed("cannot read", top->dir, NULL);
+                ok = false;
+                continue;
+            }
+            // empty: deleted
+            if (top->find != INVALID_HANDLE_VALUE) FindClose(top->find);
+            char *dir = top->dir;
+            n--;
+            if (!RemoveDirectoryA(dir)) {
+                errno = win_errno();
+                tree_failed("cannot delete", dir, NULL);
+                ok = false;
+            }
+            free(dir);
+            continue;
+        }
+        if (strcmp(f.cFileName, ".") == 0 || strcmp(f.cFileName, "..") == 0) continue;
+        char *p = tree_path(top->dir, f.cFileName);
+        DWORD fa = f.dwFileAttributes;
+        if ((fa & FILE_ATTRIBUTE_DIRECTORY) && !(fa & FILE_ATTRIBUTE_REPARSE_POINT)) {
+            if (n == cap && !(st = realloc(st, (cap *= 2) * sizeof(tree_dir)))) zs_panic_c("out of memory");
+            st[n++] = (tree_dir){INVALID_HANDLE_VALUE, p};
+            continue;
+        }
+        if (!((fa & FILE_ATTRIBUTE_DIRECTORY) ? RemoveDirectoryA(p) : DeleteFileA(p))) {
+            errno = win_errno();
+            tree_failed("cannot delete", p, NULL);
+            ok = false;
+        }
+        free(p);
+    }
+    for (; n > 0; n--) { // what's left open after a failure
+        if (st[n - 1].find != INVALID_HANDLE_VALUE) FindClose(st[n - 1].find);
+        free(st[n - 1].dir);
+    }
+    free(st);
+}
+#endif
+
 bool zs_is_symlink(zs_str *path) {
     if (!os_name(path)) return false;
 #ifdef _WIN32
@@ -2112,32 +2489,160 @@ static _Thread_local int64_t process_code;
 
 zs_int zs_process_code(void) { return process_code; }
 
+// ---- the processes Process.start started, by the number it gives each (1, 2, ...), which is
+// never another process's, as a process id may be once its process has been waited for (and a
+// Windows handle's value at once): each one's id and, once it has been waited for, its exit
+// code, which a later wait gives again (a kill then leaves it alone). A wait frees the id under
+// procs_mu, which a kill takes, so a kill never reaches a process that has taken the id since.
+// ponytail: an entry a process, kept to the end; freed by Process's dispose if a program starts
+// millions
+enum { PROC_RUNNING, PROC_WAITING, PROC_DONE }; // PROC_WAITING: a thread waits for its end
+
+typedef struct {
+    zs_int pid;
+#ifdef _WIN32
+    HANDLE h; // open until the process has been waited for
+#endif
+    zs_int code;
+    int state;
+} proc;
+
+static proc *procs;
+static size_t nprocs, procs_cap;
+static pthread_mutex_t procs_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t procs_cv = PTHREAD_COND_INITIALIZER; // a wait has ended
+
+// the table freed at exit (valgrind counts what's still allocated then), unless a thread still
+// waits for a process in it; a number is no process's after
+static void procs_free(void) {
+    pthread_mutex_lock(&procs_mu);
+    bool waiting = false;
+    for (size_t i = 0; i < nprocs; i++) waiting = waiting || procs[i].state == PROC_WAITING;
+    if (!waiting) {
+        free(procs);
+        procs = NULL;
+        nprocs = procs_cap = 0;
+    }
+    pthread_mutex_unlock(&procs_mu);
+}
+
+static pthread_once_t procs_once = PTHREAD_ONCE_INIT;
+static void procs_at_exit(void) { atexit(procs_free); }
+
+// a process started (h: its handle on Windows): its number
+static zs_int proc_add(zs_int pid, void *h) {
+    pthread_once(&procs_once, procs_at_exit);
+    pthread_mutex_lock(&procs_mu);
+    if (nprocs == procs_cap) {
+        size_t cap = procs_cap ? 2 * procs_cap : 16;
+        proc *p = realloc(procs, cap * sizeof(proc));
+        if (!p) zs_panic_c("out of memory");
+        procs = p;
+        procs_cap = cap;
+    }
+    procs[nprocs] = (proc){.pid = pid, .code = -1, .state = PROC_RUNNING};
+#ifdef _WIN32
+    procs[nprocs].h = h;
+#else
+    (void)h;
+#endif
+    zs_int n = (zs_int)++nprocs;
+    pthread_mutex_unlock(&procs_mu);
+    return n;
+}
+
+// the entry of a number Process.start gave, NULL for any other (under procs_mu; procs moves
+// when it grows, so not kept past an unlock)
+static proc *proc_of(zs_int n) { return n >= 1 && (size_t)n <= nprocs ? &procs[n - 1] : NULL; }
+
+// waits for the process to end, unless it has been waited for: its exit code, -1 if that can't
+// be had. One thread waits at a time; another waits for that one.
+static zs_int proc_wait(zs_int n) {
+    pthread_mutex_lock(&procs_mu);
+    proc *p = proc_of(n);
+    while (p && p->state == PROC_WAITING) {
+        pthread_cond_wait(&procs_cv, &procs_mu);
+        p = proc_of(n); // NULL once the table is freed, at exit
+    }
+    if (!p) {
+        pthread_mutex_unlock(&procs_mu);
+        return -1;
+    }
+    if (p->state == PROC_RUNNING) {
+        p->state = PROC_WAITING;
+        zs_int got = -1;
+#ifdef _WIN32
+        HANDLE h = p->h;
+        pthread_mutex_unlock(&procs_mu);
+        DWORD c = 0;
+        if (WaitForSingleObject(h, INFINITE) == WAIT_OBJECT_0 && GetExitCodeProcess(h, &c)) got = (zs_int)c;
+        pthread_mutex_lock(&procs_mu);
+        CloseHandle(h); // under the lock, which zs_process_kill takes to use it
+        p = proc_of(n);
+        p->h = NULL;
+#else
+        pid_t pid = (pid_t)p->pid;
+        pthread_mutex_unlock(&procs_mu);
+        int status = 0;
+        pid_t w = -1;
+#ifdef __linux__
+        // waited for without reaping it, then reaped under the lock: a kill, which takes it too,
+        // reaches the process or its zombie, never an id that's free for another
+        siginfo_t si;
+        int r;
+        while ((r = waitid(P_PID, (id_t)pid, &si, WEXITED | WNOWAIT)) < 0 && errno == EINTR) {}
+        pthread_mutex_lock(&procs_mu);
+        if (r == 0) {
+            while ((w = waitpid(pid, &status, 0)) < 0 && errno == EINTR) {}
+        }
+#else
+        // ponytail: reaped before the lock is taken (macOS's waitid returns for a stopped process
+        // too, so it can't wait without reaping), so a kill in between may signal a free id
+        while ((w = waitpid(pid, &status, 0)) < 0 && errno == EINTR) {}
+        pthread_mutex_lock(&procs_mu);
+#endif
+        if (w > 0) got = WIFEXITED(status) ? WEXITSTATUS(status) : WIFSIGNALED(status) ? 128 + WTERMSIG(status) : -1;
+        p = proc_of(n);
+#endif
+        p->code = got;
+        p->state = PROC_DONE;
+        pthread_cond_broadcast(&procs_cv);
+    }
+    zs_int code = p->code;
+    pthread_mutex_unlock(&procs_mu);
+    return code;
+}
+
 #ifdef _WIN32
 // prog as an executable path: as given when it has a separator, else the first match on PATH
-// (';'-separated); either way with ".exe" added when the name alone isn't a file
+// (';'-separated); either way with ".exe" added when the name alone isn't a file. Then made full
+// (GetFullPathName, against this program's working directory, where it was found), so the file
+// run is the file found, whatever directory the child starts in.
 static bool is_file(const char *p) {
     DWORD a = GetFileAttributesA(p);
     return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
 }
 
 static bool find_program(const char *prog, char *out, size_t size) {
+    char found[4096];
+    bool ok = false;
     if (strchr(prog, '/') || strchr(prog, '\\')) {
-        snprintf(out, size, "%s", prog);
-        if (is_file(out)) return true;
-        snprintf(out, size, "%s.exe", prog);
-        return is_file(out);
+        ok = fits(snprintf(found, sizeof found, "%s", prog), sizeof found) && is_file(found);
+        if (!ok) ok = fits(snprintf(found, sizeof found, "%s.exe", prog), sizeof found) && is_file(found);
+    } else {
+        for (const char *path = getenv("PATH"); path && *path && !ok;) {
+            const char *end = strchr(path, ';');
+            size_t len = end ? (size_t)(end - path) : strlen(path);
+            if (len) {
+                ok = fits(snprintf(found, sizeof found, "%.*s\\%s", (int)len, path, prog), sizeof found) && is_file(found);
+                if (!ok) ok = fits(snprintf(found, sizeof found, "%.*s\\%s.exe", (int)len, path, prog), sizeof found) && is_file(found);
+            }
+            path += len + (end ? 1 : 0);
+        }
     }
-    const char *path = getenv("PATH");
-    for (; path && *path;) {
-        const char *end = strchr(path, ';');
-        size_t len = end ? (size_t)(end - path) : strlen(path);
-        snprintf(out, size, "%.*s\\%s", (int)len, path, prog);
-        if (len && is_file(out)) return true;
-        snprintf(out, size, "%.*s\\%s.exe", (int)len, path, prog);
-        if (len && is_file(out)) return true;
-        path += len + (end ? 1 : 0);
-    }
-    return false;
+    if (!ok) return false;
+    DWORD n = GetFullPathNameA(found, (DWORD)size, out, NULL);
+    return n > 0 && n < size;
 }
 
 // appends arg to the command line, quoted as CommandLineToArgvW parses it back
@@ -2173,21 +2678,114 @@ static void quote_arg(char **buf, size_t *len, size_t *cap, const char *arg) {
     b[*len] = 0;
 }
 
-static _Thread_local zs_int started[4]; // the last start's process and pipes, for Native.processPipe
+// A batch file (.bat, .cmd) runs in cmd.exe, which reads its command line by rules of its own:
+// & | < > ^ ( ) are live outside quotes, %NAME% is expanded inside them too, and a backslash
+// escapes nothing (BatBadBut, CVE-2024-24576). So its line is built as Rust's has been since:
+// cmd.exe named outright, /e:ON /v:OFF /d /c ""<script>" <args>", an argument quoted unless it's
+// letters, digits and #$*+-./:?@\_ alone, a " in one doubled, a % turned into %%cd:~,% (an empty
+// slice of %cd%, so what follows names no variable), and a CR or LF, which ends the command
+// whatever quotes it's in, refused.
+
+// whether exe is a batch file, its name's trailing dots and spaces (which Windows drops) dropped
+static bool is_batch(const char *exe) {
+    size_t n = strlen(exe);
+    while (n && (exe[n - 1] == '.' || exe[n - 1] == ' ')) n--;
+    return n >= 4 && (_strnicmp(exe + n - 4, ".bat", 4) == 0 || _strnicmp(exe + n - 4, ".cmd", 4) == 0);
+}
+
+// appends arg to a batch file's command line; false for one that can't be passed
+static bool bat_arg(char **buf, size_t *len, size_t *cap, const char *arg) {
+    size_t n = strlen(arg);
+    // empty, or ending in a backslash (which a script's "%~1" would read as escaping its quote)
+    bool quote = n == 0 || arg[n - 1] == '\\';
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)arg[i];
+        if (c == '\r' || c == '\n') return false;
+        bool plain = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || strchr("#$*+-./:?@\\_", c);
+        // any other ASCII character, or a C1 control (U+0080 to U+009F: C2 80 to C2 9F)
+        if ((c < 0x80 && !plain) || (c == 0xC2 && i + 1 < n && (unsigned char)arg[i + 1] < 0xA0)) quote = true;
+    }
+    if (*len + 8 * n + 4 > *cap) { // a % takes 8 bytes, a " or \ at most 2
+        *cap = 2 * (*len + 8 * n + 4);
+        *buf = realloc(*buf, *cap);
+        if (!*buf) zs_panic_c("out of memory");
+    }
+    char *b = *buf;
+    b[(*len)++] = ' ';
+    if (quote) b[(*len)++] = '"';
+    size_t slashes = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (arg[i] == '\\') {
+            slashes++;
+        } else {
+            if (arg[i] == '"') { // the backslashes before it doubled, and the quote too
+                for (size_t k = 0; k < slashes; k++) b[(*len)++] = '\\';
+                b[(*len)++] = '"';
+            } else if (arg[i] == '%') {
+                memcpy(b + *len, "%%cd:~,", 7);
+                *len += 7;
+            }
+            slashes = 0;
+        }
+        b[(*len)++] = arg[i];
+    }
+    if (quote) {
+        for (size_t k = 0; k < slashes; k++) b[(*len)++] = '\\'; // doubled before the closing quote
+        b[(*len)++] = '"';
+    }
+    b[*len] = 0;
+    return true;
+}
+
+// the command line running the batch file script with args (each NUL-ended) in cmd.exe, or NULL
+// when one can't be passed (a file's name has no " and doesn't end in a backslash)
+static char *bat_line(const char *script, zs_str *args) {
+    size_t n = strlen(script);
+    if (strchr(script, '"') || (n && script[n - 1] == '\\')) return NULL;
+    size_t cap = n + 64, len;
+    char *b = malloc(cap);
+    if (!b) zs_panic_c("out of memory");
+    len = (size_t)snprintf(b, cap, "cmd.exe /e:ON /v:OFF /d /c \"\"%s\"", script);
+    for (int64_t i = 0; i < args->len; i += (int64_t)strlen(args->data + i) + 1)
+        if (!bat_arg(&b, &len, &cap, args->data + i)) {
+            free(b);
+            return NULL;
+        }
+    if (len + 2 > cap) {
+        cap = len + 2;
+        b = realloc(b, cap);
+        if (!b) zs_panic_c("out of memory");
+    }
+    b[len++] = '"';
+    b[len] = 0;
+    return b;
+}
+
+static _Thread_local zs_int started[4]; // the last start's number and pipes, for Native.processPipe
 
 zs_int zs_process_pipe(zs_int k) { return k >= 0 && k < 3 ? started[k + 1] : -1; }
 
-// starts prog with args (each NUL-ended), as zs_process_start's POSIX version: the process's
-// handle as its "pid", or -errno. Each piped stream's end here is a CRT descriptor.
+// starts prog with args (each NUL-ended), as zs_process_start's POSIX version: 0 and the
+// process's handle, or -errno. Each piped stream's end here is a CRT descriptor, in started.
 // ponytail: the child's ends are inheritable while CreateProcess runs, so a process another
 // thread starts at that moment inherits them too; PROC_THREAD_ATTRIBUTE_HANDLE_LIST if it matters
-zs_int zs_process_start(zs_str *prog, zs_str *args, zs_str *env, bool hasEnv, zs_str *dir, zs_int in, zs_int outm, zs_int errm) {
+static zs_int win_start(zs_str *prog, zs_str *args, zs_str *env, bool hasEnv, zs_str *dir, zs_int in, zs_int outm, zs_int errm, HANDLE *process) {
     char exe[4096];
     if (!find_program(prog->data, exe, sizeof exe)) return -ENOENT;
     size_t len = 0, cap = 0;
     char *cmd = NULL;
-    quote_arg(&cmd, &len, &cap, prog->data);
-    for (int64_t i = 0; i < args->len; i += (int64_t)strlen(args->data + i) + 1) quote_arg(&cmd, &len, &cap, args->data + i);
+    char shell[MAX_PATH + 16];
+    const char *run = exe;
+    if (is_batch(exe)) {
+        UINT k = GetSystemDirectoryA(shell, MAX_PATH);
+        if (k == 0 || k >= MAX_PATH) return -ENOENT;
+        strcat(shell, "\\cmd.exe");
+        run = shell;
+        if (!(cmd = bat_line(exe, args))) return -EINVAL;
+    } else {
+        quote_arg(&cmd, &len, &cap, prog->data);
+        for (int64_t i = 0; i < args->len; i += (int64_t)strlen(args->data + i) + 1) quote_arg(&cmd, &len, &cap, args->data + i);
+    }
     SECURITY_ATTRIBUTES sa = {sizeof sa, NULL, TRUE};
     STARTUPINFOA si = {.cb = sizeof si, .dwFlags = STARTF_USESTDHANDLES};
     HANDLE *std[3] = {&si.hStdInput, &si.hStdOutput, &si.hStdError};
@@ -2223,9 +2821,9 @@ zs_int zs_process_start(zs_str *prog, zs_str *args, zs_str *env, bool hasEnv, zs
         block = calloc((size_t)env->len + 2, 1);
         memcpy(block, env->data, (size_t)env->len);
     }
-    fflush(stdout);
+    console_flush();
     PROCESS_INFORMATION pi;
-    BOOL ok = CreateProcessA(exe, cmd, NULL, NULL, TRUE, 0, block, dir->len ? dir->data : NULL, &si, &pi);
+    BOOL ok = CreateProcessA(run, cmd, NULL, NULL, TRUE, 0, block, dir->len ? dir->data : NULL, &si, &pi);
     DWORD e = GetLastError();
     free(cmd);
     free(block);
@@ -2237,28 +2835,27 @@ zs_int zs_process_start(zs_str *prog, zs_str *args, zs_str *env, bool hasEnv, zs
         return e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND ? -ENOENT : -EACCES;
     }
     CloseHandle(pi.hThread);
-    started[0] = (zs_int)(intptr_t)pi.hProcess;
+    *process = pi.hProcess;
+    return 0;
+}
+
+// starts prog (Process.start): its number in procs, or -errno
+zs_int zs_process_start(zs_str *prog, zs_str *args, zs_str *env, bool hasEnv, zs_str *dir, zs_int in, zs_int outm, zs_int errm) {
+    HANDLE h;
+    zs_int e = win_start(prog, args, env, hasEnv, dir, in, outm, errm, &h);
+    if (e < 0) return e;
+    started[0] = proc_add((zs_int)GetProcessId(h), h);
     return started[0];
 }
-
-// waits for the process: its exit code (an NTSTATUS such as 0xC0000005 when it crashed)
-zs_int zs_process_wait(zs_int pid) {
-    HANDLE h = (HANDLE)(intptr_t)pid;
-    DWORD code = 0;
-    if (WaitForSingleObject(h, INFINITE) != WAIT_OBJECT_0 || !GetExitCodeProcess(h, &code)) return -1;
-    CloseHandle(h);
-    return (zs_int)code;
-}
-
-zs_int zs_process_kill(zs_int pid) { return TerminateProcess((HANDLE)(intptr_t)pid, 137) ? 0 : -EPERM; }
 
 // Runs prog with args (each NUL-ended, no shell), stdout captured, stderr passed through
 zs_str *zs_process_run(zs_str *prog, zs_str *args) {
     clear_error();
     zs_str none = {0};
-    zs_int h = zs_process_start(prog, args, &none, false, &none, 0, 1, 0);
-    if (h < 0) {
-        errno = (int)-h;
+    HANDLE h;
+    zs_int e = win_start(prog, args, &none, false, &none, 0, 1, 0, &h);
+    if (e < 0) {
+        errno = (int)-e;
         set_error("cannot run", prog);
         return str_of("", 0);
     }
@@ -2270,30 +2867,71 @@ zs_str *zs_process_run(zs_str *prog, zs_str *args) {
         len += (size_t)n;
         if (len == cap) buf = realloc(buf, cap *= 2);
     }
+    if (n < 0) set_error("cannot read the output of", prog);
     _close(fd);
-    process_code = zs_process_wait(h);
+    DWORD code = 0;
+    if (WaitForSingleObject(h, INFINITE) == WAIT_OBJECT_0 && GetExitCodeProcess(h, &code)) {
+        process_code = (zs_int)code;
+    } else {
+        errno = ECHILD;
+        set_error("cannot wait for", prog);
+        process_code = -1;
+    }
+    CloseHandle(h);
     zs_str *s = str_of(buf, (int64_t)len);
     free(buf);
     return s;
 }
 #else
-// prog as an executable path: as given when it has a '/', else the first match on PATH
-// (looked up here so a missing program is the same error on every libc, and under valgrind)
+#ifdef __linux__
+#include <sys/syscall.h>
+#endif
+
+// a pipe, both ends close-on-exec (and non-blocking with nonblock); macOS has no pipe2
+static int pipe_cloexec(int p[2], bool nonblock) {
+#ifdef __APPLE__
+    if (pipe(p) != 0) return -1;
+    for (int i = 0; i < 2; i++) {
+        fcntl(p[i], F_SETFD, FD_CLOEXEC);
+        if (nonblock) fcntl(p[i], F_SETFL, O_NONBLOCK);
+    }
+    return 0;
+#else
+    return pipe2(p, O_CLOEXEC | (nonblock ? O_NONBLOCK : 0));
+#endif
+}
+
+// prog as an executable path: as given when it has a '/', else the first match on PATH (looked
+// up here so a missing program is the same error on every libc, and under valgrind). Then made
+// absolute, against this program's working directory (where it was found), so the file run is
+// the file found, whatever directory the child starts in. false with errno set.
 static bool find_program(const char *prog, char *out, size_t size) {
+    char found[4096];
+    bool ok = false;
     if (strchr(prog, '/')) {
-        snprintf(out, size, "%s", prog);
-        return access(out, X_OK) == 0;
+        ok = fits(snprintf(found, sizeof found, "%s", prog), sizeof found) && access(found, X_OK) == 0;
+    } else {
+        const char *path = getenv("PATH");
+        if (!path) path = "/usr/bin:/bin";
+        while (*path && !ok) {
+            const char *end = strchr(path, ':');
+            size_t len = end ? (size_t)(end - path) : strlen(path);
+            // an empty entry is the working directory
+            ok = fits(snprintf(found, sizeof found, "%.*s/%s", (int)(len ? len : 1), len ? path : ".", prog), sizeof found) && access(found, X_OK) == 0;
+            path += len + (end ? 1 : 0);
+        }
     }
-    const char *path = getenv("PATH");
-    if (!path) path = "/usr/bin:/bin";
-    while (*path) {
-        const char *end = strchr(path, ':');
-        size_t len = end ? (size_t)(end - path) : strlen(path);
-        snprintf(out, size, "%.*s/%s", (int)len, len ? path : ".", prog);
-        if (access(out, X_OK) == 0) return true;
-        path += len + (end ? 1 : 0);
+    if (!ok) {
+        errno = ENOENT;
+        return false;
     }
-    return false;
+    char cwd[4096];
+    if (found[0] != '/' && !getcwd(cwd, sizeof cwd)) return false;
+    if (!fits(found[0] == '/' ? snprintf(out, size, "%s", found) : snprintf(out, size, "%s/%s", cwd, found), size)) {
+        errno = ENAMETOOLONG;
+        return false;
+    }
+    return true;
 }
 
 // the strings of s as an argv-style array (with first in front, NULL after): one starts at each
@@ -2311,17 +2949,31 @@ static char **split_nul(zs_str *s, char *first) {
     return v;
 }
 
+// what a child starts with: SIGPIPE and SIGCHLD as the system has them, not as this program
+// keeps them (zs_set_args), so a pipeline's writer ends at SIGPIPE once its reader has
+static void spawn_attr(posix_spawnattr_t *at) {
+    sigset_t def;
+    sigemptyset(&def);
+    sigaddset(&def, SIGPIPE);
+    sigaddset(&def, SIGCHLD);
+    posix_spawnattr_init(at);
+    posix_spawnattr_setsigdefault(at, &def);
+    posix_spawnattr_setflags(at, POSIX_SPAWN_SETSIGDEF);
+}
+
 zs_str *zs_process_run(zs_str *prog, zs_str *args) {
     clear_error();
     char exe[4096];
     if (!find_program(prog->data, exe, sizeof exe)) {
-        errno = ENOENT;
         set_error("cannot run", prog);
         return str_of("", 0);
     }
     char **argv = split_nul(args, prog->data);
     int fds[2];
-    if (pipe(fds) != 0) {
+    // close-on-exec, as every descriptor here is: a process another thread starts meanwhile
+    // would hold the write end open, and the read below wait for that one's end too. The
+    // child's standard output, dup2's copy, isn't.
+    if (pipe_cloexec(fds, false) != 0) {
         free(argv);
         set_error("cannot run", prog);
         return str_of("", 0);
@@ -2329,11 +2981,12 @@ zs_str *zs_process_run(zs_str *prog, zs_str *args) {
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
     posix_spawn_file_actions_adddup2(&fa, fds[1], 1);
-    posix_spawn_file_actions_addclose(&fa, fds[0]);
-    posix_spawn_file_actions_addclose(&fa, fds[1]);
-    fflush(stdout);
+    posix_spawnattr_t at;
+    spawn_attr(&at);
+    console_flush();
     pid_t pid;
-    int rc = posix_spawn(&pid, exe, &fa, NULL, argv, environ);
+    int rc = posix_spawn(&pid, exe, &fa, &at, argv, environ);
+    posix_spawnattr_destroy(&at);
     posix_spawn_file_actions_destroy(&fa);
     free(argv);
     close(fds[1]);
@@ -2345,50 +2998,41 @@ zs_str *zs_process_run(zs_str *prog, zs_str *args) {
     }
     size_t cap = 4096, len = 0;
     char *buf = malloc(cap);
-    ssize_t n;
-    while ((n = read(fds[0], buf + len, cap - len)) > 0) {
+    for (ssize_t n; (n = read(fds[0], buf + len, cap - len)) != 0;) {
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            set_error("cannot read the output of", prog);
+            break;
+        }
         len += (size_t)n;
         if (len == cap) buf = realloc(buf, cap *= 2);
     }
     close(fds[0]);
+    // a failed wait is an Error, not a code: status as it was (0) would read as success
     int status = 0;
-    waitpid(pid, &status, 0);
-    process_code = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+    pid_t w;
+    while ((w = waitpid(pid, &status, 0)) < 0 && errno == EINTR) {}
+    if (w < 0) set_error("cannot wait for", prog);
+    process_code = w < 0 ? -1 : WIFEXITED(status) ? WEXITSTATUS(status) : WIFSIGNALED(status) ? 128 + WTERMSIG(status) : -1;
     zs_str *s = str_of(buf, (int64_t)len);
     free(buf);
     return s;
 }
 
-#ifndef _WIN32
-// a pipe, both ends close-on-exec (and non-blocking with nonblock); macOS has no pipe2
-static int pipe_cloexec(int p[2], bool nonblock) {
-#ifdef __APPLE__
-    if (pipe(p) != 0) return -1;
-    for (int i = 0; i < 2; i++) {
-        fcntl(p[i], F_SETFD, FD_CLOEXEC);
-        if (nonblock) fcntl(p[i], F_SETFL, O_NONBLOCK);
-    }
-    return 0;
-#else
-    return pipe2(p, O_CLOEXEC | (nonblock ? O_NONBLOCK : 0));
-#endif
-}
-#endif
-
 // ---- Process.start (0024): posix_spawn with each stream inherited, piped or /dev/null
 
 // starts prog with args (each NUL-ended); env: NUL-separated NAME=value pairs, used when hasEnv;
 // dir: its working directory ("" for this one's); modes per stream (0 inherit, 1 piped, 2
-// /dev/null). The pid, or -errno; zs_process_pipe(k) gives this end of stream k's pipe (-1
-// when it isn't piped).
-static _Thread_local zs_int started[4]; // the last start's pid and pipes, for Native.processPipe
+// /dev/null). Its number in procs, or -errno; zs_process_pipe(k) gives this end of stream k's
+// pipe (-1 when it isn't piped).
+static _Thread_local zs_int started[4]; // the last start's number and pipes, for Native.processPipe
 
 zs_int zs_process_pipe(zs_int k) { return k >= 0 && k < 3 ? started[k + 1] : -1; }
 
 zs_int zs_process_start(zs_str *prog, zs_str *args, zs_str *env, bool hasEnv, zs_str *dir, zs_int in, zs_int outm, zs_int errm) {
     zs_int *out = started;
     char exe[4096];
-    if (!find_program(prog->data, exe, sizeof exe)) return -ENOENT;
+    if (!find_program(prog->data, exe, sizeof exe)) return -(zs_int)errno;
     zs_int modes[3] = {in, outm, errm};
     int pipes[3][2] = {{-1, -1}, {-1, -1}, {-1, -1}};
     posix_spawn_file_actions_t fa;
@@ -2411,8 +3055,11 @@ zs_int zs_process_start(zs_str *prog, zs_str *args, zs_str *env, bool hasEnv, zs
     if (rc == 0) {
         char **argv = split_nul(args, prog->data);
         char **envp = hasEnv ? split_nul(env, NULL) : environ;
-        fflush(stdout);
-        rc = posix_spawn(&pid, exe, &fa, NULL, argv, envp);
+        posix_spawnattr_t at;
+        spawn_attr(&at);
+        console_flush();
+        rc = posix_spawn(&pid, exe, &fa, &at, argv, envp);
+        posix_spawnattr_destroy(&at);
         free(argv);
         if (hasEnv) free(envp);
     }
@@ -2427,20 +3074,94 @@ zs_int zs_process_start(zs_str *prog, zs_str *args, zs_str *env, bool hasEnv, zs
         }
     }
     if (rc != 0) return -(zs_int)rc;
-    out[0] = pid;
+    out[0] = proc_add(pid, NULL);
+    return out[0];
+}
+#endif
+
+// waits for the process Process.start numbered n (Process.wait, once zs_process_waiter's
+// descriptor is readable, or on a thread): its exit code, or 128 plus the signal that ended it
+// (on Windows an NTSTATUS such as 0xC0000005 when it crashed); -1 when that can't be had
+zs_int zs_process_wait(zs_int n) { return proc_wait(n); }
+
+// ends the process at once (SIGKILL, TerminateProcess), or -errno; one that has been waited for
+// has ended already, and is left alone
+zs_int zs_process_kill(zs_int n) {
+    pthread_mutex_lock(&procs_mu);
+    proc *p = proc_of(n);
+    zs_int r = 0;
+    if (!p) r = -ESRCH;
+#ifdef _WIN32
+    // ended and not yet waited for, it can't be terminated: left alone too
+    else if (p->state != PROC_DONE && !TerminateProcess(p->h, 137) && WaitForSingleObject(p->h, 0) != WAIT_OBJECT_0) r = -EPERM;
+#else
+    else if (p->state != PROC_DONE && kill((pid_t)p->pid, SIGKILL) != 0) r = -(zs_int)errno;
+#endif
+    pthread_mutex_unlock(&procs_mu);
+    return r;
+}
+
+// the system's id of the process (Process.pid), -1 for a number Process.start didn't give
+zs_int zs_process_id(zs_int n) {
+    pthread_mutex_lock(&procs_mu);
+    proc *p = proc_of(n);
+    zs_int pid = p ? p->pid : -1;
+    pthread_mutex_unlock(&procs_mu);
     return pid;
 }
 
-// waits for the process: its exit code, or 128 plus the signal that ended it
-zs_int zs_process_wait(zs_int pid) {
-    int status = 0;
-    while (waitpid((pid_t)pid, &status, 0) < 0)
-        if (errno != EINTR) return -1;
-    return WIFEXITED(status) ? WEXITSTATUS(status) : WIFSIGNALED(status) ? 128 + WTERMSIG(status) : -1;
+static int wake_pair(int w[2]);
+static void wake_close(int fd);
+
+// a thread of zs_process_waiter's: waits for the process w[0], then closes w[1] (w freed first:
+// once it's closed, the program may end before this thread does)
+static void *proc_waiter(void *arg) {
+    zs_int *w = arg, n = w[0], fd = w[1];
+    free(w);
+    proc_wait(n);
+    wake_close((int)fd);
+    return NULL;
 }
 
-zs_int zs_process_kill(zs_int pid) { return kill((pid_t)pid, SIGKILL) == 0 ? 0 : -(zs_int)errno; }
+// A descriptor the event loop waits for in Process.wait, so a wait holds no thread of the loop's
+// (Task.blocking has one) and a cancelled one is over at once: readable once the process has
+// ended, zs_process_wait then giving its code without waiting; zs_fd_close closes it. -1 when
+// the process has been waited for (its code is at hand), another -errno when none could be made
+// (the caller waits on Task.blocking's thread). Linux's pidfd, made under the lock, so the
+// process can't have been reaped and its id taken; elsewhere one end of a wake pair (sockets on
+// Windows, all the loop waits for there), whose other end a thread closes once the process has
+// been waited for.
+zs_int zs_process_waiter(zs_int n) {
+    pthread_mutex_lock(&procs_mu);
+    proc *p = proc_of(n);
+    bool done = !p || p->state == PROC_DONE;
+#if defined(__linux__) && defined(SYS_pidfd_open)
+    int fd = done ? -1 : (int)syscall(SYS_pidfd_open, (pid_t)p->pid, 0);
 #endif
+    pthread_mutex_unlock(&procs_mu);
+    if (done) return -1;
+#if defined(__linux__) && defined(SYS_pidfd_open)
+    if (fd >= 0) return fd;
+#endif
+    int w[2];
+    if (wake_pair(w) != 0) return -EMFILE;
+    zs_int *arg = malloc(2 * sizeof(zs_int));
+    if (!arg) zs_panic_c("out of memory");
+    arg[0] = n;
+    arg[1] = w[1];
+    pthread_attr_t at;
+    pthread_t t;
+    pthread_attr_init(&at);
+    pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+    pthread_attr_setstacksize(&at, 256 << 10);
+    int rc = pthread_create(&t, &at, proc_waiter, arg);
+    pthread_attr_destroy(&at);
+    if (rc == 0) return w[0];
+    free(arg);
+    wake_close(w[0]);
+    wake_close(w[1]);
+    return -EAGAIN;
+}
 
 // ---- the event loop (Task.run): callbacks waiting for file descriptors, timers, a queue of
 // callbacks ready to run, and jobs on a helper thread (Task.blocking). A callback is a Z#
@@ -3785,7 +4506,9 @@ zs_int zs_fd_read(zs_int fd, uint8_t *data, zs_int len, zs_int off, zs_int n) {
 #endif
 }
 
-// writes from a Buffer<u8> or a string's bytes; a closed connection is an error, not SIGPIPE
+// writes from a Buffer<u8> or a string's bytes; a closed connection or pipe is an error, not
+// SIGPIPE (zs_set_args ignores it), but standard output or error gone ends the program as print's
+// does (console_failed)
 zs_int zs_fd_write(zs_int fd, const uint8_t *data, zs_int len, zs_int off, zs_int n) {
     if (off < 0 || n < 0 || off > len || n > len - off) zs_panic_c("write: range out of the data");
 #ifdef _WIN32
@@ -3797,7 +4520,10 @@ zs_int zs_fd_write(zs_int fd, const uint8_t *data, zs_int len, zs_int off, zs_in
     return r < 0 ? -(zs_int)errno : r;
 #else
     ssize_t r = send((int)fd, data + off, (size_t)n, MSG_NOSIGNAL);
-    if (r < 0 && errno == ENOTSOCK) r = write((int)fd, data + off, (size_t)n);
+    if (r < 0 && errno == ENOTSOCK) {
+        r = write((int)fd, data + off, (size_t)n);
+        if (r < 0 && (fd == 1 || fd == 2)) console_failed();
+    }
     return r < 0 ? failed() : r;
 #endif
 }

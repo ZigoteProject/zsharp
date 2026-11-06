@@ -92,7 +92,10 @@ Process.run : string -> list<string> -> result<ProcessResult, string>
 ```
 
 Runs `program` (looked up on PATH) with the arguments, without a shell, and waits for it.
-An `Error` means it couldn't start; a failing program is an `Ok` with a nonzero code.
+An `Error` means it couldn't start (or be waited for); a failing program is an `Ok` with a
+nonzero code. On Windows a batch file (`.bat`, `.cmd`) runs in `cmd.exe`, its arguments
+quoted for it, and one with a line break (CR or LF), which `cmd.exe` can't be given, is an
+`Error`.
 
 ### `Process.start`
 
@@ -100,8 +103,10 @@ An `Error` means it couldn't start; a failing program is an `Ok` with a nonzero 
 Process.start : ProcessStart -> result<Process, string>
 ```
 
-Starts the program (looked up on PATH unless it has a `/`), without a shell; each stream
-that is `Piped` is the `Process`'s to use. `Process.wait` gives its exit code.
+Starts the program (looked up on PATH unless it has a `/`; a relative path is from this
+program's working directory, not `directory`), without a shell; each stream that is `Piped`
+is the `Process`'s to use. `Process.wait` gives its exit code. A Windows batch file's
+arguments are as `Process.run` passes them.
 
 ### `Process.wait`
 
@@ -110,7 +115,9 @@ Process.wait : Process -> Task<int>
 ```
 
 Waits for the process to end: its exit code (128 plus the signal's number when a signal
-ended it), on `Task.blocking`'s thread so other tasks go on.
+ended it, -1 when it can't be had). Other tasks go on meanwhile, and a wait that's
+cancelled (`Task.timeout`) is over at once, the process left running. Waiting again gives
+the same code.
 
 ### `Process.kill`
 
@@ -118,5 +125,6 @@ ended it), on `Task.blocking`'s thread so other tasks go on.
 Process.kill : Process -> result<unit, string>
 ```
 
-Ends the process at once (SIGKILL).
+Ends the process at once (SIGKILL). One that has been waited for has ended, and is left
+alone.
 

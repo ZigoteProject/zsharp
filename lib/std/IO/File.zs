@@ -89,13 +89,17 @@ let writeAllBytes (path: string) (bytes: span<u8>) : result<unit, string> =
 
 /// The whole file's bytes.
 
-/// Copies the file to `target`, replacing what's there.
+/// Copies the file to `target`, replacing what's there; a new `target` gets the file's
+/// permission bits (less the umask, as `cp` gives them). A file copied onto itself (its path
+/// spelt another way, or a link to it) is an `Error`, and left as it is.
 let copy (path: string) (target: string) =
   Native.fileCopy path target
   ioResult ()
 
-/// Moves the file to `target`, replacing what's there: a rename, or a copy and a delete from
-/// another file system.
+/// Moves the file to `target`, replacing what's there: a rename, or from another file system
+/// a copy into a new file beside `target`, with the file's permission bits, renamed over it,
+/// then a delete, so a failure leaves `target` as it was (on Windows, the system's move, whose
+/// copy writes `target` itself).
 let move (path: string) (target: string) =
   Native.fileMove path target
   ioResult ()

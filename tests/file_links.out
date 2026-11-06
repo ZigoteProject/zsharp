@@ -1,0 +1,4 @@
+links deleted: [true; true; true; true], kept Ok kept
+onto a link to itself: true, left Ok important
+copies: -rw------- -rwx------
+moved: -rw------- Ok token false, a temporary file left: false

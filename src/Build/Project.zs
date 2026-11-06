@@ -276,6 +276,15 @@ let vendorDir (top: Manifest) (name: string) : string = Path.combine (Path.combi
 
 let private vendored (top: Manifest) (name: string) : bool = File.exists (Path.combine (vendorDir top name) "zs.toml")
 
+// whether root's parts lead through a symbolic link, which a repository may hold, pointing
+// anywhere: what zs fetch or zs vendor would delete, clone or check out there is refused instead
+let private throughLink (root: string) (parts: list<string>) : bool =
+  let rec go (dir: string) (rest: list<string>) =
+    match rest with
+    | [] -> false
+    | x :: more -> Native.isSymlink (Path.combine dir x) || go (Path.combine dir x) more
+  go root parts
+
 let private depPath (top: Manifest) (name: string) (d: Dep) : string =
   match d with
   | PathDep p -> p
@@ -453,7 +462,9 @@ let fetchDeps (top: Manifest) (update: bool) (offline0: bool) : list<string> =
     // a clone of the dependency's repository, made once
     let cloneOf (name: string) (url: string) : result<string, string> =
       let dir = gitDir top name
-      if Directory.exists (Path.combine dir ".git") then
+      if throughLink root [ ".zs-cache"; "deps"; name ] then
+        Error $"{Path.getRelativePath top.root dir} is reached through a symbolic link, which zs fetch doesn't follow"
+      else if Directory.exists (Path.combine dir ".git") then
         Ok dir
       else if offline then
         Error "isn't fetched here, and --offline was given (zs vendor keeps a copy in the project)"
@@ -698,7 +709,9 @@ let vendor (top: Manifest) : list<string> =
     for (name, l) in Map.toList (readLock (lockRoot top)) do
       let from = if vendored top name then vendorDir top name else gitDir top name
       let into = vendorDir top name
-      if from <> into then
+      if from <> into && throughLink (lockRoot top) [ "vendor"; name ] then
+        Buffer.push $"vendor {name}: {Path.getRelativePath top.root into} is reached through a symbolic link, which zs vendor doesn't follow" errors
+      else if from <> into then
         if Directory.exists into then
           Directory.deleteRecursive into |> ignore
         match Directory.listRecursive from with

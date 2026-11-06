@@ -1,0 +1,5 @@
+/server/share/b /x /server/share
+Q:x Q:
+x
+\\?\C:\a\..\b
+../../d/e ../d

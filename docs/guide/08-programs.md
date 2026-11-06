@@ -218,7 +218,7 @@ src/main.zs .zs notes.md
 - **Unix sockets:** `Unix.listen path`, `Unix.accept` and `Unix.connect path` are `Tcp`'s calls over a path, for processes on one machine. `Unix.listen` replaces a socket an earlier run left at the path, one no server listens on; a file there, or a live server's socket, is an error. `Tcp`, `Udp` and `Dns.lookup` are in [Tasks](13-tasks.md#sockets).
 - **The console:** `Console.readLine ()` and `Console.readLines ()` read standard input, and `Console.Error.writeLine` writes to standard error.
 - **Exit codes:** `Environment.exit code` ends the program at once with that code. Returning a number from `main` sets the exit code too.
-- **Processes:** `Process.run` starts the program directly, without a shell, so arguments are passed exactly as given.
+- **Processes:** `Process.run` starts the program directly, without a shell, so arguments are passed exactly as given (a Windows batch file runs in `cmd.exe`, its arguments quoted so it reads them as given; one with a line break is an `Error`). A write to a process's piped input once it has exited is an `Error`, not the end of the program; a program whose standard output is cut off (`| head`) still ends there, quietly.
 - **Timing:** `let sw = Stopwatch.startNew ()`, then `sw.ElapsedMilliseconds`.
 
 ## Tests

@@ -1,0 +1,5 @@
+a write with no reader: true (it exited 0)
+yes | head: y
+forever | head: 2 lines, then Ok 141
+with SIGCHLD ignored: code 3
+Ok the tool beside the program 0

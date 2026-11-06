@@ -126,6 +126,7 @@ let builtins : Map<string, Builtin> =
       b "Native.tempFile" "File.temp" [] (f tStr tStr) 1
       b "Native.tempDirectory" "Dir.temp" [] (f tStr tStr) 1
       b "Native.deleteDirectory" "Dir.delete" [] (f tStr tUnit) 1
+      b "Native.deleteTree" "Dir.deleteTree" [] (f tStr tUnit) 1
       b "Native.isSymlink" "File.isSymlink" [] (f tStr tBool) 1
       b "Native.currentDirectory" "Env.cwd" [] (f tUnit tStr) 1
       b "Native.isWindows" "Env.windows" [] (f tUnit tBool) 1
@@ -133,6 +134,8 @@ let builtins : Map<string, Builtin> =
       b "Native.processPipe" "Process.pipe" [] (f tInt tInt) 1
       b "Native.processWait" "Process.wait" [] (f tInt tInt) 1
       b "Native.processKill" "Process.kill" [] (f tInt tInt) 1
+      b "Native.processId" "Process.id" [] (f tInt tInt) 1
+      b "Native.processWaiter" "Process.waiter" [] (f tInt tInt) 1
       b "Native.unixListen" "Unix.listen" [] (f tStr tInt) 1
       b "Native.unixConnect" "Unix.connect" [] (f tStr tInt) 1
       b "Text.String.toFloat" "String.toFloat" [] (f tStr (tcon "f64")) 1
