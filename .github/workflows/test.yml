@@ -80,11 +80,17 @@ jobs:
           "$RUNNER_TEMP/micromamba" create -y -q -r "$RUNNER_TEMP/mamba" -p "$RUNNER_TEMP/llvm" -c conda-forge \
             'clang=23.1.4=*nocfg*' 'clangxx=23.1.4=*nocfg*' libclang=23.1.4 lld=23.1.4 llvm-tools=23.1.4 compiler-rt=23.1.4
           echo "$RUNNER_TEMP/llvm/bin" >> "$GITHUB_PATH"
-      # upgrade, not install: it installs what's missing and upgrades what the image has (Windows
-      # x64's came with LLVM 20, which install leaves as it is); zig from its release, 0.17.0
-      # (0.16.0's `zig rc` fails on Windows arm64, reading its cache's files short)
+      # LLVM's own release, the version the other runners have: Chocolatey's package is the x64
+      # build on Windows on Arm too, whose libclang an arm64 zs.exe can't load (import c, and the
+      # compiler's own build); zig from its release, 0.17.0 (0.16.0's `zig rc` fails on Windows
+      # arm64, reading its cache's files short)
       - if: runner.os == 'Windows'
-        run: choco upgrade -y llvm
+        run: |
+          a=$([ "$RUNNER_ARCH" = ARM64 ] && echo aarch64 || echo x86_64)
+          dir=clang+llvm-23.1.4-$a-pc-windows-msvc
+          curl -fsSL "https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.4/$dir.tar.xz" \
+            | tar -xJ -C "$RUNNER_TEMP" --wildcards "$dir/bin/*" "$dir/lib/clang/*" "$dir/include/clang-c/*"
+          cygpath -w "$RUNNER_TEMP/$dir/bin" >> "$GITHUB_PATH"
       - if: runner.os == 'Windows'
         shell: pwsh
         run: |

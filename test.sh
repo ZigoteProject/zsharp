@@ -58,6 +58,9 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 fail=0
 # the architecture the programs are built for: the target's, else this machine's
 arch=$(uname -m); [ -n "$target" ] && arch=${target%%-*}
+# Windows on Arm runs Git Bash as an x86-64 program, whose uname says x86_64: the processor is
+# the system's own (emulation leaves it as it is), and zs.exe is built for it
+[ $windows = 1 ] && [ -z "$target" ] && case ${PROCESSOR_IDENTIFIER:-} in ARM*) arch=aarch64 ;; esac
 for t in $(find tests -name '*.zs' | sort); do
   base=${t%.zs}
   [ -f "$base.out" ] || [ -f "$base.err" ] || continue
@@ -752,7 +755,7 @@ fi
 # C programs linking a Z# library: clang, or zig cc for another target, and for MinGW on Windows
 # (clang alone targets MSVC there, whose C library the runtime isn't built for)
 cc=(clang); [ -n "$target" ] && cc=(zig cc -target "$target")
-[ $windows = 1 ] && [ -z "$target" ] && cc=(zig cc -target "$(uname -m | sed 's/arm64/aarch64/')-windows-gnu")
+[ $windows = 1 ] && [ -z "$target" ] && cc=(zig cc -target "$arch-windows-gnu")
 # a library's constants are static (0014): a tree of union cases, a table and a record, read by an
 # export that C calls, with no startup code (a library has none); a C program's output is text,
 # \r\n on Windows
