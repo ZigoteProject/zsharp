@@ -369,7 +369,8 @@ let private finishImpl (cx: Cx) (st: Started) =
   cx.implRequires.Value <- Map.add (tr, hn) reqs cx.implRequires.Value
   // a use of it while its methods were checked (by them, at other type arguments, or by an impl
   // checked with it) met no requirements: what it gave is checked now. A type with variables in
-  // it is left (at the methods' own, it's what the requirements were found from)
+  // it isn't constrained (at the methods' own, it's what the requirements were found from), but
+  // what can't be shared whatever they become (ref<'a>) is an error still
   let uses = Option.defaultValue [] (Map.tryFind (tr, hn) cx.implUses.Value)
   cx.implUses.Value <- Map.remove (tr, hn) cx.implUses.Value
   let rec known (t: Ty) =
@@ -380,12 +381,24 @@ let private finishImpl (cx: Cx) (st: Started) =
     | TTuple ts -> List.forall known ts
     | TFun(a, b, _) -> known a && known b
     | _ -> true
+  // the type with each variable an int, which is Share
+  let rec filled (t: Ty) : Ty =
+    match prune v t with
+    | TVar _
+    | TGen _ -> tInt
+    | TCon(n, ts) -> TCon(n, List.map filled ts)
+    | TTuple ts -> TTuple(List.map filled ts)
+    | TFun(a, b, r) -> TFun(filled a, filled b, r)
+    | x -> x
   for (args, stmt) in List.rev uses do
     for (a, trs) in List.zip args reqs do
-      if known a then
-        for tr2 in Set.toList trs do
-          let what = $"impl {shortName tr}<{shortName hn}>, used by its own methods (or an impl checked with it), needs {shortName tr2} of its type argument"
-          located cx (if st.swritten then stmt else -1) false (fun () -> expect cx what (fresh v (kTrait tr2)) a)
+      for tr2 in Set.toList trs do
+        let what = $"impl {shortName tr}<{shortName hn}>, used by its own methods (or an impl checked with it), needs {shortName tr2} of its type argument"
+        let at = if st.swritten then stmt else -1
+        if known a then
+          located cx at false (fun () -> expect cx what (fresh v (kTrait tr2)) a)
+        else if tr2 = "Share" && Option.isSome (Types.Repr.shareBlocker v (fun _ -> ()) cx.types.Value Set.empty (filled a)) then
+          located cx at false (fun () -> fail $"{what}: {show cx a} can't be shared between threads (it isn't Share)")
 
 let private declareImpl (cx: Cx) (tr0: string) (head: SType) (others: list<SType>) (defs: list<Definition>) = finishImpl cx (startImpl cx true tr0 head others defs)
 
@@ -1822,10 +1835,10 @@ let rec private reaches (cx: Cx) (here: Set<string>) (seen: Set<string>) (cell: 
   | TCon(n, args) ->
     let key = Types.Show.showFull cx.v (TCon(n, args))
     match Map.tryFind n cx.types.Value with
-    | Some _ when Set.contains ("#" + n) seen && not (Set.contains key seen) ->
-      // a nested type (Perfect<'a> holding a Perfect<'a * 'a>) met again at other arguments,
-      // which looking through would never end: its fields were followed already, so only its
-      // arguments reach more
+    | Some _ when Set.contains ("##" + n) seen && not (Set.contains key seen) ->
+      // a type met at a third instantiation on one path, as a nested type is (Perfect<'a> holding
+      // a Perfect<'a * 'a>), which looking through would never end: its fields were followed
+      // twice already, so only its arguments reach more
       List.collect (reaches cx here seen cell) args
     | Some info when not (List.isEmpty args) && not (Set.contains key seen) ->
       let fields =
@@ -1833,7 +1846,10 @@ let rec private reaches (cx: Cx) (here: Set<string>) (seen: Set<string>) (cell: 
         | RecordDef fs -> List.map snd fs
         | UnionDef cs -> List.collect snd cs
         | CUnionDef _ -> []
-      let below = Set.add ("#" + n) (Set.add key seen)
+      // two instantiations of a name are followed per path, so a type holding itself at fixed
+      // arguments (T<'a> with a ref<'a> and a T<Node>) is seen through to its ref<Node>
+      let mark = if Set.contains ("#" + n) seen then "##" + n else "#" + n
+      let below = Set.add mark (Set.add key seen)
       List.collect (fun ft -> reaches cx here below cell (substGen cx.v args ft)) fields
     | Some _ -> []
     | None -> List.collect (reaches cx here seen cell) args

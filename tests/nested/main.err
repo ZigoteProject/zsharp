@@ -1,2 +1,3 @@
-tests/nested/main.zs:6:6: warning: 'Loop' can reach itself through 'back: Tree<ref<option<Loop>>>' and 'forth: ref<option<Loop>>', so its objects can form a cycle that reference counting never frees; make the back-pointer 'weak<Loop>', or mark the type [<Cyclic>] when the program breaks its cycles, or [<NoWarn "cycle">] when it can't form one [cycle]
-1 warning, an error under --strict
+tests/nested/main.zs:7:6: warning: 'Loop' can reach itself through 'back: Perfect.Tree<ref<option<Loop>>>' and 'forth: ref<option<Loop>>', so its objects can form a cycle that reference counting never frees; make the back-pointer 'weak<Loop>', or mark the type [<Cyclic>] when the program breaks its cycles, or [<NoWarn "cycle">] when it can't form one [cycle]
+tests/nested/main.zs:9:6: warning: 'Turn' can reach itself through 'turned: Perfect.Swap<option<Turn>, int>' and 'again: option<Turn>', so its objects can form a cycle that reference counting never frees; make the back-pointer 'weak<Turn>', or mark the type [<Cyclic>] when the program breaks its cycles, or [<NoWarn "cycle">] when it can't form one [cycle]
+2 warnings, errors under --strict

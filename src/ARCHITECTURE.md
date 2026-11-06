@@ -107,8 +107,10 @@ declaration's line.
 
 An expression written elsewhere and checked here (a constant's body at a use, a field's or a
 parameter's default) is *foreign*: it records no hovers and its places aren't used. A constant's
-record literal keeps the record it built where it's defined (keyed by the constant and the
-literal's first field name).
+body (checked where it's defined) and a library record's default are also *vetted*: what they
+call under `Native` isn't checked again, while a default the program wrote is checked for it as
+the program's code. A constant's record literal keeps the record it built where it's defined
+(keyed by the constant and the literal's first field name).
 
 *In 0.7:* `Decls` reports a member that can't be declared (declared twice, or named as a field)
 and leaves it out, the type's other members standing (`tests/err_member_twice.zs`); makes a boxed

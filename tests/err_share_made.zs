@@ -10,7 +10,7 @@ let collector () =
 let bump (r: ref<string>) (i: int) = r.Value <- r.Value + "x"
 
 let fromCall () =
-  Parallel.``for`` 0 1000 (collector ())
+  Parallel.for 0 1000 (collector ())
 
 let throughLocal () =
   let add = collector ()
@@ -20,12 +20,12 @@ let localFactory () =
   let make () =
     let r = ref 0
     fun (i: int) -> r.Value <- r.Value + i
-  Parallel.``for`` 0 1000 (make ())
+  Parallel.for 0 1000 (make ())
 
 let partial () =
-  Parallel.``for`` 0 1000 (bump (ref ""))
+  Parallel.for 0 1000 (bump (ref ""))
 
 let field (h: Handlers) =
-  Parallel.``for`` 0 1000 h.onItem
+  Parallel.for 0 1000 h.onItem
 
 let main () = ()

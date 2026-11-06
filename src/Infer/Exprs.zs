@@ -294,8 +294,11 @@ and checkCaptures (cx: Cx) (c: CExpr) (f: Ty) =
           | None -> x
         // a builtin applied to fewer arguments binds what it's given to names of its own ($a)
         let what = if String.startsWith "$" name then "a value it's given" else "'" + name + "'"
+        // known fails as it looks, so it's called in the case, not a guard (which performs nothing)
         match (prune cx.v t, Map.tryFind x cx.localValues.Value) with
-        | (TFun _, Some def) when known def (name :: via) -> ()
+        | (TFun _, Some def) ->
+          if not (known def (name :: via)) then
+            shareable what via t
         | _ -> shareable what via t
   // whether a function's captures are seen here, each checked: a lambda's and a local function's
   // free locals, a top-level function's (none: what it reaches is checked after
@@ -305,6 +308,8 @@ and checkCaptures (cx: Cx) (c: CExpr) (f: Ty) =
     | CLine(_, x)
     | CPrim("eff.open", [ x ])
     | CLet(_, _, x)
+    | CLetFun(_, _, _, _, x)
+    | CLetRec(_, x)
     | CSeq(_, x) -> known x via
     | CLam _
     | CLocal _ ->
@@ -319,8 +324,13 @@ and checkCaptures (cx: Cx) (c: CExpr) (f: Ty) =
       for a in args do
         match (prune cx.v a.ty, a.k) with
         | (_, CLocal _) -> go a via
-        | (TFun _, _) when known a via -> ()
-        | (t, _) -> shareable "a value it's given" via t
+        | (t, _) ->
+          let seenInto =
+            match t with
+            | TFun _ -> known a via
+            | _ -> false
+          if not seenInto then
+            shareable "a value it's given" via t
       known h via
     | _ -> false
   if not (known c []) then
@@ -1463,7 +1473,9 @@ and memberCall (cx: Cx) (env: Map<string, Local>) (depth: int) (m: MemberInfo) (
         let ce =
           match (p.optional, p.mdefault) with
           | (true, Some d) ->
-            let c = foreignly cx (fun () -> inferHint cx scope.Value 0 pt d)
+            // checked as the program's wherever it's written: a program can add members to the
+            // library's types
+            let c = foreignly cx false (fun () -> inferHint cx scope.Value 0 pt d)
             expect cx $"default of '{p.mname}'" pt c.ty
             c
           | (true, None) ->
@@ -1627,13 +1639,15 @@ and resolveName (cx: Cx) (x: string) : option<string> =
 
 /// The runtime's hooks (Native) are the library's: nothing checks what one is given (a job's
 /// handle, a loop's token), so a program uses one, x resolved to r, only inside unsafe. A
-/// desugaring's name (global::) and a library constant's body or field default (foreign) are the
-/// library's own; libraryNames is empty while the library is checked. Checked where a name is
-/// used, not where it's resolved: the declarations' analyses resolve a library constant's names
-/// too (Decls.makesBuffer).
+/// desugaring's name (global::) is the library's own, and so is foreign code vetted elsewhere (a
+/// constant's body, checked where it's written; a library record's default), but not a default
+/// the program wrote (a field's or a member parameter's), checked only at its uses; libraryNames
+/// is empty while the library is checked. Checked where a name is used, not where it's resolved:
+/// the declarations' analyses resolve a library constant's names too (Decls.makesBuffer).
 and nativeHook (cx: Cx) (x: string) (r: option<string>) =
+  let vetted = cx.foreign.Value && cx.foreignVetted.Value
   match r with
-  | Some q when String.startsWith "Native." q && Map.containsKey q builtins && not (String.startsWith "global::" x) && not cx.unsafeOn.Value && not cx.foreign.Value && not (Set.isEmpty cx.libraryNames.Value) ->
+  | Some q when String.startsWith "Native." q && Map.containsKey q builtins && not (String.startsWith "global::" x) && not cx.unsafeOn.Value && not vetted && not (Set.isEmpty cx.libraryNames.Value) ->
     fail $"'{q}' is the library's, a runtime hook nothing checks the arguments of: use it inside `unsafe`"
   | _ -> ()
 
@@ -1679,7 +1693,7 @@ and valueQ (cx: Cx) (env: Map<string, Local>) (depth: int) (x: string) : CExpr =
     cx.tyvars.Value <- Map.empty
     let outerConst = cx.inConst.Value
     cx.inConst.Value <- x
-    let c = foreignly cx (fun () -> infer cx Map.empty depth (Map.find x cx.consts.Value))
+    let c = foreignly cx true (fun () -> infer cx Map.empty depth (Map.find x cx.consts.Value))
     cx.inConst.Value <- outerConst
     cx.inlining.Value <- Set.remove x cx.inlining.Value
     cx.tyvars.Value <- saved
@@ -2337,7 +2351,7 @@ and recordLit (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>)
         cx.currentModule.Value <- m
         cx.opens.Value <- opens
       | None -> ()
-      let ce = foreignly cx (fun () -> inferHint cx scope 0 ft d)
+      let ce = foreignly cx (Set.contains rname cx.libraryNames.Value) (fun () -> inferHint cx scope 0 ft d)
       cx.currentModule.Value <- useModule
       cx.opens.Value <- useOpens
       expect cx $"default of field '{f}'" ft ce.ty

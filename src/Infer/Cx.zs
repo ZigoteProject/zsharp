@@ -218,6 +218,9 @@ and CxData =
     /// checking an expression written elsewhere (a constant's body at a use, a default): its places
     /// aren't this file's, so its errors are at the use and it records no hovers
     foreign: ref<bool>
+    /// foreign, and its uses of the runtime's hooks (Native) checked where it's written (a
+    /// constant's body) or the library's (a library record's default): not checked again here
+    foreignVetted: ref<bool>
     /// C names import c skipped: why
     skippedC: ref<Map<string, string>>
     /// the library's types and traits, and the dependencies' module prefixes (Json): whose an
@@ -479,6 +482,9 @@ type Cx with
   member c.foreign =
     match c with
     | Cx { foreign = x } -> x
+  member c.foreignVetted =
+    match c with
+    | Cx { foreignVetted = x } -> x
   member c.skippedC =
     match c with
     | Cx { skippedC = x } -> x
@@ -597,6 +603,7 @@ let create (requireMain: bool) (collect: bool) (allModules: list<string>) (manua
       currentDef = ref ""
       inConst = ref ""
       foreign = ref false
+      foreignVetted = ref false
       skippedC = ref Map.empty
       libraryNames = ref Set.empty
       dependencies = ref Set.empty
@@ -746,12 +753,16 @@ let located (cx: Cx) (tok: int) (lineOnly: bool) (f: unit -> 'r / <Fails | 'e>) 
     | Fails.fail x, _ -> Fails.fail (placed x)
     | Fails.report x, k -> k (Fails.report (placed x))
 
-/// Runs f on an expression written elsewhere (a constant's body at a use, a default).
-let foreignly (cx: Cx) (f: unit -> 'r / 'e) : 'r / 'e =
+/// Runs f on an expression written elsewhere (a constant's body at a use, a default); vetted:
+/// its uses of Native aren't checked again (foreignVetted).
+let foreignly (cx: Cx) (vetted: bool) (f: unit -> 'r / 'e) : 'r / 'e =
   let outer = cx.foreign.Value
+  let outerVetted = cx.foreignVetted.Value
   cx.foreign.Value <- true
+  cx.foreignVetted.Value <- vetted
   let r = f ()
   cx.foreign.Value <- outer
+  cx.foreignVetted.Value <- outerVetted
   r
 
 /// Runs f; a failure in it says what was being checked first ("field run: …").
