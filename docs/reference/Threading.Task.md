@@ -70,7 +70,7 @@ Gives a task's result to what waits for it: the end of the code `task { }` compi
 ### `Task.disposeOnCancel`
 
 ```zsharp
-Task.disposeOnCancel : Cancel -> 'a -> int when 'a : Dispose
+Task.disposeOnCancel : Cancel -> 'a -> i64 when 'a : Dispose
 ```
 
 `use x = …` in a task: x is disposed if the task is cancelled. The number goes to
@@ -79,7 +79,7 @@ Task.disposeOnCancel : Cancel -> 'a -> int when 'a : Dispose
 ### `Task.disposed`
 
 ```zsharp
-Task.disposed : Cancel -> int -> 'a -> unit when 'a : Dispose
+Task.disposed : Cancel -> i64 -> 'a -> unit when 'a : Dispose
 ```
 
 The end of a `use` scope in a task: x is disposed, and no longer on cancellation.

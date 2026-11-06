@@ -8,6 +8,11 @@ let bound () =
 
 let text (buf: Buffer<u8>) (n: int) = String.ofBytes (Buffer.toArray buf).[0..n - 1]
 
+// a port nothing listens on any more
+let closed () =
+  use s = bound ()
+  Udp.port s
+
 let main () =
   use a = bound ()
   use b = bound ()
@@ -32,6 +37,13 @@ let main () =
         match long with
         | Ok (n, _, _) -> println $"cut to {n} bytes: {text buf n}"
         | Error e -> println $"long: {e}"
+        // the port unreachable it draws isn't a's next receive's failure (it was on Windows)
+        let! _ = Udp.sendText a "127.0.0.1" (closed ()) "lost"
+        let! _ = Udp.sendText b "127.0.0.1" pa "after"
+        let! after = Udp.receive a buf
+        match after with
+        | Ok (n, _, _) -> println $"after a send to a closed port, a got {text buf n}"
+        | Error e -> println $"after a send to a closed port: {e}"
         let! local = Dns.lookup "localhost"
         let! nowhere = Dns.lookup "no.such.host.invalid"
         println $"localhost is loopback: {List.contains "127.0.0.1" local || List.contains "::1" local}, nowhere: {nowhere}"

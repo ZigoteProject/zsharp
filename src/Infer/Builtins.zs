@@ -272,6 +272,7 @@ let builtins : Map<string, Builtin> =
       b "Native.udpFrom" "Udp.from" [] (f tUnit tStr) 1
       b "Native.udpFromPort" "Udp.fromPort" [] (f tUnit tInt) 1
       b "Native.dnsLookup" "Dns.lookup" [] (f tStr tStr) 1
+      b "Native.dnsStart" "Dns.start" [] (f tStr tInt) 1
       b "Native.fdRead" "Fd.read" [] (f tInt (f (TCon("Buffer", [ tcon "u8" ])) (f tInt (f tInt tInt)))) 4
       b "Native.fdWrite" "Fd.write" [] (f tInt (f (TCon("Buffer", [ tcon "u8" ])) (f tInt (f tInt tInt)))) 4
       b "Native.fdWriteText" "Fd.write" [] (f tInt (f tStr (f tInt (f tInt tInt)))) 4

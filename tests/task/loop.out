@@ -1,0 +1,3 @@
+the datagram seen while a task yields: true
+a far timeout doesn't end a task at once: true
+a far sleep doesn't end at once: true

@@ -12,7 +12,8 @@ are `Tcp`'s types, so `Tcp.read`, `Tcp.write` and `use` work on them as they are
 Unix.listen : string -> result<TcpListener, string>
 ```
 
-A socket listening at `path`; a socket file left there by an earlier run is removed first.
+A socket listening at `path`. A socket an earlier run left there (one no server listens
+on) is removed first; anything else there is an error, a file or a live server's socket.
 
 ### `Unix.accept`
 
@@ -28,5 +29,6 @@ Waits for the next connection: `Tcp.accept`, which takes a Unix listener too.
 Unix.connect : string -> Task<result<TcpStream, string>>
 ```
 
-A connection to the socket at `path`.
+A connection to the socket at `path`. Cancelled before it has connected, it closes the
+socket it was connecting.
 

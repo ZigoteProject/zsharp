@@ -117,6 +117,11 @@ echo "time tests/json.zs: $(grep -E '^(parse|total)' "$tmp/time.log" | tr -s ' '
 vg=(); [ $valgrind = 1 ] && vg=(--valgrind)
 if diff <(tests/task/echo.sh "${vg[@]}" 2>&1) tests/task/echo.expected >"$tmp/echo.diff"; then echo "ok   tests/task/echo.sh (an echo server, 1,000 connections)"
 else echo "FAIL tests/task/echo.sh"; cat "$tmp/echo.diff"; fail=1; fi
+# the guide's accept loop out of descriptors: it pauses, sees its clients go, and goes on (a
+# descriptor limit and bash's /dev/tcp: not Windows's)
+if [ $windows = 1 ]; then echo "skip tests/task/emfile.sh (no descriptor limit for sockets on Windows)"
+elif diff <(tests/task/emfile.sh 2>&1) tests/task/emfile.expected >"$tmp/emfile.diff"; then echo "ok   tests/task/emfile.sh (accept out of descriptors)"
+else echo "FAIL tests/task/emfile.sh"; cat "$tmp/emfile.diff"; fail=1; fi
 
 # threads under ThreadSanitizer: the pool, Atomic, Mutex, Channel, Spsc and Task.spawn race on
 # nothing, and at exit nothing is used after it's freed

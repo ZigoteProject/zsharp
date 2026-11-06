@@ -215,7 +215,7 @@ src/main.zs .zs notes.md
 - **Paths:** `Path.combine`, `getFileName`, `getDirectoryName`, `getExtension` and the others work on the text alone; `getFullPath` and `getRelativePath` also read the working directory (`Environment.currentDirectory ()`).
 - **Processes with pipes:** `Process.start { program = "clang"; args = [ "-c"; "a.c" ]; stderr = Piped }` gives a `Process` whose piped streams are a `Reader` or a `Writer`, and `Process.wait p` its exit code as a `Task<int>`.
 - **Time:** `DateTime.utcNow ()` is the current moment; `string` prints a `DateTime` in ISO 8601, and `DateTime.parseIso "2026-11-04T08:30:00+02:00"` reads one back (an `option`), `DateTime.ofParts` makes one from its parts.
-- **Unix sockets:** `Unix.listen path`, `Unix.accept` and `Unix.connect path` are `Tcp`'s calls over a path, for processes on one machine. `Tcp`, `Udp` and `Dns.lookup` are in [Tasks](13-tasks.md#sockets).
+- **Unix sockets:** `Unix.listen path`, `Unix.accept` and `Unix.connect path` are `Tcp`'s calls over a path, for processes on one machine. `Unix.listen` replaces a socket an earlier run left at the path, one no server listens on; a file there, or a live server's socket, is an error. `Tcp`, `Udp` and `Dns.lookup` are in [Tasks](13-tasks.md#sockets).
 - **The console:** `Console.readLine ()` and `Console.readLines ()` read standard input, and `Console.Error.writeLine` writes to standard error.
 - **Exit codes:** `Environment.exit code` ends the program at once with that code. Returning a number from `main` sets the exit code too.
 - **Processes:** `Process.run` starts the program directly, without a shell, so arguments are passed exactly as given.

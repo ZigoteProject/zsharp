@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 #define _CRT_RAND_S // Windows's rand_s, the system's randomness (Random.shared)
 #include <inttypes.h>
+#include <limits.h>
 #include <sched.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -2451,36 +2452,52 @@ zs_int zs_process_kill(zs_int pid) { return kill((pid_t)pid, SIGKILL) == 0 ? 0 :
 // Descriptors the loop waits for. On Windows they're sockets only (wepoll's), each a small index
 // above SOCK_BASE into a table of SOCKETs: a SOCKET is a handle, not a small integer, and a CRT
 // descriptor (a file, a pipe) can't be told from one otherwise. FD_SLOT is the loop's index.
+// The table is in chunks that never move or go, so a lookup on any thread (a helper's wake of
+// a loop, a loop thread's read) takes no lock while another thread adds a socket.
 #ifdef _WIN32
 #define SOCK_BASE 0x40000000
-static SOCKET *socks;
-static size_t nsocks, freesock = (size_t)-1; // the free slots, a list through socks
+#define SOCK_CHUNK 1024
+#define SOCK_CHUNKS 4096 // 4M sockets
+static SOCKET *_Atomic sock_chunks[SOCK_CHUNKS];
+static atomic_size_t nsocks; // slots handed out, each in a chunk already published
+static size_t freesock = (size_t)-1; // the free slots, a list through their entries
 static pthread_mutex_t socks_mu = PTHREAD_MUTEX_INITIALIZER;
 
-static bool is_sock(zs_int fd) { return fd >= SOCK_BASE && (size_t)(fd - SOCK_BASE) < nsocks; }
-static SOCKET sk_of(zs_int fd) { return socks[fd - SOCK_BASE]; }
+static SOCKET *sk_slot(size_t i) { return &atomic_load_explicit(&sock_chunks[i / SOCK_CHUNK], memory_order_acquire)[i % SOCK_CHUNK]; }
+static bool is_sock(zs_int fd) { return fd >= SOCK_BASE && (size_t)(fd - SOCK_BASE) < atomic_load_explicit(&nsocks, memory_order_acquire); }
+static SOCKET sk_of(zs_int fd) { return *sk_slot((size_t)(fd - SOCK_BASE)); }
 
 static int sk_add(SOCKET s) {
     if (s == INVALID_SOCKET) return -1;
     pthread_mutex_lock(&socks_mu);
     size_t i = freesock;
     if (i != (size_t)-1) {
-        freesock = (size_t)socks[i];
+        freesock = (size_t)*sk_slot(i);
     } else {
-        SOCKET *t = realloc(socks, (nsocks + 1) * sizeof(SOCKET));
-        if (!t) zs_panic_c("out of memory");
-        socks = t;
-        i = nsocks++;
+        i = atomic_load_explicit(&nsocks, memory_order_relaxed);
+        if (i == (size_t)SOCK_CHUNKS * SOCK_CHUNK) {
+            pthread_mutex_unlock(&socks_mu);
+            closesocket(s);
+            WSASetLastError(WSAEMFILE);
+            return -1;
+        }
+        if (i % SOCK_CHUNK == 0) {
+            SOCKET *c = malloc(SOCK_CHUNK * sizeof(SOCKET));
+            if (!c) zs_panic_c("out of memory");
+            atomic_store_explicit(&sock_chunks[i / SOCK_CHUNK], c, memory_order_release);
+        }
+        atomic_store_explicit(&nsocks, i + 1, memory_order_release);
     }
-    socks[i] = s;
+    *sk_slot(i) = s;
     pthread_mutex_unlock(&socks_mu);
     return SOCK_BASE + (int)i;
 }
 
 static void sk_close(zs_int fd) {
     pthread_mutex_lock(&socks_mu);
-    closesocket(socks[fd - SOCK_BASE]);
-    socks[fd - SOCK_BASE] = (SOCKET)freesock;
+    SOCKET *slot = sk_slot((size_t)(fd - SOCK_BASE));
+    closesocket(*slot);
+    *slot = (SOCKET)freesock;
     freesock = (size_t)(fd - SOCK_BASE);
     pthread_mutex_unlock(&socks_mu);
 }
@@ -2583,8 +2600,14 @@ static int wake_pair(int w[2]) {
     }
     ioctlsocket(a, FIONBIO, &one);
     ioctlsocket(c, FIONBIO, &one);
-    w[0] = sk_add(a);
-    w[1] = sk_add(c);
+    if ((w[0] = sk_add(a)) < 0) {
+        closesocket(c);
+        return -1;
+    }
+    if ((w[1] = sk_add(c)) < 0) {
+        sk_close(w[0]);
+        return -1;
+    }
     return 0;
 }
 static void wake_send(int fd) { send(sk_of(fd), "x", 1, 0); }
@@ -2665,7 +2688,8 @@ static _Thread_local struct {
     zs_timer **heap; // the timers, a min-heap by time
     size_t ntimers, heapcap;
     ptrtab timers; // id -> timer, to cancel one
-    zs_int next_timer;
+    uintptr_t next_timer; // the last id given: unsigned, as a 32-bit word's wraps
+    size_t ran;    // callbacks run since the kernel's queue was last looked at
     int depth;     // continuations called inside others (zs_loop_enter)
     inbox *box;    // NULL until another thread has something for this loop
     size_t jobs;   // helper jobs and spawned tasks not finished yet
@@ -2804,7 +2828,13 @@ zs_int zs_loop_timer(zs_int ms, void *cb) {
     }
     zs_timer *t = malloc(sizeof(zs_timer));
     if (!t) zs_panic_c("out of memory");
-    *t = (zs_timer){now_ns() + (ms > 0 ? ms : 0) * 1000000, ++L.next_timer, cb, 0};
+    // a deadline past the clock's range is one that never comes: the range's end
+    int64_t now = now_ns();
+    int64_t at = ms <= 0 ? now : (int64_t)ms > (INT64_MAX - now) / 1000000 ? INT64_MAX : now + (int64_t)ms * 1000000;
+    // ids wrap on a 32-bit word: one still in use, or 0 (the table's empty key), is skipped
+    do L.next_timer++;
+    while (L.next_timer == 0 || tab_get(&L.timers, (void *)L.next_timer));
+    *t = (zs_timer){at, (zs_int)L.next_timer, cb, 0};
     L.heap[L.ntimers++] = t;
     heap_up(L.ntimers - 1);
     tab_put(&L.timers, (void *)(uintptr_t)t->id, t);
@@ -3117,7 +3147,10 @@ void zs_signal_unwait(zs_int s) { (void)s; }
 bool zs_loop_step(void) {
     if (L.stepping) zs_panic_c("Task.run inside a task: use let! there instead");
     L.stepping = true;
-    for (size_t n = L.qlen; n > 0 && L.qlen; n--) zs_clo_run(queue_pop());
+    for (size_t n = L.qlen; n > 0 && L.qlen; n--) {
+        zs_clo_run(queue_pop());
+        L.ran++;
+    }
     L.stepping = false;
     int64_t now = now_ns();
     while (L.ntimers && L.heap[0]->at <= now) {
@@ -3127,13 +3160,23 @@ bool zs_loop_step(void) {
         zs_loop_post(t->cb);
         free(t);
     }
-    if (L.qlen) return true;
-    if (!L.waits && !L.ntimers && !L.jobs) return false;
     int timeout = -1;
-    if (L.ntimers) {
+    if (L.qlen) {
+        // callbacks ready still (a task that keeps yielding, a run of awaits that complete at
+        // once): every 64 the kernel's queue is looked at without waiting, so what descriptors
+        // and other threads (the inbox) have for this loop isn't held back for good
+        if (L.ran < 64 || (!L.waits && !L.box)) return true;
+        timeout = 0;
+    } else if (!L.waits && !L.ntimers && !L.jobs) {
+        return false;
+    } else if (L.ntimers) {
+        // in whole milliseconds, rounded up, and at most what the call takes: the loop wakes then
+        // and looks again
         int64_t d = L.heap[0]->at - now;
-        timeout = d <= 0 ? 0 : (int)((d + 999999) / 1000000);
+        int64_t ms = d / 1000000 + (d % 1000000 != 0);
+        timeout = d <= 0 ? 0 : ms > INT_MAX ? INT_MAX : (int)ms;
     }
+    L.ran = 0;
     ensure_ep();
     poll_event evs[256];
     int k = poll_wait(L.ep, evs, 256, timeout);
@@ -3273,11 +3316,16 @@ static zs_int failed(void) { return errno == EAGAIN || errno == EWOULDBLOCK ? -1
 static int resolve_as(zs_str *host, zs_int port, bool passive, int socktype, struct addrinfo **res);
 static int resolve(zs_str *host, zs_int port, bool passive, struct addrinfo **res) { return resolve_as(host, port, passive, SOCK_STREAM, res); }
 
+#ifndef AI_NUMERICSERV
+#define AI_NUMERICSERV 0
+#endif
+
 static int resolve_as(zs_str *host, zs_int port, bool passive, int socktype, struct addrinfo **res) {
-    struct addrinfo hints = {.ai_family = AF_UNSPEC, .ai_socktype = socktype, .ai_flags = passive ? AI_PASSIVE : 0};
+    struct addrinfo hints = {.ai_family = AF_UNSPEC, .ai_socktype = socktype, .ai_flags = (passive ? AI_PASSIVE : 0) | AI_NUMERICSERV};
     char p[24];
     snprintf(p, sizeof p, "%lld", (long long)port);
-    if (!os_name(host)) {
+    // a port past 16 bits isn't one (glibc would take its low 16 bits: 65561 as 25)
+    if (!os_name(host) || port < 0 || port > 65535) {
         sk_seterr(EINVAL);
         return EAI_NONAME;
     }
@@ -3309,8 +3357,29 @@ zs_int zs_tcp_listen(zs_str *host, zs_int port) {
     return fd;
 }
 
+// whether accept's failure is the connection's own (reset before it was taken, or a network
+// error Linux passes on from it), not the listener's: the next connection is taken instead
+static bool accept_again(void) {
+#ifdef _WIN32
+    int e = WSAGetLastError();
+    return e == WSAECONNRESET || e == WSAEINTR;
+#else
+    int e = errno;
+    return e == ECONNABORTED || e == EINTR || e == EPROTO
+#ifdef __linux__
+           || e == ENETDOWN || e == ENOPROTOOPT || e == EHOSTDOWN || e == ENONET || e == EHOSTUNREACH || e == EOPNOTSUPP || e == ENETUNREACH
+#endif
+        ;
+#endif
+}
+
+// a connection, or would-block; a failure (out of descriptors, say) is the listener's, and
+// Tcp.accept waits a moment before it gives it, as a loop going on after it would spin
 zs_int zs_tcp_accept(zs_int fd) {
-    int c = sk_accept((int)fd);
+    int c;
+    // many such failures in a row: would-block, so the next try waits a turn of the loop
+    for (int tries = 0; (c = sk_accept((int)fd)) < 0 && accept_again(); tries++)
+        if (tries == 64) return -1000;
     if (c < 0) return failed();
     int one = 1;
     setsockopt(S(c), IPPROTO_TCP, TCP_NODELAY, (void *)&one, sizeof one);
@@ -3337,6 +3406,14 @@ zs_int zs_tcp_connect(zs_str *host, zs_int port) {
 
 // ---- UDP (0024, track S item 8): a socket bound to a host and port, datagrams to a host and
 // port and from whoever sent them; the loop waits on the socket as on a TCP one
+#ifdef _WIN32 // mswsock.h's and mstcpip.h's, which mingw-w64 may lack
+#ifndef SIO_UDP_CONNRESET
+#define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR, 12)
+#endif
+#ifndef SIO_UDP_NETRESET
+#define SIO_UDP_NETRESET _WSAIOW(IOC_VENDOR, 15)
+#endif
+#endif
 
 // a UDP socket bound to the host ("" for every interface) and port (0: one the system picks)
 zs_int zs_udp_bind(zs_str *host, zs_int port) {
@@ -3351,6 +3428,14 @@ zs_int zs_udp_bind(zs_str *host, zs_int port) {
         return failed();
     }
     freeaddrinfo(res);
+#ifdef _WIN32
+    // a port unreachable answering an earlier send isn't this socket's failure, which Winsock
+    // makes it on the next receive unless told not to (NETRESET's is a newer Windows's)
+    BOOL off = FALSE;
+    DWORD n;
+    WSAIoctl(S(fd), SIO_UDP_CONNRESET, &off, sizeof off, NULL, 0, &n, NULL, NULL);
+    WSAIoctl(S(fd), SIO_UDP_NETRESET, &off, sizeof off, NULL, 0, &n, NULL, NULL);
+#endif
     return fd;
 }
 
@@ -3381,6 +3466,15 @@ static _Thread_local socklen_t udp_from_len;
 zs_int zs_udp_receive(zs_int fd, uint8_t *data, zs_int len) {
     udp_from_len = sizeof udp_from;
     zs_int r = (zs_int)recvfrom(S(fd), (char *)data, (size_t)len, 0, (struct sockaddr *)&udp_from, &udp_from_len);
+#ifdef _WIN32
+    if (r < 0) {
+        int e = WSAGetLastError();
+        // a datagram longer than the buffer fails, with its start in the buffer: cut, as elsewhere
+        if (e == WSAEMSGSIZE) return len;
+        // a port unreachable for an earlier send, where the ioctls of zs_udp_bind are unknown
+        if (e == WSAECONNRESET || e == WSAENETRESET) return -1000;
+    }
+#endif
     return r < 0 ? failed() : r;
 }
 
@@ -3397,18 +3491,15 @@ zs_int zs_udp_from_port(void) {
     return ntohs(((struct sockaddr_in *)&udp_from)->sin_port);
 }
 
-// the addresses of a host as text, one per line (Dns.lookup, run off the loop's thread since it
-// blocks); "" when it has none
-zs_str *zs_dns_lookup(zs_str *host) {
-    struct addrinfo hints = {.ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM}, *res;
-    if (!os_name(host) || host->len == 0 || getaddrinfo(host->data, NULL, &hints, &res) != 0) return str_of("", 0);
-    char out[1024];
+// the addresses getaddrinfo found, as text into out (cap bytes), one per line, in its order:
+// the bytes written
+static size_t addresses_text(struct addrinfo *res, char *out, size_t cap) {
     size_t used = 0;
     for (struct addrinfo *a = res; a; a = a->ai_next) {
         char h[NI_MAXHOST];
         if (getnameinfo(a->ai_addr, (socklen_t)a->ai_addrlen, h, sizeof h, NULL, 0, NI_NUMERICHOST) != 0) continue;
         size_t n = strlen(h);
-        if (used + n + 1 > sizeof out) break;
+        if (used + n + 1 > cap) break;
         // each address once: getaddrinfo lists one per socket type
         bool seen = false;
         for (size_t i = 0, start = 0; i < used; i++)
@@ -3418,8 +3509,165 @@ zs_str *zs_dns_lookup(zs_str *host) {
         used += n;
         out[used++] = '\n';
     }
+    return used;
+}
+
+// the addresses of a host as text, one per line (Dns.lookup, run off the loop's thread since it
+// blocks); "" when it has none
+zs_str *zs_dns_lookup(zs_str *host) {
+    struct addrinfo hints = {.ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM}, *res;
+    if (!os_name(host) || host->len == 0 || getaddrinfo(host->data, NULL, &hints, &res) != 0) return str_of("", 0);
+    char out[1024];
+    size_t used = addresses_text(res, out, sizeof out);
     freeaddrinfo(res);
     return str_of(out, (zs_int)used);
+}
+
+// ---- name lookup for Tcp.connect and Udp.send, off the loop's thread: a thread of its own
+// for each, so a resolver that doesn't answer holds up no other task, nor another lookup. Its
+// answer comes back on a descriptor the task waits for (a socket pair; on Windows, where only
+// sockets are waited for, a loopback connection, as the inbox's wake is): the addresses, one per
+// line, or "!" and why there are none. A task cancelled meanwhile closes its end, and the
+// thread's write fails. The threads that have answered are joined at the next lookup and at exit.
+typedef struct lookup {
+    char *host;
+    int out;          // the descriptor the answer goes to, closed after it
+    atomic_bool done; // answered: what's left of the thread is its return
+    pthread_t thread;
+    struct lookup *next;
+} lookup;
+static lookup *lookups; // started and not yet joined
+static pthread_mutex_t lookups_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_once_t lookups_once = PTHREAD_ONCE_INIT;
+
+// joins the lookups' threads that have answered
+static void lookups_reap(void) {
+    pthread_mutex_lock(&lookups_mu);
+    for (lookup **p = &lookups; *p;) {
+        lookup *l = *p;
+        if (atomic_load_explicit(&l->done, memory_order_acquire)) {
+            *p = l->next;
+            pthread_join(l->thread, NULL);
+            free(l);
+        } else {
+            p = &l->next;
+        }
+    }
+    pthread_mutex_unlock(&lookups_mu);
+}
+
+static void lookups_start(void) { atexit(lookups_reap); }
+
+// the answer's descriptors: [0] the task reads, non-blocking; [1] the thread writes, blocking
+static int lookup_pair(int p[2]) {
+#ifdef _WIN32
+    if (wake_pair(p) != 0) return -1;
+    u_long zero = 0;
+    ioctlsocket(sk_of(p[1]), FIONBIO, &zero);
+#else
+#ifdef SOCK_CLOEXEC
+    if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, p) != 0) return -1;
+#else
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, p) != 0) return -1;
+    fcntl(p[0], F_SETFD, FD_CLOEXEC);
+    fcntl(p[1], F_SETFD, FD_CLOEXEC);
+#endif
+    fcntl(p[0], F_SETFL, O_NONBLOCK);
+#ifdef __APPLE__
+    int one = 1;
+    setsockopt(p[1], SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+#endif
+#endif
+    return 0;
+}
+
+static void *lookup_main(void *arg) {
+    lookup *l = arg;
+    char text[1024];
+    size_t n;
+    struct addrinfo hints = {.ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM}, *res;
+    int rc = getaddrinfo(l->host, NULL, &hints, &res);
+    if (rc == 0) {
+        n = addresses_text(res, text, sizeof text);
+        freeaddrinfo(res);
+        if (n == 0) n = (size_t)snprintf(text, sizeof text, "!the host has no address");
+    } else {
+#ifdef _WIN32
+        DWORD k = FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, (DWORD)rc, 0, text + 1, sizeof text - 1, NULL);
+        while (k && (text[k] == '\n' || text[k] == '\r' || text[k] == '.')) k--;
+        text[0] = '!';
+        n = k ? k + 1 : (size_t)snprintf(text, sizeof text, "!no such host");
+#else
+        n = (size_t)snprintf(text, sizeof text, "!%s", rc == EAI_SYSTEM ? strerror(errno) : gai_strerror(rc));
+#endif
+    }
+    if (n >= sizeof text) n = sizeof text - 1; // snprintf's length, cut
+    free(l->host);
+    int out = l->out;
+    for (size_t at = 0; at < n;) {
+#ifdef _WIN32
+        int w = send(sk_of(out), text + at, (int)(n - at), 0);
+#else
+        ssize_t w = send(out, text + at, n - at, MSG_NOSIGNAL);
+#endif
+        if (w <= 0) break; // the task was cancelled, and closed its end
+        at += (size_t)w;
+    }
+    atomic_store_explicit(&l->done, true, memory_order_release);
+#ifdef _WIN32
+    sk_close(out);
+#else
+    close(out);
+#endif
+    return NULL;
+}
+
+// starts looking the host up: the descriptor its answer comes on; -1001 when the host needs no
+// lookup (an address, or "": this machine's)
+zs_int zs_dns_start(zs_str *host) {
+    if (!os_name(host)) {
+        sk_seterr(EINVAL);
+        return failed();
+    }
+    if (host->len == 0) return -1001;
+    struct addrinfo hints = {.ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM, .ai_flags = AI_NUMERICHOST}, *res;
+    if (getaddrinfo(host->data, NULL, &hints, &res) == 0) {
+        freeaddrinfo(res);
+        return -1001;
+    }
+    pthread_once(&lookups_once, lookups_start);
+    lookups_reap();
+    lookup *l = calloc(1, sizeof *l);
+    char *h = malloc((size_t)host->len + 1);
+    if (!l || !h) zs_panic_c("out of memory");
+    memcpy(h, host->data, (size_t)host->len);
+    h[host->len] = 0;
+    int p[2];
+    if (lookup_pair(p) != 0) {
+        free(h);
+        free(l);
+        return failed();
+    }
+    l->host = h;
+    l->out = p[1];
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, (size_t)1 << 20);
+    pthread_mutex_lock(&lookups_mu);
+    int r = pthread_create(&l->thread, &attr, lookup_main, l);
+    if (r == 0) {
+        l->next = lookups;
+        lookups = l;
+    }
+    pthread_mutex_unlock(&lookups_mu);
+    pthread_attr_destroy(&attr);
+    if (r != 0) {
+        for (int k = 0; k < 2; k++) sk_drop(p[k]);
+        free(h);
+        free(l);
+        return -(zs_int)r;
+    }
+    return p[0];
 }
 
 #ifndef _WIN32
@@ -3437,11 +3685,51 @@ static int unix_address(zs_str *path, struct sockaddr_un *a) {
     return 0;
 }
 
-// a socket listening at the path (a file left from an earlier run is removed first)
+#if defined(_WIN32) && !defined(IO_REPARSE_TAG_AF_UNIX)
+#define IO_REPARSE_TAG_AF_UNIX 0x80000023L
+#endif
+
+// what's at a Unix socket's path before a socket listens there: 0 when it's nothing, or a socket
+// no one listens on (an earlier run's, removed now); else the error, EEXIST for what isn't a
+// socket (a file is never removed) and EADDRINUSE for one a server listens on
+static int unix_clear(const struct sockaddr_un *a) {
+#ifdef _WIN32
+    // a socket's file is a reparse point with a tag of its own
+    WIN32_FIND_DATAA d;
+    HANDLE h = FindFirstFileA(a->sun_path, &d);
+    if (h == INVALID_HANDLE_VALUE) return 0; // nothing there, or bind says what's wrong
+    FindClose(h);
+    if (!(d.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) || d.dwReserved0 != IO_REPARSE_TAG_AF_UNIX) return EEXIST;
+    // a blocking socket, so the answer is the connect's own
+    SOCKET s = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (s == INVALID_SOCKET) return WSAGetLastError();
+    bool stale = connect(s, (const struct sockaddr *)a, sizeof *a) != 0 && WSAGetLastError() == WSAECONNREFUSED;
+    closesocket(s);
+    if (!stale) return WSAEADDRINUSE;
+#else
+    struct stat st;
+    if (lstat(a->sun_path, &st) != 0) return 0; // nothing there, or bind says what's wrong
+    if (!S_ISSOCK(st.st_mode)) return EEXIST;
+    // a Unix socket's connect is answered at once: refused when no one listens
+    int s = sk_new(AF_UNIX, SOCK_STREAM, 0);
+    if (s < 0) return errno;
+    bool stale = connect(s, (const struct sockaddr *)a, sizeof *a) != 0 && (errno == ECONNREFUSED || errno == ENOENT);
+    close(s);
+    if (!stale) return EADDRINUSE;
+#endif
+    unlink(a->sun_path);
+    return 0;
+}
+
+// a socket listening at the path; a socket an earlier run left there is removed first
 zs_int zs_unix_listen(zs_str *path) {
     struct sockaddr_un a;
     if (unix_address(path, &a) != 0) return failed();
-    unlink(a.sun_path);
+    int there = unix_clear(&a);
+    if (there != 0) {
+        sk_seterr(there);
+        return failed();
+    }
     int fd = sk_new(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0 || bind(S(fd), (struct sockaddr *)&a, sizeof a) != 0 || listen(S(fd), 4096) != 0) {
         int e = sk_err();

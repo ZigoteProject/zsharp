@@ -1920,7 +1920,7 @@ static struct {
     uint32_t qhead, qlen, qcap;
     loop_timer *timers; // a min-heap by deadline
     uint32_t ntimers, tcap;
-    zs_int next_timer;
+    uint32_t next_timer; // the last id given: unsigned, as it wraps
     uint32_t waits; // interrupt lines and signals tasks wait for
 } L;
 
@@ -1990,6 +1990,14 @@ static void *timer_remove(uint32_t i) {
     return cb;
 }
 
+// where the timer with the id is in the heap, or -1. ponytail: found by a scan, fine for the
+// few a chip has pending; an index by id for hundreds
+static int32_t timer_index(zs_int id) {
+    for (uint32_t i = 0; i < L.ntimers; i++)
+        if (L.timers[i].id == id) return (int32_t)i;
+    return -1;
+}
+
 // cb runs in ms milliseconds; the result names the timer for zs_loop_untimer
 zs_int zs_loop_timer(zs_int ms, void *cb) {
     if (L.ntimers == L.tcap) {
@@ -2000,20 +2008,22 @@ zs_int zs_loop_timer(zs_int ms, void *cb) {
         L.timers = t;
         L.tcap = cap;
     }
-    int64_t at = zs_ticks() + (ms > 0 ? (int64_t)ms * clock_hz / 1000 : 0);
-    L.timers[L.ntimers] = (loop_timer){at, ++L.next_timer, cb};
+    // a deadline past the ticks' range is one that never comes: the range's end
+    int64_t now = zs_ticks(), span = ms > 0 ? (int64_t)ms * clock_hz / 1000 : 0;
+    int64_t at = span > INT64_MAX - now ? INT64_MAX : now + span;
+    // ids wrap after 2^32 timers: one still pending, or 0, is skipped
+    zs_int id;
+    do id = (zs_int)++L.next_timer;
+    while (id == 0 || timer_index(id) >= 0);
+    L.timers[L.ntimers] = (loop_timer){at, id, cb};
     timer_up(L.ntimers++);
-    return L.next_timer;
+    return id;
 }
 
-// the timer goes, its callback uncalled (its task was cancelled). ponytail: found by a scan,
-// fine for the few a chip has pending; an index by id for hundreds
+// the timer goes, its callback uncalled (its task was cancelled)
 void zs_loop_untimer(zs_int id) {
-    for (uint32_t i = 0; i < L.ntimers; i++)
-        if (L.timers[i].id == id) {
-            zs_clo_drop(timer_remove(i));
-            return;
-        }
+    int32_t i = timer_index(id);
+    if (i >= 0) zs_clo_drop(timer_remove((uint32_t)i));
 }
 
 #if !defined(__wasm__) && !defined(ZS_LIB)

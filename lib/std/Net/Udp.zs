@@ -1,6 +1,7 @@
 /// UDP for tasks: a socket bound to a port, datagrams sent to a host and port and received with
 /// their sender; and `Dns`, name lookup off the event loop's thread. A call that would block
-/// waits for the event loop instead, so other tasks go on meanwhile.
+/// waits for the event loop instead, so other tasks go on meanwhile, and a name `Udp.send` is
+/// given is looked up off the loop's thread (`Udp.bind` looks its own up where it's called).
 namespace Net
 
 /// A UDP socket (`Udp.bind`); `use` closes it.
@@ -28,20 +29,32 @@ module Udp =
     let (UdpSocket fd) = s
     Native.socketPort fd
 
-  /// Sends the buffer's first `n` bytes as one datagram to the host and port, waiting while the
-  /// socket can't take it.
-  let rec send (s: UdpSocket) (host: string) (port: int) (buf: Buffer<u8>) (n: int) : Task<result<unit, string>> =
-    let (UdpSocket fd) = s
-
+  // a datagram to an address (one the runtime would look up on the loop's thread, were it a
+  // name), waiting while the socket can't take it
+  let rec private sendTo (fd: int) (address: string) (port: int) (buf: Buffer<u8>) (n: int) : Task<result<unit, string>> =
     task {
-      let w = Native.udpSend fd host port buf n
+      let w = Native.udpSend fd address port buf n
       if w = wouldBlock then
         do! Task.waitFor fd true
-        return! send s host port buf n
+        return! sendTo fd address port buf n
       else if w < 0 then
         return Error (Native.errorText w)
       else
         return Ok ()
+    }
+
+  /// Sends the buffer's first `n` bytes as one datagram to the host and port, waiting while the
+  /// socket can't take it. A name is looked up off the loop's thread for each datagram: to send
+  /// many, look it up once (`Dns.lookup`) and send to the address.
+  let send (s: UdpSocket) (host: string) (port: int) (buf: Buffer<u8>) (n: int) : Task<result<unit, string>> =
+    let (UdpSocket fd) = s
+
+    task {
+      let! found = addressesOf host
+      match found with
+      | Ok (address :: _) -> return! sendTo fd address port buf n
+      | Ok [] -> return Error "the host has no address"
+      | Error e -> return Error e
     }
 
   /// Sends the text's bytes as one datagram.

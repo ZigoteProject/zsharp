@@ -257,6 +257,7 @@ let private runtimeList : list<string * (string * string * list<string>)> =
     ("Udp.from", ("zs_udp_from", "ptr", []))
     ("Udp.fromPort", ("zs_udp_from_port", "i_W", []))
     ("Dns.lookup", ("zs_dns_lookup", "ptr", [ "ptr" ]))
+    ("Dns.start", ("zs_dns_start", "i_W", [ "ptr" ]))
     ("Fd.read", ("zs_fd_read", "i_W", [ "i_W"; "bytes"; "i_W"; "i_W" ]))
     ("Fd.write", ("zs_fd_write", "i_W", [ "i_W"; "bytes"; "i_W"; "i_W" ]))
     ("String.slice", ("zs_str_slice", "ptr", [ "ptr"; "i_W"; "i_W" ]))
