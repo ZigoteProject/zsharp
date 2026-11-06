@@ -796,16 +796,26 @@ zs_weak *zs_weak_new(void *target) {
     return w;
 }
 
-// the object, with a new reference, or NULL once it has died (a count below 0 is an object an
-// interrupt handler shares)
+// the object, with a new reference, or NULL once it has died. A count below 0 is an object an
+// interrupt handler shares (code generation marks a Share object shared when a weak reference
+// to it is made, in a program with handlers), which a handler may drop meanwhile: its reference
+// is taken atomically, and only while its count isn't 0
 void *zs_weak_target(zs_weak *w) {
     if ((uintptr_t)w->target & 1) return (void *)((uintptr_t)w->target & ~(uintptr_t)1);
     int32_t *t = w->target;
     if (t) {
-        int32_t c = *t;
-        if (c > 0) *t = c + 1;
-        else if (c < 0) *t = c - 1;
-        else t = NULL;
+        int32_t c = __atomic_load_n(t, __ATOMIC_RELAXED);
+        if (c > 0) {
+            *t = c + 1;
+        } else {
+            for (;;) {
+                if (c == 0) {
+                    t = NULL;
+                    break;
+                }
+                if (__atomic_compare_exchange_n(t, &c, c - 1, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) break;
+            }
+        }
     }
     return t;
 }
@@ -1076,10 +1086,22 @@ _Noreturn void zs_slice_fail(zs_int i, zs_int j, zs_int n, zs_int kind) {
     zs_panic_c(msg);
 }
 
-// Fixed.ofArray of an array that hasn't the type's length
+// t in at most room bytes (3 or more), its end "..." when it doesn't fit
+static int text_upto(const char *t, char *out, int room) {
+    int k = 0;
+    while (t[k] && k < room) {
+        out[k] = t[k];
+        k++;
+    }
+    if (t[k]) k = k - 3 + text_of("...", out + k - 3);
+    return k;
+}
+
+// Fixed.ofArray of an array that hasn't the type's length; the type's text is the compiler's,
+// as long as its element type's, so it's cut to leave room for the rest (as the host's)
 _Noreturn void zs_fixed_fail(const char *type, zs_int len) {
     char msg[160];
-    int k = text_of(type, msg);
+    int k = text_upto(type, msg, (int)sizeof msg - 25 - 20 - 1);
     k += text_of(" from an array of length ", msg + k);
     k += int_text(len, msg + k);
     msg[k] = 0;
@@ -1192,12 +1214,51 @@ zs_str *zs_str_of_f32(float v) { return zs_str_of_f64((double)v); }
 
 // ---- format specifiers (0024): integers as the host's; floats by zs_str_of_f64's rules
 
-static void spec_of(zs_str *spec, char *letter, int *digits) {
-    *letter = spec->len > 0 ? spec->data[0] : 'G';
+// a specifier the compiler would refuse in a hole: the panic quotes it (its first bytes, any but
+// printable ASCII as '?'), or names the letters the type takes
+_Noreturn static void spec_fail(zs_str *spec, const char *kind, const char *letters) {
+    char msg[160];
+    int k;
+    if (kind) {
+        k = text_of("'", msg);
+        msg[k++] = spec->data[0];
+        k += text_of("' isn't a format specifier for ", msg + k);
+        k += text_of(kind, msg + k);
+        k += text_of(": it takes ", msg + k);
+        for (int i = 0; letters[i]; i++) {
+            if (i > 0) k += text_of(", ", msg + k);
+            msg[k++] = letters[i];
+        }
+    } else {
+        k = text_of("a format specifier is a letter and at most two digits, as F2 or X8, not '", msg);
+        for (zs_int i = 0; i < spec->len && i < 16; i++) {
+            unsigned char c = (unsigned char)spec->data[i];
+            msg[k++] = c >= 32 && c < 127 ? (char)c : '?';
+        }
+        if (spec->len > 16) k += text_of("...", msg + k);
+        msg[k++] = '\'';
+    }
+    msg[k] = 0;
+    zs_panic_c(msg);
+}
+
+// the host's rules (rt.c): a letter the type takes and at most two ASCII digits, so a width or
+// a precision is at most 99; anything else, from a spec made at run time, panics. Compared as
+// bytes, as a chip's char is unsigned and wasm's signed
+static void spec_of(zs_str *spec, const char *kind, const char *letters, char *letter, int *digits) {
+    const unsigned char *s = (const unsigned char *)spec->data;
+    zs_int n = spec->len;
+    bool ok = n >= 1 && n <= 3 && ((s[0] >= 'A' && s[0] <= 'Z') || (s[0] >= 'a' && s[0] <= 'z'));
+    for (zs_int i = 1; ok && i < n; i++) ok = s[i] >= '0' && s[i] <= '9';
+    if (!ok) spec_fail(spec, NULL, NULL);
+    int at = 0;
+    while (letters[at] && (unsigned char)letters[at] != s[0]) at++;
+    if (!letters[at]) spec_fail(spec, kind, letters);
+    *letter = (char)s[0];
     *digits = -1;
-    if (spec->len > 1) {
+    if (n > 1) {
         *digits = 0;
-        for (zs_int i = 1; i < spec->len && i < 3; i++) *digits = *digits * 10 + (spec->data[i] - '0');
+        for (zs_int i = 1; i < n; i++) *digits = *digits * 10 + (s[i] - '0');
     }
 }
 
@@ -1214,11 +1275,13 @@ static int group_digits(const char *in, int n, char *out) {
     return k;
 }
 
+// d is at most 99 (spec_of): F99 of u64's greatest or i64's least is 120 bytes, buf's size, and
+// N99's 126 of grouped's 160
 zs_str *zs_format_int(int64_t v, int64_t bits, bool isUnsigned, zs_str *spec) {
     char buf[120], grouped[160];
     char letter;
     int d, n = 0;
-    spec_of(spec, &letter, &d);
+    spec_of(spec, "an integer", "FNDXxBb", &letter, &d);
     uint64_t mask = bits >= 64 ? ~(uint64_t)0 : ((uint64_t)1 << bits) - 1;
     uint64_t u = (uint64_t)v & mask;
     if (letter == 'X' || letter == 'x' || letter == 'B' || letter == 'b') {
@@ -1252,7 +1315,7 @@ zs_str *zs_format_int(int64_t v, int64_t bits, bool isUnsigned, zs_str *spec) {
 zs_str *zs_format_float(double x, zs_str *spec) {
     char letter;
     int d;
-    spec_of(spec, &letter, &d);
+    spec_of(spec, "a float", "FNEG", &letter, &d);
     if ((letter != 'F' && letter != 'N') || x != x || x > 1e15 || x < -1e15) return zs_str_of_f64(x);
     char buf[80], grouped[120];
     int n = 0, decimals = d < 0 ? 2 : d > 15 ? 15 : d;

@@ -2508,6 +2508,11 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
     let t = argTy 0
     if not (heap g t && llty g t = "ptr") then
       fail fx $"weak<{showT g t}> isn't possible: a weak reference is to an object (a union's cell, a ref, an array, a string, a closure or a dyn value)" |> ignore
+    // with threads, a Share object is marked shared, with all it holds, when a weak reference to
+    // it is made: a crossing that moved it unmarked (decision 75) would leave this thread's weak
+    // reference to another thread's object, which Weak.get counts non-atomically
+    if g.opts.threaded && Option.isNone (shareBlocker g.v (fun _ -> ()) g.types Set.empty t) then
+      shareValue g em t (arg 0)
     // the cell takes no reference to the object; the argument's is given up
     let w = instr em $"call ptr @zs_weak_new(ptr {arg 0})"
     dropValue g em t (arg 0)

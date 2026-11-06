@@ -1,0 +1,10 @@
+B99: 99 99
+b99: 99 99
+D99: 100 99
+X99: 99 99
+x99: 99 99
+F99: 120 120
+N99: 126 126
+000000101 8000000000000000 18,446,744,073,709,551,615 11111111
+before
+panic: a format specifier is a letter and at most two digits, as F2 or X8, not 'Bzz'

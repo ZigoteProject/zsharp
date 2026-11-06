@@ -19,6 +19,7 @@ list.zs:1:6: warning: 'Node' can reach itself through 'next: ref<option<Node>>' 
 **Weak references:** a `weak<T>` refers to an object without keeping it alive, so a back-pointer (a child's parent, a list of observers) made weak isn't part of a cycle.
 - **Making one:** `Weak.create x`, for an object: a union's cell, a `ref`, an array, a string, a closure or a `dyn` value.
 - **Using one:** `Weak.get w` is `Some x` while the object lives, and `None` once it has gone, whether the program or the runtime freed it (a weak reference itself, an `Spsc`): a later object at the same address isn't taken for it (`tests/weak_runtime.zs`).
+- **With threads:** a `weak` stays on its thread. In a program with threads, `Weak.create x` marks a Share `x` shared, as a crossing would, so it may later go to another thread while `Weak.get` here still finds it, or `None`, safely; its counts are then atomic (`tests/parallel/weak.zs`).
 - **On a chip** too, over the chip's heap ([Microcontrollers](11-microcontrollers.md#weak-references-and-arenas)).
 
 ```zsharp

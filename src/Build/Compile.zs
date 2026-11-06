@@ -413,8 +413,12 @@ let make (o: Options.Options) (prog0: Program) (linked: Modules.Linked) (testBui
     | Ok () ->
       let rt = Options.runtimeDir ()
       let runtimeFile (name: string) = Path.combine rt name
-      // ZS_NO_POOL: objects from malloc, one by one, for valgrind (a sanitized build has that too)
-      let defines = List.append (if threads then [ "-DZS_THREADS" ] else []) (if Option.isSome (Environment.getVariable "ZS_NO_POOL") then [ "-DZS_NO_POOL" ] else [])
+      // ZS_THREADS: the allocator's state per thread and the runtime's tables locked, for a program
+      // with threads, and for any library on a computer, whose C host may call it on any number
+      // of threads at once (0008) though it gives no handles. ZS_NO_POOL: objects from malloc,
+      // one by one, for valgrind (a sanitized build has that too)
+      let runtimeThreads = threads || (o.isLib && Option.isNone o.mcu)
+      let defines = List.append (if runtimeThreads then [ "-DZS_THREADS" ] else []) (if Option.isSome (Environment.getVariable "ZS_NO_POOL") then [ "-DZS_NO_POOL" ] else [])
       let san =
         // zs fuzz: libFuzzer's coverage instrumentation and its runtime without a main (the test
         // binary's runner drives it), with the sanitizers; a panic aborts (ZS_FUZZ)

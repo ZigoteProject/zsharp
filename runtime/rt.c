@@ -539,7 +539,8 @@ static int64_t live, allocations, mallocs;
 // chunk of its own: an object goes on the list of the thread that frees it, whichever made it,
 // so no lock and no atomic either. Byte 6 of the header says where an object came from: its
 // class, or SYSTEM for malloc and aligned_alloc. With a sanitizer or valgrind (ZS_NO_POOL), it's
-// plain malloc, so the tools see every object.
+// plain malloc, so the tools see every object. A thread that ends leaves its lists and the rest
+// of its chunk to the next thread to start (heap_state).
 // ponytail: chunks are kept until exit; a program whose small objects peak once keeps that
 // memory, and so does a thread that frees objects of a size it doesn't make (a consumer's)
 #if !defined(ZS_NO_POOL)
@@ -550,12 +551,12 @@ static int64_t live, allocations, mallocs;
 #define SYSTEM 0xFF
 #endif
 
-// What the allocator keeps for a thread, in one thread-local: its counts (with threads) and the
-// pool's free lists and chunk. On macOS a thread-local is found by a call, so an allocation makes
-// one look-up rather than one for each variable.
-typedef struct {
+// What the allocator keeps for a thread: its counts (with threads) and the pool's free lists and
+// chunk, in one record, so an allocation looks up one thread-local (on macOS, a call).
+typedef struct heap_state {
 #ifdef ZS_THREADS
     counts *counts;
+    struct heap_state *spare; // the next of the ended threads'
 #endif
 #if ZS_POOL
     void *free[POOL_MAX / 8 + 1];
@@ -565,32 +566,72 @@ typedef struct {
 } heap_state;
 
 #ifdef ZS_THREADS
-static _Thread_local heap_state heap_here;
+// A thread's state is made at its first allocation or free, and outlives it: when the thread
+// ends (a C host's come and go, and Task.blocking's helper ends with its Task.run), its key's
+// destructor gives the state up, and the next thread to start takes it whole, its free lists,
+// the rest of its chunk and its counts (which stay in all_counts, so the totals keep them). The
+// thread-local is a pointer to it, as on macOS dyld may free a thread's thread-locals before that
+// destructor runs. The spare states are under counts_mu.
+static _Thread_local heap_state *heap_mine;
+static heap_state *spare_states;
+static pthread_key_t heap_key;
+static pthread_once_t heap_once = PTHREAD_ONCE_INIT;
 
-// the thread's counts, made the first time it counts
-static counts *counts_of(heap_state *h) {
-    counts *c = h->counts;
-    if (!c) {
-        c = aligned_alloc(64, 64);
-        if (!c) zs_panic_c("out of memory");
+static void heap_end(void *arg) {
+    heap_state *h = arg;
+    pthread_mutex_lock(&counts_mu);
+    h->spare = spare_states;
+    spare_states = h;
+    pthread_mutex_unlock(&counts_mu);
+    // a destructor after this one that allocates takes a state again, given up in the next round
+    heap_mine = NULL;
+}
+
+static void heap_key_make(void) {
+    if (pthread_key_create(&heap_key, heap_end) != 0) zs_panic_c("pthread_key_create failed");
+}
+
+__attribute__((noinline)) static heap_state *heap_new(void) {
+    pthread_once(&heap_once, heap_key_make);
+    // this thread's own, when its thread-locals went before its destructors ran (macOS)
+    heap_state *h = pthread_getspecific(heap_key);
+    if (h) return heap_mine = h;
+    pthread_mutex_lock(&counts_mu);
+    h = spare_states;
+    if (h) spare_states = h->spare;
+    pthread_mutex_unlock(&counts_mu);
+    if (!h) {
+        h = aligned_alloc(64, (sizeof(heap_state) + 63) & ~(size_t)63); // a cache line of its own
+        counts *c = aligned_alloc(64, 64);
+        if (!h || !c) zs_panic_c("out of memory");
+        memset(h, 0, sizeof *h);
         memset(c, 0, 64);
+        h->counts = c;
         pthread_mutex_lock(&counts_mu);
         c->next = all_counts;
         all_counts = c;
         pthread_mutex_unlock(&counts_mu);
-        h->counts = c;
     }
-    return c;
+    h->spare = NULL;
+    heap_mine = h;
+    pthread_setspecific(heap_key, h);
+    return h;
+}
+
+static inline heap_state *heap_of_thread(void) {
+    heap_state *h = heap_mine;
+    return h ? h : heap_new();
 }
 
 // only the thread itself writes its counts; another reads them whole
-#define COUNT_IN(h, x, d) do { counts *c_ = counts_of(h); __atomic_store_n(&c_->x, c_->x + (d), __ATOMIC_RELAXED); } while (0)
+#define COUNT_IN(h, x, d) do { counts *c_ = (h)->counts; __atomic_store_n(&c_->x, c_->x + (d), __ATOMIC_RELAXED); } while (0)
 #else
 static heap_state heap_here;
+static inline heap_state *heap_of_thread(void) { return &heap_here; }
 #define COUNT_IN(h, x, d) ((void)(h), (x) += (d))
 #endif
 // a count changed where the thread's state isn't at hand already
-#define COUNT(x, d) COUNT_IN(&heap_here, x, d)
+#define COUNT(x, d) COUNT_IN(heap_of_thread(), x, d)
 
 #if ZS_POOL
 static void pool_chunk(heap_state *h) {
@@ -602,7 +643,7 @@ static void pool_chunk(heap_state *h) {
 #endif
 
 void *zs_alloc(zs_int size) {
-    heap_state *h = &heap_here;
+    heap_state *h = heap_of_thread();
     COUNT_IN(h, live, 1);
     COUNT_IN(h, allocations, 1);
 #if ZS_POOL
@@ -714,7 +755,7 @@ int64_t zs_ticks(void) {
 }
 
 void zs_free(void *p) {
-    heap_state *h = &heap_here;
+    heap_state *h = heap_of_thread();
     COUNT_IN(h, live, -1);
 #if ZS_POOL
     size_t c = FROM(p);
@@ -870,13 +911,18 @@ static void *tab_remove(ptrtab *t, const void *k) {
     return v;
 }
 
-// ---- weak references (weak<T>): references that don't keep their object alive. The weak
+// ---- weak references (weak<T>): references that don't keep their object alive. A thread's weak
 // references to one object share a cell { count, object }, found from the object in a table, and
 // the object dying (freed, or its cell reused for another) empties the cell. A program that uses
 // weak references or arenas allocates and frees through zs_alloc_checked and zs_free_checked.
-typedef struct {
+// A weak reference isn't Share, so a cell stays on the thread that made it, and compiled code
+// counts it there, not atomically: another thread's weak references to the same object (a shared
+// one) have a cell of their own, chained to the first, which the table holds.
+typedef struct zs_weak {
     ZS_HEADER;
     void *target;
+    struct zs_weak *next; // the object's cell of another thread
+    pthread_t owner;
 } zs_weak;
 
 static ptrtab weaks;
@@ -893,31 +939,46 @@ static pthread_mutex_t heap_mu = PTHREAD_MUTEX_INITIALIZER;
 #endif
 
 zs_weak *zs_weak_new(void *target) {
+    pthread_t self = pthread_self();
     HEAP_LOCK();
     bool dies = __atomic_load_n((int32_t *)target, __ATOMIC_RELAXED) != 0; // a static object never does: its cells aren't in the table
-    zs_weak *w = dies ? tab_get(&weaks, target) : NULL;
+    zs_weak *first = dies ? tab_get(&weaks, target) : NULL, *w = first;
+    while (w && !pthread_equal(w->owner, self)) w = w->next;
     if (w) {
         w->rc++;
     } else {
         w = zs_alloc((zs_int)sizeof(zs_weak));
         w->rc = 1;
         w->target = dies ? target : (void *)((uintptr_t)target | 1); // the low bit: static
-        if (dies) tab_put(&weaks, target, w);
+        w->owner = self;
+        w->next = NULL;
+        if (first) {
+            w->next = first->next;
+            first->next = w;
+        } else if (dies) {
+            tab_put(&weaks, target, w);
+        }
     }
     HEAP_UNLOCK();
     return w;
 }
 
 // the object, with a new reference, or NULL once it has died. A shared object (count below 0)
-// gets its reference only while its count isn't 0: at 0 another thread is freeing it
+// gets its reference only while its count isn't 0: at 0 another thread is freeing it. A
+// thread-local one is this thread's, as the weak reference is: with threads, code generation
+// marks a Share object shared when a weak reference to it is made, so no crossing moves it to
+// another thread unmarked
 void *zs_weak_target(zs_weak *w) {
-    if ((uintptr_t)w->target & 1) return (void *)((uintptr_t)w->target & ~(uintptr_t)1);
+    // read before the lock: the low bit is the cell's from its making, and another thread may
+    // empty the cell meantime (its object dying there)
+    void *at = __atomic_load_n(&w->target, __ATOMIC_RELAXED);
+    if ((uintptr_t)at & 1) return (void *)((uintptr_t)at & ~(uintptr_t)1);
     HEAP_LOCK();
     int32_t *t = w->target;
     if (t) {
         int32_t c = __atomic_load_n(t, __ATOMIC_RELAXED);
         if (c > 0) {
-            *t = c + 1; // thread-local: this thread's, as the weak reference is
+            *t = c + 1;
         } else {
             for (;;) {
                 if (c == 0) { // another thread is freeing it
@@ -937,9 +998,33 @@ void zs_free_checked(void *p);
 
 void zs_weak_free(zs_weak *w) {
     HEAP_LOCK();
-    if (w->target && !((uintptr_t)w->target & 1)) tab_remove(&weaks, w->target);
+    if (w->target && !((uintptr_t)w->target & 1)) {
+        // out of its object's chain
+        zs_weak *first = tab_get(&weaks, w->target);
+        if (first == w) {
+            tab_remove(&weaks, w->target);
+            if (w->next) tab_put(&weaks, w->target, w->next);
+        } else {
+            for (zs_weak *p = first; p; p = p->next)
+                if (p->next == w) {
+                    p->next = w->next;
+                    break;
+                }
+        }
+    }
     HEAP_UNLOCK();
     zs_free_checked(w);
+}
+
+// the object p has died: every thread's cell of it is emptied (under the lock)
+static void weaks_die(void *p) {
+    zs_weak *w = weaks.count ? tab_remove(&weaks, p) : NULL;
+    while (w) {
+        zs_weak *next = w->next;
+        __atomic_store_n(&w->target, NULL, __ATOMIC_RELAXED); // its thread may be reading it
+        w->next = NULL;
+        w = next;
+    }
 }
 
 // ---- arenas (Arena.with): what a function allocates comes from large blocks, bumped through. An
@@ -1029,8 +1114,7 @@ void *zs_alloc_checked(zs_int size) {
 
 void zs_free_checked(void *p) {
     HEAP_LOCK();
-    zs_weak *w = weaks.count ? tab_remove(&weaks, p) : NULL;
-    if (w) w->target = NULL;
+    weaks_die(p);
     zs_arena *a = arena_blocks.count ? tab_get(&arena_blocks, (void *)((uintptr_t)p & ~(uintptr_t)(ARENA_BLOCK - 1))) : NULL;
     if (a) {
         COUNT(live, -1);
@@ -1043,8 +1127,7 @@ void zs_free_checked(void *p) {
 // a cell Perceus reuses for another object: the object it held has died
 void zs_reused(void *p) {
     HEAP_LOCK();
-    zs_weak *w = weaks.count ? tab_remove(&weaks, p) : NULL;
-    if (w) w->target = NULL;
+    weaks_die(p);
     HEAP_UNLOCK();
 }
 
@@ -1374,10 +1457,23 @@ _Noreturn void zs_slice_fail(zs_int i, zs_int j, zs_int n, zs_int kind) {
     zs_panic_c(msg);
 }
 
-// Fixed.ofArray of an array that hasn't the type's length
+// t in at most room bytes (3 or more), its end "..." when it doesn't fit
+static int text_upto(const char *t, char *out, int room) {
+    int k = 0;
+    while (t[k] && k < room) {
+        out[k] = t[k];
+        k++;
+    }
+    if (t[k]) k = k - 3 + text_of("...", out + k - 3);
+    return k;
+}
+
+// Fixed.ofArray of an array that hasn't the type's length; the type's text is the compiler's,
+// as long as its element type's (a module's path, generic arguments, a tuple's parts), so it's
+// cut to leave room for the rest, a length's 20 characters and the NUL
 _Noreturn void zs_fixed_fail(const char *type, zs_int len) {
     char msg[160];
-    int k = text_of(type, msg);
+    int k = text_upto(type, msg, (int)sizeof msg - 25 - 20 - 1);
     k += text_of(" from an array of length ", msg + k);
     k += int_text(len, msg + k);
     msg[k] = 0;
@@ -1498,14 +1594,55 @@ zs_str *zs_str_replace(zs_str *s, zs_str *old, zs_str *with) {
 
 // ---- format specifiers ($"{x:F2}", 0024): .NET's standard numeric formats, invariant
 
-// a specifier's letter and its digits (-1 when it has none)
-static void spec_of(zs_str *spec, char *letter, int *digits) {
-    *letter = spec->len > 0 ? spec->data[0] : 'G';
-    *digits = -1;
-    if (spec->len > 1) {
-        *digits = 0;
-        for (zs_int i = 1; i < spec->len && i < 3; i++) *digits = *digits * 10 + (spec->data[i] - '0');
+// a specifier the compiler would refuse in a hole: the panic quotes it (its first bytes, any but
+// printable ASCII as '?'), or names the letters the type takes
+_Noreturn static void spec_fail(zs_str *spec, const char *kind, const char *letters) {
+    char msg[160];
+    int k;
+    if (kind) {
+        k = text_of("'", msg);
+        msg[k++] = spec->data[0];
+        k += text_of("' isn't a format specifier for ", msg + k);
+        k += text_of(kind, msg + k);
+        k += text_of(": it takes ", msg + k);
+        for (int i = 0; letters[i]; i++) {
+            if (i > 0) k += text_of(", ", msg + k);
+            msg[k++] = letters[i];
+        }
+    } else {
+        k = text_of("a format specifier is a letter and at most two digits, as F2 or X8, not '", msg);
+        for (zs_int i = 0; i < spec->len && i < 16; i++) {
+            unsigned char c = (unsigned char)spec->data[i];
+            msg[k++] = c >= 32 && c < 127 ? (char)c : '?';
+        }
+        if (spec->len > 16) k += text_of("...", msg + k);
+        msg[k++] = '\'';
     }
+    panic_with(msg, (size_t)k);
+}
+
+// a specifier's letter, one of the type's letters, and its digits (-1 when it has none). A
+// hole's is checked at compile time; Format.format's, which may be made at run time, is checked
+// here by the same rules (a letter and at most two ASCII digits), so a width or a precision is
+// at most 99, which every buffer below holds; anything else panics
+static void spec_of(zs_str *spec, const char *kind, const char *letters, char *letter, int *digits) {
+    const unsigned char *s = (const unsigned char *)spec->data;
+    zs_int n = spec->len;
+    bool ok = n >= 1 && n <= 3 && ((s[0] >= 'A' && s[0] <= 'Z') || (s[0] >= 'a' && s[0] <= 'z'));
+    for (zs_int i = 1; ok && i < n; i++) ok = s[i] >= '0' && s[i] <= '9';
+    if (!ok) spec_fail(spec, NULL, NULL);
+    if (!strchr(letters, s[0])) spec_fail(spec, kind, letters);
+    *letter = (char)s[0];
+    *digits = -1;
+    if (n > 1) {
+        *digits = 0;
+        for (zs_int i = 1; i < n; i++) *digits = *digits * 10 + (s[i] - '0');
+    }
+}
+
+// what snprintf wrote: it counts what it would have, past the buffer when it cut the text
+static zs_str *str_written(const char *buf, int n, size_t cap) {
+    return str_of(buf, n < 0 ? 0 : (size_t)n >= cap ? (zs_int)cap - 1 : n);
 }
 
 // the digits of a decimal text's integer part with a comma every three (N)
@@ -1549,7 +1686,7 @@ zs_str *zs_format_float(double x, zs_str *spec) {
     char buf[1600], grouped[2200];
     char letter;
     int d, n;
-    spec_of(spec, &letter, &d);
+    spec_of(spec, "a float", "FNEG", &letter, &d);
     switch (letter) {
     case 'F': n = fixed(x, d < 0 ? 2 : d, buf, sizeof buf); break;
     case 'N': fixed(x, d < 0 ? 2 : d, buf, sizeof buf); n = group(buf, grouped); return str_of(grouped, n);
@@ -1567,7 +1704,7 @@ zs_str *zs_format_float(double x, zs_str *spec) {
         if (d <= 0) return zs_str_of_f64(x);
         n = c_snprintf(buf, sizeof buf, "%.*G", d, x);
     }
-    return str_of(buf, n);
+    return str_written(buf, n, sizeof buf);
 }
 
 // v at a width of bits bits (unsigned: its bits as they are), under a specifier
@@ -1575,7 +1712,7 @@ zs_str *zs_format_int(int64_t v, int64_t bits, bool isUnsigned, zs_str *spec) {
     char buf[200], grouped[300];
     char letter;
     int d, n;
-    spec_of(spec, &letter, &d);
+    spec_of(spec, "an integer", "FNDXxBb", &letter, &d);
     uint64_t mask = bits >= 64 ? ~(uint64_t)0 : ((uint64_t)1 << bits) - 1;
     uint64_t u = (uint64_t)v & mask; // two's complement at the type's width
     switch (letter) {
@@ -1590,6 +1727,7 @@ zs_str *zs_format_int(int64_t v, int64_t bits, bool isUnsigned, zs_str *spec) {
         for (int i = 63; i >= 0; i--)
             if (k > 0 || ((u >> i) & 1) || i == 0) buf[k++] = (char)('0' + ((u >> i) & 1));
         int pad = d > k ? d - k : 0;
+        if (pad > (int)sizeof buf - k) pad = (int)sizeof buf - k;
         memmove(buf + pad, buf, (size_t)k);
         memset(buf, '0', (size_t)pad);
         n = k + pad;
@@ -1610,7 +1748,7 @@ zs_str *zs_format_int(int64_t v, int64_t bits, bool isUnsigned, zs_str *spec) {
         else if (v < 0) n = snprintf(buf, sizeof buf, "-%0*llu", d < 0 ? 1 : d, (unsigned long long)-(uint64_t)v);
         else n = snprintf(buf, sizeof buf, "%0*lld", d < 0 ? 1 : d, (long long)v);
     }
-    return str_of(buf, n);
+    return str_written(buf, n, sizeof buf);
 }
 
 // ---- Int.parse and Float.parse (0024)
@@ -1863,6 +2001,22 @@ _Noreturn void zs_exit(zs_int code) {
     _exit((int)code);
 }
 
+// a reader's buffer (a file's, a directory's, a process's output), of cap bytes or grown to twice
+// its cap: out of memory panics, as an allocation does (a NULL kept as the buffer had the next
+// read write at the buffer's offset from address 0)
+static char *buf_new(size_t cap) {
+    char *b = malloc(cap);
+    if (!b) zs_panic_c("out of memory");
+    return b;
+}
+
+static char *buf_grow(char *b, size_t *cap) {
+    char *nb = *cap > SIZE_MAX / 2 ? NULL : realloc(b, *cap * 2);
+    if (!nb) zs_panic_c("out of memory");
+    *cap *= 2;
+    return nb;
+}
+
 zs_str *zs_file_read(zs_str *path) {
     clear_error();
     FILE *f = os_name(path) ? fopen(path->data, "rb") : NULL;
@@ -1871,11 +2025,11 @@ zs_str *zs_file_read(zs_str *path) {
         return str_of("", 0);
     }
     size_t cap = 4096, len = 0;
-    char *buf = malloc(cap);
+    char *buf = buf_new(cap);
     size_t n;
     while ((n = fread(buf + len, 1, cap - len, f)) > 0) {
         len += n;
-        if (len == cap) buf = realloc(buf, cap *= 2);
+        if (len == cap) buf = buf_grow(buf, &cap);
     }
     if (ferror(f)) set_error("cannot read", path);
     fclose(f);
@@ -1927,12 +2081,12 @@ zs_str *zs_dir_list(zs_str *path) {
         return str_of("", 0);
     }
     size_t cap = 256, len = 0;
-    char *buf = malloc(cap);
+    char *buf = buf_new(cap);
     struct dirent *e;
     while ((e = readdir(d))) {
         if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
         size_t n = strlen(e->d_name) + 1;
-        while (len + n > cap) buf = realloc(buf, cap *= 2);
+        while (len + n > cap) buf = buf_grow(buf, &cap);
         memcpy(buf + len, e->d_name, n);
         len += n;
     }
@@ -2861,11 +3015,11 @@ zs_str *zs_process_run(zs_str *prog, zs_str *args) {
     }
     int fd = (int)started[2];
     size_t cap = 4096, len = 0;
-    char *buf = malloc(cap);
+    char *buf = buf_new(cap);
     int n;
     while ((n = _read(fd, buf + len, (unsigned)(cap - len))) > 0) {
         len += (size_t)n;
-        if (len == cap) buf = realloc(buf, cap *= 2);
+        if (len == cap) buf = buf_grow(buf, &cap);
     }
     if (n < 0) set_error("cannot read the output of", prog);
     _close(fd);
@@ -2941,6 +3095,7 @@ static char **split_nul(zs_str *s, char *first) {
     int64_t count = 0;
     for (int64_t i = 0; i < s->len; i++) count += i == 0 || s->data[i - 1] == 0;
     char **v = malloc(sizeof(char *) * (size_t)(count + 2));
+    if (!v) zs_panic_c("out of memory");
     int64_t k = 0;
     if (first) v[k++] = first;
     for (int64_t i = 0; i < s->len; i++)
@@ -2997,7 +3152,7 @@ zs_str *zs_process_run(zs_str *prog, zs_str *args) {
         return str_of("", 0);
     }
     size_t cap = 4096, len = 0;
-    char *buf = malloc(cap);
+    char *buf = buf_new(cap);
     for (ssize_t n; (n = read(fds[0], buf + len, cap - len)) != 0;) {
         if (n < 0) {
             if (errno == EINTR) continue;
@@ -3005,7 +3160,7 @@ zs_str *zs_process_run(zs_str *prog, zs_str *args) {
             break;
         }
         len += (size_t)n;
-        if (len == cap) buf = realloc(buf, cap *= 2);
+        if (len == cap) buf = buf_grow(buf, &cap);
     }
     close(fds[0]);
     // a failed wait is an Error, not a code: status as it was (0) would read as success

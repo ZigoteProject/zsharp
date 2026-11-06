@@ -47,7 +47,8 @@ trait Show<'a> =
 /// .NET's standard specifiers: `F2` (fixed, two decimals), `E3`, `G`, `N0` (with commas), `D5`,
 /// `X8` and `x`, `B8` (`D`, `X` and `B` for integers, `E` and `G` for floats).
 trait Format<'a> =
-  /// The value as text, shaped by `spec` (`"F2"`, `"X8"`).
+  /// The value as text, shaped by `spec` (`"F2"`, `"X8"`). A number's panics on a `spec` a hole
+  /// couldn't have: a letter the number doesn't take, or after it anything but two digits at most.
   abstract format : 'a -> string -> string
 
 /// A hash code, consistent with `Eq`: equal values hash the same.

@@ -123,9 +123,10 @@ if [ $windows = 1 ]; then echo "skip tests/task/emfile.sh (no descriptor limit f
 elif diff <(tests/task/emfile.sh 2>&1) tests/task/emfile.expected >"$tmp/emfile.diff"; then echo "ok   tests/task/emfile.sh (accept out of descriptors)"
 else echo "FAIL tests/task/emfile.sh"; cat "$tmp/emfile.diff"; fail=1; fi
 
-# threads under ThreadSanitizer: the pool, Atomic, Mutex, Channel, Spsc and Task.spawn race on
-# nothing, and at exit nothing is used after it's freed
-for t in tests/parallel/basics tests/parallel/anythread tests/parallel/spsc tests/parallel/exit tests/task/spawn tests/task/cancel; do
+# threads under ThreadSanitizer: the pool, Atomic, Mutex, Channel, Spsc, Task.spawn and a weak
+# reference to a value another thread drops race on nothing, and at exit nothing is used after
+# it's freed
+for t in tests/parallel/basics tests/parallel/anythread tests/parallel/spsc tests/parallel/exit tests/parallel/weak tests/task/spawn tests/task/cancel; do
   [ $windows = 1 ] && { echo "skip $t.zs under ThreadSanitizer (none for mingw-w64)"; continue; }
   if bin/zs build $t.zs -o "$tmp/tsan" --sanitize=thread 2>"$tmp/tsan.log" && actual=$(timeout 120 "$tmp/tsan" 2>"$tmp/tsan.log") \
      && [ "$actual" = "$(cat $t.out)" ] && ! grep -q ThreadSanitizer "$tmp/tsan.log"; then echo "ok   $t.zs under ThreadSanitizer"
@@ -566,6 +567,12 @@ if ! command -v node >/dev/null; then echo "skip tests/security/replace32.zs on 
 elif bin/zs build tests/security/replace32.zs --target wasm32 -o "$tmp/replace32.wasm" 2>"$tmp/replace32.log" \
    && [ "$(node bin/run-wasm.mjs "$tmp/replace32.wasm" 2>&1)" = "$(cat tests/security/replace32.expected)" ]; then echo "ok   tests/security/replace32.zs on wasm32 (under node)"
 else echo "FAIL tests/security/replace32.zs on wasm32"; cat "$tmp/replace32.log"; fail=1; fi
+# Format.format's specifier made at run time, checked by rt-embedded.c as by rt.c: the widest
+# that fits its buffers, and one with letters for digits panicking, as on the host
+if ! command -v node >/dev/null; then echo "skip tests/security/format_spec.zs on wasm32 (no node)"
+elif bin/zs build tests/security/format_spec.zs --target wasm32 -o "$tmp/fspec.wasm" 2>"$tmp/fspec.log" \
+   && [ "$(node bin/run-wasm.mjs "$tmp/fspec.wasm" 2>&1)" = "$(cat tests/security/format_spec.out)" ]; then echo "ok   tests/security/format_spec.zs on wasm32 (under node)"
+else echo "FAIL tests/security/format_spec.zs on wasm32"; cat "$tmp/fspec.log"; fail=1; fi
 
 # C interop on a chip, both ways, under qemu: Z# calling C with structs by value in every shape
 # (AAPCS, hard and soft float), and a C firmware with its own startup calling a Z# library built
