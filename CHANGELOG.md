@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Runtime
+- On Windows on Arm, a subnormal `f64` prints as on every other target (`3.13983658588571e-319`,
+  not `6.5205388442357377e-4932`): numbers are written by the UCRT's own printf on Windows, not
+  mingw-w64's, which reads such a value as an 80-bit one where a long double is a double. A NaN
+  is `nan` on every target (glibc wrote `-nan` for x86's `0.0 / 0.0`, the UCRT `-nan(ind)`).
+- On Windows, `Udp.receive` cuts a datagram longer than the buffer to it, as on Linux and macOS
+  (Winsock failed the receive), and `Unix.connect` to a path with nothing there fails with "No
+  such file or directory" (Windows' AF_UNIX says a network is down).
+
 ### Library
 - `Diagnostics.ToOutput`: a started process's standard error where its standard output goes
   (`stderr = ToOutput`, its pipe when that's `Piped`), as a shell's `2>&1`, so one reader sees
@@ -23,6 +32,9 @@
 - CI upgrades Windows's LLVM (`choco upgrade`; Windows x64's image has LLVM 20, which `choco
   install` kept) and installs zig 0.16.0 there from its release, as the other runners have it
   (Chocolatey's 0.17.0 fails a link against a DLL's import library).
+- The programs that wrote under `/tmp` use the temporary directory (`Directory.temp`), which a
+  native Windows program has, and `tests/process.zs` checks a process's directory by what's in
+  it, not by `pwd`, which on Windows names `/` as the drive's root (`/c`, `/d`).
 
 ## 0.7.0 (2026-11-05)
 

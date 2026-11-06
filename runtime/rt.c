@@ -1181,12 +1181,22 @@ zs_str *zs_str_of_u64(uint64_t v) {
 // Numbers are written and read with a '.': printf and strtod use the locale's decimal point,
 // which setlocale (a C library's: GTK's, ncurses programs') changes, de_DE's printing 1.5 as
 // "1,5" (invalid JSON, two CSV fields) and reading "1.5" as 1. LC_NUMERIC "C", per call.
-// ponytail: Windows keeps the CRT's locale (_vsnprintf_l isn't C99's snprintf); _create_locale
-// and the _l functions with their own truncation if a Windows library calls setlocale
+// ponytail: Windows keeps the CRT's locale; a _create_locale "C" one for c_snprintf's NULL, and
+// _strtod_l, if a Windows library calls setlocale
 #ifdef _WIN32
+#include <stdarg.h>
 #define c_strtod strtod
 #define c_strtof strtof
-#define c_snprintf snprintf
+// the UCRT's own printf (C99's snprintf, and its rounding), not mingw-w64's that _GNU_SOURCE
+// makes snprintf: where a long double is a double (aarch64), that one widens a subnormal double
+// to an 80-bit normal, then scales it as an 80-bit subnormal (2^-1074 * 63551 as 6.52e-4932)
+static int c_snprintf(char *buf, size_t size, const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    int n = __stdio_common_vsprintf(_CRT_INTERNAL_PRINTF_STANDARD_SNPRINTF_BEHAVIOR | _CRT_INTERNAL_PRINTF_STANDARD_ROUNDING, buf, size, format, NULL, args);
+    va_end(args);
+    return n;
+}
 #else
 #include <locale.h>
 #ifdef __APPLE__
@@ -1221,10 +1231,15 @@ static int c_snprintf(char *buf, size_t size, const char *format, ...) {
 }
 #endif
 
+// a NaN as the positive quiet one, which every C library writes "nan": they differ on the sign
+// (glibc's "-nan" for x86's 0.0 / 0.0) and the kind (the UCRT's "-nan(ind)", "nan(snan)")
+static double plain_nan(double v) { return v != v ? __builtin_nan("") : v; }
+
 // Shortest representation that reads back as the same double; whole numbers print like ints.
 zs_str *zs_str_of_f64(double v) {
     char buf[40];
     int n = 0;
+    v = plain_nan(v);
     for (int prec = 15; prec <= 17; prec++) {
         n = c_snprintf(buf, sizeof buf, "%.*g", prec, v);
         if (c_strtod(buf, NULL) == v) break;
@@ -1237,7 +1252,7 @@ zs_str *zs_str_of_f32(float v) {
     char buf[40];
     int n = 0;
     for (int prec = 6; prec <= 9; prec++) {
-        n = c_snprintf(buf, sizeof buf, "%.*g", prec, (double)v);
+        n = c_snprintf(buf, sizeof buf, "%.*g", prec, plain_nan(v));
         if (c_strtof(buf, NULL) == v) break;
     }
     return str_of(buf, n);
@@ -1549,6 +1564,7 @@ zs_str *zs_format_float(double x, zs_str *spec) {
     char letter;
     int d, n;
     spec_of(spec, &letter, &d);
+    x = plain_nan(x);
     switch (letter) {
     case 'F': n = fixed(x, d < 0 ? 2 : d, buf, sizeof buf); break;
     case 'N': fixed(x, d < 0 ? 2 : d, buf, sizeof buf); n = group(buf, grouped); return str_of(grouped, n);
@@ -3369,6 +3385,11 @@ static _Thread_local socklen_t udp_from_len;
 zs_int zs_udp_receive(zs_int fd, uint8_t *data, zs_int len) {
     udp_from_len = sizeof udp_from;
     zs_int r = (zs_int)recvfrom(S(fd), (char *)data, (size_t)len, 0, (struct sockaddr *)&udp_from, &udp_from_len);
+#ifdef _WIN32
+    // a longer datagram: Winsock fills the buffer with its start (and the sender) but fails
+    // with WSAEMSGSIZE, where POSIX gives the bytes that fit
+    if (r < 0 && WSAGetLastError() == WSAEMSGSIZE) return len;
+#endif
     return r < 0 ? failed() : r;
 }
 
@@ -3448,6 +3469,18 @@ zs_int zs_unix_connect(zs_str *path) {
     if (fd < 0 || (connect(S(fd), (struct sockaddr *)&a, sizeof a) != 0 && !in_progress())) {
         int e = sk_err();
         if (fd >= 0) sk_drop(fd);
+#ifdef _WIN32
+        // Windows' AF_UNIX says a path with nothing there is a network that's down: POSIX's
+        // error when that's so (no file, or no directory on the way to it); failed() then reads
+        // errno
+        if (e == WSAENETDOWN && GetFileAttributesA(a.sun_path) == INVALID_FILE_ATTRIBUTES) {
+            DWORD why = GetLastError();
+            if (why == ERROR_FILE_NOT_FOUND || why == ERROR_PATH_NOT_FOUND) {
+                e = 0;
+                errno = ENOENT;
+            }
+        }
+#endif
         sk_seterr(e);
         return failed();
     }

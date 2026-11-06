@@ -45,7 +45,7 @@ let main () =
   println $"blocking: {Task.run (Task.blocking (fun () -> 6 * 7))}"
 
   // files read and written on the helper thread, while the event loop goes on
-  let path = "/tmp/zs-task-basics.txt"
+  let path = Path.combine (Directory.temp ()) "zs-task-basics.txt"
 
   let text =
     Task.run (
