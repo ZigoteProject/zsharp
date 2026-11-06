@@ -417,10 +417,14 @@ let private linesOf (text: string) : array<string> = Array.ofList (String.split 
 
 /// Breaks the lines of a laid-out text that are over the width, outermost construct first (and
 /// only one that runs past the width, as a Wadler group breaks), keeping each break only when the
-/// text still parses to the same shape.
+/// text still parses to the same shape. Top-down, a line at a time: a break taken leaves the lines
+/// above it as they were, each with every break it offers refused, so they aren't tried again
+/// (an attempt parses the whole text twice; trying them all again after each break taken made a
+/// file of many long lines cubic).
 let private reflow (start: string) (expected: list<string>) : string =
   let mutable text = start
-  let mutable rejected: list<list<int>> = []
+  // the line the last break was taken on: the ones above it are done
+  let mutable cursor = 1
   let mutable go = true
   while go do
     let (src, _, tree, _) = parsed text
@@ -531,24 +535,28 @@ let private reflow (start: string) (expected: list<string>) : string =
           Some laid
         else
           None
-    let mutable next = None
-    let mutable l = 1
-    while Option.isNone next && l <= nLines do
+    // each line over the width from the cursor on, its candidates in turn, until one is taken;
+    // the text is parsed again only then
+    let mutable taken = None
+    let mutable l = cursor
+    while Option.isNone taken && l <= nLines do
       if widthOf.[l] > width && not multi.[l] then
+        // the same breaks a second node offers are refused already
+        let mutable refused: list<list<int>> = []
         for (cut, structural) in candidates l do
-          if Option.isNone next then
+          if Option.isNone taken then
             let key = List.map (fun b -> tree.tokens.[b.next].offset) cut
-            if not (List.contains key rejected) then
-              next <- Some(l, cut, structural, key)
-      l <- l + 1
-    match next with
+            if not (List.contains key refused) then
+              match attempt l cut structural with
+              | Some laid -> taken <- Some(l, laid)
+              | None -> refused <- key :: refused
+      if Option.isNone taken then
+        l <- l + 1
+    match taken with
     | None -> go <- false
-    | Some(line, cut, structural, key) ->
-      match attempt line cut structural with
-      | Some laid ->
-        text <- laid
-        rejected <- []
-      | None -> rejected <- key :: rejected
+    | Some(line, laid) ->
+      text <- laid
+      cursor <- line
   text
 
 // the tokens' kinds and texts, the end of the file left out
@@ -586,14 +594,18 @@ let format (file: int) (path: string) (text: string) : result<string, string> / 
 
 /// The declarations and statements lines first to last (from 1) touch, formatted: their first and
 /// last line and their text, or None when they are formatted already or the text doesn't parse
-/// (the editor's range formatting).
-let formatRange (text0: string) (first: int) (last: int) : option<int * int * string> / Report =
+/// (the editor's range formatting). Lines outside the text are its first or last (an editor may
+/// ask to the end with the line after it).
+let formatRange (text0: string) (first0: int) (last0: int) : option<int * int * string> / Report =
   let text = String.replace text0 "\r\n" "\n"
   let (formatted, _) = collect (fun () -> format 0 "" text)
   match formatted with
   | Error _ -> None
   | Ok out ->
     let src = Source.make 0 "" text
+    let count = Array.length src.lines
+    let first = max 1 (min count first0)
+    let last = max 1 (min count last0)
     let (toks, _) = collect (fun () -> Lexer.lex src)
     let ((tree, _), _) = collect (fun () -> Parser.parse src toks)
     let lineOf (s: Source.Source) (offset: int) = Source.lineOf s offset + 1
@@ -644,9 +656,14 @@ let formatRange (text0: string) (first: int) (last: int) : option<int * int * st
     | [] -> None
     | lo :: _ ->
       let hi = List.last inRange
+      // the lines replaced are the ones newText is, from the first token's to the last one's: a
+      // comment or a blank line at an end of the range is in no statement, so a or b can be on
+      // it, and it stays as it is
+      let top = fst (lines src before.[lo])
+      let bottom = snd (lines src before.[hi])
       let outLines = Array.ofList (String.split "\n" out)
       let srcLines = Array.ofList (String.split "\n" text)
       let piece (ls: array<string>) (x: int) (y: int) = String.join "\n" (List.map (fun i -> ls.[i]) (List.init (y - x + 1) (fun i -> x - 1 + i)))
       let newText = piece outLines (fst (lines outSrc after.[lo])) (snd (lines outSrc after.[hi]))
-      let old = piece srcLines a b
-      if newText = old then None else Some(a, b, newText)
+      let old = piece srcLines top bottom
+      if newText = old then None else Some(top, bottom, newText)

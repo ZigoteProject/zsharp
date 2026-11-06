@@ -653,7 +653,7 @@ else echo "ok   library documented; docs/reference current"; fi
 
 # the repository's own Z# code is formatted (zs fmt); the tests of parse errors don't parse, so
 # they have no layout to check
-unparsed='tests/err_and.zs|tests/err_operator_builtin.zs|tests/newcomer/(let_without_in|try_with|class|mutable_field|increment|return_braces).zs'
+unparsed='tests/err_(and|operator_builtin|float_literal|hole_width|unit_exponent).zs|tests/newcomer/(let_without_in|try_with|class|mutable_field|increment|return_braces).zs'
 formatted=$(find tests lib packages -name .zs-cache -prune -o -name '*.zs' -print | grep -Ev "^($unparsed)\$")
 if bin/zs fmt --check $formatted 2>"$tmp/fmt.log"; then echo "ok   zs fmt --check"
 else echo "FAIL zs fmt --check (run: bin/zs fmt \$(find tests lib packages -name '*.zs'))"; cat "$tmp/fmt.log"; fail=1; fi
@@ -663,6 +663,10 @@ else echo "FAIL tests/cst/roundtrip.sh"; echo "$out" | head; fail=1; fi
 # zs fmt reflows lines over 100 columns on the tree, keeping comments (--stdin, as editors pipe)
 if diff <(bin/zs fmt --stdin < tests/fmt/reflow.in 2>&1) tests/fmt/reflow.zs >"$tmp/reflow.diff"; then echo "ok   tests/fmt/reflow (zs fmt --stdin)"
 else echo "FAIL tests/fmt/reflow"; cat "$tmp/reflow.diff"; fail=1; fi
+# zs fmt writes a file whole or not at all, with its permissions (POSIX's: chmod, ulimit -f)
+if [ $windows = 1 ]; then echo "skip tests/fmt/write.sh (POSIX's permissions and file size limit)"
+elif diff <(tests/fmt/write.sh 2>&1) tests/fmt/write.expected >"$tmp/fmtwrite.diff"; then echo "ok   tests/fmt/write.sh (zs fmt's write: whole or not at all, the mode kept)"
+else echo "FAIL tests/fmt/write.sh"; cat "$tmp/fmtwrite.diff"; fail=1; fi
 
 # the release the compiler reports (zs --version, and to editors in LSP's and MCP's serverInfo) is
 # src/zs.toml's

@@ -145,15 +145,19 @@ let wordBytes (target: string) : int =
   let narrow = List.exists (fun (p: string) -> String.startsWith p arch) [ "thumb"; "arm"; "riscv32"; "wasm32" ] && not (String.startsWith "arm64" arch)
   if narrow || List.contains arch [ "x86"; "i386"; "i686" ] then 4 else 8
 
+// a size past any memory (2^48 bytes): fixed<T, N> nested, each N within its bound, makes one
+// that stops here, so no size, offset or padding overflows
+let private maxBytes = 281474976710656
+
 // the size and alignment of a C struct of these parts (each a size and an alignment): each part
 // at its alignment, the whole padded to the strictest
 let private structOf (parts: list<int * int>) : int * int =
   let mutable size = 0
   let mutable align = 1
   for (s, a) in parts do
-    size <- (size + a - 1) / a * a + s
+    size <- min maxBytes ((size + a - 1) / a * a + s)
     align <- max align a
-  ((size + align - 1) / align * align, align)
+  (min maxBytes ((size + align - 1) / align * align), align)
 
 /// A value's size and alignment in bytes as code generation lays it out (DESIGN §5.1), with a
 /// machine word of `word` bytes: a number its own (int and usize the word), a heap value, a
@@ -193,7 +197,7 @@ let rec layout (v: Vars) (types: Map<string, TypeInfo>) (word: int) (t: Ty) : op
   | TCon("fixed", [ el; TCon(n, []) ]) ->
     let count : option<int> = Int.parse n
     match (layout v types word el, count) with
-    | (Some(s, a), Some k) -> Some(s * k, a)
+    | (Some(s, a), Some k) when k > 0 -> Some((if s > maxBytes / k then maxBytes else s * k), a)
     | _ -> None
   | TCon(n, _) when isDynName n -> pointer
   | TCon(n, args) when Map.containsKey n types ->
@@ -208,7 +212,7 @@ let rec layout (v: Vars) (types: Map<string, TypeInfo>) (word: int) (t: Ty) : op
       let union (parts: list<int * int>) =
         let align = List.fold (fun m (_, a) -> max m a) 1 parts
         let size = List.fold (fun m (s, _) -> max m s) 0 parts
-        ((size + align - 1) / align * align, align)
+        (min maxBytes ((size + align - 1) / align * align), align)
       Option.map union (all (List.map snd cs))
     | UnionDef cs ->
       if List.exists (fun x -> Option.isNone (layout v types word x)) args then None
@@ -244,9 +248,9 @@ let offsetOf (v: Vars) (types: Map<string, TypeInfo>) (word: int) (t: Ty) (index
         // where the fields before it end, each at its alignment; it starts at the next multiple
         // of its own
         let parts = List.map Option.get before
-        let ends = List.fold (fun (at: int) (s, a) -> (at + a - 1) / a * a + s) 0 (List.take index parts)
+        let ends = List.fold (fun (at: int) (s, a) -> min maxBytes ((at + a - 1) / a * a + s)) 0 (List.take index parts)
         let align = snd (List.item index parts)
-        Some((ends + align - 1) / align * align)
+        Some(min maxBytes ((ends + align - 1) / align * align))
     | _ -> None
   | _ -> None
 

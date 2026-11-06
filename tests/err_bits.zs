@@ -16,4 +16,7 @@ type Plain = { [<Width 4>] a: u8 }
 [<Bits 12>]
 type Odd = { a: bool }
 
+[<Bits>]
+type Far = { [<Bit 9223372036854775807>] a: bool }
+
 let main () = 0

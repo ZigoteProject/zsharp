@@ -1270,14 +1270,16 @@ let rec toTyWith (cx: Cx) (pureArrows: bool) (tparams: option<list<string>>) (st
     | None -> fail $"unknown trait '{tr}' in dyn {tr}"
   | STName("fixed", [ el; len ]) ->
     // fixed<T, N>: N elements of T inline. N is a positive number, part of the type (a type
-    // variable only in the Fixed module, whose functions work for every N)
+    // variable only in the Fixed module, whose functions work for every N), and at most a C int's
+    // largest, so the size it makes can't overflow (Repr.layout)
     let n =
       match len with
       | STName(d, []) when isDigits d ->
         let parsed : option<int> = Int.parse d
         match parsed with
-        | Some k when k > 0 -> TCon($"{k}", [])
-        | _ -> fail "fixed needs a positive number of elements, written as a literal"
+        | Some k when k > 0 && k <= 2147483647 -> TCon($"{k}", [])
+        | Some k when k <= 0 -> fail "fixed needs a positive number of elements, written as a literal"
+        | _ -> fail "fixed holds at most 2147483647 elements"
       | STVar _ when cx.currentModule.Value = Some "Collections.Fixed" -> toTy tparams len
       | _ -> fail "fixed needs a positive number of elements, written as a literal"
     TCon("fixed", [ toTy tparams el; n ])

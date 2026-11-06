@@ -223,7 +223,7 @@ Some 36 None
 
 **`function`:** `function | p -> … | q -> …` is a lambda that matches its argument, for `fun x -> match x with …`: `List.map (function Some n -> n | None -> 0) opts`.
 
-**Checks:** the compiler rejects a `match` that misses a case, naming an example of the missing value, and a case that can never be reached.
+**Checks:** the compiler rejects a `match` that misses a case, naming an example of the missing value, and a case that can never be reached. Or-patterns in many parts of one case multiply what there is to check (`(true | false)` in 30 parts of a tuple is 2^30 combinations), so a match past a few million steps of checking is an error too: split it into matches on fewer values.
 
 ```zsharp
 let describe xs =

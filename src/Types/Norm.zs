@@ -32,6 +32,23 @@ let sameVar (v: Vars) (a: Ty) (b: Ty) : bool =
   | (TGen i, TGen j) -> i = j
   | _ -> false
 
+// an exponent the checker makes stops at 2^40 either way. The parser takes a million at most,
+// but generic calls nested raise them further (a 'u -> 'u^2 of one of another…): saturated,
+// they can't overflow, so no product or sum below panics the checker.
+// ponytail: two exponents past 2^40 are the same; an error where one is made, if a program ever
+// means one
+let private maxExponent = 1099511627776
+
+let private saturated (e: int) : int =
+  if e > maxExponent then maxExponent else if e < -maxExponent then -maxExponent else e
+
+// a * b saturated, each at most maxExponent either way: the product is tested before it's made
+let private times (a: int) (b: int) : int =
+  let abs (n: int) = if n < 0 then -n else n
+  if a = 0 || b = 0 then 0
+  else if abs a > maxExponent / abs b then (if (a < 0) = (b < 0) then maxExponent else -maxExponent)
+  else saturated (a * b)
+
 /// A measure in normal form: variables expanded, like terms merged, zeros dropped, units sorted.
 let normMeas (v: Vars) (t: Ty) : list<string * int> * list<Ty * int> =
   let units = Buffer.empty
@@ -44,7 +61,7 @@ let normMeas (v: Vars) (t: Ty) : list<string * int> * list<Ty * int> =
       if found < 0 && sameVar v vars.[i] x then
         found <- i
     if found >= 0 then
-      powers.[found] <- powers.[found] + e
+      powers.[found] <- saturated (powers.[found] + e)
     else
       Buffer.push x vars
       Buffer.push e powers
@@ -54,7 +71,7 @@ let normMeas (v: Vars) (t: Ty) : list<string * int> * list<Ty * int> =
       if found < 0 && units.[i] = u then
         found <- i
     if found >= 0 then
-      unitPowers.[found] <- unitPowers.[found] + e
+      unitPowers.[found] <- saturated (unitPowers.[found] + e)
     else
       Buffer.push u units
       Buffer.push e unitPowers
@@ -62,9 +79,9 @@ let normMeas (v: Vars) (t: Ty) : list<string * int> * list<Ty * int> =
     match prune v t with
     | TMeas(us, vs) ->
       for (u, e) in us do
-        addUnit u (e * k)
+        addUnit u (times (saturated e) k)
       for (x, e) in vs do
-        go x (e * k)
+        go x (times (saturated e) k)
     | x -> addVar x k
   go t 1
   let us = [ for i in 0 .. Buffer.length units - 1 do if unitPowers.[i] <> 0 then yield (units.[i], unitPowers.[i]) ]

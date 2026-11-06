@@ -124,7 +124,7 @@ let report (items: list<Item>) =
 
 **What it keeps:** the line breaks you wrote, and comments where they are. A string literal or a comment never breaks, so a line long because of one stays long, and so does a call with many arguments outside brackets, since its arguments can't continue on the next line.
 
-**Safety:** the formatter checks that the result parses to the same program (the same syntax tree, but for layout), so formatting can't change a program's meaning. A file that doesn't parse is left alone, with its error. Zed runs it on save, and formats a selection (range formatting).
+**Safety:** the formatter checks that the result parses to the same program (the same syntax tree, but for layout), so formatting can't change a program's meaning. A file that doesn't parse is left alone, with its error. A file is written whole or not at all: the new text goes to a file beside it, with the same permissions, which then takes its place, so a full disk leaves the file as it was. Zed runs it on save, and formats a selection (range formatting): the declarations and statements the selection touches, never a comment or blank line at its edges.
 
 ## Documentation comments
 

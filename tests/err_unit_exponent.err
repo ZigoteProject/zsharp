@@ -1,0 +1,1 @@
+tests/err_unit_exponent.zs:6: error: a unit's exponent is at most 1000000 either way

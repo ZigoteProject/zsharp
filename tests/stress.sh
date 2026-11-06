@@ -36,6 +36,12 @@ items() { seq 0 $(($1 - 1)) | paste -sd ';' -; }
   echo '  println $"{x}"'; echo '  0'; } | case_ parentheses
 printf '\xef\xbb\xbflet main () =\r\n  println "a byte order mark"\r\n  0\r\n' | case_ bom
 
+# zs fmt on 300 declarations over the width: each one's break after `=` taken, its list's refused
+# (the string alone is too long), each line tried once and not again after every break below it
+for i in $(seq 300); do echo "let m$i = String.concat [ \"$(printf 'x%.0s' $(seq 95))\"; \"y\" ]"; done > "$t/wide.zs"
+if timeout 60 bin/zs fmt --stdin < "$t/wide.zs" > "$t/wide.out" 2>&1; then echo "fmt wide: $(grep -c '^  String.concat' "$t/wide.out") lines broken"
+else echo "fmt wide: failed or too slow ($?)"; fi
+
 # a statement failing after a long literal: the checker undoes what the statement bound, the
 # literal's compressed chains of type variables included, and goes on with the next
 { echo 'let main () ='; echo "  let xs = [ $(items 5000) ]"; echo '  let n: string = List.length xs'

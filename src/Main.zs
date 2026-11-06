@@ -26,8 +26,13 @@ let check (path: string) : int =
     Render.print (fun _ -> src) diags
     if Array.length diags = 0 then 0 else 1
 
+// a file's text replaced through a new file renamed over it (src/host.c): "" when done, else why
+// not, the file as it was
+extern zs_host_replace : cstr -> cstr -> i64 -> cstr
+
 // zs fmt: files formatted in place (--check: the ones that aren't, listed), or standard input to
-// standard output (--stdin); a file that doesn't parse is left alone, with its errors
+// standard output (--stdin); a file that doesn't parse is left alone, with its errors, and one
+// whose write fails is too (not left cut short)
 let fmt (args: list<string>) : int =
   if List.contains "--stdin" args then
     let text =
@@ -66,10 +71,9 @@ let fmt (args: list<string>) : int =
             eprintln $"{path}: not formatted"
             status <- 1
           else
-            match File.writeAllText path formatted with
-            | Ok () -> ()
-            | Error e ->
-              eprintln e
+            let why = String.ofCStr (zs_host_replace path formatted (i64 (String.length formatted)))
+            if why <> "" then
+              eprintln $"cannot write {path}: {why}"
               status <- 1
         | Error why ->
           if why <> "" then

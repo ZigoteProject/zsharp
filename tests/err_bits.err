@@ -4,4 +4,5 @@ tests/err_bits.zs:8: error: a [<Bits>] record's field is a bool, an enum or an u
 tests/err_bits.zs:11: error: 'on' is a bool, one bit: it takes no [<Width>]
 tests/err_bits.zs:14: error: field attributes are for a [<Bits>] record's fields: 'a' is in Plain, which isn't one
 tests/err_bits.zs:16: error: [<Bits n>] takes 8, 16, 32 or 64
-6 errors
+tests/err_bits.zs:19: error: [<Bit 9223372036854775807>] on 'a' is past a [<Bits>] record's 64 bits: a bit from 0 to 63
+7 errors

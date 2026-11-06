@@ -6,5 +6,6 @@ lets: 4999
 else-ifs: 8642
 parentheses: 1
 bom: a byte order mark
+fmt wide: 300 lines broken
 undone: 3:3: error: value of 'n': expected string, got int: interpolate it, $"{x}"
 too deep: exit 134 panic: stack overflow (recursion too deep)

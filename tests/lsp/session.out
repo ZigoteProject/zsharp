@@ -13,4 +13,6 @@
 {"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"URI","diagnostics":[{"range":{"start":{"line":4,"character":14},"end":{"line":4,"character":24}},"severity":1,"source":"zs","message":"argument 2 of \u0027add\u0027: expected int, got bool"}]}}
 {"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"URI","diagnostics":[{"range":{"start":{"line":8,"character":2},"end":{"line":8,"character":3}},"severity":2,"source":"zs","message":"this statement\u0027s value (int) is discarded: use it, or pipe it to ignore","code":"unused-value","relatedInformation":[]}]}}
 {"jsonrpc":"2.0","id":16,"result":[{"range":{"start":{"line":5,"character":0},"end":{"line":5,"character":23}},"newText":"  let names = [ \u0022a\u0022; \u0022b\u0022 ]"}]}
+{"jsonrpc":"2.0","id":17,"result":[]}
+{"jsonrpc":"2.0","id":18,"result":[{"range":{"start":{"line":3,"character":0},"end":{"line":9,"character":3}},"newText":"let main () =\n  let total = add 1 2\n  let names = [ \u0022a\u0022; \u0022b\u0022 ]\n  let n = names.Length\n  println $\u0022{total} {List.length names} {n}\u0022\n  n\n  0"}]}
 {"jsonrpc":"2.0","id":6,"result":null}

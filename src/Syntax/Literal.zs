@@ -44,11 +44,17 @@ let intValue (text: string) : result<i64, string> =
       if significant = 0 then 0 else (significant - 1) * bits + (if radix = 2 then 1 else leadBits)
     if needs > 64 then Error "integer literal too large (more than 64 bits)" else Ok value
 
-/// A float literal's value.
-let floatValue (text: string) : f64 =
+/// A float literal's value; Error for one the lexer took but no number is (`1.5e`, an exponent
+/// without its digits), never a silent 0.0.
+let floatValue (text: string) : result<f64, string> =
   match (Float.parse (String.replace text "_" "") : option<f64>) with
-  | Some v -> v
-  | None -> 0.0
+  | Some v -> Ok v
+  | None ->
+    let last = at text (String.length text - 1)
+    if last = 101 || last = 69 || last = 43 || last = 45 then
+      Error "expected digits after the exponent's 'e': 1.5e-3"
+    else
+      Error "malformed float literal"
 
 /// The escape after a backslash at s[i]: its code point and the index after it (\n \r \t \0 \\
 /// \" \' and \u{hex}), or an error.

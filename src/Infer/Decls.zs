@@ -1593,7 +1593,12 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
           if n < 1 || (isInt && n > natural) || (not isInt && (n < natural || n > 8)) then
             fail $"[<Width {n}>] doesn't fit '{f}' : {show cx ft}, which takes {(if isInt then $"1 to {natural}" else $"{natural} to 8")} bits"
           width <- n
-        | "Bit" -> at <- number f a args
+        | "Bit" ->
+          // in the 64 bits a [<Bits>] record has at most, so the bit after the field is no overflow
+          let n = number f a args
+          if n < 0 || n > 63 then
+            fail $"[<Bit {n}>] on '{f}' is past a [<Bits>] record's 64 bits: a bit from 0 to 63"
+          at <- n
         | _ -> fail $"unknown field attribute '{a}' (a [<Bits>] record's fields take [<Width n>] and [<Bit n>])"
       let (lo, n) = (at, width)
       match List.tryFind (fun (o, w) -> lo < o + w && o < lo + n) placed with

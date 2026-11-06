@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # A scripted LSP session against `zs lsp`: open a document, ask for hover, inlay hints and
-# symbols, then edit it to contain an error, and format one line of it. Prints the server's
-# responses, one per line.
+# symbols, then edit it to contain an error, and format one line of it, a comment with the line
+# below it (left as it is: the comment isn't the edit's), and from a blank line to past the end
+# (the declaration between, its lines alone). Prints the server's responses, one per line.
 set -u
 zs=${1:-bin/zs}
 uri="file://$(pwd)/tests/lsp/sample.zs"
@@ -30,6 +31,8 @@ frame() { printf 'Content-Length: %d\r\n\r\n%s' "$(printf '%s' "$1" | wc -c)" "$
   frame '{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"'"$uri"'","version":2},"contentChanges":[{"text":"'"$bad"'"}]}}'
   frame '{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"'"$uri"'","version":3},"contentChanges":[{"text":"'"$messy"'"}]}}'
   frame '{"jsonrpc":"2.0","id":16,"method":"textDocument/rangeFormatting","params":{"textDocument":{"uri":"'"$uri"'"},"range":{"start":{"line":5,"character":0},"end":{"line":5,"character":3}},"options":{"tabSize":2,"insertSpaces":true}}}'
+  frame '{"jsonrpc":"2.0","id":17,"method":"textDocument/rangeFormatting","params":{"textDocument":{"uri":"'"$uri"'"},"range":{"start":{"line":0,"character":0},"end":{"line":1,"character":3}},"options":{"tabSize":2,"insertSpaces":true}}}'
+  frame '{"jsonrpc":"2.0","id":18,"method":"textDocument/rangeFormatting","params":{"textDocument":{"uri":"'"$uri"'"},"range":{"start":{"line":2,"character":0},"end":{"line":40,"character":0}},"options":{"tabSize":2,"insertSpaces":true}}}'
   frame '{"jsonrpc":"2.0","id":6,"method":"shutdown"}'
   frame '{"jsonrpc":"2.0","method":"exit"}'
 } | "$zs" lsp | tr -d '\r' | sed 's/Content-Length: [0-9]*//' | grep -o '{.*}' | sed "s|$uri|URI|g; s|file://$(pwd)/bin/|file://ZS/|g; s|$(pwd)|.|g"

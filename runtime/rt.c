@@ -1644,19 +1644,27 @@ bool zs_parse_int(zs_str *s, int64_t radix, bool isUnsigned, int64_t bits, int64
 }
 
 // the number s writes: a sign, digits, a point, an exponent; inf and nan; nothing else (no
-// spaces, no hexadecimal, no 1,5)
+// spaces, no hexadecimal, no 1,5). Any length: a constant pasted with 500 digits rounds as
+// strtod rounds it, its copy on the heap past the stack's buffer
 bool zs_parse_float(zs_str *s, double *out) {
-    char buf[400];
-    if (s->len == 0 || s->len >= (zs_int)sizeof buf) return false;
+    char small[400];
+    if (s->len == 0) return false;
     for (zs_int i = 0; i < s->len; i++) {
         char c = s->data[i];
         if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == 'x' || c == 'X' || c == 0) return false;
+    }
+    char *buf = small;
+    if (s->len >= (zs_int)sizeof small) {
+        buf = malloc((size_t)s->len + 1);
+        if (!buf) zs_panic_c("out of memory");
     }
     memcpy(buf, s->data, (size_t)s->len);
     buf[s->len] = 0;
     char *end;
     double v = c_strtod(buf, &end);
-    if (end != buf + s->len) return false;
+    bool ok = end == buf + s->len;
+    if (buf != small) free(buf);
+    if (!ok) return false;
     *out = v;
     return true;
 }

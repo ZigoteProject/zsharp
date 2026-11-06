@@ -264,7 +264,7 @@ ok   words/counts what it joined
 
 ## Units of measure
 
-**Declaring units:** `[<Measure>] type m` declares a unit, and a number type can then carry it: `f64<m>`, `f64<m/s^2>`. A literal gets one with `9.81<m/s^2>`.
+**Declaring units:** `[<Measure>] type m` declares a unit, and a number type can then carry it: `f64<m>`, `f64<m/s^2>`. A literal gets one with `9.81<m/s^2>`. An exponent is at most a million either way, written or made (`(m^2)^3` is `m^6`).
 
 **What the compiler does:**
 - **Checks:** it checks units through arithmetic. Adding meters to seconds is an error, and multiplying or dividing combines units.

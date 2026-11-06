@@ -1,0 +1,1 @@
+tests/err_float_literal.zs:3: error: expected digits after the exponent's 'e': 1.5e-3
