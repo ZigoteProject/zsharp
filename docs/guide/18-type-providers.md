@@ -217,6 +217,10 @@ editor's sandbox) still gets the types from the last output, with a `stale-input
 import that says so. Nothing is loaded into the compiler: the provider is a process, as clang is
 for `import c`.
 
+The provider's program is built against the project's dependencies: its own git dependencies are
+the checkouts the project's `zs.lock` pinned and hashed, never fetched or locked apart, so it runs
+the code the lock names and builds with `--offline` too.
+
 A package's provider is the project's own code, so the language server and the MCP server build
 and run it only when started with `--trust` ([Trust](10-tools.md#trust)); without it, the import
 gets the module from the last build, with the `stale-input` warning, or the error `provider shout

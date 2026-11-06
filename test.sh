@@ -338,6 +338,10 @@ else echo "FAIL tests/project/workspace.sh"; cat "$tmp/ws.diff"; fail=1; fi
 # the lock's hashes, zs vendor and --offline (0018 item 6)
 if diff <(tests/project/vendor.sh 2>&1) tests/project/vendor.expected >"$tmp/vendor.diff"; then echo "ok   tests/project/vendor.sh (zs.lock hashes, zs vendor, --offline)"
 else echo "FAIL tests/project/vendor.sh"; cat "$tmp/vendor.diff"; fail=1; fi
+# symbolic links, pipes and devices in packages: hashed and vendored as links, never followed
+if [ $windows = 1 ]; then echo "skip tests/project/links.sh (symbolic links and pipes are POSIX's)"
+elif diff <(tests/project/links.sh 2>&1) tests/project/links.expected >"$tmp/links.diff"; then echo "ok   tests/project/links.sh (links hashed and vendored as links, pipes and devices refused)"
+else echo "FAIL tests/project/links.sh"; cat "$tmp/links.diff"; fail=1; fi
 # zs add, zs remove and zs tree, internal modules, and Std in a chip build's dependency (0018)
 if diff <(tests/project/pkgs.sh 2>&1) tests/project/pkgs.expected >"$tmp/pkgs.diff"; then echo "ok   tests/project/pkgs.sh (zs add, remove, tree; internal modules; Std on a chip)"
 else echo "FAIL tests/project/pkgs.sh"; cat "$tmp/pkgs.diff"; fail=1; fi

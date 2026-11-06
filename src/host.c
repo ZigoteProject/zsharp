@@ -134,6 +134,44 @@ const char *zs_host_replace(const char *path, const char *data, int64_t len) {
 }
 #endif
 
+// A package's symbolic links as links (Build/Project: zs.lock's hash, zs vendor), never what they
+// point at, which may be any file of the machine or a device that never ends: a link's text ("" when
+// path is no link, or on Windows, where zs reads none), a link made with a text ("" when made, else
+// why not), and a path with every link in it followed ("" when it leads nowhere).
+#ifdef _WIN32
+const char *zs_host_link_text(const char *path) {
+    (void)path;
+    return "";
+}
+
+const char *zs_host_make_link(const char *text, const char *path) {
+    (void)text;
+    (void)path;
+    return "zs makes no symbolic links on Windows";
+}
+
+const char *zs_host_real_path(const char *path) {
+    (void)path;
+    return "";
+}
+#else
+#include <limits.h>
+const char *zs_host_link_text(const char *path) {
+    static _Thread_local char text[PATH_MAX + 1];
+    ssize_t n = readlink(path, text, PATH_MAX);
+    if (n <= 0 || n >= PATH_MAX) return "";
+    text[n] = 0;
+    return text;
+}
+
+const char *zs_host_make_link(const char *text, const char *path) { return symlink(text, path) == 0 ? "" : strerror(errno); }
+
+const char *zs_host_real_path(const char *path) {
+    static _Thread_local char real[PATH_MAX];
+    return realpath(path, real) ? real : "";
+}
+#endif
+
 #ifndef _WIN32
 #include <sys/resource.h>
 // the runtime's floor under its threads' stacks (rt.c)

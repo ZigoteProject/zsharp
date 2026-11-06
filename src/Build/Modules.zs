@@ -108,7 +108,9 @@ let private headerOf (decls: list<Ast.Decl>) : option<string> =
 let readSource (texts: Map<string, string>) (path: string) : result<string, string> =
   match Map.tryFind (Path.getFullPath path) texts with
   | Some t -> Ok t
-  | None -> File.readAllText path
+  // a pipe or a device is no source: read whole, /dev/stdin would be the language server's own
+  // input and /dev/zero would never end (a dependency's main may be a link to either)
+  | None -> if Provide.Input.special path then Error $"{path} isn't a regular file but a pipe or a device" else File.readAllText path
 
 /// A file read and parsed, as a module (its index in the build); Error when it can't be read.
 let load (texts: Map<string, string>) (index: int) (path: string) (modName: option<string>) : result<Loaded, string> =
@@ -156,7 +158,9 @@ let private lowerFirst (s: string) : string =
 
 /// A project's problem as a diagnostic, with the source it's in (the file's index in the build).
 let problem (index: int) (p: Project.Problem) : Diagnostic * option<Source.Source> =
-  match File.readAllText p.file with
+  // a zs.toml that's a pipe, a device or too large is named, not read (Project.readManifest)
+  let text = if Provide.Input.special p.file || Result.defaultValue (i64 0) (File.size p.file) > Project.manifestLimit then Error "" else File.readAllText p.file
+  match text with
   | Ok text ->
     let display = Path.getRelativePath (Environment.currentDirectory ()) p.file
     let src = Source.make index display text

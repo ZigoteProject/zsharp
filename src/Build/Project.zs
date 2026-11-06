@@ -95,13 +95,30 @@ let private cKeys : list<string> = [ "sources"; "include"; "link"; "pkg-config" 
 let private depName (key: string) =
   key <> "" && List.forall (fun (c: char) -> Char.isLetterOrDigit c || c = '-' || c = '_') (String.chars key)
 
+// a file a manifest names (its main, its provider's): a relative path inside the package once `..`
+// is taken out, so loading a dependency never reads another file of the machine (/dev/stdin, the
+// language server's own input; a key)
+let private inside (root: string) (p: string) : bool =
+  let rel = Path.getRelativePath root (Path.combine root p)
+  not (Path.isAbsolute p) && rel <> "." && rel <> ".." && not (String.startsWith "../" rel) && not (String.startsWith "..\\" rel)
+
+/// The most bytes a zs.toml may have: a dependency's is read whole, and may be a link to any
+/// file of the machine.
+let manifestLimit = i64 1048576
+
 /// Reads the subset of TOML a manifest uses: [sections], key = "string", key = { k = "v", … },
 /// key = [ "a", "b" ].
 let rec readManifest (root: string) : result<Manifest, Problem> =
   let file = Path.combine root "zs.toml"
-  match File.readAllLines file with
-  | Error e -> Error { file = file; line = 0; message = e }
-  | Ok lines -> parseManifest root file lines
+  if Provide.Input.special file then
+    Error { file = file; line = 0; message = "isn't a regular file but a pipe or a device" }
+  else
+    match File.size file with
+    | Ok n when n > manifestLimit -> Error { file = file; line = 0; message = $"is {n} bytes; a manifest is at most 1 MB" }
+    | _ ->
+      match File.readAllLines file with
+      | Error e -> Error { file = file; line = 0; message = e }
+      | Ok lines -> parseManifest root file lines
 
 /// A manifest's lines (zs.toml, or a release's, read at its tag): its paths under root, its
 /// problems reported in file.
@@ -116,10 +133,13 @@ and parseManifest (root: string) (file: string) (lines: list<string>) : result<M
     let provider = ref None
     // [workspace] members = ["app", "libs/*"]: the member projects' directories (0018 item 8)
     let members = Buffer.empty
-    // 4096, 16K, 1M: bytes
+    // 4096, 16K, 1M: bytes; a count whose bytes don't fit an int is none (overflow panics)
     let size (v: string) : option<int> =
       let n = String.length v
-      let scaled (k: int) : option<int> = Option.map (fun (x: int) -> x * k) (Int.parse (String.sub v 0 (n - 1)))
+      let scaled (k: int) : option<int> =
+        match Int.parse (String.sub v 0 (n - 1)) with
+        | Some x when x >= 0 && x <= 9223372036854775807 / k -> Some(x * k)
+        | _ -> None
       if n > 1 && String.endsWith "K" v then scaled 1024
       else if n > 1 && String.endsWith "M" v then scaled (1024 * 1024)
       else Int.parse v
@@ -148,6 +168,7 @@ and parseManifest (root: string) (file: string) (lines: list<string>) : result<M
             match section.Value with
             | "package" ->
               match unquote value with
+              | Some v when key = "main" && not (inside root v) -> fail n $"[package] main: \"{v}\" isn't a path inside the package"
               | Some v -> package.Value <- Map.add key v package.Value
               | None -> fail n $"expected a quoted string, found {value}"
             | "dependencies" ->
@@ -198,6 +219,7 @@ and parseManifest (root: string) (file: string) (lines: list<string>) : result<M
               | _ -> fail n $"unknown key '{key}' in [workspace]; it takes members"
             | "provider" ->
               match (key, unquote value) with
+              | ("main", Some v) when not (inside root v) -> fail n $"[provider] main: \"{v}\" isn't a path inside the package"
               | ("main", Some v) -> provider.Value <- Some v
               | ("main", None) -> fail n $"[provider] main: expected a quoted path such as \"Provider.zs\", found {value}"
               | _ -> fail n $"unknown key '{key}' in [provider]; it takes main"
@@ -260,11 +282,74 @@ let workspaceOf (m: Manifest) : option<Manifest> =
       | _ -> None
   above m.root
 
-/// Where a project's lock, checkouts and vendor/ are: its workspace's root, else its own.
-let lockRoot (m: Manifest) : string =
+// zs.lock: the commit each git dependency resolved to, with the URL and the rev or the release
+// (version, its tag's name after the v) it came from
+//   [dependencies]
+//   json = { git = "https://…", rev = "v1", commit = "<sha>" }
+//   text = { git = "https://…", version = "1.3.0", commit = "<sha>" }
+// A release's rev is its tag (v1.3.0) here; isVersion says which it was.
+type private Locked = { url: string; rev: string; commit: string; isVersion: bool; hash: string }
+
+let private readLock (root: string) : Map<string, Locked> =
+  match File.readAllLines (Path.combine root "zs.lock") with
+  | Error _ -> Map.empty
+  | Ok lines ->
+    let entry (acc: Map<string, Locked>) (line: string) =
+      match String.indexOf "=" line with
+      | Some eq ->
+        if eq > 0 && not (String.startsWith "#" (String.trim line)) then
+          match tableFields (String.trim (String.sub line (eq + 1) (String.length line - eq - 1))) with
+          | Ok fields ->
+            let name = String.trim (String.sub line 0 eq)
+            match (Map.tryFind "git" fields, Map.tryFind "commit" fields, Map.tryFind "version" fields) with
+            // a name is a directory under .zs-cache/deps and vendor/, which fetch and vendor delete
+            // and replace: one a manifest couldn't have (../.., an absolute path) is no entry
+            | _ when not (depName name) -> acc
+            // a commit git would take as an option is no commit: the rev is resolved again
+            | (Some url, Some commit, _) when String.startsWith "-" commit -> acc
+            | (Some url, Some commit, Some v) -> Map.add name { url = url; rev = "v" + v; commit = commit; isVersion = true; hash = Option.defaultValue "" (Map.tryFind "hash" fields) } acc
+            | (Some url, Some commit, None) -> Map.add name { url = url; rev = Option.defaultValue "" (Map.tryFind "rev" fields); commit = commit; isVersion = false; hash = Option.defaultValue "" (Map.tryFind "hash" fields) } acc
+            | _ -> acc
+          | Error _ -> acc
+        else
+          acc
+      | None -> acc
+    List.fold entry Map.empty lines
+
+// a project's own lock root: its workspace's, else its own
+let private rootOf (m: Manifest) : string =
   match workspaceOf m with
   | Some w -> w.root
   | None -> m.root
+
+// the lock root of the project that has root as a dependency's checkout or copy
+// (<project>/.zs-cache/deps/<name>, <project>/vendor/<name>) that its zs.lock lists
+let rec private ownerRoot (root: string) : option<string> =
+  let parent = Path.getDirectoryName root
+  let up = Path.getDirectoryName parent
+  let project =
+    if Path.getFileName parent = "deps" && Path.getFileName up = ".zs-cache" then Some(Path.getDirectoryName up)
+    else if Path.getFileName parent = "vendor" then Some up
+    else None
+  match project with
+  | Some p when File.exists (Path.combine p "zs.toml") ->
+    match readManifest p with
+    | Ok o ->
+      let r =
+        match ownerRoot o.root with
+        | Some r0 -> r0
+        | None -> rootOf o
+      if Map.containsKey (Path.getFileName root) (readLock r) then Some r else None
+    | Error _ -> None
+  | _ -> None
+
+/// Where a project's lock, checkouts and vendor/ are: its workspace's root, else its own. A
+/// dependency's checkout has the project's that fetched it, so a build in it (its provider's,
+/// 0001; an editor's) reads the checkouts that project's zs.lock pinned and hashed.
+let lockRoot (m: Manifest) : string =
+  match ownerRoot m.root with
+  | Some r -> r
+  | None -> rootOf m
 
 /// Where a git dependency is checked out: <project>/.zs-cache/deps/<name> (the workspace's root
 /// for a member).
@@ -373,46 +458,31 @@ let private git (args: list<string>) : result<string, string> =
   | Ok r -> if r.code = 0 then Ok(String.trim r.out) else Error(String.trim r.err)
   | Error _ -> Error "git isn't installed"
 
-// zs.lock: the commit each git dependency resolved to, with the URL and the rev or the release
-// (version, its tag's name after the v) it came from
-//   [dependencies]
-//   json = { git = "https://…", rev = "v1", commit = "<sha>" }
-//   text = { git = "https://…", version = "1.3.0", commit = "<sha>" }
-// A release's rev is its tag (v1.3.0) here; isVersion says which it was.
-type private Locked = { url: string; rev: string; commit: string; isVersion: bool; hash: string }
+// a package's symbolic link's text, a link made, a path with its links followed (src/host.c)
+extern zs_host_link_text : cstr -> cstr
+extern zs_host_make_link : cstr -> cstr -> cstr
+extern zs_host_real_path : cstr -> cstr
 
 /// A checkout's files hashed (0018 item 6): their paths under the directory, sorted, each with its
-/// content, .git left out; "" for a directory that can't be read.
-let dirHash (dir: string) : string =
+/// content, .git left out. A symbolic link is hashed as one, by its text, as git keeps it (its
+/// path marked with a NUL, which no file's has): what it points at is never read, a file outside
+/// the checkout or a device that never ends. Error for a pipe, a device or a socket, which a
+/// package has no business holding, and for a directory that can't be read.
+let dirHash (dir: string) : result<string, string> =
   match Directory.listRecursive dir with
-  | Error _ -> ""
+  | Error e -> Error e
   | Ok rels ->
-    let files = List.sort (List.filter (fun (r: string) -> r <> ".git" && not (String.startsWith ".git/" r) && not (Directory.exists (Path.combine dir r))) rels)
-    Tools.hashOf (List.collect (fun (r: string) -> [ r; Result.defaultValue "" (File.readAllText (Path.combine dir r)) ]) files)
-
-
-let private readLock (root: string) : Map<string, Locked> =
-  match File.readAllLines (Path.combine root "zs.lock") with
-  | Error _ -> Map.empty
-  | Ok lines ->
-    let entry (acc: Map<string, Locked>) (line: string) =
-      match String.indexOf "=" line with
-      | Some eq ->
-        if eq > 0 && not (String.startsWith "#" (String.trim line)) then
-          match tableFields (String.trim (String.sub line (eq + 1) (String.length line - eq - 1))) with
-          | Ok fields ->
-            let name = String.trim (String.sub line 0 eq)
-            match (Map.tryFind "git" fields, Map.tryFind "commit" fields, Map.tryFind "version" fields) with
-            // a commit git would take as an option is no commit: the rev is resolved again
-            | (Some url, Some commit, _) when String.startsWith "-" commit -> acc
-            | (Some url, Some commit, Some v) -> Map.add name { url = url; rev = "v" + v; commit = commit; isVersion = true; hash = Option.defaultValue "" (Map.tryFind "hash" fields) } acc
-            | (Some url, Some commit, None) -> Map.add name { url = url; rev = Option.defaultValue "" (Map.tryFind "rev" fields); commit = commit; isVersion = false; hash = Option.defaultValue "" (Map.tryFind "hash" fields) } acc
-            | _ -> acc
-          | Error _ -> acc
-        else
-          acc
-      | None -> acc
-    List.fold entry Map.empty lines
+    let entry (acc: result<list<string>, string>) (r: string) : result<list<string>, string> =
+      let p = Path.combine dir r
+      match acc with
+      | Error e -> Error e
+      | Ok parts ->
+        if r = ".git" || String.startsWith ".git/" r then Ok parts
+        else if Native.isSymlink p then Ok(String.ofCStr (zs_host_link_text p) :: (r + String.ofByte (u8 0)) :: parts)
+        else if Directory.exists p then Ok parts
+        else if File.exists p then Ok(Result.defaultValue "" (File.readAllText p) :: r :: parts)
+        else Error $"{r} isn't a file, a directory or a symbolic link (a pipe or a device?)"
+    Result.map (fun (parts: list<string>) -> Tools.hashOf (List.rev parts)) (List.fold entry (Ok []) (List.sort rels))
 
 let private writeLock (root: string) (entries: list<string * Locked>) =
   let line (e: string * Locked) =
@@ -422,6 +492,33 @@ let private writeLock (root: string) (entries: list<string * Locked>) =
     $"{name} = {{ git = \"{l.url}\", {how}, commit = \"{l.commit}\"{hash} }}"
   let lines = List.append [ "# zs.lock: the exact commits of git dependencies, and a hash of each one's files. zs update"; "# moves them to the newest commit of their rev, or release; commit this file so every build"; "# uses the same code."; "[dependencies]" ] (List.map line (List.sortBy fst entries))
   File.writeAllText (Path.combine root "zs.lock") (String.join "\n" lines + "\n") |> ignore
+
+// a dependency's line with its version field's value replaced (zs update): the field whose key is
+// version between the line's braces, not the first "version" in the line, which may be in its URL
+// (…/conversion); the rest of the line, its comment too, as it was
+let private withVersion (line: string) (v: string) : string =
+  let code =
+    match String.indexOf "#" line with
+    | Some h -> String.sub line 0 h
+    | None -> line
+  let comment = String.sub line (String.length code) (String.length line - String.length code)
+  match (String.indexOf "{" code, String.lastIndexOf "}" code) with
+  | (Some o, Some c) when o < c ->
+    let field (f: string) : string =
+      match String.indexOf "=" f with
+      | Some eq when String.trim (String.sub f 0 eq) = "version" ->
+        let value = String.sub f (eq + 1) (String.length f - eq - 1)
+        match String.indexOf "\"" value with
+        | Some q1 ->
+          let after = String.sub value (q1 + 1) (String.length value - q1 - 1)
+          match String.indexOf "\"" after with
+          | Some q2 -> String.sub f 0 (eq + 1) + String.sub value 0 (q1 + 1) + v + String.sub after q2 (String.length after - q2)
+          | None -> f
+        | None -> f
+      | _ -> f
+    let fields = List.map field (String.split "," (String.sub code (o + 1) (c - o - 1)))
+    String.sub code 0 (o + 1) + String.join "," fields + String.sub code c (String.length code - c) + comment
+  | _ -> line
 
 /// The commit zs.lock has for a git dependency, by its name in zs.toml (`zs tree`).
 let lockedCommit (top: Manifest) (name: string) : option<string> =
@@ -434,8 +531,10 @@ let lockedCommit (top: Manifest) (name: string) : option<string> =
 /// lowest release at or above 1.2.0 within the major; that release's zs.toml (read at its tag)
 /// asks for its own; each package gets the highest release asked for, so the result follows
 /// from the manifests alone. The lock stands while it gives every release asked for at least
-/// what's asked; update first raises the project's own minimums in zs.toml to the newest
-/// releases. Each checkout's files are hashed into the lock and checked against it (item 6): a
+/// what's asked (by the projects and the releases they get), and keeps only what's asked: an
+/// entry no manifest asks for is dropped; update first raises the project's own minimums in
+/// zs.toml to the newest releases. A dependency's checkout fetches nothing: the project that has
+/// it does. Each checkout's files are hashed into the lock and checked against it (item 6): a
 /// locked checkout that differs is restored from its commit, and one that still differs is an
 /// error; a vendored dependency (vendor/<name>) is read as it is, its hash checked, and never
 /// fetched. offline (--offline, or ZS_OFFLINE=1): an error instead of the network. Returns error
@@ -446,6 +545,17 @@ let fetchDeps (top: Manifest) (update: bool) (offline0: bool) : list<string> =
   let lock = readLock root
   let resolved = ref Map.empty
   let errors = Buffer.empty
+  // a dependency's checkout (its provider's own zs build, an editor in it): what it depends on
+  // was fetched, hashed and locked by the project that has it, whose checkouts it's built
+  // against; nothing is fetched or locked here
+  let owned = Option.isSome (ownerRoot top.root)
+  if owned then
+    for (name, d) in top.deps do
+      match d with
+      | PathDep _ -> ()
+      | _ ->
+        if not (Map.containsKey name lock) then
+          Buffer.push $"{top.name} is a dependency of the project at {Path.getRelativePath (Environment.currentDirectory ()) root}, whose zs.lock has no '{name}'; run zs fetch there" errors
   // a member's lock: the workspace has the one (0018 item 8)
   match workspaceOf top with
   | Some w when File.exists (Path.combine top.root "zs.lock") ->
@@ -489,14 +599,16 @@ let fetchDeps (top: Manifest) (update: bool) (offline0: bool) : list<string> =
       if vendored top name then
         // vendored: as it is, against the lock's hash
         let vdir = vendorDir top name
-        let h = dirHash vdir
-        match locked with
-        | Some l when l.hash <> "" && l.hash <> h ->
+        match (dirHash vdir, locked) with
+        | (Error e, _) ->
+          Buffer.push $"vendored {name}: {e}" errors
+          false
+        | (Ok h, Some l) when l.hash <> "" && l.hash <> h ->
           Buffer.push (mismatch name (Path.getRelativePath top.root vdir)) errors
           false
-        | _ ->
+        | (Ok h, _) ->
           let l0 = Option.defaultValue { url = url; rev = rev; commit = ""; isVersion = isVersion; hash = "" } locked
-          resolved.Value <- Map.add name { l0 with hash = h } resolved.Value
+          resolved.Value <- Map.add name { l0 with hash = h; isVersion = isVersion } resolved.Value
           true
       else
         let checkedOut =
@@ -527,14 +639,14 @@ let fetchDeps (top: Manifest) (update: bool) (offline0: bool) : list<string> =
               match at with
               | Error e -> Error e
               | Ok h ->
-                if l.hash = "" || dirHash dir = l.hash then
+                if l.hash = "" || Result.defaultValue "" (dirHash dir) = l.hash then
                   Ok h
                 else
                   match git [ "-C"; dir; "checkout"; "--quiet"; "--force"; "--detach"; c ] with
                   | Error e -> Error e
                   | Ok _ ->
                     git [ "-C"; dir; "clean"; "-fdq" ] |> ignore
-                    if dirHash dir = l.hash then Ok h else Error(mismatch name (Path.getRelativePath top.root dir))
+                    if Result.defaultValue "" (dirHash dir) = l.hash then Ok h else Error(mismatch name (Path.getRelativePath top.root dir))
             | None ->
               // the rev resolved on the remote's current state: a branch means origin's branch
               eprintln $"resolving {name} {(if rev = "" then "(default branch)" else rev)}"
@@ -551,9 +663,9 @@ let fetchDeps (top: Manifest) (update: bool) (offline0: bool) : list<string> =
                 match git [ "-C"; dir; "checkout"; "--quiet"; "--detach"; target ] with
                 | Error e -> Error e
                 | Ok _ -> head ()
-        match checkedOut with
-        | Ok commit ->
-          resolved.Value <- Map.add name { url = url; rev = rev; commit = commit; isVersion = isVersion; hash = dirHash dir } resolved.Value
+        match Result.bind (fun (commit: string) -> Result.map (fun (h: string) -> (commit, h)) (dirHash dir)) checkedOut with
+        | Ok(commit, h) ->
+          resolved.Value <- Map.add name { url = url; rev = rev; commit = commit; isVersion = isVersion; hash = h } resolved.Value
           true
         | Error e ->
           Buffer.push $"git dependency '{name}' ({url}{(if rev = "" then "" else " " + rev)}): {e}" errors
@@ -587,23 +699,23 @@ let fetchDeps (top: Manifest) (update: bool) (offline0: bool) : list<string> =
           if newest > least then
             match File.readAllLines (Path.combine top.root "zs.toml") with
             | Ok lines ->
-              let bump (l: string) =
-                let t = String.trim l
-                if (String.startsWith (name + " ") t || String.startsWith (name + "=") t) && String.contains "version" t then
-                  match String.indexOf "version" l with
-                  | Some at ->
-                    let rest = String.sub l at (String.length l - at)
-                    match (String.indexOf "\"" rest) with
-                    | Some q1 ->
-                      let after = String.sub rest (q1 + 1) (String.length rest - q1 - 1)
-                      match String.indexOf "\"" after with
-                      | Some q2 -> String.sub l 0 (at + q1 + 1) + showVersion newest + String.sub after q2 (String.length after - q2)
-                      | None -> l
-                    | None -> l
+              // the dependency's own line, by its key in [dependencies], as parseManifest reads it
+              let out = Buffer.empty
+              let section = ref ""
+              for l in lines do
+                let code =
+                  match String.indexOf "#" l with
+                  | Some h -> String.sub l 0 h
                   | None -> l
+                let t = String.trim code
+                if String.startsWith "[" t && String.endsWith "]" t then
+                  section.Value <- String.trim (String.sub t 1 (String.length t - 2))
+                  Buffer.push l out
                 else
-                  l
-              File.writeAllText (Path.combine top.root "zs.toml") (String.join "\n" (List.map bump lines) + "\n") |> ignore
+                  match String.indexOf "=" t with
+                  | Some eq when section.Value = "dependencies" && String.trim (String.sub t 0 eq) = name -> Buffer.push (withVersion l (showVersion newest)) out
+                  | _ -> Buffer.push l out
+              File.writeAllText (Path.combine top.root "zs.toml") (String.join "\n" (Array.toList (Buffer.toArray out)) + "\n") |> ignore
               eprintln $"{name}: version {showVersion least} -> {showVersion newest}"
             | Error _ -> ()
             newest
@@ -620,8 +732,10 @@ let fetchDeps (top: Manifest) (update: bool) (offline0: bool) : list<string> =
           | Some l ->
             if l.url <> url then
               Buffer.push $"two git dependencies are named '{name}': {l.url} and {url}" errors
+            else if l.isVersion then
+              Buffer.push $"'{name}' is both a git dependency at a rev and one on releases (version); a name is one package in a build" errors
           | None ->
-            let dir = gitDir top name
+            let dir = if vendored top name then vendorDir top name else gitDir top name
             if checkout name url rev false && File.exists (Path.combine dir "zs.toml") && not (Set.contains dir visited.Value) then
               visited.Value <- Set.add dir visited.Value
               match readManifest dir with
@@ -637,21 +751,69 @@ let fetchDeps (top: Manifest) (update: bool) (offline0: bool) : list<string> =
     visit top
     // the releases: the lock's while it gives each at least what's asked, else selected
     let asked = Array.toList (Buffer.toArray wanted)
-    let fromLock (w: string * string * Version) =
+    // the lock's release of a package when it gives at least what's asked (a rev's entry gives
+    // none: its rev is no tag)
+    let lockGives (w: string * string * Version) : option<Version> =
       let (name, url, least) = w
       match Map.tryFind name lock with
       | Some l when l.isVersion && l.url = url ->
         match parseVersion (String.sub l.rev 1 (String.length l.rev - 1)) with
-        | Some v -> seriesOf v = seriesOf least && v >= least
-        | None -> false
-      | _ -> false
+        | Some v when seriesOf v = seriesOf least && v >= least -> Some v
+        | _ -> None
+      | _ -> None
     let chosen : ref<Map<string, string * Version * string>> = ref Map.empty
-    if not update && List.forall fromLock asked then
-      for (name, l) in Map.toList lock do
-        match (l.isVersion, parseVersion (String.sub l.rev 1 (String.length l.rev - 1))) with
-        | (true, Some v) -> chosen.Value <- Map.add name (l.url, v, l.rev) chosen.Value
-        | _ -> ()
-    else
+    // a chosen release checked out once a run (the lock's, then perhaps the selection's), and its
+    // zs.toml; a name a rev dependency has is refused, as the two would share one checkout
+    let taken : ref<Map<string, string * option<Manifest>>> = ref Map.empty
+    let take (name: string) (url: string) (tag: string) : option<Manifest> =
+      match (Map.tryFind name taken.Value, Map.tryFind name resolved.Value) with
+      | (Some(t, dm), _) when t = tag -> dm
+      | (_, Some l) when not l.isVersion ->
+        Buffer.push $"'{name}' is both a git dependency at a rev and one on releases (version); a name is one package in a build" errors
+        taken.Value <- Map.add name (tag, None) taken.Value
+        None
+      | _ ->
+        let dir = if vendored top name then vendorDir top name else gitDir top name
+        let dm =
+          if checkout name url tag true && File.exists (Path.combine dir "zs.toml") then
+            match readManifest dir with
+            | Ok m -> Some m
+            | Error p ->
+              Buffer.push $"{p.file}: {p.message}" errors
+              None
+          else
+            None
+        taken.Value <- Map.add name (tag, dm) taken.Value
+        dm
+    // what a release's zs.toml asks for of releases
+    let asksOf (dm: option<Manifest>) : list<string * string * Version> =
+      match dm with
+      | Some m -> List.choose (fun (kd: string * Dep) -> match snd kd with | GitVersion(u, l) -> Some(fst kd, u, l) | _ -> None) m.deps
+      | None -> []
+    // from the lock: what's asked, then what those releases ask in turn, each the lock's; an entry
+    // nothing asks for any more (zs remove, a version made a rev) isn't taken, and leaves the lock.
+    // A release asking for what the lock doesn't give (a lock merged by hand) is selected again
+    let before = resolved.Value
+    let errorsBefore = Buffer.length errors
+    let stale = ref (update || not (List.forall (fun (w: string * string * Version) -> Option.isSome (lockGives w)) asked))
+    let rec fromLock (pending: list<string * string * Version>) =
+      match pending with
+      | [] -> ()
+      | w :: rest ->
+        let (name, url, _) = w
+        match (lockGives w, Map.tryFind name lock) with
+        | (Some _, _) when Map.containsKey name chosen.Value -> fromLock rest
+        | (Some v, Some l) ->
+          chosen.Value <- Map.add name (url, v, l.rev) chosen.Value
+          fromLock (List.append (asksOf (take name url l.rev)) rest)
+        | _ -> stale.Value <- true
+    if not stale.Value then
+      fromLock asked
+      // a checkout that failed is its error already, which a selection would only repeat
+      if Buffer.length errors > errorsBefore then
+        stale.Value <- false
+    if stale.Value then
+      chosen.Value <- Map.empty
       let met = ref Set.empty
       let rec require (name: string) (url: string) (least: Version) =
         match releases name url with
@@ -673,6 +835,7 @@ let fetchDeps (top: Manifest) (update: bool) (offline0: bool) : list<string> =
                 | _ -> chosen.Value <- Map.add name (url, v, tag) chosen.Value
                 // what that release asks for, from its zs.toml at its tag
                 match git [ "-C"; gitDir top name; "show"; tag + ":zs.toml" ] with
+                | Ok text when i64 (String.length text) > manifestLimit -> Buffer.push $"{name} {tag}: zs.toml is larger than a manifest may be (1 MB)" errors
                 | Ok text ->
                   match parseManifest (gitDir top name) $"{name} {tag}: zs.toml" (String.split "\n" text) with
                   | Ok dm ->
@@ -684,24 +847,28 @@ let fetchDeps (top: Manifest) (update: bool) (offline0: bool) : list<string> =
                 | Error _ -> ()
       for (name, url, least) in asked do
         require name url least
+    // a release the lock gave that the selection didn't take: not locked
+    for (name, _) in Map.toList taken.Value do
+      if not (Map.containsKey name chosen.Value) && not (Map.containsKey name before) then
+        resolved.Value <- Map.remove name resolved.Value
     // each chosen release checked out, and what it depends on by path or rev visited
     for (name, (url, _, tag)) in Map.toList chosen.Value do
-      let dir = gitDir top name
-      if checkout name url tag true && File.exists (Path.combine dir "zs.toml") && not (Set.contains dir visited.Value) then
-        visited.Value <- Set.add dir visited.Value
-        match readManifest dir with
-        | Ok dm -> visit dm
-        | Error p -> Buffer.push $"{p.file}: {p.message}" errors
-  if Buffer.length errors = 0 then
+      match take name url tag with
+      | Some dm when not (Set.contains dm.root visited.Value) ->
+        visited.Value <- Set.add dm.root visited.Value
+        visit dm
+      | _ -> ()
+  if Buffer.length errors = 0 && not owned then
     for p in projects do
       forProject p
-  if Buffer.length errors = 0 && (not (Map.isEmpty resolved.Value) || File.exists (Path.combine root "zs.lock")) then
+  if Buffer.length errors = 0 && not owned && (not (Map.isEmpty resolved.Value) || File.exists (Path.combine root "zs.lock")) then
     writeLock root (Map.toList resolved.Value)
   Array.toList (Buffer.toArray errors)
 
 /// zs vendor (0018 item 6): each git dependency's checkout copied into vendor/<name> (.git left
-/// out), the lock's hash with it, so the project builds from its own files and never fetches.
-/// Returns error messages.
+/// out), the lock's hash with it, so the project builds from its own files and never fetches. A
+/// symbolic link is copied as a link when it leads inside the package; one leading out of it, a
+/// pipe or a device is an error, and the package isn't vendored. Returns error messages.
 let vendor (top: Manifest) : list<string> =
   match fetchDeps top false false with
   | [] ->
@@ -719,20 +886,40 @@ let vendor (top: Manifest) : list<string> =
         | Ok rels ->
           Directory.create (Path.combine (lockRoot top) "vendor") |> ignore
           Directory.create into |> ignore
+          let failed = Buffer.length errors
+          // the checkout with its links followed: a link is copied as the link it is, and only
+          // when it leads inside the checkout, never what it points at (vendor/ is committed, and
+          // a link may point at any file of the machine)
+          let realRoot = String.ofCStr (zs_host_real_path from)
           for r in List.sort rels do
             if r <> ".git" && not (String.startsWith ".git/" r) then
               let src = Path.combine from r
               let dst = Path.combine into r
-              if Directory.exists src then
+              if Native.isSymlink src then
+                let text = String.ofCStr (zs_host_link_text src)
+                let target = String.ofCStr (zs_host_real_path src)
+                if text = "" || Path.isAbsolute text || realRoot = "" || not (target = realRoot || String.startsWith (realRoot + "/") target) then
+                  Buffer.push $"vendor {name}: {r} is a symbolic link to {text}, which leads out of the package (or nowhere); zs vendor copies a link only when it leads inside" errors
+                else
+                  match String.ofCStr (zs_host_make_link text dst) with
+                  | "" -> ()
+                  | why -> Buffer.push $"vendor {name}: {r}: {why}" errors
+              else if Directory.exists src then
                 Directory.create dst |> ignore
-              else
+              else if File.exists src then
                 match File.copy src dst with
                 | Ok _ -> ()
                 | Error e -> Buffer.push $"vendor {name}: {r}: {e}" errors
-          if dirHash into <> l.hash then
-            Buffer.push $"vendor {name}: the copy's hash differs from the lock's" errors
-          else
-            println $"vendored {name} {l.rev} into {Path.getRelativePath top.root into}"
+              else
+                Buffer.push $"vendor {name}: {r} isn't a file, a directory or a symbolic link (a pipe or a device?)" errors
+          if Buffer.length errors = failed then
+            match dirHash into with
+            | Ok h when h = l.hash -> println $"vendored {name} {l.rev} into {Path.getRelativePath top.root into}"
+            | Ok _ -> Buffer.push $"vendor {name}: the copy's hash differs from the lock's" errors
+            | Error e -> Buffer.push $"vendor {name}: {e}" errors
+          // a copy cut short isn't left to be read as the package
+          if Buffer.length errors > failed then
+            Directory.deleteRecursive into |> ignore
     Array.toList (Buffer.toArray errors)
   | errors -> errors
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Git dependencies, against a local repository (no network): fetching a tag, zs.lock pinning
-# the commit, a branch rev, zs update, and re-fetching from the lock.
+# the commit, a branch rev, zs update, re-fetching from the lock, the default branch, what the
+# lock keeps, and a packaged provider built against the lock's checkouts.
 set -u
 zs="$(pwd)/bin/zs"; t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 g() { git -C "$t/text" -c user.name=zs -c user.email=zs@example.invalid "$@" >/dev/null 2>&1; }
@@ -92,3 +93,81 @@ edit 's/c = { git = "\([^"]*\)", version = "1.4.0" }/c = { git = "\1", version =
 "$zs" build 2>&1 | grep -o "c: no tag v1.5.0 or later below v2.0.0 (the newest is v1.4.0)"
 printf '[package]\nname = "both"\n\n[dependencies]\nc = { git = "file:///x", rev = "main", version = "1.0" }\n' > zs.toml
 "$zs" fetch 2>&1 | grep -o "dependency 'c' has both rev and version; keep one"
+
+# a dependency on the default branch (no rev): locked with rev = "", which every later fetch reads
+mkdir -p "$t/branch/src" && cd "$t/branch"
+printf '[package]\nname = "branch"\n\n[dependencies]\ntext = { git = "file://%s/text" }\n' "$t" > zs.toml
+printf 'let main () =\n  println $"words {Text.wordCount "a b"}"\n  0\n' > src/main.zs
+"$zs" run 2>/dev/null
+"$zs" run 2>&1 | sed 's/^/(again) /'
+grep -o 'rev = "[^"]*"' zs.lock
+
+# zs.lock keeps what the manifests ask for: zs remove takes a release out of it, and a release
+# made a rev builds the rev, not the release the lock had
+mkdir -p "$t/prune/src" && cd "$t/prune"
+printf '[package]\nname = "prune"\n\n[dependencies]\nc = { git = "file://%s/c", version = "1.1" }\n' "$t" > zs.toml
+printf 'let main () =\n  println $"c {C.release ()}"\n  0\n' > src/main.zs
+"$zs" run 2>/dev/null
+"$zs" remove c 2>/dev/null
+grep -c '^c = ' zs.lock | sed 's/^/zs.lock entries for c: /'
+printf '[package]\nname = "prune"\n\n[dependencies]\nc = { git = "file://%s/c", version = "1.1" }\n' "$t" > zs.toml
+"$zs" run 2>/dev/null
+edit 's/version = "1.1"/rev = "v1.4.0"/' zs.toml
+"$zs" run 2>/dev/null
+grep -o '^c = { git = "[^"]*", [a-z]* = "[^"]*"' zs.lock | sed 's/git = "[^"]*", //'
+
+# a lock entry's name is a directory under .zs-cache/deps, as a manifest's is: one leading out of
+# it deletes nothing, and leaves the lock
+mkdir -p "$t/lockname/src" "$t/lockname/.zs-cache/deps" "$t/keep9" && cd "$t/lockname"
+touch "$t/keep9/precious"
+printf '[package]\nname = "lockname"\n' > zs.toml
+printf '[dependencies]\n../../../keep9 = { git = "file:///nonexistent/x", version = "1.0.0", commit = "0123456789abcdef0123456789abcdef01234567" }\n' > zs.lock
+printf 'let main () =\n  0\n' > src/main.zs
+"$zs" check src/main.zs 2>&1
+[ -f "$t/keep9/precious" ] && echo "../../../keep9 is still there"
+grep -c keep9 zs.lock | sed 's/^/zs.lock entries for it: /'
+
+# zs update writes a release's version field itself, not the first "version" on its line (here
+# in the URL, …/conversion), and keeps the line's comment
+git clone -q "$t/c" "$t/conversion"
+mkdir -p "$t/conv/src" && cd "$t/conv"
+printf '[package]\nname = "conv"\n\n[dependencies]\nc = { git = "file://%s/conversion", version = "1.1" } # a version from before\n' "$t" > zs.toml
+printf 'let main () =\n  println $"c {C.release ()}"\n  0\n' > src/main.zs
+"$zs" update 2>/dev/null && grep '^c = ' zs.toml | sed "s|$t|…|"
+"$zs" run 2>/dev/null
+
+# a packaged provider (0001) whose own git dependency, helper, is the project's checkout, as the
+# project's zs.lock pinned it: the provider's build (a zs build of its own) fetches and locks
+# nothing apart, so after helper's main moves on the provider still runs the locked helper
+repo helper
+printf '[package]\nname = "helper"\nmain = "src/Helper.zs"\n' > "$t/helper/zs.toml"
+printf '/// The word.\nlet word () = "locked"\n' > "$t/helper/src/Helper.zs"
+release helper 1.0.0
+repo gen
+printf '[package]\nname = "gen"\nmain = "Main.zs"\n\n[provider]\nmain = "Main.zs"\n\n[dependencies]\nhelper = { git = "file://%s/helper", rev = "main" }\n' "$t" > "$t/gen/zs.toml"
+cat > "$t/gen/Main.zs" <<'ZS'
+// A provider whose module holds its dependency's word.
+let main () =
+  println "// provided by gen 0.1"
+  println ""
+  println $"let word = \"{Helper.word ()}\""
+  0
+ZS
+release gen 1.0.0
+mkdir -p "$t/papp/src" && cd "$t/papp"
+printf '[package]\nname = "papp"\n\n[dependencies]\ngen = { git = "file://%s/gen", rev = "v1.0.0" }\n' "$t" > zs.toml
+cat > src/main.zs <<'ZS'
+import gen "words"
+
+let main () =
+  println word
+  0
+ZS
+"$zs" run 2>/dev/null
+if [ -e .zs-cache/deps/gen/zs.lock ] || [ -e .zs-cache/deps/gen/.zs-cache ]; then echo "gen's provider resolved dependencies of its own"
+else echo "gen's provider was built against the project's checkouts"; fi
+grep -o '^helper = { git = "[^"]*", rev = "[^"]*"' zs.lock | sed 's/git = "[^"]*", //'
+printf '/// The word.\nlet word () = "moved"\n' > "$t/helper/src/Helper.zs"
+git -C "$t/helper" -c user.name=zs -c user.email=zs@example.invalid commit -qam moved
+rm -rf .zs-cache/providers
+"$zs" run 2>/dev/null | sed 's/^/(helper moved on) /'
