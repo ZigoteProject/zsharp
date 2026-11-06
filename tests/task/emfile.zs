@@ -18,9 +18,9 @@ let rec accepting (l: TcpListener) (s: Scope) (quit: Promise<unit>) (failed: ref
     match r with
     | Ok conn ->
       Task.start s (task {
-        use c = conn
-        return! serve c (Buffer.create 64 (u8 0)) quit
-      }) |> ignore
+          use c = conn
+          return! serve c (Buffer.create 64 (u8 0)) quit
+        }) |> ignore
     | Error _ -> failed.Value <- failed.Value + 1
     return! accepting l s quit failed
   }
