@@ -90,7 +90,10 @@ for t in $(find tests -name '*.zs' | sort); do
       leaks=1; grep -q "^panic:" "$base.out" && leaks=0
       sanenv=(env "ASAN_OPTIONS=exitcode=99:detect_leaks=$leaks:abort_on_error=0" "UBSAN_OPTIONS=exitcode=99:print_stacktrace=1")
     fi
-    actual=$("${sanenv[@]}" "${run[@]}" < /dev/null 2>&1); code=$?
+    # bounded, so a program that hangs fails itself and not the rest of the suite
+    actual=$("${sanenv[@]}" timeout 600 "${run[@]}" < /dev/null 2>&1); code=$?
+    [ $code = 124 ] && actual="$actual
+(still running after 600 s: stopped)"
     expected=$(cat "$base.out"); [ $windows = 1 ] && [ -f "$base.windows.out" ] && expected=$(cat "$base.windows.out")
     [ $code = 99 ] && actual="$actual
 (${san[0]:+the sanitizers}${san[0]:-valgrind} reported memory errors or leaks)"
@@ -150,7 +153,8 @@ else echo "FAIL examples/simple.zs for arm-linux-musleabihf"; cat "$tmp/armlinux
 if bin/zs doctor >"$tmp/doctor.log" 2>&1 && grep -q '^ok   clang' "$tmp/doctor.log"; then echo "ok   zs doctor"
 else echo "FAIL zs doctor"; cat "$tmp/doctor.log"; fail=1; fi
 mkdir -p "$tmp/oldclang" && printf '#!/bin/sh\necho "Apple clang version 21.0.0 (clang-2100.3.34.2)"\n' >"$tmp/oldclang/clang" && chmod +x "$tmp/oldclang/clang"
-if ! PATH="$tmp/oldclang:$PATH" bin/zs doctor >"$tmp/doctor-old.log" 2>&1 && grep -q '^--   clang .*: too old, LLVM 23 or later is needed' "$tmp/doctor-old.log"; then echo "ok   zs doctor (an old clang)"
+if [ $windows = 1 ]; then echo "skip zs doctor (an old clang): Windows starts no shell script as a program"
+elif ! PATH="$tmp/oldclang:$PATH" bin/zs doctor >"$tmp/doctor-old.log" 2>&1 && grep -q '^--   clang .*: too old, LLVM 23 or later is needed' "$tmp/doctor-old.log"; then echo "ok   zs doctor (an old clang)"
 else echo "FAIL zs doctor (an old clang)"; cat "$tmp/doctor-old.log"; fail=1; fi
 
 # doc tests (0009, D8): the library's examples in its /// comments, and zs test --doc --update
@@ -745,28 +749,31 @@ else echo "skip editors/tree-sitter-zsharp (no tree-sitter CLI; rebuild the dev 
 
 fi
 
+# C programs linking a Z# library: clang, or zig cc for another target, and for MinGW on Windows
+# (clang alone targets MSVC there, whose C library the runtime isn't built for)
+cc=(clang); [ -n "$target" ] && cc=(zig cc -target "$target")
+[ $windows = 1 ] && [ -z "$target" ] && cc=(zig cc -target "$(uname -m | sed 's/arm64/aarch64/')-windows-gnu")
 # a library's constants are static (0014): a tree of union cases, a table and a record, read by an
-# export that C calls, with no startup code (a library has none)
+# export that C calls, with no startup code (a library has none); a C program's output is text,
+# \r\n on Windows
 mkdir -p "$tmp/libstatic"
 printf '#include <stdio.h>\n#include "libstatic.h"\nint main(void) { printf("%%lld\\n", (long long)total(41)); return 0; }\n' > "$tmp/libstatic/main.c"
 if bin/zs build tests/libstatic.zs --lib -o "$tmp/libstatic/libstatic.a" 2>"$tmp/libstatic.log" \
-   && clang -I"$tmp/libstatic" "$tmp/libstatic/main.c" "$tmp/libstatic/libstatic.a" -lm -o "$tmp/libstatic/cmain" 2>>"$tmp/libstatic.log" \
-   && [ "$("$tmp/libstatic/cmain")" = 122 ]; then echo "ok   tests/libstatic.zs (a library's static constants, from C)"
+   && "${cc[@]}" -I"$tmp/libstatic" "$tmp/libstatic/main.c" "$tmp/libstatic/libstatic.a" -lm "${syslibs[@]}" -o "$tmp/libstatic/cmain" 2>>"$tmp/libstatic.log" \
+   && [ "$("$tmp/libstatic/cmain" | tr -d '\r')" = 122 ]; then echo "ok   tests/libstatic.zs (a library's static constants, from C)"
 else echo "FAIL tests/libstatic.zs"; cat "$tmp/libstatic.log"; fail=1; fi
 # the same under -g and --coverage, which keep the code as written but fold the initializers; and
 # a startup assert among a library's values, wherever it is, refused
 for flag in -g --coverage; do
   if bin/zs build tests/libstatic.zs --lib $flag -o "$tmp/libstatic/libstatic.a" 2>"$tmp/libstatic.log" \
-     && clang -I"$tmp/libstatic" "$tmp/libstatic/main.c" "$tmp/libstatic/libstatic.a" -lm -o "$tmp/libstatic/cmain" 2>>"$tmp/libstatic.log" \
-     && [ "$(cd "$tmp/libstatic" && ./cmain)" = 122 ]; then echo "ok   tests/libstatic.zs --lib $flag"
+     && "${cc[@]}" -I"$tmp/libstatic" "$tmp/libstatic/main.c" "$tmp/libstatic/libstatic.a" -lm "${syslibs[@]}" -o "$tmp/libstatic/cmain" 2>>"$tmp/libstatic.log" \
+     && [ "$(cd "$tmp/libstatic" && ./cmain | tr -d '\r')" = 122 ]; then echo "ok   tests/libstatic.zs --lib $flag"
   else echo "FAIL tests/libstatic.zs --lib $flag"; cat "$tmp/libstatic.log"; fail=1; fi
 done
 printf 'let table = [| 1; 2; 3 |]\nlet check (n: int) = n * 2 = 5\nassert (check (Array.length table))\n\n[<Export>]\nlet get (i: int) : int = table.[i]\n' > "$tmp/libassert.zs"
 if ! bin/zs build "$tmp/libassert.zs" --lib -o "$tmp/libassert.a" 2>"$tmp/libassert.log" && grep -q "top-level assert" "$tmp/libassert.log"; then echo "ok   a library's startup assert after a table is refused"
 else echo "FAIL a library's startup assert after a table"; cat "$tmp/libassert.log"; fail=1; fi
 # C interop: a directory with main.c links the static library built from its lib.zs
-cc=(clang); [ -n "$target" ] && cc=(zig cc -target "$target")
-[ $windows = 1 ] && [ -z "$target" ] && cc=(zig cc -target "$(uname -m | sed 's/arm64/aarch64/')-windows-gnu")
 for c in $(find tests -name main.c | sort); do
   d=$(dirname "$c")
   if bin/zs build "$d/lib.zs" "${tgt[@]}" --lib -o "$tmp/lib.a" 2>"$tmp/build.log" && "${cc[@]}" -I"$tmp" "$c" "$tmp/lib.a" -lm "${syslibs[@]}" -o "$tmp/cexe" 2>>"$tmp/build.log"; then
@@ -783,11 +790,11 @@ done
 # nothing under Helgrind, and a ref's handle released on another thread panics with its type
 if [ -z "$target" ]; then
   ct="$tmp/ct"; mkdir -p "$ct"
-  if bin/zs build tests/cthreads/lib.zs --lib -o "$ct/lib.a" 2>"$ct/log" && clang -I"$ct" tests/cthreads/main.c "$ct/lib.a" -lm -o "$ct/exe" 2>>"$ct/log"; then
+  if bin/zs build tests/cthreads/lib.zs --lib -o "$ct/lib.a" 2>"$ct/log" && "${cc[@]}" -I"$ct" tests/cthreads/main.c "$ct/lib.a" -lm "${syslibs[@]}" -o "$ct/exe" 2>>"$ct/log"; then
     if ! command -v valgrind >/dev/null; then echo "skip tests/cthreads under Helgrind (no valgrind)"
     elif valgrind --tool=helgrind -q --error-exitcode=99 "$ct/exe" >"$ct/out" 2>"$ct/hg"; then echo "ok   tests/cthreads under Helgrind"
     else echo "FAIL tests/cthreads under Helgrind"; head -30 "$ct/hg"; fail=1; fi
-    actual=$("$ct/exe" other-thread 2>&1); code=$?
+    actual=$("$ct/exe" other-thread 2>&1); code=$?; actual=${actual//$'\r'/}
     expected="16 threads using a list's handle: every sum right
 the counter on its own thread: 5
 panic: zs_release: a handle of ref<int> used from another thread (make its type Share, or use it on the thread that made it)"

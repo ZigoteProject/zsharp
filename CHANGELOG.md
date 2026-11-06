@@ -16,8 +16,13 @@
   it (stage 0 is 0.6.1's).
 
 ### Tests
-- CI upgrades Windows's LLVM and zig (`choco upgrade`): Windows x64's image has LLVM 20, which
-  `choco install` kept.
+- The suite runs natively on Windows (CI's x64 and arm64 runners): text is checked out with LF
+  there too (`.gitattributes`; git for Windows' CRLF failed every comparison), each test program
+  is stopped after 600 s instead of holding up the rest, and a C program linking a Z# library
+  uses zig's MinGW target as `zs` does (clang alone targets MSVC, which has no `libm`).
+- CI upgrades Windows's LLVM (`choco upgrade`; Windows x64's image has LLVM 20, which `choco
+  install` kept) and installs zig 0.16.0 there from its release, as the other runners have it
+  (Chocolatey's 0.17.0 fails a link against a DLL's import library).
 
 ## 0.7.0 (2026-11-05)
 
