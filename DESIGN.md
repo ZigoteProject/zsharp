@@ -105,7 +105,7 @@ let sumTo n =                            // imperative code is fine; mutation st
   - **Custom operators:** `let (>>=) r f = …` defines one, and `(op)` is the function (`(+)` too). Precedence comes from the first character after any dots, as in F#: `|>`, `>>`, the comparisons and operators starting with `< > = | & $ !` share one level above `&&`; `@ ^` group like `::`, `+ -` like `+`, `* / %` like `*`, and `**` is right-associative. Operators starting with `!` (but not `!=`) or `~` are prefix: `!r` binds tighter than application.
   - Known calls pass all arguments at once, and so does a closure applied to as many arguments as it takes, so currying costs nothing at run time.
   - Tail calls: a call to itself becomes a loop, and other tail calls with the same signature use LLVM `musttail`. Recursion in tail position runs in constant stack.
-- **Loops:** `for i in a .. b do`, `for i in a .. step .. b do`, `for pattern in xs do` (lists and arrays), `while c do`.
+- **Loops:** `for i in a .. b do`, `for i in a .. step .. b do`, `for pattern in xs do` (lists and arrays), `while c do`. A range loop ends where its next step would pass `b`, tested before the step, so `b` may be its type's last value (`for c in u8 0 .. u8 255` runs 256 times): the variable never wraps round.
 - **Pattern matching:**
   - Supports nesting, literals (numbers, characters, strings, bools), tuples, records (`{ x = 0; y = y }`, fields left out match anything), union cases (positional or by field name), lists, guards, `as` and or-patterns that bind variables.
   - Patterns work in `match`, `let`, function parameters (`let norm { x = x; y = y } = …`), lambdas and `for` loops.
@@ -593,7 +593,7 @@ and gives LLVM the facts it can't prove. Everything in this table is built.
 | Mono | Fusion: a pipeline of `map`s and `filter`s from `List.init`, a list, `Array.init` or an array into `sum`/`sumBy`/`fold`/`length`/`iter` is one loop; one of several stages that builds a list or an array builds only that. Pure lambdas only (decision 36) |
 | Core | Uncurrying: a function whose body is a lambda takes its parameters (`let f x = fun y -> …` has two); a closure applied to several arguments calls code taking them all when it takes that many, through the closure's static description (drop function, arity, full entry), instead of building a closure per argument |
 | Perceus | Ownership, drop specialization, reuse, borrowing, moves out of mutables, borrowed reads and fields, re-matching |
-| Codegen | Copy-on-write checks hoisted out of loops; loop versioning that proves bounds, and no overflow in the arithmetic on the loop variable, once for innermost call-free loops |
+| Codegen | Copy-on-write checks hoisted out of loops; loop versioning that proves bounds, and no overflow in the arithmetic on the loop variable, once for innermost call-free loops (an array's or a span's accesses: a `Buffer`'s keep their checks, since the loop can shrink it) |
 | Codegen | Overflow checks via `llvm.*.with.overflow`, which LLVM drops when ranges prove them safe |
 | Codegen | `print` of an interpolation prints the pieces, without building the string |
 | LLVM facts | `!range` on lengths, `inbounds nuw` element access, `noalias` allocator with `allockind`, `inlinehint` on higher-order functions, `optsize` at `-Os` |

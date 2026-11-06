@@ -230,38 +230,61 @@ let rec private jumps (e: CExpr) : bool =
   | CMatch(_, cases) -> List.exists (fun (_, _, b) -> jumps b) cases
   | _ -> false
 
-// how x is used first on the paths of e: 0, not at all; 1, read first; 2, assigned first
-let rec private firstUse (x: string) (e: CExpr) : int =
-  let inOrder (es: list<CExpr>) = List.fold (fun u c -> if u <> 0 then u else firstUse x c) 0 es
-  // 1: a path that reads it, or that might not reassign it
-  let join (us: list<int>) = if List.forall (fun u -> u = 2) us then 2 else if List.forall (fun u -> u = 0) us then 0 else 1
+// whether e uses x: reads it, assigns it or writes its array
+let rec private uses (x: string) (e: CExpr) : bool =
   match e.k with
-  | CLocal y when y = x -> 1
-  | CArraySet(y, _, _) when y = x -> 1 // the write needs the array it holds
-  | CAssign(y, w) when y = x -> if firstUse x w = 1 then 1 else 2
-  | CIf(c, t, f) ->
-    match firstUse x c with
-    | 0 -> join [ firstUse x t; firstUse x f ]
-    | u -> u
-  | CMatch(sc, cases) ->
-    match firstUse x sc with
-    | 0 -> join (List.map (fun (_, g, b) -> inOrder (List.append (Option.toList g) [ b ])) cases)
-    | u -> u
-  | CWhile _
-  | CFor _ -> if Set.contains x (freeVars e) || List.exists (fun (y, _) -> y = x) (refs e) then 1 else 0
-  | CLam _ -> 0
-  | k -> inOrder (children k)
+  | CLocal y
+  | CAssign(y, _)
+  | CArraySet(y, _, _) when y = x -> true
+  | k -> List.exists (uses x) (children k)
 
-// the first assignment to x on every path, marked as taking a moved-out variable
-let rec private markAssign (x: string) (e: CExpr) : CExpr =
+// how x is used first on the paths of e: 0, not at all; 1, read first, or not assigned first on
+// every path; 2, assigned first on every path. With e, its first assignments to x marked as taking
+// a moved-out variable when it's 2: one walk decides and marks, so a 2 always comes with every
+// such assignment marked. A use under a node it doesn't follow (an argument, a condition, a
+// scrutinee, a guard, a loop, a join point's body) is a 1.
+let rec private firstUse (x: string) (e: CExpr) : int * CExpr =
+  let re (k: CKind) = mk k e.ty
+  // a head, then the rest: the rest only when the head doesn't use x
+  let inOrder (a: CExpr) (b: CExpr) (build: CExpr -> CExpr -> CKind) : int * CExpr =
+    match firstUse x a with
+    | (0, _) ->
+      match firstUse x b with
+      | (2, b2) -> (2, re (build a b2))
+      | (u, _) -> (u, e)
+    | (2, a2) -> (2, re (build a2 b))
+    | _ -> (1, e)
+  // the paths of the branches: 2 when every one assigns first, 0 when none uses x
+  let branches (us: list<int>) (marked: unit -> CKind) : int * CExpr =
+    if List.forall (fun u -> u = 2) us then (2, re (marked ()))
+    else if List.forall (fun u -> u = 0) us then (0, e)
+    else (1, e)
   match e.k with
-  | CAssign(y, w) when y = x -> mk (CAssign(x, mk (CPrim("slot.moved", [ w ])) w.ty)) e.ty
-  | CIf(c, t, f) -> mk (CIf(c, markAssign x t, markAssign x f)) e.ty
-  | CMatch(sc, cases) -> mk (CMatch(sc, List.map (fun (p, g, b) -> (p, g, markAssign x b)) cases)) e.ty
-  | CSeq(a, b) -> if firstUse x a = 2 then mk (CSeq(markAssign x a, b)) e.ty else mk (CSeq(a, markAssign x b)) e.ty
-  | CLet(y, w, b) -> if firstUse x w = 2 then mk (CLet(y, markAssign x w, b)) e.ty else mk (CLet(y, w, markAssign x b)) e.ty
-  | CLine(l, a) -> mk (CLine(l, markAssign x a)) e.ty
-  | _ -> e
+  | CLocal y when y = x -> (1, e)
+  | CArraySet(y, _, _) when y = x -> (1, e) // the write needs the array it holds
+  | CAssign(y, w) when y = x -> if uses x w then (1, e) else (2, re (CAssign(x, mk (CPrim("slot.moved", [ w ])) w.ty)))
+  | CIf(c, t, f) when not (uses x c) ->
+    let (ut, t2) = firstUse x t
+    let (uf, f2) = firstUse x f
+    branches [ ut; uf ] (fun () -> CIf(c, t2, f2))
+  | CMatch(sc, cases) when not (uses x sc) && List.forall (fun (_, g, _) -> not (Option.exists (uses x) g)) cases ->
+    let arms = List.map (fun (p, g, b) -> (p, g, firstUse x b)) cases
+    branches (List.map (fun (_, _, (u, _)) -> u) arms) (fun () -> CMatch(sc, List.map (fun (p, g, (_, b)) -> (p, g, b)) arms))
+  | CSeq(a, b) -> inOrder a b (fun a2 b2 -> CSeq(a2, b2))
+  | CLet(y, w, b) -> inOrder w b (fun w2 b2 -> CLet(y, w2, b2))
+  | CLetMut(y, w, b) -> inOrder w b (fun w2 b2 -> CLetMut(y, w2, b2))
+  | CLine(l, a) ->
+    match firstUse x a with
+    | (2, a2) -> (2, re (CLine(l, a2)))
+    | (u, _) -> (u, e)
+  | CJoin(j, ps, body, rest) ->
+    // the rest runs first: when every path of it assigns first, a jump comes after that; when
+    // none uses x, a jump may reach a body that does
+    match firstUse x rest with
+    | (2, r2) -> (2, re (CJoin(j, ps, body, r2)))
+    | (0, _) -> if uses x body then (1, e) else (0, e)
+    | _ -> (1, e)
+  | _ -> if uses x e then (1, e) else (0, e)
 
 // reference counting for one function, with tables of its own
 let private lowerFun (types: Map<string, TypeInfo>) (borrowedParams: Map<string, Set<int>>) (one: MFun) : MFun =
@@ -930,7 +953,7 @@ let private lowerFun (types: Map<string, TypeInfo>) (borrowedParams: Map<string,
           | _ -> []
         let movable (a: CExpr) : option<string> =
           match a.k with
-          | CLocal x -> if Set.contains x mutables && heapVar x && List.forall (fun c -> firstUse x c = 2) conts then Some x else None
+          | CLocal x -> if Set.contains x mutables && heapVar x && List.forall (fun c -> fst (firstUse x c) = 2) conts then Some x else None
           | _ -> None
         // as in assignHeap: the other arguments may read x, not write it
         let alone (x: string) = List.length (List.filter (isLocalNamed x) args) = 1 && not (List.exists (writes x) args)
@@ -949,7 +972,12 @@ let private lowerFun (types: Map<string, TypeInfo>) (borrowedParams: Map<string,
             | CTuple a -> mk (CTuple(List.map take a)) h.ty
             | CPrim(op, a) -> mk (CPrim(op, List.map take a)) h.ty
             | _ -> h
-          build h2 (List.map (fun c -> moves (List.fold (fun c2 x -> markAssign x c2) c ok)) conts)
+          // marking one variable's assignments changes no other's first use
+          let marked (c: CExpr) (x: string) =
+            match firstUse x c with
+            | (2, c2) -> c2
+            | _ -> panic "Rc: a moved variable's first assignment not marked"
+          build h2 (List.map (fun c -> moves (List.fold marked c ok)) conts)
     let owned = Set.difference (Set.ofList (List.filter heapVar (List.map fst f.pars))) lent
     { f with body = rc owned lent (number (moves f.body)) }
   rcFun one
