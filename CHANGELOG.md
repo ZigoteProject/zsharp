@@ -2,8 +2,8 @@
 
 ## Unreleased
 
-Windows, natively: the suite now runs on CI's Windows x64 and arm64 runners, and what it found is
-fixed here.
+Windows, natively: the suite runs and passes on CI's Windows x64 and arm64 runners, as on the
+other four (at `be321b3`, the first run with every job green), and what it found is fixed here.
 
 ### Runtime
 - On Windows on Arm, a subnormal `f64` prints as on every other target (`3.13983658588571e-319`,
