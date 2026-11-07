@@ -237,14 +237,12 @@ let private call (name: string) (args: Json) : result<string, string> =
           File.delete exe |> ignore
           Error(formatErrors b.sources (Array.toList b.diagnostics))
         else
-          // ponytail: standard output read to its end before standard error; a program filling the
-          // second pipe waits there until the time limit
-          let ran = Build.Tools.runSplit "env" [ "ZS_LEAKCHECK=1"; "timeout"; "--kill-after=1"; "10"; exe ]
+          let ran = Build.Tools.runBounded [ ("ZS_LEAKCHECK", "1") ] 10000 exe []
           File.delete exe |> ignore
           match ran with
           | Error e -> Error e
           | Ok r ->
-            let status = if r.code = 124 || r.code = 137 then "killed after 10 seconds" else $"exit code {r.code}"
+            let status = if r.code = 124 then "killed after 10 seconds" else $"exit code {r.code}"
             Ok(withWarnings b $"{status}\n--- stdout\n{limit 20000 r.out}\n--- stderr\n{limit 20000 r.err}")
   else if name = "emit_llvm" then
     match fileOf () with

@@ -381,9 +381,8 @@ let private leafOf (line: string) : option<Leaf> =
 // runs a test binary on one test, killed after its time limit: the exit code (None when it timed
 // out) and its output (standard output, then standard error)
 let private runLeafWith (exe: string) (l: Leaf) (extra: list<string>) : option<int> * string =
-  let secs = float l.timeout / 1000.0
-  match Tools.runSplit "timeout" (List.concat [ [ "--kill-after=1"; $"{secs}"; exe; l.path ]; extra ]) with
-  | Ok r -> ((if r.code = 124 || r.code = 137 then None else Some r.code), r.out + r.err)
+  match Tools.runBounded [] l.timeout exe (l.path :: extra) with
+  | Ok r -> ((if r.code = 124 then None else Some r.code), r.out + r.err)
   | Error e -> (Some 1, e)
 
 // a property's side files, beside the binary: the case being run (its seed, size and index) and
@@ -741,7 +740,7 @@ let private runOnChip (o: Options.Options) (src: string) (m: Options.Mcu) : opti
     None
   else
     let output =
-      match Tools.runSplit "timeout" (List.concat [ [ "--kill-after=1"; "120"; List.head m.runner ]; List.tail m.runner; [ exe ] ]) with
+      match Tools.runBounded [] 120000 (List.head m.runner) (List.append (List.tail m.runner) [ exe ]) with
       | Ok r -> r.out + "\n" + r.err
       | Error e -> e
     File.delete exe |> ignore

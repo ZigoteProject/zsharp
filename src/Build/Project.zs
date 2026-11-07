@@ -361,7 +361,7 @@ let packageOf (file: string) : result<Package, Problem> =
 
 // runs git, failing instead of asking for a password: its output, or Error with its message
 let private git (args: list<string>) : result<string, string> =
-  match Tools.runSplit "env" ("GIT_TERMINAL_PROMPT=0" :: "git" :: args) with
+  match Tools.runBounded [ ("GIT_TERMINAL_PROMPT", "0") ] 0 "git" args with
   | Ok r -> if r.code = 0 then Ok(String.trim r.out) else Error(String.trim r.err)
   | Error _ -> Error "git isn't installed"
 

@@ -3356,6 +3356,14 @@ zs_int zs_udp_bind(zs_str *host, zs_int port) {
         return failed();
     }
     freeaddrinfo(res);
+#ifdef _WIN32
+    // an ICMP port-unreachable for an earlier send fails Winsock's next receive on the socket
+    // with WSAECONNRESET; POSIX doesn't report it on an unconnected socket (libuv and Go turn
+    // it off on Windows likewise)
+    BOOL off = FALSE;
+    DWORD n = 0;
+    WSAIoctl(S(fd), _WSAIOW(IOC_VENDOR, 12) /* SIO_UDP_CONNRESET */, &off, sizeof off, NULL, 0, &n, NULL, NULL);
+#endif
     return fd;
 }
 

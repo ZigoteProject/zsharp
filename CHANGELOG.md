@@ -13,6 +13,9 @@ other four (at `be321b3`, the first run with every job green), and what it found
 - On Windows, `Udp.receive` cuts a datagram longer than the buffer to it, as on Linux and macOS
   (Winsock failed the receive), and `Unix.connect` to a path with nothing there fails with "No
   such file or directory" (Windows' AF_UNIX says a network is down).
+- On Windows, a UDP socket's next receive no longer fails after a datagram it sent drew an ICMP
+  port-unreachable (Winsock's `WSAECONNRESET`; `SIO_UDP_CONNRESET` is off), as on Linux and macOS,
+  where an unconnected socket isn't told.
 - On Windows, a `--coverage` program's counts are written as bytes: in text mode each line ended
   `\r\n`, which `zs test --coverage` didn't read, so it counted nothing.
 
@@ -46,6 +49,12 @@ other four (at `be321b3`, the first run with every job green), and what it found
   and writes them back as `file:///C:/a`, with `/` and the drive (RFC 8089); renaming a provided
   name is refused there too. The MCP server's tools reach the project's files on Windows (each
   was "outside the project"), and `build` and `run` build for mingw-w64 as `zs build` does.
+- `zs test`, a test run on a chip, MCP's `run` and git dependencies start their programs
+  themselves, with no `timeout` or `env`: a test's time limit is the compiler's (killed then,
+  reported as before), and its variables are added to the environment it passes on. A stock Mac
+  has no `timeout`, and on Windows outside Git Bash `timeout` is another program, so every test
+  failed there. Both output streams are read while the program runs, so one filling its pipe
+  doesn't wait for its time limit (MCP's `run` read standard output to its end first).
 - On Windows, `zs build` runs each build in its own process, with no build server: whoever
   reaches the server's socket runs `zs` as its user, so its directory must be that user's alone,
   and Windows' `chmod` sets nothing (the directory kept the ACL it inherited).

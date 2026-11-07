@@ -3,6 +3,8 @@
 
 extern zs_host_exe : unit -> cstr
 extern zs_host_os : unit -> cstr
+extern zs_host_env_count : unit -> i64
+extern zs_host_env_at : i64 -> cstr
 
 /// The operating system the compiler runs on: linux, macos or windows.
 let hostOs () : string = String.ofCStr (zs_host_os ())
@@ -88,6 +90,52 @@ let runSplit (program: string) (args: list<string>) : result<Ran, string> =
           Ok { code = code; out = out; err = err }
       File.delete errFile |> ignore
       r
+
+// this process's environment with `vars` set (an entry of the same name dropped, regardless of
+// case on Windows, where names have none); an entry is split at its first '=' after the first
+// character, as Windows' per-drive "=C:=C:\dir" ones start with one
+let private environmentWith (vars: list<string * string>) : list<string * string> =
+  let key (name: string) = if hostOs () = "windows" then String.ofChars (List.map Char.toUpper (String.chars name)) else name
+  let given = Set.ofList (List.map (fun (n, _) -> key n) vars)
+  let entry (e: string) : option<string * string> =
+    match String.indexOf "=" (String.sub e 1 (max 0 (String.length e - 1))) with
+    | Some i -> Some(String.sub e 0 (i + 1), String.sub e (i + 2) (String.length e - i - 2))
+    | None -> None
+  let own = List.choose entry (List.init (int (zs_host_env_count ())) (fun i -> String.ofCStr (zs_host_env_at (i64 i))))
+  List.append (List.filter (fun (n, _) -> not (Set.contains (key n) given)) own) vars
+
+// a pipe read to its end on a thread of its own: Task.blocking's jobs share one helper thread,
+// so the other pipe's read would wait behind this one while the program, filling it, waits too
+let private readPipe (fd: int) : Task<string> =
+  Task.spawn (fun () -> Task.blocking (fun () -> if fd < 0 then "" else Result.defaultValue "" (IO.Reader.readToEnd (IO.Reader.ofFd fd))))
+
+// the program's exit code, or 124 (as `timeout` gives) when it's still running after `ms`
+// milliseconds, killed then; no limit for 0
+let private waitBounded (p: Diagnostics.Process) (ms: int) : Task<int> =
+  if ms <= 0 then
+    Diagnostics.Process.wait p
+  else
+    let late () =
+      Diagnostics.Process.kill p |> ignore
+      124
+    Task.map (fun (r: option<int>) -> match r with | Some code -> code | None -> late ()) (Task.timeout ms (Diagnostics.Process.wait p))
+
+/// Runs the program with these variables added to this process's environment, its standard
+/// output and standard error captured apart and read while it writes them, stopped after `ms`
+/// milliseconds (no limit for 0) with the code 124. What `timeout` and `env` did, without them:
+/// stock macOS has no timeout, and Windows' is another program.
+let runBounded (vars: list<string * string>) (ms: int) (program: string) (args: list<string>) : result<Ran, string> =
+  let s : Diagnostics.ProcessStart = { program = program; args = args; environment = Some(environmentWith vars); stdin = Diagnostics.Null; stdout = Diagnostics.Piped; stderr = Diagnostics.Piped }
+  match Diagnostics.Process.start s with
+  | Error e -> Error e
+  | Ok p ->
+    let fd (r: option<IO.Reader>) =
+      match r with
+      | Some x -> x.fd
+      | None -> -1
+    let ((out, err), code) = Task.run (Task.both (Task.both (readPipe (fd p.stdout)) (readPipe (fd p.stderr))) (waitBounded p ms))
+    Dispose.dispose p
+    Ok { code = code; out = out; err = err }
 
 /// Runs the program with the arguments, its standard error into its standard output (so neither
 /// pipe fills while the other is read); Error when it can't start.
