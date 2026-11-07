@@ -3,8 +3,9 @@
 A review of the whole of 0.7.0 (`5d1628c`, and `fb9d178` after it) for defects an attacker can
 reach and for crashes, hangs, leaks and races a program can hit: the compiler, the C runtimes, the
 library, the language and build servers, the package manager, the scripts and CI, and the editor
-extensions. It found 103 distinct defects (119 reports, some the same defect seen from two
-places): 1 critical, 30 high, 45 medium and 27 low. 100 are fixed on
+extensions. It found 105 distinct defects (121 reports, some the same defect seen from two
+places, two of them found by CI on the fixes' own tests): 1 critical, 30 high, 47 medium and 27
+low. 102 are fixed on
 `claude/security-stability-review-lgcqg3`, each with a test; two are fixed in part and one is
 deferred, each with the design that finishes it (below).
 
@@ -30,11 +31,15 @@ deferred, each with the design that finishes it (below).
   the C was compiled (clang, gcc, both chips' targets) and tested under the sanitizers there, and
   every Z# change was tested by CI's Linux x86-64 job: the whole suite in the dev container, the
   chips' programs under QEMU, wasm32's under Node, and `tests/bootstrap.sh`, the compiler built by
-  itself to the same bytes. CI's runs on the merged fixes failed only on the tests' own mistakes
-  (an array shown, `JNumber -1.25e-5` read as a subtraction, `3e-7` as three tokens,
-  a mode read after a `chmod`, `Runtime.mallocs` counting every task's frame, `zs fmt`'s spacing
-  of a minus after `>`), and once on `tests/task/echo.sh`'s port, drawn from the range the system
-  gives clients (now below it). Each is fixed in its own commit.
+  itself to the same bytes. CI's runs on the merged fixes failed mostly on the tests' own
+  mistakes (an array shown, `JNumber -1.25e-5` read as a subtraction, `3e-7` as three tokens, a
+  mode read after a `chmod`, `Runtime.mallocs` counting every task's frame, `zs fmt`'s spacing of
+  a minus after `>`, a test port drawn from the range the system gives clients), once on two
+  fixes that met only when merged (a library-only rule and four new uses in the compiler), and
+  twice on defects older than the review that its tests were the first to reach: R3-1, a
+  literal only a library trait constrains defaulting to `i16` (`Binary.toBytes 70000` wrote
+  4464), and R3-2, a tail call the Cortex-M0 and WebAssembly can't make. Each is fixed in its
+  own commit.
 
 ## What changes for programs and users
 
@@ -118,7 +123,8 @@ deferred, each with the design that finishes it (below).
 ## The findings
 
 R1 refs are the first round's, R2 the second's (the package manager's, and the first round's
-reports whose verification ran then). A ref after a comma is the same defect, reported twice.
+reports whose verification ran then), R3 what CI found on the fixes' tests. A ref after a comma
+is the same defect, reported twice.
 
 ### Optimizer and code generator
 
@@ -128,6 +134,7 @@ reports whose verification ran then). A ref after a comma is the same defect, re
 | R2-leftover-1 | high | Moving a mutable into a call, then a `let mutable`, then reassigning it: the reassignment drops the moved value again (UAF / double free) (`src/Opt/Rc.zs`) | fixed |
 | R2-leftover-5 | high | `for i in a .. b` never ends when b is near the type's maximum; in the unchecked versioned copy the wrapped variable then indexes out of bounds (`src/Gen/Fun.zs`) | fixed |
 | R1-15, R2-leftover-3 | high | Buffer.blit's range check wraps on i + n, so huge offsets write or read before the storage (`src/Gen/Helpers.zs`) | fixed |
+| R3-2 | medium | A tail call to another function was a musttail call on a Cortex-M0 and on WebAssembly, which can't make one: LLVM's backend crashed (thumbv6m) or … (`src/Gen/Fun.zs`) | fixed |
 | R2-leftover-4 | medium | Simplify keeps what an `if x`/`match x` proved about a `let mutable` x after x is reassigned: later tests of x are decided at compile time (`src/Opt/Simplify.zs`) | fixed |
 | R1-46 | medium | A Buffer that grows while owning its storage alone leaks the values left past its length (`src/Gen/Helpers.zs`) | fixed |
 
@@ -138,6 +145,7 @@ reports whose verification ran then). A ref after a comma is the same defect, re
 | R2-leftover-6 | high | Share check trusts any function-typed expression: a closure returned by a call carries a ref or Buffer onto other threads (`src/Infer/Exprs.zs`) | fixed |
 | R2-leftover-8 | high | A nested (non-regular) generic type makes the cycle warning, and shareBlocker, expand without end: checker hang or OOM, so the LSP dies on an … (`src/Infer/Decls.zs`) | fixed |
 | R2-leftover-9 | high | [&lt;NoAlloc&gt;] and interrupt-handler check misses heap work done inside primitives (ignore, ref.set and truncate drops; vec.store copy; Buffer … (`src/Opt/NoAlloc.zs`) | partly fixed |
+| R3-1 | medium | An integer or float literal that only a library trait constrains (Binary, ToJson, ...) defaulted to the first type with an impl, i16 or f32, not int … (`src/Types/Norm.zs`) | fixed |
 | R2-leftover-10 | medium | Checked-module cache key omits the module whose extern a module calls by its bare C name, so a stale check skips type and callback/share checks (`src/Build/Check.zs`) | fixed |
 | R2-leftover-7 | low | Internal Native.* builtins are callable from safe code: parJoin forges any type or double-frees a job, loopFulfill turns an int into a pointer write (`src/Infer/Builtins.zs`) | fixed |
 | R2-leftover-11 | low | Impl requirements are empty while the impl's own methods are checked, so a use inside the impl at a non-Share type escapes a Share requirement … (`src/Infer/Decls.zs`) | fixed |

@@ -138,14 +138,15 @@ let rec substGen (v: Vars) (args: list<Ty>) (t: Ty) : Ty =
     | x -> x
 
 // what an unconstrained variable of a kind becomes: int, f64, string, bool or unit, the first
-// the kind allows
+// the kind allows. A literal's kind lists only the types that have its traits, the library's
+// impls counted (Unify.meet keeps those), so one of them is as good as the built-in ones: a
+// literal Binary.toBytes takes is an int, where checking built-in impls alone made it the first
+// name left (i16, which held 70000 as 4464; an f32 for a float)
 let private defaultOf (k: Kind) : Ty =
   let fits (n: string) =
-    let allowed =
-      match k.allowed with
-      | Some s -> Set.contains n s
-      | None -> true
-    allowed && List.forall (fun tr -> hasBuiltinImpl tr n) (Set.toList k.traits)
+    match k.allowed with
+    | Some s -> Set.contains n s
+    | None -> List.forall (fun tr -> hasBuiltinImpl tr n) (Set.toList k.traits)
   match List.tryFind fits [ "int"; "f64"; "string"; "bool"; "unit" ] with
   | Some n -> tcon n
   | None ->

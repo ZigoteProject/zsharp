@@ -28,12 +28,6 @@ let main () =
   let big: result<i64, string> = Binary.ofBytes (Binary.toBytes wide)
   let narrow: result<int, string> = Binary.ofBytes (Binary.toBytes wide)
   println $"{ints} {big} {narrow}"
-  // ponytail: a diagnostic for CI (the int line above differs on 32-bit targets), to be removed
-  let runtime = String.length "abcd" * 268435456
-  let lit1: result<int, string> = Binary.ofBytes (Binary.toBytes 1073741824)
-  let run1: result<int, string> = Binary.ofBytes (Binary.toBytes runtime)
-  println $"diag {Array.toList (Binary.toBytes 1073741824)} {Array.toList (Binary.toBytes runtime)} {Array.toList (Binary.toBytes (i64 runtime))}"
-  println $"diag {lit1} {run1} {Array.toList (Binary.toBytes [ runtime ])} {Array.toList (Binary.toBytes [ 1073741824 ])}"
   // numbers past 1e15 and below 1e-4 print as JSON numbers (an exponent), not inf or 0
   let numbers = [ JNumber 2.5e15; JNumber 3.0e-7; JNumber (-1.25e-5); JNumber 1.0e300; JNumber 0.5 ]
   println (Json.print (JArray numbers))

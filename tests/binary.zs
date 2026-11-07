@@ -77,4 +77,9 @@ let main () =
   let small: result<u16, string> = Binary.ofBytes (Binary.toBytes (u64 70000))
   let sameBytes = Array.toList (Binary.toBytes (i64 -5)) = Array.toList (Binary.toBytes -5)
   println $"{sameBytes} {same (i64 -9223372036854775807 - i64 1, i64 9223372036854775807)} {narrow} {small}"
+  // a literal only Binary constrains is an int (a float an f64), not the first type with an impl
+  // (i16, which held 70000 as 4464, and f32)
+  let lits: result<list<int>, string> = Binary.ofBytes (Binary.toBytes [ 70000; 1073741824 ])
+  let tenth: result<f64, string> = Binary.ofBytes (Binary.toBytes 0.1)
+  println $"{lits} {tenth} {Array.length (Binary.toBytes 70000)}"
   0

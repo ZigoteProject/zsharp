@@ -4,7 +4,7 @@
 
 ### Security and stability
 A review of 0.7.0 ([docs/reports/security-review-0.7.md](docs/reports/security-review-0.7.md))
-found 103 defects (1 critical, 30 high, 45 medium, 27 low); 100 are fixed here, each with a test,
+found 105 defects (1 critical, 30 high, 47 medium, 27 low); 102 are fixed here, each with a test,
 two in part and one deferred, with the designs that finish them. What a program or a user sees:
 - `zs lsp` and `zs mcp` build and run a dependency's type provider only with `--trust` (the
   module from the last trusted build otherwise, or an error at the import); the VS Code and
@@ -15,6 +15,8 @@ two in part and one deferred, with the designs that finish them. What a program 
   (`Rc`), an `Spsc` popped on two threads (now any number of producers and consumers, still never
   waiting), a weak reference to an object another thread holds, a closure carrying a `ref` across
   threads (now a Share error), the runtime's `Native.*` hooks (now the library's, or `unsafe`'s).
+- A literal that only a library trait constrains is an `int` (a float an `f64`), as any other:
+  `Binary.toBytes 70000` took it as the first type with an impl, an `i16`, and wrote 4464.
 - On a chip, a stack overflow is a panic (the stack below everything else in RAM, an MPU guard
   where there is one), and the heap masks interrupts while it changes.
 - `Json` has a `JUInt` case (integers from 2^63 to 2^64 - 1): a `match` on `Json` without a
