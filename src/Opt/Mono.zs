@@ -97,7 +97,7 @@ let private isDyn (t: Ty) : bool =
   | _ -> false
 
 /// The program with its types' fields as monomorphization gives every other type: units of measure
-/// erased, a Buffer as its cell, a span as its window. The passes after it read a field's type from
+/// erased, a Buffer as its cell, a span as its window, a share<F> as its function. The passes after it read a field's type from
 /// the table.
 let lowered (prog: Program) : Program =
   let rec lower (t: Ty) : Ty =
@@ -106,6 +106,7 @@ let lowered (prog: Program) : Program =
     | TMeas _ -> measOne
     | TCon("Buffer", a) -> TCon("ref", [ TCon(bufferType, List.map lower a) ])
     | TCon("span", a) -> TCon(windowType, List.map lower a)
+    | TCon("share", [ f ]) -> lower f
     | TCon(n, a) -> TCon(n, List.map lower a)
     | TFun(a, b, r) -> TFun(lower a, lower b, r)
     | TTuple ts -> TTuple(List.map lower ts)
