@@ -22,10 +22,13 @@ static double any(void) { uint64_t u = next(); double d; memcpy(&d, &u, 8); retu
 static double within(double lo, double hi) { return lo + (hi - lo) * (double)(next() >> 11) / 9007199254740992.0; }
 
 // the error of `got` in units in the last place of `want`; 0 when both are the same NaN,
-// infinity or zero, and huge when they differ in kind or in a zero's sign
+// infinity or zero, and huge when they differ in kind or in sign. A zero's unit is the smallest
+// subnormal: a result just past half of it is rounded to it, where a libm that flushes such a
+// result to zero (Windows' UCRT, for atan2) is 1 ulp from it
 static double ulps(double got, double want) {
     if (isnan(want)) return isnan(got) ? 0 : 1e9;
-    if (isinf(want) || want == 0) return memcmp(&got, &want, 8) == 0 ? 0 : 1e9;
+    if (isinf(want)) return memcmp(&got, &want, 8) == 0 ? 0 : 1e9;
+    if (want == 0) return signbit(got) != signbit(want) || isinf(got) || isnan(got) ? 1e9 : fabs(got) / 0x1p-1074;
     double u = nextafter(fabs(want), INFINITY) - fabs(want);
     return fabs(got - want) / u;
 }

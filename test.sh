@@ -358,18 +358,13 @@ else echo "skip examples/raylib (no raylib.h)"; fi
 
 # debug info: gdb on a zs build -g program (breakpoints, arguments, locals, stepping, backtrace);
 # not on Windows on Arm, whose gdb is x86-64's and debugs no arm64 program. Where one fails on
-# Windows, gdb's own words on the program follow its diff
+# Windows, gdb's own words on the program follow its diff (GDB_RAW=1: unfiltered)
 gdbskip=""; command -v gdb >/dev/null || gdbskip="no gdb"
 [ $windows = 1 ] && [ "$arch" = aarch64 ] && gdbskip="its gdb is x86-64's and debugs no arm64 program"
-gdb_raw() {
-  [ $windows = 1 ] || return 0
-  bin/zs build -g tests/debug/prog.zs -o "$tmp/gdbraw.exe" >/dev/null 2>&1 \
-    && printf '%s\n' "break square" run bt "info source" > "$tmp/gdbraw.cmds" \
-    && timeout 60 gdb -q -batch -x "$tmp/gdbraw.cmds" "$tmp/gdbraw.exe" 2>&1 | head -30
-}
+gdb_raw() { [ $windows = 1 ] && GDB_RAW=1 "$1" 2>&1 | head -80; }
 if [ -z "$gdbskip" ]; then
   if diff <(tests/debug/gdb.sh) tests/debug/gdb.expected >"$tmp/gdb.diff"; then echo "ok   tests/debug/gdb.sh"
-  else echo "FAIL tests/debug/gdb.sh"; cat "$tmp/gdb.diff"; gdb_raw; fail=1; fi
+  else echo "FAIL tests/debug/gdb.sh"; cat "$tmp/gdb.diff"; gdb_raw tests/debug/gdb.sh; fail=1; fi
 else echo "skip tests/debug/gdb.sh ($gdbskip)"; fi
 # -g on every kind of value (closures, C pointers, a Buffer, unions that hold themselves through
 # a list, a ref or an array): it builds, runs, and its DWARF verifies, at -O0 and with --release.
@@ -405,10 +400,10 @@ fi
 # with their case, an option over a string, a ref's value
 if [ -z "$gdbskip" ]; then
   if diff <(tests/debug/gdb_heap.sh) tests/debug/gdb_heap.expected >"$tmp/gdb_heap.diff"; then echo "ok   tests/debug/gdb_heap.sh"
-  else echo "FAIL tests/debug/gdb_heap.sh"; cat "$tmp/gdb_heap.diff"; gdb_raw; fail=1; fi
+  else echo "FAIL tests/debug/gdb_heap.sh"; cat "$tmp/gdb_heap.diff"; gdb_raw tests/debug/gdb_heap.sh; fail=1; fi
   # -g on an optimized build (0011, debugging 3): the lines stay
   if diff <(tests/debug/opt.sh) tests/debug/opt.expected >"$tmp/gdb_opt.diff"; then echo "ok   tests/debug/opt.sh (-g --release)"
-  else echo "FAIL tests/debug/opt.sh"; cat "$tmp/gdb_opt.diff"; fail=1; fi
+  else echo "FAIL tests/debug/opt.sh"; cat "$tmp/gdb_opt.diff"; gdb_raw tests/debug/opt.sh; fail=1; fi
 else echo "skip tests/debug/gdb_heap.sh and tests/debug/opt.sh ($gdbskip)"; fi
 # the same under lldb, the debugger on macOS
 if command -v lldb >/dev/null && [ $windows = 0 ]; then

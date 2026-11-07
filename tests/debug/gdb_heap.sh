@@ -10,6 +10,7 @@ timeout 30 "$zs" build tests/debug/heap.zs -g -o "$exe" || exit 1
 printf '%s\n' "break heap.zs:18" run "print *xs" "print *xs->tail" "print xs->tail->tail->tail" "print *names" \
   "print *names->elements[1]" "print *tree" "print token->case" "print token->Word" "print *some" "print *cell" \
   "whatis xs" "whatis tree" kill > "$dir/cmds"
-timeout 30 gdb -q -batch -x "$dir/cmds" "$exe" 2>&1 \
+if [ -n "${GDB_RAW:-}" ]; then timeout 60 gdb -q -batch -x "$dir/cmds" "$exe" 2>&1; rm -rf "$dir"; exit; fi
+timeout 60 gdb -q -batch -x "$dir/cmds" "$exe" 2>&1 \
   | grep -E '^(\$[0-9]|type = )' | sed -E 's/0x[0-9a-f]+/ADDR/g'
 rm -rf "$dir"

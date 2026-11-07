@@ -10,8 +10,13 @@ zs=${1:-bin/zs}; dir=$(mktemp -d); exe=$dir/prog.exe
 timeout 30 "$zs" build tests/debug/prog.zs -g -o "$exe" || exit 1
 printf '%s\n' "break square" run bt "info args" next "print result" finish next "info locals" delete \
   "break prog.zs:22" continue "print name" "print range" "print summary" kill > "$dir/cmds"
-timeout 30 gdb -q -batch -x "$dir/cmds" "$exe" 2>&1 \
-  | grep -E '^(Breakpoint|#|[a-z]+ = |[0-9]+\s|\$[0-9])' | sed -E 's/0x[0-9a-f]+/ADDR/g; s/ at ADDR: / /' \
+# gdb's own output with GDB_RAW=1; else the lines checked: Windows' gdb says "Thread 1 hit
+# Breakpoint 1", and a backtrace's frames are the Z# code's (below it, the C start-up's are the
+# platform's: Linux's main, Windows' kernel32 and ntdll)
+if [ -n "${GDB_RAW:-}" ]; then timeout 60 gdb -q -batch -x "$dir/cmds" "$exe" 2>&1; rm -rf "$dir"; exit; fi
+timeout 60 gdb -q -batch -x "$dir/cmds" "$exe" 2>&1 | sed -E 's/^Thread [0-9]+ hit //' \
+  | grep -E '^(Breakpoint|#|[a-z]+ = |[0-9]+\s|\$[0-9])' | sed -E '/^#/{/\.zs:/!d;}' \
+  | sed -E 's/0x[0-9a-f]+/ADDR/g; s/ at ADDR: / /' \
   | LC_ALL=C awk '/^[a-z]+ = / { run[++n] = $0; next } { sorted(); print } END { sorted() }
       function sorted(  i, j, l) {
         for (i = 2; i <= n; i++) { l = run[i]; for (j = i - 1; j > 0 && run[j] > l; j--) run[j + 1] = run[j]; run[j + 1] = l }

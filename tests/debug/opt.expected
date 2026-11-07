@@ -3,4 +3,3 @@ Breakpoint 1, depth (…) at opt.zs:5
 #0  depth (…) at opt.zs:5
 #1  ADDR in depth (…) at opt.zs:8
 #2  ADDR in depth (…) at opt.zs:8
-#3  ADDR in main (…)
