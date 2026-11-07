@@ -100,9 +100,10 @@ deferred, each with the design that finishes it (below).
   are seen. The rest: a table of the arguments each operation drops, which `NoAlloc` turns into
   frees, and `print` lending its argument.
 - **R2-leftover-15, CI's downloads:** LLVM (Linux arm64) and micromamba (macOS Intel) are checked
-  against their SHA-256s, Windows's packages are pinned; zig 0.16.0's archive is pinned by version
-  only (its site couldn't be reached from the review's machine to hash it), and Homebrew's
-  formulae are its current ones.
+  against their SHA-256s; zig 0.16.0's archive is pinned by version only (its site couldn't be
+  reached from the review's machine to hash it), and Homebrew's formulae and Chocolatey's
+  packages are their current ones (a pin of Chocolatey's llvm to 23.1.4 found none to install on
+  Windows arm64; each package checks its installer's checksum itself).
 - **Left as they are, and why:** `Tcp.listen` and `Udp.bind` still look a name up on the loop
   (a server's own address, once, at start); a lookup is a thread, without a cap on how many at
   once; an `Spsc` is 232 bytes on a computer (the head and tail on cache lines of their own), past
