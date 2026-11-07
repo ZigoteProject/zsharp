@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+### Security and stability
+A review of 0.7.0 ([docs/reports/security-review-0.7.md](docs/reports/security-review-0.7.md))
+found 103 defects (1 critical, 30 high, 45 medium, 27 low); 100 are fixed here, each with a test,
+two in part and one deferred, with the designs that finish them. What a program or a user sees:
+- `zs lsp` and `zs mcp` build and run a dependency's type provider only with `--trust` (the
+  module from the last trusted build otherwise, or an error at the import); the VS Code and
+  Rider extensions pass it in a trusted workspace or project, Zed's doesn't.
+- A Buffer read in a `for` loop is bounds-checked (versioning took the Buffer's owner pointer
+  for its length); `Buffer.blit`'s range doesn't wrap; `for` ends at its type's last value.
+- Use-after-frees and double frees from safe code are gone: a mutable moved and reassigned
+  (`Rc`), an `Spsc` popped on two threads (now any number of producers and consumers, still never
+  waiting), a weak reference to an object another thread holds, a closure carrying a `ref` across
+  threads (now a Share error), the runtime's `Native.*` hooks (now the library's, or `unsafe`'s).
+- On a chip, a stack overflow is a panic (the stack below everything else in RAM, an MPU guard
+  where there is one), and the heap masks interrupts while it changes.
+- `Json` has a `JUInt` case (integers from 2^63 to 2^64 - 1): a `match` on `Json` without a
+  wildcard needs it. `Json.parse` and `Binary.ofBytes` nest 32 levels where `int` is 32 bits
+  (1,000 elsewhere); `Binary.ofBytesWith { depth }`. `Hmac.verify` and `Bytes.fixedTimeEquals`.
+  `Iter`'s range panics on a step of 0. `Format.format` with a specifier made at run time panics
+  on one a written specifier couldn't be.
+- A `.bat` or `.cmd` started by `Process` gets `cmd.exe`'s quoting (an argument with a line break
+  is an Error); `SIGPIPE` is ignored (a write to a closed pipe is an Error; a closed standard
+  output still ends the program as it did); `File.copy` onto itself is an Error and a copy keeps
+  the source's mode; `File.move` across file systems renames a finished copy over the target;
+  `Directory.deleteRecursive` never follows a link; `Unix.listen` replaces only a stale socket;
+  `Tcp.connect` resolves off the event loop and tries every address.
+- Packages: links in a dependency are hashed as links and `zs vendor` copies only those that stay
+  inside it; lock entries' names are checked; a manifest's `main` is inside its package (the
+  project's own too); a `zs.toml` is at most 1 MB; a dependency's caches are in the project's
+  `.zs-cache/pkgs/`, never in the dependency or through a link.
+- The thread pool waits, rather than panicking, when a job waits on a lock or channel past its
+  spare threads; the build server drops a client that stalls, and a provider program stops after
+  60 seconds (`ZS_PROVIDER_TIMEOUT`); `zs fmt` writes a file whole or not at all.
+- `src/install.sh` refuses a directory that isn't a compiler's; release archives are root's,
+  written by no one else; CI checks the toolchains it downloads.
+
 ### Library
 - `Diagnostics.ToOutput`: a started process's standard error where its standard output goes
   (`stderr = ToOutput`, its pipe when that's `Piped`), as a shell's `2>&1`, so one reader sees
