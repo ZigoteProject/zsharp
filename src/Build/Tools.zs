@@ -24,6 +24,10 @@ let rec findUp (dir: string) (relative: string) : option<string> =
 /// two are captured apart).
 type Ran = { code: int; out: string; err: string }
 
+/// Whether a link item names a file (it has a directory separator: '/', or Windows' '\\', as
+/// Path.combine joins there) rather than a library to link with -l.
+let isFile (item: string) : bool = String.contains "/" item || String.contains "\\" item
+
 /// Whether a program is on PATH.
 let onPath (program: string) : bool =
   match Environment.getVariable "PATH" with

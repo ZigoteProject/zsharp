@@ -2,6 +2,11 @@
 /// caret under the place; a warning's kind after its message; then its notes, each the same way.
 open Diagnostic
 
+/// A path as the compiler's own messages name it: with `/` between its parts on every OS, as git
+/// names files on Windows, where `Path` joins them with `\`. For showing only: a path the
+/// compiler opens keeps what `Path` made of it.
+let path (p: string) : string = if Path.separator = '\\' then String.replace p "\\" "/" else p
+
 // a message at a place: where and what, then the source line with a caret under the column (a
 // span of length -1 is a line's, the F# compiler's errors with no column: the caret under its
 // first character)
@@ -16,9 +21,9 @@ let private placed (src: Syntax.Source.Source) (word: string) (offset: int) (spa
   let col = if span < 0 then first - from + 1 else col0
   let head =
     if span < 0 then
-      $"{src.path}:{line}: {word}: {message}"
+      $"{path src.path}:{line}: {word}: {message}"
     else
-      $"{src.path}:{line}:{col}: {word}: {message}"
+      $"{path src.path}:{line}:{col}: {word}: {message}"
   [ head
     $" {gutter} | {String.sub src.text from (stop - from)}"
     $" {String.repeat (String.length gutter) " "} | {String.repeat (col - 1) " "}^" ]
@@ -26,7 +31,10 @@ let private placed (src: Syntax.Source.Source) (word: string) (offset: int) (spa
 // one message: where and what, then the source line with a caret under the column; with no place
 // (offset -1), the file's
 let private lines (src: Syntax.Source.Source) (word: string) (offset: int) (span: int) (message: string) : list<string> =
-  if offset < 0 then [ $"{src.path}: {word}: {message}" ] else placed src word offset span message
+  if offset < 0 then
+    [ $"{path src.path}: {word}: {message}" ]
+  else
+    placed src word offset span message
 
 /// A diagnostic's lines, its notes' after it; `sourceOf` gives a span's file.
 let render (sourceOf: int -> Syntax.Source.Source) (d: Diagnostic) : list<string> =

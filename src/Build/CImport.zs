@@ -660,8 +660,8 @@ let private load (file: string) (at: int) : result<Imported, string> =
         match s with
         | JArray [ JString n; JString csig; JString cdoc; JInt line ] -> Some(n, { csig = csig; cdoc = cdoc; cfile = copy; cline = int line })
         | _ -> None
-      if List.length decls = List.length ds then Ok { decls = decls; skipped = List.choose skip ss; infos = List.choose info is; headerFile = copy } else Error $"{file} isn't a saved import"
-    | _ -> Error $"{file} isn't a saved import"
+      if List.length decls = List.length ds then Ok { decls = decls; skipped = List.choose skip ss; infos = List.choose info is; headerFile = copy } else Error $"{Diag.Render.path file} isn't a saved import"
+    | _ -> Error $"{Diag.Render.path file} isn't a saved import"
 
 /// Where a header's import is saved in cacheDir.
 let cacheFile (header: string) (cacheDir: string) : string =
@@ -690,4 +690,4 @@ let importHeader (header: string) (dir: string) (flags: list<string>) (cacheDir:
     if File.exists saved then
       load saved at
     else
-      Error $"import c \"{header}\": {msg}. Build once where libclang and the header are installed (e.g. ./dev zs build); that saves the import in {cacheDir} for editors"
+      Error $"import c \"{header}\": {msg}. Build once where libclang and the header are installed (e.g. ./dev zs build); that saves the import in {Diag.Render.path cacheDir} for editors"

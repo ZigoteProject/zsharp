@@ -1,3 +1,4 @@
 internal functions profiled, by source file: parts.zs trees.zs
 named after a temporary file: 0
 with the profile: the same output
+--profile-generate and --profile-use are for a build clang links for this machine

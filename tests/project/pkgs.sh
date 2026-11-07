@@ -4,6 +4,9 @@
 # is the package's own; a microcontroller build names a dependency that uses Std.
 set -u
 zs="$(pwd)/bin/zs"; t=$(cd "$(mktemp -d)" && pwd -P); trap 'rm -rf "$t"' EXIT  # resolved, as the compiler names it (macOS: /var is /private/var)
+# on Windows, the compiler run in it names it by its working directory there: Windows' long form
+# of it, with / (C:/Users/runneradmin/…, where Git Bash's /tmp is TEMP's short C:/Users/RUNNER~1/…)
+at=$t; command -v cygpath >/dev/null && at=$(cygpath -m -l "$t")
 cp -r tests/project/two tests/project/alpha tests/project/beta tests/project/cwords tests/project/text "$t/"
 cd "$t/two"
 echo "== zs tree"
@@ -15,7 +18,7 @@ sed -n '/\[dependencies\]/,$p' zs.toml
 "$zs" tree
 echo "== what isn't there"
 "$zs" remove yaml; echo "exit $?"
-out=$("$zs" add ../nowhere 2>&1); code=$?; echo "$out" | sed "s|$t|…|"; echo "exit $code"
+out=$("$zs" add ../nowhere 2>&1); code=$?; echo "$out" | sed "s|$at|…|"; echo "exit $code"
 echo "== a git dependency, as written (not fetched here)"
 mkdir -p "$t/g" && printf '[package]\nname = "g"\n' > "$t/g/zs.toml"
 (cd "$t/g" && "$zs" add https://example.invalid/someone/json.git@1.2 2>/dev/null | head -1; "$zs" add git@github.com:someone/json@v1 2>/dev/null | head -1; "$zs" add https://example.invalid/t.git --rev main 2>/dev/null | head -1; sed -n '/\[dependencies\]/,$p' zs.toml)

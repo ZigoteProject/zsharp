@@ -14,3 +14,7 @@ names=$(llvm-profdata show --all-functions "$t/run.profdata" | grep -E '^  [^ ]+
 echo "internal functions profiled, by source file: $(echo "$names" | grep -o '^  [a-z]*\.zs;' | sort -u | tr -d ' ;' | paste -sd ' ' -)"
 echo "named after a temporary file: $(echo "$names" | grep -c '\.ll;')"
 bin/zs build "$t/parts.zs" --profile-use "$t/run.profdata" -o "$t/use" && "$t/use" | diff - tests/modules/parts.out && echo "with the profile: the same output"
+# zig cc, which links a build for another target (and Windows' builds), has no profile runtime:
+# refused, rather than built without the counters
+bin/zs build "$t/parts.zs" --profile-generate --target aarch64-linux-musl -o "$t/cross" >"$t/cross.log" 2>&1 \
+  || grep -o -- '--profile-generate and --profile-use are for a build clang links for this machine' "$t/cross.log"

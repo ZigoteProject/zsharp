@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+Windows, natively: the suite now runs on CI's Windows x64 and arm64 runners, and what it found is
+fixed here.
+
+### Runtime
+- On Windows on Arm, a subnormal `f64` prints as on every other target (`3.13983658588571e-319`,
+  not `6.5205388442357377e-4932`): numbers are written by the UCRT's own printf on Windows, not
+  mingw-w64's, which reads such a value as an 80-bit one where a long double is a double. A NaN
+  is `nan` on every target (glibc wrote `-nan` for x86's `0.0 / 0.0`, the UCRT `-nan(ind)`).
+- On Windows, `Udp.receive` cuts a datagram longer than the buffer to it, as on Linux and macOS
+  (Winsock failed the receive), and `Unix.connect` to a path with nothing there fails with "No
+  such file or directory" (Windows' AF_UNIX says a network is down).
+- On Windows, a `--coverage` program's counts are written as bytes: in text mode each line ended
+  `\r\n`, which `zs test --coverage` didn't read, so it counted nothing.
+
 ### Library
 - `Diagnostics.ToOutput`: a started process's standard error where its standard output goes
   (`stderr = ToOutput`, its pipe when that's `Piped`), as a shell's `2>&1`, so one reader sees
@@ -14,15 +28,63 @@
   there hold a megabyte, where Windows' default is a page or so; the compiler moves to
   `ToOutput`, which no amount of errors fills, once it's built by a release whose library has
   it (stage 0 is 0.6.1's).
+- On Windows, a build with C beside it links: a `[<Link "x.c">]` source, a package's `[c]` source
+  and `import c`'s, joined with Windows' `\`, were passed to zig as libraries to link
+  (`-lD:\…\x.c`: "failed to check zig installation for DLL import libs"), so `import c`, the
+  `libclang` and `xxhash` packages and the compiler's own build failed there.
+- On Windows, the compiler's own messages name files with `/`, as git does there: a
+  diagnostic's file, `built app/build/app`, `vendored text v1 into vendor/text`, `zs tree`'s
+  paths, a saved failing case, a workspace's members, a provided C module's `// input:` line,
+  and the language and MCP servers' messages. Programs keep `Path`'s `\`.
+- On Windows, a native build runs pkg-config for a package's `[c]` as other machines' do (it was
+  taken for a cross build, for the mingw-w64 triple it targets), its `\r\n` read as an end of
+  line and not an argument; `zs provide` finds `zs-provider-<name>.exe` on PATH, which is
+  `;`-separated there; and `zs check`, the language server and MCP read a C header as `zs build`
+  does there, for mingw-w64, finding the import it saved.
+- The language server on Windows reads the URIs editors send, `file:///C:/a` and VS Code's
+  `file:///c%3A/a`, as `C:\a` (it took the drive for a directory, `\c\a`, and opened nothing),
+  and writes them back as `file:///C:/a`, with `/` and the drive (RFC 8089); renaming a provided
+  name is refused there too. The MCP server's tools reach the project's files on Windows (each
+  was "outside the project"), and `build` and `run` build for mingw-w64 as `zs build` does.
+- On Windows, `zs build` runs each build in its own process, with no build server: whoever
+  reaches the server's socket runs `zs` as its user, so its directory must be that user's alone,
+  and Windows' `chmod` sets nothing (the directory kept the ACL it inherited).
+- A debug build for Windows is the same bytes each time, as a release build was: the link wrote
+  the time into the PE header (`/Brepro` puts a hash of the binary there instead). Its debug
+  info's directories are escaped as LLVM reads a string (`tests\debug` read as the byte 0xDE).
+- `--profile-generate` and `--profile-use` are refused for a build zig links (another target,
+  and mingw-w64 on Windows), whose link has no profile runtime: it built a program that wrote no
+  profile.
+- A git dependency is checked out with its files as committed on every OS (`core.autocrlf=false`,
+  `core.eol=lf`), so `zs.lock`'s hash of them is the same on Windows.
 
 ### Tests
 - The suite runs natively on Windows (CI's x64 and arm64 runners): text is checked out with LF
   there too (`.gitattributes`; git for Windows' CRLF failed every comparison), each test program
-  is stopped after 600 s instead of holding up the rest, and a C program linking a Z# library
-  uses zig's MinGW target as `zs` does (clang alone targets MSVC, which has no `libm`).
-- CI upgrades Windows's LLVM (`choco upgrade`; Windows x64's image has LLVM 20, which `choco
-  install` kept) and installs zig 0.16.0 there from its release, as the other runners have it
-  (Chocolatey's 0.17.0 fails a link against a DLL's import library).
+  is stopped after 600 s instead of holding up the rest, a C program linking a Z# library uses
+  zig's MinGW target as `zs` does (clang alone targets MSVC, which has no `libm`), and the
+  architecture is the machine's (Git Bash runs as x86-64 on Windows on Arm, its `uname` saying
+  so: `PROCESSOR_IDENTIFIER` doesn't).
+- CI on Windows: LLVM 23.1.4, the other runners' version, from LLVM's release (Chocolatey's
+  package is the x64 build on Windows on Arm too, whose libclang an arm64 `zs.exe` can't load,
+  and Windows x64's image had LLVM 20); zig 0.17.0 from its release (0.16.0's `zig rc` failed
+  every build on arm64); pkg-config; a first build of one program with each step bounded; and a
+  job stopped after three hours.
+- The programs that wrote under `/tmp` use the temporary directory (`Directory.temp`), which a
+  native Windows program has, and `tests/process.zs` checks a process's directory by what's in
+  it, not by `pwd`, which on Windows names `/` as the drive's root (`/c`, `/d`).
+- On Windows, the scripts strip a temporary directory as the compiler is handed it (Git Bash's
+  `C:/…/Temp/…` for `/tmp/…`), `tests/providers/provide.sh`'s provider on PATH is a Z# program
+  (Windows starts no script), a guide example's output on Windows is a ```` ```text windows ````
+  block after its own (`tests/docs.sh`), and `tests/providers/svd_nucleo.sh` is skipped where
+  there's no `opt`.
+- The language and MCP servers' scripts give `zs` Windows' own paths there (`cygpath -m`: Git
+  Bash's `/d/a` reaches only its own programs), and `tests/lsp/providers.sh` writes to the server
+  through a pipe, not a named one, which `zs.exe` reads nothing from. `tests/server.sh` is
+  skipped on Windows, which has no build server.
+- gdb's checks are skipped on Windows on Arm (its gdb is x86-64's) and run on Windows x64, which
+  prints gdb's own output where one fails; `tests/libm.sh` links with the Windows-aware C
+  compiler; `tests/project/git.sh`'s repositories keep LF.
 
 ## 0.7.0 (2026-11-05)
 

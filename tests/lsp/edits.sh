@@ -5,10 +5,13 @@
 # binder's type. Prints the server's responses.
 set -u
 zs=${1:-bin/zs}
-dir="$(pwd)/tests/lsp/edits"
-open() { local uri="file://$dir/$1"; local src=$(sed 's/\\/\\\\/g; s/"/\\"/g' "$dir/$1" | awk '{printf "%s\\n", $0}'); frame '{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"'"$uri"'","languageId":"zsharp","version":1,"text":"'"$src"'"}}}'; }
+# this checkout as zs reads it: on Windows its own path (cygpath -m: D:/a/b, where Git Bash's pwd
+# says /d/a/b), and a file URI's path then starts with the drive (file:///D:/a/b)
+here=$(cygpath -m "$PWD" 2>/dev/null || pwd); root="file:///${here#/}"
+dir=tests/lsp/edits; at="$root/$dir"
+open() { local uri="$at/$1"; local src=$(sed 's/\\/\\\\/g; s/"/\\"/g' "$dir/$1" | awk '{printf "%s\\n", $0}'); frame '{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"'"$uri"'","languageId":"zsharp","version":1,"text":"'"$src"'"}}}'; }
 frame() { printf 'Content-Length: %d\r\n\r\n%s' "$(printf '%s' "$1" | wc -c)" "$1"; }
-main="file://$dir/main.zs"; shapes="file://$dir/Shapes.zs"
+main="$at/main.zs"; shapes="$at/Shapes.zs"
 {
   frame '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}'
   open Shapes.zs
@@ -22,4 +25,4 @@ main="file://$dir/main.zs"; shapes="file://$dir/Shapes.zs"
   frame '{"jsonrpc":"2.0","id":8,"method":"textDocument/codeAction","params":{"textDocument":{"uri":"'"$main"'"},"range":{"start":{"line":13,"character":0},"end":{"line":13,"character":0}},"context":{"diagnostics":[]}}}'
   frame '{"jsonrpc":"2.0","id":9,"method":"shutdown"}'
   frame '{"jsonrpc":"2.0","method":"exit"}'
-} | "$zs" lsp | tr -d '\r' | sed 's/Content-Length: [0-9]*//' | grep -o '{.*}' | grep -v '"method"' | grep -v '"id":1,' | sed "s|file://$dir/||g"
+} | "$zs" lsp | tr -d '\r' | sed 's/Content-Length: [0-9]*//' | grep -o '{.*}' | grep -v '"method"' | grep -v '"id":1,' | sed "s|$at/||g"

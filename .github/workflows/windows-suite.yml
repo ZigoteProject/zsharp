@@ -1,5 +1,5 @@
-# Temporary: Windows' LLVM from its release archive and zig 0.17.0, then the doctor and an
-# import c build, with an earlier run's archives
+# Temporary: the suite on Windows alone, with an earlier run's archives (round 4's, whose compiler
+# is this tree's), so a change to the tests is tried in half an hour
 name: windows-suite
 on:
   push:
@@ -8,23 +8,27 @@ permissions:
   contents: read
   actions: read
 jobs:
-  setup:
+  suite:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2025, windows-11-arm]
+        include:
+          - { os: windows-2025, archive: zs-ci-windows-x86_64 }
+          - { os: windows-11-arm, archive: zs-ci-windows-aarch64 }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
+    timeout-minutes: 150
     defaults:
       run:
         shell: bash
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: releases
           path: dist
-          run-id: 42044795228
+          run-id: 42311657147
           github-token: ${{ github.token }}
       # LLVM's own release, the version the other runners have: Chocolatey's package is the x64
       # build on Windows on Arm too, whose libclang an arm64 zs.exe can't load (import c, and the
@@ -46,14 +50,9 @@ jobs:
           Invoke-WebRequest "https://ziglang.org/download/0.17.0/zig-$a-windows-0.17.0.zip" -OutFile "$env:RUNNER_TEMP\zig.zip"
           Expand-Archive "$env:RUNNER_TEMP\zig.zip" -DestinationPath $env:RUNNER_TEMP
           "$env:RUNNER_TEMP\zig-$a-windows-0.17.0" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
-      - env:
-          ZS_NO_SERVER: 1
-        run: |
-          set +e
-          a=$([ "$RUNNER_ARCH" = ARM64 ] && echo aarch64 || echo x86_64)
-          tar -xzf "dist/zs-ci-windows-$a.tar.gz" -C dist
-          zs=$PWD/dist/zs-ci-windows-$a/zs
-          clang --version; zig version; command -v clang opt llvm-ar
-          timeout 120 "$zs" doctor
-          timeout 900 "$zs" build tests/cimport/ops.zs -o "$RUNNER_TEMP/ops.exe" && timeout 30 "$RUNNER_TEMP/ops.exe"
-          echo "ops: $?"
+      # pkg-config, which a package's [c] runs (tests/project/cwords), as apt gives Linux's: a
+      # native one, a program zs.exe can start (the images list none)
+      - if: runner.os == 'Windows'
+        run: choco install -y --no-progress pkgconfiglite
+      - run: tar -xzf "dist/${{ matrix.archive }}.tar.gz" -C dist
+      - run: ./test.sh --zs "dist/${{ matrix.archive }}/zs"

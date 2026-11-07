@@ -96,9 +96,14 @@ let intOf (j: Json) : int =
   | JNumber x -> int x
   | _ -> 0
 
-/// A file URI's path (file:///a/b%20c → /a/b c).
+let private windows = Native.isWindows ()
+
+/// A file URI's full path (file:///a/b%20c → /a/b c), as the server keys documents. On Windows
+/// the URI's path starts with the drive (RFC 8089): file:///C:/a, and VS Code's file:///c%3A/a,
+/// are C:\a, the letter a capital as Windows writes it, so the two name one document.
 let toPath (uri: string) : string =
-  let p = if String.startsWith "file://" uri then String.sub uri 7 (String.length uri - 7) else uri
+  let file = String.startsWith "file://" uri
+  let p = if file then String.sub uri 7 (String.length uri - 7) else uri
   let out = Buffer.empty
   let n = String.length p
   let mutable i = 0
@@ -113,18 +118,30 @@ let toPath (uri: string) : string =
     else
       Buffer.push b out
       i <- i + 1
-  String.ofBytes (Buffer.toArray out)
+  let path = String.ofBytes (Buffer.toArray out)
+  let letter (b: u8) = (b >= u8 65 && b <= u8 90) || (b >= u8 97 && b <= u8 122)
+  let drive = windows && String.length path >= 3 && String.byte path 0 = u8 47 && letter (String.byte path 1) && String.byte path 2 = u8 58
+  if not file then
+    path
+  else if drive then
+    Path.getFullPath (String.toUpper (String.sub path 1 1) + String.sub path 2 (String.length path - 2))
+  else
+    Path.getFullPath path
 
-/// A path's file URI, its characters outside the unreserved ones and `/` percent-encoded (as
-/// .NET's Uri writes one).
+/// A path's file URI: its full path, the characters outside the unreserved ones and `/`
+/// percent-encoded (as .NET's Uri writes one). On Windows `/` between its parts, and the drive
+/// after a `/` (C:\a is file:///C:/a, RFC 8089's), as editors read one.
 let toUri (path: string) : string =
   let full = Path.getFullPath path
   let out = Buffer.empty
   for i in 0 .. String.length full - 1 do
     let b = int (String.byte full i)
     let plain = (b >= 97 && b <= 122) || (b >= 65 && b <= 90) || (b >= 48 && b <= 57) || String.contains (String.ofByte (u8 b)) "/-._~!$&'()*+,;=:@"
-    if plain then Buffer.push (String.ofByte (u8 b)) out else Buffer.push ("%" + String.sub hex (b / 16) 1 + String.sub hex (b % 16) 1) out
-  "file://" + String.concat (Array.toList (Buffer.toArray out))
+    if windows && b = 92 then Buffer.push "/" out
+    else if plain then Buffer.push (String.ofByte (u8 b)) out
+    else Buffer.push ("%" + String.sub hex (b / 16) 1 + String.sub hex (b % 16) 1) out
+  let drive = windows && not (String.startsWith "\\" full || String.startsWith "/" full)
+  "file://" + (if drive then "/" else "") + String.concat (Array.toList (Buffer.toArray out))
 
 /// One LSP message: `Content-Length: n` headers, a blank line, n bytes of JSON; None at the end
 /// of the input. `first` is a header line already read (protocol detection read it).

@@ -29,7 +29,8 @@ let private limit (n: int) (s: string) =
     String.sub s 0 b + $"\n… ({String.charCount s - n} more characters)"
 
 // a tool's file: inside the directory the server was started in, reached through no symbolic
-// link (getFullPath works on the text, so a link could lead out of it), and there
+// link (getFullPath works on the text, so a link could lead out of it), and there. Its parts are
+// between Path's separators (`\` on Windows), as getFullPath writes them.
 let private projectFile (p: string) : result<string, string> =
   let full = Path.getFullPath p
   let root = Path.getFullPath (Environment.currentDirectory ())
@@ -37,8 +38,10 @@ let private projectFile (p: string) : result<string, string> =
     match parts with
     | [] -> false
     | x :: rest -> Native.isSymlink (Path.combine dir x) || linked (Path.combine dir x) rest
-  if not (String.startsWith (root + "/") full) then Error $"{p} is outside the project ({root})"
-  else if linked root (String.split "/" (Path.getRelativePath root full)) then Error $"{p} is reached through a symbolic link"
+  if not (String.startsWith (Path.combine root "") full) then
+    Error $"{p} is outside the project ({Diag.Render.path root})"
+  else if linked root (String.split (String.ofChar Path.separator) (Path.getRelativePath root full)) then
+    Error $"{p} is reached through a symbolic link"
   else if not (File.exists full) then Error $"{p} does not exist"
   else Ok(Path.getRelativePath root full)
 
@@ -50,8 +53,9 @@ let private formatErrors (sources: list<Syntax.Source.Source>) (ds: list<Diagnos
     match Map.tryFind d.at.file byIndex with
     | Some src when d.at.offset >= 0 ->
       let (line, col) = Syntax.Source.position src d.at.offset
-      if d.at.length >= 0 then $"{src.path}:{line}:{col}: {msg}" else $"{src.path}:{line}: {msg}"
-    | Some src -> $"{src.path}: {msg}"
+      let file = Diag.Render.path src.path
+      if d.at.length >= 0 then $"{file}:{line}:{col}: {msg}" else $"{file}:{line}: {msg}"
+    | Some src -> $"{Diag.Render.path src.path}: {msg}"
     | None -> msg
   String.join "\n" (List.map one ds)
 
@@ -116,7 +120,9 @@ let private definitionOf (c: Build.Check.Checked) (h: Infer.Cx.Hover) : option<I
 let private shownPath (m: Build.Modules.Loaded) : string =
   let lib = Build.Modules.libraryDir ()
   let full = Path.getFullPath m.source.path
-  if String.startsWith lib full then "lib/" + Path.getRelativePath lib full else m.source.path
+  let shown =
+    if String.startsWith lib full then "lib/" + Path.getRelativePath lib full else m.source.path
+  Diag.Render.path shown
 
 // a definition's place and line: "file:line:column\n  the line"
 let private definitionText (c: Build.Check.Checked) (h: Infer.Cx.Hover) : option<string> =
@@ -141,7 +147,9 @@ let private call (name: string) (args: Json) : result<string, string> =
     match arg "file" with
     | Ok v -> projectFile (Rpc.text v)
     | Error e -> Error e
-  let options (file: string) (out: string) : Build.Options.Options = { Build.Options.defaults with main = file; out = out }
+  // built for this machine as zs build builds: on Windows for mingw-w64 (clang alone targets MSVC)
+  let options (file: string) (out: string) : Build.Options.Options =
+    { Build.Options.defaults with main = file; out = out; target = Build.Options.nativeTarget () }
   if name = "check" then
     match fileOf () with
     | Error e -> Error e
@@ -160,7 +168,7 @@ let private call (name: string) (args: Json) : result<string, string> =
       | Error e -> Error e
       | Ok c ->
         match hoverAt c file line col with
-        | None -> Ok $"no name at {file}:{line}:{col}"
+        | None -> Ok $"no name at {Diag.Render.path file}:{line}:{col}"
         | Some h when name = "type_at" -> Ok(signature c h)
         | Some h when name = "definition" -> Ok(Option.defaultValue $"{h.name} has no definition in this program's files (a built-in)" (definitionText c h))
         | Some h ->
@@ -214,7 +222,7 @@ let private call (name: string) (args: Json) : result<string, string> =
     | Ok file ->
       let out = Path.changeExtension file ""
       let b = Build.Make.make (options file out) false
-      if b.made then Ok(withWarnings b $"built {out}") else Error(formatErrors b.sources (Array.toList b.diagnostics))
+      if b.made then Ok(withWarnings b $"built {Diag.Render.path out}") else Error(formatErrors b.sources (Array.toList b.diagnostics))
   else if name = "run" then
     match fileOf () with
     | Error e -> Error e
@@ -252,7 +260,7 @@ let private call (name: string) (args: Json) : result<string, string> =
         else
           match Build.Compile.generate (options file "") (Build.Check.programOf c) false with
           | Ok(_, ir, _, _) -> Ok(limit 100000 ir)
-          | Error(Build.Compile.InPass e) -> Error $"{file}:{e.line}: {e.message}"
+          | Error(Build.Compile.InPass e) -> Error $"{Diag.Render.path file}:{e.line}: {e.message}"
           | Error(Build.Compile.InTool m) -> Error m
   else if name = "format" then
     match fileOf () with

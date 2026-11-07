@@ -63,7 +63,7 @@ let fmt (args: list<string>) : int =
         | Ok formatted when formatted = src.text -> ()
         | Ok formatted ->
           if check then
-            eprintln $"{path}: not formatted"
+            eprintln $"{Render.path path}: not formatted"
             status <- 1
           else
             match File.writeAllText path formatted with
@@ -73,7 +73,7 @@ let fmt (args: list<string>) : int =
               status <- 1
         | Error why ->
           if why <> "" then
-            eprintln $"{path}: {why}"
+            eprintln $"{Render.path path}: {why}"
           status <- 1
     status
 
