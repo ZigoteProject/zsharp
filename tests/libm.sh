@@ -30,14 +30,15 @@ static double ulps(double got, double want) {
     return fabs(got - want) / u;
 }
 
-static double worst_pow = 0, worst_atan2 = 0, worst_round = 0;
+// each function's worst arguments, shown when it's past its bound
+static double worst_pow = 0, worst_atan2 = 0, worst_round = 0, pow_args[2], atan2_args[2];
 static void pow_at(double x, double y) {
     double e = ulps(zs_pow(x, y), pow(x, y));
-    if (e > worst_pow) worst_pow = e;
+    if (e > worst_pow) { worst_pow = e; pow_args[0] = x; pow_args[1] = y; }
 }
 static void atan2_at(double y, double x) {
     double e = ulps(zs_atan2(y, x), atan2(y, x));
-    if (e > worst_atan2) worst_atan2 = e;
+    if (e > worst_atan2) { worst_atan2 = e; atan2_args[0] = y; atan2_args[1] = x; }
 }
 
 int main(void) {
@@ -61,6 +62,10 @@ int main(void) {
     printf("atan2  %.0f ulp at most\n", worst_atan2);
     printf("round  %.0f ulp at most\n", worst_round);
     printf("powf   %s\n", zs_powf(2.0f, 10.0f) == 1024.0f && zs_powf(9.0f, 0.5f) == 3.0f ? "ok" : "wrong");
+    if (worst_pow > 1)
+        printf("pow (%a, %a): ours %a, libm's %a\n", pow_args[0], pow_args[1], zs_pow(pow_args[0], pow_args[1]), pow(pow_args[0], pow_args[1]));
+    if (worst_atan2 > 1)
+        printf("atan2 (%a, %a): ours %a, libm's %a\n", atan2_args[0], atan2_args[1], zs_atan2(atan2_args[0], atan2_args[1]), atan2(atan2_args[0], atan2_args[1]));
     return worst_pow <= 1 && worst_atan2 <= 1 && worst_round == 0 ? 0 : 1;
 }
 C

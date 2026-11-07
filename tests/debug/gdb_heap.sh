@@ -3,10 +3,13 @@
 # the next, an array's count, length and elements, a tree's node with its fields, a tagged
 # union's cell's case and that case's fields (the other cases' lie over the same bytes), an
 # option over a string as the string, a ref's value. Addresses are left out of the output.
-zs=${1:-bin/zs}; exe=$(mktemp)
+# gdb's commands from a file, not -ex arguments: a native Windows gdb started from Git Bash got
+# "break square" split in two
+zs=${1:-bin/zs}; dir=$(mktemp -d); exe=$dir/heap.exe
 timeout 30 "$zs" build tests/debug/heap.zs -g -o "$exe" || exit 1
-timeout 30 gdb -q -batch -ex "break heap.zs:18" -ex run -ex "print *xs" -ex "print *xs->tail" -ex "print xs->tail->tail->tail" \
-  -ex "print *names" -ex "print *names->elements[1]" -ex "print *tree" -ex "print token->case" -ex "print token->Word" \
-  -ex "print *some" -ex "print *cell" -ex "whatis xs" -ex "whatis tree" -ex kill "$exe" 2>&1 \
+printf '%s\n' "break heap.zs:18" run "print *xs" "print *xs->tail" "print xs->tail->tail->tail" "print *names" \
+  "print *names->elements[1]" "print *tree" "print token->case" "print token->Word" "print *some" "print *cell" \
+  "whatis xs" "whatis tree" kill > "$dir/cmds"
+timeout 30 gdb -q -batch -x "$dir/cmds" "$exe" 2>&1 \
   | grep -E '^(\$[0-9]|type = )' | sed -E 's/0x[0-9a-f]+/ADDR/g'
-rm -f "$exe"
+rm -rf "$dir"

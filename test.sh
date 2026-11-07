@@ -364,7 +364,8 @@ gdbskip=""; command -v gdb >/dev/null || gdbskip="no gdb"
 gdb_raw() {
   [ $windows = 1 ] || return 0
   bin/zs build -g tests/debug/prog.zs -o "$tmp/gdbraw.exe" >/dev/null 2>&1 \
-    && timeout 60 gdb -q -batch -ex "break square" -ex run -ex bt -ex "info source" "$tmp/gdbraw.exe" 2>&1 | head -30
+    && printf '%s\n' "break square" run bt "info source" > "$tmp/gdbraw.cmds" \
+    && timeout 60 gdb -q -batch -x "$tmp/gdbraw.cmds" "$tmp/gdbraw.exe" 2>&1 | head -30
 }
 if [ -z "$gdbskip" ]; then
   if diff <(tests/debug/gdb.sh) tests/debug/gdb.expected >"$tmp/gdb.diff"; then echo "ok   tests/debug/gdb.sh"
