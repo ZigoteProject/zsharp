@@ -231,9 +231,9 @@ let realDirectory (root: string) (parts: list<string>) : result<string, string> 
     | [] -> Ok dir
     | p :: more ->
       let path = Path.combine dir p
-      if not (Native.isSymlink path) && not (Directory.exists path) then
+      if not (unsafe (Native.isSymlink path)) && not (Directory.exists path) then
         Directory.create path |> ignore
-      if Native.isSymlink path then Error $"{path} is a symbolic link, which zs doesn't write through" else down path more
+      if (unsafe (Native.isSymlink path)) then Error $"{path} is a symbolic link, which zs doesn't write through" else down path more
   makeDirectory root
   down root parts
 

@@ -592,16 +592,18 @@ else echo "FAIL tests/mcu/noheap.zs"; cat "$tmp/noheap.log"; fail=1; fi
 if command -v qemu-system-arm >/dev/null; then
   for chip in cortex-m4 cortex-m0plus; do
     board=$([ $chip = cortex-m4 ] && echo mps2-an386 || echo microbit)
+    out=""
     if bin/zs build tests/mcu/bytes.zs --target $chip -o "$tmp/bytes.elf" 2>"$tmp/bytes.log" \
-       && [ "$(timeout 60 qemu-system-arm -M $board -nographic -semihosting-config enable=on,target=native -kernel "$tmp/bytes.elf" 2>&1 | grep -v '^#zs')" = "$(cat tests/mcu/bytes.expected)" ]; then
+       && out=$(timeout 60 qemu-system-arm -M $board -nographic -semihosting-config enable=on,target=native -kernel "$tmp/bytes.elf" 2>&1 | grep -v '^#zs') \
+       && [ "$out" = "$(cat tests/mcu/bytes.expected)" ]; then
       echo "ok   tests/mcu/bytes.zs on $chip (under qemu)"
-    else echo "FAIL tests/mcu/bytes.zs on $chip"; cat "$tmp/bytes.log"; fail=1; fi
+    else echo "FAIL tests/mcu/bytes.zs on $chip"; cat "$tmp/bytes.log"; [ -n "$out" ] && diff <(echo "$out") tests/mcu/bytes.expected; fail=1; fi
   done
 fi
 if ! command -v node >/dev/null; then echo "skip tests/mcu/bytes.zs on wasm32 (no node)"
-elif bin/zs build tests/mcu/bytes.zs --target wasm32 -o "$tmp/bytes.wasm" 2>"$tmp/bytes.log" \
-   && [ "$(node bin/run-wasm.mjs "$tmp/bytes.wasm" 2>&1)" = "$(cat tests/mcu/bytes.expected)" ]; then echo "ok   tests/mcu/bytes.zs on wasm32 (under node)"
-else echo "FAIL tests/mcu/bytes.zs on wasm32"; cat "$tmp/bytes.log"; fail=1; fi
+elif out="" && bin/zs build tests/mcu/bytes.zs --target wasm32 -o "$tmp/bytes.wasm" 2>"$tmp/bytes.log" \
+   && out=$(node bin/run-wasm.mjs "$tmp/bytes.wasm" 2>&1) && [ "$out" = "$(cat tests/mcu/bytes.expected)" ]; then echo "ok   tests/mcu/bytes.zs on wasm32 (under node)"
+else echo "FAIL tests/mcu/bytes.zs on wasm32"; cat "$tmp/bytes.log"; [ -n "$out" ] && diff <(echo "$out") tests/mcu/bytes.expected; fail=1; fi
 # Math where libm is compiler-rt's and the runtime's (pow, atan2, round: fdlibm's, checked against
 # the host's libm by tests/libm.sh), with a host's results: both chips under qemu, and wasm32
 if out=$(tests/libm.sh 2>&1); then echo "ok   tests/libm.sh (the runtime's pow, atan2 and round against the host's libm)"

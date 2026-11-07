@@ -1305,7 +1305,11 @@ let rec gen (fx: F) (env: Map<string, Binding>) (tail: bool) (e: CExpr) : string
       // an empty struct's result (unit) too: -O2 replaces the result with a constant and merges
       // the function's returns, leaving the musttail call before a branch (LLVM 23)
       let unitResult = g.opts.optimized && rt = "{}"
-      let kind = if (fname = fx.f.name && g.opts.optimized && not g.opts.debugInfo) || not inRegisters || elsewhere || unitResult then "tail" else "musttail"
+      // a Cortex-M0 (Thumb1) can't tail-call another function, nor WebAssembly without its
+      // tail-call feature: there a call to another is a plain tail call, as a drop's is
+      // (Helpers.tailKeyword), and LLVM's backend no longer fails on it
+      let noSibling = String.startsWith "thumbv6m" g.opts.target || String.startsWith "wasm" g.opts.target
+      let kind = if (fname = fx.f.name && g.opts.optimized && not g.opts.debugInfo) || not inRegisters || elsewhere || unitResult || (noSibling && fname <> fx.f.name) then "tail" else "musttail"
       let r = instr em $"{kind} call {rt} {sym g fname}({argv})"
       emit em $"ret {rt} {r}"
       dead em

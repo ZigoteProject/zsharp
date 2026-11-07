@@ -491,7 +491,7 @@ let dirHash (dir: string) : result<string, string> =
       | Error e -> Error e
       | Ok parts ->
         if r = ".git" || String.startsWith ".git/" r then Ok parts
-        else if Native.isSymlink p then Ok(String.ofCStr (zs_host_link_text p) :: (r + String.ofByte (u8 0)) :: parts)
+        else if (unsafe (Native.isSymlink p)) then Ok(String.ofCStr (zs_host_link_text p) :: (r + String.ofByte (u8 0)) :: parts)
         else if Directory.exists p then Ok parts
         else if File.exists p then Ok(Result.defaultValue "" (File.readAllText p) :: r :: parts)
         else Error $"{r} isn't a file, a directory or a symbolic link (a pipe or a device?)"
@@ -925,7 +925,7 @@ let vendor (top: Manifest) : list<string> =
             if r <> ".git" && not (String.startsWith ".git/" r) then
               let src = Path.combine from r
               let dst = Path.combine into r
-              if Native.isSymlink src then
+              if (unsafe (Native.isSymlink src)) then
                 let text = String.ofCStr (zs_host_link_text src)
                 let target = String.ofCStr (zs_host_real_path src)
                 if text = "" || Path.isAbsolute text || realRoot = "" || not (target = realRoot || String.startsWith (realRoot + "/") target) then
