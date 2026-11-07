@@ -7,7 +7,8 @@
 # gdb's commands from a file, not -ex arguments: a native Windows gdb started from Git Bash got
 # "break square" split in two
 zs=${1:-bin/zs}; dir=$(mktemp -d); exe=$dir/prog.exe
-timeout 30 "$zs" build tests/debug/prog.zs -g -o "$exe" || exit 1
+# the build bounded at 5 minutes: on Windows it's the suite's first -g build, zig's cache cold
+timeout 300 "$zs" build tests/debug/prog.zs -g -o "$exe" || exit 1
 printf '%s\n' "break square" run bt "info args" next "print result" finish next "info locals" delete \
   "break prog.zs:22" continue "print name" "print range" "print summary" kill > "$dir/cmds"
 # gdb's own output with GDB_RAW=1; else the lines checked: Windows' gdb says "Thread 1 hit

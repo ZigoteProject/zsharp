@@ -82,9 +82,16 @@ fixed here.
   Bash's `/d/a` reaches only its own programs), and `tests/lsp/providers.sh` writes to the server
   through a pipe, not a named one, which `zs.exe` reads nothing from. `tests/server.sh` is
   skipped on Windows, which has no build server.
-- gdb's checks are skipped on Windows on Arm (its gdb is x86-64's) and run on Windows x64, which
-  prints gdb's own output where one fails; `tests/libm.sh` links with the Windows-aware C
-  compiler; `tests/project/git.sh`'s repositories keep LF.
+- gdb's checks run on Windows x64: their commands are a file (`-x`; a native gdb started from
+  Git Bash got each `-ex` split at its spaces), Windows' "Thread 1 hit Breakpoint 1" reads as
+  Linux's "Breakpoint 1", a backtrace is checked for its Z# frames (below them the C start-up's
+  are the platform's), the build is bounded at 5 minutes (a first `-g` build there fills zig's
+  cache), and where one fails there gdb's own output follows (`GDB_RAW=1`). They're skipped on
+  Windows on Arm, whose gdb is x86-64's.
+- `tests/libm.sh` links with the Windows-aware C compiler, counts a zero's unit as the smallest
+  subnormal (the UCRT's `atan2` flushes a result just past half of it to zero, where ours rounds
+  to it: 1 ulp, not a difference in kind), and names the worst arguments when past its bound;
+  `tests/project/git.sh`'s repositories keep LF.
 
 ## 0.7.0 (2026-11-05)
 

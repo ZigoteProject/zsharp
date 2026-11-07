@@ -6,7 +6,7 @@
 # gdb's commands from a file, not -ex arguments: a native Windows gdb started from Git Bash got
 # "break square" split in two
 zs=${1:-bin/zs}; dir=$(mktemp -d); exe=$dir/heap.exe
-timeout 30 "$zs" build tests/debug/heap.zs -g -o "$exe" || exit 1
+timeout 300 "$zs" build tests/debug/heap.zs -g -o "$exe" || exit 1
 printf '%s\n' "break heap.zs:18" run "print *xs" "print *xs->tail" "print xs->tail->tail->tail" "print *names" \
   "print *names->elements[1]" "print *tree" "print token->case" "print token->Word" "print *some" "print *cell" \
   "whatis xs" "whatis tree" kill > "$dir/cmds"

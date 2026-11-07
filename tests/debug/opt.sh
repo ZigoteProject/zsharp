@@ -5,7 +5,7 @@
 # gdb's commands from a file, not -ex arguments: a native Windows gdb started from Git Bash got
 # "break opt.zs:5" split in two
 zs=${1:-bin/zs}; dir=$(mktemp -d); exe=$dir/opt.exe
-timeout 30 "$zs" build tests/debug/opt.zs -g --release -o "$exe" || exit 1
+timeout 300 "$zs" build tests/debug/opt.zs -g --release -o "$exe" || exit 1
 printf '%s\n' "break opt.zs:5" run bt kill > "$dir/cmds"
 # gdb's own output with GDB_RAW=1; else the lines checked: Windows' gdb says "Thread 1 hit
 # Breakpoint 1", and a backtrace's frames are the Z# code's (below it, the C start-up's are the
