@@ -39,7 +39,9 @@ deferred, each with the design that finishes it (below).
   twice on defects older than the review that its tests were the first to reach: R3-1, a
   literal only a library trait constrains defaulting to `i16` (`Binary.toBytes 70000` wrote
   4464), and R3-2, a tail call the Cortex-M0 and WebAssembly can't make. Each is fixed in its
-  own commit.
+  own commit. At `32ff96a` every job that passed at `fb9d178` passes: Linux x86-64's (the suite,
+  the bootstrap, the chips under QEMU, wasm32 under Node, the six release archives), and the
+  suites of Linux arm64, macOS arm64 and macOS Intel, each with its own archive.
 
 ## What changes for programs and users
 
@@ -113,8 +115,12 @@ deferred, each with the design that finishes it (below).
 
 ## What wasn't covered
 
-- **Windows and macOS at run time:** their code paths were read and, where headers allowed,
-  compiled, but not run here; CI's Windows jobs fail at `fb9d178` already, before this work.
+- **Windows at run time:** its code paths were read and, where headers allowed, compiled, but
+  CI's Windows jobs fail at `fb9d178` already, before this work, and still do at `32ff96a`: x64's
+  suite fails most checks on their output's line ends (126 at `32ff96a`, 143 at `fb9d178`; this
+  work's new tests among them, and `zs doctor`, which printed nothing), and arm64's stopped at
+  installing its tools, a pin of this work's undone in `8c34c59`. So the Windows parts of the
+  fixes (the `.bat` quoting, the socket table, UDP, file IDs, reparse points) are unrun.
 - **Vendored code** (`runtime/wepoll`, `packages/xxhash`, the tree-sitter runtime): its version
   and known advisories only.
 - **Performance:** the fixes keep the common paths as they were where they could (the review
