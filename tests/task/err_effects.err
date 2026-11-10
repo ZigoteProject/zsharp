@@ -1,0 +1,3 @@
+tests/task/err_effects.zs:12: error: a task's body can't perform Throw<string>: throw never resumes, and a task runs after its handlers have returned. Handle it inside the task (not around a let!), or give a result
+tests/task/err_effects.zs:17: error: main performs Log and nothing handles it: wrap the call in handle … with
+2 errors

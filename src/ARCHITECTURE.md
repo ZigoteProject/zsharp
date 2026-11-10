@@ -112,6 +112,8 @@ call under `Native` isn't checked again, while a default the program wrote is ch
 the program's code. A constant's record literal keeps the record it built where it's defined
 (keyed by the constant and the literal's first field name).
 
+*In 0.7.1:* `Evidence` lowers a task's work (`task.work`, which `Exprs.taskExpr` wraps the work's lambda in) with the frames in scope where the task is made, and in a mode with no yield points: an effectful call passes its frames and panics if the yield state is set after it. `taskExpr` gives the body a row that the `task { }` performs, and refuses one with an operation that never resumes.
+
 *In 0.7.1:* `Leave` lowers `break`, `continue` and `return` (0029) in a function's body before it's checked: a `$stop` flag in a loop's condition, a `$skip` flag for a round, a `$ret` slot for a result returned from inside a loop, a range loop left early as a `while`; `Exprs` and `Decls` call it where a body is given its parameters, so no pass after the checker knows the three. `Cx.literal` records each integer literal for the range check at its declaration's end (`Decls`), and `generalize` narrows a variable a literal is left at to the types that hold it.
 
 *In 0.7:* `Decls` reports a member that can't be declared (declared twice, or named as a field)

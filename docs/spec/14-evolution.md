@@ -31,7 +31,7 @@ rather than give it another meaning.
 ### Language
 
 The table below is what has a decision or a proposal. The open design questions this
-specification raised (effects across tasks and threads, written constraints, what safe code
+specification raised (effects across threads, and handlers inside a task, written constraints, what safe code
 guarantees around `extern`, and others) are track G of [ROADMAP.md](../../ROADMAP.md), each
 awaiting a proposal.
 

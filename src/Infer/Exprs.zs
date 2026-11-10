@@ -838,9 +838,20 @@ and taskExpr (cx: Cx) (env: Map<string, Local>) (depth: int) (body: Expr) : CExp
   let cl = localOf (uniq cx "$cancel") cancelTy false (depth + 1)
   let ku = uniq cx "$k"
   let ru = uniq cx "$result"
-  // the work runs from the event loop, where no handler is: it performs nothing
-  let what = "a task's body (it runs from the event loop, where no handler is)"
-  let cb = withRowAs cx rowEmpty what (fun () -> infer cx (Map.add "$cancel" cl env) (depth + 1) body)
+  // the work runs later, from the event loop, with the handlers in place where the task is made
+  // (Evidence: the work keeps their frames), so making the task performs what its body does. An
+  // effect with an operation that never resumes (Throw) can't be among them: no handler is on
+  // the stack then to stop at
+  let row = fresh v kRow
+  let cb = withRow cx row (fun () -> infer cx (Map.add "$cancel" cl env) (depth + 1) body)
+  for l in fst (rowParts v row) do
+    match Map.tryFind (Types.Norm.labelName v l) cx.effects.Value with
+    | Some info ->
+      match List.tryFind (fun (o: EffectOp) -> o.own > 0) info.ops with
+      | Some o -> fail $"a task's body can't perform {show cx l}: {o.name} never resumes, and a task runs after its handlers have returned. Handle it inside the task (not around a let!), or give a result"
+      | None -> ()
+    | None -> ()
+  useRow cx row
   expect cx "the task's result" a cb.ty
   let complete = value cx env depth "Threading.Task.complete"
   expect cx "the task's result" (tfun kTy (tfun a tUnit)) complete.ty
@@ -889,7 +900,8 @@ and taskExpr (cx: Cx) (env: Map<string, Local>) (depth: int) (body: Expr) : CExp
     else
       // the result first, then what waits for it (which waits held meanwhile)
       mk (CLet(ru, plainWaits cb, mk (CApp(complete, [ kE; mk (CLocal ru) a ])) tUnit)) tUnit
-  let work = mk (CLam([ (cl.u, cancelTy); (ku, kTy) ], workBody)) (tfun cancelTy (tfun kTy tUnit))
+  let workTy = tfun cancelTy (tfun kTy tUnit)
+  let work = mk (CPrim("task.work", [ mk (CLam([ (cl.u, cancelTy); (ku, kTy) ], workBody)) workTy ])) workTy
   let (_, noneTag) = Map.find "None" cx.ctors.Value
   mk (CTuple [ mk (CCtor("option", noneTag, [])) (TCon("option", [ a ])); work ]) (TCon("Threading.Task", [ a ]))
 

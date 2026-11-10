@@ -1,0 +1,15 @@
+made: nothing has run yet
+  log: hello, aiko
+  log: step 1
+  log: step 1 woke at 101
+  log: step 2
+  log: step 2 woke at 102
+  log: 4 is over the limit
+  log: p
+  log: q
+  log: step 10
+  log: step 20
+  log: step 10 woke at 103
+  log: step 20 woke at 104
+result 66, 12 lines
+quiet 66

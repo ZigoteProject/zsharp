@@ -422,7 +422,7 @@ the syntax reserves and the compiler's known deviations.
      float sorts and keys a `Map` wrongly. `compare` a total order (IEEE 754's `totalOrder`:
      NaN after every number), the operators as they are.
 - **What a type means** (these change signatures, so they cost the most later):
-  4. **Effects end at a task and at a thread:** a `task { }` body, a `share<F>` and a callback
+  4. **Effects end at a task and at a thread** *(tasks in part, 2026-11-11: a task's body performs effects with the handlers in place where it was made, their clauses resuming last, `tests/task/effects.zs`; left: a handler installed inside a task around its waits, a stop across a wait, and threads)*: a `task { }` body, a `share<F>` and a callback
      perform nothing (DESIGN §6.1), so a handler that injects a clock, a log or a disk doesn't
      reach the code that waits or runs in parallel, which is where a server's code is. Where to start: a handler
      installed *inside* a task or a job by the function that makes it (`Task.handling`), which

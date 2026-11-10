@@ -449,7 +449,8 @@ module.exports = grammar({
     _items: $ => seq(sep1($._expression, choice(';', $._newline)), optional(choice(';', $._newline))),
     record: $ => seq('{', sep1($.field_value, choice(';', $._newline)), optional(choice(';', $._newline)), '}'),
     record_update: $ => seq('{', $._expression, 'with', sep1($.field_value, choice(';', $._newline)), optional(choice(';', $._newline)), '}'),
-    field_value: $ => seq(field('name', $.identifier), '=', $._expression),
+    // a literal's first field may name its module or type: { Db.id = 1; … }
+    field_value: $ => seq(field('name', choice($.identifier, $.qualified_identifier)), '=', $._expression),
 
     // ------------------------------------------------------------ patterns
 

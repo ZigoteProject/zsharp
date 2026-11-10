@@ -67,6 +67,13 @@ The specification's three defects (ROADMAP's track G, items 1 to 3), and proposa
   are reserved words now (`return` outside a computation expression): a value, function or
   parameter named `break`, `continue` or `return` is renamed (`tests/loop_leave.zs`,
   `loop_leave_use.zs`, `err_loop_leave.zs`).
+- Effects in a task: a `task { }` body performs effects, across its waits, with the handlers in
+  place where the task was made, which it keeps; making the task is what performs them
+  (`let reply text : Task<unit> / Ctx = task { … }`). So a service's context, log and clock
+  are handled once, around its tasks, and reach every function without being passed. Such a
+  handler's clauses resume (`k v`) last: one that doesn't is a panic when a task performs its
+  operation, and an effect whose operation never resumes (`Throw`) is still an error in a
+  task's body (`tests/task/effects.zs`, `err_effects.zs`, `effects_stop.zs`).
 - A record of a module that isn't opened needs no annotation when it's the only record with
   the fields: `Db.lines () |> List.map (fun l -> l.text)`, `let f l = l.text`, a literal
   `{ role = "user"; content = c }` and a record pattern find it, where 0.7.0 asked for an

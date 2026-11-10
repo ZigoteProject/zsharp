@@ -1,1 +1,1 @@
-tests/effects/err_task.zs:3:5: error: this performs Yield<int>, but a task's body (it runs from the event loop, where no handler is) can't: handle it inside (handle … with)
+tests/effects/err_task.zs:1: error: main performs Yield<int> and nothing handles it: wrap the call in handle … with, or consume the Seq

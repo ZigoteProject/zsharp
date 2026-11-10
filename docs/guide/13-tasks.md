@@ -103,7 +103,9 @@ the slow server closed
 gave up after 20 ms
 ```
 
-**Throws inside a task:** a task's body can't perform an effect ([chapter 16](16-effects.md#effect-types)), but it can call `Throw.catch`. A throw that passes a `use` written in a function of its own disposes what it bound, as everywhere ([chapter 16](16-effects.md#typed-exceptions-throw)); one that passes a `use` written inside the `task { }`, a lambda's there included, frees what it bound without disposing it. Put the code that throws, with its `use`s, in a function outside the task.
+**Effects in a task:** a task's body performs effects as any code does, across its waits, and the task keeps the handlers in place where it was made: `handle server () with | Ctx.get (), k -> k ctx` gives every task `server` makes, and every function they call, the context, with nothing passed along ([chapter 16](16-effects.md#effects-in-tasks)). The clauses must resume (`k v`) last.
+
+**Throws inside a task:** a task's body can't perform `Throw` (nothing is on the stack to stop at when it runs), but it can call `Throw.catch`. A throw that passes a `use` written in a function of its own disposes what it bound, as everywhere ([chapter 16](16-effects.md#typed-exceptions-throw)); one that passes a `use` written inside the `task { }`, a lambda's there included, frees what it bound without disposing it. Put the code that throws, with its `use`s, in a function outside the task.
 
 **Blocking calls:** `Task.blocking (fun () -> …)` runs a function on a helper thread, for a C call that blocks (a database's, say), while the event loop goes on. The function crosses threads, so what it captures must be shareable ([chapter 14](14-parallel.md#what-can-cross-to-another-thread)), as its result must. `File.readAllTextAsync` and `File.writeAllTextAsync` work this way.
 

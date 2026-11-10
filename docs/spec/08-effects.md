@@ -147,7 +147,6 @@ where the function is declared or converted, with an error naming the effect:
 |---|---|
 | `main` | nothing is above it |
 | a top-level value's initializer; a top-level `assert` | startup has no handler |
-| a `task { }` body | it runs from the event loop |
 | a `share<F>`, and so every function given to another thread | a handler does not cross threads |
 | a `callback<F>`, an `fnptr<F>`, an `[<Export>]` function, an `extern` | no resumption is captured across a C frame |
 | an `[<Interrupt>]` handler | it runs between any two instructions |
@@ -192,7 +191,19 @@ There is no `try … with`, `raise` or exception type.
 ## 8.7 Effects and other features
 
 - **Tasks.** `Task` is not an effect: waiting is written with `let!` in a `task { }`
-  ([§9.2](09-computations.md#92-task)), and a task's body performs nothing.
+  ([§9.2](09-computations.md#92-task)). A task's body may perform effects, before and after
+  its waits:
+  - The `task { }` expression performs what its body does: the effects are in the row of the
+    function that makes the task, and are handled around the making, not around the run.
+  - The task keeps the handlers in place where it was made. Its body runs later, when the
+    task is run or waited for, and each operation it performs goes to those handlers, whether
+    or not their `handle` has returned by then.
+  - Such a handler's clause must resume last (`k v` as the last thing it does): the clause
+    answers the operation where it is performed. A clause that stops, or keeps `k`, for an
+    operation a task performed is a panic there, since no handler is on the stack to return to.
+  - An effect with an operation that never resumes (one whose result is its own type
+    variable, as `Throw.throw`) cannot be in a task's row: it is an error at the `task { }`.
+    Handle it inside the task, in code that does not wait, or give a `result`.
 - **Threads.** A function that crosses threads performs nothing; each thread has its own
   handlers.
 - **Modules.** An effect may be performed in one module and handled in another; rows are

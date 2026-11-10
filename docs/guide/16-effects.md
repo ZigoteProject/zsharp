@@ -214,8 +214,38 @@ let main () =
 [A; B]
 ```
 
+## Effects in tasks
+
+A task's body performs effects, before and after its waits, and making the task is what
+performs them: the handlers around the `task { }` when it's made are the ones it keeps.
+
+```fsharp
+effect Ctx =
+  abstract get : unit -> Context
+
+let reply (text: string) : Task<unit> / Ctx =
+  task {
+    let ctx = Ctx.get ()
+    do! send ctx.chat text      // a wait
+    Log.note (Ctx.get ()).name  // the same context after it
+  }
+
+let serve (ctx: Context) =
+  handle loop () with
+  | Ctx.get (), k -> k ctx
+```
+
+- **Dependency injection:** a service's context, log, clock or connection is handled once,
+  around the tasks, and reaches every function and task without being a parameter.
+- **Resume last:** the task runs after `handle` has returned, so a clause for it must end with
+  `k v`. One that stops or keeps `k` panics when a task performs its operation.
+- **Not `Throw`:** an effect whose operation never resumes can't be performed by a task's
+  body (an error at the `task { }`): catch it inside, or return a `result`.
+- **Not across threads:** `Task.spawn` takes a function that performs nothing, as every
+  function given to another thread.
+
 **Where effects can't go:** nothing can handle an effect after it leaves `main`, a top-level
-value's initializer, a `task { }` body (it runs from the event loop), a function C calls (an
+value's initializer, a function C calls (an
 `[<Export>]`, a `callback<…>`: the C-callback rule), a function run on another thread
 (`share<…>`, `Parallel.for`) or a trait's method. Each is a compile error naming the effect:
 handle it inside.

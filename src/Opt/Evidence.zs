@@ -15,6 +15,11 @@
 ///     needs no test: there's no rest.
 ///   - A loop with such calls becomes a local function taking its mutable variables, and the code
 ///     after it goes into the loop's exit.
+///   - A task's work (`task.work`, the lambda its `task { }` is) runs later, from the event loop,
+///     with no handler on the stack: it keeps the frames in scope where the task is made (they're
+///     variables it captures) and has no yield points, since nothing could take a yield. An
+///     operation's closure is called as anywhere; a clause that resumes last has answered by
+///     then, and any other left the yield state set, which is a panic there (the direct mode).
 /// Functions without effects and without handles compile exactly as before.
 open Types.Ty
 open Core.Ir
@@ -101,13 +106,15 @@ type private K =
 /// block being made, the type), its result's type, the joins of Simplify's that became local
 /// functions (their function, the mutable variables they take), and the `use` scopes open here
 /// (each a call of the local function disposing what it bound, the newest first): what a stop
-/// passing over them disposes, where this function returns for it.
+/// passing over them disposes, where this function returns for it; and whether it's a task's work.
 and private Ctx =
   { ev: list<Ty * CExpr>
     muts: list<string * string * Ty>
     ret: Ty
     joins: Map<string, string * list<string>>
-    uses: list<unit -> CExpr> = [] }
+    uses: list<unit -> CExpr> = []
+    /// a task's work: no yield points, a yield is a panic
+    direct: bool = false }
 
 /// e under its line markers.
 let rec private unLine (e: CExpr) : CExpr =
@@ -132,6 +139,7 @@ let private useScope (e: CExpr) : option<string * CExpr * CExpr * Ty> =
 let rec private stripUseScopes (e: CExpr) : CExpr =
   match e.k with
   | CPrim("use.scope", [ after ]) -> stripUseScopes after
+  | CPrim("task.work", [ w ]) -> stripUseScopes w
   | k -> { e with k = mapChildren stripUseScopes k }
 
 let private cur (ctx: Ctx) (x: string) : string =
@@ -319,6 +327,7 @@ let private lowerAll (types0: Map<string, TypeInfo>) (effects: Map<string, Effec
     /// which are functions of their own, nor in a handle's body and clauses).
     and yields (ctx: Ctx) (e: CExpr) : bool =
       match e.k with
+      | _ when ctx.direct -> false
       | CPerform _ -> true
       // a jump to a join point lowered as a local function: that function runs the rest, so the
       // jump goes through lower, where nothing follows it
@@ -340,6 +349,26 @@ let private lowerAll (types0: Map<string, TypeInfo>) (effects: Map<string, Effec
         let i2 = plain ctx i
         mk (CArraySet(cur ctx x, i2, plain ctx w)) ty
       | CLam(ps, b) -> lambda ctx e ps b
+      // a task's work: the frames here are its own (captured), and nothing in it yields
+      | CPrim("task.work", [ w ]) ->
+        match (unLine w).k with
+        | CLam(ps, b) ->
+          let wctx = { ev = ctx.ev; muts = []; ret = ev (resultAfter (List.length ps) w.ty); joins = Map.empty; direct = true }
+          mk (CLam(List.map (fun (x, t) -> (x, ev t)) ps, lowerBody wctx b)) (ev w.ty)
+        | _ -> plain ctx w
+      | CPerform(l, op, args) when ctx.direct ->
+        if opIsPolymorphic l op && Option.isNone failure.Value then
+          failure.Value <- Some $"a task can't perform {Types.Show.show v l}: its operation never resumes, and no handler is on the stack when a task runs. Handle it inside the task, or give a result (in {baseFunName fname})"
+        let frame = List.head (framesFor v ctx (rowExt l rowEmpty))
+        let ops = opTypes l
+        let o = fresh "$op"
+        let fields = CPWild :: List.mapi (fun i t -> if i = op then CPVar(o, t) else CPWild) ops
+        let call = answered (mk (CApp(local o (List.item op ops), List.map (plain ctx) args)) ty)
+        mk (CMatch(frame, [ (CPCtor(frameName v l, 0, fields), None, call) ])) ty
+      | CHandle(l, b, cls, r, rb) when ctx.direct -> answered (lowerHandle ctx l b cls r rb ty)
+      | CApp(h, args) when ctx.direct && List.exists (fun r -> not (Types.Norm.isRowEmpty v r)) (rowsOf (List.length args) h.ty) ->
+        let h2 = plain ctx h
+        answered (mk (CApp(h2, withEvidence ctx h.ty (List.map (plain ctx) args))) ty)
       | CLetFun(n, r, ps, b, rest) ->
         let (ps2, b2) = localFun ctx n ps b
         mk (CLetFun(n, r, ps2, b2, plain ctx rest)) ty
@@ -370,6 +399,13 @@ let private lowerAll (types0: Map<string, TypeInfo>) (effects: Map<string, Effec
         let fty = List.fold (fun acc (a: CExpr) -> tfun a.ty acc) ctx.ret (List.rev args2)
         mk (CApp(local fn fty, List.append args2 (List.map (fun o -> local (cur ctx o) (mutTy ctx o)) ms))) ctx.ret
       | k -> mk (mapChildren (plain ctx) k) ty
+    /// A call in a task's work that may have yielded: its value, or a panic when it did (no
+    /// handler is below a task to take the yield).
+    and answered (call: CExpr) : CExpr =
+      let r = fresh "$r"
+      let message = "a handler didn't resume an operation a task performed: a task runs after its handlers have returned, so their clauses must resume (k v) last"
+      let stuck = mk (CIf(mk (CBin("<>", state (), intE 0)) tBool, mk (CPrim("panic", [ mk (CStr message) tStr ])) tUnit, unitE ())) tUnit
+      mk (CLet(r, call, seqE stuck (local r call.ty))) call.ty
     and mutTy (ctx: Ctx) (o: string) : Ty =
       match List.tryFind (fun (x, _, _) -> x = o) ctx.muts with
       | Some(_, _, t) -> t
