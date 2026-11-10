@@ -1,6 +1,6 @@
 # The Z# Language Specification
 
-**Language version:** 0.7 (compiler `zs 0.7.0`, 2026-11-05, with the corrections merged since).
+**Language version:** 0.7 (compiler `zs 0.7.1`, 2026-11-11).
 **Status:** descriptive. Z# is pre-1.0; the language may change between releases, and every
 change is listed in [CHANGELOG.md](../../CHANGELOG.md). 1.0 is the release that freezes the
 language ([chapter 14](14-evolution.md)).
@@ -84,5 +84,5 @@ them, to be reported; neither wins silently. The chapters were written against:
   and 13;
 - the checker (`src/Infer/`, `src/Types/`) and `lib/prelude.zs` for chapters 3, 4, 7, 8, 12;
 - [DESIGN.md](../../DESIGN.md) and its decisions (§13) for meaning and intent;
-- programs run through `zs 0.7.0` for the edge cases stated as rules (overflow, conversion,
+- programs run through `zs 0.7.0` and `zs 0.7.1` for the edge cases stated as rules (overflow, conversion,
   evaluation order, the value restriction).

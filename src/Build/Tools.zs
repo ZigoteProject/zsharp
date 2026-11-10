@@ -10,7 +10,7 @@ extern zs_host_env_at : i64 -> cstr
 let hostOs () : string = String.ofCStr (zs_host_os ())
 
 /// This compiler's release: src/zs.toml's version, which test.sh checks it against.
-let version = "0.7.0"
+let version = "0.7.1"
 
 /// This program's executable, its symbolic links followed: where its library and runtime are.
 let selfPath () : string = String.ofCStr (zs_host_exe ())

@@ -112,6 +112,8 @@ call under `Native` isn't checked again, while a default the program wrote is ch
 the program's code. A constant's record literal keeps the record it built where it's defined
 (keyed by the constant and the literal's first field name).
 
+*In 0.7.1:* `Leave` lowers `break`, `continue` and `return` (0029) in a function's body before it's checked: a `$stop` flag in a loop's condition, a `$skip` flag for a round, a `$ret` slot for a result returned from inside a loop, a range loop left early as a `while`; `Exprs` and `Decls` call it where a body is given its parameters, so no pass after the checker knows the three. `Cx.literal` records each integer literal for the range check at its declaration's end (`Decls`), and `generalize` narrows a variable a literal is left at to the types that hold it.
+
 *In 0.7:* `Decls` reports a member that can't be declared (declared twice, or named as a field)
 and leaves it out, the type's other members standing (`tests/err_member_twice.zs`); makes a boxed
 union case of constants a value, which the image holds; checks `[<Section>]` and `[<Align>]` (what

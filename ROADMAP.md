@@ -22,7 +22,7 @@ itself from an earlier release (stage 0: 0.6.1, pinned in `dev`).
 
  done: 0–11, L, V, the third design review, 12's release (0.6.2 on 2026-10-30), and 0.7's
        items 2 to 4 but for what their statuses leave
- now: 0.7.0 released (2026-11-05), with 0.7's first
+ now: 0.7.1 (2026-11-11) after 0.7.0 (2026-11-05), with 0.7's first
       item open: what 11.5 and 12 have left (the suites in CI, clean machines, the board)
 ```
 
@@ -35,7 +35,7 @@ itself from an earlier release (stage 0: 0.6.1, pinned in `dev`).
 ## Where things stand
 
 **Works today:**
-- **Language:** inference (lambdas get their parameter types from the call), records with defaults, unions, exhaustive matching (record, string and character patterns), active patterns, units of measure, traits, `dyn` values, derives, members with named and optional arguments, nested modules with their own fields and traits, closures, generics, custom operators, `char`, multi-line and raw strings, raw pointers in `unsafe`, computation expressions (`option { }`, `result { }`, `task { }`), list and array expressions with F#'s ranges (`[ 1 .. 10 ]`), typed tuple parameters, `function`, compound assignment (`+=`), `?` on results and options, generic constants (`Map.empty`), and effect handlers with inferred, row-polymorphic effect types: generators (`seq { }`), typed exceptions (`Throw`) and handlers of a program's own.
+- **Language:** inference (lambdas get their parameter types from the call), records with defaults, unions, exhaustive matching (record, string and character patterns), active patterns, units of measure, traits, `dyn` values, derives, members with named and optional arguments, nested modules with their own fields and traits, closures, generics, custom operators, `char`, multi-line and raw strings, raw pointers in `unsafe`, computation expressions (`option { }`, `result { }`, `task { }`), list and array expressions with F#'s ranges (`[ 1 .. 10 ]`), typed tuple parameters, `function`, compound assignment (`+=`), `?` on results and options, `break`, `continue` and `return`, generic constants (`Map.empty`), and effect handlers with inferred, row-polymorphic effect types: generators (`seq { }`), typed exceptions (`Throw`) and handlers of a program's own.
 - **Memory and performance:** Perceus RC with borrowing and reuse, copy-on-write arrays, spans and slices (windows without copies), weak references, arenas, checked arithmetic, constants folded and kept as static objects in the image, one-case unions without a tag, a pool allocator under a one-word header, an optimizer that inlines, uncurries, resolves known constructors and fuses pipelines, ThinLTO and PGO. On the host suite's kernels it's at C's speed or better, with at most C's peak memory, except `fib` (1.76×: overflow checks, which cost C with `-ftrapv` the same); on its five real programs it takes 1.3× (`json`) to 3.5× (`pathfind`) C's time, with more memory than C on `wordfreq`, the gaps mostly in the library's data structures (`docs/reports/realworld.md`). On compute code it's as fast as C on a Cortex-M.
 - **Library:** a prelude, Core (collections, lazy sequences, iteration over any collection, text with UTF-8, JSON, bytes, hashes and encodings, `Math` and `Random`, `Int`'s checked, saturating and bit operations, fixed-point numbers (`q7`, `q15`, `q31`), `DateTime` with ISO 8601 parsing, options, results, typed exceptions, tasks, tests, properties and benchmarks as values: every target) and Std (console, environment, files and streams, paths, processes with pipes, timing, threads, TCP, UDP and Unix sockets, name lookup: targets with an OS), in .NET-style namespaces; format specifiers in interpolation (`$"{x:F2}"`, `{name,-20}`).
 - **Concurrency:** `Task` on an event loop per thread, compiled to state machines (a wait allocates nothing), with structured concurrency, cancellation that disposes `use` values (on other threads too, for spawned tasks), timers, TCP and UDP sockets, name lookup off the loop's thread (`Dns.lookup`), `Task.spawn` to run tasks on every core, `Task.blocking` for C calls that block, and Concurrent ML's events (`Threading.Alt`); the same `Task` on a microcontroller, on the embedded runtime's loop, the core asleep between events.
@@ -59,7 +59,8 @@ itself from an earlier release (stage 0: 0.6.1, pinned in `dev`).
 ## Next
 
 ### After 0.7
-0.6.2 is out (2026-10-30), and 0.7.0 (2026-11-05). Phases 11.5 and 12
+0.6.2 is out (2026-10-30), 0.7.0 (2026-11-05) and 0.7.1 (2026-11-11: the security review's
+fixes, Windows natively, track G's three defects and `break`, `continue` and `return`). Phases 11.5 and 12
 stay here until their last exit tests close: the clean-machine installs (11.5) and the flagship
 on its Nucleo-F401RE (12), what's left of 0.7's first item (the suite is green on the five CI
 runners since 2026-11-07). What follows 0.7 isn't planned

@@ -124,6 +124,8 @@ expression    = 'let' … 'in' expression                             a binding 
               | 'while' expression 'do' block
               | 'for' ID 'in' op-expr '..' op-expr [ '..' op-expr ] 'do' block
               | 'for' pattern 'in' op-expr 'do' block
+              | 'break' | 'continue'                                leaving a loop: §5.9
+              | 'return' [ expression ]                             not in a computation expression
               | 'handle' block 'with' handler-clauses               `handle`: §8.4
               | 'unsafe' block
               | 'yield' [ '!' ] expression                          in seq or a list expression

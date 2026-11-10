@@ -1,12 +1,60 @@
 # Changelog
 
-## Unreleased
+## 0.7.1 (2026-11-11)
 
-Windows, natively: the suite runs and passes on CI's Windows x64 and arm64 runners, as on the
-other four (at `be321b3`, the first run with every job green), and what it found is fixed here.
+What a review of 0.7.0 found, fixed: 103 of its 106 defects, the memory errors safe code could
+reach among them (below, under Security and stability). Windows, natively: the suite runs and
+passes on CI's Windows x64 and arm64 runners, as on the other four (at `be321b3`, the first run
+with every job green), and what it found is fixed here. The language has its specification
+([docs/spec](docs/spec/README.md)), the three places the compiler differed from it are fixed
+(an integer literal outside its type, `1e-3`, `compare` on a NaN), and a loop and a function
+can be left early: `break`, `continue` and `return`.
+
+Tested as 0.7.0's changes were on the five CI runners up to `be321b3`; what came after it (the
+security review's fixes, the three defects, `break`, `continue` and `return`) has passed the
+suite in the dev container on Linux x86-64 (538 checks, `tests/bootstrap.sh` among them: the
+compiler builds itself to the same bytes), and on the other runners once CI has run this
+release's commit. Not run for it: `./test.sh --valgrind`, `--sanitize` and `--release`. Still
+open from 0.7's plan: the flagship on its Nucleo-F401RE, and the archives on clean machines.
+
+### Upgrading from 0.7.0
+What a 0.7.0 program may have to change, and what behaves differently:
+- `break`, `continue` and `return` are reserved words (`return` everywhere but in a computation
+  expression, where it's the builder's as before). **To rewrite:** a value, function, parameter
+  or field of one of those names, to another.
+- An integer literal outside its type's range is an error, where 0.7.0 truncated it with
+  nothing said (`let a : u8 = 300` was `44`; a pattern `| 256` at `u8` matched 0). A literal
+  written in a radix may still fill its type's bits (`let m : i8 = 0xFF` is -1). A function
+  with a literal is of the types that hold it: `let f x = x + 300` no longer takes a `u8`.
+  **To rewrite:** the value meant, or a wider type.
+- `compare` on floats is a total order: a NaN is after every number and equal to a NaN, where
+  `compare nan x` was `0` for every `x`. A list with a NaN sorts with it last, and a `Map` or a
+  `Set` keeps one NaN key. `=`, `<>`, `<` and the other operators are IEEE 754's, as before.
+  **To rewrite:** code that took `compare a b = 0` on floats for `a = b`.
+- `e?` as a statement of a loop's body returns the failure from the function; 0.7.0 refused it
+  there. Anywhere else it gives its block the failure, as before.
+- `1e5` and `1e-3` are float literals; 0.7.0 read `1e5` as `1` applied to a name `e5`, an error.
+- `Json` has a `JUInt` case (integers from 2^63 to 2^64 - 1). **To rewrite:** a `match` on a
+  `Json` without a wildcard, with its arm.
+- A literal that only a library trait constrains is an `int` (a float an `f64`): `Binary.toBytes
+  70000` wrote an `i16`'s two bytes (4464) in 0.7.0, and writes an `int`'s now. **To rewrite:**
+  nothing, unless the bytes written were relied on; then annotate the literal.
+- A closure that carries a `ref` to another thread is a Share error, where 0.7.0 compiled it (and
+  could free the cell twice). **To rewrite:** an `Atomic`, a `Mutex` or a `Channel` for what
+  the threads share.
+- The runtime's `Native.*` hooks are the library's own: a program's call of one is an error
+  outside `unsafe`. **To rewrite:** the library function over it.
+- `zs lsp` and `zs mcp` run a dependency's type provider only with `--trust`. **To change:** in
+  Zed, the server's arguments, for a project whose dependencies' providers you trust; VS Code
+  and Rider pass it for a trusted workspace or project.
+- `Iter`'s range panics on a step of 0; `File.copy` onto itself is an Error; a `.bat` or `.cmd`
+  argument with a line break is an Error; a write to a closed pipe is an Error, not the
+  program's end (`SIGPIPE` is ignored).
+- On Windows `zs build` has no build server (each build is its own process), and the compiler's
+  messages name files with `/`.
 
 ### Language
-The specification's three defects (ROADMAP's track G, items 1 to 3). What a 0.7 program rewrites:
+The specification's three defects (ROADMAP's track G, items 1 to 3), and proposal 0029:
 - An integer literal outside its type's range is an error at the literal, where it was
   truncated (`let a : u8 = 300` was `44`); a pattern's literal alike. A literal in a radix may
   still fill its type's bits (`let m : i8 = 0xFF`). Write the value meant, or a wider type.
@@ -128,8 +176,10 @@ two in part and one deferred, with the designs that finish them. What a program 
 ### Documentation
 - [The language specification](docs/spec/README.md): the language's definition in 14 chapters,
   from the lexer's rules to the grammar, with what's planned, where the compiler deviates from
-  the design (an integer literal too large for its type is truncated, not refused; `1e-3` isn't
-  a float literal) and what was declined.
+  the design and what was declined. The three defects it found in the compiler are fixed in
+  this release (above); its other findings are the ROADMAP's track G.
+- Proposals [0028](docs/proposals/0028-written-constraints.md) (written constraints: approved,
+  not built) and [0029](docs/proposals/0029-leaving-a-loop.md) (leaving a loop: built).
 - The README is shorter and by reader: F# programmers, systems programmers, embedded developers,
   with a section on status and limitations; the full tables stay in `docs/reports`.
 

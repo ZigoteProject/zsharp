@@ -142,4 +142,3 @@ records what the language does not have.
 | Explicit allocator parameters | arenas; `[<NoAlloc>]` | decision 26 |
 | A `[<Test>]` attribute on functions | tests as values, `[<Tests>]` | proposal 0009 |
 | Block comments | `//` | |
-| `break`, `continue`, `return` in functions | recursion; conditions; effects | |
