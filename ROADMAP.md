@@ -436,7 +436,7 @@ the syntax reserves and the compiler's known deviations.
      are, or the guarantee is "no `unsafe`, no `extern`, no `Mmio`" wherever it's stated. An
      `import c` module's functions `[<Unsafe>]` by default, with a safe wrapper the package
      writes, is Rust's answer; the cost is every existing C call.
-  6. **Constraints can't be written** *(run)*: there's no syntax for `'a : Show`, and a type
+  6. **Constraints can't be written** *(run; [proposal 0028](docs/proposals/0028-written-constraints.md), a draft)*: there's no syntax for `'a : Show`, and a type
      variable in an annotation isn't held generic (`let f (x: 'a) : 'a = x + 1` compiles, at
      the numbers). So a public function can't state its own type, and an annotation can't
      catch a function that became less general. F#'s `when 'a : Show` after the type, and an
@@ -464,7 +464,7 @@ the syntax reserves and the compiler's known deviations.
       its result ([proposal 0002](docs/proposals/0002-effect-handlers.md)'s unresolved
       questions): state with logging is a handle in a handle. Several effects in one `handle`
       is sugar over nesting and costs nothing at run time.
-  12. **Leaving a loop:** no `break`, `continue` or early `return`, and `?` in a `for` body
+  12. **Leaving a loop** *([proposal 0029](docs/proposals/0029-leaving-a-loop.md), a draft)*: no `break`, `continue` or early `return`, and `?` in a `for` body
       leaves the body, not the function (DESIGN §2.1's `Iter.forEach` lowering already stops
       on `false`, so `break` is a `false` the body returns).
   13. **Field attributes for derives:** a JSON key can't be renamed or a field skipped (DESIGN
