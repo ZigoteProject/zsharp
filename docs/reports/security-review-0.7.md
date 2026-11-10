@@ -3,9 +3,9 @@
 A review of the whole of 0.7.0 (`5d1628c`, and `fb9d178` after it) for defects an attacker can
 reach and for crashes, hangs, leaks and races a program can hit: the compiler, the C runtimes, the
 library, the language and build servers, the package manager, the scripts and CI, and the editor
-extensions. It found 105 distinct defects (121 reports, some the same defect seen from two
-places, two of them found by CI on the fixes' own tests): 1 critical, 30 high, 47 medium and 27
-low. 102 are fixed on
+extensions. It found 106 distinct defects (122 reports, some the same defect seen from two
+places, three of them found by CI on the fixes' own tests): 1 critical, 30 high, 48 medium and 27
+low. 103 are fixed on
 `claude/security-stability-review-lgcqg3`, each with a test; two are fixed in part and one is
 deferred, each with the design that finishes it (below).
 
@@ -36,12 +36,20 @@ deferred, each with the design that finishes it (below).
   mode read after a `chmod`, `Runtime.mallocs` counting every task's frame, `zs fmt`'s spacing of
   a minus after `>`, a test port drawn from the range the system gives clients), once on two
   fixes that met only when merged (a library-only rule and four new uses in the compiler), and
-  twice on defects older than the review that its tests were the first to reach: R3-1, a
+  three times on defects older than the review that its tests were the first to reach: R3-1, a
   literal only a library trait constrains defaulting to `i16` (`Binary.toBytes 70000` wrote
-  4464), and R3-2, a tail call the Cortex-M0 and WebAssembly can't make. Each is fixed in its
+  4464), R3-2, a tail call the Cortex-M0 and WebAssembly can't make, and R3-3, a C header added
+  beside a package's source that `zig cc`'s own object cache didn't see. Each is fixed in its
   own commit. At `32ff96a` every job that passed at `fb9d178` passes: Linux x86-64's (the suite,
   the bootstrap, the chips under QEMU, wasm32 under Node, the six release archives), and the
   suites of Linux arm64, macOS arm64 and macOS Intel, each with its own archive.
+- **Merged with master** (`e6b96a9`, which made the suite pass natively on Windows; `cb63145`):
+  git's merge put the end of master's `Rpc.toPath` into this work's `decoded` helper without a
+  conflict, so the compiler didn't build (`982b5fc`). A review of every file both sides changed
+  found no other splice, but five places where the two met: master's `runBounded` waited once
+  through `Task.timeout`, which this work's `Process.wait` cancels at once, so a program it
+  killed stayed a zombie (it waits again after the kill now), and four of this work's tests that
+  weren't Windows-clean, which now do as master's own (`9a96f23`).
 
 ## What changes for programs and users
 
@@ -116,12 +124,17 @@ deferred, each with the design that finishes it (below).
 
 ## What wasn't covered
 
-- **Windows at run time:** its code paths were read and, where headers allowed, compiled, but
-  CI's Windows jobs fail at `fb9d178` already, before this work, and still do at `32ff96a`: x64's
-  suite fails most checks on their output's line ends (126 at `32ff96a`, 143 at `fb9d178`; this
-  work's new tests among them, and `zs doctor`, which printed nothing), and arm64's stopped at
-  installing its tools, a pin of this work's undone in `8c34c59`. So the Windows parts of the
-  fixes (the `.bat` quoting, the socket table, UDP, file IDs, reparse points) are unrun.
+- **Windows, in part:** since master's Windows work was merged, CI runs the whole suite on
+  Windows x64 and arm64, the bootstrap included, and at `9a96f23` x64's failed only R3-3's
+  check. What of the fixes ran there: the `.bat` quoting (`tests/process_batch.zs`), a second
+  `Process.wait` and a `kill` after it (`process_wait.zs`), UDP's long datagram and port
+  unreachable (`task/udp.zs`), `Unix.listen` (`task/unix_path.zs`), `File.copy` and `move`
+  (`file_copy.zs`), `Path.getFullPath`'s roots (`path_roots.zs`), the Spsc and the pool
+  (`parallel/`), the language server's URIs and the trust gate (`lsp/uris.sh`, `lsp/trust.sh`).
+  What didn't: reparse points and file IDs (`file_links.zs`, `project/links.sh` and
+  `depcache.sh` need links Git Bash's `ln -s` copies), the socket table's race (C harnesses), the
+  providers' drain and limit (shell-script providers), and ThreadSanitizer (none for
+  mingw-w64).
 - **Vendored code** (`runtime/wepoll`, `packages/xxhash`, the tree-sitter runtime): its version
   and known advisories only.
 - **Performance:** the fixes keep the common paths as they were where they could (the review
@@ -272,6 +285,7 @@ is the same defect, reported twice.
 | R2-pkg-1 | high | A fetched dependency's symlinked .zs-cache/cimport makes import c's cache overwrite files outside the checkout (e.g. the project's .git/config) (`src/Build/CImport.zs`) | fixed |
 | R2-pkg-2 | high | Symlinks inside a fetched dependency are followed by dirHash and zs vendor: local secrets are copied into the committed vendor/ with the hash check … (`src/Build/Project.zs`) | fixed |
 | R2-pkg-4 | medium | fetchDeps panics (String.sub out of range) on every run once a default-branch git dependency is in zs.lock (`src/Build/Project.zs`) | fixed |
+| R3-3 | medium | A C header added beside a package's source, which its `#include "geo.h"` finds before an include directory's, left the object as it was where `zig cc` builds it (Windows, another target, a chip): zig's cache keys a C object on the files its last compile read (`src/Build/Compile.zs`) | fixed |
 | R2-pkg-5 | medium | The C sources' object cache keys on the .c file and the .h files in its own directory only: a header changed elsewhere leaves a stale object, so the … (`src/Build/Units.zs`) | fixed |
 | R2-pkg-6 | medium | zs writes into dependency checkouts and vendor copies (import c and provider caches, a nested provider build's .zs-cache/deps and zs.lock), which … (`src/Build/Project.zs`) | fixed |
 | R2-pkg-7 | medium | A packaged provider is built against its own unpinned dependencies: its git dependencies are resolved outside the user's zs.lock and its hashes, yet … (`src/Build/Modules.zs`) | fixed |

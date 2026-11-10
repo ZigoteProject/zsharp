@@ -7,7 +7,7 @@ other four (at `be321b3`, the first run with every job green), and what it found
 
 ### Security and stability
 A review of 0.7.0 ([docs/reports/security-review-0.7.md](docs/reports/security-review-0.7.md))
-found 105 defects (1 critical, 30 high, 47 medium, 27 low); 102 are fixed here, each with a test,
+found 106 defects (1 critical, 30 high, 48 medium, 27 low); 103 are fixed here, each with a test,
 two in part and one deferred, with the designs that finish them. What a program or a user sees:
 - `zs lsp` and `zs mcp` build and run a dependency's type provider only with `--trust` (the
   module from the last trusted build otherwise, or an error at the import); the VS Code and
@@ -36,7 +36,8 @@ two in part and one deferred, with the designs that finish them. What a program 
 - Packages: links in a dependency are hashed as links and `zs vendor` copies only those that stay
   inside it; lock entries' names are checked; a manifest's `main` is inside its package (the
   project's own too); a `zs.toml` is at most 1 MB; a dependency's caches are in the project's
-  `.zs-cache/pkgs/`, never in the dependency or through a link.
+  `.zs-cache/pkgs/`, never in the dependency or through a link; a header added beside a
+  package's C file, or changed anywhere it's included from, makes a new object on every target.
 - The thread pool waits, rather than panicking, when a job waits on a lock or channel past its
   spare threads; the build server drops a client that stalls, and a provider program stops after
   60 seconds (`ZS_PROVIDER_TIMEOUT`); `zs fmt` writes a file whole or not at all.

@@ -332,9 +332,19 @@ let cpuFlags (o: Options.Options) : list<string> =
   | None -> []
 
 // what the link takes for the packages' [c] sections: their C flags (for the C sources among
-// them), then the sources, libraries and files (a name is a library's)
+// them), then the sources, libraries and files (a name is a library's). zig cc (Windows, another
+// target, a chip) keeps a C file's object under the files its last compile read, so a header
+// added beside the file, found before an include directory's by its #include "geo.h", would
+// leave the object as it was: the names of the headers beside each C file go in a define, which
+// zig's key holds (Units' key holds them so)
 let linkArgs (linked: Modules.Linked) : list<string> =
-  List.append linked.cflags (List.map (fun (l: string) -> if String.startsWith "-" l || Tools.isFile l then l else "-l" + l) linked.links)
+  let sources = List.filter (fun (l: string) -> String.endsWith ".c" l) linked.links
+  let beside (c: string) : list<string> =
+    match Directory.list (Path.getDirectoryName c) with
+    | Ok names -> List.sort (List.filter (fun (h: string) -> String.endsWith ".h" h) names)
+    | Error _ -> []
+  let headers = if List.isEmpty sources then [] else [ "-DZS_C_HEADERS=" + Tools.hashOf (List.collect (fun (c: string) -> Path.getFileName c :: beside c) sources) ]
+  List.concat [ linked.cflags; headers; List.map (fun (l: string) -> if String.startsWith "-" l || Tools.isFile l then l else "-l" + l) linked.links ]
 
 /// What stops a build after checking: a pass's error (at a line), or a tool's failure.
 type Failure =
