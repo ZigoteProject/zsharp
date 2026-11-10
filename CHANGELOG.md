@@ -72,6 +72,8 @@ other four (at `be321b3`, the first run with every job green), and what it found
   from the lexer's rules to the grammar, with what's planned, where the compiler deviates from
   the design (an integer literal too large for its type is truncated, not refused; `1e-3` isn't
   a float literal) and what was declined.
+- The README is shorter and by reader: F# programmers, systems programmers, embedded developers,
+  with a section on status and limitations; the full tables stay in `docs/reports`.
 
 ### Tests
 - The suite runs natively on Windows (CI's x64 and arm64 runners): text is checked out with LF
