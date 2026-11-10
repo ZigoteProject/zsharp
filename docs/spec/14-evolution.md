@@ -30,6 +30,11 @@ rather than give it another meaning.
 
 ### Language
 
+The table below is what has a decision or a proposal. The open design questions this
+specification raised (effects across tasks and threads, written constraints, what safe code
+guarantees around `extern`, and others) are track G of [ROADMAP.md](../../ROADMAP.md), each
+awaiting a proposal.
+
 | Feature | Status | Syntax and effect on this document |
 |---|---|---|
 | **`[<Align n>]` on a type** | decided (decision 69, proposal 0014); built for values only | *Reserved:* `[<Align n>]` before a `type`. Every value of the type is aligned to `n` bytes. Extends [§4.4](04-declarations.md#44-representation-attributes), [§11.3](11-low-level.md#113-layout) |
