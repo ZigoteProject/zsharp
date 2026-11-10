@@ -86,7 +86,7 @@ Where the reference implementation at 0.7 differs from this document or from
 | `use` and stops ([§8.4](08-effects.md#84-handlers)) | every abandoned `use` is disposed | not for a kept resumption never called, nor for a `use` in a `task { }` body |
 | The `cycle` warning ([§10.4](10-execution.md#104-lifetime)) | best effort | cycles through closures and `dyn` values are not detected |
 | `[<Section>]` ([§11.4](11-low-level.md#114-bare-metal)) | places the storage in the named section | on macOS and Windows the name is dropped and the alignment kept |
-| Stack overflow ([§10.5](10-execution.md#105-panics)) | a panic where the platform reports it | reported on Linux and macOS; a platform fault elsewhere |
+| Stack overflow ([§10.5](10-execution.md#105-panics)) | a panic where the platform reports it | reported on Linux, macOS and Cortex-M chips; a platform fault elsewhere |
 
 ## 14.4 Room for growth
 

@@ -159,8 +159,8 @@ program without `unsafe` has no data races.
 - An `[<Interrupt>]` handler is checked as a `share<unit -> unit>`.
 
 **Shared mutation** goes through the cells made for it: `Atomic<T>` (lock-free; `T` a number,
-`bool` or `char`), `Mutex<T>`, `Channel<T>` (bounded), and `Spsc<T>` (one producer, one
-consumer, for interrupt handlers).
+`bool` or `char`), `Mutex<T>`, `Channel<T>` (bounded), and `Spsc<T>` (bounded and never
+waiting, for interrupt handlers; any number of producers and consumers).
 
 **Tasks and threads.** A task belongs to the event loop that runs it and never moves between
 threads; values used inside one task need not be `Share`.
