@@ -1,0 +1,17 @@
+Ok 3 Error not a number: x Ok 0
+Some 2 None None
+5 0 -1
+[5; 3; 1]
+Ok 3 Error not a number: x Some 3 None
+Some (3, 4) None
+10 7 4 0 2 6 8 250 251 253 254 255 
+[4; 6]
+log 1
+log 2
+log 1
+all logged
+1 a
+3 c
+a
+b
+c

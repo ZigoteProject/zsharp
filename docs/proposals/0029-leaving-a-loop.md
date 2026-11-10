@@ -2,16 +2,16 @@
 
 | | |
 |---|---|
-| **Status** | Draft |
+| **Status** | Implemented (2026-11-11): `src/Infer/Leave.zs`; not in computation expressions, and a range loop left early needs a literal step |
 | **Decided at** | not yet: track G's item 12 ([ROADMAP](../../ROADMAP.md#language-g)), found by the specification |
 | **Builds** | after 0.7 |
 | **Rests on** | [DESIGN §2.1](../../DESIGN.md) (`?` returns early) and §4 (`for x in c do body` is `Iter.forEach c (fun x -> body; true)`: a `false` stops the loop); decision 57 (iteration); decision 5 (no unwinding) |
 | **Related** | [0017 iteration](0017-iteration.md); [0002 effect handlers](0002-effect-handlers.md) (a stop disposes the `use` values it passes); track S's item 10 (`use` under effects) |
 | **Changes** | DESIGN §2.1; the specification's §5 (expressions) and §14.2 (three reserved words); the grammar and the editors' keyword lists |
 
-- [ ] Approved in principle
+- [x] Approved in principle (2026-11-11, with the open questions answered: `return` in a lambda leaves the lambda; no labels and no `break` with a value; all three are errors in a computation expression for now)
 - [ ] Discussion
-- [ ] Implementation
+- [x] Implementation (as designed, with three things the design didn't say: the three are written as a statement, a branch of an `if` or a `match`, or a `let`'s value, and are an error elsewhere; a `for` over a range left early becomes a `while`, so its step must be a literal; and `?` returns from the function only as a statement of a loop's body, since elsewhere a block's `?` gives the block its failure, which programs rely on. Measured: a linear search with `return` executes the instruction count of the same search as a recursive function, 2,629,174,671 for 2,000,000 searches of 1,000 elements)
 
 ## Summary
 

@@ -383,8 +383,26 @@ a `let` without an annotation, `let p = e?`, and as a whole statement, `e?`.
 - The rest of the block must therefore have the same kind of type: `result<_, E>` with the
   same error type `E`, or an `option`. Errors are not converted, and `option` and `result`
   are not mixed.
-- The block left is the innermost enclosing block of the function or lambda; a `for` body is
-  a function of its own for this purpose.
+- The block left is the innermost enclosing block of the function or lambda. As a statement
+  of a loop's body, `e?` returns the failure from the function instead, as `return` does.
+
+**Leaving a loop or a function.** `break`, `continue` and `return e`
+([proposal 0029](../proposals/0029-leaving-a-loop.md)):
+
+- `continue` ends the current round of the innermost enclosing `for` or `while`; `break` ends
+  that loop. Neither carries a value.
+- `return e` ends the enclosing function or lambda with `e`, which has its result type;
+  `return` alone is `return ()`. A lambda is a function of its own: a `return` in it leaves
+  the lambda, and a `break` or `continue` in it is not inside the loop around it.
+- Each has any type, as a panic has, so `if c then break` needs no `else`.
+- They are written as a statement, as a branch of an `if` or a `match`, or as a `let`'s
+  value (`let x = match o with Some v -> v | None -> return 0`); anywhere else (a function's
+  argument, an operand, a condition) is an error. A statement after one in the same block is
+  an error: it is never reached.
+- A `use` value of a scope that is left is disposed, innermost first, as at the scope's end.
+- A range loop that is left early (`for i in a .. s .. b`) needs a step that is a literal.
+- In a computation expression `return` is the builder's, and `break` and `continue` are
+  errors.
 
 **`unsafe`.** `unsafe e`, or `unsafe` and an indented block, is `e`, in which the unsafe
 operations are permitted ([§11.2](11-low-level.md#112-unsafe)).

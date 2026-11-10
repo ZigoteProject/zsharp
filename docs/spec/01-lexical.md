@@ -60,12 +60,15 @@ letter    = 'A'…'Z' | 'a'…'z' | any byte ≥ 0x80 ;
 The reserved words:
 
 ```text
-abstract  and     as      derive  do       effect    else     extern  false
-for       fun     function        if       impl      in       let     match
-member    module  mutable         namespace         not      of      open
+abstract  and     as      break   continue derive    do       effect  else
+extern    false   for     fun     function if        impl     in      let
+match     member  module  mutable namespace          not      of      open
 private   rec     static  then    trait    true      type     unsafe  when
 while     with
 ```
+
+`return` is reserved too, outside a computation expression, where it is the builder's
+([chapter 9](09-computations.md)).
 
 The **contextual words** are ordinary identifiers that a construct reads specially in one
 position: `use`, `return`, `yield`, `handle`, `import`, `assert`, `dyn`, `sizeof`, `alignof`,

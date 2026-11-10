@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| **Status** | Draft |
+| **Status** | Approved in principle (2026-11-11); not built |
 | **Decided at** | not yet: track G's item 6 ([ROADMAP](../../ROADMAP.md#language-g)), found by the specification |
 | **Builds** | after 0.7, before the first-party packages (track K) publish signatures |
 | **Rests on** | [DESIGN §2.1](../../DESIGN.md) (inference, annotations) and §4 (traits: requirements are inferred); decision 57 (a requirement carries a trait's other parameters, `'c : Iter<int>`) |
 | **Related** | track G's items 7 (local functions have one type) and 9 (supertraits), which this doesn't decide; [0025 reading effects](0025-reading-effects.md) (how a type is shown) |
 | **Changes** | DESIGN §2.1 and §4; the specification's §3 and §4.1; `zs doc` and hover print what can now be written |
 
-- [ ] Approved in principle
+- [x] Approved in principle (2026-11-11; open question 1 answered: an integer literal is allowed at a rigid `'a : Num`, a float literal isn't for now)
 - [ ] Discussion
 - [ ] Implementation
 

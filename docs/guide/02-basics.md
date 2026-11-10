@@ -239,6 +239,10 @@ let main () =
 
 ## if, while, for
 
+A loop is left early with `break`, a round of it with `continue`, and a function with
+`return e` (`if xs.[i] = x then return Some i`); each is a statement, a branch of an `if` or a
+`match`, or a `let`'s value.
+
 `if` is an expression: both branches give a value of the same type. Without an `else`, the branch must be `unit` (a statement).
 
 ```zsharp

@@ -455,7 +455,7 @@ and inferNode (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>)
       | _ -> apply cx env depth (field cx cr f) args None
   | App(h, args) -> apply cx env depth (inf h) args None
   | Lambda(ps0, body0) ->
-    let (ps, body) = lowerParams cx ps0 body0
+    let (ps, body) = lowerParams cx ps0 (Leave.fn None body0)
     let pars = List.map (fun (x, ann) -> (x, uniq cx x, annot cx ann)) ps
     recordParams cx ps0 pars
     // the function type expected of it gives the unannotated parameters their types before the
@@ -479,7 +479,7 @@ and inferNode (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>)
     let cb = withRow cx row (fun () -> infer cx envB (depth + 1) body)
     mk (CLam(parsOf pars, cb)) (funTyRow (parTypes pars) cb.ty row)
   | LetFun(name, isRec, ps0, ret, body0, rest) ->
-    let (ps, body) = lowerParams cx ps0 body0
+    let (ps, body) = lowerParams cx ps0 (Leave.fn ret body0)
     let pars = List.map (fun (x, ann) -> (x, uniq cx x, annot cx ann)) ps
     recordParams cx ps0 pars
     let (rty, declared) = annotRet cx ret
@@ -781,8 +781,13 @@ and inferNode (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>)
   | Slice(a, i, j) -> slice cx env depth a i j
   | Yield _
   | YieldAll _ -> fail "yield belongs in [ … ], [| … |] or seq { }"
-  | ForIn(x, xs, body) -> forIn cx env depth x xs body
-  | TryBind(p, x, rest) -> tryBind cx env depth node p x rest
+  | ForIn(x, xs, body) -> forIn cx env depth x xs body None
+  | ForInUntil(x, xs, body, stop) -> forIn cx env depth x xs body (Some stop)
+  | Break -> failLine node.at "'break' is for a loop in a function's body"
+  | Continue -> failLine node.at "'continue' is for a loop in a function's body"
+  | Return _ -> failLine node.at "'return' is for a function's body"
+  | TryBind(p, x, rest) -> tryBind cx env depth node p x rest None
+  | TryLeave(p, x, rest, name, onFail) -> tryBind cx env depth node p x rest (Some(name, onFail))
   | Match(s, cases) ->
     if not (isActiveCall cx s) && List.exists (fun (c: Clause) -> Option.isSome (activeOf cx c.pattern)) cases then
       inferWith cx env depth hint (desugarActive cx s cases)
@@ -1011,7 +1016,7 @@ and letRecGroup (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty
   let prepare (m: Expr) : Prepared =
     match m.e with
     | LetFun(name, _, ps0, ret, body0, _) ->
-      let (ps, body) = lowerParams cx ps0 body0
+      let (ps, body) = lowerParams cx ps0 (Leave.fn ret body0)
       let pars = List.map (fun (x, ann) -> (x, uniq cx x, annot cx ann)) ps
       recordParams cx ps0 pars
       let (rty, declared) = annotRet cx ret
@@ -1169,7 +1174,7 @@ and slice (cx: Cx) (env: Map<string, Local>) (depth: int) (a: Expr) (i: option<E
 /// loop. The lambda is the compiler's: its body is typed at the function's depth, so it may assign
 /// the function's mutables (the impl's forEach is inlined and the lambda applied in place; Lift
 /// gives an assigned variable a cell otherwise).
-and forIn (cx: Cx) (env: Map<string, Local>) (depth: int) (x: string) (xs: Expr) (body: Expr) : CExpr =
+and forIn (cx: Cx) (env: Map<string, Local>) (depth: int) (x: string) (xs: Expr) (body: Expr) (until: option<string>) : CExpr =
   let cxs = infer cx env depth xs
   let fe = infer cx env depth (plain (Var "Iter.forEach"))
   let (collTy, elTy, row) =
@@ -1182,7 +1187,12 @@ and forIn (cx: Cx) (env: Map<string, Local>) (depth: int) (x: string) (xs: Expr)
   let envB = Map.add x (localOf xu elTy false depth) (Map.add "$coll" coll env)
   let cb = withRow cx row (fun () -> infer cx envB depth body)
   expect cx "the body of 'for'" tUnit cb.ty
-  let lamE = mk (CLam([ (xu, elTy) ], mk (CSeq(cb, mk (CBool true) tBool)) tBool)) (TFun(elTy, tBool, row))
+  // the loop goes on while the body says so: always, or until a break's flag is set (0029)
+  let goOn =
+    match until with
+    | Some stop -> infer cx envB depth (plain (Not(plain (Var stop))))
+    | None -> mk (CBool true) tBool
+  let lamE = mk (CLam([ (xu, elTy) ], mk (CSeq(cb, goOn)) tBool)) (TFun(elTy, tBool, row))
   useRow cx row
   let callE = mk (CApp(fe, [ mk (CLocal coll.u) cxs.ty; lamE ])) tBool
   mk (CLet(coll.u, cxs, mk (CSeq(callE, mk CUnit tUnit)) tUnit)) tUnit
@@ -1190,7 +1200,7 @@ and forIn (cx: Cx) (env: Map<string, Local>) (depth: int) (x: string) (xs: Expr)
 /// let p = e? and the rest: match e with Ok p -> rest | Error err -> Error err, or, on an option,
 /// match e with Some p -> rest | None -> None: the rest of the block (the function's result, or the
 /// lambda's) gives what the early return does. Its errors point at the `?`.
-and tryBind (cx: Cx) (env: Map<string, Local>) (depth: int) (node: Expr) (p: Pat) (x: Expr) (rest: Expr) : CExpr =
+and tryBind (cx: Cx) (env: Map<string, Local>) (depth: int) (node: Expr) (p: Pat) (x: Expr) (rest: Expr) (onFail: option<string * Expr>) : CExpr =
   let v = cx.v
   let ce = infer cx env depth x
   let onOption =
@@ -1231,13 +1241,29 @@ and tryBind (cx: Cx) (env: Map<string, Local>) (depth: int) (node: Expr) (p: Pat
           | e -> show cx e
         fail $"'?' needs the rest of the block to produce a result<_, {ers}>, but it produces {show cx t}"
       | (t, None) -> fail $"'?' needs the rest of the block to produce an option, but it produces {show cx t}"
-  located cx node.at false gives
+  if Option.isNone onFail then
+    located cx node.at false gives
+  // the failure's value: of the rest's own type, or, for a `?` that leaves a loop (0029), a
+  // result or an option of its own, bound for what returns it
+  let failTy =
+    match (onFail, other) with
+    | (None, _) -> crest.ty
+    | (Some _, Some er) -> TCon("result", [ fresh v kAny; er ])
+    | (Some _, None) -> TCon("option", [ fresh v kAny ])
+  let after (failure: CExpr) : CExpr =
+    match onFail with
+    | None -> failure
+    | Some(name, leave) ->
+      let l = localOf (uniq cx name) failTy false depth
+      let cl = infer cx (Map.add name l env) depth leave
+      expect cx "what follows '?'" crest.ty cl.ty
+      mk (CLet(l.u, failure, cl)) crest.ty
   let failCase =
     match other with
     | Some er ->
       let eu = uniq cx "$err"
-      (CPCtor("result", caseOf "Error", [ CPVar(eu, er) ]), None, mk (CCtor("result", caseOf "Error", [ mk (CLocal eu) er ])) crest.ty)
-    | None -> (CPCtor("option", caseOf "None", []), None, mk (CCtor("option", caseOf "None", [])) crest.ty)
+      (CPCtor("result", caseOf "Error", [ CPVar(eu, er) ]), None, after (mk (CCtor("result", caseOf "Error", [ mk (CLocal eu) er ])) failTy))
+    | None -> (CPCtor("option", caseOf "None", []), None, after (mk (CCtor("option", caseOf "None", [])) failTy))
   let cases = [ (cp, None, crest); failCase ]
   Patterns.check (unionCases cx) (fun c -> Set.contains c cx.apCtors.Value) (List.map (fun (q, _, _) -> (q, false)) cases)
   mk (CMatch(ce, cases)) crest.ty

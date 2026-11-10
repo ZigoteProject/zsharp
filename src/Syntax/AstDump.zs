@@ -143,6 +143,17 @@ let dump (src: Source.Source) (toks: array<Token.Token>) (decls: list<Decl>) : l
     | ForIn(x, a, b) ->
       line d ("ForIn " + x)
       kids [ a; b ]
+    | ForInUntil(x, a, b, stop) ->
+      line d ("ForInUntil " + x + " " + stop)
+      kids [ a; b ]
+    | TryLeave(_, a, b, _, c) ->
+      line d "TryLeave"
+      kids [ a; b; c ]
+    | Break -> line d "Break"
+    | Continue -> line d "Continue"
+    | Return a ->
+      line d "Return"
+      kids [ a ]
     | Seq(a, b) ->
       line d "Seq"
       kids [ a; b ]

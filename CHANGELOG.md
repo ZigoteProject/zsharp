@@ -11,6 +11,12 @@ The specification's three defects (ROADMAP's track G, items 1 to 3). What a 0.7 
   truncated (`let a : u8 = 300` was `44`); a pattern's literal alike. A literal in a radix may
   still fill its type's bits (`let m : i8 = 0xFF`). Write the value meant, or a wider type.
   Not checked: a literal whose type is a generic function's variable (`tests/err_literal_range.zs`).
+- `break`, `continue` and `return` ([proposal 0029](docs/proposals/0029-leaving-a-loop.md)):
+  a loop and a function left early, with `use` values disposed on the way; `?` as a statement
+  of a loop's body returns its failure from the function (it was an error there). The three
+  are reserved words now (`return` outside a computation expression): a value, function or
+  parameter named `break`, `continue` or `return` is renamed (`tests/loop_leave.zs`,
+  `loop_leave_use.zs`, `err_loop_leave.zs`).
 - `1e-3` is a float literal, as DESIGN.md said and F# reads it (`tests/float_exponent.zs`).
 - `compare` is a total order on floats: a NaN is after every number and equal to a NaN, where
   `compare nan x` was `0` for every `x`, so a list with a NaN sorts and a `Map` takes it as a

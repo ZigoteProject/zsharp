@@ -1,0 +1,1 @@
+tests/err_loop_leave_ce.zs:5: error: 'break' isn't supported in a computation expression

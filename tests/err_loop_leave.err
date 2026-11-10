@@ -1,0 +1,8 @@
+tests/err_loop_leave.zs:3: error: 'break' is outside a loop (a lambda is a function of its own)
+tests/err_loop_leave.zs:7: error: 'break' is outside a loop (a lambda is a function of its own)
+tests/err_loop_leave.zs:10:16: error: annotated expression: expected int, got string
+tests/err_loop_leave.zs:16: error: this is never reached: the statement before it leaves
+tests/err_loop_leave.zs:19: error: 'return' can't be used inside this expression: write it as a statement, as a branch of an if or a match, or as a let's value
+tests/err_loop_leave.zs:21: error: a range loop left early needs a step that's a literal, not 0: write it as a while loop
+tests/err_loop_leave.zs:25: error: 'return' is for a function's body
+7 errors

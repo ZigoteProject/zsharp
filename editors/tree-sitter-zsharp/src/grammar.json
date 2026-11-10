@@ -2948,10 +2948,6 @@
         },
         {
           "type": "SYMBOL",
-          "name": "return_expression"
-        },
-        {
-          "type": "SYMBOL",
           "name": "assignment"
         },
         {
@@ -3075,11 +3071,27 @@
             ]
           },
           {
-            "type": "SYMBOL",
-            "name": "_body"
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "SYMBOL",
+                "name": "_body"
+              },
+              {
+                "type": "BLANK"
+              }
+            ]
           }
         ]
       }
+    },
+    "break_expression": {
+      "type": "STRING",
+      "value": "break"
+    },
+    "continue_expression": {
+      "type": "STRING",
+      "value": "continue"
     },
     "let_binding": {
       "type": "SEQ",
@@ -3348,6 +3360,18 @@
         {
           "type": "SYMBOL",
           "name": "yield_expression"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "return_expression"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "break_expression"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "continue_expression"
         },
         {
           "type": "SYMBOL",

@@ -1,0 +1,21 @@
+  work 1
+  dispose round 1
+  dispose round 2
+  work 3
+  dispose round 3
+  dispose round 4
+  dispose outer
+0
+  work 1
+  dispose round 1
+  dispose round 9
+  dispose outer
+-1
+  dispose a
+zero
+  dispose b
+  dispose a
+one
+  dispose b
+  dispose a
+7!

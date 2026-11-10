@@ -36,8 +36,8 @@ proposal describes a change to it, and [ROADMAP.md](../../ROADMAP.md) says when 
 | 0025 | [Reading effect rows](0025-reading-effects.md) | Implemented (before phase 11, decision 80) | a design review with 0017, before phase 11 |
 | 0026 | [Performance you can see](0026-performance-you-can-see.md) | Implemented in part: the editor's allocation hints (phase 12), arenas on a chip and a leak failing its test under `ZS_LEAKCHECK=1` (0.7); atomic counts and the rest are a draft | a design review, with the flagship's first profiles |
 | 0027 | [More microcontrollers](0027-more-microcontrollers.md) | Implemented in part (phase 12): the Nucleo-F401RE, RTT and probe-rs, not yet run on the board itself; the other boards are a draft | a design review, before phase 12's M4 (one real board) |
-| 0028 | [Written constraints](0028-written-constraints.md) | Draft | track G's item 6, before packages publish signatures |
-| 0029 | [Leaving a loop](0029-leaving-a-loop.md) | Draft | track G's item 12 |
+| 0028 | [Written constraints](0028-written-constraints.md) | Approved in principle; not built | track G's item 6, before packages publish signatures |
+| 0029 | [Leaving a loop](0029-leaving-a-loop.md) | Implemented | track G's item 12 |
 
 **Status:**
 - **Draft:** written, with its open questions listed.

@@ -47,6 +47,8 @@ type private P =
     /// inside a task { }'s body, and inside a seq { }
     inTask: ref<int>
     inSeq: ref<int>
+    /// inside any computation expression's braces: its `return` is the builder's (0029)
+    inCe: ref<int>
     /// a `let` where an expression is, which `in` must follow (`let y = x + 1 in y * 2`)
     letIn: ref<bool> }
 
@@ -91,6 +93,7 @@ let private make (src: Source.Source) (toks: Buffer<Token>) (start: int) (eof: i
     quiet = ref (-1)
     inTask = ref 0
     inSeq = ref 0
+    inCe = ref 0
     letIn = ref false }
 
 // ------------------------------------------------------------ reading tokens
@@ -2205,6 +2208,17 @@ and private primary (p: P) : Ast.Expr =
       e
     | Id when (textIs p ti "sizeof" || textIs p ti "alignof" || textIs p ti "offsetof") && peek p = Lt && adjacent p ->
       layoutFact p at ti
+    | Id when p.inCe.Value = 0 && textIs p ti "return" ->
+      // return e: the function's result, e to the end of its line or branch (none: unit)
+      let ends =
+        match peek p with
+        | Newline | Dedent | Eof | Else | Then | Bar | With | RParen | RBrack | RBrace | BarRBrack | Comma | Semi -> true
+        | _ -> false
+      ex (Ast.Return(if ends then plain Ast.UnitLit else expr p)) ti
+    | Id when textIs p ti "break" || textIs p ti "continue" ->
+      if p.inCe.Value > 0 then
+        failAt p ti $"'{textOf p ti}' isn't supported in a computation expression"
+      ex (if textIs p ti "break" then Ast.Break else Ast.Continue) ti
     | Id -> ex (Ast.Var(idName p ti)) ti
     | True -> plain (Ast.BoolLit true)
     | False -> plain (Ast.BoolLit false)
@@ -2456,6 +2470,7 @@ and private computation (p: P) (ti: int) : Ast.Expr =
     (if first >= 97 && first <= 122 then String.ofByte (u8 (first - 32)) else String.sub w 0 1) + String.sub w 1 (String.length w - 1) + ".Builder."
   let unitParam : Ast.Param = ({ param = plainPat Ast.PUnit; ann = None } : Ast.Param)
   advance p
+  p.inCe.Value <- p.inCe.Value + 1
   let e =
     if w = "seq" then
       // a sequence: its body in direct style, run when the sequence is consumed; a yield
@@ -2477,6 +2492,7 @@ and private computation (p: P) (ti: int) : Ast.Expr =
     else
       let body = ceBlock p builder
       ex (Ast.AtLine(plain (Ast.Call(builder + "delay", [ plain (Ast.Lambda([ unitParam ], body)) ])))) ti
+  p.inCe.Value <- p.inCe.Value - 1
   expect p RBrace "'}'"
   e
 

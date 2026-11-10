@@ -61,7 +61,7 @@ let private defineGroupWith (cx: Cx) (joint: bool) (items: list<Item>) : list<Gl
   let prepare (it: Item) : Ready =
     let run () =
       cx.tyvars.Value <- Map.empty
-      let (ps, body) = lowerParams cx it.ips it.ibody
+      let (ps, body) = lowerParams cx it.ips (Leave.fn it.iret it.ibody)
       let pars = List.map (fun (x, ann) -> (x, uniq cx x, annot cx ann)) ps
       recordParams cx it.ips pars
       let (rty, declared) = annotRet cx it.iret

@@ -249,12 +249,15 @@ module.exports = grammar({
     _body: $ => choice($._expression, $.assignment, $.block),
     block: $ => seq($._indent, sep1($._statement, $._newline), optional($._newline), $._dedent),
 
-    _statement: $ => choice($.let_binding, $.let_function, $.let_mutable, $.use_binding, $.let_bang, $.do_bang, $.return_expression, $.assignment, $._expression),
+    _statement: $ => choice($.let_binding, $.let_function, $.let_mutable, $.use_binding, $.let_bang, $.do_bang, $.assignment, $._expression),
     use_binding: $ => seq('use', field('name', $.identifier), '=', field('value', $._body)),
     // in a computation expression: let!, do!, return and return!
     let_bang: $ => seq('let', token.immediate('!'), field('pattern', $._pattern), '=', field('value', $._body)),
     do_bang: $ => seq('do', token.immediate('!'), field('value', $._body)),
-    return_expression: $ => prec.right(seq('return', optional(token.immediate('!')), $._body)),
+    // (and a function's own return, with break and continue for its loops: 0029)
+    return_expression: $ => prec.right(seq('return', optional(token.immediate('!')), optional($._body))),
+    break_expression: $ => 'break',
+    continue_expression: $ => 'continue',
     let_binding: $ => seq('let', field('pattern', $._pattern), optional($.type_annotation), '=', field('value', $._body)),
     let_function: $ => seq('let', optional('rec'), field('name', choice($.identifier, $._handle_name, $.operator_name)), repeat1($._parameter), optional($.type_annotation), '=', field('body', $._body),
       repeat(seq($._newline, $.and_definition))),
@@ -272,6 +275,9 @@ module.exports = grammar({
       $.function_expression,
       $.lambda,
       $.yield_expression,
+      $.return_expression,
+      $.break_expression,
+      $.continue_expression,
       $.unsafe_expression,
       $.for_expression,
       $.while_expression,

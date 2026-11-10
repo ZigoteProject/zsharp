@@ -90,6 +90,13 @@ and ExprShape =
   | For of string * Expr * option<Expr> * Expr * Expr
   /// for x in xs do body
   | ForIn of string * Expr * Expr
+  /// for x in xs do body, until the named flag is set: what a `for` with a break lowers to (0029)
+  | ForInUntil of string * Expr * Expr * string
+  /// break and continue (a loop's) and return e (a function's): lowered before the checker
+  /// sees them (Infer.Leave, 0029)
+  | Break
+  | Continue
+  | Return of Expr
   | Seq of Expr * Expr
   | Tuple of list<Expr>
   | RecordLit of list<FieldValue>
@@ -104,6 +111,9 @@ and ExprShape =
   | Question of Expr
   /// let p = e? and the rest, which runs only when e is Ok
   | TryBind of Pat * Expr * Expr
+  /// let p = e? and the rest, in a loop (0029): a failure, bound to the name as the function's
+  /// result, runs the last expression, which returns it
+  | TryLeave of Pat * Expr * Expr * string * Expr
   /// 9.58<s>
   | Measured of Expr * SType
   /// (e: T)
@@ -253,6 +263,8 @@ let mapExpr (f: Expr -> Expr / 'e) (x: Expr) : Expr / 'e =
     | BoolLit _
     | StrLit _
     | UnitLit
+    | Break
+    | Continue
     | LayoutOf _
     | Var _ -> x.e
     | Call(n, args) -> Call(n, List.map f args)
@@ -270,6 +282,8 @@ let mapExpr (f: Expr -> Expr / 'e) (x: Expr) : Expr / 'e =
     | While(c, b) -> While(f c, f b)
     | For(n, a, st, b, body) -> For(n, f a, Option.map f st, f b, f body)
     | ForIn(n, xs, b) -> ForIn(n, f xs, f b)
+    | ForInUntil(n, xs, b, s) -> ForInUntil(n, f xs, f b, s)
+    | Return a -> Return(f a)
     | Seq(a, b) -> Seq(f a, f b)
     | Tuple xs -> Tuple(List.map f xs)
     | RecordLit fs -> RecordLit(fields fs)
@@ -281,6 +295,7 @@ let mapExpr (f: Expr -> Expr / 'e) (x: Expr) : Expr / 'e =
     | Match(sc, cases) -> Match(f sc, List.map (fun (c: Clause) -> { c with guard = Option.map f c.guard; body = f c.body }) cases)
     | Question a -> Question(f a)
     | TryBind(p, a, b) -> TryBind(p, f a, f b)
+    | TryLeave(p, a, b, n, c) -> TryLeave(p, f a, f b, n, f c)
     | DeriveCtx(c, a) -> DeriveCtx(c, f a)
     | Measured(a, m) -> Measured(f a, m)
     | Typed(a, t) -> Typed(f a, t)
