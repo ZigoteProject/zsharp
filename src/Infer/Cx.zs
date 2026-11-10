@@ -1135,7 +1135,8 @@ let expect (cx: Cx) (what: string) (expected: Ty) (actual: Ty) : unit / Fails =
             match (prune cx.v t, prune cx.v other) with
             | (TCon(u, []), TVar i) when Set.contains u ints ->
               match (kindOf cx.v i).allowed with
-              | Some ts -> not (Set.contains u ts) && Set.contains "i64" ts
+              // (not a negative literal's variable, which no unsigned type is ever of)
+              | Some ts -> not (Set.contains u ts) && Set.contains (if Set.contains u unsigned then "u64" else "i64") ts
               | None -> false
             | _ -> false
           if outside expected actual then
