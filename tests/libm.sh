@@ -3,6 +3,9 @@
 # on a chip and on WebAssembly) against the host's libm: the special values, and the largest
 # difference over random arguments in units in the last place. fdlibm's pow and atan2 are faithful
 # (within 1 ulp of the true value), so they may be 1 ulp from a correctly rounded host's.
+# The arguments: the C compiler, clang unless given (test.sh's: zig cc for MinGW on Windows, where
+# clang alone targets MSVC, which has no libm).
+cc=("$@"); [ $# = 0 ] && cc=(clang)
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 { echo '#include <stdint.h>'; sed -n '/ZS_LIBM_BEGIN/,/ZS_LIBM_END/p' runtime/rt-embedded.c; } > "$tmp/libm.c"
 cat > "$tmp/main.c" <<'C'
@@ -19,22 +22,26 @@ static double any(void) { uint64_t u = next(); double d; memcpy(&d, &u, 8); retu
 static double within(double lo, double hi) { return lo + (hi - lo) * (double)(next() >> 11) / 9007199254740992.0; }
 
 // the error of `got` in units in the last place of `want`; 0 when both are the same NaN,
-// infinity or zero, and huge when they differ in kind or in a zero's sign
+// infinity or zero, and huge when they differ in kind or in sign. A zero's unit is the smallest
+// subnormal: a result just past half of it is rounded to it, where a libm that flushes such a
+// result to zero (Windows' UCRT, for atan2) is 1 ulp from it
 static double ulps(double got, double want) {
     if (isnan(want)) return isnan(got) ? 0 : 1e9;
-    if (isinf(want) || want == 0) return memcmp(&got, &want, 8) == 0 ? 0 : 1e9;
+    if (isinf(want)) return memcmp(&got, &want, 8) == 0 ? 0 : 1e9;
+    if (want == 0) return signbit(got) != signbit(want) || isinf(got) || isnan(got) ? 1e9 : fabs(got) / 0x1p-1074;
     double u = nextafter(fabs(want), INFINITY) - fabs(want);
     return fabs(got - want) / u;
 }
 
-static double worst_pow = 0, worst_atan2 = 0, worst_round = 0;
+// each function's worst arguments, shown when it's past its bound
+static double worst_pow = 0, worst_atan2 = 0, worst_round = 0, pow_args[2], atan2_args[2];
 static void pow_at(double x, double y) {
     double e = ulps(zs_pow(x, y), pow(x, y));
-    if (e > worst_pow) worst_pow = e;
+    if (e > worst_pow) { worst_pow = e; pow_args[0] = x; pow_args[1] = y; }
 }
 static void atan2_at(double y, double x) {
     double e = ulps(zs_atan2(y, x), atan2(y, x));
-    if (e > worst_atan2) worst_atan2 = e;
+    if (e > worst_atan2) { worst_atan2 = e; atan2_args[0] = y; atan2_args[1] = x; }
 }
 
 int main(void) {
@@ -58,8 +65,12 @@ int main(void) {
     printf("atan2  %.0f ulp at most\n", worst_atan2);
     printf("round  %.0f ulp at most\n", worst_round);
     printf("powf   %s\n", zs_powf(2.0f, 10.0f) == 1024.0f && zs_powf(9.0f, 0.5f) == 3.0f ? "ok" : "wrong");
+    if (worst_pow > 1)
+        printf("pow (%a, %a): ours %a, libm's %a\n", pow_args[0], pow_args[1], zs_pow(pow_args[0], pow_args[1]), pow(pow_args[0], pow_args[1]));
+    if (worst_atan2 > 1)
+        printf("atan2 (%a, %a): ours %a, libm's %a\n", atan2_args[0], atan2_args[1], zs_atan2(atan2_args[0], atan2_args[1]), atan2(atan2_args[0], atan2_args[1]));
     return worst_pow <= 1 && worst_atan2 <= 1 && worst_round == 0 ? 0 : 1;
 }
 C
 renames="-Droundeven=zs_roundeven -Droundevenf=zs_roundevenf -Datan=zs_atan -Datan2=zs_atan2 -Dpow=zs_pow -Datanf=zs_atanf -Datan2f=zs_atan2f -Dpowf=zs_powf"
-clang -O2 -ffp-contract=off $renames -c "$tmp/libm.c" -o "$tmp/libm.o" && clang -O2 "$tmp/main.c" "$tmp/libm.o" -lm -o "$tmp/check" && "$tmp/check"
+"${cc[@]}" -O2 -ffp-contract=off $renames -c "$tmp/libm.c" -o "$tmp/libm.o" && "${cc[@]}" -O2 "$tmp/main.c" "$tmp/libm.o" -lm -o "$tmp/check" && "$tmp/check"

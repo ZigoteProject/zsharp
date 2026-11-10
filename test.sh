@@ -58,6 +58,14 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 fail=0
 # the architecture the programs are built for: the target's, else this machine's
 arch=$(uname -m); [ -n "$target" ] && arch=${target%%-*}
+# Windows on Arm runs Git Bash as an x86-64 program, whose uname says x86_64: the processor is
+# the system's own (emulation leaves it as it is), and zs.exe is built for it
+[ $windows = 1 ] && [ -z "$target" ] && case ${PROCESSOR_IDENTIFIER:-} in ARM*) arch=aarch64 ;; esac
+# the C checks' compiler (C programs linking a Z# library, tests/libm.sh): clang, or zig cc for
+# another target, and for MinGW on Windows (clang alone targets MSVC there, whose C library the
+# runtime isn't built for)
+cc=(clang); [ -n "$target" ] && cc=(zig cc -target "$target")
+[ $windows = 1 ] && [ -z "$target" ] && cc=(zig cc -target "$arch-windows-gnu")
 for t in $(find tests -name '*.zs' | sort); do
   base=${t%.zs}
   [ -f "$base.out" ] || [ -f "$base.err" ] || continue
@@ -90,7 +98,10 @@ for t in $(find tests -name '*.zs' | sort); do
       leaks=1; grep -q "^panic:" "$base.out" && leaks=0
       sanenv=(env "ASAN_OPTIONS=exitcode=99:detect_leaks=$leaks:abort_on_error=0" "UBSAN_OPTIONS=exitcode=99:print_stacktrace=1")
     fi
-    actual=$("${sanenv[@]}" "${run[@]}" < /dev/null 2>&1); code=$?
+    # bounded, so a program that hangs fails itself and not the rest of the suite
+    actual=$("${sanenv[@]}" timeout 600 "${run[@]}" < /dev/null 2>&1); code=$?
+    [ $code = 124 ] && actual="$actual
+(still running after 600 s: stopped)"
     expected=$(cat "$base.out"); [ $windows = 1 ] && [ -f "$base.windows.out" ] && expected=$(cat "$base.windows.out")
     [ $code = 99 ] && actual="$actual
 (${san[0]:+the sanitizers}${san[0]:-valgrind} reported memory errors or leaks)"
@@ -157,7 +168,8 @@ else echo "FAIL examples/simple.zs for arm-linux-musleabihf"; cat "$tmp/armlinux
 if bin/zs doctor >"$tmp/doctor.log" 2>&1 && grep -q '^ok   clang' "$tmp/doctor.log"; then echo "ok   zs doctor"
 else echo "FAIL zs doctor"; cat "$tmp/doctor.log"; fail=1; fi
 mkdir -p "$tmp/oldclang" && printf '#!/bin/sh\necho "Apple clang version 21.0.0 (clang-2100.3.34.2)"\n' >"$tmp/oldclang/clang" && chmod +x "$tmp/oldclang/clang"
-if ! PATH="$tmp/oldclang:$PATH" bin/zs doctor >"$tmp/doctor-old.log" 2>&1 && grep -q '^--   clang .*: too old, LLVM 23 or later is needed' "$tmp/doctor-old.log"; then echo "ok   zs doctor (an old clang)"
+if [ $windows = 1 ]; then echo "skip zs doctor (an old clang): Windows starts no shell script as a program"
+elif ! PATH="$tmp/oldclang:$PATH" bin/zs doctor >"$tmp/doctor-old.log" 2>&1 && grep -q '^--   clang .*: too old, LLVM 23 or later is needed' "$tmp/doctor-old.log"; then echo "ok   zs doctor (an old clang)"
 else echo "FAIL zs doctor (an old clang)"; cat "$tmp/doctor-old.log"; fail=1; fi
 
 # src/install.sh: its paths are the caller's, a prefix's directory or the checkout is refused with
@@ -180,14 +192,22 @@ else echo "FAIL tests/doctest.sh"; cat "$tmp/doctest.diff"; fail=1; fi
 # zs provide (0001): the providers' modules, and a program built with them beside it
 if diff <(tests/providers/provide.sh bin/zs 2>&1) tests/providers/provide.expected >"$tmp/provide.diff"; then echo "ok   tests/providers/provide.sh (zs provide json, csv, sql and svd, and one on PATH)"
 else echo "FAIL tests/providers/provide.sh"; cat "$tmp/provide.diff"; fail=1; fi
-# the Nucleo firmware on the chip's SVD compiles to the same register accesses as the Mmio one
-if out=$(tests/providers/svd_nucleo.sh bin/zs 2>&1); then echo "ok   tests/providers/svd_nucleo.sh ($out)"
+# the Nucleo firmware on the chip's SVD compiles to the same register accesses as the Mmio one,
+# counted in the IR as LLVM's opt optimizes it (LLVM's Windows installer has no opt; its release
+# archive, which CI unpacks, has)
+if ! command -v opt >/dev/null; then echo "skip tests/providers/svd_nucleo.sh (no opt, LLVM's optimizer)"
+elif out=$(tests/providers/svd_nucleo.sh bin/zs 2>&1); then echo "ok   tests/providers/svd_nucleo.sh ($out)"
 else echo "FAIL tests/providers/svd_nucleo.sh"; echo "$out"; fail=1; fi
 
-# the checked library and modules, cached between builds: the same program from the cache
-if diff <(tests/cache.sh 2>&1) tests/cache.expected >"$tmp/cache.diff"; then echo "ok   tests/cache.sh (checked library, modules and compiled modules cached)"
+# the checked library and modules, cached between builds: the same program from the cache.
+# Windows' builds are one module, through mingw-w64's path (Options.nativeTarget) and not the
+# host's module per file, so they report no module cache and no clang jobs: the rest is the same
+cacheexp=tests/cache.expected
+[ $windows = 1 ] && { sed 's/ module cache .*//' tests/cache.expected >"$tmp/cache.expected"; cacheexp=$tmp/cache.expected; }
+if diff <(tests/cache.sh 2>&1) "$cacheexp" >"$tmp/cache.diff"; then echo "ok   tests/cache.sh (checked library, modules and compiled modules cached)"
 else echo "FAIL tests/cache.sh"; cat "$tmp/cache.diff"; fail=1; fi
-if diff <(tests/pgo.sh 2>&1) tests/pgo.expected >"$tmp/pgo.diff"; then echo "ok   tests/pgo.sh (profile-guided optimization finds its profile)"
+if [ $windows = 1 ]; then echo "skip tests/pgo.sh (no profile runtime for mingw-w64: zig cc links Windows' programs, and zs build refuses --profile-generate there)"
+elif diff <(tests/pgo.sh 2>&1) tests/pgo.expected >"$tmp/pgo.diff"; then echo "ok   tests/pgo.sh (profile-guided optimization finds its profile)"
 else echo "FAIL tests/pgo.sh"; cat "$tmp/pgo.diff"; fail=1; fi
 
 # programs as big and as deep as generated code makes them build in time (nothing quadratic, no
@@ -377,11 +397,16 @@ if [ -f /usr/include/raylib.h ]; then
   else echo "FAIL examples/raylib"; head -5 "$tmp/raylib.log"; fail=1; fi
 else echo "skip examples/raylib (no raylib.h)"; fi
 
-# debug info: gdb on a zs build -g program (breakpoints, arguments, locals, stepping, backtrace)
-if command -v gdb >/dev/null && [ $windows = 0 ]; then
+# debug info: gdb on a zs build -g program (breakpoints, arguments, locals, stepping, backtrace);
+# not on Windows on Arm, whose gdb is x86-64's and debugs no arm64 program. Where one fails on
+# Windows, gdb's own words on the program follow its diff (GDB_RAW=1: unfiltered)
+gdbskip=""; command -v gdb >/dev/null || gdbskip="no gdb"
+[ $windows = 1 ] && [ "$arch" = aarch64 ] && gdbskip="its gdb is x86-64's and debugs no arm64 program"
+gdb_raw() { [ $windows = 1 ] && GDB_RAW=1 "$1" 2>&1 | head -80; }
+if [ -z "$gdbskip" ]; then
   if diff <(tests/debug/gdb.sh) tests/debug/gdb.expected >"$tmp/gdb.diff"; then echo "ok   tests/debug/gdb.sh"
-  else echo "FAIL tests/debug/gdb.sh"; cat "$tmp/gdb.diff"; fail=1; fi
-else echo "skip tests/debug/gdb.sh (no gdb)"; fi
+  else echo "FAIL tests/debug/gdb.sh"; cat "$tmp/gdb.diff"; gdb_raw tests/debug/gdb.sh; fail=1; fi
+else echo "skip tests/debug/gdb.sh ($gdbskip)"; fi
 # -g on every kind of value (closures, C pointers, a Buffer, unions that hold themselves through
 # a list, a ref or an array): it builds, runs, and its DWARF verifies, at -O0 and with --release.
 # GNU ld merges .debug_str's strings by their tails, so a .debug_str_offsets entry may point
@@ -414,13 +439,13 @@ if command -v qemu-system-arm >/dev/null && command -v node >/dev/null; then
 fi
 # heap values under gdb (track D, item 1): a list's cells, an array's elements, a tree's nodes
 # with their case, an option over a string, a ref's value
-if command -v gdb >/dev/null; then
+if [ -z "$gdbskip" ]; then
   if diff <(tests/debug/gdb_heap.sh) tests/debug/gdb_heap.expected >"$tmp/gdb_heap.diff"; then echo "ok   tests/debug/gdb_heap.sh"
-  else echo "FAIL tests/debug/gdb_heap.sh"; cat "$tmp/gdb_heap.diff"; fail=1; fi
+  else echo "FAIL tests/debug/gdb_heap.sh"; cat "$tmp/gdb_heap.diff"; gdb_raw tests/debug/gdb_heap.sh; fail=1; fi
   # -g on an optimized build (0011, debugging 3): the lines stay
   if diff <(tests/debug/opt.sh) tests/debug/opt.expected >"$tmp/gdb_opt.diff"; then echo "ok   tests/debug/opt.sh (-g --release)"
-  else echo "FAIL tests/debug/opt.sh"; cat "$tmp/gdb_opt.diff"; fail=1; fi
-fi
+  else echo "FAIL tests/debug/opt.sh"; cat "$tmp/gdb_opt.diff"; gdb_raw tests/debug/opt.sh; fail=1; fi
+else echo "skip tests/debug/gdb_heap.sh and tests/debug/opt.sh ($gdbskip)"; fi
 # the same under lldb, the debugger on macOS
 if command -v lldb >/dev/null && [ $windows = 0 ]; then
   if diff <(tests/debug/lldb.sh) tests/debug/lldb.expected >"$tmp/lldb.diff"; then echo "ok   tests/debug/lldb.sh"
@@ -606,7 +631,7 @@ elif out="" && bin/zs build tests/mcu/bytes.zs --target wasm32 -o "$tmp/bytes.wa
 else echo "FAIL tests/mcu/bytes.zs on wasm32"; cat "$tmp/bytes.log"; [ -n "$out" ] && diff <(echo "$out") tests/mcu/bytes.expected; fail=1; fi
 # Math where libm is compiler-rt's and the runtime's (pow, atan2, round: fdlibm's, checked against
 # the host's libm by tests/libm.sh), with a host's results: both chips under qemu, and wasm32
-if out=$(tests/libm.sh 2>&1); then echo "ok   tests/libm.sh (the runtime's pow, atan2 and round against the host's libm)"
+if out=$(tests/libm.sh "${cc[@]}" 2>&1); then echo "ok   tests/libm.sh (the runtime's pow, atan2 and round against the host's libm)"
 else echo "FAIL tests/libm.sh"; echo "$out"; fail=1; fi
 if command -v qemu-system-arm >/dev/null; then
   for chip in cortex-m4 cortex-m0plus; do
@@ -790,8 +815,11 @@ else echo "FAIL tests/lsp/uris.sh"; cat "$tmp/lspuri.diff"; fail=1; fi
 # code actions (tests/lsp/edits.sh)
 if diff <(tests/lsp/edits.sh bin/zs 2>&1) tests/lsp/edits.expected >"$tmp/lspx.diff"; then echo "ok   tests/lsp/edits.sh"
 else echo "FAIL tests/lsp/edits.sh"; cat "$tmp/lspx.diff"; fail=1; fi
-# the build server: the binary an in-process build makes, errors and exit codes back
-if diff <(tests/server.sh 2>&1) tests/server.expected >"$tmp/server.diff"; then echo "ok   tests/server.sh (the build server)"
+# the build server: the binary an in-process build makes, errors and exit codes back; not on
+# Windows, which has no build server yet, as its socket's directory can't be made this user's
+# alone there (src/Server.zs)
+if [ $windows = 1 ]; then echo "skip tests/server.sh (no build server on Windows: its socket's directory can't be made this user's alone yet)"
+elif diff <(tests/server.sh 2>&1) tests/server.expected >"$tmp/server.diff"; then echo "ok   tests/server.sh (the build server)"
 else echo "FAIL tests/server.sh"; cat "$tmp/server.diff"; fail=1; fi
 
 # editors may start zs without arguments: it detects LSP or MCP from the first byte
@@ -831,27 +859,26 @@ else echo "skip editors/tree-sitter-zsharp (no tree-sitter CLI; rebuild the dev 
 fi
 
 # a library's constants are static (0014): a tree of union cases, a table and a record, read by an
-# export that C calls, with no startup code (a library has none)
+# export that C calls, with no startup code (a library has none); a C program's output is text,
+# \r\n on Windows
 mkdir -p "$tmp/libstatic"
 printf '#include <stdio.h>\n#include "libstatic.h"\nint main(void) { printf("%%lld\\n", (long long)total(41)); return 0; }\n' > "$tmp/libstatic/main.c"
 if bin/zs build tests/libstatic.zs --lib -o "$tmp/libstatic/libstatic.a" 2>"$tmp/libstatic.log" \
-   && clang -I"$tmp/libstatic" "$tmp/libstatic/main.c" "$tmp/libstatic/libstatic.a" -lm -o "$tmp/libstatic/cmain" 2>>"$tmp/libstatic.log" \
-   && [ "$("$tmp/libstatic/cmain")" = 122 ]; then echo "ok   tests/libstatic.zs (a library's static constants, from C)"
+   && "${cc[@]}" -I"$tmp/libstatic" "$tmp/libstatic/main.c" "$tmp/libstatic/libstatic.a" -lm "${syslibs[@]}" -o "$tmp/libstatic/cmain" 2>>"$tmp/libstatic.log" \
+   && [ "$("$tmp/libstatic/cmain" | tr -d '\r')" = 122 ]; then echo "ok   tests/libstatic.zs (a library's static constants, from C)"
 else echo "FAIL tests/libstatic.zs"; cat "$tmp/libstatic.log"; fail=1; fi
 # the same under -g and --coverage, which keep the code as written but fold the initializers; and
 # a startup assert among a library's values, wherever it is, refused
 for flag in -g --coverage; do
   if bin/zs build tests/libstatic.zs --lib $flag -o "$tmp/libstatic/libstatic.a" 2>"$tmp/libstatic.log" \
-     && clang -I"$tmp/libstatic" "$tmp/libstatic/main.c" "$tmp/libstatic/libstatic.a" -lm -o "$tmp/libstatic/cmain" 2>>"$tmp/libstatic.log" \
-     && [ "$(cd "$tmp/libstatic" && ./cmain)" = 122 ]; then echo "ok   tests/libstatic.zs --lib $flag"
+     && "${cc[@]}" -I"$tmp/libstatic" "$tmp/libstatic/main.c" "$tmp/libstatic/libstatic.a" -lm "${syslibs[@]}" -o "$tmp/libstatic/cmain" 2>>"$tmp/libstatic.log" \
+     && [ "$(cd "$tmp/libstatic" && ./cmain | tr -d '\r')" = 122 ]; then echo "ok   tests/libstatic.zs --lib $flag"
   else echo "FAIL tests/libstatic.zs --lib $flag"; cat "$tmp/libstatic.log"; fail=1; fi
 done
 printf 'let table = [| 1; 2; 3 |]\nlet check (n: int) = n * 2 = 5\nassert (check (Array.length table))\n\n[<Export>]\nlet get (i: int) : int = table.[i]\n' > "$tmp/libassert.zs"
 if ! bin/zs build "$tmp/libassert.zs" --lib -o "$tmp/libassert.a" 2>"$tmp/libassert.log" && grep -q "top-level assert" "$tmp/libassert.log"; then echo "ok   a library's startup assert after a table is refused"
 else echo "FAIL a library's startup assert after a table"; cat "$tmp/libassert.log"; fail=1; fi
 # C interop: a directory with main.c links the static library built from its lib.zs
-cc=(clang); [ -n "$target" ] && cc=(zig cc -target "$target")
-[ $windows = 1 ] && [ -z "$target" ] && cc=(zig cc -target "$(uname -m | sed 's/arm64/aarch64/')-windows-gnu")
 for c in $(find tests -name main.c | sort); do
   d=$(dirname "$c")
   if bin/zs build "$d/lib.zs" "${tgt[@]}" --lib -o "$tmp/lib.a" 2>"$tmp/build.log" && "${cc[@]}" -I"$tmp" "$c" "$tmp/lib.a" -lm "${syslibs[@]}" -o "$tmp/cexe" 2>>"$tmp/build.log"; then
@@ -868,11 +895,11 @@ done
 # nothing under Helgrind, and a ref's handle released on another thread panics with its type
 if [ -z "$target" ]; then
   ct="$tmp/ct"; mkdir -p "$ct"
-  if bin/zs build tests/cthreads/lib.zs --lib -o "$ct/lib.a" 2>"$ct/log" && clang -I"$ct" tests/cthreads/main.c "$ct/lib.a" -lm -o "$ct/exe" 2>>"$ct/log"; then
+  if bin/zs build tests/cthreads/lib.zs --lib -o "$ct/lib.a" 2>"$ct/log" && "${cc[@]}" -I"$ct" tests/cthreads/main.c "$ct/lib.a" -lm "${syslibs[@]}" -o "$ct/exe" 2>>"$ct/log"; then
     if ! command -v valgrind >/dev/null; then echo "skip tests/cthreads under Helgrind (no valgrind)"
     elif valgrind --tool=helgrind -q --error-exitcode=99 "$ct/exe" >"$ct/out" 2>"$ct/hg"; then echo "ok   tests/cthreads under Helgrind"
     else echo "FAIL tests/cthreads under Helgrind"; head -30 "$ct/hg"; fail=1; fi
-    actual=$("$ct/exe" other-thread 2>&1); code=$?
+    actual=$("$ct/exe" other-thread 2>&1); code=$?; actual=${actual//$'\r'/}
     expected="16 threads using a list's handle: every sum right
 the counter on its own thread: 5
 panic: zs_release: a handle of ref<int> used from another thread (make its type Share, or use it on the thread that made it)"

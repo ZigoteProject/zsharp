@@ -195,7 +195,6 @@ let main () =
   match Process.run "echo" [ "hi"; "there" ] with
   | Ok r -> println $"echo said {String.trim r.output} (code {r.code})"
   | Error e -> eprintln e
-  println $"{Path.combine "src" "main.zs"} {Path.getExtension "main.zs"} {Path.changeExtension "notes.txt" "md"}"
   File.delete "notes.txt" |> ignore
   0
 ```
@@ -206,7 +205,22 @@ Ok [one; two]
 Ok 14 true
 Error cannot open missing.txt: No such file or directory
 echo said hi there (code 0)
+```
+
+**Paths are text,** joined with `/`, and on Windows with `\` (which takes `/` as a separator too): this prints the first output on Linux and macOS, the second on Windows.
+
+```zsharp
+let main () =
+  println $"{Path.combine "src" "main.zs"} {Path.getExtension "main.zs"} {Path.changeExtension "notes.txt" "md"}"
+  0
+```
+
+```text
 src/main.zs .zs notes.md
+```
+
+```text windows
+src\main.zs .zs notes.md
 ```
 
 **More of Std:**

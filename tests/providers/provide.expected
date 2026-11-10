@@ -259,7 +259,7 @@ let MAX_CORNERS = 8
 ///
 /// The unit square's area.
 let UNIT_AREA = 1.0
---- a provider on PATH: zs-provider-upper, a shell script
+--- a provider on PATH: zs-provider-upper, a Z# program
 upper  zs-provider-upper, on PATH
 // provided by upper 1.0 from words.txt
 // input: words.txt

@@ -96,6 +96,8 @@ zs build app.zs --profile-use app.profdata -o app
 
 On the host benchmarks it gains a few percent (6% on `binarytrees`); a profile from a run unlike the real ones can lose as much.
 
+The profile is written by clang's profile runtime, which clang links for this machine on Linux and macOS; zig cc, which links a build for another target and Windows' builds (mingw-w64), has none, so `zs build` refuses the two flags there.
+
 ## Formatting
 
 **What `zs fmt` does:** it applies the one canonical layout, with no options:

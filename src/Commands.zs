@@ -35,7 +35,7 @@ let private membersOf (m: Project.Manifest) : list<Project.Manifest> =
 
 // a workspace root (members, no program of its own): the members' names, for an error
 let private membersText (m: Project.Manifest) : string =
-  String.join ", " (List.map (fun (d: string) -> Path.getRelativePath m.root d) m.members)
+  String.join ", " (List.map (fun (d: string) -> Diag.Render.path (Path.getRelativePath m.root d)) m.members)
 
 // fetches the git dependencies of the project around dir (if any) before a build; false on
 // failure, with the reasons shown
@@ -94,7 +94,7 @@ let build (served: bool) (args: list<string>) : int =
             let out = if o.out <> "" && List.isEmpty m.members then o.out else Path.combine dir p.name
             let code = Make.build { (projectTarget p args o) with main = p.main; out = out } false
             if code = 0 then
-              println $"built {Path.getRelativePath (Environment.currentDirectory ()) out}"
+              println $"built {Diag.Render.path (Path.getRelativePath (Environment.currentDirectory ()) out)}"
             code
         if List.isEmpty m.members then
           one m
@@ -102,7 +102,7 @@ let build (served: bool) (args: list<string>) : int =
           // a workspace: every member with a main; a library member is skipped
           let codes =
             List.map (fun (p: Project.Manifest) ->
-              let rel = Path.getRelativePath (Environment.currentDirectory ()) p.root
+              let rel = Diag.Render.path (Path.getRelativePath (Environment.currentDirectory ()) p.root)
               match File.readAllText p.main with
               | Ok text when String.contains "let main" text ->
                 println $"member {rel}"
@@ -231,7 +231,7 @@ let private dependencyLine (root: string) (spec: string) (rev: option<string>) :
   if not isGit then
     let dir = Path.getFullPath (Path.combine root spec)
     if not (File.exists (Path.combine dir "zs.toml")) then
-      Error $"zs add {spec}: no zs.toml in {dir} (a path dependency is a package; a git one is a URL)"
+      Error $"zs add {spec}: no zs.toml in {Diag.Render.path dir} (a path dependency is a package; a git one is a URL)"
     else
       let name =
         match Project.findProject dir with
@@ -268,7 +268,7 @@ let add (remove: bool) (args: list<string>) : int =
     let edit (name: string) (value: option<string>) : int =
       match File.readAllLines file with
       | Error e ->
-        eprintln $"zs: can't read {file}: {e}"
+        eprintln $"zs: can't read {Diag.Render.path file}: {e}"
         1
       | Ok lines ->
         match editDependencies lines name value with
@@ -278,7 +278,7 @@ let add (remove: bool) (args: list<string>) : int =
         | Ok edited ->
           match File.writeAllText file (String.join "\n" edited + "\n") with
           | Error e ->
-            eprintln $"zs: can't write {file}: {e}"
+            eprintln $"zs: can't write {Diag.Render.path file}: {e}"
             1
           | Ok _ ->
             match value with
@@ -353,7 +353,7 @@ let tree () : int =
               let version = match d.manifest with | Some mf when mf.version <> "" -> " " + mf.version | _ -> ""
               let from =
                 match dep with
-                | Project.PathDep path -> $"path {Path.getRelativePath m.root path}"
+                | Project.PathDep path -> $"path {Diag.Render.path (Path.getRelativePath m.root path)}"
                 | Project.GitDep(url, rev) -> $"git {url}{(if rev = "" then "" else ", rev " + rev)}"
                 | Project.GitVersion(url, v) -> $"git {url}, at least {Project.showVersion v}"
               let commit =
@@ -365,7 +365,7 @@ let tree () : int =
               if not again then
                 shown.Value <- Set.add d.root shown.Value
                 show (indent + (if last then "   " else "│  ")) d) pkg.deps
-        println $"{m.name}{(if m.version = "" then "" else " " + m.version)} ({Path.getRelativePath (Environment.currentDirectory ()) m.root})"
+        println $"{m.name}{(if m.version = "" then "" else " " + m.version)} ({Diag.Render.path (Path.getRelativePath (Environment.currentDirectory ()) m.root)})"
         show "" top
         0) (membersOf m0)
     List.fold max 0 codes
@@ -386,9 +386,8 @@ let private leafOf (line: string) : option<Leaf> =
 // runs a test binary on one test, killed after its time limit: the exit code (None when it timed
 // out) and its output (standard output, then standard error)
 let private runLeafWith (exe: string) (l: Leaf) (extra: list<string>) : option<int> * string =
-  let secs = float l.timeout / 1000.0
-  match Tools.runSplit "timeout" (List.concat [ [ "--kill-after=1"; $"{secs}"; exe; l.path ]; extra ]) with
-  | Ok r -> ((if r.code = 124 || r.code = 137 then None else Some r.code), r.out + r.err)
+  match Tools.runBounded [] l.timeout exe (l.path :: extra) with
+  | Ok r -> ((if r.code = 124 then None else Some r.code), r.out + r.err)
   | Error e -> (Some 1, e)
 
 // a property's side files, beside the binary: the case being run (its seed, size and index) and
@@ -586,7 +585,7 @@ let private runProperty (exe: string) (src: string) (l: Leaf) : option<int> * st
           File.writeAllText recordFile (hexOf bytes) |> ignore
           let (code, output) = replayCase exe l recordFile size
           if replayFails (code, output) then
-            Some(code, output + $"\nthe failing case saved last time, replayed first (delete {Path.getRelativePath (Environment.currentDirectory ()) saved} to run afresh)")
+            Some(code, output + $"\nthe failing case saved last time, replayed first (delete {Diag.Render.path (Path.getRelativePath (Environment.currentDirectory ()) saved)} to run afresh)")
           else
             File.delete saved |> ignore
             None
@@ -624,7 +623,7 @@ let private runProperty (exe: string) (src: string) (l: Leaf) : option<int> * st
               let dir = Path.getDirectoryName saved
               Tools.makeDirectory dir
               File.writeAllText saved $"{size}\n{hexOf bytes}\n" |> ignore
-              let note = $"\nshrunk from {Array.length bytes0} bytes to {Array.length bytes} in {runs} runs; saved as {Path.getRelativePath (Environment.currentDirectory ()) saved}, replayed first next time"
+              let note = $"\nshrunk from {Array.length bytes0} bytes to {Array.length bytes} in {runs} runs; saved as {Diag.Render.path (Path.getRelativePath (Environment.currentDirectory ()) saved)}, replayed first next time"
               (code2, shown + note)
         | _ -> (code, output)
       | _ -> (code, output)
@@ -746,7 +745,7 @@ let private runOnChip (o: Options.Options) (src: string) (m: Options.Mcu) : opti
     None
   else
     let output =
-      match Tools.runSplit "timeout" (List.concat [ [ "--kill-after=1"; "120"; List.head m.runner ]; List.tail m.runner; [ exe ] ]) with
+      match Tools.runBounded [] 120000 (List.head m.runner) (List.append (List.tail m.runner) [ exe ]) with
       | Ok r -> r.out + "\n" + r.err
       | Error e -> e
     File.delete exe |> ignore
@@ -844,7 +843,7 @@ let private coverageReport (src: string) (exe: string) =
       let missed = List.filter (fun l -> not (hit l)) lines
       let total = List.length lines
       let pct = if total = 0 then 100 else (100 * List.length covered) / total
-      let shown = Path.getRelativePath cwd (Path.getFullPath file)
+      let shown = Diag.Render.path (Path.getRelativePath cwd (Path.getFullPath file))
       println $"  {shown}: {List.length covered} of {total} lines ({pct}%){(if List.isEmpty missed then "" else $", not run: {ranges missed}")}"
       Buffer.push $"TN:\nSF:{Path.getFullPath file}" lcov
       for l in lines do
@@ -876,7 +875,7 @@ let private runTests (o: Options.Options) (src: string) (args: list<string>) (st
       // every test, property and benchmark (run once, as a test of its body; zs bench times it)
       let leaves = List.choose leafOf (List.filter (fun l -> l <> "") (String.split "\n" listed))
       if List.isEmpty leaves then
-        eprintln $"{src}: no [<Tests>] values"
+        eprintln $"{Diag.Render.path src}: no [<Tests>] values"
         File.delete exe |> ignore
         Some(0, 0, 0)
       else
@@ -1003,7 +1002,7 @@ let private docTests (o: Options.Options) (files: list<string>) (update: bool) :
         // .zs-doctest.zs first and change it between its writing and its build, which runs it
         | _ -> (Path.combine (Tools.cacheRoot ()) "doctest", None)
       Tools.makeDirectory dir
-      let shown = Path.getRelativePath (Environment.currentDirectory ()) file
+      let shown = Diag.Render.path (Path.getRelativePath (Environment.currentDirectory ()) file)
       let changed = Buffer.empty
       for b in Build.DocTest.blocks text do
         let src = Path.combine dir ".zs-doctest.zs"
@@ -1083,7 +1082,7 @@ let private benchFile (o: Options.Options) (src: string) (filters: list<string>)
     let wanted (l: Leaf) = List.isEmpty filters || List.exists (fun (f: string) -> String.contains f l.path) filters
     let chosen = List.filter wanted leaves
     if List.isEmpty chosen then
-      println (if List.isEmpty leaves then $"{src}: no benchmarks (a bench value among its [<Tests>])" else $"no benchmark's path matches {String.join " " filters}")
+      println (if List.isEmpty leaves then $"{Diag.Render.path src}: no benchmarks (a bench value among its [<Tests>])" else $"no benchmark's path matches {String.join " " filters}")
       File.delete exe |> ignore
       0
     else
@@ -1237,7 +1236,7 @@ let fuzz (args: list<string>) : int =
             let exact = List.tryFind (fun (l: Leaf) -> l.path = wanted) leaves
             match (if Option.isSome exact then exact else List.tryFind (fun (l: Leaf) -> String.contains wanted l.path) leaves) with
             | None ->
-              println (if List.isEmpty leaves then $"{src}: no properties" else $"no property's path matches {wanted} (they are {String.join ", " (List.map (fun (l: Leaf) -> l.path) leaves)})")
+              println (if List.isEmpty leaves then $"{Diag.Render.path src}: no properties" else $"no property's path matches {wanted} (they are {String.join ", " (List.map (fun (l: Leaf) -> l.path) leaves)})")
               File.delete exe |> ignore
               1
             | Some l ->
@@ -1248,7 +1247,7 @@ let fuzz (args: list<string>) : int =
               let flags = List.concat [ [ corpus; $"-max_total_time={seconds}"; $"-artifact_prefix={crashes}/" ]; theirs ]
               // libFuzzer's own flags (-runs, -max_total_time) decide how long it runs then
               let span = if List.isEmpty theirs then $"for {seconds} s" else $"with libFuzzer's {String.join " " theirs}"
-              println $"fuzzing {l.path} {span} (corpus: {Path.getRelativePath (Environment.currentDirectory ()) corpus})"
+              println $"fuzzing {l.path} {span} (corpus: {Diag.Render.path (Path.getRelativePath (Environment.currentDirectory ()) corpus)})"
               let ran = Tools.runSplit exe (List.concat [ [ l.path; "--fuzz" ]; flags ])
               let found =
                 match Directory.list crashes with
@@ -1294,7 +1293,7 @@ let fuzz (args: list<string>) : int =
                       println $"       {line}"
                     // the input as bytes: what a property over Gen.bytes saw
                     println $"       input: [| {String.join "; " (List.map (fun (b: u8) -> string (int b)) (Array.toList bytes))} |]"
-                    println $"       found by libFuzzer ({inputs} inputs in the corpus); shrunk from {Array.length bytes0} bytes to {Array.length bytes} in {runs} runs; saved as {Path.getRelativePath (Environment.currentDirectory ()) saved}, which zs test replays first"
+                    println $"       found by libFuzzer ({inputs} inputs in the corpus); shrunk from {Array.length bytes0} bytes to {Array.length bytes} in {runs} runs; saved as {Diag.Render.path (Path.getRelativePath (Environment.currentDirectory ()) saved)}, which zs test replays first"
                     1
                   | Error e ->
                     println $"{name}: {e}"
@@ -1385,7 +1384,7 @@ let test (args: list<string>) : int =
               // a stress run's time shared among the files
               let each = Option.map (fun ms -> max 1000 (ms / max 1 (List.length files))) stress
               let runFile (f: string) =
-                println (Path.getRelativePath (Environment.currentDirectory ()) f)
+                println (Diag.Render.path (Path.getRelativePath (Environment.currentDirectory ()) f))
                 runTests o f filters each
               let results = List.map runFile files
               let sumOf (pick: int * int * int -> int) = List.sumBy (fun (r: option<int * int * int>) -> match r with | Some t -> pick t | None -> 0) results
@@ -1418,8 +1417,8 @@ let doctor () : int =
   let rt = Options.runtimeDir ()
   let libOk = File.exists (Path.combine lib "prelude.zs")
   let rtOk = File.exists (Path.combine rt "rt.c")
-  report (if libOk then Some lib else None) "library" "Core and Std" "reinstall zs, or set ZS_LIB to its lib/"
-  report (if rtOk then Some rt else None) "runtime" "rt.c and the boards" "reinstall zs, or set ZS_RUNTIME"
+  report (if libOk then Some(Diag.Render.path lib) else None) "library" "Core and Std" "reinstall zs, or set ZS_LIB to its lib/"
+  report (if rtOk then Some(Diag.Render.path rt) else None) "runtime" "rt.c and the boards" "reinstall zs, or set ZS_RUNTIME"
   let clang = version "clang" [ "--version" ]
   let getClang = pick "brew install llvm, with $(brew --prefix llvm)/bin first on PATH" "LLVM's release (apt's clang may be older), first on PATH" "winget install LLVM.LLVM"
   // the IR is LLVM 23's (its coroutine intrinsics): an older clang builds some programs, not tasks

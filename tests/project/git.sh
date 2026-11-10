@@ -4,6 +4,9 @@
 # lock keeps, and a packaged provider built against the lock's checkouts.
 set -u
 zs="$(pwd)/bin/zs"; t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
+# the repositories made here keep their files as written: git for Windows' core.autocrlf=true
+# warns, on each add, that their LF will be CRLF
+git() { command git -c core.autocrlf=false "$@"; }
 g() { git -C "$t/text" -c user.name=zs -c user.email=zs@example.invalid "$@" >/dev/null 2>&1; }
 lockCommit() { grep -o 'commit = "[0-9a-f]*"' "$t/app/zs.lock" | grep -o '[0-9a-f]\{40\}'; }
 head() { git -C "$t/text" rev-parse "$1"; }

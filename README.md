@@ -412,8 +412,9 @@ suite passes in the dev container; the two that failed in CI's dev container on
 typed `_` parameter) are fixed. Linux arm64's under QEMU and Windows x64's under Wine, which 0.6.2
 ran, haven't been run for it.
 
-**Left of 0.7's plan:** its first item, which needs machines, not code: the suites on the five CI
-runners, the archives on clean machines, and the flagship on its board. Also `[<Align>]` on a
+**Left of 0.7's plan:** its first item, which needs machines, not code: the archives on clean
+machines and the flagship on its board (since 2026-11-07, after 0.7.0, the suite passes on all
+five CI runners, Windows' two among them). Also `[<Align>]` on a
 type, `Seq` pipelines as one loop, fixed point's vector forms, a new seed for `tests/fuzz.sh` on each run (it takes 1 unless
 `ZS_FUZZ_SEED` says otherwise), and the stress run over the pool, tasks and `Alt` under
 ThreadSanitizer. The [roadmap](ROADMAP.md) has the details.

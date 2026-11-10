@@ -15,15 +15,24 @@ let private names () =
   let ns = "c" :: List.map (fun (n, _, _) -> n) providers
   String.join ", " (List.take (List.length ns - 1) ns) + " and " + List.last ns
 
-/// The providers on PATH: each program named zs-provider-<name>, by its name.
+/// The providers on PATH: each program named zs-provider-<name> (on Windows, zs-provider-<name>.exe
+/// too), by its name.
 let onPath () : list<string> =
   match Environment.getVariable "PATH" with
   | Some path ->
+    // Windows' PATH is ;-separated (its directories start with a drive, C:\), and a program there
+    // is an .exe, which starting it by name finds
+    let windows = Build.Tools.hostOs () = "windows"
+    let provider (file: string) : option<string> =
+      let exe = windows && String.endsWith ".exe" (String.toLower file)
+      let f = if exe then String.sub file 0 (String.length file - 4) else file
+      if String.startsWith "zs-provider-" f then Some(String.sub f 12 (String.length f - 12)) else None
     let inDir (d: string) : list<string> =
       match Directory.list d with
-      | Ok files -> List.choose (fun (f: string) -> if String.startsWith "zs-provider-" f then Some(String.sub f 12 (String.length f - 12)) else None) files
+      | Ok files -> List.choose provider files
       | Error _ -> []
-    List.distinct (List.collect inDir (List.filter (fun (d: string) -> d <> "") (String.split ":" path)))
+    let dirs = String.split (if windows then ";" else ":") path
+    List.distinct (List.collect inDir (List.filter (fun (d: string) -> d <> "") dirs))
   | None -> []
 
 // how long a provider program may run, in seconds: $ZS_PROVIDER_TIMEOUT (a day at most), else a

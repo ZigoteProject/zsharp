@@ -6,7 +6,7 @@
 # are left out of the output, and each command's variables are in name order: the order lldb lists
 # a frame's locals in, across its nested blocks, isn't the same on every machine.
 zs=${1:-bin/zs}; dir=$(mktemp -d); exe="$dir/prog"
-timeout 30 "$zs" build tests/debug/prog.zs -g -o "$exe" || exit 1
+timeout 300 "$zs" build tests/debug/prog.zs -g -o "$exe" || exit 1
 timeout 60 lldb -b -o "breakpoint set -n square" -o run -o bt -o "frame variable" -o next \
   -o "frame variable result" -o finish -o next -o "frame variable" -o "breakpoint delete 1" \
   -o "breakpoint set -f prog.zs -l 22" -o continue -o "frame variable name range summary" -o kill \

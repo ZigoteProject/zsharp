@@ -8,7 +8,9 @@ let main () =
   if Environment.args () = [ "--exit" ] then Environment.exit 7
   println $"args {List.length (Environment.args ())}"
   println $"HOME set {Option.isSome (Environment.getVariable "HOME")}, unset {Environment.getVariable "ZS_SURELY_UNSET"}"
-  let dir = "/tmp/zs-cli-test"
+  // in the temporary directory, which differs by OS and machine (an error naming a file there
+  // is shown with <temp> for it)
+  let dir = Path.combine (Directory.temp ()) "zs-cli-test"
   println $"mkdir {show (Directory.create dir)} exists {Directory.exists dir}"
   let path = dir + "/a.txt"
   println $"write {show (File.writeAllText path "one\ntwo\n")}"
@@ -17,7 +19,7 @@ let main () =
   println $"read {File.readAllText path |> Result.map String.length}"
   println $"exists {File.exists path} {File.exists (dir + "/nope")}"
   println $"list {Directory.list dir}"
-  println $"missing: {show (File.readAllText (dir + "/nope"))}"
+  println $"missing: {String.replace (show (File.readAllText (dir + "/nope"))) dir "<temp>/zs-cli-test"}"
   println $"delete {show (File.delete path)} {File.exists path}"
   let other = dir + "/b.txt"
   println $"writeAllLines {show (File.writeAllLines other [ "x"; "y" ])} {File.readAllLines other} {show (File.delete other)}"

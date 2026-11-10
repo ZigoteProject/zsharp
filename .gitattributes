@@ -1,0 +1,6 @@
+# Text is checked out with LF everywhere, Windows included (git for Windows converts to CRLF by
+# default): the tests compare output and read their data byte for byte
+* text=auto eol=lf
+# these mix CRLF and LF on purpose: a CSV file as Windows writes one
+examples/providers/stocks.csv -text
+tests/providers/stocks.csv -text

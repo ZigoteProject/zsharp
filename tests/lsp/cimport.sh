@@ -2,7 +2,11 @@
 # Hover and go-to-definition on an imported C function (tests/cimport): its Z# type, C prototype
 # and header comment. Prints the two responses.
 zs=${1:-bin/zs}
-f="$(pwd)/tests/cimport/main.zs"; uri="file://$f"
+f=tests/cimport/main.zs
+# this checkout as zs reads it: on Windows its own path (cygpath -m: D:/a/b, where Git Bash's pwd
+# says /d/a/b), and a file URI's path then starts with the drive (file:///D:/a/b)
+here=$(cygpath -m "$PWD" 2>/dev/null || pwd); root="file:///${here#/}"
+uri="$root/$f"
 src=$(sed 's/\\/\\\\/g; s/"/\\"/g' "$f" | awk '{printf "%s\\n", $0}')
 line=$(($(grep -n "point_add {" "$f" | head -1 | cut -d: -f1) - 1))
 col=$(($(sed -n "$((line + 1))p" "$f" | grep -bo point_add | head -1 | cut -d: -f1) + 2))

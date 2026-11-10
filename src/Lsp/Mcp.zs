@@ -29,8 +29,8 @@ let private limit (n: int) (s: string) =
     String.sub s 0 b + $"\n… ({String.charCount s - n} more characters)"
 
 // a tool's file: inside the directory the server was started in, reached through no symbolic
-// link (getFullPath works on the text, so a link could lead out of it), and there. Full paths
-// have the platform's separator (Windows's \), each part checked for a link
+// link (getFullPath works on the text, so a link could lead out of it), and there. Its parts are
+// between Path's separators (`\` on Windows), as getFullPath writes them.
 let private projectFile (p: string) : result<string, string> =
   let full = Path.getFullPath p
   let root = Path.getFullPath (Environment.currentDirectory ())
@@ -43,8 +43,10 @@ let private projectFile (p: string) : result<string, string> =
       // the runtime's hook: stage 0's library (0.6.1) has no public function for it
       let link = unsafe (Native.isSymlink here)
       link || linked here rest
-  if not (String.startsWith (root + sep) full) then Error $"{p} is outside the project ({root})"
-  else if linked root (String.split sep (Path.getRelativePath root full)) then Error $"{p} is reached through a symbolic link"
+  if not (String.startsWith (Path.combine root "") full) then
+    Error $"{p} is outside the project ({Diag.Render.path root})"
+  else if linked root (String.split sep (Path.getRelativePath root full)) then
+    Error $"{p} is reached through a symbolic link"
   else if not (File.exists full) then Error $"{p} does not exist"
   else Ok(Path.getRelativePath root full)
 
@@ -56,8 +58,9 @@ let private formatErrors (sources: list<Syntax.Source.Source>) (ds: list<Diagnos
     match Map.tryFind d.at.file byIndex with
     | Some src when d.at.offset >= 0 ->
       let (line, col) = Syntax.Source.position src d.at.offset
-      if d.at.length >= 0 then $"{src.path}:{line}:{col}: {msg}" else $"{src.path}:{line}: {msg}"
-    | Some src -> $"{src.path}: {msg}"
+      let file = Diag.Render.path src.path
+      if d.at.length >= 0 then $"{file}:{line}:{col}: {msg}" else $"{file}:{line}: {msg}"
+    | Some src -> $"{Diag.Render.path src.path}: {msg}"
     | None -> msg
   String.join "\n" (List.map one ds)
 
@@ -123,7 +126,9 @@ let private definitionOf (c: Build.Check.Checked) (h: Infer.Cx.Hover) : option<I
 let private shownPath (m: Build.Modules.Loaded) : string =
   let lib = Build.Modules.libraryDir ()
   let full = Path.getFullPath m.source.path
-  if String.startsWith lib full then "lib/" + Path.getRelativePath lib full else m.source.path
+  let shown =
+    if String.startsWith lib full then "lib/" + Path.getRelativePath lib full else m.source.path
+  Diag.Render.path shown
 
 // a definition's place and line: "file:line:column\n  the line"
 let private definitionText (c: Build.Check.Checked) (h: Infer.Cx.Hover) : option<string> =
@@ -149,7 +154,9 @@ let private call (name: string) (args: Json) (trusted: bool) : result<string, st
     match arg "file" with
     | Ok v -> projectFile (Rpc.text v)
     | Error e -> Error e
-  let options (file: string) (out: string) : Build.Options.Options = { Build.Options.defaults with main = file; out = out; trusted = trusted }
+  // built for this machine as zs build builds: on Windows for mingw-w64 (clang alone targets MSVC)
+  let options (file: string) (out: string) : Build.Options.Options =
+    { Build.Options.defaults with main = file; out = out; target = Build.Options.nativeTarget (); trusted = trusted }
   if name = "check" then
     match fileOf () with
     | Error e -> Error e
@@ -168,7 +175,7 @@ let private call (name: string) (args: Json) (trusted: bool) : result<string, st
       | Error e -> Error e
       | Ok c ->
         match hoverAt c file line col with
-        | None -> Ok $"no name at {file}:{line}:{col}"
+        | None -> Ok $"no name at {Diag.Render.path file}:{line}:{col}"
         | Some h when name = "type_at" -> Ok(signature c h)
         | Some h when name = "definition" -> Ok(Option.defaultValue $"{h.name} has no definition in this program's files (a built-in)" (definitionText c h))
         | Some h ->
@@ -222,7 +229,7 @@ let private call (name: string) (args: Json) (trusted: bool) : result<string, st
     | Ok file ->
       let out = Path.changeExtension file ""
       let b = Build.Make.make (options file out) false
-      if b.made then Ok(withWarnings b $"built {out}") else Error(formatErrors b.sources (Array.toList b.diagnostics))
+      if b.made then Ok(withWarnings b $"built {Diag.Render.path out}") else Error(formatErrors b.sources (Array.toList b.diagnostics))
   else if name = "run" then
     match fileOf () with
     | Error e -> Error e
@@ -237,14 +244,12 @@ let private call (name: string) (args: Json) (trusted: bool) : result<string, st
           File.delete exe |> ignore
           Error(formatErrors b.sources (Array.toList b.diagnostics))
         else
-          // ponytail: standard output read to its end before standard error; a program filling the
-          // second pipe waits there until the time limit
-          let ran = Build.Tools.runSplit "env" [ "ZS_LEAKCHECK=1"; "timeout"; "--kill-after=1"; "10"; exe ]
+          let ran = Build.Tools.runBounded [ ("ZS_LEAKCHECK", "1") ] 10000 exe []
           File.delete exe |> ignore
           match ran with
           | Error e -> Error e
           | Ok r ->
-            let status = if r.code = 124 || r.code = 137 then "killed after 10 seconds" else $"exit code {r.code}"
+            let status = if r.code = 124 then "killed after 10 seconds" else $"exit code {r.code}"
             Ok(withWarnings b $"{status}\n--- stdout\n{limit 20000 r.out}\n--- stderr\n{limit 20000 r.err}")
   else if name = "emit_llvm" then
     match fileOf () with
@@ -260,7 +265,7 @@ let private call (name: string) (args: Json) (trusted: bool) : result<string, st
         else
           match Build.Compile.generate (options file "") (Build.Check.programOf c) false with
           | Ok(_, ir, _, _) -> Ok(limit 100000 ir)
-          | Error(Build.Compile.InPass e) -> Error $"{file}:{e.line}: {e.message}"
+          | Error(Build.Compile.InPass e) -> Error $"{Diag.Render.path file}:{e.line}: {e.message}"
           | Error(Build.Compile.InTool m) -> Error m
   else if name = "format" then
     match fileOf () with

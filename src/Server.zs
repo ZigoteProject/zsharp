@@ -112,8 +112,10 @@ let serve (path: string) (run: list<string> -> int) : int =
   let dir = Path.getDirectoryName path
   Build.Tools.makeDirectory dir
   // whoever reaches the socket runs zs commands as this user, so its directory is this user's
-  // alone (made with the umask's permissions, it's open to every user under a umask of 0)
-  let mine = chmod dir (u32 448) = 0
+  // alone (made with the umask's permissions, it's open to every user under a umask of 0). On
+  // Windows chmod sets nothing and says it did: the directory keeps the ACL it inherits, so no
+  // server there. ponytail: a protected DACL for this user (SetNamedSecurityInfoW), then serve
+  let mine = Build.Tools.hostOs () <> "windows" && chmod dir (u32 448) = 0
   // another server started first (two builds found none): it answers, this one ends
   let ping =
     task {
@@ -192,34 +194,38 @@ let serve (path: string) (run: list<string> -> int) : int =
 /// when none answers (one is started for the next build, apart from this process, with this
 /// environment).
 let viaServer (args: list<string>) : option<int> =
-  let path = socketPath ()
-  let reply =
-    Task.run (
-      task {
-        let! got = Unix.connect path
-        match got with
-        | Ok s ->
-          use conn = s
-          let! sent = sendFields conn (Environment.currentDirectory () :: args)
-          if Result.isOk sent then
-            let! fields = readFields conn
-            return fields
-          else
-            return None
-        | Error _ -> return None
-      })
-  match reply with
-  | Some [ code; out; err ] ->
-    print out
-    let e = IO.Writer.ofFd 2
-    IO.Writer.writeText e err |> ignore
-    IO.Writer.flush e |> ignore
-    Int.parse code
-  | _ ->
-    if args <> [ "stop" ] then
-      // its own streams, so a caller reading this one's output isn't kept waiting
-      let s : Diagnostics.ProcessStart = { program = Build.Tools.selfPath (); args = [ "server"; path ]; stdin = Diagnostics.Null; stdout = Diagnostics.Null; stderr = Diagnostics.Null }
-      match Diagnostics.Process.start s with
-      | Ok p -> Dispose.dispose p
-      | Error _ -> ()
+  // none on Windows yet: its socket's directory can't be made this user's alone (serve)
+  if Build.Tools.hostOs () = "windows" then
     None
+  else
+    let path = socketPath ()
+    let reply =
+      Task.run (
+        task {
+          let! got = Unix.connect path
+          match got with
+          | Ok s ->
+            use conn = s
+            let! sent = sendFields conn (Environment.currentDirectory () :: args)
+            if Result.isOk sent then
+              let! fields = readFields conn
+              return fields
+            else
+              return None
+          | Error _ -> return None
+        })
+    match reply with
+    | Some [ code; out; err ] ->
+      print out
+      let e = IO.Writer.ofFd 2
+      IO.Writer.writeText e err |> ignore
+      IO.Writer.flush e |> ignore
+      Int.parse code
+    | _ ->
+      if args <> [ "stop" ] then
+        // its own streams, so a caller reading this one's output isn't kept waiting
+        let s : Diagnostics.ProcessStart = { program = Build.Tools.selfPath (); args = [ "server"; path ]; stdin = Diagnostics.Null; stdout = Diagnostics.Null; stderr = Diagnostics.Null }
+        match Diagnostics.Process.start s with
+        | Ok p -> Dispose.dispose p
+        | Error _ -> ()
+      None

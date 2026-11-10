@@ -166,7 +166,9 @@ let problem (index: int) (p: Project.Problem) : Diagnostic * option<Source.Sourc
     let src = Source.make index display text
     let offset = if p.line > 0 && p.line <= Array.length src.lines then src.lines.[p.line - 1] else -1
     (error { file = index; offset = offset; length = -1 } p.message, Some src)
-  | Error _ -> (error { file = -1; offset = -1; length = -1 } (p.file + ": " + p.message), None)
+  | Error _ ->
+    (error { file = -1; offset = -1; length = -1 } (Diag.Render.path p.file + ": " + p.message),
+      None)
 
 /// import c's flags for a target: for one with an OS, clang's triple and zig's C library headers
 /// for it as the system's (what the build links against), from `zig cc -v`'s search list; for a
@@ -208,12 +210,14 @@ let private targetFlags (target: string) (chip: option<Options.Mcu>) : list<stri
 /// Parser.zs. A file names the package's modules as the checker resolves names, in the modules
 /// enclosing its own, in the modules it opens, then globally; only its package's files see its
 /// dependencies. An import cycle is an error at the file that closes it. target: --target's
-/// triple, "" for this machine (where pkg-config runs). trusted: a package's type provider may be
-/// built and run (not for zs lsp and zs mcp without --trust, which open projects nobody vetted).
-/// home: for a package's provider, the lock root of the project it's built for (zs build
-/// --deps-of), whose checkouts its git dependencies are and where its caches go.
+/// triple, "" or `Options.nativeTarget` for this machine (where pkg-config runs). trusted: a
+/// package's type provider may be built and run (not for zs lsp and zs mcp without --trust,
+/// which open projects nobody vetted). home: for a package's provider, the lock root of the
+/// project it's built for (zs build --deps-of), whose checkouts its git dependencies are and
+/// where its caches go.
 let program (texts: Map<string, string>) (first: int) (mainPath: string) (target: string) (chip: option<Options.Mcu>) (trusted: bool) (home: option<string>) : result<list<Loaded> * Linked, Diagnostic * option<Source.Source>> =
-  let hosted = target = ""
+  // a native build on Windows is for the platform's mingw-w64 triple, and still this machine's
+  let hosted = target = "" || target = Options.nativeTarget ()
   let forTarget = targetFlags target chip
   let targetName = Options.targetName chip target
   let order = Buffer.empty
@@ -360,7 +364,10 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
     match Tools.runSplit "pkg-config" [ what; name ] with
     | Ok r ->
       if r.code = 0 then
-        List.filter (fun a -> a <> "") (String.split " " (String.replace (String.replace r.out "\t" " ") "\n" " "))
+        // a Windows pkg-config ends its line with \r\n
+        let spaced =
+          String.replace (String.replace (String.replace r.out "\r" " ") "\t" " ") "\n" " "
+        List.filter (fun a -> a <> "") (String.split " " spaced)
       else
         failProblem { file = Path.combine m.root "zs.toml"; line = 0; message = $"package {m.name}: pkg-config knows no '{name}'; install the library's development files, or give include and link in [c]" }
         []
@@ -515,7 +522,7 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
               Ok out
             | Ok r ->
               let lines = List.filter (fun (l: string) -> String.trim l <> "") (String.split "\n" (r.err + "\n" + r.out))
-              Error $"{name}: its provider ({Path.getRelativePath pkgRoot main}) didn't build: {(if List.isEmpty lines then $"exit code {r.code}" else List.head lines)}"
+              Error $"{name}: its provider ({Diag.Render.path (Path.getRelativePath pkgRoot main)}) didn't build: {(if List.isEmpty lines then $"exit code {r.code}" else List.head lines)}"
             | Error e -> Error $"{name}: its provider didn't build: {e}"
       // a dependency is keyed by its module prefix (Shout); the import names it as the manifest
       // does (shout)
@@ -586,7 +593,7 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
       | Ok text ->
         match Tools.realDirectory (fst at) (List.append (snd at) [ "providers"; importer ]) with
         | Error e ->
-          report d $"{provider}: can't write {out}: {e}"
+          report d $"{provider}: can't write {Diag.Render.path out}: {e}"
           None
         | Ok _ ->
           // written only when it changed: an editor watching the cache isn't woken for nothing;
@@ -595,7 +602,7 @@ let program (texts: Map<string, string>) (first: int) (mainPath: string) (target
           if Result.defaultValue "" (Provide.Input.read out) <> text then
             Tools.writeWhole out (Array.ofSpan (String.bytes text))
             if Result.defaultValue "" (Provide.Input.read out) <> text then
-              report d $"{provider}: can't write {out}"
+              report d $"{provider}: can't write {Diag.Render.path out}"
           let ins = inputsOf text
           let hashes = hashesOf ins
           if Result.defaultValue "" (Provide.Input.read (out + ".inputs")) <> hashes then

@@ -19,9 +19,14 @@ let main () =
   match Process.start { program = "no-such-program-zs" } with
   | Ok _ -> println "unexpected"
   | Error e -> println e
+  // in a directory of its own, which the shell lists, and an environment of its own (pwd would
+  // spell the directory the shell's way: on Windows `/` is the drive's root, /c or /d to sh)
+  let dir = Result.defaultValue "." (Directory.createTemp "zs-process-")
+  let marker = Path.combine dir "marker"
+  File.writeAllText marker "" |> ignore
   match Process.start { program = "sh"
-    args = [ "-c"; "pwd; echo $A" ]
-    directory = Some "/"
+    args = [ "-c"; "echo *; echo $A" ]
+    directory = Some dir
     stdout = Piped
     environment = Some [ ("A", "1") ] } with
   | Ok p ->
@@ -29,6 +34,8 @@ let main () =
     let out = match proc.stdout with | Some r -> Reader.readToEnd r | None -> Ok ""
     println $"{out} {Task.run (Process.wait proc)}"
   | Error e -> println e
+  File.delete marker |> ignore
+  Directory.delete dir |> ignore
   // standard error into standard output's pipe (2>&1): both in the order written, and errors
   // past a pipe's worth before the output ends don't block the program (read apart, they would)
   match Process.start { program = "sh"

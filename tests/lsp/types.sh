@@ -3,7 +3,10 @@
 # at the end of a function's line. Prints the server's responses, one per line.
 set -u
 zs=${1:-bin/zs}
-uri="file://$(pwd)/tests/lsp/types.zs"
+# this checkout as zs reads it: on Windows its own path (cygpath -m: D:/a/b, where Git Bash's pwd
+# says /d/a/b), and a file URI's path then starts with the drive (file:///D:/a/b)
+here=$(cygpath -m "$PWD" 2>/dev/null || pwd); root="file:///${here#/}"
+uri="$root/tests/lsp/types.zs"
 src=$(sed 's/\\/\\\\/g; s/"/\\"/g' tests/lsp/types.zs | awk '{printf "%s\\n", $0}')
 frame() { printf 'Content-Length: %d\r\n\r\n%s' "$(printf '%s' "$1" | wc -c)" "$1"; }
 {

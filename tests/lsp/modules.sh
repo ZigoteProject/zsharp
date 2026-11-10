@@ -4,8 +4,11 @@
 # putting it back clears them. Prints the diagnostics the server publishes, one per line.
 set -u
 zs=${1:-bin/zs}
-main="file://$(pwd)/tests/modules/main.zs"
-geo="file://$(pwd)/tests/modules/geometry.zs"
+# this checkout as zs reads it: on Windows its own path (cygpath -m: D:/a/b, where Git Bash's pwd
+# says /d/a/b), and a file URI's path then starts with the drive (file:///D:/a/b)
+here=$(cygpath -m "$PWD" 2>/dev/null || pwd); root="file:///${here#/}"
+main="$root/tests/modules/main.zs"
+geo="$root/tests/modules/geometry.zs"
 text() { sed 's/\\/\\\\/g; s/"/\\"/g' "$1" | awk '{printf "%s\\n", $0}'; }
 msrc=$(text tests/modules/main.zs)
 gsrc=$(text tests/modules/geometry.zs)
@@ -23,4 +26,4 @@ change() { frame '{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"
   change "$geo" "$gsrc" 3
   frame '{"jsonrpc":"2.0","id":2,"method":"shutdown"}'
   frame '{"jsonrpc":"2.0","method":"exit"}'
-} | "$zs" lsp | tr -d '\r' | sed 's/Content-Length: [0-9]*//' | grep -o '{.*}' | grep publishDiagnostics | sed "s|file://$(pwd)/||g"
+} | "$zs" lsp | tr -d '\r' | sed 's/Content-Length: [0-9]*//' | grep -o '{.*}' | grep publishDiagnostics | sed "s|$root/||g"

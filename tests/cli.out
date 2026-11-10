@@ -7,7 +7,7 @@ lines Ok [one; two; three]
 read Ok 13
 exists true false
 list Ok [a.txt]
-missing: error: cannot open /tmp/zs-cli-test/nope: No such file or directory
+missing: error: cannot open <temp>/zs-cli-test/nope: No such file or directory
 delete ok false
 writeAllLines ok Ok [x; y] ok
 echo -> code 0 output hi there a;b

@@ -30,7 +30,7 @@ let main () =
   let kept = (Array.init 5 (fun i -> i * i)).[2..]
   println $"{Array.toList (Array.ofSpan kept)} {Span.isEmpty kept.[3..]} {Array.toList (Array.map (fun x -> x + 1) kept)}"
   // a file's bytes read once, parsed through spans without a copy
-  let path = "/tmp/zs-spans-test.txt"
+  let path = Path.combine (Directory.temp ()) "zs-spans-test.txt"
   File.writeAllText path "12 345 6" |> ignore
   match File.readAllText path with
   | Ok text ->

@@ -197,3 +197,19 @@ __attribute__((constructor(101))) static void zs_host_stack(void) {
     setrlimit(RLIMIT_STACK, &rl);
 }
 #endif
+
+#include <stdint.h>
+// this process's environment, NAME=value each, for a child given it with a variable more (zs
+// test's runs, git's): how many, and the i-th
+#ifdef _WIN32
+#define host_environ _environ
+#else
+extern char **environ;
+#define host_environ environ
+#endif
+int64_t zs_host_env_count(void) {
+    int64_t n = 0;
+    while (host_environ && host_environ[n]) n++;
+    return n;
+}
+const char *zs_host_env_at(int64_t i) { return host_environ[i]; }

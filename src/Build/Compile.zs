@@ -334,7 +334,7 @@ let cpuFlags (o: Options.Options) : list<string> =
 // what the link takes for the packages' [c] sections: their C flags (for the C sources among
 // them), then the sources, libraries and files (a name is a library's)
 let linkArgs (linked: Modules.Linked) : list<string> =
-  List.append linked.cflags (List.map (fun (l: string) -> if String.startsWith "-" l || String.contains "/" l then l else "-l" + l) linked.links)
+  List.append linked.cflags (List.map (fun (l: string) -> if String.startsWith "-" l || Tools.isFile l then l else "-l" + l) linked.links)
 
 /// What stops a build after checking: a pass's error (at a line), or a tool's failure.
 type Failure =
@@ -454,7 +454,7 @@ let make (o: Options.Options) (prog0: Program) (linked: Modules.Linked) (testBui
           let mac = Options.targetOs o = "macos"
           let cxx = if mac then "-lc++" else "-lstdc++"
           match Tools.runSplit "clang" [ "-print-file-name=" + (if mac then "libclang_rt.fuzzer_no_main_osx.a" else "libclang_rt.fuzzer_no_main.a") ] with
-          | Ok r when String.contains "/" r.out -> [ String.trim r.out; cxx ]
+          | Ok r when Tools.isFile r.out -> [ String.trim r.out; cxx ]
           | _ -> [ cxx ]
       let built =
         match o.mcu with
@@ -534,7 +534,10 @@ let make (o: Options.Options) (prog0: Program) (linked: Modules.Linked) (testBui
           else if cross then
             let obj = Path.changeExtension ll ".o"
             let r1 = timed o.time "clang" (fun () -> Tools.run "clang" (List.concat [ opt; tclang; Options.sectionFlags o; [ "-c"; "-Wno-override-module" ]; san; [ ll; "-o"; obj ] ]))
-            let r2 = andThen (fun () -> timed o.time "zig cc" (fun () -> cc (List.concat [ opt; defines; Options.sectionFlags o; Options.unusedLinkFlags o; [ obj; runtimeFile "rt.c" ]; linkArgs linked; [ "-o"; o.out; "-lm" ]; Options.systemLibs o; (if String.contains "-windows" o.target then [ runtimeFile "utf8.rc" ] else []) ]))) r1
+            // Windows: the manifest, and the PE's timestamp a hash of its bytes (lld's /Brepro),
+            // not the time of the link, which zig gives a debug build: the same program each time
+            let windowsLink = if String.contains "-windows" o.target then [ "-Wl,-Brepro"; runtimeFile "utf8.rc" ] else []
+            let r2 = andThen (fun () -> timed o.time "zig cc" (fun () -> cc (List.concat [ opt; defines; Options.sectionFlags o; Options.unusedLinkFlags o; [ obj; runtimeFile "rt.c" ]; linkArgs linked; [ "-o"; o.out; "-lm" ]; Options.systemLibs o; windowsLink ]))) r1
             File.delete obj |> ignore
             r2
           else

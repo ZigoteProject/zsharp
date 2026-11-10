@@ -158,11 +158,14 @@ let private checkModules (cx: Infer.Cx.Cx) (lib: list<Modules.Loaded>) (prog: li
 
 /// Checks the program whose main file is mainPath, an editor's open file from its text in texts;
 /// what stops it before checking (a file it can't read, an import cycle, syntax errors) is Error,
-/// with the sources the errors are in. chip: a microcontroller's build (no Std); hostBuild: a
-/// build for this machine (pkg-config's flags); trusted: a package's type provider may be built
-/// and run (Modules.program); home: zs build --deps-of's project, whose checkouts and caches a
-/// package's provider uses.
-let programIn (texts: Map<string, string>) (mainPath: string) (requireMain: bool) (collect: bool) (chip: option<Options.Mcu>) (target: string) (trusted: bool) (home: option<string>) : result<Checked, array<Diagnostic> * list<Syntax.Source.Source>> =
+/// with the sources the errors are in. chip: a microcontroller's build (no Std); target: the
+/// build's triple, "" for this machine (pkg-config's flags); trusted: a package's type provider
+/// may be built and run (Modules.program); home: zs build --deps-of's project, whose checkouts
+/// and caches a package's provider uses.
+let programIn (texts: Map<string, string>) (mainPath: string) (requireMain: bool) (collect: bool) (chip: option<Options.Mcu>) (target0: string) (trusted: bool) (home: option<string>) : result<Checked, array<Diagnostic> * list<Syntax.Source.Source>> =
+  // this machine's build on Windows is mingw-w64's: zs check and the editor read a C header as
+  // it does, and find the import it saved (.llp64.json) where libclang is missing
+  let target = if target0 = "" then Options.nativeTarget () else target0
   let noPlace : Span = { file = -1; offset = -1; length = -1 }
   // a file of a library itself: that library, checked on its own
   let ownLibrary = Modules.libraryRootOf mainPath

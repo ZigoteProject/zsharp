@@ -158,7 +158,7 @@ let private analyze (st: State) (path: string) =
   let elsewhere (d: Diagnostic) =
     let (shown, full, line, _) = placeOf byIndex d.at
     if full <> path && isError d then
-      Some(JObject [ ("range", range 0 0 0 1); ("severity", num 1); ("source", JString "zs"); ("message", JString $"{shown}:{line}: {d.message}") ])
+      Some(JObject [ ("range", range 0 0 0 1); ("severity", num 1); ("source", JString "zs"); ("message", JString $"{Diag.Render.path shown}:{line}: {d.message}") ])
     else
       None
   let all = Array.toList diags
@@ -412,10 +412,16 @@ let private keywords =
 
 // ------------------------------------------------------------ rename, signature help, code actions (0019)
 
+// whether a full path is inside directories of these names, as getFullPath writes it (Path's
+// separators: `\` on Windows)
+let private within (dirs: list<string>) (full: string) =
+  let sep = String.ofChar Path.separator
+  String.contains (sep + String.join sep dirs + sep) full
+
 // a file the editor may change: the program's, not the library's or a dependency's
 let private editable (file: string) =
   let full = Path.getFullPath file
-  Option.isNone (Build.Modules.libraryRootOf full) && not (String.contains "/.zs-cache/" full)
+  Option.isNone (Build.Modules.libraryRootOf full) && not (within [ ".zs-cache" ] full)
 
 let private isIdentByte (b: u8) = (b >= u8 97 && b <= u8 122) || (b >= u8 65 && b <= u8 90) || (b >= u8 48 && b <= u8 57) || b = u8 95
 
@@ -447,7 +453,8 @@ let private lastPart (name: string) =
 // (.zs-cache/pkgs/<name>-<hash>/providers/)
 let private providedFile (file: string) : bool =
   let full = Path.getFullPath file
-  String.contains "/.zs-cache/providers/" full || (String.contains "/.zs-cache/pkgs/" full && String.contains "/providers/" full)
+  let sep = String.ofChar Path.separator
+  within [ ".zs-cache"; "providers" ] full || (within [ ".zs-cache"; "pkgs" ] full && String.contains (sep + "providers" + sep) full)
 
 // what a rename at a position changes: the name there and every reference to it, in the programs
 // of the open documents (a field's uses too: its key is field:Record.name), or why it can't be

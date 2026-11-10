@@ -34,6 +34,11 @@ let make (o: Options.Options) (testBuild: bool) : Built =
       { made = false; diagnostics = errors; sources = sources }
     else if o.strict && Array.length all > 0 then
       { made = false; diagnostics = all; sources = sources }
+    // a profile's counters are written by compiler-rt's profile runtime, which clang links for
+    // this machine; zig cc, which links the rest, has none (refused rather than built without)
+    else if (o.profileGenerate || Option.isSome o.profileUse) && o.target <> "" then
+      let msg = "--profile-generate and --profile-use are for a build clang links for this machine, with its profile runtime: zig cc links this one (for another target, or mingw-w64 on Windows)"
+      { made = false; diagnostics = Array.append all [| passError sources o.main { file = ""; line = 0; message = msg } |]; sources = sources }
     // what must not touch the heap is checked on the whole program, made in one module; so is a
     // program with [<Section>] or [<Align>] values, which only the whole program's code places
     // (a part sees another module's values by their signatures)

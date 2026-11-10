@@ -116,7 +116,15 @@ let private decoded (p: string) : string =
     else
       Buffer.push b out
       i <- i + 1
-  String.ofBytes (Buffer.toArray out)
+  let path = String.ofBytes (Buffer.toArray out)
+  let letter (b: u8) = (b >= u8 65 && b <= u8 90) || (b >= u8 97 && b <= u8 122)
+  let drive = windows && String.length path >= 3 && String.byte path 0 = u8 47 && letter (String.byte path 1) && String.byte path 2 = u8 58
+  if not file then
+    path
+  else if drive then
+    Path.getFullPath (String.toUpper (String.sub path 1 1) + String.sub path 2 (String.length path - 2))
+  else
+    Path.getFullPath path
 
 let private isLetter (b: u8) = (b >= u8 65 && b <= u8 90) || (b >= u8 97 && b <= u8 122)
 

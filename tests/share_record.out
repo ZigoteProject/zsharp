@@ -1,0 +1,4 @@
+field: 2
+list: [5; 40]
+tuple: logged! 7 80
+spawned: 2

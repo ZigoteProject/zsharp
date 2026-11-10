@@ -86,12 +86,30 @@ jobs:
           "$RUNNER_TEMP/micromamba/bin/micromamba" create -y -q -r "$RUNNER_TEMP/mamba" -p "$RUNNER_TEMP/llvm" -c conda-forge \
             'clang=23.1.4=*nocfg*' 'clangxx=23.1.4=*nocfg*' libclang=23.1.4 lld=23.1.4 llvm-tools=23.1.4 compiler-rt=23.1.4
           echo "$RUNNER_TEMP/llvm/bin" >> "$GITHUB_PATH"
-      # upgrade, not install: it installs what's missing and upgrades what the image has (Windows
-      # x64's came with LLVM 20, which install leaves as it is); their current versions, not pinned:
-      # Chocolatey has no llvm 23.1.4 to install on Windows arm64, which comes without one (a
-      # package checks the installer it downloads against the checksum it was published with)
+      # LLVM's own release, the version the other runners have: Chocolatey's package is the x64
+      # build on Windows on Arm too, whose libclang an arm64 zs.exe can't load (import c, and the
+      # compiler's own build); zig from its release, 0.17.0 (0.16.0's `zig rc` fails on Windows
+      # arm64, reading its cache's files short)
       - if: runner.os == 'Windows'
-        run: choco upgrade -y llvm zig
+        run: |
+          a=$([ "$RUNNER_ARCH" = ARM64 ] && echo aarch64 || echo x86_64)
+          dir=clang+llvm-23.1.4-$a-pc-windows-msvc
+          # tar takes D:\... for a remote host's path: the temporary directory as MSYS names it
+          t=$(cygpath -u "$RUNNER_TEMP")
+          curl -fsSL "https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.4/$dir.tar.xz" \
+            | tar -xJ -C "$t" --wildcards "$dir/bin/*" "$dir/lib/clang/*" "$dir/include/clang-c/*"
+          cygpath -w "$t/$dir/bin" >> "$GITHUB_PATH"
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $a = if ($env:RUNNER_ARCH -eq 'ARM64') { 'aarch64' } else { 'x86_64' }
+          Invoke-WebRequest "https://ziglang.org/download/0.17.0/zig-$a-windows-0.17.0.zip" -OutFile "$env:RUNNER_TEMP\zig.zip"
+          Expand-Archive "$env:RUNNER_TEMP\zig.zip" -DestinationPath $env:RUNNER_TEMP
+          "$env:RUNNER_TEMP\zig-$a-windows-0.17.0" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+      # pkg-config, which a package's [c] runs (tests/project/cwords), as apt gives Linux's: a
+      # native one, a program zs.exe can start (the images list none)
+      - if: runner.os == 'Windows'
+        run: choco install -y --no-progress pkgconfiglite
       # the dev image's LLVM and zig, from their releases (Ubuntu's clang is too old for the IR,
       # and it packages no zig); the LLVM archive checked against its sha256 (the Containerfile's
       # LLVM_SHA256_ARM64) before anything of it is unpacked
