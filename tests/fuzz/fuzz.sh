@@ -29,7 +29,10 @@ let tests =
 ZS
 cd "$t"
 export ZS_BACKTRACE=0
-"$zs" fuzz parse.zs parses --for 60 2>/dev/null | sed -E 's/\([0-9]+ inputs in the corpus\)/(N inputs in the corpus)/; s/shrunk from [0-9]+ bytes to/shrunk from N bytes to/; s/in [0-9]+ runs/in N runs/; s/^fuzzing (.*) for 60 s \(corpus: .*\)$/fuzzing \1 (corpus kept)/'
+# libFuzzer's time to the bug is random (its seed is the clock's): seconds on most runners, past
+# a minute now and then on the slowest (macOS Intel's). It stops at the crash, so the long limit
+# costs time only where the bug isn't found
+"$zs" fuzz parse.zs parses --for 300 2>/dev/null | sed -E 's/\([0-9]+ inputs in the corpus\)/(N inputs in the corpus)/; s/shrunk from [0-9]+ bytes to/shrunk from N bytes to/; s/in [0-9]+ runs/in N runs/; s/^fuzzing (.*) for 300 s \(corpus: .*\)$/fuzzing \1 (corpus kept)/'
 echo "saved:"; (cd .zs-cache/failures && find . -type f | sed 's|^\./||')
 echo "zs test replays it first:"; "$zs" test parse.zs 2>&1 | grep -v "^       panic\|^       index\|^       /" | head -4
 echo "the flags after -- are libFuzzer's (-runs=0: the corpus is run, nothing new tried):"

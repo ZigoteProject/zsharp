@@ -125,8 +125,11 @@ deferred, each with the design that finishes it (below).
 ## What wasn't covered
 
 - **Windows, in part:** since master's Windows work was merged, CI runs the whole suite on
-  Windows x64 and arm64, the bootstrap included, and at `9a96f23` x64's failed only R3-3's
-  check. What of the fixes ran there: the `.bat` quoting (`tests/process_batch.zs`), a second
+  Windows x64 and arm64, the bootstrap included; at `9a96f23` x64's failed only R3-3's check,
+  and at `c7c25e4` both pass every check (as do Linux's two and macOS arm64's; macOS Intel's
+  failed once on `tests/fuzz/fuzz.sh`, whose 60 s let libFuzzer miss the planted bug now and then
+  on that runner, the same source passing in another run: 300 s now). What of the fixes ran
+  there: the `.bat` quoting (`tests/process_batch.zs`), a second
   `Process.wait` and a `kill` after it (`process_wait.zs`), UDP's long datagram and port
   unreachable (`task/udp.zs`), `Unix.listen` (`task/unix_path.zs`), `File.copy` and `move`
   (`file_copy.zs`), `Path.getFullPath`'s roots (`path_roots.zs`), the Spsc and the pool
