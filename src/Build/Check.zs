@@ -37,7 +37,7 @@ let private funsFile (key: string) = Path.combine (Path.combine (Tools.cacheRoot
 let private loadChecked (key: string) : option<Infer.Snapshot.Saved> =
   match File.readAllBytes (checkedFile key) with
   | Ok bytes ->
-    let read : result<Infer.Snapshot.Saved, string> = Binary.ofBytes bytes
+    let read : result<Infer.Snapshot.Saved, string> = Tools.ofCacheBytes bytes
     match read with
     | Ok saved when saved.key = key ->
       File.touch (checkedFile key) |> ignore
@@ -49,7 +49,7 @@ let private loadChecked (key: string) : option<Infer.Snapshot.Saved> =
 let private loadFuns (key: string) : list<Core.Ir.FunDef> =
   match File.readAllBytes (funsFile key) with
   | Ok bytes ->
-    let read : result<list<Core.Ir.FunDef>, string> = Binary.ofBytes bytes
+    let read : result<list<Core.Ir.FunDef>, string> = Tools.ofCacheBytes bytes
     Result.defaultValue [] read
   | Error _ -> []
 
@@ -159,8 +159,10 @@ let private checkModules (cx: Infer.Cx.Cx) (lib: list<Modules.Loaded>) (prog: li
 /// Checks the program whose main file is mainPath, an editor's open file from its text in texts;
 /// what stops it before checking (a file it can't read, an import cycle, syntax errors) is Error,
 /// with the sources the errors are in. chip: a microcontroller's build (no Std); target: the
-/// build's triple, "" for this machine (pkg-config's flags).
-let programWith (texts: Map<string, string>) (mainPath: string) (requireMain: bool) (collect: bool) (chip: option<Options.Mcu>) (target0: string) : result<Checked, array<Diagnostic> * list<Syntax.Source.Source>> =
+/// build's triple, "" for this machine (pkg-config's flags); trusted: a package's type provider
+/// may be built and run (Modules.program); home: zs build --deps-of's project, whose checkouts
+/// and caches a package's provider uses.
+let programIn (texts: Map<string, string>) (mainPath: string) (requireMain: bool) (collect: bool) (chip: option<Options.Mcu>) (target0: string) (trusted: bool) (home: option<string>) : result<Checked, array<Diagnostic> * list<Syntax.Source.Source>> =
   // this machine's build on Windows is mingw-w64's: zs check and the editor read a C header as
   // it does, and find the import it saved (.llp64.json) where libclang is missing
   let target = if target0 = "" then Options.nativeTarget () else target0
@@ -171,7 +173,7 @@ let programWith (texts: Map<string, string>) (mainPath: string) (requireMain: bo
   | Error e -> Error([| error noPlace e |], [])
   | Ok lib ->
     let none : Modules.Linked = { cflags = []; links = [] }
-    let loaded = if Option.isSome ownLibrary then Ok([], none) else Modules.program texts (List.length lib) mainPath target chip
+    let loaded = if Option.isSome ownLibrary then Ok([], none) else Modules.program texts (List.length lib) mainPath target chip trusted home
     match loaded with
     | Error(d, src) -> Error([| d |], Option.toList src)
     | Ok(prog, linked) ->
@@ -196,8 +198,13 @@ let programWith (texts: Map<string, string>) (mainPath: string) (requireMain: bo
         Infer.Decls.finish cx
         Ok { modules = all; units = units; cx = cx; linked = linked; checkedNames = checkedNames; checkedCount = checkedCount; restoreMs = restoreMs; checkMs = checkMs }
 
-/// Checks the program whose main file is mainPath, from the files on disk.
-let program (mainPath: string) (requireMain: bool) (collect: bool) (chip: option<Options.Mcu>) (target: string) = programWith Map.empty mainPath requireMain collect chip target
+/// programIn for a project's own program (its checkouts, its caches).
+let programWith (texts: Map<string, string>) (mainPath: string) (requireMain: bool) (collect: bool) (chip: option<Options.Mcu>) (target: string) (trusted: bool) : result<Checked, array<Diagnostic> * list<Syntax.Source.Source>> =
+  programIn texts mainPath requireMain collect chip target trusted None
+
+/// Checks the program whose main file is mainPath, from the files on disk, its providers run (a
+/// command the user ran on the project).
+let program (mainPath: string) (requireMain: bool) (collect: bool) (chip: option<Options.Mcu>) (target: string) = programWith Map.empty mainPath requireMain collect chip target true
 
 /// A function's checked Core with every type settled, as the passes take it (a variable bound in
 /// the context followed, a free one defaulted, rows in canonical order).

@@ -85,7 +85,7 @@ As a zigzag varint.
 impl Binary<i64>
 ```
 
-As a zigzag varint.
+As a zigzag varint (BinaryWriter.varint64).
 
 ### `impl Binary<u8>`
 
@@ -181,7 +181,8 @@ Nothing.
 impl Binary<list<'a>>
 ```
 
-Its length, then its elements.
+Its length, then its elements. A length the bytes left can't hold is an `Error` (elements
+that take no bytes, `unit`'s, at most 65,536 of them).
 
 ### `impl Binary<array<'a>>`
 
@@ -289,13 +290,21 @@ BinaryWriter.uvarint : BinaryWriter -> u64 -> unit
 
 An unsigned number in 7-bit groups, low first, the high bit set on all but the last.
 
+### `BinaryWriter.varint64`
+
+```zsharp
+BinaryWriter.varint64 : BinaryWriter -> i64 -> unit
+```
+
+A signed 64-bit number: zigzag (0, -1, 1, -2, … as 0, 1, 2, 3, …), then as `uvarint`.
+
 ### `BinaryWriter.varint`
 
 ```zsharp
 BinaryWriter.varint : BinaryWriter -> int -> unit
 ```
 
-A signed number: zigzag (0, -1, 1, -2, … as 0, 1, 2, 3, …), then as `uvarint`.
+A signed number, as `varint64`: the same bytes whether `int` is 32 or 64 bits.
 
 ### `BinaryWriter.float`
 
@@ -337,13 +346,22 @@ BinaryReader.uvarint : BinaryReader -> result<u64, string>
 
 An unsigned number as `BinaryWriter.uvarint` writes it.
 
+### `BinaryReader.varint64`
+
+```zsharp
+BinaryReader.varint64 : BinaryReader -> result<i64, string>
+```
+
+A signed 64-bit number as `BinaryWriter.varint64` writes it.
+
 ### `BinaryReader.varint`
 
 ```zsharp
 BinaryReader.varint : BinaryReader -> result<int, string>
 ```
 
-A signed number as `BinaryWriter.varint` writes it.
+A signed number as `BinaryWriter.varint` writes it; an `Error` for one that doesn't fit an
+`int` (a 64-bit machine's, read where `int` is 32 bits).
 
 ### `BinaryReader.float`
 
@@ -369,6 +387,15 @@ Binary.toBytes : 'a -> array<u8> when 'a : Binary
 
 The value's bytes.
 
+### `Binary.ofBytesWith`
+
+```zsharp
+Binary.ofBytesWith : Binary.Options -> span<u8> -> result<'a, string> when 'a : Binary
+```
+
+The value the bytes hold, its records and unions nested at most `options.depth` levels; an
+`Error` when they don't hold one, or hold more than one.
+
 ### `Binary.ofBytes`
 
 ```zsharp
@@ -376,4 +403,6 @@ Binary.ofBytes : span<u8> -> result<'a, string> when 'a : Binary
 ```
 
 The value the bytes hold; an `Error` when they don't hold one, or hold more than one.
+Records and unions nest at most 1,000 levels, 32 where `int` is 32 bits (a microcontroller's
+stack can be 4 KB, and a level is a call); `ofBytesWith` sets another limit.
 

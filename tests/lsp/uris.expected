@@ -1,0 +1,3 @@
+"uri":"file://DIR/local.zs","diagnostics":[]
+"uri":"file://DIR/with%20space.zs","diagnostics":[]
+"uri":"file://DIR/up.zs","diagnostics":[]

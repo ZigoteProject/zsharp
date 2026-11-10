@@ -171,7 +171,7 @@ true true
 **What a string is:** an immutable sequence of UTF-8 bytes. `+` joins two strings.
 
 **Interpolation:** `$"..."` evaluates the expressions in braces and inserts their text. Any value with a `Show` impl can go in a hole: numbers, strings, records, unions, lists and options all have one.
-- **Formats and widths,** as in .NET: `{ratio:F2}` (fixed, two decimals), `{n:N0}` (with commas), `{flags:X8}` (hex), `{id:D5}`, `{x:E2}`, `{bits:B8}`; `{name,10}` pads on the left to 10 characters and `{name,-10}` on the right, and `{x,8:F1}` does both. A specifier a number doesn't have is a compile error. A tuple in a hole is written `{(a, b)}`.
+- **Formats and widths,** as in .NET: `{ratio:F2}` (fixed, two decimals), `{n:N0}` (with commas), `{flags:X8}` (hex), `{id:D5}`, `{x:E2}`, `{bits:B8}`; `{name,10}` pads on the left to 10 characters and `{name,-10}` on the right (a million at most), and `{x,8:F1}` does both. A specifier is a letter and at most two digits, so a width or a precision is at most 99, and one a number doesn't have is a compile error; `Format.format n spec` with a `spec` made at run time is checked by the same rules, and panics on one they refuse. A tuple in a hole is written `{(a, b)}`.
 
 **Escapes:** `\n`, `\r`, `\t`, `\0`, `\"`, `\'`, `\\`, and `\u{e9}` for any Unicode character by its hex code.
 - **Over several lines:** a string can span lines, and the line breaks are part of it.
@@ -269,7 +269,7 @@ a! b!
 ```
 
 **Loops:**
-- `for i in a .. b` counts up to `b` inclusive, and `a .. step .. b` uses a step, which can be negative.
+- `for i in a .. b` counts up to `b` inclusive, and `a .. step .. b` uses a step, which can be negative. The loop ends where the next step would pass `b`, so `b` can be the type's last value: `for c in u8 0 .. u8 255` runs 256 times.
 - `for x in xs` goes over any collection: a list, an array, a Buffer, a string's characters, an option, a `Map`'s entries (`for (k, v) in m`), a `Set`, a `HashMap` or a `Seq`, and a type of your own with an `Iter` impl ([traits](06-traits.md#traits-with-several-parameters)). Each compiles to one loop with the body in place, and the body may assign the function's mutable variables.
 - There's no `break`: to stop at the first match use `Iter.exists`, `Iter.tryFind` or `List.tryFind`.
 

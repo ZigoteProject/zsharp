@@ -6,3 +6,8 @@ Ok [1; -2; 300]
 8
 Error the bytes end at 1 Error 1 bytes after the value Error unknown case Square
 true true
+Error the bytes end in a string at 11 Error the bytes end in a string at 11 Error string 18446744073709551615 isn't written yet
+Error a list of -1 elements Error a list of 4611686018427387904 elements, with 0 bytes left Error a list of 1000 elements, with 0 bytes left true
+Error nesting deeper than 1000 levels Error the bytes end at 2006 Error nesting deeper than 1000 levels true
+true true Error 300 doesn't fit an i8 Error 70000 doesn't fit a u16
+Ok [70000; 1073741824] Ok 0.1 3

@@ -71,26 +71,32 @@ let private skipSpace (r: Reader) =
     i <- i + 1
   advanceTo r i
 
-// past a run that ends with `close` (a comment, a declaration, CDATA): Error when it doesn't end
+// past a run that ends with `close` (a comment, a declaration, CDATA), found in the text itself
+// (a copy of the rest per comment would be quadratic): Error when it doesn't end
 let private skipPast (r: Reader) (close: string) (what: string) : result<unit, string> =
-  match String.indexOf close (String.sub r.s r.pos.Value (r.n - r.pos.Value)) with
-  | Some k ->
-    advanceTo r (r.pos.Value + k + String.length close)
+  let k = String.indexOfFrom r.s close r.pos.Value
+  if k < 0 then fail r $"{what} isn't closed"
+  else
+    advanceTo r (k + String.length close)
     Ok ()
-  | None -> fail r $"{what} isn't closed"
 
 /// Text with its entities decoded: &lt; &gt; &amp; &quot; &apos; and &#n; or &#xn;.
 let decode (s: string) : string =
   if not (String.contains "&" s) then s
   else
     let n = String.length s
-    let mutable out = ""
+    // the pieces, joined once; an entity's ';' looked for in the ten bytes after its '&' alone,
+    // so neither is quadratic in a text of many '&'
+    let pieces = Buffer.empty
     let mutable from = 0
     let mutable i = 0
     while i < n do
       if String.byte s i = u8 38 then
-        match String.indexOf ";" (String.sub s i (n - i)) with
-        | Some k when k <= 10 ->
+        let mutable k = 1
+        while k <= 10 && i + k < n && String.byte s (i + k) <> u8 59 do
+          k <- k + 1
+        if k > 10 || i + k >= n then i <- i + 1
+        else
           let name = String.sub s (i + 1) (k - 1)
           let replaced =
             match name with
@@ -109,14 +115,15 @@ let decode (s: string) : string =
               else None
           match replaced with
           | Some t ->
-            out <- out + String.sub s from (i - from) + t
+            Buffer.push (String.sub s from (i - from)) pieces
+            Buffer.push t pieces
             i <- i + k + 1
             from <- i
           | None -> i <- i + 1
-        | _ -> i <- i + 1
       else
         i <- i + 1
-    out + String.sub s from (n - from)
+    Buffer.push (String.sub s from (n - from)) pieces
+    String.concat (Array.toList (Buffer.toArray pieces))
 
 let private nameAt (r: Reader) : string =
   let start = r.pos.Value
@@ -205,13 +212,13 @@ and private content (r: Reader) (name: string) (attrs: list<string * string>) (d
         | Ok _ -> from.Value <- r.pos.Value
       else if startsAt r i "<![CDATA[" then
         let start = i + 9
-        match String.indexOf "]]>" (String.sub r.s start (r.n - start)) with
-        | Some k ->
-          let piece = String.sub r.s start k
+        let k = String.indexOfFrom r.s "]]>" start
+        if k < 0 then stop <- Some(fail r "CDATA isn't closed")
+        else
+          let piece = String.sub r.s start (k - start)
           if piece <> "" then texts.Value <- piece :: texts.Value
-          advanceTo r (start + k + 3)
+          advanceTo r (k + 3)
           from.Value <- r.pos.Value
-        | None -> stop <- Some(fail r "CDATA isn't closed")
       else if startsAt r i "<?" then
         match skipPast r "?>" "a processing instruction" with
         | Error e -> stop <- Some(Error e)

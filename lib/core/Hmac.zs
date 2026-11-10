@@ -19,3 +19,17 @@ let sha256 (key: span<u8>) (message: span<u8>) : array<u8> =
     Buffer.blit rest 0 b 64 n
     b
   Sha256.hash (padded (u8 0x5c) (Sha256.hash (padded (u8 0x36) message)))
+
+/// Whether `tag` is the message's HMAC-SHA256 under the key, compared in a time that doesn't
+/// depend on where they differ (`Bytes.fixedTimeEquals`): check a JWT's signature with this, the
+/// signature decoded from Base64, never with `=`, whose time tells a forger how much is right.
+///
+/// ```zsharp
+/// let key = String.bytes "key"
+/// let message = String.bytes "The quick brown fox jumps over the lazy dog"
+/// let tag = Hmac.sha256 key message
+/// println $"{Hmac.verify key message tag} {Hmac.verify key message (Array.set tag 31 (u8 0))}"
+/// // => true false
+/// ```
+let verify (key: span<u8>) (message: span<u8>) (tag: span<u8>) : bool =
+  Bytes.fixedTimeEquals (sha256 key message) tag

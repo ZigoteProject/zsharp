@@ -128,9 +128,16 @@ echo "time tests/json.zs: $(grep -E '^(parse|total)' "$tmp/time.log" | tr -s ' '
 vg=(); [ $valgrind = 1 ] && vg=(--valgrind)
 if diff <(tests/task/echo.sh "${vg[@]}" 2>&1) tests/task/echo.expected >"$tmp/echo.diff"; then echo "ok   tests/task/echo.sh (an echo server, 1,000 connections)"
 else echo "FAIL tests/task/echo.sh"; cat "$tmp/echo.diff"; fail=1; fi
+# the guide's accept loop out of descriptors: it pauses, sees its clients go, and goes on (a
+# descriptor limit and bash's /dev/tcp: not Windows's)
+if [ $windows = 1 ]; then echo "skip tests/task/emfile.sh (no descriptor limit for sockets on Windows)"
+elif diff <(tests/task/emfile.sh 2>&1) tests/task/emfile.expected >"$tmp/emfile.diff"; then echo "ok   tests/task/emfile.sh (accept out of descriptors)"
+else echo "FAIL tests/task/emfile.sh"; cat "$tmp/emfile.diff"; fail=1; fi
 
-# threads under ThreadSanitizer: the pool, Atomic, Mutex, Channel and Task.spawn race on nothing
-for t in tests/parallel/basics tests/parallel/anythread tests/task/spawn tests/task/cancel; do
+# threads under ThreadSanitizer: the pool, Atomic, Mutex, Channel, Spsc, Task.spawn and a weak
+# reference to a value another thread drops race on nothing, and at exit nothing is used after
+# it's freed
+for t in tests/parallel/basics tests/parallel/anythread tests/parallel/spsc tests/parallel/exit tests/parallel/weak tests/task/spawn tests/task/cancel; do
   [ $windows = 1 ] && { echo "skip $t.zs under ThreadSanitizer (none for mingw-w64)"; continue; }
   if bin/zs build $t.zs -o "$tmp/tsan" --sanitize=thread 2>"$tmp/tsan.log" && actual=$(timeout 120 "$tmp/tsan" 2>"$tmp/tsan.log") \
      && [ "$actual" = "$(cat $t.out)" ] && ! grep -q ThreadSanitizer "$tmp/tsan.log"; then echo "ok   $t.zs under ThreadSanitizer"
@@ -165,6 +172,16 @@ if [ $windows = 1 ]; then echo "skip zs doctor (an old clang): Windows starts no
 elif ! PATH="$tmp/oldclang:$PATH" bin/zs doctor >"$tmp/doctor-old.log" 2>&1 && grep -q '^--   clang .*: too old, LLVM 23 or later is needed' "$tmp/doctor-old.log"; then echo "ok   zs doctor (an old clang)"
 else echo "FAIL zs doctor (an old clang)"; cat "$tmp/doctor-old.log"; fail=1; fi
 
+# src/install.sh: its paths are the caller's, a prefix's directory or the checkout is refused with
+# nothing deleted, a binary that isn't there fails it
+if diff <(tests/install.sh 2>&1) tests/install.expected >"$tmp/install.diff"; then echo "ok   tests/install.sh (src/install.sh refuses what isn't its own)"
+else echo "FAIL tests/install.sh"; cat "$tmp/install.diff"; fail=1; fi
+# src/release.sh's archive: root's, written by its owner only, whoever built it; a numbered
+# release of a tree with files git doesn't have refused (Linux's and macOS's script)
+if [ $windows = 1 ]; then echo "skip tests/release.sh (src/release.sh is Linux's and macOS's)"
+elif diff <(tests/release.sh 2>&1) tests/release.expected >"$tmp/release.diff"; then echo "ok   tests/release.sh (release archives owned by root, modes normalised)"
+else echo "FAIL tests/release.sh"; cat "$tmp/release.diff"; fail=1; fi
+
 # doc tests (0009, D8): the library's examples in its /// comments, and zs test --doc --update
 # rewriting a block's expectations
 if out=$(bin/zs test --doc $(grep -rl '/// ```zsharp' lib) 2>&1); then echo "ok   the library's doc tests ($(echo "$out" | tail -1))"
@@ -173,7 +190,10 @@ if diff <(tests/doctest.sh 2>&1) tests/doctest.expected >"$tmp/doctest.diff"; th
 else echo "FAIL tests/doctest.sh"; cat "$tmp/doctest.diff"; fail=1; fi
 
 # zs provide (0001): the providers' modules, and a program built with them beside it
-if diff <(tests/providers/provide.sh bin/zs 2>&1) tests/providers/provide.expected >"$tmp/provide.diff"; then echo "ok   tests/providers/provide.sh (zs provide json, csv, sql and svd, and one on PATH)"
+# (on Windows up to the checks that need /dev/zero or a shell script as a program)
+provexp=tests/providers/provide.expected
+[ $windows = 1 ] && { sed '/^json: \/dev\/zero /,$d' tests/providers/provide.expected >"$tmp/provide.expected"; provexp=$tmp/provide.expected; }
+if diff <(tests/providers/provide.sh bin/zs 2>&1) "$provexp" >"$tmp/provide.diff"; then echo "ok   tests/providers/provide.sh (zs provide json, csv, sql and svd, and one on PATH)"
 else echo "FAIL tests/providers/provide.sh"; cat "$tmp/provide.diff"; fail=1; fi
 # the Nucleo firmware on the chip's SVD compiles to the same register accesses as the Mmio one,
 # counted in the IR as LLVM's opt optimizes it (LLVM's Windows installer has no opt; its release
@@ -186,7 +206,7 @@ else echo "FAIL tests/providers/svd_nucleo.sh"; echo "$out"; fail=1; fi
 # Windows' builds are one module, through mingw-w64's path (Options.nativeTarget) and not the
 # host's module per file, so they report no module cache and no clang jobs: the rest is the same
 cacheexp=tests/cache.expected
-[ $windows = 1 ] && { sed 's/ module cache .*//' tests/cache.expected >"$tmp/cache.expected"; cacheexp=$tmp/cache.expected; }
+[ $windows = 1 ] && { sed "s/ module cache .*//; /^beside another build's IR: /d; /^a stopped build's files kept: /d" tests/cache.expected >"$tmp/cache.expected"; cacheexp=$tmp/cache.expected; }
 if diff <(tests/cache.sh 2>&1) "$cacheexp" >"$tmp/cache.diff"; then echo "ok   tests/cache.sh (checked library, modules and compiled modules cached)"
 else echo "FAIL tests/cache.sh"; cat "$tmp/cache.diff"; fail=1; fi
 if [ $windows = 1 ]; then echo "skip tests/pgo.sh (no profile runtime for mingw-w64: zig cc links Windows' programs, and zs build refuses --profile-generate there)"
@@ -200,6 +220,21 @@ else echo "FAIL tests/pgo.sh"; cat "$tmp/pgo.diff"; fail=1; fi
 if [ "$(uname -s)" != Linux ]; then echo "skip tests/stress.sh (the compiler's deep stack is Linux's)"
 elif diff <(tests/stress.sh 2>&1) tests/stress.expected >"$tmp/stress.diff"; then echo "ok   tests/stress.sh (long literals, long runs of statements, deep nesting)"
 else echo "FAIL tests/stress.sh"; cat "$tmp/stress.diff"; fail=1; fi
+# and with the stack unlimited (ulimit -s unlimited), which the runtime takes as 8 MB a thread: the
+# compiler's pool threads, which run its passes over each function, still get their 256 MB
+# (src/host.c). stress.sh's long list literal, run of lets and else-if chain (the last two as
+# deep in the IR those passes walk; parentheses are gone by then), which build with 256 MB
+if [ "$(uname -s)" != Linux ] || ! (ulimit -S -s unlimited) 2>/dev/null; then echo "skip the compiler with ulimit -s unlimited (Linux's, where the hard limit allows it)"
+else
+  { echo 'let main () ='; echo "  let x = [ $(seq 0 19999 | paste -sd ';' -) ]"; echo '  println $"{List.length x}"'; echo '  0'; } > "$tmp/ulist.zs"
+  { echo 'let main () ='; seq 0 4999 | sed 's/.*/  let a& = &/'; echo '  println $"{a0 + a4999}"'; echo '  0'; } > "$tmp/ulets.zs"
+  { echo 'let main () ='; echo '  let x = 4321'
+    printf '  let y = '; for i in $(seq 0 4999); do printf 'if x = %d then %d else ' $i $((i * 2)); done; echo '0'
+    echo '  println $"{y}"'; echo '  0'; } > "$tmp/uifs.zs"
+  if (ulimit -S -s unlimited && for p in ulist ulets uifs; do bin/zs build "$tmp/$p.zs" -o "$tmp/$p" || exit 1; done) >"$tmp/unlimited.log" 2>&1 \
+     && [ "$("$tmp/ulist")" = 20000 ] && [ "$("$tmp/ulets")" = 4999 ] && [ "$("$tmp/uifs")" = 8642 ]; then echo "ok   the compiler with ulimit -s unlimited (its pool threads' stacks)"
+  else echo "FAIL the compiler with ulimit -s unlimited"; grep -v '^ *[0-9]* | ' "$tmp/unlimited.log" | head -3; fail=1; fi
+fi
 # programs broken at random: errors, never a crash, a panic or a hang of zs check or zs fmt
 if out=$(tests/fuzz.sh 2>&1); then echo "ok   tests/fuzz.sh ($(echo "$out" | tail -1))"
 else echo "FAIL tests/fuzz.sh"; echo "$out" | tail -20; fail=1; fi
@@ -233,8 +268,10 @@ else echo "FAIL tests/ztest/property.sh"; diff <(tests/ztest/property.sh 2>&1) t
 # zs fuzz (0010, step 5): a property under libFuzzer, the planted bug found, shrunk, saved;
 # where clang has libFuzzer's runtime (the dev container does)
 if [ -n "$(find "$(clang -print-resource-dir 2>/dev/null)/lib" -name 'libclang_rt.fuzzer_no_main*' 2>/dev/null | head -1)" ]; then
-  if [ "$(tests/fuzz/fuzz.sh 2>&1)" = "$(cat tests/fuzz/fuzz.expected)" ]; then echo "ok   tests/fuzz/fuzz.sh (zs fuzz finds and shrinks a planted bug)"
-  else echo "FAIL tests/fuzz/fuzz.sh"; diff <(tests/fuzz/fuzz.sh 2>&1) tests/fuzz/fuzz.expected; fail=1; fi
+  # run once: the diff shows the run that failed, not another (a fuzzer's runs differ)
+  out=$(tests/fuzz/fuzz.sh 2>&1)
+  if [ "$out" = "$(cat tests/fuzz/fuzz.expected)" ]; then echo "ok   tests/fuzz/fuzz.sh (zs fuzz finds and shrinks a planted bug)"
+  else echo "FAIL tests/fuzz/fuzz.sh"; diff <(printf '%s\n' "$out") tests/fuzz/fuzz.expected; fail=1; fi
 else echo "skip tests/fuzz/fuzz.sh (no libFuzzer runtime)"; fi
 # zs bench (0009, D9): benchmarks as values, a median and a confidence interval each, a planted
 # slowdown reported against the saved run and nothing for the same build; testFaster
@@ -278,7 +315,7 @@ else echo "FAIL tests/iter/loops.sh"; diff <(tests/iter/loops.sh bin/zs 2>&1) te
 # the first-party packages: their own tests, with their C through [c] (0018 item 4)
 pk=$( (cd packages/xxhash && "$zs" test | tail -1; cd ../libclang && "$zs" test | tail -1) 2>&1 )
 if [ "$pk" = "1 passed, 0 failed
-1 passed, 0 failed" ]; then echo "ok   packages (xxhash, libclang)"
+2 passed, 0 failed" ]; then echo "ok   packages (xxhash, libclang)"
 else echo "FAIL packages"; echo "$pk"; fail=1; fi
 
 # git dependencies against a local repository: tags, branches, zs.lock, zs update, re-fetching
@@ -336,6 +373,15 @@ else echo "FAIL tests/project/workspace.sh"; cat "$tmp/ws.diff"; fail=1; fi
 # the lock's hashes, zs vendor and --offline (0018 item 6)
 if diff <(tests/project/vendor.sh 2>&1) tests/project/vendor.expected >"$tmp/vendor.diff"; then echo "ok   tests/project/vendor.sh (zs.lock hashes, zs vendor, --offline)"
 else echo "FAIL tests/project/vendor.sh"; cat "$tmp/vendor.diff"; fail=1; fi
+# symbolic links, pipes and devices in packages: hashed and vendored as links, never followed
+if [ $windows = 1 ]; then echo "skip tests/project/links.sh (symbolic links and pipes are POSIX's)"
+elif diff <(tests/project/links.sh 2>&1) tests/project/links.expected >"$tmp/links.diff"; then echo "ok   tests/project/links.sh (links hashed and vendored as links, pipes and devices refused)"
+else echo "FAIL tests/project/links.sh"; cat "$tmp/links.diff"; fail=1; fi
+# what zs writes for a dependency (import c, a provider's build) kept out of its directory, and
+# no cache written through a symbolic link (Git Bash's ln -s copies)
+if [ $windows = 1 ]; then echo "skip tests/project/depcache.sh (symbolic links, which Git Bash's ln -s copies)"
+elif diff <(tests/project/depcache.sh 2>&1) tests/project/depcache.expected >"$tmp/depcache.diff"; then echo "ok   tests/project/depcache.sh (dependencies' caches in the project, none through a link)"
+else echo "FAIL tests/project/depcache.sh"; cat "$tmp/depcache.diff"; fail=1; fi
 # zs add, zs remove and zs tree, internal modules, and Std in a chip build's dependency (0018)
 if diff <(tests/project/pkgs.sh 2>&1) tests/project/pkgs.expected >"$tmp/pkgs.diff"; then echo "ok   tests/project/pkgs.sh (zs add, remove, tree; internal modules; Std on a chip)"
 else echo "FAIL tests/project/pkgs.sh"; cat "$tmp/pkgs.diff"; fail=1; fi
@@ -453,6 +499,30 @@ if command -v qemu-system-arm >/dev/null; then
     done
   done
 fi
+# the embedded runtime's checks, on both chips under qemu: C's malloc, calloc and realloc past the
+# heap are NULL (cmalloc), Float.parse's exponent saturates (float_exp); and panics that say what's
+# wrong where memory was overwritten: a stack overflow, which faults below RAM (overflow), a line
+# past the board's table (irq_line), a Signal record Signal.create didn't make (signal_id). The two
+# that need no chip on wasm32 too, under node (its malloc and Float.parse are the same runtime's)
+if command -v qemu-system-arm >/dev/null; then
+  for chip in cortex-m4 cortex-m0plus; do
+    board=$([ $chip = cortex-m4 ] && echo mps2-an386 || echo microbit)
+    for t in cmalloc float_exp overflow irq_line signal_id; do
+      if bin/zs build tests/mcu/$t.zs --target $chip -o "$tmp/$t.elf" 2>"$tmp/$t.log" \
+         && [ "$(timeout 60 qemu-system-arm -M $board -nographic -semihosting-config enable=on,target=native -kernel "$tmp/$t.elf" 2>&1 | grep -v '^#zs')" = "$(cat tests/mcu/$t.expected)" ]; then
+        echo "ok   tests/mcu/$t.zs on $chip (under qemu)"
+      else echo "FAIL tests/mcu/$t.zs on $chip"; cat "$tmp/$t.log"; fail=1; fi
+    done
+  done
+fi
+if ! command -v node >/dev/null; then echo "skip tests/mcu/cmalloc.zs and float_exp.zs on wasm32 (no node)"
+else
+  for t in cmalloc float_exp; do
+    if bin/zs build tests/mcu/$t.zs --target wasm32 -o "$tmp/$t.wasm" 2>"$tmp/$t.log" \
+       && [ "$(node bin/run-wasm.mjs "$tmp/$t.wasm" 2>&1)" = "$(cat tests/mcu/$t.expected)" ]; then echo "ok   tests/mcu/$t.zs on wasm32 (under node)"
+    else echo "FAIL tests/mcu/$t.zs on wasm32"; cat "$tmp/$t.log"; fail=1; fi
+  done
+fi
 # .noinit on a chip (0014 item 12): the section is NOBITS in RAM (the reset handler neither copies
 # nor zeroes it), 32-byte aligned for the Buffer, holding the two refs and the 64 bytes
 if command -v qemu-system-arm >/dev/null && command -v llvm-readelf >/dev/null; then
@@ -552,16 +622,18 @@ else echo "FAIL tests/mcu/noheap.zs"; cat "$tmp/noheap.log"; fail=1; fi
 if command -v qemu-system-arm >/dev/null; then
   for chip in cortex-m4 cortex-m0plus; do
     board=$([ $chip = cortex-m4 ] && echo mps2-an386 || echo microbit)
+    out=""
     if bin/zs build tests/mcu/bytes.zs --target $chip -o "$tmp/bytes.elf" 2>"$tmp/bytes.log" \
-       && [ "$(timeout 60 qemu-system-arm -M $board -nographic -semihosting-config enable=on,target=native -kernel "$tmp/bytes.elf" 2>&1 | grep -v '^#zs')" = "$(cat tests/mcu/bytes.expected)" ]; then
+       && out=$(timeout 60 qemu-system-arm -M $board -nographic -semihosting-config enable=on,target=native -kernel "$tmp/bytes.elf" 2>&1 | grep -v '^#zs') \
+       && [ "$out" = "$(cat tests/mcu/bytes.expected)" ]; then
       echo "ok   tests/mcu/bytes.zs on $chip (under qemu)"
-    else echo "FAIL tests/mcu/bytes.zs on $chip"; cat "$tmp/bytes.log"; fail=1; fi
+    else echo "FAIL tests/mcu/bytes.zs on $chip"; cat "$tmp/bytes.log"; [ -n "$out" ] && diff <(echo "$out") tests/mcu/bytes.expected; fail=1; fi
   done
 fi
 if ! command -v node >/dev/null; then echo "skip tests/mcu/bytes.zs on wasm32 (no node)"
-elif bin/zs build tests/mcu/bytes.zs --target wasm32 -o "$tmp/bytes.wasm" 2>"$tmp/bytes.log" \
-   && [ "$(node bin/run-wasm.mjs "$tmp/bytes.wasm" 2>&1)" = "$(cat tests/mcu/bytes.expected)" ]; then echo "ok   tests/mcu/bytes.zs on wasm32 (under node)"
-else echo "FAIL tests/mcu/bytes.zs on wasm32"; cat "$tmp/bytes.log"; fail=1; fi
+elif out="" && bin/zs build tests/mcu/bytes.zs --target wasm32 -o "$tmp/bytes.wasm" 2>"$tmp/bytes.log" \
+   && out=$(node bin/run-wasm.mjs "$tmp/bytes.wasm" 2>&1) && [ "$out" = "$(cat tests/mcu/bytes.expected)" ]; then echo "ok   tests/mcu/bytes.zs on wasm32 (under node)"
+else echo "FAIL tests/mcu/bytes.zs on wasm32"; cat "$tmp/bytes.log"; [ -n "$out" ] && diff <(echo "$out") tests/mcu/bytes.expected; fail=1; fi
 # Math where libm is compiler-rt's and the runtime's (pow, atan2, round: fdlibm's, checked against
 # the host's libm by tests/libm.sh), with a host's results: both chips under qemu, and wasm32
 if out=$(tests/libm.sh "${cc[@]}" 2>&1); then echo "ok   tests/libm.sh (the runtime's pow, atan2 and round against the host's libm)"
@@ -585,6 +657,12 @@ if ! command -v node >/dev/null; then echo "skip tests/security/replace32.zs on 
 elif bin/zs build tests/security/replace32.zs --target wasm32 -o "$tmp/replace32.wasm" 2>"$tmp/replace32.log" \
    && [ "$(node bin/run-wasm.mjs "$tmp/replace32.wasm" 2>&1)" = "$(cat tests/security/replace32.expected)" ]; then echo "ok   tests/security/replace32.zs on wasm32 (under node)"
 else echo "FAIL tests/security/replace32.zs on wasm32"; cat "$tmp/replace32.log"; fail=1; fi
+# Format.format's specifier made at run time, checked by rt-embedded.c as by rt.c: the widest
+# that fits its buffers, and one with letters for digits panicking, as on the host
+if ! command -v node >/dev/null; then echo "skip tests/security/format_spec.zs on wasm32 (no node)"
+elif bin/zs build tests/security/format_spec.zs --target wasm32 -o "$tmp/fspec.wasm" 2>"$tmp/fspec.log" \
+   && [ "$(node bin/run-wasm.mjs "$tmp/fspec.wasm" 2>&1)" = "$(cat tests/security/format_spec.out)" ]; then echo "ok   tests/security/format_spec.zs on wasm32 (under node)"
+else echo "FAIL tests/security/format_spec.zs on wasm32"; cat "$tmp/fspec.log"; fail=1; fi
 
 # C interop on a chip, both ways, under qemu: Z# calling C with structs by value in every shape
 # (AAPCS, hard and soft float), and a C firmware with its own startup calling a Z# library built
@@ -672,7 +750,7 @@ else echo "ok   library documented; docs/reference current"; fi
 
 # the repository's own Z# code is formatted (zs fmt); the tests of parse errors don't parse, so
 # they have no layout to check
-unparsed='tests/err_and.zs|tests/err_operator_builtin.zs|tests/newcomer/(let_without_in|try_with|class|mutable_field|increment|return_braces).zs'
+unparsed='tests/err_(and|operator_builtin|float_literal|hole_width|unit_exponent).zs|tests/newcomer/(let_without_in|try_with|class|mutable_field|increment|return_braces).zs'
 formatted=$(find tests lib packages -name .zs-cache -prune -o -name '*.zs' -print | grep -Ev "^($unparsed)\$")
 if bin/zs fmt --check $formatted 2>"$tmp/fmt.log"; then echo "ok   zs fmt --check"
 else echo "FAIL zs fmt --check (run: bin/zs fmt \$(find tests lib packages -name '*.zs'))"; cat "$tmp/fmt.log"; fail=1; fi
@@ -682,6 +760,10 @@ else echo "FAIL tests/cst/roundtrip.sh"; echo "$out" | head; fail=1; fi
 # zs fmt reflows lines over 100 columns on the tree, keeping comments (--stdin, as editors pipe)
 if diff <(bin/zs fmt --stdin < tests/fmt/reflow.in 2>&1) tests/fmt/reflow.zs >"$tmp/reflow.diff"; then echo "ok   tests/fmt/reflow (zs fmt --stdin)"
 else echo "FAIL tests/fmt/reflow"; cat "$tmp/reflow.diff"; fail=1; fi
+# zs fmt writes a file whole or not at all, with its permissions (POSIX's: chmod, ulimit -f)
+if [ $windows = 1 ]; then echo "skip tests/fmt/write.sh (POSIX's permissions and file size limit)"
+elif diff <(tests/fmt/write.sh 2>&1) tests/fmt/write.expected >"$tmp/fmtwrite.diff"; then echo "ok   tests/fmt/write.sh (zs fmt's write: whole or not at all, the mode kept)"
+else echo "FAIL tests/fmt/write.sh"; cat "$tmp/fmtwrite.diff"; fail=1; fi
 
 # the release the compiler reports (zs --version, and to editors in LSP's and MCP's serverInfo) is
 # src/zs.toml's
@@ -726,6 +808,14 @@ else echo "FAIL tests/lsp/hints.sh"; cat "$tmp/lsph.diff"; fail=1; fi
 # sample watched and completion following an edit to it (tests/lsp/providers.sh)
 if diff <(tests/lsp/providers.sh bin/zs 2>&1) tests/lsp/providers.expected >"$tmp/lspp.diff"; then echo "ok   tests/lsp/providers.sh (a provided module's fields, the sample watched)"
 else echo "FAIL tests/lsp/providers.sh"; cat "$tmp/lspp.diff"; fail=1; fi
+# a package's provider in the editor: built and run only by a server started with --trust, the
+# module from the last build otherwise (tests/lsp/trust.sh)
+if diff <(tests/lsp/trust.sh bin/zs 2>&1) tests/lsp/trust.expected >"$tmp/lsptrust.diff"; then echo "ok   tests/lsp/trust.sh (a package's provider runs only with --trust)"
+else echo "FAIL tests/lsp/trust.sh"; cat "$tmp/lsptrust.diff"; fail=1; fi
+# document URIs as the files they name: a localhost authority, a percent-encoded space, a path
+# through .. (tests/lsp/uris.sh)
+if diff <(tests/lsp/uris.sh bin/zs 2>&1) tests/lsp/uris.expected >"$tmp/lspuri.diff"; then echo "ok   tests/lsp/uris.sh (document URIs read as their files)"
+else echo "FAIL tests/lsp/uris.sh"; cat "$tmp/lspuri.diff"; fail=1; fi
 # editing through the server (0019): renaming a record field across modules, signature help,
 # code actions (tests/lsp/edits.sh)
 if diff <(tests/lsp/edits.sh bin/zs 2>&1) tests/lsp/edits.expected >"$tmp/lspx.diff"; then echo "ok   tests/lsp/edits.sh"

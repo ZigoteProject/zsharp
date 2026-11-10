@@ -46,4 +46,40 @@ let main () =
     Block [ { label = "a"; body = Num 1 }
       { label = "b"; body = Block [ { label = "c"; body = Num -2 } ] } ]
   println $"{same program} {same { label = "top"; body = program }}"
+  // lengths from elsewhere: a string's of 2^64 - 1 or 2^63 (a negative int, converted first), a
+  // string's number past int's, a list's negative or past the bytes left (or of units, past the
+  // cap): each an Error, nothing read or made of the size it claims
+  let huge =
+    [| u8 0; u8 255; u8 255; u8 255; u8 255; u8 255; u8 255; u8 255; u8 255; u8 255; u8 1 |]
+  let half =
+    [| u8 0; u8 128; u8 128; u8 128; u8 128; u8 128; u8 128; u8 128; u8 128; u8 128; u8 1 |]
+  let s1: result<string, string> = Binary.ofBytes huge
+  let s2: result<Shape, string> = Binary.ofBytes half
+  let s3: result<string, string> = Binary.ofBytes huge.[1..]
+  println $"{s1} {s2} {s3}"
+  let l1: result<list<unit>, string> = Binary.ofBytes [| u8 1 |]
+  let l2: result<list<unit>, string> = Binary.ofBytes half.[1..]
+  let l3: result<array<int>, string> = Binary.ofBytes [| u8 0xD0; u8 0x0F; u8 2 |]
+  println $"{l1} {l2} {Result.map (fun (x: array<int>) -> Array.toList x) l3} {same [ (); (); () ]}"
+  // nesting: past the limit an Error, not a stack run out (after "Node" once, a level is a byte)
+  let deep = Buffer.ofArray [| u8 0; u8 4; u8 78; u8 111; u8 100; u8 101 |]
+  for _ in 1 .. 2000 do
+    Buffer.push (u8 1) deep
+  let d1: result<Tree, string> = Binary.ofBytes deep
+  let d2: result<Tree, string> = Binary.ofBytesWith { depth = 3000 } deep
+  let rec chain (n: int) (t: Tree) = if n = 0 then t else chain (n - 1) (Node (t, n, Leaf))
+  let long = chain 1500 Leaf
+  let cut: result<Tree, string> = Binary.ofBytes (Binary.toBytes long)
+  let whole: result<Tree, string> = Binary.ofBytesWith { depth = 2000 } (Binary.toBytes long)
+  println $"{d1} {d2} {cut} {whole = Ok long}"
+  // numbers: i64 and int as the same bytes, i64's ends; one too big for its type an Error
+  let narrow: result<i8, string> = Binary.ofBytes (Binary.toBytes 300)
+  let small: result<u16, string> = Binary.ofBytes (Binary.toBytes (u64 70000))
+  let sameBytes = Array.toList (Binary.toBytes (i64 -5)) = Array.toList (Binary.toBytes -5)
+  println $"{sameBytes} {same (i64 -9223372036854775807 - i64 1, i64 9223372036854775807)} {narrow} {small}"
+  // a literal only Binary constrains is an int (a float an f64), not the first type with an impl
+  // (i16, which held 70000 as 4464, and f32)
+  let lits: result<list<int>, string> = Binary.ofBytes (Binary.toBytes [ 70000; 1073741824 ])
+  let tenth: result<f64, string> = Binary.ofBytes (Binary.toBytes 0.1)
+  println $"{lits} {tenth} {Array.length (Binary.toBytes 70000)}"
   0

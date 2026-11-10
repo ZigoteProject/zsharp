@@ -1,0 +1,14 @@
+words 4
+== the file a link points at changes
+fetched: the lock's hash is the link's, not the file's
+== zs vendor and a link out of the package
+zs: vendor linked: NOTES is a symbolic link to …/secret, which leads out of the package (or nowhere); zs vendor copies a link only when it leads inside
+packages vendored: 0
+== zs vendor and a link inside it
+vendored linked v2 into vendor/linked
+vendor/linked/Alias.zs is a link to src/Text.zs
+words 4
+== a pipe in a vendored package
+zs: vendored linked: pipe isn't a file, a directory or a symbolic link (a pipe or a device?)
+== a dependency's main that's a device
+../dev/src/Dev.zs isn't a regular file but a pipe or a device

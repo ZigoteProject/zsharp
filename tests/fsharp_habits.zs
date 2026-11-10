@@ -49,6 +49,11 @@ let main () =
   Buffer.push "one" log.lines
   println $"{Buffer.length seen} {Buffer.length log.lines}"
   println $"{handle 2} {asked ()}"
+  // inside brackets too, with a record's `with` further on
+  let ys = List.map (fun x -> handle x) [ 1; 2 ]
+  let origin: Point = { x = 0; y = 0 }
+  let moved = { origin with x = 9 }
+  println $"{ys} {moved.x}"
   let pair: Pair = { a = 5; b = 6 }
   println $"{pair.a + pair.b} {sizeof<Pair>}"
   0

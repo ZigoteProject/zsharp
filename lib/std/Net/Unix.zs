@@ -5,7 +5,8 @@ namespace Net
 
 /// Functions on Unix sockets.
 module Unix =
-  /// A socket listening at `path`; a socket file left there by an earlier run is removed first.
+  /// A socket listening at `path`. A socket an earlier run left there (one no server listens
+  /// on) is removed first; anything else there is an error, a file or a live server's socket.
   let listen (path: string) : result<TcpListener, string> =
     let fd = Native.unixListen path
     if fd < 0 then Error (Native.errorText fd) else Ok (TcpListener fd)
@@ -13,14 +14,15 @@ module Unix =
   /// Waits for the next connection: `Tcp.accept`, which takes a Unix listener too.
   let accept (l: TcpListener) : Task<result<TcpStream, string>> = Tcp.accept l
 
-  /// A connection to the socket at `path`.
+  /// A connection to the socket at `path`. Cancelled before it has connected, it closes the
+  /// socket it was connecting.
   let connect (path: string) : Task<result<TcpStream, string>> =
     task {
       let fd = Native.unixConnect path
       if fd < 0 then
         return Error (Native.errorText fd)
       else
-        do! Task.waitFor fd true
+        do! waitOrClose fd true
         let e = Native.socketError fd
         if e <> 0 then
           Native.fdClose fd

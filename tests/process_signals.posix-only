@@ -1,0 +1,1 @@
+SIGPIPE, SIGCHLD and the shell's tools (yes, timeout, chmod) are Linux's and macOS's

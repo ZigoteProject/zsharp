@@ -33,12 +33,11 @@ let cells (separator: string) (text: string) : list<list<string>> =
     if quoted then
       if b = quote then
         if i + 1 < n && String.byte text (i + 1) = quote then
-          // a doubled quote: one, and the run goes on after both
-          cell.Value <- cell.Value + String.sub text from (i + 1 - from)
+          // a doubled quote: one, made so when the run ends (a copy per quote would be quadratic)
           i <- i + 2
-          from <- i
         else
-          cell.Value <- cell.Value + String.sub text from (i - from)
+          // the run, each quote in it one of a doubled pair
+          cell.Value <- cell.Value + String.replace (String.sub text from (i - from)) "\"\"" "\""
           quoted <- false
           i <- i + 1
           from <- i
@@ -64,9 +63,11 @@ let cells (separator: string) (text: string) : list<list<string>> =
       from <- i
     else
       i <- i + 1
-  // the last cell and row, when the text doesn't end with a line break
+  // the last cell and row, when the text doesn't end with a line break (a run in quotes left
+  // open read as if closed there)
   if from < n || cell.Value <> "" || not (List.isEmpty row.Value) then
-    cell.Value <- cell.Value + String.sub text from (n - from)
+    let rest = String.sub text from (n - from)
+    cell.Value <- cell.Value + (if quoted then String.replace rest "\"\"" "\"" else rest)
     endCell ()
     endRow ()
   List.rev rows.Value
@@ -119,12 +120,9 @@ let private overridesOf (types: string) : result<list<string * string>, string> 
       | Error e -> Error e
   if types = "" then Ok [] else go (String.split "," types) []
 
-// a string as a Z# literal
-let private literal (s: string) = "\"" + String.replace (String.replace s "\\" "\\\\") "\"" "\\\"" + "\""
-
 // the reader above, as the module's own (Core only, so a microcontroller build has it)
 let private readerText (separator: string) : list<string> =
-  [ "let private separator = " + literal separator
+  [ "let private separator = " + Names.literal separator
     ""
     "/// The cells of every row: a cell in quotes may hold the separator, a quote doubled, and a line"
     "/// break; \\r\\n ends a row as \\n does; a last line without a line break is a row."
@@ -154,11 +152,9 @@ let private readerText (separator: string) : list<string> =
     "    if quoted then"
     "      if b = quote then"
     "        if i + 1 < n && String.byte text (i + 1) = quote then"
-    "          cell.Value <- cell.Value + String.sub text from (i + 1 - from)"
     "          i <- i + 2"
-    "          from <- i"
     "        else"
-    "          cell.Value <- cell.Value + String.sub text from (i - from)"
+    "          cell.Value <- cell.Value + String.replace (String.sub text from (i - from)) \"\\\"\\\"\" \"\\\"\""
     "          quoted <- false"
     "          i <- i + 1"
     "          from <- i"
@@ -185,7 +181,8 @@ let private readerText (separator: string) : list<string> =
     "    else"
     "      i <- i + 1"
     "  if from < n || cell.Value <> \"\" || not (List.isEmpty row.Value) then"
-    "    cell.Value <- cell.Value + String.sub text from (n - from)"
+    "    let rest = String.sub text from (n - from)"
+    "    cell.Value <- cell.Value + (if quoted then String.replace rest \"\\\"\\\"\" \"\\\"\" else rest)"
     "    endCell ()"
     "    endRow ()"
     "  List.rev rows.Value"
@@ -257,20 +254,26 @@ let provide (file: string) (text: string) (opts: list<string * string>) : result
         match tooWide with
         | Some r -> Error (file + ": a row has " + string (List.length r) + " cells, the header " + string width)
         | None ->
-          let at (i: int) (r: list<string>) = if i < List.length r then List.item i r else ""
+          // each row's cells as an array, so a cell is found in one step however wide the file
+          let cellsOf = List.map (fun (r: list<string>) -> Array.ofList r) data
+          let at (i: int) (r: array<string>) = if i < Array.length r then r.[i] else ""
           let column (ih: int * string) : Column =
             let (i, h) = ih
-            let values = List.map (at i) data
+            let values = List.map (at i) cellsOf
             let kind =
               match List.tryFind (fun (c, _) -> c = h) overrides with
               | Some(_, t) -> t
               | None -> kindOf values
             { header = h; kind = kind; optional = List.exists (fun (v: string) -> v = "") values }
           let columns = List.map column (index 0 headers)
-          let duplicate = List.tryFind (fun (c: Column) -> List.length (List.filter (fun (d: Column) -> d.header = c.header) columns) > 1) columns
-          match (List.tryFind (fun (c: Column) -> c.header = "") columns, duplicate) with
-          | (Some _, _) -> Error (file + ": a column has no name (hasHeaders = false names them col1, col2, …)")
-          | (_, Some c) -> Error (file + ": two columns are named '" + c.header + "'")
+          let rec twice (seen: Set<string>) (cs: list<Column>) : option<Column> =
+            match cs with
+            | [] -> None
+            | c :: rest -> if Set.contains c.header seen then Some c else twice (Set.add c.header seen) rest
+          match (List.tryFind (fun (c: Column) -> c.header = "") columns, twice Set.empty columns, Names.unnamed headers) with
+          | (Some _, _, _) -> Error (file + ": a column has no name (hasHeaders = false names them col1, col2, …)")
+          | (_, Some c, _) -> Error (file + ": two columns are named '" + c.header + "'")
+          | (_, _, Some e) -> Error (file + ": " + e)
           | _ ->
             let fieldOf (c: Column) = Names.fieldName c.header
             let typeOf (c: Column) = if c.optional then "option<" + c.kind + ">" else c.kind
@@ -286,7 +289,7 @@ let provide (file: string) (text: string) (opts: list<string * string>) : result
             let binds =
               List.map (fun (ic: int * Column) ->
                 let (i, c) = ic
-                "        let! f" + string i + " = " + reader c + " " + literal c.header + " (at " + string i + ")") (index 0 columns)
+                "        let! f" + string i + " = " + reader c + " " + Names.literal c.header + " (at " + string i + ")") (index 0 columns)
             let built = String.join "; " (List.map (fun (ic: int * Column) -> fieldOf (snd ic) + " = f" + string (fst ic)) (index 0 columns))
             let shown (ic: int * Column) =
               let (i, c) = ic
@@ -296,11 +299,11 @@ let provide (file: string) (text: string) (opts: list<string * string>) : result
                 "(match " + value + " with\n        | Some v -> " + inner + "\n        | None -> \"\")"
               else if c.kind = "string" then "quoted " + value
               else "string " + value
-            let headerLiteral = String.join "; " (List.map (fun (c: Column) -> literal c.header) columns)
+            let headerLiteral = String.join "; " (List.map (fun (c: Column) -> Names.literal c.header) columns)
             let headerLine = String.join separator headers
-            let header = [ "// provided by csv 0.1 from " + file; "// input: " + file; "" ]
+            let header = [ Names.oneLine ("// provided by csv 0.1 from " + file); Names.oneLine ("// input: " + file); "" ]
             let declaration =
-              [ "/// From \"" + file + "\": " + Names.clip 100 headerLine
+              [ Names.oneLine ("/// From \"" + file + "\": ") + Names.clip 100 headerLine
                 "type Row = { " + String.join "; " fields + " }"
                 "" ]
             let rowText =

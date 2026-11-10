@@ -84,4 +84,48 @@ echo "--- the same text twice"
 echo "--- main.zs with the modules beside it"
 cp main.zs weather.json stocks.csv "$dir/"
 (cd "$dir" && ZS_NO_SERVER=1 "$zs" build --strict main.zs -o main && ./main)
+echo "--- what a file holds stays data: a key, a header, a column, a register's name"
+# a key that would end the backticks, the record and the line, and go on as code: refused
+printf '{"a``: int }\\nlet pwned = 1\\ntype Junk = { ``b": 1}\n' > "$dir/hostile.json"
+"$zs" provide json "$dir/hostile.json" 2>&1 | sed "s|$at/||"; echo "exit ${PIPESTATUS[0]}"
+printf '"x\ny",b\n1,2\n' > "$dir/hostile.csv"
+"$zs" provide csv "$dir/hostile.csv" 2>&1 | sed "s|$at/||"; echo "exit ${PIPESTATUS[0]}"
+# a quote, a backtick, an interpolation and a backslash: a field in double backticks, which the
+# derive reads and writes back as the key
+cat > "$dir/odd.json" <<'JSON'
+{"q\"$\"{1}\"`b\\": "it's"}
+JSON
+"$zs" provide json "$dir/odd.json" | sed "s|$at/||" | grep -E '^type|^/// From'
+printf 'module Odd = import json "odd.json"\n\nlet main () =\n  match File.readAllText "odd.json" with\n  | Error e -> println e\n  | Ok text ->\n    match Odd.parse text with\n    | Ok r -> println (Odd.print r)\n    | Error e -> println e\n  0\n' > "$dir/odd_use.zs"
+(cd "$dir" && ZS_NO_SERVER=1 "$zs" build --strict odd_use.zs -o odd_use && ./odd_use)
+printf '"a""b",c\n"x""""y",2\n' > "$dir/odd.csv"
+"$zs" provide csv "$dir/odd.csv" | sed "s|$at/||" | grep -E '^type|^/// From|^let private header'
+printf 'CREATE TABLE t ("a\\" TEXT NOT NULL);\n' > "$dir/odd.sql"
+"$zs" provide sql "$dir/odd.sql" | sed "s|$at/||"
+printf '<device><name>x</name><peripherals><peripheral><name>P</name><baseAddress>0x40000000</baseAddress><registers><register><name>CR&#10;let pwned = 1&#10;//</name><addressOffset>0</addressOffset><fields><field><name>EN</name><bitOffset>0</bitOffset><bitWidth>1</bitWidth></field></fields></register></registers></peripheral></peripherals></device>\n' > "$dir/odd.svd"
+"$zs" provide svd "$dir/odd.svd" > "$dir/Odd.zs"; echo "exit $?; the name in a comment: $(grep -c pwned "$dir/Odd.zs"), as code: $(grep -c '^ *let pwned' "$dir/Odd.zs")"
+grep pwned "$dir/Odd.zs"
+# POSIX's alone: Windows has no /dev/zero and starts no script as a program (test.sh leaves these
+# lines out of provide.expected there)
+if [ -z "$exe" ]; then
+# a device is no file: read whole, it would never end
+timeout 60 "$zs" provide json /dev/zero; echo "exit $?"
+timeout 60 "$zs" provide c /dev/zero; echo "exit $?"
+echo "--- a provider writing much to standard error, and one that doesn't end"
+# over a pipe's worth of warnings before the module: read as they come, so neither side waits
+cat > "$dir/bin/zs-provider-chatty" <<'SH'
+#!/usr/bin/env bash
+head -c 200000 /dev/zero | tr '\0' 'w' >&2
+echo "// provided by chatty 1.0 from $1"
+echo "let chatty = 1"
+SH
+# a provider stuck in a program it started, which holds its pipes: stopped at the limit
+cat > "$dir/bin/zs-provider-stuck" <<'SH'
+#!/usr/bin/env bash
+sleep 30
+SH
+chmod +x "$dir/bin/zs-provider-chatty" "$dir/bin/zs-provider-stuck"
+PATH="$dir/bin:$PATH" timeout 60 "$zs" provide chatty x; echo "exit $?"
+PATH="$dir/bin:$PATH" ZS_PROVIDER_TIMEOUT=2 timeout 60 "$zs" provide stuck x; echo "exit $?"
+fi
 rm -rf "$dir"

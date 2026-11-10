@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Packages (0018, items 3, 5 and 7): zs add writes a dependency into zs.toml and fetches it, zs
 # remove takes one out, zs tree shows what was resolved; a module under an internal/ directory
-# is the package's own; a microcontroller build names a dependency that uses Std.
+# is the package's own; a microcontroller build names a dependency that uses Std; a
+# dependency's manifest that names a main outside it, a size past an int or is too large is an
+# error, not a read of another file, an overflow or a read of any size.
 set -u
 zs="$(pwd)/bin/zs"; t=$(cd "$(mktemp -d)" && pwd -P); trap 'rm -rf "$t"' EXIT  # resolved, as the compiler names it (macOS: /var is /private/var)
 # on Windows, the compiler run in it names it by its working directory there: Windows' long form
@@ -40,3 +42,13 @@ printf 'let read (p: string) = File.readAllText p\nlet tag = "log"\n' > "$t/logg
 printf '[package]\nname = "chip"\nmain = "src/main.zs"\ntarget = "cortex-m4"\n\n[dependencies]\nlogger = { path = "../logger" }\n' > "$t/chip/zs.toml"
 printf 'let main () =\n  println Logger.tag\n  0\n' > "$t/chip/src/main.zs"
 (cd "$t/chip" && "$zs" build 2>&1 | grep -v '^ [ 0-9]* | '; echo "exit ${PIPESTATUS[0]}")
+echo "== a dependency's manifest: its main inside it, a size that fits, at most 1 MB"
+mkdir -p "$t/evil" "$t/user/src"
+printf '[package]\nname = "user"\n\n[dependencies]\nevil = { path = "../evil" }\n' > "$t/user/zs.toml"
+printf 'let main () =\n  0\n' > "$t/user/src/main.zs"
+printf '[package]\nname = "evil"\nmain = "/dev/stdin"\n' > "$t/evil/zs.toml"
+(cd "$t/user" && "$zs" build 2>&1 | sed "s|$at|…|")
+printf '[package]\nname = "evil"\n\n[target.cortex-m4]\nheap = "9000000000000000M"\n' > "$t/evil/zs.toml"
+(cd "$t/user" && "$zs" build 2>&1 | sed "s|$at|…|")
+head -c 1100000 /dev/zero | tr '\0' '#' > "$t/evil/zs.toml"
+(cd "$t/user" && "$zs" build 2>&1 | sed "s|$at|…|")

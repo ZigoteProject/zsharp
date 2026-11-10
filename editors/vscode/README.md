@@ -33,7 +33,8 @@ The same grammar and language configuration give the Rider plugin (`../rider`) i
 3. The agent gets the `zs` MCP server (`zs mcp`): `check`, `type_at`, `definition`, `explain`,
    `docs`, `build`, `run`, `emit_llvm` and `format`. Enable it in the chat's tool picker
    (**MCP: List Servers** shows it). Its tools take only files inside the workspace, but `run` runs
-   the program it builds with your full rights, unsandboxed.
+   the program it builds with your full rights, unsandboxed, and every tool that checks or builds
+   a file builds and runs the project's own type providers (a dependency's `[provider]`).
 
 4. Open a `.zs` file. **Output → Z#** shows the server's messages; **Z#: Restart Language Server**
    restarts it (changing a `zsharp.*` setting restarts it too).
@@ -49,7 +50,8 @@ The same grammar and language configuration give the Rider plugin (`../rider`) i
 
 The extension stays off in an untrusted workspace (Restricted Mode): a workspace's settings can
 set `zsharp.path`, so trusting the workspace is trusting the program it names. Highlighting still
-works there.
+works there. In a trusted one it starts both servers with `--trust` (added to the arguments when
+they lack it), so they build and run the project's own type providers, as `zs build` does.
 
 ## Checks
 

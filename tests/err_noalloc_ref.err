@@ -1,0 +1,1 @@
+tests/err_noalloc_ref.zs:3: error: clear is [<NoAlloc>], but clear overwrites a ref's value, which drops the old one (it may be the last reference)

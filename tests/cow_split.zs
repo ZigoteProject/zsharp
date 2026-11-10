@@ -1,7 +1,8 @@
 // The other shapes of a mutable passed to a call that reads it elsewhere (tests/cow_args.zs has
 // x <- f … x …): let r = f … x … with x reassigned after, which moves x the same way; and an
 // argument that writes x, by assignment or in place, which must not move it: the call gets the
-// value x held before.
+// value x held before. A reassignment the move can't mark (past a join point, on some paths
+// only) keeps the variable from moving.
 let main () =
   // let r = f (read of a) a, then a <- r: a stays unique, so the writes are in place
   let mutable a = Array.create 50 0
@@ -39,4 +40,29 @@ let main () =
   d.[0] <- 1
   d <- Array.create n 7
   println $"written before reassigned: {d.[0]} {n}"
+  // moved into a call, then a let mutable, then reassigned: the reassignment drops nothing, as
+  // with nothing between
+  let mutable e = Array.create 4 1
+  let len = Array.length e
+  let mutable total = 0
+  e <- Array.create len 2
+  for i in 0 .. len - 1 do
+    total <- total + e.[i]
+  println $"let mutable between: {total} {len}"
+  // moved into a tuple, then a let mutable: the tuple keeps the value the reassignment replaces
+  let mutable names = [| "a"; "b" |]
+  let saved = (names, 1)
+  let mutable count = 0
+  names <- [| "c" |]
+  count <- count + Array.length names
+  println $"tuple: {Array.toList (fst saved)} {snd saved} {Array.toList names} {count}"
+  // a call, then a match whose shared arm (a join point) reassigns the mutable and whose other
+  // arm doesn't: no move, so the other path still has the array
+  let mutable f = Array.create 4 1
+  let flen = Array.length f
+  let k = Option.defaultValue 0 (String.parseInt "3")
+  match String.parseInt "5" with
+  | Some 0 | Some 1 -> f <- Array.create (k * 3 + flen / 2 + 1) (k * 7 - flen % 3 + 2)
+  | _ -> ()
+  println $"join point: {Array.length f} {flen}"
   0

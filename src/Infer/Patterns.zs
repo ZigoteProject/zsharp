@@ -142,31 +142,33 @@ let rec pattern (cx: Cx) (names: ref<Map<string, string>>) (p: Pat) (ty: Ty) : C
 // infinitely many, as ints)
 type private Con = { con: string; arity: int; all: option<list<string * int>> }
 
-// the values a pattern covers
+// the values a pattern covers. An or-pattern stays one, its alternatives in order (none of them
+// one itself), until it's at the head of a row: Maranget's algorithm splits it there, in the
+// column being specialized, never into the product of every column's alternatives up front
+// ((true | false) in 26 columns was 2^26 rows)
 type private Space =
   | SWild
   | SCon of Con * list<Space>
+  | SOr of list<Space>
 
-// every way of picking one from each list, in order
-let rec private cart (xss: list<list<Space>>) : list<list<Space>> =
-  match xss with
-  | [] -> [ [] ]
-  | xs :: rest ->
-    let tails = cart rest
-    List.collect (fun x -> List.map (fun r -> x :: r) tails) xs
+// an or-pattern's alternatives, the ones of an or-pattern among them in its place
+let private alternatives (s: Space) : list<Space> =
+  match s with
+  | SOr alts -> alts
+  | _ -> [ s ]
 
-// a pattern as the list of spaces it covers (or-patterns expand)
-let rec private spaces (cases: string -> list<string * int> / <>) (p: CPat) : list<Space> =
-  let con (c: Con) (ps: list<CPat>) = List.map (fun args -> SCon(c, args)) (cart (List.map (spaces cases) ps))
+// a pattern as the space it covers
+let rec private space (cases: string -> list<string * int> / <>) (p: CPat) : Space =
+  let con (c: Con) (ps: list<CPat>) = SCon(c, List.map (space cases) ps)
   match p with
   | CPWild
-  | CPVar _ -> [ SWild ]
-  | CPAs(q, _, _) -> spaces cases q
-  | CPInt n -> [ SCon({ con = $"{n}"; arity = 0; all = None }, []) ]
-  | CPStr s -> [ SCon({ con = "\"" + s + "\""; arity = 0; all = None }, []) ]
+  | CPVar _ -> SWild
+  | CPAs(q, _, _) -> space cases q
+  | CPInt n -> SCon({ con = $"{n}"; arity = 0; all = None }, [])
+  | CPStr s -> SCon({ con = "\"" + s + "\""; arity = 0; all = None }, [])
   | CPBool b ->
     let all = Some [ ("true", 0); ("false", 0) ]
-    [ SCon({ con = (if b then "true" else "false"); arity = 0; all = all }, []) ]
+    SCon({ con = (if b then "true" else "false"); arity = 0; all = all }, [])
   | CPTuple ps -> con { con = ","; arity = List.length ps; all = Some [ (",", List.length ps) ] } ps
   | CPRecord(_, fs) ->
     // a record is one constructor; its name carries the field names, for messages
@@ -175,7 +177,7 @@ let rec private spaces (cases: string -> list<string * int> / <>) (p: CPat) : li
   | CPCtor(u, tag, ps) ->
     let all = cases u
     con { con = fst (List.item tag all); arity = List.length ps; all = Some all } ps
-  | CPOr(a, b) -> List.append (spaces cases a) (spaces cases b)
+  | CPOr(a, b) -> SOr(List.append (alternatives (space cases a)) (alternatives (space cases b)))
 
 let private isWildSpace (s: Space) : bool =
   match s with
@@ -192,6 +194,7 @@ let rec private render (bare: string -> bool / <>) (s: Space) : string =
   match s with
   | SCon(c, [ SWild ]) when bare c.con -> c.con
   | SWild -> "_"
+  | SOr alts -> String.join " | " (List.map (render bare) alts)
   | SCon(c, args) when c.con = "," -> "(" + String.join ", " (List.map (render bare) args) + ")"
   | SCon(c, args) when String.startsWith "{" c.con ->
     // { kind = C }: only the fields that matter
@@ -206,34 +209,60 @@ let rec private render (bare: string -> bool / <>) (s: Space) : string =
 
 let private wilds (n: int) : list<Space> = List.replicate n SWild
 
+// the rows with an or-pattern at the head split, one for each alternative, in order: what the
+// head column holds, as if every or-pattern had been expanded (the same rows in the same order);
+// the rows themselves when none is
+let private split (rows: list<list<Space>>) : list<list<Space>> =
+  let orHead (row: list<Space>) =
+    match row with
+    | SOr _ :: _ -> true
+    | _ -> false
+  if not (List.exists orHead rows) then
+    rows
+  else
+    let push (acc: list<list<Space>>) (row: list<Space>) =
+      match row with
+      | SOr alts :: rest -> List.fold (fun (a: list<list<Space>>) alt -> (alt :: rest) :: a) acc alts
+      | _ -> row :: acc
+    List.rev (List.fold push [] rows)
+
 let private specialize (c: Con) (rows: list<list<Space>>) : list<list<Space>> =
   let one (row: list<Space>) =
     match row with
     | SCon(c2, args) :: rest when c2.con = c.con -> Some(List.append args rest)
     | SWild :: rest -> Some(List.append (wilds c.arity) rest)
     | _ -> None
-  List.choose one rows
+  List.choose one (split rows)
 
 let private defaults (rows: list<list<Space>>) : list<list<Space>> =
   let one (row: list<Space>) =
     match row with
     | SWild :: rest -> Some rest
     | _ -> None
-  List.choose one rows
+  List.choose one (split rows)
 
 let private rebuild (c: Con) (w: list<Space>) : list<Space> = SCon(c, List.take c.arity w) :: List.skip c.arity w
 
-// a value vector matched by q but by no row, if any
-let rec private useful (rows: list<list<Space>>) (q: list<Space>) : option<list<Space>> =
+// the work one match's check may do, in calls and the rows they look at. Exhaustiveness with
+// or-patterns is NP-hard, (true | false) in n columns 2^n paths however they're expanded, so past
+// this the match is an error, not seconds of an editor's time (or minutes) on every change
+let private budget = 5000000
+
+// a value vector matched by q but by no row, if any; None too once steps passes the budget
+let rec private useful (steps: ref<int>) (rows: list<list<Space>>) (q: list<Space>) : option<list<Space>> =
+  steps.Value <- steps.Value + 1 + List.length rows
   match q with
+  | _ when steps.Value > budget -> None
   | [] -> if List.isEmpty rows then Some [] else None
-  | SCon(c, args) :: rest -> Option.map (rebuild c) (useful (specialize c rows) (List.append args rest))
+  // q's alternatives (a clause's, checked for being reachable): any one that's useful
+  | SOr alts :: rest -> List.tryPick (fun a -> useful steps rows (a :: rest)) alts
+  | SCon(c, args) :: rest -> Option.map (rebuild c) (useful steps (specialize c rows) (List.append args rest))
   | SWild :: rest ->
     let heads (row: list<Space>) =
       match row with
       | SCon(c, _) :: _ -> Some c
       | _ -> None
-    let sigma = List.fold (fun (acc: list<Con>) c -> if List.exists (fun (d: Con) -> d.con = c.con) acc then acc else List.append acc [ c ]) [] (List.choose heads rows)
+    let sigma = List.fold (fun (acc: list<Con>) c -> if List.exists (fun (d: Con) -> d.con = c.con) acc then acc else List.append acc [ c ]) [] (List.choose heads (split rows))
     let all =
       match List.tryHead sigma with
       | Some c -> c.all
@@ -248,7 +277,7 @@ let rec private useful (rows: list<list<Space>>) (q: list<Space>) : option<list<
       let tryCon (p: string * int) =
         let (n, a) = p
         let c = { con = n; arity = a; all = all }
-        Option.map (rebuild c) (useful (specialize c rows) (List.append (wilds a) rest))
+        Option.map (rebuild c) (useful steps (specialize c rows) (List.append (wilds a) rest))
       List.tryPick tryCon cs
     | _ ->
       let missing =
@@ -257,7 +286,7 @@ let rec private useful (rows: list<list<Space>>) (q: list<Space>) : option<list<
           let (n, a) = List.find (fun (m, _) -> not (seen m)) cs
           SCon({ con = n; arity = a; all = all }, wilds a)
         | None -> SWild
-      Option.map (fun w -> missing :: w) (useful (defaults rows) rest)
+      Option.map (fun w -> missing :: w) (useful steps (defaults rows) rest)
 
 /// A match's error for a value no clause matches, shown as `missing`.
 let matchMissing (missing: string) = $"match is not exhaustive; missing case: {missing}"
@@ -271,13 +300,23 @@ let letMissing (missing: string) = $"a let's pattern must match every value, and
 /// optional (active pattern cases), shown without it.
 let checkWith (missing: string -> string) (cases: string -> list<string * int> / <>) (bare: string -> bool / <>) (clauses: list<CPat * bool>) : unit / Fails =
   let rows = ref []
+  let steps = ref 0
+  let tooComplex () =
+    fail $"this match is too complex to check that it covers every value (past {budget} steps: its or-patterns multiply): split it into matches on fewer values at once"
   for (p, guarded) in clauses do
-    let ps = spaces cases p
-    if List.forall (fun s -> Option.isNone (useful rows.Value [ s ])) ps then
+    let s = space cases p
+    // reached when one of its alternatives is
+    let reached = Option.isSome (useful steps rows.Value [ s ])
+    if steps.Value > budget then
+      tooComplex ()
+    if not reached then
       fail "this match case is never reached"
     if not guarded then
-      rows.Value <- List.append rows.Value (List.map (fun s -> [ s ]) ps)
-  match useful rows.Value [ SWild ] with
+      rows.Value <- List.append rows.Value [ [ s ] ]
+  let w = useful steps rows.Value [ SWild ]
+  if steps.Value > budget then
+    tooComplex ()
+  match w with
   | Some w -> fail (missing (render bare (List.head w)))
   | None -> ()
 

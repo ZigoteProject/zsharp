@@ -60,10 +60,17 @@ let concat (xs: list<string>) = String.join "" xs
 
 /// `s` repeated `n` times.
 let repeat n (s: string) =
-  let mutable r = ""
-  for _ in 1 .. n do
-    r <- r + s
-  r
+  let count = int n
+  let k = String.length s
+  if count <= 0 || k = 0 then
+    ""
+  else
+    // s copied into one buffer of the whole length, as join does (a string added to at each
+    // copy is copied whole each time)
+    let b = Buffer.create (count * k) (u8 0)
+    for i in 0 .. count - 1 do
+      Buffer.blit (String.bytes s) 0 b (i * k) k
+    String.ofBytes b
 
 /// The integer written in `s` (optional sign, decimal digits), or `None`: `Int.parse` at `int`.
 let parseInt (s: string) : option<int> = Int.parse s

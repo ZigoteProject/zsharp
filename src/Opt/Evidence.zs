@@ -548,18 +548,31 @@ let private lowerAll (types0: Map<string, TypeInfo>) (effects: Map<string, Effec
             | [ a2; s2; b2 ] ->
               let sv = fresh "$step"
               let bv = fresh "$to"
+              // as genPlain decides: an unsigned step is never below 0 (a literal is its bits)
+              let uns =
+                match a.ty with
+                | TCon(n, []) -> Set.contains n unsigned
+                | _ -> false
               let down =
                 match s.k with
-                | CInt n -> n < i64 0
-                | CNeg _ -> true
+                | CInt n -> not uns && n < i64 0
+                | CNeg _ -> not uns
                 | _ -> false
               let it = ev a.ty
               let iv = local x it
               let cond = mk (CBin((if down then ">=" else "<="), iv, local bv it)) tBool
-              let next = mk (CPrim("wrap+", [ iv; local sv it ])) it
+              let next = mk (CPrim("checked+", [ iv; local sv it ])) (TTuple [ tBool; it ])
               let lp =
                 loop cx k [ (x, it, a2) ] (fun cx2 finish ->
-                  let inner = lower cx2 body (Then(fun cx3 w -> seqE w (finish cx3 true [ next ])))
+                  // the next round with i + step, unless that's past the type's end (so past b):
+                  // a wrapped sum would start the range again
+                  let again (cx3: Ctx) : CExpr =
+                    let ok = fresh "$ok"
+                    let nv = fresh "$next"
+                    let more = finish cx3 true [ local nv it ]
+                    let go = mk (CIf(local ok tBool, more, finish cx3 false [ iv ])) more.ty
+                    mk (CMatch(next, [ (CPTuple [ CPVar(ok, tBool); CPVar(nv, it) ], None, go) ])) more.ty
+                  let inner = lower cx2 body (Then(fun cx3 w -> seqE w (again cx3)))
                   mk (CIf(cond, inner, finish cx2 false [ iv ])) (roundTy cx2 [ it ]))
               mk (CLet(sv, s2, mk (CLet(bv, b2, lp)) lp.ty)) lp.ty
             | _ -> panic "unreachable")

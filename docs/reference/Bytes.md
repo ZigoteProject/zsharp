@@ -400,3 +400,20 @@ println (String.ofBytes (Bytes.written (Bytes.appendJsonString "say \"hi\"\n" (B
 // => "say \"hi\"\n"
 ```
 
+### `Bytes.fixedTimeEquals`
+
+```zsharp
+Bytes.fixedTimeEquals : span<u8> -> span<u8> -> bool
+```
+
+Whether `a` and `b` hold the same bytes, in a time that depends on their lengths alone: every
+byte is compared, where `=` stops at the first that differs, so how long it took says how
+much of a forged tag was right. For secrets and authentication tags (`Hmac.verify`), as
+.NET's `CryptographicOperations.FixedTimeEquals`.
+
+```zsharp
+let tag = String.bytes "secret"
+println $"{Bytes.fixedTimeEquals tag tag} {Bytes.fixedTimeEquals tag (String.bytes "secreT")} {Bytes.fixedTimeEquals tag (String.bytes "secrets")}"
+// => true false false
+```
+

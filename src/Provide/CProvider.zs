@@ -17,15 +17,13 @@ let rec private styText (t: Syntax.Ast.SType) : string =
     left + " -> " + styText b
   | _ -> "_"
 
-let private escaped (s: string) : string = "\"" + String.replace (String.replace s "\\" "\\\\") "\"" "\\\"" + "\""
-
 let rec private exprText (e: Syntax.Ast.Expr) : option<string> =
   match e.e with
   | Syntax.Ast.Lit v -> Some(string v)
   | Syntax.Ast.FloatLit v ->
     let s = string v
     Some(if String.contains "." s || String.contains "e" s || String.contains "n" s then s else s + ".0")
-  | Syntax.Ast.StrLit v -> Some(escaped v)
+  | Syntax.Ast.StrLit v -> Some(Provide.Names.literal v)
   | Syntax.Ast.RecordLit fs ->
     let fields = List.map (fun (f: Syntax.Ast.FieldValue) -> Option.map (fun (v: string) -> f.field + " = " + v) (exprText f.value)) fs
     if List.forall Option.isSome fields then Some("{ " + String.join "; " (List.map Option.get fields) + " }") else None
@@ -35,10 +33,11 @@ let rec private exprText (e: Syntax.Ast.Expr) : option<string> =
 let private docOf (infos: list<string * Build.CImport.CInfo>) (name: string) : list<string> =
   match List.tryFind (fun (ni: string * Build.CImport.CInfo) -> fst ni = name) infos with
   | Some(_, i) ->
-    // the signature on one line (a struct's spans several)
-    let oneLine = String.join " " (List.filter (fun (w: string) -> w <> "") (String.split " " (String.replace (String.replace i.csig "\n" " ") "\t" " ")))
+    // the signature on one line (a struct's spans several), and the comment's lines each on its
+    // own: the header's text (or a saved import's) never leaves its comment
+    let oneLine = String.join " " (List.filter (fun (w: string) -> w <> "") (String.split " " (Provide.Names.oneLine i.csig)))
     let sig = if oneLine = "" then [] else [ "/// `" + oneLine + "`" ]
-    let doc = List.map (fun (l: string) -> "/// " + l) (List.filter (fun (l: string) -> l <> "") (List.map String.trim (String.split "\n" i.cdoc)))
+    let doc = List.map (fun (l: string) -> "/// " + Provide.Names.oneLine l) (List.filter (fun (l: string) -> l <> "") (List.map String.trim (String.split "\n" i.cdoc)))
     List.append sig (if List.isEmpty sig || List.isEmpty doc then doc else "///" :: doc)
   | None -> []
 
@@ -75,6 +74,6 @@ let provide (header: string) (dir: string) (flags: list<string>) (cacheDir: stri
     // with `/`, so the module names its input as one written on any OS (Windows reads it too)
     let input =
       if r.headerFile = "" then header else Diag.Render.path (Path.getRelativePath dir r.headerFile)
-    let skipped = List.map (fun (nw: string * string) -> "// left out: " + fst nw + " (" + snd nw + ")") r.skipped
-    let header = List.concat [ [ "// provided by c 0.1 from " + header; "// input: " + input; "" ]; skipped; (if List.isEmpty skipped then [] else [ "" ]) ]
+    let skipped = List.map (fun (nw: string * string) -> Provide.Names.oneLine ("// left out: " + fst nw + " (" + snd nw + ")")) r.skipped
+    let header = List.concat [ [ Provide.Names.oneLine ("// provided by c 0.1 from " + header); Provide.Names.oneLine ("// input: " + input); "" ]; skipped; (if List.isEmpty skipped then [] else [ "" ]) ]
     Ok(String.join "\n" (List.append header (List.collect (declText r.infos) r.decls)))

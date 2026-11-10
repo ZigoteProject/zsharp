@@ -43,6 +43,8 @@ let main () =
     |> Bytes.append b" "
     |> Bytes.appendInt 7
   println (String.ofBytes (Bytes.written ints))
+  // a growing Writer has room for int's most (Int.min - 1 overflowed)
+  println $"{Bytes.remaining ints}"
   unsafe (Ptr.free mem)
   // floats by their IEEE 754 bits
   let out = Buffer.create 12 (u8 0)

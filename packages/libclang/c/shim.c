@@ -9,7 +9,12 @@
 // LLVM's Windows release has libclang.dll in bin/, beside clang.exe, and PATH is ';'-separated
 #include <windows.h>
 #include <io.h>
-#define dlopen(path, flags) ((void *)LoadLibraryA(path))
+#ifndef LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
+#define LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR 0x00000100
+#endif
+#ifndef LOAD_LIBRARY_SEARCH_DEFAULT_DIRS
+#define LOAD_LIBRARY_SEARCH_DEFAULT_DIRS 0x00001000
+#endif
 #define dlsym(lib, name) ((void *)GetProcAddress((HMODULE)(lib), name))
 #define realpath(path, out) _fullpath(out, path, 4096)
 #define X_OK 0
@@ -38,7 +43,30 @@ CXTranslationUnit clang_parseTranslationUnit(CXIndex index, const char *source_f
 static void *lib;
 static int tried;
 
+#ifdef _WIN32
+// a DLL by its full path (with backslashes, by which the loader finds its directory), that
+// directory and the system's searched for the DLLs it needs, never the current directory, which
+// LoadLibraryA's own search has before PATH
+static void *open_at(const char *path) {
+  char full[4096];
+  if (!_fullpath(full, path, sizeof full)) return NULL;
+  for (char *c = full; *c; c++)
+    if (*c == '/') *c = '\\';
+  return (void *)LoadLibraryExA(full, NULL, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+}
+#else
 static void *open_at(const char *path) { return dlopen(path, RTLD_NOW | RTLD_LOCAL); }
+#endif
+
+// a PATH entry from the root: one that isn't ("", ".", "bin") is the current directory's, which
+// is a project's
+static int absolute(const char *p, int n) {
+#ifdef _WIN32
+  return (n >= 3 && p[1] == ':' && (p[2] == '\\' || p[2] == '/')) || (n >= 2 && (p[0] == '\\' || p[0] == '/') && (p[1] == '\\' || p[1] == '/'));
+#else
+  return n > 0 && p[0] == '/';
+#endif
+}
 
 #ifdef __APPLE__
 #define LIB_EXT ".dylib"
@@ -51,8 +79,11 @@ static void *open_at(const char *path) { return dlopen(path, RTLD_NOW | RTLD_LOC
 #define BESIDE_CLANG "/../lib/libclang" LIB_EXT
 #endif
 
-// $ZS_LIBCLANG; else the libclang of the first clang on PATH (its ../lib); else the system's, by
-// its name and then its versioned names, newest first (on macOS, Homebrew's and then Xcode's)
+// $ZS_LIBCLANG; else the libclang of the first clang on PATH (its ../lib); else by a full path, on
+// Windows LLVM's install and on macOS Homebrew's and then Xcode's; else on Linux the system's, by
+// its name and then its versioned names, newest first. Never a bare name where the loader would
+// look in the current directory, a project's (Windows's does, and macOS's): a libclang put there
+// would run in zs lsp, zs mcp and zs build, which open libclang for an import c
 static void *open_libclang(void) {
   const char *env = getenv("ZS_LIBCLANG");
   if (env && *env) return open_at(env);
@@ -61,7 +92,7 @@ static void *open_libclang(void) {
     const char *end = strchr(p, PATH_SEP);
     int n = end ? (int)(end - p) : (int)strlen(p);
     snprintf(path, sizeof path, "%.*s/" CLANG_EXE, n, p);
-    if (n > 0 && access(path, X_OK) == 0) {
+    if (absolute(p, n) && access(path, X_OK) == 0) {
       void *h = NULL;
       if (realpath(path, real)) {
         char *slash = strrchr(real, '/');
@@ -77,13 +108,22 @@ static void *open_libclang(void) {
     }
     p = end ? end + 1 : NULL;
   }
-#ifdef __APPLE__
+#if defined(_WIN32)
+  const char *programs = getenv("ProgramFiles");
+  if (programs && *programs) {
+    snprintf(path, sizeof path, "%s\\LLVM\\bin\\libclang.dll", programs);
+    if (absolute(path, (int)strlen(path)) && access(path, 0) == 0) return open_at(path);
+  }
+  return NULL;
+#elif defined(__APPLE__)
   const char *mac[] = {"/opt/homebrew/opt/llvm/lib/libclang.dylib", "/usr/local/opt/llvm/lib/libclang.dylib",
                        "/Library/Developer/CommandLineTools/usr/lib/libclang.dylib",
                        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/libclang.dylib"};
   for (size_t i = 0; i < sizeof mac / sizeof *mac; i++)
     if (access(mac[i], R_OK) == 0) return open_at(mac[i]);
-#endif
+  return NULL;
+#else
+  // ld.so looks for a bare name in the system's directories, not the current one
   void *h = open_at("libclang" LIB_EXT);
   for (int v = 40; !h && v >= 13; v--) {
     snprintf(path, sizeof path, "libclang.so.%d.1", v);
@@ -94,6 +134,7 @@ static void *open_libclang(void) {
     if (!h) h = open_at(path);
   }
   return h;
+#endif
 }
 
 int zs_clang_load(void) {
@@ -225,9 +266,14 @@ const char *zs_clang_text(CXString s) {
   return c ? c : "";
 }
 
-// args: n strings, each ending in a NUL, len bytes in all
+// args: n strings, each ending in a NUL, len bytes in all; NULL when that's not what they are (an
+// argument holding a NUL would be several of clang's, the last ones dropped: Libclang.parse
+// refuses one first)
 CXTranslationUnit zs_clang_parse(CXIndex index, const char *file, const char *args, size_t len, int n,
                                  unsigned options) {
+  size_t ends = 0;
+  for (size_t i = 0; i < len; i++) ends += args[i] == 0;
+  if (n < 0 || ends != (size_t)n || (len > 0 && args[len - 1] != 0)) return NULL;
   const char **argv = calloc(n ? n : 1, sizeof *argv);
   for (int i = 0; i < n && len > 0; i++) {
     argv[i] = args;

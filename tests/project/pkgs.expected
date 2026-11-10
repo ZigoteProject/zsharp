@@ -34,3 +34,7 @@ src/main.zs:1: error: Box.Internal.Secret is internal to box; use its public mod
 == Std in a chip build's dependency
 ../logger/src/Logger.zs:1: error: package 'logger' uses File, part of Std, which needs an operating system; a build for cortex-m4 has none, so it can't depend on this package
 exit 1
+== a dependency's manifest: its main inside it, a size that fits, at most 1 MB
+zs: …/evil/zs.toml: [package] main: "/dev/stdin" isn't a path inside the package
+zs: …/evil/zs.toml: [target.cortex-m4] heap: expected a size such as "16K", found "9000000000000000M"
+zs: …/evil/zs.toml: is 1100000 bytes; a manifest is at most 1 MB

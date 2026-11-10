@@ -1,0 +1,2 @@
+before
+panic: Buffer.blit out of range

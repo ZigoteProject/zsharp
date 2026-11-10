@@ -254,8 +254,9 @@ let rec private checkCallback (cx: Cx) (what: string) (f: Ty) : unit / Fails =
 /// Registers an impl and type-checks its methods. The impl is registered before its bodies so they
 /// may use it recursively; its requirements on type arguments are inferred.
 /// An impl registered, its methods' bodies not checked yet: impls declared together (a derive
-/// over types that hold each other) may use one another. What finishImpl checks.
-type private Started = { strait: string; shead: string; hvars: list<string>; items: list<Item> }
+/// over types that hold each other) may use one another. What finishImpl checks; swritten: written
+/// in the source (a derive's code has no places of its own)
+type private Started = { strait: string; shead: string; hvars: list<string>; items: list<Item>; swritten: bool }
 
 let private startImpl (cx: Cx) (written: bool) (tr0: string) (head: SType) (others: list<SType>) (defs: list<Definition>) : Started =
   let v = cx.v
@@ -335,6 +336,7 @@ let private startImpl (cx: Cx) (written: bool) (tr0: string) (head: SType) (othe
   let fname (m: string) = $"{tr}<{hn}>#{m}"
   cx.impls.Value <- Map.add (tr, hn) (Map.ofList (List.map (fun m -> (m, fname m)) given)) cx.impls.Value
   cx.implRequires.Value <- Map.add (tr, hn) (List.map (fun _ -> Set.empty) hvars) cx.implRequires.Value
+  cx.implUses.Value <- Map.add (tr, hn) [] cx.implUses.Value
   let methodItem (d: Definition) : Item =
     let tm = Map.find (tr + "." + d.dname) cx.traitMethods.Value
     let expected () =
@@ -343,7 +345,7 @@ let private startImpl (cx: Cx) (written: bool) (tr0: string) (head: SType) (othe
       if tm.isConst then tfun tUnit t else t
     let ps = if List.isEmpty d.dpars then [ unitParam ] else d.dpars
     { itemAt = d.defAt; iname = fname d.dname; isRec = true; ips = ps; iret = d.dret; ibody = d.dbody; expected = Some expected }
-  { strait = tr; shead = hn; hvars = hvars; items = List.map methodItem defs }
+  { strait = tr; shead = hn; hvars = hvars; items = List.map methodItem defs; swritten = written }
 
 // an impl's methods checked, and what it needs from each type argument
 let private finishImpl (cx: Cx) (st: Started) =
@@ -363,7 +365,40 @@ let private finishImpl (cx: Cx) (st: Started) =
         | _ -> []
       | None -> []
     Set.ofList (List.collect fromResult results)
-  cx.implRequires.Value <- Map.add (tr, hn) (List.map needs hvars) cx.implRequires.Value
+  let reqs = List.map needs hvars
+  cx.implRequires.Value <- Map.add (tr, hn) reqs cx.implRequires.Value
+  // a use of it while its methods were checked (by them, at other type arguments, or by an impl
+  // checked with it) met no requirements: what it gave is checked now. A type with variables in
+  // it isn't constrained (at the methods' own, it's what the requirements were found from), but
+  // what can't be shared whatever they become (ref<'a>) is an error still
+  let uses = Option.defaultValue [] (Map.tryFind (tr, hn) cx.implUses.Value)
+  cx.implUses.Value <- Map.remove (tr, hn) cx.implUses.Value
+  let rec known (t: Ty) =
+    match prune v t with
+    | TVar _
+    | TGen _ -> false
+    | TCon(_, ts)
+    | TTuple ts -> List.forall known ts
+    | TFun(a, b, _) -> known a && known b
+    | _ -> true
+  // the type with each variable an int, which is Share
+  let rec filled (t: Ty) : Ty =
+    match prune v t with
+    | TVar _
+    | TGen _ -> tInt
+    | TCon(n, ts) -> TCon(n, List.map filled ts)
+    | TTuple ts -> TTuple(List.map filled ts)
+    | TFun(a, b, r) -> TFun(filled a, filled b, r)
+    | x -> x
+  for (args, stmt) in List.rev uses do
+    for (a, trs) in List.zip args reqs do
+      for tr2 in Set.toList trs do
+        let what = $"impl {shortName tr}<{shortName hn}>, used by its own methods (or an impl checked with it), needs {shortName tr2} of its type argument"
+        let at = if st.swritten then stmt else -1
+        if known a then
+          located cx at false (fun () -> expect cx what (fresh v (kTrait tr2)) a)
+        else if tr2 = "Share" && Option.isSome (Types.Repr.shareBlocker v (fun _ -> ()) cx.types.Value Set.empty (filled a)) then
+          located cx at false (fun () -> fail $"{what}: {show cx a} can't be shared between threads (it isn't Share)")
 
 let private declareImpl (cx: Cx) (tr0: string) (head: SType) (others: list<SType>) (defs: list<Definition>) = finishImpl cx (startImpl cx true tr0 head others defs)
 
@@ -1593,7 +1628,12 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
           if n < 1 || (isInt && n > natural) || (not isInt && (n < natural || n > 8)) then
             fail $"[<Width {n}>] doesn't fit '{f}' : {show cx ft}, which takes {(if isInt then $"1 to {natural}" else $"{natural} to 8")} bits"
           width <- n
-        | "Bit" -> at <- number f a args
+        | "Bit" ->
+          // in the 64 bits a [<Bits>] record has at most, so the bit after the field is no overflow
+          let n = number f a args
+          if n < 0 || n > 63 then
+            fail $"[<Bit {n}>] on '{f}' is past a [<Bits>] record's 64 bits: a bit from 0 to 63"
+          at <- n
         | _ -> fail $"unknown field attribute '{a}' (a [<Bits>] record's fields take [<Width n>] and [<Bit n>])"
       let (lo, n) = (at, width)
       match List.tryFind (fun (o, w) -> lo < o + w && o < lo + n) placed with
@@ -1795,13 +1835,22 @@ let rec private reaches (cx: Cx) (here: Set<string>) (seen: Set<string>) (cell: 
   | TCon(n, args) ->
     let key = Types.Show.showFull cx.v (TCon(n, args))
     match Map.tryFind n cx.types.Value with
+    | Some _ when Set.contains ("##" + n) seen && not (Set.contains key seen) ->
+      // a type met at a third instantiation on one path, as a nested type is (Perfect<'a> holding
+      // a Perfect<'a * 'a>), which looking through would never end: its fields were followed
+      // twice already, so only its arguments reach more
+      List.collect (reaches cx here seen cell) args
     | Some info when not (List.isEmpty args) && not (Set.contains key seen) ->
       let fields =
         match info.def with
         | RecordDef fs -> List.map snd fs
         | UnionDef cs -> List.collect snd cs
         | CUnionDef _ -> []
-      List.collect (fun ft -> reaches cx here (Set.add key seen) cell (substGen cx.v args ft)) fields
+      // two instantiations of a name are followed per path, so a type holding itself at fixed
+      // arguments (T<'a> with a ref<'a> and a T<Node>) is seen through to its ref<Node>
+      let mark = if Set.contains ("#" + n) seen then "##" + n else "#" + n
+      let below = Set.add mark (Set.add key seen)
+      List.collect (fun ft -> reaches cx here below cell (substGen cx.v args ft)) fields
     | Some _ -> []
     | None -> List.collect (reaches cx here seen cell) args
   | TTuple ts -> List.collect (reaches cx here seen cell) ts

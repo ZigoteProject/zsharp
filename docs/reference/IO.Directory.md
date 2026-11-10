@@ -60,8 +60,8 @@ is listed and not followed.
 Directory.deleteRecursive : string -> result<unit, string>
 ```
 
-Deletes the directory and everything under it (a symbolic link as itself, not what it
-points to).
+Deletes the directory and everything under it. A symbolic link (or a Windows junction) is
+deleted as itself, never what it points to: `path` itself, or one in the tree.
 
 ### `Directory.exists`
 

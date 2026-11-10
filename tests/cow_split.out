@@ -3,3 +3,6 @@ assigned inside: [7; 2; 3]
 map assigned inside: [(2, two)]
 written inside: [1; 0]
 written before reassigned: 7 4
+let mutable between: 8 4
+tuple: [a; b] 1 [c] 1
+join point: 4 4

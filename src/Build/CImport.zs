@@ -526,8 +526,8 @@ let private importUncached (header: string) (dir: string) (flags: list<string>) 
       let args = List.concat [ [ "-x"; "c"; "-I"; dir ]; (if resources = "" then [] else [ "-resource-dir"; resources ]); flags ]
       let r =
         match Libclang.parse index tmp args (u32 CXTranslationUnit_DetailedPreprocessingRecord) with
-        | None -> Error "libclang couldn't parse it"
-        | Some tu ->
+        | Error e -> Error e
+        | Ok tu ->
           let r =
             match Libclang.errors tu with
             | e :: _ -> Error(String.replace e (tmp + ":1:10: ") "")
@@ -637,11 +637,14 @@ let private save (file: string) (r: Imported) : unit =
     JArray [ JString n; JString why ]
   let fields = [ ("decls", JArray(List.map declJson r.decls)); ("skipped", JArray(List.map skip r.skipped)); ("infos", JArray(List.map info r.infos)) ]
   let o = JObject fields
-  Tools.makeDirectory (Path.getDirectoryName file)
-  File.writeAllText file (Json.print o) |> ignore
+  // each file written beside and moved over its name: a symbolic link there is replaced, never
+  // written through
+  Tools.writeWhole file (Array.ofSpan (String.bytes (Json.print o)))
   // a copy of the header, for go-to-definition where the header isn't installed
   if File.exists r.headerFile then
-    File.copy r.headerFile (String.sub file 0 (String.length file - 5)) |> ignore
+    match File.readAllBytes r.headerFile with
+    | Ok bytes -> Tools.writeWhole (String.sub file 0 (String.length file - 5)) bytes
+    | Error _ -> ()
 
 let private load (file: string) (at: int) : result<Imported, string> =
   // raylib.h.json beside raylib.h
@@ -682,12 +685,17 @@ let savedFile (header: string) (flags: list<string>) (cacheDir: string) : string
 
 let importHeader (header: string) (dir: string) (flags: list<string>) (cacheDir: string) (at: int) : result<Imported, string> =
   let saved = savedFile header flags cacheDir
-  match importUncached header dir flags at with
-  | Ok r ->
-    save saved r
-    Ok r
-  | Error msg ->
-    if File.exists saved then
-      load saved at
-    else
-      Error $"import c \"{header}\": {msg}. Build once where libclang and the header are installed (e.g. ./dev zs build); that saves the import in {Diag.Render.path cacheDir} for editors"
+  // a header beside the importer (or named by its path) that's a pipe or a device: libclang
+  // would read it to an end that never comes (/dev/stdin is the language server's own input)
+  if Provide.Input.special (Path.combine dir header) then
+    Error $"import c \"{header}\": it isn't a regular file but a pipe or a device"
+  else
+    match importUncached header dir flags at with
+    | Ok r ->
+      save saved r
+      Ok r
+    | Error msg ->
+      if File.exists saved then
+        load saved at
+      else
+        Error $"import c \"{header}\": {msg}. Build once where libclang and the header are installed (e.g. ./dev zs build); that saves the import in {Diag.Render.path cacheDir} for editors"

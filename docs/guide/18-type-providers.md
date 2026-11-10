@@ -175,7 +175,9 @@ C hover; the library a named module needs is linked by the package's `[c]` secti
 ## Where the module is, and keeping it
 
 A provided module is written to `.zs-cache/providers/<importing module>/<Name>.zs` and loaded
-as a dependency of the file, so errors inside it, hover and definition point into that file.
+as a dependency of the file, so errors inside it, hover and definition point into that file (a
+dependency's import is written to the project's `.zs-cache/pkgs/<name>-<hash>/providers/`, not
+into the dependency).
 `.zs-cache` is ignored by git, so a clone runs the providers once. To keep the module in the
 project instead, print it and drop the import:
 
@@ -194,7 +196,11 @@ the edit, and a renamed provided name is refused with where it comes from
 A provider is a program named `zs-provider-<name>` on PATH, in any language (on Windows an
 executable, `zs-provider-<name>.exe`, not a script), or a package: a dependency whose `zs.toml`
 has a `[provider]` section naming its program is the provider of its name, built by the compiler
-into `.zs-cache/providers/bin` when its sources change and run the same way:
+into `.zs-cache/providers/bin` and run the same way. It's built again when a file it's built from
+changes: its package's `zs.toml`, Z# and C files, those of the packages it depends on, the
+library's and the runtime's (`ZS_LIB`, `ZS_RUNTIME`), or the compiler. It's built with the
+project's checkouts of its dependencies (the build that needs it fetched them), so it fetches
+nothing and writes nothing into its package:
 
 ```toml
 [package]
@@ -209,11 +215,34 @@ The compiler runs it in the importing file's directory with the string and each 
 `--name=value`. Its standard output is the declarations of one module, starting with `//
 provided by <name> <version> from <string>` and one `// input: <path>` per file it read
 (relative to that directory); its standard error has errors, one per line, `file:line:col:
-message` where there is a position; a non-zero exit fails the import with those lines. The
+message` where there is a position; a non-zero exit fails the import with those lines. A
+provider that hasn't finished after 60 seconds (`ZS_PROVIDER_TIMEOUT=<seconds>` changes that) is
+stopped, and the import fails saying so. The
 compiler caches the output with a hash of each input, so a machine without the provider (an
 editor's sandbox) still gets the types from the last output, with a `stale-input` warning at the
 import that says so. Nothing is loaded into the compiler: the provider is a process, as clang is
 for `import c`.
+
+The provider's program is built against the project's dependencies: its own git dependencies are
+the checkouts the project's `zs.lock` pinned and hashed, never fetched or locked apart, so it runs
+the code the lock names and builds with `--offline` too.
+
+A package's provider is the project's own code, so the language server and the MCP server build
+and run it only when started with `--trust` ([Trust](10-tools.md#trust)); without it, the import
+gets the module from the last build, with the `stale-input` warning, or the error `provider shout
+not run: the project is not trusted (start the language server with --trust)`. `zs build`, `zs
+check`, `zs doc`, `zs test` and the other commands build and run it, as a build of the project
+does (`cargo check` runs a package's build script the same way): checking a project, or
+printing its reference, runs code of its own, so check one you don't trust in the language
+server without `--trust`. Every command and server runs zs's own providers and a
+`zs-provider-<name>` on PATH, which you installed.
+
+A provider's file must be a regular file (or a link to one): a pipe or a device named by an
+import (`/dev/stdin`, `/dev/zero`) is an error, not a read that never ends. What a provider takes
+from its file and writes into the module is quoted: a key, a column or a register's name becomes
+a field in double backticks (a key holding a line break, a control character or two backticks is
+an error, as no name can hold it), a string literal has its `\`, `"` and control characters
+escaped, and a comment its line breaks removed, so no sample can add code to the program.
 
 Errors name the problem and what to write: `no provider 'jsn': zs has c, json, csv, sql and svd,
 no zs-provider-jsn is on PATH, and no dependency named jsn has a [provider] section`, `csv:

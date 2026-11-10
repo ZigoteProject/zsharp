@@ -58,22 +58,10 @@ let listRecursive (path: string) : result<list<string>, string> =
         walk (dirs @ rest) (rels @ found)
   walk [ "" ] []
 
-/// Deletes the directory and everything under it (a symbolic link as itself, not what it
-/// points to).
+/// Deletes the directory and everything under it. A symbolic link (or a Windows junction) is
+/// deleted as itself, never what it points to: `path` itself, or one in the tree.
 let deleteRecursive (path: string) =
-  match listRecursive path with
-  | Error e -> Error e
-  | Ok rels ->
-    // the deepest first, so each directory is empty when its turn comes
-    let rec go (xs: list<string>) =
-      match xs with
-      | [] -> delete path
-      | r :: rest ->
-        let full = path + "/" + r
-        let removed =
-          if Directory.exists full && not (Native.isSymlink full) then delete full
-          else File.delete full
-        match removed with
-        | Error e -> Error e
-        | Ok () -> go rest
-    go (List.rev rels)
+  // the runtime's walk, each directory opened from its parent without following a link, so one
+  // swapped in meanwhile doesn't lead it out of the tree
+  Native.deleteTree path
+  ioResult ()

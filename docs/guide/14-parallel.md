@@ -71,6 +71,12 @@ let main () =
 100 121 144
 ```
 
+**Functions a call makes:** a function a call returns may capture what the call made (a counter
+built by a factory holds its `ref`), and its type doesn't say, so it crosses threads only when
+the call gives a `share<…>`: `let adder (n: int) : share<int -> int> = fun i -> i + n`, whose
+lambda is checked where it's returned. A top-level function given some of its arguments
+(`scale 3`) crosses when what it's given can be shared.
+
 ## What threads change together
 
 **`Atomic<T>`:** a number, `bool` or `char` that threads change without a lock: `Atomic.get`,
@@ -99,10 +105,14 @@ let main () =
 10 4500
 ```
 
-**Waiting in parallel work:** a job of the pool that waits on a channel holds its thread. When
-the job that would send runs later on the same thread, they wait for each other forever, so a
-channel between two pool jobs needs room for what one sends before the other receives (or
-tasks: `Task.spawn` runs each on a thread of its own loop).
+**Waiting in parallel work:** a job of the pool that waits on a channel, or for a mutex past a
+short spin, holds its thread, so the pool starts a spare thread to run the other jobs meanwhile:
+a channel of capacity zero works between two jobs. Spares are at most twice the cores, and past
+that a job waits without one. That's fine when what it waits for is outside the pool (the
+thread that called `Parallel.both` holding the lock, a task draining the channel): it comes in
+its time. But jobs that wait only for each other, more of them than there are threads, wait for
+good, so a channel between many pool jobs needs room for what the senders send before the
+receivers run (or tasks: `Task.spawn` runs each on a thread of its own loop).
 
 ## How sharing works
 

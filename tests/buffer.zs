@@ -1,5 +1,14 @@
 // Buffers that grow (0024): push, pop, truncate, clear and blit. A slice shares the storage
 // until either grows past it, and every element is dropped once (ZS_LEAKCHECK=1 checks)
+
+// a slice from the start of a Buffer that's gone: its storage is the slice's alone, holding two
+// values past it, which pushing on the slice drops as the values it keeps move
+let firstTwo () =
+  let all = Buffer.empty
+  for i in 1 .. 4 do
+    Buffer.push $"s{i}" all
+  all.[0..1]
+
 let main () =
   let b = Buffer.empty
   for i in 1 .. 10 do
@@ -36,4 +45,7 @@ let main () =
   let words = Buffer.ofArray [| "a"; "b"; "c"; "d" |]
   Buffer.blit words 0 words 1 3
   println $"{Array.toList (Buffer.toArray words)}"
+  let h = firstTwo ()
+  Buffer.push "x" h
+  println $"{Array.toList (Buffer.toArray h)}"
   0

@@ -1,0 +1,1 @@
+Re-executes itself; qemu-user can't, without binfmt_misc.

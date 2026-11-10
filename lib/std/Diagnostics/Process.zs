@@ -25,9 +25,11 @@ type Pipe =
 /// What `Process.start` runs, naming only what it changes from the defaults:
 /// `Process.start { program = "clang"; args = [ "-c"; f ]; stderr = Piped }`.
 type ProcessStart =
-  { /// The program, looked up on PATH unless it has a `/`.
+  { /// The program, looked up on PATH unless it has a `/`; a relative path is from this
+    /// program's working directory, not `directory`.
     program: string
-    /// Its arguments (no shell reads them).
+    /// Its arguments (no shell reads them; a Windows batch file's are quoted for `cmd.exe`, as
+    /// `Process.run` says).
     args: list<string> = []
     /// Its whole environment, as names and values; `None` gives it this program's.
     environment: option<list<string * string>> = None
@@ -45,6 +47,9 @@ type ProcessStart =
 type Process =
   { /// Its process id.
     pid: int
+    /// The runtime's number for it, which `Process.wait` and `Process.kill` go by: unlike a
+    /// process id, never another process's once this one has been waited for.
+    handle: int
     /// Its standard input, when piped.
     stdin: option<Writer>
     /// Its standard output, when piped.
@@ -70,7 +75,10 @@ module Process =
       None
 
   /// Runs `program` (looked up on PATH) with the arguments, without a shell, and waits for it.
-  /// An `Error` means it couldn't start; a failing program is an `Ok` with a nonzero code.
+  /// An `Error` means it couldn't start (or be waited for); a failing program is an `Ok` with a
+  /// nonzero code. On Windows a batch file (`.bat`, `.cmd`) runs in `cmd.exe`, its arguments
+  /// quoted for it, and one with a line break (CR or LF), which `cmd.exe` can't be given, is an
+  /// `Error`.
   let run (program: string) (args: list<string>) =
     match refused program args with
     | Some e -> Error e
@@ -94,8 +102,10 @@ module Process =
     | ToOutput -> true
     | _ -> false
 
-  /// Starts the program (looked up on PATH unless it has a `/`), without a shell; each stream
-  /// that is `Piped` is the `Process`'s to use. `Process.wait` gives its exit code.
+  /// Starts the program (looked up on PATH unless it has a `/`; a relative path is from this
+  /// program's working directory, not `directory`), without a shell; each stream that is `Piped`
+  /// is the `Process`'s to use. `Process.wait` gives its exit code. A Windows batch file's
+  /// arguments are as `Process.run` passes them.
   let start (s: ProcessStart) : result<Process, string> =
     let vars = Option.defaultValue [] s.environment |> List.map (fun (k, v) -> k + "=" + v)
     let dir = Option.defaultValue "" s.directory
@@ -105,26 +115,41 @@ module Process =
       Error $"cannot run {s.program}: ToOutput is for stderr"
     | None ->
       let env = Option.map (fun _ -> String.join (nul ()) vars) s.environment
-      let pid =
+      let h =
         Native.processStart s.program (ended s.args) (Option.defaultValue "" env) (Option.isSome env) dir (mode s.stdin) (mode s.stdout) (mode s.stderr)
-      if pid < 0 then
-        Error $"cannot run {s.program}: {Native.errorText pid}"
+      if h < 0 then
+        Error $"cannot run {s.program}: {Native.errorText h}"
       else
         let pipe k = Native.processPipe k
         let input = if pipe 0 >= 0 then Some (Writer.ofFd (pipe 0)) else None
         let output = if pipe 1 >= 0 then Some (Reader.ofFd (pipe 1)) else None
         let errors = if pipe 2 >= 0 then Some (Reader.ofFd (pipe 2)) else None
-        Ok { pid = pid; stdin = input; stdout = output; stderr = errors }
+        Ok { pid = Native.processId h; handle = h; stdin = input; stdout = output; stderr = errors }
 
   /// Waits for the process to end: its exit code (128 plus the signal's number when a signal
-  /// ended it), on `Task.blocking`'s thread so other tasks go on.
+  /// ended it, -1 when it can't be had). Other tasks go on meanwhile, and a wait that's
+  /// cancelled (`Task.timeout`) is over at once, the process left running. Waiting again gives
+  /// the same code.
   let wait (p: Process) : Task<int> =
-    let pid = p.pid
-    Task.blocking (fun () -> Native.processWait pid)
+    let h = p.handle
 
-  /// Ends the process at once (SIGKILL).
+    task {
+      // readable once the process has ended; -1: waited for already, its code at hand
+      let fd = Native.processWaiter h
+      if fd = -1 then
+        return Native.processWait h
+      else if fd < 0 then
+        return! Task.blocking (fun () -> Native.processWait h)
+      else
+        do! Task.fromCallback (fun k -> Native.loopWait fd false k) (fun () -> Native.fdClose fd)
+        Native.fdClose fd
+        return Native.processWait h
+    }
+
+  /// Ends the process at once (SIGKILL). One that has been waited for has ended, and is left
+  /// alone.
   let kill (p: Process) : result<unit, string> =
-    let e = Native.processKill p.pid
+    let e = Native.processKill p.handle
     if e < 0 then Error (Native.errorText e) else Ok ()
 
 /// `use` closes the process's pipes (it doesn't wait for it: `Process.wait` does).

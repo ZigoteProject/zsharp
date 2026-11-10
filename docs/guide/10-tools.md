@@ -7,7 +7,7 @@
 | `zs new <name>` | create a project |
 | `zs build [file.zs] [-o out]` | build an executable (the project's, without a file) |
 | `zs run [file.zs [--]] [args…]` | build and run |
-| `zs check <file.zs>` | type-check only, reporting every error and warning |
+| `zs check <file.zs>` | type-check only, reporting every error and warning; as a build, it fetches the project's git dependencies first, asks pkg-config for a `[c]` section's flags, and builds and runs a package's type provider ([Trust](#trust)) |
 | `zs test [file.zs] [paths…] [--update] [--summary]` | run `[<Tests>]` values (tests, [properties](#properties) and benchmarks), each test in its own process; `--update` rewrites failing `expect` literals |
 | `zs test --doc [files…] [--update]` | run the examples in `///` comments (the project's files without any); `--update` rewrites their expectations |
 | `zs add ../text`, `zs add https://…/json.git@1.2`, `zs add <url> --rev main` | write a dependency into `zs.toml`'s `[dependencies]` (a path, or a git URL at a release or a rev; the name from the package's `zs.toml`, or the URL's last part) and fetch it |
@@ -20,13 +20,13 @@
 | `zs test --coverage file.zs` | the test binary built with a counter per line of the file's directory's sources (not the library's), each test's process writing them at exit; then the lines run and not run per file (`cov.zs: 7 of 9 lines (77%), not run: 5, 7`) and `coverage.lcov` in the current directory, which `genhtml -o coverage coverage.lcov` renders and coverage services read. `zs build --coverage` and `zs run --coverage` write the counts to `<program>.zscov` the same way |
 | `zs test --stress 10m [file.zs] [paths…]` | the tests at random on every core, over and over for that long (`30s`, `10m`, `1h`), each run its own process: a failure one run hides (a race, a leak on a rare path, a timeout under load) shows, each failing test shown once. With `ZS_LEAKCHECK=1`, a leak at a test's exit fails it, in one run too |
 | `zs fmt [--check] <files…>` | format files in place (`--check`: list unformatted ones; `--stdin`: standard input to standard output) |
-| `zs doc <file.zs>` | print a Markdown reference of a file's documented items |
+| `zs doc <file.zs>` | print a Markdown reference of a file's documented items; checking the file builds and runs a package's type provider, as `zs check` does ([Trust](#trust)) |
 | `zs fetch` / `zs update` | check out / update git dependencies |
 | `zs --version` | the compiler's release (`zs 0.7.0`), which the language and MCP servers report to an editor too |
 | `zs doctor` | what builds need (clang, zig, libclang, and the tools some commands run), found or not, and how to get what's missing |
 | `zs provide <provider> <file> [--option=value]…` | a module from a data source, printed to keep beside the program ([proposal 0001](../proposals/0001-type-providers.md)): `json` gives a document's records with the `Json` derive and `parse` and `print` (`--root`, `--types=temp:f64`), `csv` a `Row` record with `parse` and `print` from the header and the rows (`--separator`, `--hasHeaders`, `--types`), `sql` a record per table from a schema's `CREATE TABLE`s (`--types`, `--queries`), `svd` a module per peripheral from a chip's SVD file (`--only`), `c` a header's declarations as `import c` reads them, and another name runs `zs-provider-<name>` from PATH ([Type providers](18-type-providers.md#a-provider-of-your-own)); `--list` names the providers. The same module comes from an import in the program: `module Weather = import json "weather.json"`, or bare, `import csv ("stocks.csv", separator = ";")`, which opens it; it's written to `.zs-cache/providers/` and loaded as a module of the build |
-| `zs lsp` | the language server (stdio) |
-| `zs mcp` | the MCP server for AI agents (stdio), with the tools `check`, `type_at`, `definition` (where a name is defined, with the defining line), `explain` (a name's type with its constraints, its effects in words, where it's defined and its doc comment), `docs`, `build`, `run`, `emit_llvm` and `format` |
+| `zs lsp [--trust]` | the language server (stdio); `--trust` builds and runs the project's own type providers ([Trust](#trust)) |
+| `zs mcp [--trust]` | the MCP server for AI agents (stdio), with the tools `check`, `type_at`, `definition` (where a name is defined, with the defining line), `explain` (a name's type with its constraints, its effects in words, where it's defined and its doc comment), `docs`, `build`, `run`, `emit_llvm` and `format`; `--trust` as for `zs lsp` |
 
 **Build options:**
 
@@ -76,9 +76,9 @@ main.zs:11:3: warning: this statement's value (int) is discarded: use it, or pip
 |---|---|
 | `unused-value` | a statement whose value isn't `unit` is dropped; `x \|> ignore` says it's on purpose |
 | `cycle` | a type whose objects can form a reference cycle through a cell, at its declaration with the path ([memory](12-memory.md#cycles-and-weak-references)); `[<Cyclic>]` marks a type whose cycles the program breaks |
-| `stale-input` | a type provider that isn't on PATH, at its import: the module is the one an earlier build wrote, which an input changed since then would make stale ([Type providers](18-type-providers.md#a-provider-of-your-own)) |
+| `stale-input` | a type provider that isn't on PATH, or a project's own that an editor's server started without `--trust` doesn't run ([Trust](#trust)), at its import: the module is the one an earlier build wrote, which an input changed since then would make stale ([Type providers](18-type-providers.md#a-provider-of-your-own)) |
 
-- **Silencing:** `[<NoWarn "unused-value">]` on a declaration silences that kind in it; a name that isn't a kind is an error. `unused-value` and `cycle` are a declaration's; `stale-input` isn't, and goes once the provider is on PATH.
+- **Silencing:** `[<NoWarn "unused-value">]` on a declaration silences that kind in it; a name that isn't a kind is an error. `unused-value` and `cycle` are a declaration's; `stale-input` isn't, and goes once the provider is on PATH (or runs).
 - **Notes:** a warning about several places names the others under it (`note: 'Parent.kids: ref<list<Child>>' is on the cycle`), and an editor shows them as related places.
 - **`--strict`** makes warnings errors: `2 warnings, errors under --strict`, exit code 1. CI passes it, and `./test.sh` does for the repository's own code; a build on your machine doesn't stop for one.
 - **Editors** underline a warning in the warning color with its kind as the code.
@@ -126,7 +126,7 @@ let report (items: list<Item>) =
 
 **What it keeps:** the line breaks you wrote, and comments where they are. A string literal or a comment never breaks, so a line long because of one stays long, and so does a call with many arguments outside brackets, since its arguments can't continue on the next line.
 
-**Safety:** the formatter checks that the result parses to the same program (the same syntax tree, but for layout), so formatting can't change a program's meaning. A file that doesn't parse is left alone, with its error. Zed runs it on save, and formats a selection (range formatting).
+**Safety:** the formatter checks that the result parses to the same program (the same syntax tree, but for layout), so formatting can't change a program's meaning. A file that doesn't parse is left alone, with its error. A file is written whole or not at all: the new text goes to a file beside it, with the same permissions, which then takes its place, so a full disk leaves the file as it was. Zed runs it on save, and formats a selection (range formatting): the declarations and statements the selection touches, never a comment or blank line at its edges.
 
 ## Documentation comments
 
@@ -283,6 +283,12 @@ A list, an array, a tree (a boxed union), a `ref` or a `Buffer` is a pointer to 
 
 ## Editors
 
+### Trust
+
+Checking a program can run code of the project's own: a dependency with a `[provider]` section is a type provider the compiler builds and runs for its import ([Type providers](18-type-providers.md#a-provider-of-your-own)). `zs build`, `zs check`, `zs doc`, `zs test` and the other commands do that, since you run them on the project on purpose, as `cargo check` runs a package's build script: `zs check` and `zs doc` on a project you don't trust run its code. The provider is built with the project's checkouts of its dependencies, so it fetches nothing of its own. An editor opens whatever you open, so `zs lsp` and `zs mcp` don't, unless started with `--trust`: without it, such an import uses the module the last build wrote (with a `stale-input` warning), or is an error at the import, `provider shout not run: the project is not trusted (start the language server with --trust)`. zs's own providers (`json`, `csv`, `sql`, `svd`, `c`) and the `zs-provider-<name>` programs on your `PATH`, which you installed, run either way.
+
+The VS Code extension passes `--trust`, as it runs only in a trusted workspace; the Rider plugin passes it in a trusted project; the Zed extension doesn't, and you add it to the arguments in Zed's settings ([Zed](#zed)). An MCP client starts `zs mcp` with the `args` you give it.
+
 ### Zed
 
 `editors/zed` is a Zed extension. Install it with **Extensions → Install Dev Extension** and choose that folder. It needs Rust, with the `wasm32-wasip2` target installed through rustup.
@@ -301,20 +307,22 @@ The extension finds `zs` on your `PATH`. Or set the path in Zed's settings:
 "context_servers": { "zs": { "command": "/path/to/zs", "args": ["mcp"] } }
 ```
 
+To have the servers run the project's own type providers ([Trust](#trust)), add `--trust` to both argument lists: `["lsp", "--trust"]` and `["mcp", "--trust"]`. The settings are yours, so that trusts every project you open in Zed.
+
 Allocation hints are off until the settings turn them on, since the server compiles the program's code for them after each change: `"lsp": { "zs": { "initialization_options": { "allocationHints": true } } }`. They come from the code the compiler makes, after inlining, so a small function's allocations show at the line that calls it too. A module of a project (a `zs.toml` above it naming another main file) gets them from the project's program, so opening any of its files shows them; code that no entry reaches (`main`, a test, an export) has none.
 
 ### VS Code
 
 `editors/vscode` is a VS Code extension (1.101 or later). Package it with `npx @vscode/vsce package` in that folder and install the `.vsix`, or open the folder and press F5. It gives what the Zed extension does: TextMate highlighting, the language server's features, and the `zs mcp` server for the agent (Copilot's agent mode).
 
-It finds `zs` on your `PATH`, or set `"zsharp.path": "/path/to/zs"`; `zsharp.lsp.arguments` and `zsharp.mcp.arguments` change the arguments, and `"zsharp.allocationHints": true` turns on the allocation hints. It stays off in an untrusted workspace, whose settings could point it at another program.
+It finds `zs` on your `PATH`, or set `"zsharp.path": "/path/to/zs"`; `zsharp.lsp.arguments` and `zsharp.mcp.arguments` change the arguments, and `"zsharp.allocationHints": true` turns on the allocation hints. It stays off in an untrusted workspace, whose settings could point it at another program, and in a trusted one starts both servers with `--trust`.
 
 ### Rider
 
-`editors/rider` is a plugin for Rider and the other JetBrains IDEs, 2025.2 or later. Build it with `./gradlew buildPlugin` in that folder (it needs a JDK 25) and install `build/distributions/zsharp-rider-0.1.0.zip` from disk. It gives the same highlighting (the VS Code extension's grammar) and the language server through the IDE's LSP support, with the structure view, quick fixes and parameter info. **Settings → Tools → Z#** sets the path to `zs`.
+`editors/rider` is a plugin for Rider and the other JetBrains IDEs, 2025.2 or later. Build it with `./gradlew buildPlugin` in that folder (it needs a JDK 25) and install `build/distributions/zsharp-rider-0.1.0.zip` from disk. It gives the same highlighting (the VS Code extension's grammar) and the language server through the IDE's LSP support, with the structure view, quick fixes and parameter info. **Settings → Tools → Z#** sets the path to `zs`. It starts the server with `--trust` in a trusted project, and without it in one opened in safe mode.
 
-JetBrains' AI Assistant and Junie take MCP servers from their own settings: add `zs` with the argument `mcp` there.
+JetBrains' AI Assistant and Junie take MCP servers from their own settings: add `zs` with the argument `mcp` there (and `--trust` for projects you trust).
 
 ### Other editors
 
-Run `zs lsp` over stdio as the language server for `.zs` files. The tree-sitter grammar is in `editors/tree-sitter-zsharp`, with highlight, indent and outline queries. `zs mcp` works with any MCP client.
+Run `zs lsp` over stdio as the language server for `.zs` files, with `--trust` when the editor trusts the project. The tree-sitter grammar is in `editors/tree-sitter-zsharp`, with highlight, indent and outline queries. `zs mcp` works with any MCP client.

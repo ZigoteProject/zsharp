@@ -258,8 +258,10 @@ and bufferFn (g: G) (kind: string) (el: Ty) : string =
       if heap g el then
         let al = alone old data
         emit em $"br i1 {al}, label %move, label %copy"
-        // the old storage gives its values up: its length 0, so freeing it drops none
+        // the old storage gives its values up: its length 0, so freeing it drops none. Those past
+        // the Buffer's length (a slice from the start, its parent gone) move nowhere: dropped
         enter em "move"
+        dropSlots data len (load "i_W" (lenOf old)) "past"
         emit em $"store i_W 0, ptr {lenOf old}"
         emit em "br label %release"
         enter em "copy"
@@ -377,14 +379,13 @@ and bufferFn (g: G) (kind: string) (el: Ty) : string =
       emit em "ret void"
       helper g $"define private void {name}(ptr %c, i_W %n) {{\n{bodyOf em}}}\n\n"
     | _ ->
-      // blit: n elements from src[i] to dst[j], both in range
+      // blit: n elements from src[i] to dst[j], both in range: at <= len and n <= len - at,
+      // unsigned (a negative at or n is above any length), so no sum wraps past the length
       let inRange (len: string) (at0: string) =
-        let ok1 = instr em $"icmp sle i_W 0, {at0}"
-        let ok2 = instr em "icmp sle i_W 0, %n"
-        let sum = instr em $"add i_W {at0}, %n"
-        let ok3 = instr em $"icmp sle i_W {sum}, {len}"
-        let ok12 = instr em $"and i1 {ok1}, {ok2}"
-        instr em $"and i1 {ok12}, {ok3}"
+        let ok1 = instr em $"icmp ule i_W {at0}, {len}"
+        let rest = instr em $"sub i_W {len}, {at0}"
+        let ok2 = instr em $"icmp ule i_W %n, {rest}"
+        instr em $"and i1 {ok1}, {ok2}"
       let r1 = inRange "%sl" "%i"
       let r2 = inRange "%dl" "%j"
       let ok = instr em $"and i1 {r1}, {r2}"

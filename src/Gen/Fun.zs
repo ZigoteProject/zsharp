@@ -353,12 +353,17 @@ let provable (env: Map<string, Binding>) (x: string) (body: CExpr) : CExpr * lis
     match e.k with
     | CBin(op, a, b) when arith op -> { e with k = CBin("nsw" + op, unchecked a, unchecked b) }
     | k -> { e with k = mapChildren unchecked k }
-  // an array the loop doesn't assign: a variable, or a field of one
+  // an array the loop doesn't assign: a variable, or a field of one. Never a Buffer: the loop can
+  // shrink one without assigning it (truncate, removeLast, through an alias), so each of its reads
+  // checks the length it has then
   let rec stable (a: CExpr) : bool =
-    match a.k with
-    | CLocal arr -> outside arr
-    | CField(r, _) -> stable r
-    | _ -> false
+    if isBuf a.ty then
+      false
+    else
+      match a.k with
+      | CLocal arr -> outside arr
+      | CField(r, _) -> stable r
+      | _ -> false
   let accesses = Buffer.empty
   let sums = Buffer.empty
   let rec mark (e: CExpr) : CExpr =
@@ -1300,7 +1305,11 @@ let rec gen (fx: F) (env: Map<string, Binding>) (tail: bool) (e: CExpr) : string
       // an empty struct's result (unit) too: -O2 replaces the result with a constant and merges
       // the function's returns, leaving the musttail call before a branch (LLVM 23)
       let unitResult = g.opts.optimized && rt = "{}"
-      let kind = if (fname = fx.f.name && g.opts.optimized && not g.opts.debugInfo) || not inRegisters || elsewhere || unitResult then "tail" else "musttail"
+      // a Cortex-M0 (Thumb1) can't tail-call another function, nor WebAssembly without its
+      // tail-call feature: there a call to another is a plain tail call, as a drop's is
+      // (Helpers.tailKeyword), and LLVM's backend no longer fails on it
+      let noSibling = String.startsWith "thumbv6m" g.opts.target || String.startsWith "wasm" g.opts.target
+      let kind = if (fname = fx.f.name && g.opts.optimized && not g.opts.debugInfo) || not inRegisters || elsewhere || unitResult || (noSibling && fname <> fx.f.name) then "tail" else "musttail"
       let r = instr em $"{kind} call {rt} {sym g fname}({argv})"
       emit em $"ret {rt} {r}"
       dead em
@@ -1464,10 +1473,11 @@ and genVersioned (fx: F) (env: Map<string, Binding>) (tail: bool) (e: CExpr) : s
         let hi = if lanes > 1 then ovf t "add" hi0 $"{lanes - 1}" else hi0
         let av = gen fx env false arr
         let len =
-          if isWin arr.ty then
-            instr em $"extractvalue {llty g arr.ty} {av}, 2"
-          else
-            loadLen g em (instr em $"getelementptr {{ i_W, i_W }}, ptr {av}, i32 0, i32 1")
+          match arr.ty with
+          | TCon("array", [ _ ]) -> loadLen g em (instr em $"getelementptr {{ i_W, i_W }}, ptr {av}, i32 0, i32 1")
+          | t when isWin t -> instr em $"extractvalue {llty g t} {av}, 2"
+          // another container's length isn't where an array keeps it
+          | t -> panic $"Codegen: a versioned access to {showT g t}"
         let ge = instr em $"icmp sge {t} {lo}, 0"
         let below = instr em $"icmp slt {t} {hi}, {len}"
         let both = instr em $"and i1 {ge}, {below}"
@@ -1518,25 +1528,48 @@ and genPlain (fx: F) (env: Map<string, Binding>) (e: CExpr) : string =
     alloca em $"{slot} = alloca {lt}"
     emit em $"store {lt} {va}, ptr {slot}"
     declareVar fx x a.ty va (Some slot) 0
-    let lc = fresh em "fcond"
     let lb = fresh em "fbody"
+    let lnext = fresh em "fnext"
     let lend = fresh em "fend"
-    emit em $"br label %{lc}"
-    enter em lc
-    let i = instr em $"load {lt}, ptr {slot}"
+    let uns = isUnsigned a.ty
+    // an unsigned step is never below 0 (a literal is its bits, a negation panics)
     let down =
       match step.k with
-      | CInt k -> k < i64 0
-      | CNeg _ -> true
+      | CInt k -> not uns && k < i64 0
+      | CNeg _ -> not uns
       | _ -> false
-    let cmp = if down then (if isUnsigned a.ty then "uge" else "sge") else (if isUnsigned a.ty then "ule" else "sle")
-    let cond = instr em $"icmp {cmp} {lt} {i}, {vb}"
-    emit em $"br i1 {cond}, label %{lb}, label %{lend}"
+    let cmp = if down then "sge" else (if uns then "ule" else "sle")
+    let first = instr em $"icmp {cmp} {lt} {va}, {vb}"
+    emit em $"br i1 {first}, label %{lb}, label %{lend}"
     enter em lb
+    let i = instr em $"load {lt}, ptr {slot}"
     gen fx (Map.add x (Ssa i) env) false body |> ignore
-    let nx = instr em $"add {lt} {i}, {vs}"
+    // the test before the step: the loop ends where i + step would pass b, before the sum could
+    // wrap past the type's end and start again. With a step of 1 (or -1), when i is b; else when
+    // what's left to b is less than the step's size, both unsigned (i hasn't passed b)
+    let byOne =
+      match step.k with
+      | CInt k -> k = i64 1 || (down && k = i64 (-1))
+      | _ -> false
+    let last =
+      if byOne then
+        instr em $"icmp eq {lt} {i}, {vb}"
+      else
+        let left = if down then instr em $"sub {lt} {i}, {vb}" else instr em $"sub {lt} {vb}, {i}"
+        let stride = if down then instr em $"sub {lt} 0, {vs}" else vs
+        instr em $"icmp ult {lt} {left}, {stride}"
+    emit em $"br i1 {last}, label %{lend}, label %{lnext}"
+    enter em lnext
+    // within b, so it doesn't overflow: unsigned, or a constant step (a variable one's sign
+    // isn't known)
+    let flags =
+      match (uns, step.k) with
+      | (true, _) -> "nuw "
+      | (false, CInt _) -> "nsw "
+      | _ -> ""
+    let nx = instr em $"add {flags}{lt} {i}, {vs}"
     emit em $"store {lt} {nx}, ptr {slot}"
-    emit em $"br label %{lc}"
+    emit em $"br label %{lb}"
     enter em lend
     "zeroinitializer"
   | _ -> panic "Codegen: not a loop"
@@ -2508,6 +2541,11 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
     let t = argTy 0
     if not (heap g t && llty g t = "ptr") then
       fail fx $"weak<{showT g t}> isn't possible: a weak reference is to an object (a union's cell, a ref, an array, a string, a closure or a dyn value)" |> ignore
+    // with threads, a Share object is marked shared, with all it holds, when a weak reference to
+    // it is made: a crossing that moved it unmarked (decision 75) would leave this thread's weak
+    // reference to another thread's object, which Weak.get counts non-atomically
+    if g.opts.threaded && Option.isNone (shareBlocker g.v (fun _ -> ()) g.types Set.empty t) then
+      shareValue g em t (arg 0)
     // the cell takes no reference to the object; the argument's is given up
     let w = instr em $"call ptr @zs_weak_new(ptr {arg 0})"
     dropValue g em t (arg 0)

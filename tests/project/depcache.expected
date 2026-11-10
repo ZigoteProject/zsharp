@@ -1,0 +1,39 @@
+== a git dependency's import c
+size 3
+size 3
+the checkout: .git src zs.toml 
+its cache: pkgs/cdep-<hash>/cimport/cdep.h pkgs/cdep-<hash>/cimport/cdep.h.json 
+the checkout, its file checked: .git src zs.toml 
+== vendored
+vendored cdep v1 into vendor/cdep
+size 3
+size 3
+files in vendor: 3
+== a dependency whose .zs-cache/cimport is a symbolic link
+size 5
+  files where the link leads: 0
+== a dependency whose name is a path
+size 6
+its cache: pkgs/package-<hash>/cimport/esc.h pkgs/package-<hash>/cimport/esc.h.json 
+  files where the name leads: 0
+== the project's own .zs-cache, a symbolic link
+src/main.zs:1: error: import c "own.h": …/own/.zs-cache is a symbolic link, which zs doesn't write through
+  files where the link leads: 0
+== a package's provider, with a path and a git dependency of its own
+hello world
+gen: Provider.zs zs.toml 
+-- the provider's own file changed
+hello, world
+-- a package it depends on changed
+hi, world
+gen: Provider.zs zs.toml 
+helper: src zs.toml 
+the checkout of words: .git src zs.toml 
+-- the library it's built with changed (ZS_LIB)
+hi, world
+  the provider built again
+== a git dependency's own file, with a git dependency of its own: checked, and opened in an editor
+world
+the checkout, its file checked: .git src zs.toml 
+  city is provided by json from w.json; change it there
+the checkout, its file opened: .git src zs.toml 

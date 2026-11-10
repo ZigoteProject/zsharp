@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 #define _CRT_RAND_S // Windows's rand_s, the system's randomness (Random.shared)
 #include <inttypes.h>
+#include <limits.h>
 #include <sched.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -47,6 +48,7 @@ double roundeven(double x) { return nearbyint(x); }
 float roundevenf(float x) { return nearbyintf(x); }
 #endif
 
+#include <errno.h>
 #include <pthread.h>
 #ifndef _WIN32
 #include <signal.h>
@@ -176,10 +178,15 @@ static void *spawned_main(void *p) {
     return r;
 }
 
+// The stack a program's threads get at least, whatever RLIMIT_STACK says (unlimited included):
+// 0, but the compiler's own, 256 MB (src/host.c), for passes as deep as the program it reads nests
+size_t zs_thread_stack;
+
 // A thread's stack: the main thread's usual 8 MB at least (macOS gives a new thread 512 KB, which
 // deep recursion, a compiler's passes over a long list literal, runs out of where Linux's 8 MB
 // doesn't), or the soft RLIMIT_STACK when that's more, as glibc sizes its threads (ulimit -s
-// raises it; the compiler raises its own, src/host.c). At most 1 GB, and 8 MB with 32-bit words.
+// raises it; the compiler raises its own, src/host.c), or zs_thread_stack. At most 1 GB, and
+// 8 MB with 32-bit words.
 static size_t thread_stack_size(void) {
     size_t size = (size_t)8 << 20;
 #ifndef _WIN32
@@ -187,10 +194,14 @@ static size_t thread_stack_size(void) {
     struct rlimit rl;
     if (getrlimit(RLIMIT_STACK, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY && rl.rlim_cur > size)
         size = rl.rlim_cur > most ? most : (size_t)rl.rlim_cur;
+    if (zs_thread_stack > size) size = zs_thread_stack > most ? most : zs_thread_stack;
 #endif
     return size;
 }
 
+// a thread whose large stack the address space has no room for (ulimit -v, many cores, each
+// thread's stack the 256 MB a compiler running it left in RLIMIT_STACK) gets the usual 8 MB
+// instead of failing
 static int spawn(pthread_t *t, void *(*body)(void *), void *arg) {
     spawned *s = malloc(sizeof *s);
     if (!s) return -1;
@@ -198,8 +209,13 @@ static int spawn(pthread_t *t, void *(*body)(void *), void *arg) {
     s->arg = arg;
     pthread_attr_t attr;
     pthread_attr_init(&attr);
-    pthread_attr_setstacksize(&attr, thread_stack_size());
+    size_t size = thread_stack_size();
+    pthread_attr_setstacksize(&attr, size);
     int r = pthread_create(t, &attr, spawned_main, s);
+    if ((r == EAGAIN || r == ENOMEM) && size > ((size_t)8 << 20)) {
+        pthread_attr_setstacksize(&attr, (size_t)8 << 20);
+        r = pthread_create(t, &attr, spawned_main, s);
+    }
     pthread_attr_destroy(&attr);
     if (r != 0) free(s);
     return r;
@@ -539,7 +555,8 @@ static int64_t live, allocations, mallocs;
 // chunk of its own: an object goes on the list of the thread that frees it, whichever made it,
 // so no lock and no atomic either. Byte 6 of the header says where an object came from: its
 // class, or SYSTEM for malloc and aligned_alloc. With a sanitizer or valgrind (ZS_NO_POOL), it's
-// plain malloc, so the tools see every object.
+// plain malloc, so the tools see every object. A thread that ends leaves its lists and the rest
+// of its chunk to the next thread to start (heap_state).
 // ponytail: chunks are kept until exit; a program whose small objects peak once keeps that
 // memory, and so does a thread that frees objects of a size it doesn't make (a consumer's)
 #if !defined(ZS_NO_POOL)
@@ -550,12 +567,12 @@ static int64_t live, allocations, mallocs;
 #define SYSTEM 0xFF
 #endif
 
-// What the allocator keeps for a thread, in one thread-local: its counts (with threads) and the
-// pool's free lists and chunk. On macOS a thread-local is found by a call, so an allocation makes
-// one look-up rather than one for each variable.
-typedef struct {
+// What the allocator keeps for a thread: its counts (with threads) and the pool's free lists and
+// chunk, in one record, so an allocation looks up one thread-local (on macOS, a call).
+typedef struct heap_state {
 #ifdef ZS_THREADS
     counts *counts;
+    struct heap_state *spare; // the next of the ended threads'
 #endif
 #if ZS_POOL
     void *free[POOL_MAX / 8 + 1];
@@ -565,32 +582,83 @@ typedef struct {
 } heap_state;
 
 #ifdef ZS_THREADS
-static _Thread_local heap_state heap_here;
+// A thread's state is made at its first allocation or free, and outlives it: when the thread
+// ends (a C host's come and go, and Task.blocking's helper ends with its Task.run), its key's
+// destructor gives the state up, and the next thread to start takes it whole, its free lists,
+// the rest of its chunk and its counts (which stay in all_counts, so the totals keep them). The
+// thread-local is a pointer to it, as on macOS dyld may free a thread's thread-locals before that
+// destructor runs. The spare states are under counts_mu.
+static _Thread_local heap_state *heap_mine;
+static heap_state *spare_states;
+static pthread_key_t heap_key;
+static pthread_once_t heap_once = PTHREAD_ONCE_INIT;
+static bool heap_keyed; // heap_key made, and not deleted yet
 
-// the thread's counts, made the first time it counts
-static counts *counts_of(heap_state *h) {
-    counts *c = h->counts;
-    if (!c) {
-        c = aligned_alloc(64, 64);
-        if (!c) zs_panic_c("out of memory");
+static void heap_end(void *arg) {
+    heap_state *h = arg;
+    pthread_mutex_lock(&counts_mu);
+    h->spare = spare_states;
+    spare_states = h;
+    pthread_mutex_unlock(&counts_mu);
+    // a destructor after this one that allocates takes a state again, given up in the next round
+    heap_mine = NULL;
+}
+
+static void heap_key_make(void) {
+    if (pthread_key_create(&heap_key, heap_end) != 0) zs_panic_c("pthread_key_create failed");
+    __atomic_store_n(&heap_keyed, true, __ATOMIC_RELEASE);
+}
+
+// The key's destructor is code in this image: a host that unloads a library holding this runtime
+// (dlclose, FreeLibrary) while threads that called it live on would have each of them run it, in
+// unmapped code, when it ends. So the key goes with the image (at exit too), and a thread ending
+// after that keeps its state.
+__attribute__((destructor)) static void heap_unload(void) {
+    if (__atomic_exchange_n(&heap_keyed, false, __ATOMIC_ACQ_REL)) pthread_key_delete(heap_key);
+}
+
+__attribute__((noinline)) static heap_state *heap_new(void) {
+    pthread_once(&heap_once, heap_key_make);
+    bool keyed = __atomic_load_n(&heap_keyed, __ATOMIC_ACQUIRE);
+    // this thread's own, when its thread-locals went before its destructors ran (macOS)
+    heap_state *h = keyed ? pthread_getspecific(heap_key) : NULL;
+    if (h) return heap_mine = h;
+    pthread_mutex_lock(&counts_mu);
+    h = spare_states;
+    if (h) spare_states = h->spare;
+    pthread_mutex_unlock(&counts_mu);
+    if (!h) {
+        h = aligned_alloc(64, (sizeof(heap_state) + 63) & ~(size_t)63); // a cache line of its own
+        counts *c = aligned_alloc(64, 64);
+        if (!h || !c) zs_panic_c("out of memory");
+        memset(h, 0, sizeof *h);
         memset(c, 0, 64);
+        h->counts = c;
         pthread_mutex_lock(&counts_mu);
         c->next = all_counts;
         all_counts = c;
         pthread_mutex_unlock(&counts_mu);
-        h->counts = c;
     }
-    return c;
+    h->spare = NULL;
+    heap_mine = h;
+    if (keyed) pthread_setspecific(heap_key, h);
+    return h;
+}
+
+static inline heap_state *heap_of_thread(void) {
+    heap_state *h = heap_mine;
+    return h ? h : heap_new();
 }
 
 // only the thread itself writes its counts; another reads them whole
-#define COUNT_IN(h, x, d) do { counts *c_ = counts_of(h); __atomic_store_n(&c_->x, c_->x + (d), __ATOMIC_RELAXED); } while (0)
+#define COUNT_IN(h, x, d) do { counts *c_ = (h)->counts; __atomic_store_n(&c_->x, c_->x + (d), __ATOMIC_RELAXED); } while (0)
 #else
 static heap_state heap_here;
+static inline heap_state *heap_of_thread(void) { return &heap_here; }
 #define COUNT_IN(h, x, d) ((void)(h), (x) += (d))
 #endif
 // a count changed where the thread's state isn't at hand already
-#define COUNT(x, d) COUNT_IN(&heap_here, x, d)
+#define COUNT(x, d) COUNT_IN(heap_of_thread(), x, d)
 
 #if ZS_POOL
 static void pool_chunk(heap_state *h) {
@@ -602,7 +670,7 @@ static void pool_chunk(heap_state *h) {
 #endif
 
 void *zs_alloc(zs_int size) {
-    heap_state *h = &heap_here;
+    heap_state *h = heap_of_thread();
     COUNT_IN(h, live, 1);
     COUNT_IN(h, allocations, 1);
 #if ZS_POOL
@@ -714,7 +782,7 @@ int64_t zs_ticks(void) {
 }
 
 void zs_free(void *p) {
-    heap_state *h = &heap_here;
+    heap_state *h = heap_of_thread();
     COUNT_IN(h, live, -1);
 #if ZS_POOL
     size_t c = FROM(p);
@@ -870,13 +938,18 @@ static void *tab_remove(ptrtab *t, const void *k) {
     return v;
 }
 
-// ---- weak references (weak<T>): references that don't keep their object alive. The weak
+// ---- weak references (weak<T>): references that don't keep their object alive. A thread's weak
 // references to one object share a cell { count, object }, found from the object in a table, and
 // the object dying (freed, or its cell reused for another) empties the cell. A program that uses
 // weak references or arenas allocates and frees through zs_alloc_checked and zs_free_checked.
-typedef struct {
+// A weak reference isn't Share, so a cell stays on the thread that made it, and compiled code
+// counts it there, not atomically: another thread's weak references to the same object (a shared
+// one) have a cell of their own, chained to the first, which the table holds.
+typedef struct zs_weak {
     ZS_HEADER;
     void *target;
+    struct zs_weak *next; // the object's cell of another thread
+    pthread_t owner;
 } zs_weak;
 
 static ptrtab weaks;
@@ -893,31 +966,46 @@ static pthread_mutex_t heap_mu = PTHREAD_MUTEX_INITIALIZER;
 #endif
 
 zs_weak *zs_weak_new(void *target) {
+    pthread_t self = pthread_self();
     HEAP_LOCK();
     bool dies = __atomic_load_n((int32_t *)target, __ATOMIC_RELAXED) != 0; // a static object never does: its cells aren't in the table
-    zs_weak *w = dies ? tab_get(&weaks, target) : NULL;
+    zs_weak *first = dies ? tab_get(&weaks, target) : NULL, *w = first;
+    while (w && !pthread_equal(w->owner, self)) w = w->next;
     if (w) {
         w->rc++;
     } else {
         w = zs_alloc((zs_int)sizeof(zs_weak));
         w->rc = 1;
         w->target = dies ? target : (void *)((uintptr_t)target | 1); // the low bit: static
-        if (dies) tab_put(&weaks, target, w);
+        w->owner = self;
+        w->next = NULL;
+        if (first) {
+            w->next = first->next;
+            first->next = w;
+        } else if (dies) {
+            tab_put(&weaks, target, w);
+        }
     }
     HEAP_UNLOCK();
     return w;
 }
 
 // the object, with a new reference, or NULL once it has died. A shared object (count below 0)
-// gets its reference only while its count isn't 0: at 0 another thread is freeing it
+// gets its reference only while its count isn't 0: at 0 another thread is freeing it. A
+// thread-local one is this thread's, as the weak reference is: with threads, code generation
+// marks a Share object shared when a weak reference to it is made, so no crossing moves it to
+// another thread unmarked
 void *zs_weak_target(zs_weak *w) {
-    if ((uintptr_t)w->target & 1) return (void *)((uintptr_t)w->target & ~(uintptr_t)1);
+    // read before the lock: the low bit is the cell's from its making, and another thread may
+    // empty the cell meantime (its object dying there)
+    void *at = __atomic_load_n(&w->target, __ATOMIC_RELAXED);
+    if ((uintptr_t)at & 1) return (void *)((uintptr_t)at & ~(uintptr_t)1);
     HEAP_LOCK();
     int32_t *t = w->target;
     if (t) {
         int32_t c = __atomic_load_n(t, __ATOMIC_RELAXED);
         if (c > 0) {
-            *t = c + 1; // thread-local: this thread's, as the weak reference is
+            *t = c + 1;
         } else {
             for (;;) {
                 if (c == 0) { // another thread is freeing it
@@ -937,9 +1025,33 @@ void zs_free_checked(void *p);
 
 void zs_weak_free(zs_weak *w) {
     HEAP_LOCK();
-    if (w->target && !((uintptr_t)w->target & 1)) tab_remove(&weaks, w->target);
+    if (w->target && !((uintptr_t)w->target & 1)) {
+        // out of its object's chain
+        zs_weak *first = tab_get(&weaks, w->target);
+        if (first == w) {
+            tab_remove(&weaks, w->target);
+            if (w->next) tab_put(&weaks, w->target, w->next);
+        } else {
+            for (zs_weak *p = first; p; p = p->next)
+                if (p->next == w) {
+                    p->next = w->next;
+                    break;
+                }
+        }
+    }
     HEAP_UNLOCK();
     zs_free_checked(w);
+}
+
+// the object p has died: every thread's cell of it is emptied (under the lock)
+static void weaks_die(void *p) {
+    zs_weak *w = weaks.count ? tab_remove(&weaks, p) : NULL;
+    while (w) {
+        zs_weak *next = w->next;
+        __atomic_store_n(&w->target, NULL, __ATOMIC_RELAXED); // its thread may be reading it
+        w->next = NULL;
+        w = next;
+    }
 }
 
 // ---- arenas (Arena.with): what a function allocates comes from large blocks, bumped through. An
@@ -1029,8 +1141,7 @@ void *zs_alloc_checked(zs_int size) {
 
 void zs_free_checked(void *p) {
     HEAP_LOCK();
-    zs_weak *w = weaks.count ? tab_remove(&weaks, p) : NULL;
-    if (w) w->target = NULL;
+    weaks_die(p);
     zs_arena *a = arena_blocks.count ? tab_get(&arena_blocks, (void *)((uintptr_t)p & ~(uintptr_t)(ARENA_BLOCK - 1))) : NULL;
     if (a) {
         COUNT(live, -1);
@@ -1043,8 +1154,7 @@ void zs_free_checked(void *p) {
 // a cell Perceus reuses for another object: the object it held has died
 void zs_reused(void *p) {
     HEAP_LOCK();
-    zs_weak *w = weaks.count ? tab_remove(&weaks, p) : NULL;
-    if (w) w->target = NULL;
+    weaks_die(p);
     HEAP_UNLOCK();
 }
 
@@ -1389,10 +1499,23 @@ _Noreturn void zs_slice_fail(zs_int i, zs_int j, zs_int n, zs_int kind) {
     zs_panic_c(msg);
 }
 
-// Fixed.ofArray of an array that hasn't the type's length
+// t in at most room bytes (3 or more), its end "..." when it doesn't fit
+static int text_upto(const char *t, char *out, int room) {
+    int k = 0;
+    while (t[k] && k < room) {
+        out[k] = t[k];
+        k++;
+    }
+    if (t[k]) k = k - 3 + text_of("...", out + k - 3);
+    return k;
+}
+
+// Fixed.ofArray of an array that hasn't the type's length; the type's text is the compiler's,
+// as long as its element type's (a module's path, generic arguments, a tuple's parts), so it's
+// cut to leave room for the rest, a length's 20 characters and the NUL
 _Noreturn void zs_fixed_fail(const char *type, zs_int len) {
     char msg[160];
-    int k = text_of(type, msg);
+    int k = text_upto(type, msg, (int)sizeof msg - 25 - 20 - 1);
     k += text_of(" from an array of length ", msg + k);
     k += int_text(len, msg + k);
     msg[k] = 0;
@@ -1513,14 +1636,55 @@ zs_str *zs_str_replace(zs_str *s, zs_str *old, zs_str *with) {
 
 // ---- format specifiers ($"{x:F2}", 0024): .NET's standard numeric formats, invariant
 
-// a specifier's letter and its digits (-1 when it has none)
-static void spec_of(zs_str *spec, char *letter, int *digits) {
-    *letter = spec->len > 0 ? spec->data[0] : 'G';
-    *digits = -1;
-    if (spec->len > 1) {
-        *digits = 0;
-        for (zs_int i = 1; i < spec->len && i < 3; i++) *digits = *digits * 10 + (spec->data[i] - '0');
+// a specifier the compiler would refuse in a hole: the panic quotes it (its first bytes, any but
+// printable ASCII as '?'), or names the letters the type takes
+_Noreturn static void spec_fail(zs_str *spec, const char *kind, const char *letters) {
+    char msg[160];
+    int k;
+    if (kind) {
+        k = text_of("'", msg);
+        msg[k++] = spec->data[0];
+        k += text_of("' isn't a format specifier for ", msg + k);
+        k += text_of(kind, msg + k);
+        k += text_of(": it takes ", msg + k);
+        for (int i = 0; letters[i]; i++) {
+            if (i > 0) k += text_of(", ", msg + k);
+            msg[k++] = letters[i];
+        }
+    } else {
+        k = text_of("a format specifier is a letter and at most two digits, as F2 or X8, not '", msg);
+        for (zs_int i = 0; i < spec->len && i < 16; i++) {
+            unsigned char c = (unsigned char)spec->data[i];
+            msg[k++] = c >= 32 && c < 127 ? (char)c : '?';
+        }
+        if (spec->len > 16) k += text_of("...", msg + k);
+        msg[k++] = '\'';
     }
+    panic_with(msg, (size_t)k);
+}
+
+// a specifier's letter, one of the type's letters, and its digits (-1 when it has none). A
+// hole's is checked at compile time; Format.format's, which may be made at run time, is checked
+// here by the same rules (a letter and at most two ASCII digits), so a width or a precision is
+// at most 99, which every buffer below holds; anything else panics
+static void spec_of(zs_str *spec, const char *kind, const char *letters, char *letter, int *digits) {
+    const unsigned char *s = (const unsigned char *)spec->data;
+    zs_int n = spec->len;
+    bool ok = n >= 1 && n <= 3 && ((s[0] >= 'A' && s[0] <= 'Z') || (s[0] >= 'a' && s[0] <= 'z'));
+    for (zs_int i = 1; ok && i < n; i++) ok = s[i] >= '0' && s[i] <= '9';
+    if (!ok) spec_fail(spec, NULL, NULL);
+    if (!strchr(letters, s[0])) spec_fail(spec, kind, letters);
+    *letter = (char)s[0];
+    *digits = -1;
+    if (n > 1) {
+        *digits = 0;
+        for (zs_int i = 1; i < n; i++) *digits = *digits * 10 + (s[i] - '0');
+    }
+}
+
+// what snprintf wrote: it counts what it would have, past the buffer when it cut the text
+static zs_str *str_written(const char *buf, int n, size_t cap) {
+    return str_of(buf, n < 0 ? 0 : (size_t)n >= cap ? (zs_int)cap - 1 : n);
 }
 
 // the digits of a decimal text's integer part with a comma every three (N)
@@ -1564,7 +1728,7 @@ zs_str *zs_format_float(double x, zs_str *spec) {
     char buf[1600], grouped[2200];
     char letter;
     int d, n;
-    spec_of(spec, &letter, &d);
+    spec_of(spec, "a float", "FNEG", &letter, &d);
     x = plain_nan(x);
     switch (letter) {
     case 'F': n = fixed(x, d < 0 ? 2 : d, buf, sizeof buf); break;
@@ -1583,7 +1747,7 @@ zs_str *zs_format_float(double x, zs_str *spec) {
         if (d <= 0) return zs_str_of_f64(x);
         n = c_snprintf(buf, sizeof buf, "%.*G", d, x);
     }
-    return str_of(buf, n);
+    return str_written(buf, n, sizeof buf);
 }
 
 // v at a width of bits bits (unsigned: its bits as they are), under a specifier
@@ -1591,7 +1755,7 @@ zs_str *zs_format_int(int64_t v, int64_t bits, bool isUnsigned, zs_str *spec) {
     char buf[200], grouped[300];
     char letter;
     int d, n;
-    spec_of(spec, &letter, &d);
+    spec_of(spec, "an integer", "FNDXxBb", &letter, &d);
     uint64_t mask = bits >= 64 ? ~(uint64_t)0 : ((uint64_t)1 << bits) - 1;
     uint64_t u = (uint64_t)v & mask; // two's complement at the type's width
     switch (letter) {
@@ -1606,6 +1770,7 @@ zs_str *zs_format_int(int64_t v, int64_t bits, bool isUnsigned, zs_str *spec) {
         for (int i = 63; i >= 0; i--)
             if (k > 0 || ((u >> i) & 1) || i == 0) buf[k++] = (char)('0' + ((u >> i) & 1));
         int pad = d > k ? d - k : 0;
+        if (pad > (int)sizeof buf - k) pad = (int)sizeof buf - k;
         memmove(buf + pad, buf, (size_t)k);
         memset(buf, '0', (size_t)pad);
         n = k + pad;
@@ -1626,7 +1791,7 @@ zs_str *zs_format_int(int64_t v, int64_t bits, bool isUnsigned, zs_str *spec) {
         else if (v < 0) n = snprintf(buf, sizeof buf, "-%0*llu", d < 0 ? 1 : d, (unsigned long long)-(uint64_t)v);
         else n = snprintf(buf, sizeof buf, "%0*lld", d < 0 ? 1 : d, (long long)v);
     }
-    return str_of(buf, n);
+    return str_written(buf, n, sizeof buf);
 }
 
 // ---- Int.parse and Float.parse (0024)
@@ -1660,19 +1825,27 @@ bool zs_parse_int(zs_str *s, int64_t radix, bool isUnsigned, int64_t bits, int64
 }
 
 // the number s writes: a sign, digits, a point, an exponent; inf and nan; nothing else (no
-// spaces, no hexadecimal, no 1,5)
+// spaces, no hexadecimal, no 1,5). Any length: a constant pasted with 500 digits rounds as
+// strtod rounds it, its copy on the heap past the stack's buffer
 bool zs_parse_float(zs_str *s, double *out) {
-    char buf[400];
-    if (s->len == 0 || s->len >= (zs_int)sizeof buf) return false;
+    char small[400];
+    if (s->len == 0) return false;
     for (zs_int i = 0; i < s->len; i++) {
         char c = s->data[i];
         if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == 'x' || c == 'X' || c == 0) return false;
+    }
+    char *buf = small;
+    if (s->len >= (zs_int)sizeof small) {
+        buf = malloc((size_t)s->len + 1);
+        if (!buf) zs_panic_c("out of memory");
     }
     memcpy(buf, s->data, (size_t)s->len);
     buf[s->len] = 0;
     char *end;
     double v = c_strtod(buf, &end);
-    if (end != buf + s->len) return false;
+    bool ok = end == buf + s->len;
+    if (buf != small) free(buf);
+    if (!ok) return false;
     *out = v;
     return true;
 }
@@ -1728,13 +1901,36 @@ zs_str *zs_read_line(void) {
 
 bool zs_eof(void) { return at_eof; }
 
-void zs_eprintln(zs_str *s) {
-    fflush(stdout);
-    fwrite(s->data, 1, (size_t)s->len, stderr);
-    fputc('\n', stderr);
+// A program ignores SIGPIPE (zs_set_args), so writing to a pipe whose reader has gone (a child's
+// standard input) is an Error, not the end of the program. Standard output or error gone (`| head`
+// has read what it wants) still ends it as SIGPIPE did: console_failed after a failed write. A
+// library leaves its host's signals alone.
+#include <errno.h>
+#ifndef _WIN32
+static bool sigpipe_ignored;
+#endif
+
+static void console_failed(void) {
+#ifndef _WIN32
+    if (!sigpipe_ignored || errno != EPIPE) return;
+    signal(SIGPIPE, SIG_DFL);
+    raise(SIGPIPE);
+    _exit(128 + SIGPIPE); // blocked in this thread: the status it would have ended with
+#endif
 }
 
-void zs_print(zs_str *s) { fwrite(s->data, 1, (size_t)s->len, stdout); }
+static void console_flush(void) {
+    if (fflush(stdout) != 0) console_failed();
+}
+
+void zs_eprintln(zs_str *s) {
+    console_flush();
+    if (fwrite(s->data, 1, (size_t)s->len, stderr) != (size_t)s->len || fputc('\n', stderr) == EOF) console_failed();
+}
+
+void zs_print(zs_str *s) {
+    if (fwrite(s->data, 1, (size_t)s->len, stdout) != (size_t)s->len) console_failed();
+}
 
 void zs_println(zs_str *s) {
     // a short line and its newline in one write: one lock of stdout, and no other thread's
@@ -1743,10 +1939,9 @@ void zs_println(zs_str *s) {
     if (s->len < (zs_int)sizeof line) {
         memcpy(line, s->data, (size_t)s->len);
         line[s->len] = '\n';
-        fwrite(line, 1, (size_t)s->len + 1, stdout);
-    } else {
-        fwrite(s->data, 1, (size_t)s->len, stdout);
-        fputc('\n', stdout);
+        if (fwrite(line, 1, (size_t)s->len + 1, stdout) != (size_t)s->len + 1) console_failed();
+    } else if (fwrite(s->data, 1, (size_t)s->len, stdout) != (size_t)s->len || fputc('\n', stdout) == EOF) {
+        console_failed();
     }
 }
 
@@ -1782,6 +1977,15 @@ void zs_set_args(int32_t argc, char **argv) {
     setvbuf(stderr, NULL, _IONBF, 0); // unbuffered, as C has it (the UCRT buffers a pipe)
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
+#else
+    // a write to a pipe whose reader has gone is an Error (standard output's ends the program
+    // still: console_failed, and at exit console_flush); SIGCHLD as the system has it, which
+    // waitpid needs (ignored, as a parent may hand it down, children are reaped unasked and
+    // waitpid fails). Children start with both as the system has them (spawn_attr).
+    signal(SIGPIPE, SIG_IGN);
+    signal(SIGCHLD, SIG_DFL);
+    sigpipe_ignored = true;
+    atexit(console_flush); // after the exit handlers registered later; C's own flush is quiet
 #endif
     const char *stats = getenv("ZS_STATS");
     if (stats && *stats && strcmp(stats, "0") != 0) atexit(print_stats);
@@ -1835,8 +2039,25 @@ zs_str *zs_env_get(zs_str *name) {
 // written first (_exit skips atexit's)
 _Noreturn void zs_exit(zs_int code) {
     coverage_dump();
+    console_flush();
     fflush(NULL);
     _exit((int)code);
+}
+
+// a reader's buffer (a file's, a directory's, a process's output), of cap bytes or grown to twice
+// its cap: out of memory panics, as an allocation does (a NULL kept as the buffer had the next
+// read write at the buffer's offset from address 0)
+static char *buf_new(size_t cap) {
+    char *b = malloc(cap);
+    if (!b) zs_panic_c("out of memory");
+    return b;
+}
+
+static char *buf_grow(char *b, size_t *cap) {
+    char *nb = *cap > SIZE_MAX / 2 ? NULL : realloc(b, *cap * 2);
+    if (!nb) zs_panic_c("out of memory");
+    *cap *= 2;
+    return nb;
 }
 
 zs_str *zs_file_read(zs_str *path) {
@@ -1847,11 +2068,11 @@ zs_str *zs_file_read(zs_str *path) {
         return str_of("", 0);
     }
     size_t cap = 4096, len = 0;
-    char *buf = malloc(cap);
+    char *buf = buf_new(cap);
     size_t n;
     while ((n = fread(buf + len, 1, cap - len, f)) > 0) {
         len += n;
-        if (len == cap) buf = realloc(buf, cap *= 2);
+        if (len == cap) buf = buf_grow(buf, &cap);
     }
     if (ferror(f)) set_error("cannot read", path);
     fclose(f);
@@ -1903,12 +2124,12 @@ zs_str *zs_dir_list(zs_str *path) {
         return str_of("", 0);
     }
     size_t cap = 256, len = 0;
-    char *buf = malloc(cap);
+    char *buf = buf_new(cap);
     struct dirent *e;
     while ((e = readdir(d))) {
         if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
         size_t n = strlen(e->d_name) + 1;
-        while (len + n > cap) buf = realloc(buf, cap *= 2);
+        while (len + n > cap) buf = buf_grow(buf, &cap);
         memcpy(buf + len, e->d_name, n);
         len += n;
     }
@@ -1985,36 +2206,144 @@ void zs_file_touch(zs_str *path) {
 #endif
 }
 
+// whether snprintf's n bytes fitted in size (a path cut short names another file)
+static bool fits(int n, size_t size) { return n >= 0 && (size_t)n < size; }
+
+// what failed, with its own words: "<what> <path>: <why>"
+static void set_error_why(const char *what, zs_str *path, const char *why) {
+    char buf[1024];
+    snprintf(buf, sizeof buf, "%s %s: %s", what, path ? path->data : "", why);
+    if (io_error) zs_free(io_error);
+    io_error = zs_str_from_c(buf);
+}
+
+// whether descriptors a and b are one file (two names for it, or one spelt two ways): its device
+// and inode, or on Windows (whose stat has no inode) its volume and index
+static bool same_file(int a, int b) {
+#ifdef _WIN32
+    BY_HANDLE_FILE_INFORMATION x, y;
+    return GetFileInformationByHandle((HANDLE)_get_osfhandle(a), &x) && GetFileInformationByHandle((HANDLE)_get_osfhandle(b), &y) &&
+           x.dwVolumeSerialNumber == y.dwVolumeSerialNumber && x.nFileIndexHigh == y.nFileIndexHigh && x.nFileIndexLow == y.nFileIndexLow;
+#else
+    struct stat x, y;
+    return fstat(a, &x) == 0 && fstat(b, &y) == 0 && x.st_dev == y.st_dev && x.st_ino == y.st_ino;
+#endif
+}
+
+// in's bytes to its end, written to out: false with errno set
+static bool copy_bytes(int in, int out) {
+    char buf[65536];
+    for (;;) {
+        ssize_t n = read(in, buf, sizeof buf);
+        if (n == 0) return true;
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return false;
+        }
+        for (ssize_t done = 0; done < n;) {
+            ssize_t w = write(out, buf + done, (size_t)(n - done));
+            if (w < 0 && errno != EINTR) return false;
+            if (w > 0) done += w;
+        }
+    }
+}
+
+// File.copy: from's bytes into to, replacing what's there. A new file gets from's permission
+// bits (less the umask, as cp gives them), so a file only its owner may read isn't copied to one
+// anyone may. to is emptied only once it's known not to be from (a link to it, or its path spelt
+// another way), which opening it emptied before a byte was read.
 static bool copy_file(zs_str *from, zs_str *to) {
+    struct stat st;
     int in = os_name(from) ? open(from->data, O_RDONLY | O_CLOEXEC) : -1;
-    if (in < 0) {
+    if (in < 0 || fstat(in, &st) != 0) {
         set_error("cannot open", from);
+        if (in >= 0) close(in);
         return false;
     }
-    int out = os_name(to) ? open(to->data, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666) : -1;
+#ifdef _WIN32
+    int mode = 0666; // the directory's ACL decides
+#else
+    int mode = st.st_mode & 0777;
+#endif
+    int out = os_name(to) ? open(to->data, O_WRONLY | O_CREAT | O_CLOEXEC, mode) : -1;
     if (out < 0) {
         set_error("cannot create", to);
         close(in);
         return false;
     }
-    char buf[65536];
-    ssize_t n;
-    bool ok = true;
-    while (ok && (n = read(in, buf, sizeof buf)) > 0)
-        for (ssize_t done = 0; ok && done < n;) {
-            ssize_t w = write(out, buf + done, (size_t)(n - done));
-            if (w < 0) ok = false; else done += w;
-        }
-    if (n < 0 || !ok) set_error("cannot copy to", to);
+    bool ok = false;
+    if (same_file(in, out)) set_error_why("cannot copy to", to, "it's the file copied");
+#ifdef _WIN32
+    else if (_chsize(out, 0) != 0 || !copy_bytes(in, out)) set_error("cannot copy to", to);
+#else
+    else if (ftruncate(out, 0) != 0 || !copy_bytes(in, out)) set_error("cannot copy to", to);
+#endif
+    else ok = true;
     close(in);
-    if (close(out) != 0 && ok) { set_error("cannot copy to", to); ok = false; }
-    return ok && n >= 0;
+    if (close(out) != 0 && ok) {
+        set_error("cannot copy to", to);
+        ok = false;
+    }
+    return ok;
 }
 
 void zs_file_copy(zs_str *from, zs_str *to) {
     clear_error();
     copy_file(from, to);
 }
+
+#ifndef _WIN32
+// File.move across file systems: from copied into a new file beside to (made 0600, then given
+// from's owner where that's allowed and its permission bits, as mv gives them: the set-user and
+// set-group bits only with the owner), which is renamed over to, so a failure (a full disk)
+// leaves to as it was and no one reads it half written; then from deleted. A file moved onto
+// itself (rename gives EXDEV across two mounts of one file system) stays as it is, as rename has it.
+static void move_across(zs_str *from, zs_str *to) {
+    struct stat st, at;
+    if (lstat(from->data, &st) != 0) {
+        set_error("cannot move", from);
+        return;
+    }
+    if (!S_ISREG(st.st_mode)) { // a directory or a link moves by rename alone
+        errno = EXDEV;
+        set_error("cannot move", from);
+        return;
+    }
+    if (stat(to->data, &at) == 0 && at.st_dev == st.st_dev && at.st_ino == st.st_ino) return;
+    const char *slash = strrchr(to->data, '/');
+    char tmp[4096];
+    if (!fits(snprintf(tmp, sizeof tmp, "%.*s.zs-move-XXXXXX", slash ? (int)(slash - to->data + 1) : 0, to->data), sizeof tmp)) {
+        errno = ENAMETOOLONG;
+        set_error("cannot move", from);
+        return;
+    }
+    int in = open(from->data, O_RDONLY | O_CLOEXEC | O_NOFOLLOW); // what lstat saw, not a link
+    if (in < 0) {
+        set_error("cannot open", from);
+        return;
+    }
+    int out = mkostemp(tmp, O_CLOEXEC);
+    if (out < 0) {
+        set_error("cannot move to", to);
+        close(in);
+        return;
+    }
+    mode_t bits = fchown(out, st.st_uid, st.st_gid) == 0 ? 07777 : 0777;
+    bool ok = copy_bytes(in, out) && fchmod(out, st.st_mode & bits) == 0 && fsync(out) == 0;
+    if (!ok) set_error("cannot move to", to);
+    close(in);
+    if (close(out) != 0 && ok) {
+        set_error("cannot move to", to);
+        ok = false;
+    }
+    if (ok && rename(tmp, to->data) != 0) {
+        set_error("cannot move to", to);
+        ok = false;
+    }
+    if (!ok) unlink(tmp);
+    else if (remove(from->data) != 0) set_error("cannot delete", from);
+}
+#endif
 
 // a rename, or across file systems a copy and a delete
 void zs_file_move(zs_str *from, zs_str *to) {
@@ -2029,14 +2358,14 @@ void zs_file_move(zs_str *from, zs_str *to) {
         errno = EACCES;
         set_error("cannot move", from);
     }
-    return;
-#endif
+#else
     if (rename(from->data, to->data) == 0) return;
     if (errno != EXDEV) {
         set_error("cannot move", from);
         return;
     }
-    if (copy_file(from, to) && remove(from->data) != 0) set_error("cannot delete", from);
+    move_across(from, to);
+#endif
 }
 
 // a new empty file (mode 0600) or directory in the temporary directory ($TMPDIR, else /tmp),
@@ -2099,6 +2428,243 @@ void zs_dir_delete(zs_str *path) {
     if (!os_name(path) || rmdir(path->data) != 0) set_error("cannot delete", path);
 }
 
+// ---- Directory.deleteRecursive: path and everything under it, no symbolic link followed: a link
+// (path itself, or one in the tree) is deleted as itself, never what it points to.
+
+// the error of a step of the walk, at where's entry name (or where itself)
+static void tree_failed(const char *what, const char *where, const char *name) {
+    int e = errno;
+    char buf[4096];
+    snprintf(buf, sizeof buf, "%s%s%s", where, name ? "/" : "", name ? name : "");
+    zs_str *p = zs_str_from_c(buf);
+    errno = e;
+    set_error(what, p);
+    zs_free(p);
+}
+
+#ifndef _WIN32
+// The walk goes by descriptors: each directory opened from its parent's with O_NOFOLLOW, each
+// entry deleted by its name in its directory's (unlinkat), so a directory swapped for a link
+// meanwhile can't lead the walk, or its deletes, out of the tree (CVE-2022-21658's fix, Rust's).
+// A directory is read again after a pass that deleted something, as a file system may skip an
+// entry when the one before it is deleted.
+typedef struct {
+    DIR *d;
+    char *name;     // its name in the directory below it (NULL for path's)
+    size_t at;      // where's length without it (path's: with it)
+    bool removed;   // something in it was deleted this pass
+} tree_dir;
+
+void zs_dir_delete_tree(zs_str *path) {
+    clear_error();
+    if (!os_name(path)) {
+        set_error("cannot delete", path);
+        return;
+    }
+    size_t n = 1, cap = 16, wcap = (size_t)path->len + 256;
+    tree_dir *st = malloc(cap * sizeof(tree_dir));
+    char *where = malloc(wcap); // the path of the directory on top, for an error's message
+    if (!st || !where) zs_panic_c("out of memory");
+    // without a trailing slash, which would have a link followed
+    size_t len = (size_t)path->len;
+    while (len > 1 && path->data[len - 1] == '/') len--;
+    memcpy(where, path->data, len);
+    where[len] = 0;
+    int fd = open(where, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    DIR *root = fd < 0 ? NULL : fdopendir(fd);
+    if (!root) {
+        struct stat s;
+        // a link (O_NOFOLLOW's ELOOP; EMLINK on the BSDs): deleted as itself
+        if (fd < 0 && (errno == ELOOP || errno == EMLINK || errno == ENOTDIR) && lstat(where, &s) == 0 && S_ISLNK(s.st_mode)) {
+            if (unlink(where) != 0) set_error("cannot delete", path);
+        } else {
+            set_error("cannot delete", path);
+            if (fd >= 0) close(fd);
+        }
+        free(st);
+        free(where);
+        return;
+    }
+    st[0] = (tree_dir){root, NULL, len, false};
+    bool ok = true;
+    while (ok && n > 0) {
+        tree_dir *top = &st[n - 1];
+        errno = 0;
+        struct dirent *e = readdir(top->d);
+        if (!e) {
+            if (errno != 0) {
+                ok = false;
+                tree_failed("cannot read", where, NULL);
+            } else if (top->removed) {
+                top->removed = false;
+                rewinddir(top->d);
+            } else {
+                // empty: deleted from its parent's descriptor (path's by its path)
+                closedir(top->d);
+                char *name = top->name;
+                where[top->at] = 0;
+                n--;
+                if (n > 0 && unlinkat(dirfd(st[n - 1].d), name, AT_REMOVEDIR) != 0) ok = false, tree_failed("cannot delete", where, name);
+                else if (n > 0) st[n - 1].removed = true;
+                else if (rmdir(where) != 0) ok = false, set_error("cannot delete", path);
+                free(name);
+            }
+            continue;
+        }
+        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+        int dfd = dirfd(top->d);
+        bool isdir = e->d_type == DT_DIR;
+        if (e->d_type == DT_UNKNOWN) {
+            struct stat s;
+            isdir = fstatat(dfd, e->d_name, &s, AT_SYMLINK_NOFOLLOW) == 0 && S_ISDIR(s.st_mode);
+        }
+        if (isdir) {
+            int cfd = openat(dfd, e->d_name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+            DIR *c = cfd < 0 ? NULL : fdopendir(cfd);
+            if (c) {
+                size_t at = strlen(where), len = strlen(e->d_name);
+                if (n == cap && !(st = realloc(st, (cap *= 2) * sizeof(tree_dir)))) zs_panic_c("out of memory");
+                if (at + len + 2 > wcap && !(where = realloc(where, wcap = 2 * (at + len + 2)))) zs_panic_c("out of memory");
+                where[at] = '/';
+                memcpy(where + at + 1, e->d_name, len + 1);
+                st[n++] = (tree_dir){c, strdup(e->d_name), at, false};
+                if (!st[n - 1].name) zs_panic_c("out of memory");
+                continue;
+            }
+            if (cfd >= 0) close(cfd);
+            // swapped for a link or a file since it was read: deleted as itself, below
+            if (errno != ELOOP && errno != EMLINK && errno != ENOTDIR) {
+                ok = false;
+                tree_failed("cannot delete", where, e->d_name);
+                continue;
+            }
+        }
+        if (unlinkat(dfd, e->d_name, 0) != 0) ok = false, tree_failed("cannot delete", where, e->d_name);
+        else top->removed = true;
+    }
+    for (; n > 0; n--) { // what's left open after a failure
+        closedir(st[n - 1].d);
+        free(st[n - 1].name);
+    }
+    free(st);
+    free(where);
+}
+#else
+// Windows has no calls relative to a directory's handle here, so the walk goes by paths; a
+// reparse point (a symbolic link, a junction) is deleted as itself (RemoveDirectory takes a
+// directory's, DeleteFile a file's) and never walked into.
+// ponytail: a directory swapped for a junction between its listing and its walk is walked;
+// handle-relative deletes (NtCreateFile, FILE_FLAG_OPEN_REPARSE_POINT) if that matters
+typedef struct {
+    HANDLE find; // INVALID_HANDLE_VALUE until it's read
+    char *dir;
+} tree_dir;
+
+static int win_errno(void) {
+    switch (GetLastError()) {
+    case ERROR_FILE_NOT_FOUND:
+    case ERROR_PATH_NOT_FOUND:
+        return ENOENT;
+    case ERROR_DIR_NOT_EMPTY:
+        return ENOTEMPTY;
+    case ERROR_DIRECTORY:
+        return ENOTDIR;
+    default:
+        return EACCES;
+    }
+}
+
+// dir's entry name, as a path
+static char *tree_path(const char *dir, const char *name) {
+    size_t a = strlen(dir), b = strlen(name);
+    char *p = malloc(a + b + 2);
+    if (!p) zs_panic_c("out of memory");
+    memcpy(p, dir, a);
+    p[a] = '\\';
+    memcpy(p + a + 1, name, b + 1);
+    return p;
+}
+
+void zs_dir_delete_tree(zs_str *path) {
+    clear_error();
+    if (!os_name(path)) {
+        set_error("cannot delete", path);
+        return;
+    }
+    DWORD a = GetFileAttributesA(path->data);
+    if (a == INVALID_FILE_ATTRIBUTES || (a & FILE_ATTRIBUTE_REPARSE_POINT)) {
+        if (a == INVALID_FILE_ATTRIBUTES || !((a & FILE_ATTRIBUTE_DIRECTORY) ? RemoveDirectoryA(path->data) : DeleteFileA(path->data))) {
+            errno = win_errno();
+            set_error("cannot delete", path);
+        }
+        return;
+    }
+    if (!(a & FILE_ATTRIBUTE_DIRECTORY)) {
+        errno = ENOTDIR;
+        set_error("cannot delete", path);
+        return;
+    }
+    size_t n = 1, cap = 16;
+    tree_dir *st = malloc(cap * sizeof(tree_dir));
+    char *root = strdup(path->data);
+    if (!st || !root) zs_panic_c("out of memory");
+    st[0] = (tree_dir){INVALID_HANDLE_VALUE, root};
+    bool ok = true;
+    while (ok && n > 0) {
+        tree_dir *top = &st[n - 1];
+        WIN32_FIND_DATAA f;
+        bool got;
+        if (top->find == INVALID_HANDLE_VALUE) {
+            char *pattern = tree_path(top->dir, "*");
+            top->find = FindFirstFileA(pattern, &f);
+            free(pattern);
+            got = top->find != INVALID_HANDLE_VALUE;
+        } else {
+            got = FindNextFileA(top->find, &f);
+        }
+        if (!got) {
+            DWORD why = GetLastError();
+            if (why != ERROR_NO_MORE_FILES && why != ERROR_FILE_NOT_FOUND) {
+                errno = win_errno();
+                tree_failed("cannot read", top->dir, NULL);
+                ok = false;
+                continue;
+            }
+            // empty: deleted
+            if (top->find != INVALID_HANDLE_VALUE) FindClose(top->find);
+            char *dir = top->dir;
+            n--;
+            if (!RemoveDirectoryA(dir)) {
+                errno = win_errno();
+                tree_failed("cannot delete", dir, NULL);
+                ok = false;
+            }
+            free(dir);
+            continue;
+        }
+        if (strcmp(f.cFileName, ".") == 0 || strcmp(f.cFileName, "..") == 0) continue;
+        char *p = tree_path(top->dir, f.cFileName);
+        DWORD fa = f.dwFileAttributes;
+        if ((fa & FILE_ATTRIBUTE_DIRECTORY) && !(fa & FILE_ATTRIBUTE_REPARSE_POINT)) {
+            if (n == cap && !(st = realloc(st, (cap *= 2) * sizeof(tree_dir)))) zs_panic_c("out of memory");
+            st[n++] = (tree_dir){INVALID_HANDLE_VALUE, p};
+            continue;
+        }
+        if (!((fa & FILE_ATTRIBUTE_DIRECTORY) ? RemoveDirectoryA(p) : DeleteFileA(p))) {
+            errno = win_errno();
+            tree_failed("cannot delete", p, NULL);
+            ok = false;
+        }
+        free(p);
+    }
+    for (; n > 0; n--) { // what's left open after a failure
+        if (st[n - 1].find != INVALID_HANDLE_VALUE) FindClose(st[n - 1].find);
+        free(st[n - 1].dir);
+    }
+    free(st);
+}
+#endif
+
 bool zs_is_symlink(zs_str *path) {
     if (!os_name(path)) return false;
 #ifdef _WIN32
@@ -2120,32 +2686,160 @@ static _Thread_local int64_t process_code;
 
 zs_int zs_process_code(void) { return process_code; }
 
+// ---- the processes Process.start started, by the number it gives each (1, 2, ...), which is
+// never another process's, as a process id may be once its process has been waited for (and a
+// Windows handle's value at once): each one's id and, once it has been waited for, its exit
+// code, which a later wait gives again (a kill then leaves it alone). A wait frees the id under
+// procs_mu, which a kill takes, so a kill never reaches a process that has taken the id since.
+// ponytail: an entry a process, kept to the end; freed by Process's dispose if a program starts
+// millions
+enum { PROC_RUNNING, PROC_WAITING, PROC_DONE }; // PROC_WAITING: a thread waits for its end
+
+typedef struct {
+    zs_int pid;
+#ifdef _WIN32
+    HANDLE h; // open until the process has been waited for
+#endif
+    zs_int code;
+    int state;
+} proc;
+
+static proc *procs;
+static size_t nprocs, procs_cap;
+static pthread_mutex_t procs_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t procs_cv = PTHREAD_COND_INITIALIZER; // a wait has ended
+
+// the table freed at exit (valgrind counts what's still allocated then), unless a thread still
+// waits for a process in it; a number is no process's after
+static void procs_free(void) {
+    pthread_mutex_lock(&procs_mu);
+    bool waiting = false;
+    for (size_t i = 0; i < nprocs; i++) waiting = waiting || procs[i].state == PROC_WAITING;
+    if (!waiting) {
+        free(procs);
+        procs = NULL;
+        nprocs = procs_cap = 0;
+    }
+    pthread_mutex_unlock(&procs_mu);
+}
+
+static pthread_once_t procs_once = PTHREAD_ONCE_INIT;
+static void procs_at_exit(void) { atexit(procs_free); }
+
+// a process started (h: its handle on Windows): its number
+static zs_int proc_add(zs_int pid, void *h) {
+    pthread_once(&procs_once, procs_at_exit);
+    pthread_mutex_lock(&procs_mu);
+    if (nprocs == procs_cap) {
+        size_t cap = procs_cap ? 2 * procs_cap : 16;
+        proc *p = realloc(procs, cap * sizeof(proc));
+        if (!p) zs_panic_c("out of memory");
+        procs = p;
+        procs_cap = cap;
+    }
+    procs[nprocs] = (proc){.pid = pid, .code = -1, .state = PROC_RUNNING};
+#ifdef _WIN32
+    procs[nprocs].h = h;
+#else
+    (void)h;
+#endif
+    zs_int n = (zs_int)++nprocs;
+    pthread_mutex_unlock(&procs_mu);
+    return n;
+}
+
+// the entry of a number Process.start gave, NULL for any other (under procs_mu; procs moves
+// when it grows, so not kept past an unlock)
+static proc *proc_of(zs_int n) { return n >= 1 && (size_t)n <= nprocs ? &procs[n - 1] : NULL; }
+
+// waits for the process to end, unless it has been waited for: its exit code, -1 if that can't
+// be had. One thread waits at a time; another waits for that one.
+static zs_int proc_wait(zs_int n) {
+    pthread_mutex_lock(&procs_mu);
+    proc *p = proc_of(n);
+    while (p && p->state == PROC_WAITING) {
+        pthread_cond_wait(&procs_cv, &procs_mu);
+        p = proc_of(n); // NULL once the table is freed, at exit
+    }
+    if (!p) {
+        pthread_mutex_unlock(&procs_mu);
+        return -1;
+    }
+    if (p->state == PROC_RUNNING) {
+        p->state = PROC_WAITING;
+        zs_int got = -1;
+#ifdef _WIN32
+        HANDLE h = p->h;
+        pthread_mutex_unlock(&procs_mu);
+        DWORD c = 0;
+        if (WaitForSingleObject(h, INFINITE) == WAIT_OBJECT_0 && GetExitCodeProcess(h, &c)) got = (zs_int)c;
+        pthread_mutex_lock(&procs_mu);
+        CloseHandle(h); // under the lock, which zs_process_kill takes to use it
+        p = proc_of(n);
+        p->h = NULL;
+#else
+        pid_t pid = (pid_t)p->pid;
+        pthread_mutex_unlock(&procs_mu);
+        int status = 0;
+        pid_t w = -1;
+#ifdef __linux__
+        // waited for without reaping it, then reaped under the lock: a kill, which takes it too,
+        // reaches the process or its zombie, never an id that's free for another
+        siginfo_t si;
+        int r;
+        while ((r = waitid(P_PID, (id_t)pid, &si, WEXITED | WNOWAIT)) < 0 && errno == EINTR) {}
+        pthread_mutex_lock(&procs_mu);
+        if (r == 0) {
+            while ((w = waitpid(pid, &status, 0)) < 0 && errno == EINTR) {}
+        }
+#else
+        // ponytail: reaped before the lock is taken (macOS's waitid returns for a stopped process
+        // too, so it can't wait without reaping), so a kill in between may signal a free id
+        while ((w = waitpid(pid, &status, 0)) < 0 && errno == EINTR) {}
+        pthread_mutex_lock(&procs_mu);
+#endif
+        if (w > 0) got = WIFEXITED(status) ? WEXITSTATUS(status) : WIFSIGNALED(status) ? 128 + WTERMSIG(status) : -1;
+        p = proc_of(n);
+#endif
+        p->code = got;
+        p->state = PROC_DONE;
+        pthread_cond_broadcast(&procs_cv);
+    }
+    zs_int code = p->code;
+    pthread_mutex_unlock(&procs_mu);
+    return code;
+}
+
 #ifdef _WIN32
 // prog as an executable path: as given when it has a separator, else the first match on PATH
-// (';'-separated); either way with ".exe" added when the name alone isn't a file
+// (';'-separated); either way with ".exe" added when the name alone isn't a file. Then made full
+// (GetFullPathName, against this program's working directory, where it was found), so the file
+// run is the file found, whatever directory the child starts in.
 static bool is_file(const char *p) {
     DWORD a = GetFileAttributesA(p);
     return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
 }
 
 static bool find_program(const char *prog, char *out, size_t size) {
+    char found[4096];
+    bool ok = false;
     if (strchr(prog, '/') || strchr(prog, '\\')) {
-        snprintf(out, size, "%s", prog);
-        if (is_file(out)) return true;
-        snprintf(out, size, "%s.exe", prog);
-        return is_file(out);
+        ok = fits(snprintf(found, sizeof found, "%s", prog), sizeof found) && is_file(found);
+        if (!ok) ok = fits(snprintf(found, sizeof found, "%s.exe", prog), sizeof found) && is_file(found);
+    } else {
+        for (const char *path = getenv("PATH"); path && *path && !ok;) {
+            const char *end = strchr(path, ';');
+            size_t len = end ? (size_t)(end - path) : strlen(path);
+            if (len) {
+                ok = fits(snprintf(found, sizeof found, "%.*s\\%s", (int)len, path, prog), sizeof found) && is_file(found);
+                if (!ok) ok = fits(snprintf(found, sizeof found, "%.*s\\%s.exe", (int)len, path, prog), sizeof found) && is_file(found);
+            }
+            path += len + (end ? 1 : 0);
+        }
     }
-    const char *path = getenv("PATH");
-    for (; path && *path;) {
-        const char *end = strchr(path, ';');
-        size_t len = end ? (size_t)(end - path) : strlen(path);
-        snprintf(out, size, "%.*s\\%s", (int)len, path, prog);
-        if (len && is_file(out)) return true;
-        snprintf(out, size, "%.*s\\%s.exe", (int)len, path, prog);
-        if (len && is_file(out)) return true;
-        path += len + (end ? 1 : 0);
-    }
-    return false;
+    if (!ok) return false;
+    DWORD n = GetFullPathNameA(found, (DWORD)size, out, NULL);
+    return n > 0 && n < size;
 }
 
 // appends arg to the command line, quoted as CommandLineToArgvW parses it back
@@ -2181,21 +2875,114 @@ static void quote_arg(char **buf, size_t *len, size_t *cap, const char *arg) {
     b[*len] = 0;
 }
 
-static _Thread_local zs_int started[4]; // the last start's process and pipes, for Native.processPipe
+// A batch file (.bat, .cmd) runs in cmd.exe, which reads its command line by rules of its own:
+// & | < > ^ ( ) are live outside quotes, %NAME% is expanded inside them too, and a backslash
+// escapes nothing (BatBadBut, CVE-2024-24576). So its line is built as Rust's has been since:
+// cmd.exe named outright, /e:ON /v:OFF /d /c ""<script>" <args>", an argument quoted unless it's
+// letters, digits and #$*+-./:?@\_ alone, a " in one doubled, a % turned into %%cd:~,% (an empty
+// slice of %cd%, so what follows names no variable), and a CR or LF, which ends the command
+// whatever quotes it's in, refused.
+
+// whether exe is a batch file, its name's trailing dots and spaces (which Windows drops) dropped
+static bool is_batch(const char *exe) {
+    size_t n = strlen(exe);
+    while (n && (exe[n - 1] == '.' || exe[n - 1] == ' ')) n--;
+    return n >= 4 && (_strnicmp(exe + n - 4, ".bat", 4) == 0 || _strnicmp(exe + n - 4, ".cmd", 4) == 0);
+}
+
+// appends arg to a batch file's command line; false for one that can't be passed
+static bool bat_arg(char **buf, size_t *len, size_t *cap, const char *arg) {
+    size_t n = strlen(arg);
+    // empty, or ending in a backslash (which a script's "%~1" would read as escaping its quote)
+    bool quote = n == 0 || arg[n - 1] == '\\';
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)arg[i];
+        if (c == '\r' || c == '\n') return false;
+        bool plain = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || strchr("#$*+-./:?@\\_", c);
+        // any other ASCII character, or a C1 control (U+0080 to U+009F: C2 80 to C2 9F)
+        if ((c < 0x80 && !plain) || (c == 0xC2 && i + 1 < n && (unsigned char)arg[i + 1] < 0xA0)) quote = true;
+    }
+    if (*len + 8 * n + 4 > *cap) { // a % takes 8 bytes, a " or \ at most 2
+        *cap = 2 * (*len + 8 * n + 4);
+        *buf = realloc(*buf, *cap);
+        if (!*buf) zs_panic_c("out of memory");
+    }
+    char *b = *buf;
+    b[(*len)++] = ' ';
+    if (quote) b[(*len)++] = '"';
+    size_t slashes = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (arg[i] == '\\') {
+            slashes++;
+        } else {
+            if (arg[i] == '"') { // the backslashes before it doubled, and the quote too
+                for (size_t k = 0; k < slashes; k++) b[(*len)++] = '\\';
+                b[(*len)++] = '"';
+            } else if (arg[i] == '%') {
+                memcpy(b + *len, "%%cd:~,", 7);
+                *len += 7;
+            }
+            slashes = 0;
+        }
+        b[(*len)++] = arg[i];
+    }
+    if (quote) {
+        for (size_t k = 0; k < slashes; k++) b[(*len)++] = '\\'; // doubled before the closing quote
+        b[(*len)++] = '"';
+    }
+    b[*len] = 0;
+    return true;
+}
+
+// the command line running the batch file script with args (each NUL-ended) in cmd.exe, or NULL
+// when one can't be passed (a file's name has no " and doesn't end in a backslash)
+static char *bat_line(const char *script, zs_str *args) {
+    size_t n = strlen(script);
+    if (strchr(script, '"') || (n && script[n - 1] == '\\')) return NULL;
+    size_t cap = n + 64, len;
+    char *b = malloc(cap);
+    if (!b) zs_panic_c("out of memory");
+    len = (size_t)snprintf(b, cap, "cmd.exe /e:ON /v:OFF /d /c \"\"%s\"", script);
+    for (int64_t i = 0; i < args->len; i += (int64_t)strlen(args->data + i) + 1)
+        if (!bat_arg(&b, &len, &cap, args->data + i)) {
+            free(b);
+            return NULL;
+        }
+    if (len + 2 > cap) {
+        cap = len + 2;
+        b = realloc(b, cap);
+        if (!b) zs_panic_c("out of memory");
+    }
+    b[len++] = '"';
+    b[len] = 0;
+    return b;
+}
+
+static _Thread_local zs_int started[4]; // the last start's number and pipes, for Native.processPipe
 
 zs_int zs_process_pipe(zs_int k) { return k >= 0 && k < 3 ? started[k + 1] : -1; }
 
-// starts prog with args (each NUL-ended), as zs_process_start's POSIX version: the process's
-// handle as its "pid", or -errno. Each piped stream's end here is a CRT descriptor.
+// starts prog with args (each NUL-ended), as zs_process_start's POSIX version: 0 and the
+// process's handle, or -errno. Each piped stream's end here is a CRT descriptor, in started.
 // ponytail: the child's ends are inheritable while CreateProcess runs, so a process another
 // thread starts at that moment inherits them too; PROC_THREAD_ATTRIBUTE_HANDLE_LIST if it matters
-zs_int zs_process_start(zs_str *prog, zs_str *args, zs_str *env, bool hasEnv, zs_str *dir, zs_int in, zs_int outm, zs_int errm) {
+static zs_int win_start(zs_str *prog, zs_str *args, zs_str *env, bool hasEnv, zs_str *dir, zs_int in, zs_int outm, zs_int errm, HANDLE *process) {
     char exe[4096];
     if (!find_program(prog->data, exe, sizeof exe)) return -ENOENT;
     size_t len = 0, cap = 0;
     char *cmd = NULL;
-    quote_arg(&cmd, &len, &cap, prog->data);
-    for (int64_t i = 0; i < args->len; i += (int64_t)strlen(args->data + i) + 1) quote_arg(&cmd, &len, &cap, args->data + i);
+    char shell[MAX_PATH + 16];
+    const char *run = exe;
+    if (is_batch(exe)) {
+        UINT k = GetSystemDirectoryA(shell, MAX_PATH);
+        if (k == 0 || k >= MAX_PATH) return -ENOENT;
+        strcat(shell, "\\cmd.exe");
+        run = shell;
+        if (!(cmd = bat_line(exe, args))) return -EINVAL;
+    } else {
+        quote_arg(&cmd, &len, &cap, prog->data);
+        for (int64_t i = 0; i < args->len; i += (int64_t)strlen(args->data + i) + 1) quote_arg(&cmd, &len, &cap, args->data + i);
+    }
     SECURITY_ATTRIBUTES sa = {sizeof sa, NULL, TRUE};
     STARTUPINFOA si = {.cb = sizeof si, .dwFlags = STARTF_USESTDHANDLES};
     HANDLE *std[3] = {&si.hStdInput, &si.hStdOutput, &si.hStdError};
@@ -2229,11 +3016,12 @@ zs_int zs_process_start(zs_str *prog, zs_str *args, zs_str *env, bool hasEnv, zs
     char *block = NULL;
     if (hasEnv) {
         block = calloc((size_t)env->len + 2, 1);
+        if (!block) zs_panic_c("out of memory");
         memcpy(block, env->data, (size_t)env->len);
     }
-    fflush(stdout);
+    console_flush();
     PROCESS_INFORMATION pi;
-    BOOL ok = CreateProcessA(exe, cmd, NULL, NULL, TRUE, 0, block, dir->len ? dir->data : NULL, &si, &pi);
+    BOOL ok = CreateProcessA(run, cmd, NULL, NULL, TRUE, 0, block, dir->len ? dir->data : NULL, &si, &pi);
     DWORD e = GetLastError();
     free(cmd);
     free(block);
@@ -2245,129 +3033,58 @@ zs_int zs_process_start(zs_str *prog, zs_str *args, zs_str *env, bool hasEnv, zs
         return e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND ? -ENOENT : -EACCES;
     }
     CloseHandle(pi.hThread);
-    started[0] = (zs_int)(intptr_t)pi.hProcess;
+    *process = pi.hProcess;
+    return 0;
+}
+
+// starts prog (Process.start): its number in procs, or -errno
+zs_int zs_process_start(zs_str *prog, zs_str *args, zs_str *env, bool hasEnv, zs_str *dir, zs_int in, zs_int outm, zs_int errm) {
+    HANDLE h;
+    zs_int e = win_start(prog, args, env, hasEnv, dir, in, outm, errm, &h);
+    if (e < 0) return e;
+    started[0] = proc_add((zs_int)GetProcessId(h), h);
     return started[0];
 }
-
-// waits for the process: its exit code (an NTSTATUS such as 0xC0000005 when it crashed)
-zs_int zs_process_wait(zs_int pid) {
-    HANDLE h = (HANDLE)(intptr_t)pid;
-    DWORD code = 0;
-    if (WaitForSingleObject(h, INFINITE) != WAIT_OBJECT_0 || !GetExitCodeProcess(h, &code)) return -1;
-    CloseHandle(h);
-    return (zs_int)code;
-}
-
-zs_int zs_process_kill(zs_int pid) { return TerminateProcess((HANDLE)(intptr_t)pid, 137) ? 0 : -EPERM; }
 
 // Runs prog with args (each NUL-ended, no shell), stdout captured, stderr passed through
 zs_str *zs_process_run(zs_str *prog, zs_str *args) {
     clear_error();
     zs_str none = {0};
-    zs_int h = zs_process_start(prog, args, &none, false, &none, 0, 1, 0);
-    if (h < 0) {
-        errno = (int)-h;
+    HANDLE h;
+    zs_int e = win_start(prog, args, &none, false, &none, 0, 1, 0, &h);
+    if (e < 0) {
+        errno = (int)-e;
         set_error("cannot run", prog);
         return str_of("", 0);
     }
     int fd = (int)started[2];
     size_t cap = 4096, len = 0;
-    char *buf = malloc(cap);
+    char *buf = buf_new(cap);
     int n;
     while ((n = _read(fd, buf + len, (unsigned)(cap - len))) > 0) {
         len += (size_t)n;
-        if (len == cap) buf = realloc(buf, cap *= 2);
+        if (len == cap) buf = buf_grow(buf, &cap);
     }
+    if (n < 0) set_error("cannot read the output of", prog);
     _close(fd);
-    process_code = zs_process_wait(h);
+    DWORD code = 0;
+    if (WaitForSingleObject(h, INFINITE) == WAIT_OBJECT_0 && GetExitCodeProcess(h, &code)) {
+        process_code = (zs_int)code;
+    } else {
+        errno = ECHILD;
+        set_error("cannot wait for", prog);
+        process_code = -1;
+    }
+    CloseHandle(h);
     zs_str *s = str_of(buf, (int64_t)len);
     free(buf);
     return s;
 }
 #else
-// prog as an executable path: as given when it has a '/', else the first match on PATH
-// (looked up here so a missing program is the same error on every libc, and under valgrind)
-static bool find_program(const char *prog, char *out, size_t size) {
-    if (strchr(prog, '/')) {
-        snprintf(out, size, "%s", prog);
-        return access(out, X_OK) == 0;
-    }
-    const char *path = getenv("PATH");
-    if (!path) path = "/usr/bin:/bin";
-    while (*path) {
-        const char *end = strchr(path, ':');
-        size_t len = end ? (size_t)(end - path) : strlen(path);
-        snprintf(out, size, "%.*s/%s", (int)len, len ? path : ".", prog);
-        if (access(out, X_OK) == 0) return true;
-        path += len + (end ? 1 : 0);
-    }
-    return false;
-}
+#ifdef __linux__
+#include <sys/syscall.h>
+#endif
 
-// the strings of s as an argv-style array (with first in front, NULL after): one starts at each
-// byte that begins s or follows a NUL, so Process's arguments "a\0\0" (each NUL-ended) are "a"
-// and "", "\0" is one "", and an environment "A=1\0B=2" two
-static char **split_nul(zs_str *s, char *first) {
-    int64_t count = 0;
-    for (int64_t i = 0; i < s->len; i++) count += i == 0 || s->data[i - 1] == 0;
-    char **v = malloc(sizeof(char *) * (size_t)(count + 2));
-    int64_t k = 0;
-    if (first) v[k++] = first;
-    for (int64_t i = 0; i < s->len; i++)
-        if (i == 0 || s->data[i - 1] == 0) v[k++] = s->data + i;
-    v[k] = NULL;
-    return v;
-}
-
-zs_str *zs_process_run(zs_str *prog, zs_str *args) {
-    clear_error();
-    char exe[4096];
-    if (!find_program(prog->data, exe, sizeof exe)) {
-        errno = ENOENT;
-        set_error("cannot run", prog);
-        return str_of("", 0);
-    }
-    char **argv = split_nul(args, prog->data);
-    int fds[2];
-    if (pipe(fds) != 0) {
-        free(argv);
-        set_error("cannot run", prog);
-        return str_of("", 0);
-    }
-    posix_spawn_file_actions_t fa;
-    posix_spawn_file_actions_init(&fa);
-    posix_spawn_file_actions_adddup2(&fa, fds[1], 1);
-    posix_spawn_file_actions_addclose(&fa, fds[0]);
-    posix_spawn_file_actions_addclose(&fa, fds[1]);
-    fflush(stdout);
-    pid_t pid;
-    int rc = posix_spawn(&pid, exe, &fa, NULL, argv, environ);
-    posix_spawn_file_actions_destroy(&fa);
-    free(argv);
-    close(fds[1]);
-    if (rc != 0) {
-        close(fds[0]);
-        errno = rc;
-        set_error("cannot run", prog);
-        return str_of("", 0);
-    }
-    size_t cap = 4096, len = 0;
-    char *buf = malloc(cap);
-    ssize_t n;
-    while ((n = read(fds[0], buf + len, cap - len)) > 0) {
-        len += (size_t)n;
-        if (len == cap) buf = realloc(buf, cap *= 2);
-    }
-    close(fds[0]);
-    int status = 0;
-    waitpid(pid, &status, 0);
-    process_code = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
-    zs_str *s = str_of(buf, (int64_t)len);
-    free(buf);
-    return s;
-}
-
-#ifndef _WIN32
 // a pipe, both ends close-on-exec (and non-blocking with nonblock); macOS has no pipe2
 static int pipe_cloexec(int p[2], bool nonblock) {
 #ifdef __APPLE__
@@ -2381,22 +3098,140 @@ static int pipe_cloexec(int p[2], bool nonblock) {
     return pipe2(p, O_CLOEXEC | (nonblock ? O_NONBLOCK : 0));
 #endif
 }
-#endif
+
+// prog as an executable path: as given when it has a '/', else the first match on PATH (looked
+// up here so a missing program is the same error on every libc, and under valgrind). Then made
+// absolute, against this program's working directory (where it was found), so the file run is
+// the file found, whatever directory the child starts in. false with errno set.
+static bool find_program(const char *prog, char *out, size_t size) {
+    char found[4096];
+    bool ok = false;
+    if (strchr(prog, '/')) {
+        ok = fits(snprintf(found, sizeof found, "%s", prog), sizeof found) && access(found, X_OK) == 0;
+    } else {
+        const char *path = getenv("PATH");
+        if (!path) path = "/usr/bin:/bin";
+        while (*path && !ok) {
+            const char *end = strchr(path, ':');
+            size_t len = end ? (size_t)(end - path) : strlen(path);
+            // an empty entry is the working directory
+            ok = fits(snprintf(found, sizeof found, "%.*s/%s", (int)(len ? len : 1), len ? path : ".", prog), sizeof found) && access(found, X_OK) == 0;
+            path += len + (end ? 1 : 0);
+        }
+    }
+    if (!ok) {
+        errno = ENOENT;
+        return false;
+    }
+    char cwd[4096];
+    if (found[0] != '/' && !getcwd(cwd, sizeof cwd)) return false;
+    if (!fits(found[0] == '/' ? snprintf(out, size, "%s", found) : snprintf(out, size, "%s/%s", cwd, found), size)) {
+        errno = ENAMETOOLONG;
+        return false;
+    }
+    return true;
+}
+
+// the strings of s as an argv-style array (with first in front, NULL after): one starts at each
+// byte that begins s or follows a NUL, so Process's arguments "a\0\0" (each NUL-ended) are "a"
+// and "", "\0" is one "", and an environment "A=1\0B=2" two
+static char **split_nul(zs_str *s, char *first) {
+    int64_t count = 0;
+    for (int64_t i = 0; i < s->len; i++) count += i == 0 || s->data[i - 1] == 0;
+    char **v = malloc(sizeof(char *) * (size_t)(count + 2));
+    if (!v) zs_panic_c("out of memory");
+    int64_t k = 0;
+    if (first) v[k++] = first;
+    for (int64_t i = 0; i < s->len; i++)
+        if (i == 0 || s->data[i - 1] == 0) v[k++] = s->data + i;
+    v[k] = NULL;
+    return v;
+}
+
+// what a child starts with: SIGPIPE and SIGCHLD as the system has them, not as this program
+// keeps them (zs_set_args), so a pipeline's writer ends at SIGPIPE once its reader has
+static void spawn_attr(posix_spawnattr_t *at) {
+    sigset_t def;
+    sigemptyset(&def);
+    sigaddset(&def, SIGPIPE);
+    sigaddset(&def, SIGCHLD);
+    posix_spawnattr_init(at);
+    posix_spawnattr_setsigdefault(at, &def);
+    posix_spawnattr_setflags(at, POSIX_SPAWN_SETSIGDEF);
+}
+
+zs_str *zs_process_run(zs_str *prog, zs_str *args) {
+    clear_error();
+    char exe[4096];
+    if (!find_program(prog->data, exe, sizeof exe)) {
+        set_error("cannot run", prog);
+        return str_of("", 0);
+    }
+    char **argv = split_nul(args, prog->data);
+    int fds[2];
+    // close-on-exec, as every descriptor here is: a process another thread starts meanwhile
+    // would hold the write end open, and the read below wait for that one's end too. The
+    // child's standard output, dup2's copy, isn't.
+    if (pipe_cloexec(fds, false) != 0) {
+        free(argv);
+        set_error("cannot run", prog);
+        return str_of("", 0);
+    }
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_adddup2(&fa, fds[1], 1);
+    posix_spawnattr_t at;
+    spawn_attr(&at);
+    console_flush();
+    pid_t pid;
+    int rc = posix_spawn(&pid, exe, &fa, &at, argv, environ);
+    posix_spawnattr_destroy(&at);
+    posix_spawn_file_actions_destroy(&fa);
+    free(argv);
+    close(fds[1]);
+    if (rc != 0) {
+        close(fds[0]);
+        errno = rc;
+        set_error("cannot run", prog);
+        return str_of("", 0);
+    }
+    size_t cap = 4096, len = 0;
+    char *buf = buf_new(cap);
+    for (ssize_t n; (n = read(fds[0], buf + len, cap - len)) != 0;) {
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            set_error("cannot read the output of", prog);
+            break;
+        }
+        len += (size_t)n;
+        if (len == cap) buf = buf_grow(buf, &cap);
+    }
+    close(fds[0]);
+    // a failed wait is an Error, not a code: status as it was (0) would read as success
+    int status = 0;
+    pid_t w;
+    while ((w = waitpid(pid, &status, 0)) < 0 && errno == EINTR) {}
+    if (w < 0) set_error("cannot wait for", prog);
+    process_code = w < 0 ? -1 : WIFEXITED(status) ? WEXITSTATUS(status) : WIFSIGNALED(status) ? 128 + WTERMSIG(status) : -1;
+    zs_str *s = str_of(buf, (int64_t)len);
+    free(buf);
+    return s;
+}
 
 // ---- Process.start (0024): posix_spawn with each stream inherited, piped or /dev/null
 
 // starts prog with args (each NUL-ended); env: NUL-separated NAME=value pairs, used when hasEnv;
 // dir: its working directory ("" for this one's); modes per stream (0 inherit, 1 piped, 2
-// /dev/null). The pid, or -errno; zs_process_pipe(k) gives this end of stream k's pipe (-1
-// when it isn't piped).
-static _Thread_local zs_int started[4]; // the last start's pid and pipes, for Native.processPipe
+// /dev/null). Its number in procs, or -errno; zs_process_pipe(k) gives this end of stream k's
+// pipe (-1 when it isn't piped).
+static _Thread_local zs_int started[4]; // the last start's number and pipes, for Native.processPipe
 
 zs_int zs_process_pipe(zs_int k) { return k >= 0 && k < 3 ? started[k + 1] : -1; }
 
 zs_int zs_process_start(zs_str *prog, zs_str *args, zs_str *env, bool hasEnv, zs_str *dir, zs_int in, zs_int outm, zs_int errm) {
     zs_int *out = started;
     char exe[4096];
-    if (!find_program(prog->data, exe, sizeof exe)) return -ENOENT;
+    if (!find_program(prog->data, exe, sizeof exe)) return -(zs_int)errno;
     zs_int modes[3] = {in, outm, errm};
     int pipes[3][2] = {{-1, -1}, {-1, -1}, {-1, -1}};
     posix_spawn_file_actions_t fa;
@@ -2419,8 +3254,11 @@ zs_int zs_process_start(zs_str *prog, zs_str *args, zs_str *env, bool hasEnv, zs
     if (rc == 0) {
         char **argv = split_nul(args, prog->data);
         char **envp = hasEnv ? split_nul(env, NULL) : environ;
-        fflush(stdout);
-        rc = posix_spawn(&pid, exe, &fa, NULL, argv, envp);
+        posix_spawnattr_t at;
+        spawn_attr(&at);
+        console_flush();
+        rc = posix_spawn(&pid, exe, &fa, &at, argv, envp);
+        posix_spawnattr_destroy(&at);
         free(argv);
         if (hasEnv) free(envp);
     }
@@ -2435,20 +3273,94 @@ zs_int zs_process_start(zs_str *prog, zs_str *args, zs_str *env, bool hasEnv, zs
         }
     }
     if (rc != 0) return -(zs_int)rc;
-    out[0] = pid;
+    out[0] = proc_add(pid, NULL);
+    return out[0];
+}
+#endif
+
+// waits for the process Process.start numbered n (Process.wait, once zs_process_waiter's
+// descriptor is readable, or on a thread): its exit code, or 128 plus the signal that ended it
+// (on Windows an NTSTATUS such as 0xC0000005 when it crashed); -1 when that can't be had
+zs_int zs_process_wait(zs_int n) { return proc_wait(n); }
+
+// ends the process at once (SIGKILL, TerminateProcess), or -errno; one that has been waited for
+// has ended already, and is left alone
+zs_int zs_process_kill(zs_int n) {
+    pthread_mutex_lock(&procs_mu);
+    proc *p = proc_of(n);
+    zs_int r = 0;
+    if (!p) r = -ESRCH;
+#ifdef _WIN32
+    // ended and not yet waited for, it can't be terminated: left alone too
+    else if (p->state != PROC_DONE && !TerminateProcess(p->h, 137) && WaitForSingleObject(p->h, 0) != WAIT_OBJECT_0) r = -EPERM;
+#else
+    else if (p->state != PROC_DONE && kill((pid_t)p->pid, SIGKILL) != 0) r = -(zs_int)errno;
+#endif
+    pthread_mutex_unlock(&procs_mu);
+    return r;
+}
+
+// the system's id of the process (Process.pid), -1 for a number Process.start didn't give
+zs_int zs_process_id(zs_int n) {
+    pthread_mutex_lock(&procs_mu);
+    proc *p = proc_of(n);
+    zs_int pid = p ? p->pid : -1;
+    pthread_mutex_unlock(&procs_mu);
     return pid;
 }
 
-// waits for the process: its exit code, or 128 plus the signal that ended it
-zs_int zs_process_wait(zs_int pid) {
-    int status = 0;
-    while (waitpid((pid_t)pid, &status, 0) < 0)
-        if (errno != EINTR) return -1;
-    return WIFEXITED(status) ? WEXITSTATUS(status) : WIFSIGNALED(status) ? 128 + WTERMSIG(status) : -1;
+static int wake_pair(int w[2]);
+static void wake_close(int fd);
+
+// a thread of zs_process_waiter's: waits for the process w[0], then closes w[1] (w freed first:
+// once it's closed, the program may end before this thread does)
+static void *proc_waiter(void *arg) {
+    zs_int *w = arg, n = w[0], fd = w[1];
+    free(w);
+    proc_wait(n);
+    wake_close((int)fd);
+    return NULL;
 }
 
-zs_int zs_process_kill(zs_int pid) { return kill((pid_t)pid, SIGKILL) == 0 ? 0 : -(zs_int)errno; }
+// A descriptor the event loop waits for in Process.wait, so a wait holds no thread of the loop's
+// (Task.blocking has one) and a cancelled one is over at once: readable once the process has
+// ended, zs_process_wait then giving its code without waiting; zs_fd_close closes it. -1 when
+// the process has been waited for (its code is at hand), another -errno when none could be made
+// (the caller waits on Task.blocking's thread). Linux's pidfd, made under the lock, so the
+// process can't have been reaped and its id taken; elsewhere one end of a wake pair (sockets on
+// Windows, all the loop waits for there), whose other end a thread closes once the process has
+// been waited for.
+zs_int zs_process_waiter(zs_int n) {
+    pthread_mutex_lock(&procs_mu);
+    proc *p = proc_of(n);
+    bool done = !p || p->state == PROC_DONE;
+#if defined(__linux__) && defined(SYS_pidfd_open)
+    int fd = done ? -1 : (int)syscall(SYS_pidfd_open, (pid_t)p->pid, 0);
 #endif
+    pthread_mutex_unlock(&procs_mu);
+    if (done) return -1;
+#if defined(__linux__) && defined(SYS_pidfd_open)
+    if (fd >= 0) return fd;
+#endif
+    int w[2];
+    if (wake_pair(w) != 0) return -EMFILE;
+    zs_int *arg = malloc(2 * sizeof(zs_int));
+    if (!arg) zs_panic_c("out of memory");
+    arg[0] = n;
+    arg[1] = w[1];
+    pthread_attr_t at;
+    pthread_t t;
+    pthread_attr_init(&at);
+    pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+    pthread_attr_setstacksize(&at, 256 << 10);
+    int rc = pthread_create(&t, &at, proc_waiter, arg);
+    pthread_attr_destroy(&at);
+    if (rc == 0) return w[0];
+    free(arg);
+    wake_close(w[0]);
+    wake_close(w[1]);
+    return -EAGAIN;
+}
 
 // ---- the event loop (Task.run): callbacks waiting for file descriptors, timers, a queue of
 // callbacks ready to run, and jobs on a helper thread (Task.blocking). A callback is a Z#
@@ -2468,36 +3380,52 @@ zs_int zs_process_kill(zs_int pid) { return kill((pid_t)pid, SIGKILL) == 0 ? 0 :
 // Descriptors the loop waits for. On Windows they're sockets only (wepoll's), each a small index
 // above SOCK_BASE into a table of SOCKETs: a SOCKET is a handle, not a small integer, and a CRT
 // descriptor (a file, a pipe) can't be told from one otherwise. FD_SLOT is the loop's index.
+// The table is in chunks that never move or go, so a lookup on any thread (a helper's wake of
+// a loop, a loop thread's read) takes no lock while another thread adds a socket.
 #ifdef _WIN32
 #define SOCK_BASE 0x40000000
-static SOCKET *socks;
-static size_t nsocks, freesock = (size_t)-1; // the free slots, a list through socks
+#define SOCK_CHUNK 1024
+#define SOCK_CHUNKS 4096 // 4M sockets
+static SOCKET *_Atomic sock_chunks[SOCK_CHUNKS];
+static atomic_size_t nsocks; // slots handed out, each in a chunk already published
+static size_t freesock = (size_t)-1; // the free slots, a list through their entries
 static pthread_mutex_t socks_mu = PTHREAD_MUTEX_INITIALIZER;
 
-static bool is_sock(zs_int fd) { return fd >= SOCK_BASE && (size_t)(fd - SOCK_BASE) < nsocks; }
-static SOCKET sk_of(zs_int fd) { return socks[fd - SOCK_BASE]; }
+static SOCKET *sk_slot(size_t i) { return &atomic_load_explicit(&sock_chunks[i / SOCK_CHUNK], memory_order_acquire)[i % SOCK_CHUNK]; }
+static bool is_sock(zs_int fd) { return fd >= SOCK_BASE && (size_t)(fd - SOCK_BASE) < atomic_load_explicit(&nsocks, memory_order_acquire); }
+static SOCKET sk_of(zs_int fd) { return *sk_slot((size_t)(fd - SOCK_BASE)); }
 
 static int sk_add(SOCKET s) {
     if (s == INVALID_SOCKET) return -1;
     pthread_mutex_lock(&socks_mu);
     size_t i = freesock;
     if (i != (size_t)-1) {
-        freesock = (size_t)socks[i];
+        freesock = (size_t)*sk_slot(i);
     } else {
-        SOCKET *t = realloc(socks, (nsocks + 1) * sizeof(SOCKET));
-        if (!t) zs_panic_c("out of memory");
-        socks = t;
-        i = nsocks++;
+        i = atomic_load_explicit(&nsocks, memory_order_relaxed);
+        if (i == (size_t)SOCK_CHUNKS * SOCK_CHUNK) {
+            pthread_mutex_unlock(&socks_mu);
+            closesocket(s);
+            WSASetLastError(WSAEMFILE);
+            return -1;
+        }
+        if (i % SOCK_CHUNK == 0) {
+            SOCKET *c = malloc(SOCK_CHUNK * sizeof(SOCKET));
+            if (!c) zs_panic_c("out of memory");
+            atomic_store_explicit(&sock_chunks[i / SOCK_CHUNK], c, memory_order_release);
+        }
+        atomic_store_explicit(&nsocks, i + 1, memory_order_release);
     }
-    socks[i] = s;
+    *sk_slot(i) = s;
     pthread_mutex_unlock(&socks_mu);
     return SOCK_BASE + (int)i;
 }
 
 static void sk_close(zs_int fd) {
     pthread_mutex_lock(&socks_mu);
-    closesocket(socks[fd - SOCK_BASE]);
-    socks[fd - SOCK_BASE] = (SOCKET)freesock;
+    SOCKET *slot = sk_slot((size_t)(fd - SOCK_BASE));
+    closesocket(*slot);
+    *slot = (SOCKET)freesock;
     freesock = (size_t)(fd - SOCK_BASE);
     pthread_mutex_unlock(&socks_mu);
 }
@@ -2600,8 +3528,14 @@ static int wake_pair(int w[2]) {
     }
     ioctlsocket(a, FIONBIO, &one);
     ioctlsocket(c, FIONBIO, &one);
-    w[0] = sk_add(a);
-    w[1] = sk_add(c);
+    if ((w[0] = sk_add(a)) < 0) {
+        closesocket(c);
+        return -1;
+    }
+    if ((w[1] = sk_add(c)) < 0) {
+        sk_close(w[0]);
+        return -1;
+    }
     return 0;
 }
 static void wake_send(int fd) { send(sk_of(fd), "x", 1, 0); }
@@ -2682,7 +3616,8 @@ static _Thread_local struct {
     zs_timer **heap; // the timers, a min-heap by time
     size_t ntimers, heapcap;
     ptrtab timers; // id -> timer, to cancel one
-    zs_int next_timer;
+    uintptr_t next_timer; // the last id given: unsigned, as a 32-bit word's wraps
+    size_t ran;    // callbacks run since the kernel's queue was last looked at
     int depth;     // continuations called inside others (zs_loop_enter)
     inbox *box;    // NULL until another thread has something for this loop
     size_t jobs;   // helper jobs and spawned tasks not finished yet
@@ -2821,7 +3756,13 @@ zs_int zs_loop_timer(zs_int ms, void *cb) {
     }
     zs_timer *t = malloc(sizeof(zs_timer));
     if (!t) zs_panic_c("out of memory");
-    *t = (zs_timer){now_ns() + (ms > 0 ? ms : 0) * 1000000, ++L.next_timer, cb, 0};
+    // a deadline past the clock's range is one that never comes: the range's end
+    int64_t now = now_ns();
+    int64_t at = ms <= 0 ? now : (int64_t)ms > (INT64_MAX - now) / 1000000 ? INT64_MAX : now + (int64_t)ms * 1000000;
+    // ids wrap on a 32-bit word: one still in use, or 0 (the table's empty key), is skipped
+    do L.next_timer++;
+    while (L.next_timer == 0 || tab_get(&L.timers, (void *)L.next_timer));
+    *t = (zs_timer){at, (zs_int)L.next_timer, cb, 0};
     L.heap[L.ntimers++] = t;
     heap_up(L.ntimers - 1);
     tab_put(&L.timers, (void *)(uintptr_t)t->id, t);
@@ -3008,6 +3949,17 @@ static void boxes_sweep(void) {
 
 // ---- loop threads (Task.spawn): a thread per core, each running an event loop of its own for
 // the tasks spawned onto it, which stay on it to the end. They stop when the program does.
+
+// the loop threads and the thread pool, once started, stop at exit in one handler (the first of
+// them to start registers it), the loop threads first whichever started first: one may be running
+// a task that forks, and one that forked gives its deque back into the pool's arrays as it ends
+static atomic_bool loopsUp, poolUp;
+static void threads_stop(void);
+static void stop_at_exit(void) {
+    static atomic_flag registered = ATOMIC_FLAG_INIT;
+    if (!atomic_flag_test_and_set(&registered)) atexit(threads_stop);
+}
+
 static struct {
     int n;
     pthread_t *threads;
@@ -3073,7 +4025,8 @@ static void loops_start(void) {
     pthread_mutex_lock(&T.mu);
     while (T.ready < T.n) pthread_cond_wait(&T.cv, &T.mu);
     pthread_mutex_unlock(&T.mu);
-    atexit(loops_stop);
+    atomic_store(&loopsUp, true);
+    stop_at_exit();
 }
 
 // starts work (a closure whose objects the compiler marked shared) on the next loop thread;
@@ -3106,6 +4059,10 @@ void zs_loop_irq_wait(zs_int n, void *cb) {
 
 void zs_loop_irq_unwait(zs_int n) { (void)n; }
 
+// Irq.enable, disable and pend's lines (lib/core/Irq.zs): none, rather than a store to an NVIC
+// a computer doesn't have
+zs_int zs_irq_lines(void) { zs_panic_c("Irq needs a microcontroller's interrupt controller: build with --target cortex-m4"); }
+
 zs_int zs_signal_new(void) { zs_panic_c("a Signal needs a microcontroller's interrupt handlers: build with --target cortex-m4"); }
 
 void zs_signal_set(zs_int s) { (void)s; }
@@ -3122,7 +4079,10 @@ void zs_signal_unwait(zs_int s) { (void)s; }
 bool zs_loop_step(void) {
     if (L.stepping) zs_panic_c("Task.run inside a task: use let! there instead");
     L.stepping = true;
-    for (size_t n = L.qlen; n > 0 && L.qlen; n--) zs_clo_run(queue_pop());
+    for (size_t n = L.qlen; n > 0 && L.qlen; n--) {
+        zs_clo_run(queue_pop());
+        L.ran++;
+    }
     L.stepping = false;
     int64_t now = now_ns();
     while (L.ntimers && L.heap[0]->at <= now) {
@@ -3132,13 +4092,23 @@ bool zs_loop_step(void) {
         zs_loop_post(t->cb);
         free(t);
     }
-    if (L.qlen) return true;
-    if (!L.waits && !L.ntimers && !L.jobs) return false;
     int timeout = -1;
-    if (L.ntimers) {
+    if (L.qlen) {
+        // callbacks ready still (a task that keeps yielding, a run of awaits that complete at
+        // once): every 64 the kernel's queue is looked at without waiting, so what descriptors
+        // and other threads (the inbox) have for this loop isn't held back for good
+        if (L.ran < 64 || (!L.waits && !L.box)) return true;
+        timeout = 0;
+    } else if (!L.waits && !L.ntimers && !L.jobs) {
+        return false;
+    } else if (L.ntimers) {
+        // in whole milliseconds, rounded up, and at most what the call takes: the loop wakes then
+        // and looks again
         int64_t d = L.heap[0]->at - now;
-        timeout = d <= 0 ? 0 : (int)((d + 999999) / 1000000);
+        int64_t ms = d / 1000000 + (d % 1000000 != 0);
+        timeout = d <= 0 ? 0 : ms > INT_MAX ? INT_MAX : (int)ms;
     }
+    L.ran = 0;
     ensure_ep();
     poll_event evs[256];
     int k = poll_wait(L.ep, evs, 256, timeout);
@@ -3278,11 +4248,16 @@ static zs_int failed(void) { return errno == EAGAIN || errno == EWOULDBLOCK ? -1
 static int resolve_as(zs_str *host, zs_int port, bool passive, int socktype, struct addrinfo **res);
 static int resolve(zs_str *host, zs_int port, bool passive, struct addrinfo **res) { return resolve_as(host, port, passive, SOCK_STREAM, res); }
 
+#ifndef AI_NUMERICSERV
+#define AI_NUMERICSERV 0
+#endif
+
 static int resolve_as(zs_str *host, zs_int port, bool passive, int socktype, struct addrinfo **res) {
-    struct addrinfo hints = {.ai_family = AF_UNSPEC, .ai_socktype = socktype, .ai_flags = passive ? AI_PASSIVE : 0};
+    struct addrinfo hints = {.ai_family = AF_UNSPEC, .ai_socktype = socktype, .ai_flags = (passive ? AI_PASSIVE : 0) | AI_NUMERICSERV};
     char p[24];
     snprintf(p, sizeof p, "%lld", (long long)port);
-    if (!os_name(host)) {
+    // a port past 16 bits isn't one (glibc would take its low 16 bits: 65561 as 25)
+    if (!os_name(host) || port < 0 || port > 65535) {
         sk_seterr(EINVAL);
         return EAI_NONAME;
     }
@@ -3314,8 +4289,29 @@ zs_int zs_tcp_listen(zs_str *host, zs_int port) {
     return fd;
 }
 
+// whether accept's failure is the connection's own (reset before it was taken, or a network
+// error Linux passes on from it), not the listener's: the next connection is taken instead
+static bool accept_again(void) {
+#ifdef _WIN32
+    int e = WSAGetLastError();
+    return e == WSAECONNRESET || e == WSAEINTR;
+#else
+    int e = errno;
+    return e == ECONNABORTED || e == EINTR || e == EPROTO
+#ifdef __linux__
+           || e == ENETDOWN || e == ENOPROTOOPT || e == EHOSTDOWN || e == ENONET || e == EHOSTUNREACH || e == EOPNOTSUPP || e == ENETUNREACH
+#endif
+        ;
+#endif
+}
+
+// a connection, or would-block; a failure (out of descriptors, say) is the listener's, and
+// Tcp.accept waits a moment before it gives it, as a loop going on after it would spin
 zs_int zs_tcp_accept(zs_int fd) {
-    int c = sk_accept((int)fd);
+    int c;
+    // many such failures in a row: would-block, so the next try waits a turn of the loop
+    for (int tries = 0; (c = sk_accept((int)fd)) < 0 && accept_again(); tries++)
+        if (tries == 64) return -1000;
     if (c < 0) return failed();
     int one = 1;
     setsockopt(S(c), IPPROTO_TCP, TCP_NODELAY, (void *)&one, sizeof one);
@@ -3342,6 +4338,14 @@ zs_int zs_tcp_connect(zs_str *host, zs_int port) {
 
 // ---- UDP (0024, track S item 8): a socket bound to a host and port, datagrams to a host and
 // port and from whoever sent them; the loop waits on the socket as on a TCP one
+#ifdef _WIN32 // mswsock.h's and mstcpip.h's, which mingw-w64 may lack
+#ifndef SIO_UDP_CONNRESET
+#define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR, 12)
+#endif
+#ifndef SIO_UDP_NETRESET
+#define SIO_UDP_NETRESET _WSAIOW(IOC_VENDOR, 15)
+#endif
+#endif
 
 // a UDP socket bound to the host ("" for every interface) and port (0: one the system picks)
 zs_int zs_udp_bind(zs_str *host, zs_int port) {
@@ -3357,12 +4361,12 @@ zs_int zs_udp_bind(zs_str *host, zs_int port) {
     }
     freeaddrinfo(res);
 #ifdef _WIN32
-    // an ICMP port-unreachable for an earlier send fails Winsock's next receive on the socket
-    // with WSAECONNRESET; POSIX doesn't report it on an unconnected socket (libuv and Go turn
-    // it off on Windows likewise)
+    // a port unreachable answering an earlier send isn't this socket's failure, which Winsock
+    // makes it on the next receive unless told not to (NETRESET's is a newer Windows's)
     BOOL off = FALSE;
     DWORD n = 0;
-    WSAIoctl(S(fd), _WSAIOW(IOC_VENDOR, 12) /* SIO_UDP_CONNRESET */, &off, sizeof off, NULL, 0, &n, NULL, NULL);
+    WSAIoctl(S(fd), SIO_UDP_CONNRESET, &off, sizeof off, NULL, 0, &n, NULL, NULL);
+    WSAIoctl(S(fd), SIO_UDP_NETRESET, &off, sizeof off, NULL, 0, &n, NULL, NULL);
 #endif
     return fd;
 }
@@ -3395,9 +4399,13 @@ zs_int zs_udp_receive(zs_int fd, uint8_t *data, zs_int len) {
     udp_from_len = sizeof udp_from;
     zs_int r = (zs_int)recvfrom(S(fd), (char *)data, (size_t)len, 0, (struct sockaddr *)&udp_from, &udp_from_len);
 #ifdef _WIN32
-    // a longer datagram: Winsock fills the buffer with its start (and the sender) but fails
-    // with WSAEMSGSIZE, where POSIX gives the bytes that fit
-    if (r < 0 && WSAGetLastError() == WSAEMSGSIZE) return len;
+    if (r < 0) {
+        int e = WSAGetLastError();
+        // a datagram longer than the buffer fails, with its start in the buffer: cut, as elsewhere
+        if (e == WSAEMSGSIZE) return len;
+        // a port unreachable for an earlier send, where the ioctls of zs_udp_bind are unknown
+        if (e == WSAECONNRESET || e == WSAENETRESET) return -1000;
+    }
 #endif
     return r < 0 ? failed() : r;
 }
@@ -3415,18 +4423,15 @@ zs_int zs_udp_from_port(void) {
     return ntohs(((struct sockaddr_in *)&udp_from)->sin_port);
 }
 
-// the addresses of a host as text, one per line (Dns.lookup, run off the loop's thread since it
-// blocks); "" when it has none
-zs_str *zs_dns_lookup(zs_str *host) {
-    struct addrinfo hints = {.ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM}, *res;
-    if (!os_name(host) || host->len == 0 || getaddrinfo(host->data, NULL, &hints, &res) != 0) return str_of("", 0);
-    char out[1024];
+// the addresses getaddrinfo found, as text into out (cap bytes), one per line, in its order:
+// the bytes written
+static size_t addresses_text(struct addrinfo *res, char *out, size_t cap) {
     size_t used = 0;
     for (struct addrinfo *a = res; a; a = a->ai_next) {
         char h[NI_MAXHOST];
         if (getnameinfo(a->ai_addr, (socklen_t)a->ai_addrlen, h, sizeof h, NULL, 0, NI_NUMERICHOST) != 0) continue;
         size_t n = strlen(h);
-        if (used + n + 1 > sizeof out) break;
+        if (used + n + 1 > cap) break;
         // each address once: getaddrinfo lists one per socket type
         bool seen = false;
         for (size_t i = 0, start = 0; i < used; i++)
@@ -3436,8 +4441,165 @@ zs_str *zs_dns_lookup(zs_str *host) {
         used += n;
         out[used++] = '\n';
     }
+    return used;
+}
+
+// the addresses of a host as text, one per line (Dns.lookup, run off the loop's thread since it
+// blocks); "" when it has none
+zs_str *zs_dns_lookup(zs_str *host) {
+    struct addrinfo hints = {.ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM}, *res;
+    if (!os_name(host) || host->len == 0 || getaddrinfo(host->data, NULL, &hints, &res) != 0) return str_of("", 0);
+    char out[1024];
+    size_t used = addresses_text(res, out, sizeof out);
     freeaddrinfo(res);
     return str_of(out, (zs_int)used);
+}
+
+// ---- name lookup for Tcp.connect and Udp.send, off the loop's thread: a thread of its own
+// for each, so a resolver that doesn't answer holds up no other task, nor another lookup. Its
+// answer comes back on a descriptor the task waits for (a socket pair; on Windows, where only
+// sockets are waited for, a loopback connection, as the inbox's wake is): the addresses, one per
+// line, or "!" and why there are none. A task cancelled meanwhile closes its end, and the
+// thread's write fails. The threads that have answered are joined at the next lookup and at exit.
+typedef struct lookup {
+    char *host;
+    int out;          // the descriptor the answer goes to, closed after it
+    atomic_bool done; // answered: what's left of the thread is its return
+    pthread_t thread;
+    struct lookup *next;
+} lookup;
+static lookup *lookups; // started and not yet joined
+static pthread_mutex_t lookups_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_once_t lookups_once = PTHREAD_ONCE_INIT;
+
+// joins the lookups' threads that have answered
+static void lookups_reap(void) {
+    pthread_mutex_lock(&lookups_mu);
+    for (lookup **p = &lookups; *p;) {
+        lookup *l = *p;
+        if (atomic_load_explicit(&l->done, memory_order_acquire)) {
+            *p = l->next;
+            pthread_join(l->thread, NULL);
+            free(l);
+        } else {
+            p = &l->next;
+        }
+    }
+    pthread_mutex_unlock(&lookups_mu);
+}
+
+static void lookups_start(void) { atexit(lookups_reap); }
+
+// the answer's descriptors: [0] the task reads, non-blocking; [1] the thread writes, blocking
+static int lookup_pair(int p[2]) {
+#ifdef _WIN32
+    if (wake_pair(p) != 0) return -1;
+    u_long zero = 0;
+    ioctlsocket(sk_of(p[1]), FIONBIO, &zero);
+#else
+#ifdef SOCK_CLOEXEC
+    if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, p) != 0) return -1;
+#else
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, p) != 0) return -1;
+    fcntl(p[0], F_SETFD, FD_CLOEXEC);
+    fcntl(p[1], F_SETFD, FD_CLOEXEC);
+#endif
+    fcntl(p[0], F_SETFL, O_NONBLOCK);
+#ifdef __APPLE__
+    int one = 1;
+    setsockopt(p[1], SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+#endif
+#endif
+    return 0;
+}
+
+static void *lookup_main(void *arg) {
+    lookup *l = arg;
+    char text[1024];
+    size_t n;
+    struct addrinfo hints = {.ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM}, *res;
+    int rc = getaddrinfo(l->host, NULL, &hints, &res);
+    if (rc == 0) {
+        n = addresses_text(res, text, sizeof text);
+        freeaddrinfo(res);
+        if (n == 0) n = (size_t)snprintf(text, sizeof text, "!the host has no address");
+    } else {
+#ifdef _WIN32
+        DWORD k = FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, (DWORD)rc, 0, text + 1, sizeof text - 1, NULL);
+        while (k && (text[k] == '\n' || text[k] == '\r' || text[k] == '.')) k--;
+        text[0] = '!';
+        n = k ? k + 1 : (size_t)snprintf(text, sizeof text, "!no such host");
+#else
+        n = (size_t)snprintf(text, sizeof text, "!%s", rc == EAI_SYSTEM ? strerror(errno) : gai_strerror(rc));
+#endif
+    }
+    if (n >= sizeof text) n = sizeof text - 1; // snprintf's length, cut
+    free(l->host);
+    int out = l->out;
+    for (size_t at = 0; at < n;) {
+#ifdef _WIN32
+        int w = send(sk_of(out), text + at, (int)(n - at), 0);
+#else
+        ssize_t w = send(out, text + at, n - at, MSG_NOSIGNAL);
+#endif
+        if (w <= 0) break; // the task was cancelled, and closed its end
+        at += (size_t)w;
+    }
+    atomic_store_explicit(&l->done, true, memory_order_release);
+#ifdef _WIN32
+    sk_close(out);
+#else
+    close(out);
+#endif
+    return NULL;
+}
+
+// starts looking the host up: the descriptor its answer comes on; -1001 when the host needs no
+// lookup (an address, or "": this machine's)
+zs_int zs_dns_start(zs_str *host) {
+    if (!os_name(host)) {
+        sk_seterr(EINVAL);
+        return failed();
+    }
+    if (host->len == 0) return -1001;
+    struct addrinfo hints = {.ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM, .ai_flags = AI_NUMERICHOST}, *res;
+    if (getaddrinfo(host->data, NULL, &hints, &res) == 0) {
+        freeaddrinfo(res);
+        return -1001;
+    }
+    pthread_once(&lookups_once, lookups_start);
+    lookups_reap();
+    lookup *l = calloc(1, sizeof *l);
+    char *h = malloc((size_t)host->len + 1);
+    if (!l || !h) zs_panic_c("out of memory");
+    memcpy(h, host->data, (size_t)host->len);
+    h[host->len] = 0;
+    int p[2];
+    if (lookup_pair(p) != 0) {
+        free(h);
+        free(l);
+        return failed();
+    }
+    l->host = h;
+    l->out = p[1];
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, (size_t)1 << 20);
+    pthread_mutex_lock(&lookups_mu);
+    int r = pthread_create(&l->thread, &attr, lookup_main, l);
+    if (r == 0) {
+        l->next = lookups;
+        lookups = l;
+    }
+    pthread_mutex_unlock(&lookups_mu);
+    pthread_attr_destroy(&attr);
+    if (r != 0) {
+        for (int k = 0; k < 2; k++) sk_drop(p[k]);
+        free(h);
+        free(l);
+        return -(zs_int)r;
+    }
+    return p[0];
 }
 
 #ifndef _WIN32
@@ -3455,11 +4617,51 @@ static int unix_address(zs_str *path, struct sockaddr_un *a) {
     return 0;
 }
 
-// a socket listening at the path (a file left from an earlier run is removed first)
+#if defined(_WIN32) && !defined(IO_REPARSE_TAG_AF_UNIX)
+#define IO_REPARSE_TAG_AF_UNIX 0x80000023L
+#endif
+
+// what's at a Unix socket's path before a socket listens there: 0 when it's nothing, or a socket
+// no one listens on (an earlier run's, removed now); else the error, EEXIST for what isn't a
+// socket (a file is never removed) and EADDRINUSE for one a server listens on
+static int unix_clear(const struct sockaddr_un *a) {
+#ifdef _WIN32
+    // a socket's file is a reparse point with a tag of its own
+    WIN32_FIND_DATAA d;
+    HANDLE h = FindFirstFileA(a->sun_path, &d);
+    if (h == INVALID_HANDLE_VALUE) return 0; // nothing there, or bind says what's wrong
+    FindClose(h);
+    if (!(d.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) || d.dwReserved0 != IO_REPARSE_TAG_AF_UNIX) return EEXIST;
+    // a blocking socket, so the answer is the connect's own
+    SOCKET s = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (s == INVALID_SOCKET) return WSAGetLastError();
+    bool stale = connect(s, (const struct sockaddr *)a, sizeof *a) != 0 && WSAGetLastError() == WSAECONNREFUSED;
+    closesocket(s);
+    if (!stale) return WSAEADDRINUSE;
+#else
+    struct stat st;
+    if (lstat(a->sun_path, &st) != 0) return 0; // nothing there, or bind says what's wrong
+    if (!S_ISSOCK(st.st_mode)) return EEXIST;
+    // a Unix socket's connect is answered at once: refused when no one listens
+    int s = sk_new(AF_UNIX, SOCK_STREAM, 0);
+    if (s < 0) return errno;
+    bool stale = connect(s, (const struct sockaddr *)a, sizeof *a) != 0 && (errno == ECONNREFUSED || errno == ENOENT);
+    close(s);
+    if (!stale) return EADDRINUSE;
+#endif
+    unlink(a->sun_path);
+    return 0;
+}
+
+// a socket listening at the path; a socket an earlier run left there is removed first
 zs_int zs_unix_listen(zs_str *path) {
     struct sockaddr_un a;
     if (unix_address(path, &a) != 0) return failed();
-    unlink(a.sun_path);
+    int there = unix_clear(&a);
+    if (there != 0) {
+        sk_seterr(there);
+        return failed();
+    }
     int fd = sk_new(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0 || bind(S(fd), (struct sockaddr *)&a, sizeof a) != 0 || listen(S(fd), 4096) != 0) {
         int e = sk_err();
@@ -3519,7 +4721,9 @@ zs_int zs_fd_read(zs_int fd, uint8_t *data, zs_int len, zs_int off, zs_int n) {
 #endif
 }
 
-// writes from a Buffer<u8> or a string's bytes; a closed connection is an error, not SIGPIPE
+// writes from a Buffer<u8> or a string's bytes; a closed connection or pipe is an error, not
+// SIGPIPE (zs_set_args ignores it), but standard output or error gone ends the program as print's
+// does (console_failed)
 zs_int zs_fd_write(zs_int fd, const uint8_t *data, zs_int len, zs_int off, zs_int n) {
     if (off < 0 || n < 0 || off > len || n > len - off) zs_panic_c("write: range out of the data");
 #ifdef _WIN32
@@ -3531,7 +4735,10 @@ zs_int zs_fd_write(zs_int fd, const uint8_t *data, zs_int len, zs_int off, zs_in
     return r < 0 ? -(zs_int)errno : r;
 #else
     ssize_t r = send((int)fd, data + off, (size_t)n, MSG_NOSIGNAL);
-    if (r < 0 && errno == ENOTSOCK) r = write((int)fd, data + off, (size_t)n);
+    if (r < 0 && errno == ENOTSOCK) {
+        r = write((int)fd, data + off, (size_t)n);
+        if (r < 0 && (fd == 1 || fd == 2)) console_failed();
+    }
     return r < 0 ? failed() : r;
 #endif
 }
@@ -3578,7 +4785,8 @@ zs_str *zs_error_text(zs_int e) {
 // channel tells the pool, which starts a spare worker while fewer threads than it has cores are
 // left to run jobs (Java's ForkJoinPool does this for a managed blocker): a job waiting for what
 // another job sends isn't left waiting for a thread to run that one. A spare that finds nothing
-// to do while enough others can sleeps until it's needed again.
+// to do while enough others can sleeps until it's needed again. Spares are at most twice the
+// cores: past that, a job waits without one.
 
 typedef struct {
     void (*run)(void *clo, void *out);
@@ -3587,10 +4795,17 @@ typedef struct {
     _Alignas(64) char result[]; // what run stores (a SIMD vector, say)
 } par_job;
 
+// a deque's ring of jobs, with its capacity in it: a thief loads the ring once and indexes it by
+// that ring's own capacity, so a resize between its loads can't pair one ring with another's
+// (Lê et al. keep the size in the array for this)
+typedef struct {
+    long long cap; // a power of two, written before the ring is published and never after
+    _Atomic(par_job *) slot[];
+} par_ring;
+
 typedef struct {
     atomic_llong top, bottom;
-    _Atomic(_Atomic(par_job *) *) buf;
-    atomic_llong cap; // a power of two
+    _Atomic(par_ring *) ring;
 } par_deque;
 
 #define PAR_OTHERS 1024 // deques for threads that aren't workers: forking threads and spares
@@ -3614,7 +4829,7 @@ static struct {
     pthread_cond_t sparecv;
     pthread_t *spareThreads; // every spare started, joined at exit (under mu)
     int nspare;
-    void **old; // buffers replaced by bigger ones (a thief may still read one), freed at exit
+    void **old; // rings replaced by bigger ones (a thief may still read one), freed at exit
     size_t nold;
     pthread_mutex_t oldmu;
 } P;
@@ -3624,50 +4839,50 @@ static _Thread_local int me = -1;         // this thread's deque, -1 for a threa
 static _Thread_local bool runsJobs;      // a worker or a spare: what the pool counts on
 static pthread_key_t slotKey;            // gives a forking thread's deque back when it ends
 
+static par_ring *ring_new(long long cap) {
+    par_ring *r = calloc(1, sizeof(par_ring) + (size_t)cap * sizeof(_Atomic(par_job *)));
+    if (!r) zs_panic_c("out of memory");
+    r->cap = cap;
+    return r;
+}
+
 static void dq_init(par_deque *q) {
     atomic_init(&q->top, 0);
     atomic_init(&q->bottom, 0);
-    atomic_init(&q->cap, 64);
-    _Atomic(par_job *) *b = calloc(64, sizeof *b);
-    if (!b) zs_panic_c("out of memory");
-    atomic_init(&q->buf, b);
+    atomic_init(&q->ring, ring_new(64));
 }
 
 static void dq_push(par_deque *q, par_job *j) {
     long long b = atomic_load_explicit(&q->bottom, memory_order_relaxed);
     long long t = atomic_load_explicit(&q->top, memory_order_acquire);
-    long long cap = atomic_load_explicit(&q->cap, memory_order_relaxed);
-    _Atomic(par_job *) *a = atomic_load_explicit(&q->buf, memory_order_relaxed);
-    if (b - t >= cap - 1) { // full: twice as big, the old one kept for thieves still reading it
-        _Atomic(par_job *) *n = calloc((size_t)cap * 2, sizeof *n);
-        if (!n) zs_panic_c("out of memory");
+    par_ring *a = atomic_load_explicit(&q->ring, memory_order_relaxed);
+    if (b - t >= a->cap - 1) { // full: twice as big, the old one kept for thieves still reading it
+        par_ring *n = ring_new(a->cap * 2);
         for (long long i = t; i < b; i++)
-            atomic_store_explicit(&n[i & (cap * 2 - 1)], atomic_load_explicit(&a[i & (cap - 1)], memory_order_relaxed), memory_order_relaxed);
+            atomic_store_explicit(&n->slot[i & (n->cap - 1)], atomic_load_explicit(&a->slot[i & (a->cap - 1)], memory_order_relaxed), memory_order_relaxed);
         pthread_mutex_lock(&P.oldmu);
         void **o = realloc(P.old, (P.nold + 1) * sizeof(void *));
         if (!o) zs_panic_c("out of memory");
         P.old = o;
-        P.old[P.nold++] = (void *)a;
+        P.old[P.nold++] = a;
         pthread_mutex_unlock(&P.oldmu);
-        atomic_store_explicit(&q->buf, n, memory_order_release);
-        atomic_store_explicit(&q->cap, cap * 2, memory_order_release);
+        // one store publishes the jobs copied and the capacity with them
+        atomic_store_explicit(&q->ring, n, memory_order_release);
         a = n;
-        cap *= 2;
     }
-    atomic_store_explicit(&a[b & (cap - 1)], j, memory_order_relaxed);
+    atomic_store_explicit(&a->slot[b & (a->cap - 1)], j, memory_order_relaxed);
     // publishes the job; seq_cst, as is zs_par_fork's look for sleepers after it (see run_jobs)
     atomic_store_explicit(&q->bottom, b + 1, memory_order_seq_cst);
 }
 
 static par_job *dq_pop(par_deque *q) {
     long long b = atomic_load_explicit(&q->bottom, memory_order_relaxed) - 1;
-    _Atomic(par_job *) *a = atomic_load_explicit(&q->buf, memory_order_relaxed);
-    long long cap = atomic_load_explicit(&q->cap, memory_order_relaxed);
+    par_ring *a = atomic_load_explicit(&q->ring, memory_order_relaxed);
     atomic_store_explicit(&q->bottom, b, memory_order_seq_cst);
     long long t = atomic_load_explicit(&q->top, memory_order_seq_cst);
     par_job *x = NULL;
     if (t <= b) {
-        x = atomic_load_explicit(&a[b & (cap - 1)], memory_order_relaxed);
+        x = atomic_load_explicit(&a->slot[b & (a->cap - 1)], memory_order_relaxed);
         if (t == b) { // the last one: a thief may be taking it too
             if (!atomic_compare_exchange_strong_explicit(&q->top, &t, t + 1, memory_order_seq_cst, memory_order_relaxed)) x = NULL;
             atomic_store_explicit(&q->bottom, b + 1, memory_order_relaxed);
@@ -3682,9 +4897,9 @@ static par_job *dq_steal(par_deque *q) {
     long long t = atomic_load_explicit(&q->top, memory_order_seq_cst);
     long long b = atomic_load_explicit(&q->bottom, memory_order_seq_cst);
     if (t >= b) return NULL;
-    _Atomic(par_job *) *a = atomic_load_explicit(&q->buf, memory_order_acquire);
-    long long cap = atomic_load_explicit(&q->cap, memory_order_acquire);
-    par_job *x = atomic_load_explicit(&a[t & (cap - 1)], memory_order_relaxed);
+    // the ring current when job t was pushed, or a later one it was copied into
+    par_ring *a = atomic_load_explicit(&q->ring, memory_order_acquire);
+    par_job *x = atomic_load_explicit(&a->slot[t & (a->cap - 1)], memory_order_relaxed);
     if (!atomic_compare_exchange_strong_explicit(&q->top, &t, t + 1, memory_order_seq_cst, memory_order_relaxed)) return NULL;
     return x;
 }
@@ -3730,12 +4945,13 @@ static void slot_take(void) {
     me = k;
 }
 
-// a thread that forked ends: its deque (empty: it joined what it forked) is handed out again
+// a thread that forked ends: its deque (empty: it joined what it forked) is handed out again,
+// unless the pool has stopped (a thread ending after exit has freed the pool's arrays)
 static void slot_give(void *arg) {
     (void)arg;
     if (me < 0) return;
     pthread_mutex_lock(&P.mu);
-    P.freed[P.nfreed++] = me;
+    if (!atomic_load(&P.stop)) P.freed[P.nfreed++] = me;
     pthread_mutex_unlock(&P.mu);
     me = -1;
 }
@@ -3756,13 +4972,12 @@ static void par_block(void) {
     if (free_runners() >= wanted_runners()) return;
     pthread_mutex_lock(&P.mu);
     if (P.parked == 0 && P.nspare >= 2 * P.n) {
-        // at most twice the cores: with none left free, every job waits for another, for good
-        int blocked = atomic_load(&P.blocked);
+        // at most twice the cores: it waits without one. That's no deadlock to end the program
+        // for: what it waits for may be a thread outside the pool (the main thread holding the
+        // lock, a task's loop thread receiving), which no count here tells from a job that no
+        // thread is left to run
         pthread_mutex_unlock(&P.mu);
-        if (free_runners() > 0) return;
-        char msg[160];
-        snprintf(msg, sizeof msg, "the thread pool's spare threads are exhausted (%d blocked jobs): jobs wait for each other in channels or mutexes", blocked);
-        zs_panic_c(msg);
+        return;
     }
     atomic_fetch_add(&P.spares, 1);
     if (P.parked > 0) {
@@ -3846,13 +5061,18 @@ static void pool_stop(void) {
     for (int k = 0; k < P.n - 1; k++) pthread_join(P.threads[k], NULL);
     for (int k = 0; k < nspare; k++) pthread_join(P.spareThreads[k], NULL);
     int used = atomic_load(&P.slots);
-    for (int k = 0; k < used; k++) free((void *)atomic_load(&P.deques[k].buf));
+    for (int k = 0; k < used; k++) free(atomic_load(&P.deques[k].ring));
     for (size_t k = 0; k < P.nold; k++) free(P.old[k]);
     free(P.old);
     free(P.deques);
     free(P.freed);
     free(P.threads);
     free(P.spareThreads);
+}
+
+static void threads_stop(void) {
+    if (atomic_load(&loopsUp)) loops_stop();
+    if (atomic_load(&poolUp)) pool_stop();
 }
 
 static void pool_start(void) {
@@ -3876,7 +5096,8 @@ static void pool_start(void) {
     me = P.n - 1; // the thread starting the pool runs jobs with the last deque
     for (int k = 0; k < P.n - 1; k++)
         if (spawn(&P.threads[k], worker_main, (void *)(intptr_t)k) != 0) zs_panic_c("pthread_create failed");
-    atexit(pool_stop);
+    atomic_store(&poolUp, true);
+    stop_at_exit();
 }
 
 // a thread forking without a deque (a task's loop thread, Task.blocking's helper) takes one,
@@ -4088,52 +5309,95 @@ void zs_chan_free(zs_chan *c) {
     zs_free_checked(c);
 }
 
-// ---- Spsc (0012): a ring between one producer and one consumer, an interrupt handler and the
-// program, or two threads, neither waiting or locking: the producer alone moves the tail and the
-// consumer alone the head, each after the value it wrote or read. One slot stays empty, so a full
-// ring isn't an empty one. A Z# object: the drop function it was made with drops what's still in
-// it when it's freed.
+// ---- Spsc (0012): a ring between a producer and a consumer, an interrupt handler and the program,
+// or two threads, neither waiting or locking. Spsc is Share, so safe code can push or pop from
+// more threads than one a side, and that stays safe: each slot has a sequence number (Vyukov's
+// bounded queue). A push or a pop claims its position with a CAS on the tail or the head, copies
+// the value, then moves the slot's number on, which hands the slot to the other side. A pop finds
+// nothing while the value at the head is still being pushed, and a push finds the queue full
+// while the slot it needs is still being popped: neither ever waits for the other. The slots are
+// a power of two (positions wrap with the word), the capacity or more: past the capacity, a push
+// finds the queue full. A Z# object: the drop function it was made with drops what's still in it
+// when it's freed.
 typedef struct {
     ZS_HEADER;
-    zs_int cap, size;
-    zs_int head, tail; // each written by its side alone, read by the other atomically
+    zs_int cap, size; // the values it holds at most; a value's bytes
+    uintptr_t mask;   // the slots, less one
     void (*drop)(void *slot);
-    char slots[];
+    // positions: the next to pop, the next to push, each on a cache line of its own (the two
+    // sides write them, and read the fields above)
+    char apart[64];
+    uintptr_t head;
+    char apart2[64 - sizeof(uintptr_t)];
+    uintptr_t tail;
+    char apart3[64 - sizeof(uintptr_t)];
+    // a slot's number: its position while it waits for that position's push, the position + 1
+    // once it holds its value. The values' bytes come after.
+    uintptr_t seq[];
 } zs_spsc;
+
+static char *spsc_value(zs_spsc *q, uintptr_t pos) { return (char *)(q->seq + q->mask + 1) + (pos & q->mask) * (size_t)q->size; }
 
 void *zs_spsc_new(zs_int cap, zs_int size, void (*drop)(void *)) {
     if (cap < 1) zs_panic_c("an Spsc holds at least one value");
-    zs_int bytes; // cap + 1 slots after the header, past what can be allocated a panic
-    if (__builtin_add_overflow(cap, 1, &bytes) || __builtin_mul_overflow(bytes, size ? size : 1, &bytes) || __builtin_add_overflow(bytes, (zs_int)sizeof(zs_spsc), &bytes)) zs_panic_c("out of memory");
+    zs_int n = 2, slot, bytes; // past what can be allocated a panic
+    while (n < cap)
+        if (__builtin_mul_overflow(n, 2, &n)) zs_panic_c("out of memory");
+    if (__builtin_add_overflow(size, (zs_int)sizeof(uintptr_t), &slot) || __builtin_mul_overflow(n, slot, &bytes) || __builtin_add_overflow(bytes, (zs_int)sizeof(zs_spsc), &bytes)) zs_panic_c("out of memory");
     zs_spsc *q = zs_alloc(bytes);
     q->rc = 1;
-    q->cap = cap + 1;
+    q->cap = cap;
     q->size = size;
+    q->mask = (uintptr_t)n - 1;
     q->head = q->tail = 0;
     q->drop = drop;
+    for (zs_int i = 0; i < n; i++) q->seq[i] = (uintptr_t)i;
     return q;
 }
 
 bool zs_spsc_push(zs_spsc *q, const void *v) {
-    zs_int t = q->tail;
-    zs_int next = (t + 1) % q->cap;
-    if (next == __atomic_load_n(&q->head, __ATOMIC_ACQUIRE)) return false; // full
-    memcpy(q->slots + t * q->size, v, (size_t)q->size);
-    __atomic_store_n(&q->tail, next, __ATOMIC_RELEASE);
-    return true;
+    uintptr_t t = __atomic_load_n(&q->tail, __ATOMIC_RELAXED);
+    for (;;) {
+        uintptr_t *s = &q->seq[t & q->mask];
+        intptr_t d = (intptr_t)(__atomic_load_n(s, __ATOMIC_ACQUIRE) - t);
+        if (d < 0) return false; // full: the value a lap before isn't popped yet
+        if (d > 0) {             // another push took t
+            t = __atomic_load_n(&q->tail, __ATOMIC_RELAXED);
+            continue;
+        }
+        // full at the capacity, when the slots are more (a head read late finds it full sooner,
+        // never later)
+        if ((uintptr_t)q->cap <= q->mask && (intptr_t)(t - __atomic_load_n(&q->head, __ATOMIC_RELAXED)) >= q->cap) return false;
+        if (__atomic_compare_exchange_n(&q->tail, &t, t + 1, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+            memcpy(spsc_value(q, t), v, (size_t)q->size);
+            __atomic_store_n(s, t + 1, __ATOMIC_RELEASE); // the value, to a pop
+            return true;
+        }
+    }
 }
 
 bool zs_spsc_pop(zs_spsc *q, void *out) {
-    zs_int h = q->head;
-    if (h == __atomic_load_n(&q->tail, __ATOMIC_ACQUIRE)) return false; // empty
-    memcpy(out, q->slots + h * q->size, (size_t)q->size);
-    __atomic_store_n(&q->head, (h + 1) % q->cap, __ATOMIC_RELEASE);
-    return true;
+    uintptr_t h = __atomic_load_n(&q->head, __ATOMIC_RELAXED);
+    for (;;) {
+        uintptr_t *s = &q->seq[h & q->mask];
+        intptr_t d = (intptr_t)(__atomic_load_n(s, __ATOMIC_ACQUIRE) - (h + 1));
+        if (d < 0) return false; // empty, or its value is still being pushed
+        if (d > 0) {             // another pop took h
+            h = __atomic_load_n(&q->head, __ATOMIC_RELAXED);
+            continue;
+        }
+        if (__atomic_compare_exchange_n(&q->head, &h, h + 1, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+            memcpy(out, spsc_value(q, h), (size_t)q->size);
+            __atomic_store_n(s, h + q->mask + 1, __ATOMIC_RELEASE); // the slot, to the push a lap on
+            return true;
+        }
+    }
 }
 
 void zs_spsc_free(zs_spsc *q) {
+    // what's between the head and the tail (no push or pop is under way: each holds a reference)
     if (q->drop)
-        for (zs_int i = q->head; i != q->tail; i = (i + 1) % q->cap) q->drop(q->slots + i * q->size);
+        for (uintptr_t p = q->head; p != q->tail; p++) q->drop(spsc_value(q, p));
     zs_free_checked(q);
 }
 

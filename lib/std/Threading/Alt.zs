@@ -16,12 +16,12 @@ namespace Threading
 // task's Cancel, and the partner that pops it takes back its action there.
 
 // a nack: its cancellation, its link on the syncing task's, the branches it covers [lo, hi)
-type private Nack = { nack: Cancel; link: int; lo: int; hi: int }
+type private Nack = { nack: Cancel; link: i64; lo: int; hi: int }
 
 // where a sync is: over once a branch committed or the task was cancelled; what its waiting
 // branches left (queue cells, timers, promise and nack waiters); its action on the task's Cancel;
 // whether the committed value went on through the loop (it can't be dropped then)
-type private PickState = { over: bool; undo: list<unit -> unit>; link: int; posted: bool }
+type private PickState = { over: bool; undo: list<unit -> unit>; link: i64; posted: bool }
 
 // one sync, shared by its branches so that exactly one commits; its nacks newest first
 type private PickData = { state: ref<PickState>; cancel: Cancel; nacks: list<Nack> }
@@ -67,7 +67,7 @@ type Alt<'a> =
 // task's cancellation, its action there). One heap cell, which is also its queue cell's Some
 type private Waiter<'v, 'r> =
   | Branch of Pick * int * 'v * ('r -> unit)
-  | Lone of Cancel * int * 'v * ('r -> unit)
+  | Lone of Cancel * i64 * 'v * ('r -> unit)
 
 // oldest first; a dropped entry leaves an empty cell; dead counts empty cells at or after head
 type private Queue<'w> = { cells: Buffer<ref<option<'w>>>; head: ref<int>; dead: ref<int> }
@@ -308,7 +308,7 @@ let private run (c: Cancel) (nacks: list<Nack>) (prims: list<Prim<'a>>) (k: 'a -
 // what prepare has left to do: an event to flatten, or a nack's range to close at the count
 type private Step<'a> =
   | Next of Ev<'a>
-  | Close of Cancel * int * int
+  | Close of Cancel * i64 * int
 
 // a prepare's state: the work left, the prims so far (newest first), their count, the nacks
 type private Prep<'a> =

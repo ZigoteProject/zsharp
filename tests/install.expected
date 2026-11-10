@@ -1,0 +1,26 @@
+--- relative paths, from another directory
+exit 0
+out/zs: NEW
+out: the library and the runtime
+the checkout's out: none
+--- again, over that install
+exit 0
+out/lib: replaced
+--- a binary that isn't there
+exit 1
+out/zs: OLD
+--- a prefix's directory
+install.sh: …/work/prefix/lib isn't a Z# library; install into a directory of its own (bin, ~/.local/zs)
+exit 1
+prefix/lib: libfoo.so
+prefix/zs: none
+install.sh: …/work/other/wepoll isn't wepoll; install into a directory of its own (bin, ~/.local/zs)
+exit 1
+other/wepoll: notes.txt
+--- the checkout
+install.sh: ../zsharp is the checkout, or in its lib/ or runtime/; install into a directory of its own (bin, ~/.local/zs)
+exit 1
+install.sh: ../zsharp/lib/zs is the checkout, or in its lib/ or runtime/; install into a directory of its own (bin, ~/.local/zs)
+exit 1
+the checkout's lib: kept
+the checkout's zs: none

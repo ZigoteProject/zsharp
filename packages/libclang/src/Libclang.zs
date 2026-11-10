@@ -31,13 +31,19 @@ let visitChildren (c: CXCursor) (f: CXCursor -> i32) : unit =
   zs_clang_visit_children c (fun p -> f (unsafe Ptr.read p)) |> ignore
 
 /// A file's translation unit, parsed with clang's arguments (`-I dir`, `-D NAME`) and
-/// clang_parseTranslationUnit's options; None when clang couldn't parse it at all (its
-/// diagnostics say why when it could).
-let parse (index: cptr) (file: string) (args: list<string>) (options: u32) : option<cptr> =
-  let joined = String.concat (List.map (fun a -> a + "\0") args)
-  let tu = zs_clang_parse index file (String.bytes joined) (i32 (List.length args)) options
-  let p: ptr<u8> = unsafe Ptr.ofCPtr tu
-  if Ptr.isNull p then None else Some tu
+/// clang_parseTranslationUnit's options; an Error when clang couldn't parse it at all (its
+/// diagnostics say why when it could), or when the file's name or an argument holds a NUL byte,
+/// which would end it there (an argument's rest would be arguments of clang's own).
+let parse (index: cptr) (file: string) (args: list<string>) (options: u32) : result<cptr, string> =
+  match List.tryFind (fun (a: string) -> String.contains "\0" a) (file :: args) with
+  | Some a ->
+    let shown = String.replace a "\0" "\\0"
+    Error $"a NUL byte in {shown}"
+  | None ->
+    let joined = String.concat (List.map (fun a -> a + "\0") args)
+    let tu = zs_clang_parse index file (String.bytes joined) (i32 (List.length args)) options
+    let p: ptr<u8> = unsafe Ptr.ofCPtr tu
+    if Ptr.isNull p then Error "libclang couldn't parse it" else Ok tu
 
 /// The cursor's children, in order.
 let children (c: CXCursor) : list<CXCursor> =
@@ -109,18 +115,28 @@ let declarations (tu: cptr) : list<string> =
 
 [<Tests>]
 let tests =
-  Testing.test "reads a header" (fun () ->
-    match Directory.createTemp "libclang" with
-    | Error e -> panic e
-    | Ok dir ->
-      let header = Path.combine dir "shapes.h"
-      File.writeAllText header "#include <stddef.h>\nstruct point { int x; int y; };\nint area(struct point p, size_t n);\n"
-      |> ignore
+  Testing.testList "libclang" [
+    Testing.test "reads a header" (fun () ->
+      match Directory.createTemp "libclang" with
+      | Error e -> panic e
+      | Ok dir ->
+        let header = Path.combine dir "shapes.h"
+        File.writeAllText header "#include <stddef.h>\nstruct point { int x; int y; };\nint area(struct point p, size_t n);\n"
+        |> ignore
+        let index = clang_createIndex 0 0
+        match parse index header [ "-x"; "c"; "-DSIDES=4" ] (u32 0) with
+        | Error e -> panic e
+        | Ok tu ->
+          assert (declarations tu = [ "point"; "area" ])
+          clang_disposeTranslationUnit tu
+        clang_disposeIndex index
+        Directory.deleteRecursive dir |> ignore)
+    // an include directory from a project's zs.toml holding NULs would have been three arguments,
+    // the PCH clang then reads among them, and the arguments after it dropped
+    Testing.test "refuses a NUL in an argument" (fun () ->
       let index = clang_createIndex 0 0
-      match parse index header [ "-x"; "c"; "-DSIDES=4" ] (u32 0) with
-      | None -> panic "clang couldn't parse shapes.h"
-      | Some tu ->
-        assert (declarations tu = [ "point"; "area" ])
-        clang_disposeTranslationUnit tu
-      clang_disposeIndex index
-      Directory.deleteRecursive dir |> ignore)
+      match parse index "shapes.h" [ "-x"; "c"; "-Ia\0-include-pch\0evil.pch"; "-Ib" ] (u32 0) with
+      | Error e -> assert (e = "a NUL byte in -Ia\\0-include-pch\\0evil.pch")
+      | Ok _ -> panic "parsed with a NUL in an argument"
+      clang_disposeIndex index)
+  ]

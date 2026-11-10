@@ -4,7 +4,10 @@ chain: 2000
 statements: 4999
 lets: 4999
 else-ifs: 8642
+else-ifs again: 8642
 parentheses: 1
 bom: a byte order mark
+texts: 7888890 4000000 2000000 4000002
+fmt wide: 300 lines broken
 undone: 3:3: error: value of 'n': expected string, got int: interpolate it, $"{x}"
 too deep: exit 134 panic: stack overflow (recursion too deep)

@@ -35,35 +35,31 @@ let onPath () : list<string> =
     List.distinct (List.collect inDir (List.filter (fun (d: string) -> d <> "") dirs))
   | None -> []
 
+// how long a provider program may run, in seconds: $ZS_PROVIDER_TIMEOUT (a day at most), else a
+// minute
+let private limit () : int =
+  match Environment.getVariable "ZS_PROVIDER_TIMEOUT" with
+  | Some v ->
+    let given : option<int> = Int.parse v
+    match given with
+    | Some n when n > 0 -> min n 86400
+    | _ -> 60
+  | None -> 60
+
 // a provider program run in `dir` with the string and each option as --name=value: its standard
 // output is the module, its standard error the errors (the first line named), a non-zero exit
-// a failure
+// a failure. Both streams are read as they come (one that fills can't block it), and one that
+// runs past the limit is stopped, so a provider can't hang a build or the language server.
 let private runProvider (program: string) (dir: string) (arg: string) (opts: list<string * string>) : result<string, string> =
-    let s : Diagnostics.ProcessStart =
-      { program = program
-        args = arg :: List.map (fun (n, v) -> "--" + n + "=" + v) opts
-        directory = Some dir
-        stdin = Diagnostics.Null
-        stdout = Diagnostics.Piped
-        stderr = Diagnostics.Piped }
-    match Diagnostics.Process.start s with
-    | Error e -> Error $"{Path.getFileName program}: {e}"
-    | Ok p ->
-      let read (r: option<IO.Reader>) : string =
-        match r with
-        | Some reader ->
-          match IO.Reader.readToEnd reader with
-          | Ok t -> t
-          | Error _ -> ""
-        | None -> ""
-      let out = read p.stdout
-      let err = read p.stderr
-      let code = Task.run (Diagnostics.Process.wait p)
-      Dispose.dispose p
-      if code <> 0 then
-        let lines = List.filter (fun (l: string) -> String.trim l <> "") (String.split "\n" err)
-        Error(if List.isEmpty lines then $"{Path.getFileName program} exited with {code}" else String.trim (List.head lines))
-      else Ok out
+  let name = Path.getFileName program
+  match Build.Tools.runFor program (arg :: List.map (fun (n, v) -> "--" + n + "=" + v) opts) (Some dir) (limit ()) with
+  | Error e when String.startsWith "didn't finish" e -> Error $"{name} {e} (ZS_PROVIDER_TIMEOUT=<seconds> gives it longer)"
+  | Error e -> Error $"{name}: {e}"
+  | Ok r ->
+    if r.code <> 0 then
+      let lines = List.filter (fun (l: string) -> String.trim l <> "") (String.split "\n" r.err)
+      Error(if List.isEmpty lines then $"{name} exited with {r.code}" else String.trim (List.head lines))
+    else Ok r.out
 
 // a provider on PATH, zs-provider-<name>; None when there's no such program
 let private external (provider: string) (dir: string) (arg: string) (opts: list<string * string>) : option<result<string, string>> =
@@ -81,8 +77,9 @@ let provide (provider: string) (dir: string) (where: string) (arg: string) (opts
     match List.tryFind (fun (n, _) -> not (List.contains n known)) opts with
     | Some(n, _) -> Error ("unknown option '" + n + "' (" + String.join ", " known + ")")
     | None ->
-      match File.readAllText (Path.combine dir arg) with
-      | Error _ -> Error (arg + " not found " + where)
+      match Provide.Input.read (Path.combine dir arg) with
+      | Error "not found" -> Error (arg + " not found " + where)
+      | Error why -> Error (arg + " " + why)
       | Ok text ->
         match provider with
         | "json" -> Provide.JsonProvider.provide arg text opts
@@ -121,8 +118,10 @@ let run (args: list<string>) : int =
       println $"{name,-6} zs-provider-{name}, on PATH"
     0
   | [ "c"; header ] ->
-    // the header beside the working directory or on the system's path, with this machine's flags
-    match Provide.CProvider.provide header (Environment.currentDirectory ()) [] (Path.combine ".zs-cache" "cimport") with
+    // the header beside the working directory or on the system's path, with this machine's flags;
+    // the import saved in .zs-cache/cimport there, not through a symbolic link
+    let here = Environment.currentDirectory ()
+    match Result.bind (fun (_: string) -> Provide.CProvider.provide header here [] (Path.combine ".zs-cache" "cimport")) (Build.Tools.realDirectory here [ ".zs-cache"; "cimport" ]) with
     | Ok text ->
       print text
       0

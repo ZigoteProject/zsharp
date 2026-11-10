@@ -29,6 +29,9 @@ type State =
     hints: ref<bool>
     /// the providers' input files the client watches for the server (0001)
     watched: ref<Set<string>>
+    /// started with --trust: a package's type provider is built and run (else the module from
+    /// the last build, or an error at the import)
+    trusted: bool
     out: IO.Writer }
 
 let private num (n: int) = Rpc.num n
@@ -121,7 +124,7 @@ let private watchInputs (st: State) =
 /// doesn't get to checking (a syntax error) keeps the last analysis's hovers.
 let private analyze (st: State) (path: string) =
   let (diags, sources) =
-    match Build.Check.programWith st.texts.Value path false true None "" with
+    match Build.Check.programWith st.texts.Value path false true None "" st.trusted with
     | Ok c ->
       let spots = spotsOf c
       let infos = Map.ofList (List.collect (fun (m: Build.Modules.Loaded) -> m.cInfos) c.modules)
@@ -213,7 +216,7 @@ let private summaryOf (fs: list<Core.Program.MFun>) (touched: Core.Program.MFun 
 let private heapProgram (st: State) (path: string) (a: Analysis) : option<Build.Check.Checked> =
   match Build.Project.findProject (Path.getDirectoryName path) with
   | Some(Ok m) when Path.getFullPath m.main <> path && File.exists m.main ->
-    match Build.Check.programWith st.texts.Value m.main true true None "" with
+    match Build.Check.programWith st.texts.Value m.main true true None "" st.trusted with
     | Ok c -> Some c
     | Error _ -> None
   | _ -> Some a.checked
@@ -446,6 +449,13 @@ let private lastPart (name: string) =
   | Some i -> String.sub name (i + 1) (String.length name - i - 1)
   | None -> name
 
+// a provided module's file: in providers/ of a .zs-cache, the program's or a dependency's
+// (.zs-cache/pkgs/<name>-<hash>/providers/)
+let private providedFile (file: string) : bool =
+  let full = Path.getFullPath file
+  let sep = String.ofChar Path.separator
+  within [ ".zs-cache"; "providers" ] full || (within [ ".zs-cache"; "pkgs" ] full && String.contains (sep + "providers" + sep) full)
+
 // what a rename at a position changes: the name there and every reference to it, in the programs
 // of the open documents (a field's uses too: its key is field:Record.name), or why it can't be
 // renamed. A name's key depends on the program it's checked in, so another program's references
@@ -475,7 +485,7 @@ let private renameTarget (st: State) (path: string) (line: int) (ch: int) : resu
       Error $"{h.h.name} is declared in a C header; rename it there"
     else
       match List.tryFind (fun (o: Spot) -> o.h.isDef) all with
-      | Some d when within [ ".zs-cache"; "providers" ] (Path.getFullPath d.path) -> Error $"{Types.Ty.shortName h.h.name} is {provenance d.path}; change it there"
+      | Some d when providedFile d.path -> Error $"{Types.Ty.shortName h.h.name} is {provenance d.path}; change it there"
       | Some d when not (editable d.path) -> Error $"{Types.Ty.shortName h.h.name} is defined in {Path.getFileName d.path}, outside the program"
       | def ->
         let samePlace (a: Spot) (b: Spot) = a.path = b.path && a.line = b.line && a.col = b.col
@@ -1065,9 +1075,10 @@ let private answer (st: State) (msg: Json) : bool =
   running
 
 /// Serves the editor on standard input (`input`) and output until it says exit (or the input
-/// ends). `first`: a header line protocol detection already read.
-let serve (input: IO.Reader) (first: option<string>) : int =
-  let st : State = { texts = ref Map.empty; results = ref Map.empty; madeOf = ref Map.empty; docCache = ref Map.empty; watched = ref Set.empty; hints = ref false; out = Console.openStandardOutput () }
+/// ends). `first`: a header line protocol detection already read; `trusted`: --trust, the
+/// project's own type providers built and run.
+let serve (input: IO.Reader) (first: option<string>) (trusted: bool) : int =
+  let st : State = { texts = ref Map.empty; results = ref Map.empty; madeOf = ref Map.empty; docCache = ref Map.empty; watched = ref Set.empty; hints = ref false; trusted = trusted; out = Console.openStandardOutput () }
   let mutable pending = first
   let mutable running = true
   while running do

@@ -1,7 +1,9 @@
 # Net.Tcp
 
 TCP connections for tasks: listening, accepting, connecting, reading and writing. A call
-that would block waits for the event loop instead, so other tasks go on meanwhile.
+that would block waits for the event loop instead, so other tasks go on meanwhile, and the
+name `Tcp.connect` is given is looked up off the loop's thread (`Tcp.listen` looks its own
+up where it's called, before it gives the listener).
 
 ## Types
 
@@ -71,7 +73,9 @@ A socket listening on the host (a name or an address; "" for every interface) an
 Tcp.accept : TcpListener -> Task<result<TcpStream, string>>
 ```
 
-Waits for the next connection.
+Waits for the next connection. When taking it fails (the process is out of descriptors,
+say), the error comes after a pause of 100 ms, so a server that goes on accepting after
+one doesn't spin, and its other tasks get to close what they hold.
 
 ### `Tcp.connect`
 
@@ -79,7 +83,9 @@ Waits for the next connection.
 Tcp.connect : string -> int -> Task<result<TcpStream, string>>
 ```
 
-A connection to the host and port.
+A connection to the host and port: a name is looked up off the loop's thread, and its
+addresses tried in turn until one connects. Cancelled (by `Task.timeout`, say) before it
+has connected, it closes the socket it was connecting.
 
 ### `Tcp.read`
 

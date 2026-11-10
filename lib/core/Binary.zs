@@ -17,7 +17,12 @@ type BinaryReader =
     /// The next byte's index.
     pos: ref<int>
     /// The strings read so far, by their numbers.
-    strings: Buffer<string> }
+    strings: Buffer<string>
+    /// How many records and unions the read is inside of.
+    nesting: ref<int> = ref 0
+    /// How many may nest, a derived read's `Error` past them; -1, as `create` makes it, for no
+    /// limit (`Binary.ofBytes` sets one).
+    maxNesting: int = -1 }
 
 /// A value that can be written as bytes and read back.
 trait Binary<'a> =
@@ -42,8 +47,11 @@ module BinaryWriter =
       byte w (u8 ((n &&& u64 127) ||| u64 128))
       uvarint w (n >>> 7)
 
-  /// A signed number: zigzag (0, -1, 1, -2, … as 0, 1, 2, 3, …), then as `uvarint`.
-  let varint (w: BinaryWriter) (n: int) = uvarint w (u64 ((n <<< 1) ^^^ (n >>> 63)))
+  /// A signed 64-bit number: zigzag (0, -1, 1, -2, … as 0, 1, 2, 3, …), then as `uvarint`.
+  let varint64 (w: BinaryWriter) (n: i64) = uvarint w (u64 ((n <<< 1) ^^^ (n >>> 63)))
+
+  /// A signed number, as `varint64`: the same bytes whether `int` is 32 or 64 bits.
+  let varint (w: BinaryWriter) (n: int) = varint64 w (i64 n)
 
   /// A float's 64 bits, low byte first.
   let float (w: BinaryWriter) (x: f64) =
@@ -88,10 +96,16 @@ module BinaryReader =
         if b < u8 128 then Ok acc else go acc (shift + 7)
     go (u64 0) 0
 
-  /// A signed number as `BinaryWriter.varint` writes it.
-  let varint (r: BinaryReader) : result<int, string> =
+  /// A signed 64-bit number as `BinaryWriter.varint64` writes it.
+  let varint64 (r: BinaryReader) : result<i64, string> =
     let n = (uvarint r)?
-    Ok(int (n >>> 1) ^^^ -(int (n &&& u64 1)))
+    Ok(i64 (n >>> 1) ^^^ -(i64 (n &&& u64 1)))
+
+  /// A signed number as `BinaryWriter.varint` writes it; an `Error` for one that doesn't fit an
+  /// `int` (a 64-bit machine's, read where `int` is 32 bits).
+  let varint (r: BinaryReader) : result<int, string> =
+    let n = (varint64 r)?
+    if i64 (int n) = n then Ok(int n) else Error $"{n} doesn't fit an int"
 
   /// A float as `BinaryWriter.float` writes it.
   let float (r: BinaryReader) : result<f64, string> =
@@ -105,20 +119,20 @@ module BinaryReader =
 
   /// A string as `BinaryWriter.string` writes it.
   let string (r: BinaryReader) : result<string, string> =
+    // the numbers compared as read, u64s: one past int's range would wrap, converted first
     let n = (uvarint r)?
-    let n = int n
-    if n > 0 then
-      if n <= Buffer.length r.strings then
-        Ok r.strings.[n - 1]
+    if n > u64 0 then
+      if n <= u64 (Buffer.length r.strings) then
+        Ok r.strings.[int n - 1]
       else
         Error $"string {n} isn't written yet"
     else
       let len = (uvarint r)?
-      let len = int len
       let i = r.pos.Value
-      if i + len > Span.length r.bytes then
+      if len > u64 (Span.length r.bytes - i) then
         Error $"the bytes end in a string at {i}"
       else
+        let len = int len
         r.pos.Value <- i + len
         let s = String.ofBytes r.bytes.[i .. i + len - 1]
         Buffer.push s r.strings
@@ -126,20 +140,32 @@ module BinaryReader =
 
 /// `toBytes` and `ofBytes`.
 module Binary =
+  /// How `ofBytesWith` reads: records and unions nest at most `depth` levels (a tree as deep as
+  /// its longest branch), an `Error` past them.
+  type Options = { depth: int = 1000 }
+
   /// The value's bytes.
   let toBytes (x: 'a) : array<u8> =
     let w = BinaryWriter.create ()
     write w x
     Buffer.toArray w.bytes
 
-  /// The value the bytes hold; an `Error` when they don't hold one, or hold more than one.
-  let ofBytes (bytes: span<u8>) : result<'a, string> =
-    let r = BinaryReader.create bytes
+  /// The value the bytes hold, its records and unions nested at most `options.depth` levels; an
+  /// `Error` when they don't hold one, or hold more than one.
+  let ofBytesWith (options: Options) (bytes: span<u8>) : result<'a, string> =
+    let r0 = BinaryReader.create bytes
+    let r = { r0 with maxNesting = max 0 options.depth }
     let x = (read r)?
     if r.pos.Value = Span.length bytes then
       Ok x
     else
       Error $"{Span.length bytes - r.pos.Value} bytes after the value"
+
+  /// The value the bytes hold; an `Error` when they don't hold one, or hold more than one.
+  /// Records and unions nest at most 1,000 levels, 32 where `int` is 32 bits (a microcontroller's
+  /// stack can be 4 KB, and a level is a call); `ofBytesWith` sets another limit.
+  let ofBytes (bytes: span<u8>) : result<'a, string> =
+    ofBytesWith { depth = (if sizeof<int> = 4 then 32 else 1000) } bytes
 
 /// As a zigzag varint (BinaryWriter.varint).
 impl Binary<int> =
@@ -149,22 +175,28 @@ impl Binary<int> =
 /// As a zigzag varint.
 impl Binary<i8> =
   let write w (x: i8) = BinaryWriter.varint w (int x)
-  let read r = Result.map i8 (BinaryReader.varint r)
+  let read r =
+    let n = (BinaryReader.varint r)?
+    if int (i8 n) = n then Ok(i8 n) else Error $"{n} doesn't fit an i8"
 
 /// As a zigzag varint.
 impl Binary<i16> =
   let write w (x: i16) = BinaryWriter.varint w (int x)
-  let read r = Result.map i16 (BinaryReader.varint r)
+  let read r =
+    let n = (BinaryReader.varint r)?
+    if int (i16 n) = n then Ok(i16 n) else Error $"{n} doesn't fit an i16"
 
 /// As a zigzag varint.
 impl Binary<i32> =
   let write w (x: i32) = BinaryWriter.varint w (int x)
-  let read r = Result.map i32 (BinaryReader.varint r)
+  let read r =
+    let n = (BinaryReader.varint r)?
+    if int (i32 n) = n then Ok(i32 n) else Error $"{n} doesn't fit an i32"
 
-/// As a zigzag varint.
+/// As a zigzag varint (BinaryWriter.varint64).
 impl Binary<i64> =
-  let write w (x: i64) = BinaryWriter.varint w (int x)
-  let read r = Result.map i64 (BinaryReader.varint r)
+  let write w (x: i64) = BinaryWriter.varint64 w x
+  let read r = BinaryReader.varint64 r
 
 /// As one byte.
 impl Binary<u8> =
@@ -174,12 +206,16 @@ impl Binary<u8> =
 /// As a varint (BinaryWriter.uvarint).
 impl Binary<u16> =
   let write w (x: u16) = BinaryWriter.uvarint w (u64 x)
-  let read r = Result.map u16 (BinaryReader.uvarint r)
+  let read r =
+    let n = (BinaryReader.uvarint r)?
+    if u64 (u16 n) = n then Ok(u16 n) else Error $"{n} doesn't fit a u16"
 
 /// As a varint.
 impl Binary<u32> =
   let write w (x: u32) = BinaryWriter.uvarint w (u64 x)
-  let read r = Result.map u32 (BinaryReader.uvarint r)
+  let read r =
+    let n = (BinaryReader.uvarint r)?
+    if u64 (u32 n) = n then Ok(u32 n) else Error $"{n} doesn't fit a u32"
 
 /// As a varint.
 impl Binary<u64> =
@@ -189,7 +225,9 @@ impl Binary<u64> =
 /// As a varint.
 impl Binary<usize> =
   let write w (x: usize) = BinaryWriter.uvarint w (u64 x)
-  let read r = Result.map usize (BinaryReader.uvarint r)
+  let read r =
+    let n = (BinaryReader.uvarint r)?
+    if u64 (usize n) = n then Ok(usize n) else Error $"{n} doesn't fit a usize"
 
 /// Its 64 bits, low byte first.
 impl Binary<f64> =
@@ -221,7 +259,8 @@ impl Binary<unit> =
   let write _ () = ()
   let read _ = Ok ()
 
-/// Its length, then its elements.
+/// Its length, then its elements. A length the bytes left can't hold is an `Error` (elements
+/// that take no bytes, `unit`'s, at most 65,536 of them).
 impl Binary<list<'a>> =
   let write w xs =
     BinaryWriter.varint w (List.length xs)
@@ -233,9 +272,16 @@ impl Binary<list<'a>> =
       if i = n then
         Ok(List.rev acc)
       else
+        let at = r.pos.Value
         let x = (read r)?
-        go (i + 1) (x :: acc)
-    go 0 []
+        // an element that took a byte means each after it takes one: a length from elsewhere
+        // makes no list longer than the bytes (nor one of nothing longer than the cap)
+        let left = Span.length r.bytes - r.pos.Value
+        if (r.pos.Value > at && n - i - 1 > left) || (r.pos.Value = at && n > 65536) then
+          Error $"a list of {n} elements, with {left} bytes left"
+        else
+          go (i + 1) (x :: acc)
+    if n < 0 then Error $"a list of {n} elements" else go 0 []
 
 /// Its length, then its elements.
 impl Binary<array<'a>> =
@@ -334,10 +380,19 @@ derive Binary =
       for f in c.fields do
         write w f.value
   let read (r: BinaryReader) : result<'self, string> =
-    match Shape.kind with
-    | RecordKind -> Shape.build (fun f -> read r)
-    | UnionKind ->
-      let name = (BinaryReader.string r)?
-      match Shape.buildCase name (fun f -> read r) with
-      | Some built -> built
-      | None -> Error $"unknown case {name}"
+    // a level is a call, and after a recursive type's case is written once a level is a byte:
+    // past the reader's limit an Error, not a stack run out
+    if r.maxNesting >= 0 && r.nesting.Value >= r.maxNesting then
+      Error $"nesting deeper than {r.maxNesting} levels"
+    else
+      r.nesting.Value <- r.nesting.Value + 1
+      let x =
+        match Shape.kind with
+        | RecordKind -> Shape.build (fun f -> read r)
+        | UnionKind ->
+          let name = (BinaryReader.string r)?
+          match Shape.buildCase name (fun f -> read r) with
+          | Some built -> built
+          | None -> Error $"unknown case {name}"
+      r.nesting.Value <- r.nesting.Value - 1
+      x

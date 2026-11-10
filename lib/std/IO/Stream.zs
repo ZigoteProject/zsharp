@@ -15,7 +15,8 @@ type Reader =
     filled: ref<int> }
 
 /// A stream being written (`File.openWrite`, `Console.openStandardOutput`, a process's piped
-/// input): bytes collect in `buffer` until it's full or flushed.
+/// input): bytes collect in `buffer` until it's full or flushed. A pipe whose reader has gone (a
+/// process that has exited) is an `Error` then, not the end of the program.
 type Writer =
   { /// The file descriptor.
     fd: int
@@ -47,6 +48,21 @@ module Reader =
   // bytes i to j - 1 of the buffer as a string
   let private text (r: Reader) (i: int) (j: int) = String.ofBytes r.buffer.[i .. j - 1]
 
+  // where bytes i to j - 1 end in whole characters: before a last one the read cut short (its
+  // lead byte and the continuation bytes so far), which waits for the next read, as decoded now
+  // each of its bytes would be a U+FFFD
+  let private whole (r: Reader) (i: int) (j: int) : int =
+    let mutable k = j - 1
+    while k > i && k > j - 4 && r.buffer.[k] >= u8 0x80 && r.buffer.[k] <= u8 0xBF do
+      k <- k - 1
+    let lead = if k >= i then r.buffer.[k] else u8 0
+    let need =
+      if lead >= u8 0xF0 && lead <= u8 0xF4 then 4
+      else if lead >= u8 0xE0 && lead <= u8 0xEF then 3
+      else if lead >= u8 0xC2 && lead <= u8 0xDF then 2
+      else 1
+    if k >= i && k + need > j then k else j
+
   /// The next line, without its line ending (`\n` or `\r\n`); `None` at the end. A last line
   /// without a newline is a line.
   let rec readLine (r: Reader) : result<option<string>, string> =
@@ -62,12 +78,17 @@ module Reader =
           else
             line))
       else
-        // no newline yet: take what's there and read on
-        let acc = acc + text r r.start.Value r.filled.Value
-        r.start.Value <- r.filled.Value
+        // no newline yet: take what's there (but a character cut short) and read on
+        let cut = whole r r.start.Value r.filled.Value
+        let acc = acc + text r r.start.Value cut
+        r.start.Value <- cut
         match fill r with
         | Error e -> Error e
-        | Ok 0 -> Ok (if String.isEmpty acc then None else Some acc)
+        | Ok 0 ->
+          // the end: what's left is the last line's, a character cut short as it is
+          let last = acc + text r r.start.Value r.filled.Value
+          r.start.Value <- r.filled.Value
+          Ok (if String.isEmpty last then None else Some last)
         | Ok _ -> scan acc
     scan ""
 
@@ -96,11 +117,16 @@ module Reader =
   /// What's left of the stream, as text.
   let readToEnd (r: Reader) : result<string, string> =
     let rec go (acc: string) =
-      let acc = acc + text r r.start.Value r.filled.Value
-      r.start.Value <- r.filled.Value
+      // a character the read cut short waits for the rest
+      let cut = whole r r.start.Value r.filled.Value
+      let acc = acc + text r r.start.Value cut
+      r.start.Value <- cut
       match fill r with
       | Error e -> Error e
-      | Ok 0 -> Ok acc
+      | Ok 0 ->
+        let all = acc + text r r.start.Value r.filled.Value
+        r.start.Value <- r.filled.Value
+        Ok all
       | Ok _ -> go acc
     go ""
 

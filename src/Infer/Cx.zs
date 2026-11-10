@@ -89,6 +89,10 @@ and CxData =
     impls: ref<Map<string * string, Map<string, string>>>
     /// (trait, type): the traits each type argument needs
     implRequires: ref<Map<string * string, list<Set<string>>>>
+    /// (trait, type) of an impl whose methods are being checked, its requirements not known yet
+    /// (none meanwhile): each use of it then, its type arguments and the statement, checked once
+    /// they are (Decls.finishImpl)
+    implUses: ref<Map<string * string, list<list<Ty> * int>>>
     /// (trait, type): the trait's other parameters, over the head's variables (0017)
     implOthers: ref<Map<string * string, list<Ty>>>
     /// by full name, as traits
@@ -214,6 +218,9 @@ and CxData =
     /// checking an expression written elsewhere (a constant's body at a use, a default): its places
     /// aren't this file's, so its errors are at the use and it records no hovers
     foreign: ref<bool>
+    /// foreign, and its uses of the runtime's hooks (Native) checked where it's written (a
+    /// constant's body) or the library's (a library record's default): not checked again here
+    foreignVetted: ref<bool>
     /// C names import c skipped: why
     skippedC: ref<Map<string, string>>
     /// the library's types and traits, and the dependencies' module prefixes (Json): whose an
@@ -289,6 +296,9 @@ type Cx with
   member c.implRequires =
     match c with
     | Cx { implRequires = x } -> x
+  member c.implUses =
+    match c with
+    | Cx { implUses = x } -> x
   member c.implOthers =
     match c with
     | Cx { implOthers = x } -> x
@@ -472,6 +482,9 @@ type Cx with
   member c.foreign =
     match c with
     | Cx { foreign = x } -> x
+  member c.foreignVetted =
+    match c with
+    | Cx { foreignVetted = x } -> x
   member c.skippedC =
     match c with
     | Cx { skippedC = x } -> x
@@ -528,6 +541,7 @@ let create (requireMain: bool) (collect: bool) (allModules: list<string>) (manua
       effectOps = ref Map.empty
       impls = ref Map.empty
       implRequires = ref Map.empty
+      implUses = ref Map.empty
       implOthers = ref Map.empty
       derives = ref Map.empty
       deriveGroups = ref Map.empty
@@ -589,6 +603,7 @@ let create (requireMain: bool) (collect: bool) (allModules: list<string>) (manua
       currentDef = ref ""
       inConst = ref ""
       foreign = ref false
+      foreignVetted = ref false
       skippedC = ref Map.empty
       libraryNames = ref Set.empty
       dependencies = ref Set.empty
@@ -738,12 +753,16 @@ let located (cx: Cx) (tok: int) (lineOnly: bool) (f: unit -> 'r / <Fails | 'e>) 
     | Fails.fail x, _ -> Fails.fail (placed x)
     | Fails.report x, k -> k (Fails.report (placed x))
 
-/// Runs f on an expression written elsewhere (a constant's body at a use, a default).
-let foreignly (cx: Cx) (f: unit -> 'r / 'e) : 'r / 'e =
+/// Runs f on an expression written elsewhere (a constant's body at a use, a default); vetted:
+/// its uses of Native aren't checked again (foreignVetted).
+let foreignly (cx: Cx) (vetted: bool) (f: unit -> 'r / 'e) : 'r / 'e =
   let outer = cx.foreign.Value
+  let outerVetted = cx.foreignVetted.Value
   cx.foreign.Value <- true
+  cx.foreignVetted.Value <- vetted
   let r = f ()
   cx.foreign.Value <- outer
+  cx.foreignVetted.Value <- outerVetted
   r
 
 /// Runs f; a failure in it says what was being checked first ("field run: …").
@@ -945,6 +964,11 @@ let rec private userImpl (cx: Cx) (tr: string) (t: Ty) : bool / <Mismatched, Fai
   let reqsOf (key: string * string) (args: list<Ty>) =
     match Map.tryFind key cx.implRequires.Value with
     | Some reqs ->
+      // an impl whose methods are being checked requires nothing yet: what this use gives it is
+      // checked again once its requirements are known
+      match Map.tryFind key cx.implUses.Value with
+      | Some uses -> cx.implUses.Value <- Map.add key ((args, cx.currentStmt.Value) :: uses) cx.implUses.Value
+      | None -> ()
       for (a, trs) in List.zip args reqs do
         for tr2 in Set.toList trs do
           unify cx (fresh cx.v (kTrait tr2)) a
@@ -1270,14 +1294,16 @@ let rec toTyWith (cx: Cx) (pureArrows: bool) (tparams: option<list<string>>) (st
     | None -> fail $"unknown trait '{tr}' in dyn {tr}"
   | STName("fixed", [ el; len ]) ->
     // fixed<T, N>: N elements of T inline. N is a positive number, part of the type (a type
-    // variable only in the Fixed module, whose functions work for every N)
+    // variable only in the Fixed module, whose functions work for every N), and at most a C int's
+    // largest, so the size it makes can't overflow (Repr.layout)
     let n =
       match len with
       | STName(d, []) when isDigits d ->
         let parsed : option<int> = Int.parse d
         match parsed with
-        | Some k when k > 0 -> TCon($"{k}", [])
-        | _ -> fail "fixed needs a positive number of elements, written as a literal"
+        | Some k when k > 0 && k <= 2147483647 -> TCon($"{k}", [])
+        | Some k when k <= 0 -> fail "fixed needs a positive number of elements, written as a literal"
+        | _ -> fail "fixed holds at most 2147483647 elements"
       | STVar _ when cx.currentModule.Value = Some "Collections.Fixed" -> toTy tparams len
       | _ -> fail "fixed needs a positive number of elements, written as a literal"
     TCon("fixed", [ toTy tparams el; n ])

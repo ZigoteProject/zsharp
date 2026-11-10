@@ -1,0 +1,1 @@
+tests/err_noalloc_truncate.zs:4: error: cut is [<NoAlloc>], but cut shortens a Buffer of string, which drops the elements past its end (each may be the last reference)

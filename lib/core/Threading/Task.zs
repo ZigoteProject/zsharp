@@ -7,13 +7,15 @@
 /// chip.
 namespace Threading
 
-// where a Callbacks is: the number the next one gets, and how many have been taken back
-type private Counts = { next: int; dead: int }
+// where a Callbacks is: the number the next one gets, and how many have been taken back. The
+// numbers are 64-bit on every target: a task that waits in a loop takes one per wait, and 2^31
+// waits (days of a 10 kHz interrupt) would overflow a 32-bit word's
+type private Counts = { next: i64; dead: int }
 
 // callbacks under numbers, in the order they were added: a Cancel's actions, or the tasks
 // waiting for a Promise. Adding one, taking it back and taking them all out are cheap, whatever
 // the order. Each entry has its number, ascending (None once taken back)
-type private Callbacks<'f> = { entries: Buffer<int * option<'f>>; counts: ref<Counts> }
+type private Callbacks<'f> = { entries: Buffer<i64 * option<'f>>; counts: ref<Counts> }
 
 /// A task's cancellation: whether it has been cancelled, and what to do then (stop waiting,
 /// dispose what `use` bound). A task started by `both`, `all`, `race` or `Task.start` has its
@@ -58,14 +60,14 @@ let private callbacks () : Callbacks<'f> =
   { entries = Buffer.empty; counts = ref { next = 0; dead = 0 } }
 
 // adds f, and gives the number that takes it back
-let private addCallback (cs: Callbacks<'f>) (f: 'f) : int =
+let private addCallback (cs: Callbacks<'f>) (f: 'f) : i64 =
   let c = cs.counts.Value
   cs.counts.Value <- { c with next = c.next + 1 }
   Buffer.push (c.next, Some f) cs.entries
   c.next
 
 // the place of id among the entries, or -1
-let private findCallback (cs: Callbacks<'f>) (id: int) : int =
+let private findCallback (cs: Callbacks<'f>) (id: i64) : int =
   let mutable lo = 0
   let mutable hi = Buffer.length cs.entries
   while lo < hi do
@@ -93,7 +95,7 @@ let private compactCallbacks (cs: Callbacks<'f>) =
   if dead <> before then cs.counts.Value <- { cs.counts.Value with dead = dead }
 
 // takes back what's under id, and says whether it was still there
-let private removeCallback (cs: Callbacks<'f>) (id: int) : bool =
+let private removeCallback (cs: Callbacks<'f>) (id: i64) : bool =
   let es = cs.entries
   let n = Buffer.length es
   if n > 0 && fst es.[n - 1] = id then
@@ -133,10 +135,10 @@ let private newCancel () : Cancel = { cancelled = ref false; actions = callbacks
 
 // adds f to what c does when it's cancelled (a wait to undo then, as Alt's are); its number
 // goes to forget once it's not needed
-let private onCancel (c: Cancel) (f: unit -> unit) : int = addCallback c.actions f
+let private onCancel (c: Cancel) (f: unit -> unit) : i64 = addCallback c.actions f
 
 // takes back an action onCancel added
-let private forget (c: Cancel) (id: int) = removeCallback c.actions id |> ignore
+let private forget (c: Cancel) (id: i64) = removeCallback c.actions id |> ignore
 
 // cancels c: its actions run, newest first, once
 let private cancelNow (c: Cancel) =
@@ -145,7 +147,7 @@ let private cancelNow (c: Cancel) =
     drainCallbacks c.actions true (fun f -> f ())
 
 // a cancellation under c, cancelled with it, and the number (forget c) that unlinks it
-let private child (c: Cancel) : Cancel * int =
+let private child (c: Cancel) : Cancel * i64 =
   let k = newCancel ()
   let link = onCancel c (fun () -> cancelNow k)
   (k, link)
@@ -179,10 +181,10 @@ module Task =
 
   /// `use x = …` in a task: x is disposed if the task is cancelled. The number goes to
   /// `Task.disposed` when the scope ends.
-  let disposeOnCancel (c: Cancel) (x: 'r) : int = onCancel c (fun () -> dispose x)
+  let disposeOnCancel (c: Cancel) (x: 'r) : i64 = onCancel c (fun () -> dispose x)
 
   /// The end of a `use` scope in a task: x is disposed, and no longer on cancellation.
-  let disposed (c: Cancel) (id: int) (x: 'r) =
+  let disposed (c: Cancel) (id: i64) (x: 'r) =
     // gone when the cancellation has disposed it already
     if removeCallback c.actions id then dispose x
 

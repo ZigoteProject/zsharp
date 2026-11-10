@@ -140,7 +140,8 @@ Text for a value under a format specifier: what `$"{x:F2}"` calls. Built in for 
 abstract format : 'a -> string -> string
 ```
 
-The value as text, shaped by `spec` (`"F2"`, `"X8"`).
+The value as text, shaped by `spec` (`"F2"`, `"X8"`). A number's panics on a `spec` a hole
+couldn't have: a letter the number doesn't take, or after it anything but two digits at most.
 
 ### `Hash`
 

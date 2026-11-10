@@ -83,7 +83,7 @@ The repository's `examples/raylib` is a complete demo, a ball you push around wi
 
 **Finding headers:**
 - **Where:** the header is found next to the importing file, then on the system include path.
-- **Saved imports:** each successful import is saved in the project's `.zs-cache/cimport/`, with a copy of the header. An editor whose language server can't run clang still gets the C names, with types and the header's comments on hover.
+- **Saved imports:** each successful import is saved in the project's `.zs-cache/cimport/`, with a copy of the header (a dependency's in the project's `.zs-cache/pkgs/<name>-<hash>/cimport/`, not in the dependency). An editor whose language server can't run clang still gets the C names, with types and the header's comments on hover.
 
 ## Structs by value
 
@@ -242,6 +242,7 @@ An `extern` of the library's that the program defines (a callback's C side) is f
 - An exported function can't be generic.
 - Its parameters and result must be C types, or Z# objects as handles (below).
 - C passes strings in as `cstr`, and `String.ofCStr` copies one into a Z# string.
+- C may call the library on any number of threads at once, whether or not it gives handles: what a call allocates comes from its own thread's pool (`tests/cthreads_plain`).
 - A library has no startup, so its top-level values are constants: a table, a record or a tree of union cases of constants is a static object in it. One computed at startup is an error: `top-level value 'ages' is computed at startup, which a library doesn't have; make it a constant (a literal table, record or union of constants is one) or a function`.
 
 ### Handles

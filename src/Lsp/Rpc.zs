@@ -59,7 +59,6 @@ let rec write (j: Json) : string =
   | JNull -> "null"
   | JBool b -> if b then "true" else "false"
   | JInt n -> $"{n}"
-  | JNumber x -> $"{x}"
   | JString s -> quote s
   | JArray xs -> "[" + String.join "," (List.map write xs) + "]"
   | JObject kvs ->
@@ -67,6 +66,9 @@ let rec write (j: Json) : string =
       let (k, v) = kv
       quote k + ":" + write v
     "{" + String.join "," (List.map field kvs) + "}"
+  // a JNumber, and a JUInt (past i64's range) where the library has one: stage 0's hasn't, and
+  // the compiler builds with both
+  | number -> Json.print number
 
 /// A number.
 let num (n: int) : Json = JInt(i64 n)
@@ -96,14 +98,10 @@ let intOf (j: Json) : int =
   | JNumber x -> int x
   | _ -> 0
 
-let private windows = Native.isWindows ()
+let private windows = Path.separator = '\\'
 
-/// A file URI's full path (file:///a/b%20c → /a/b c), as the server keys documents. On Windows
-/// the URI's path starts with the drive (RFC 8089): file:///C:/a, and VS Code's file:///c%3A/a,
-/// are C:\a, the letter a capital as Windows writes it, so the two name one document.
-let toPath (uri: string) : string =
-  let file = String.startsWith "file://" uri
-  let p = if file then String.sub uri 7 (String.length uri - 7) else uri
+// text with each %XX as its byte
+let private decoded (p: string) : string =
   let out = Buffer.empty
   let n = String.length p
   let mutable i = 0
@@ -118,30 +116,50 @@ let toPath (uri: string) : string =
     else
       Buffer.push b out
       i <- i + 1
-  let path = String.ofBytes (Buffer.toArray out)
-  let letter (b: u8) = (b >= u8 65 && b <= u8 90) || (b >= u8 97 && b <= u8 122)
-  let drive = windows && String.length path >= 3 && String.byte path 0 = u8 47 && letter (String.byte path 1) && String.byte path 2 = u8 58
-  if not file then
-    path
-  else if drive then
-    Path.getFullPath (String.toUpper (String.sub path 1 1) + String.sub path 2 (String.length path - 2))
-  else
-    Path.getFullPath path
+  String.ofBytes (Buffer.toArray out)
 
-/// A path's file URI: its full path, the characters outside the unreserved ones and `/`
-/// percent-encoded (as .NET's Uri writes one). On Windows `/` between its parts, and the drive
-/// after a `/` (C:\a is file:///C:/a, RFC 8089's), as editors read one.
+let private isLetter (b: u8) = (b >= u8 65 && b <= u8 90) || (b >= u8 97 && b <= u8 122)
+
+/// A file URI's path, percent-decoded and full (file:///a/b%20c → /a/b c), so it's the key the
+/// loader looks a file up by. On Windows a drive's (file:///c%3A/p → C:\p, its letter as Windows
+/// writes it) or a share's (file://server/share/p → \\server\share\p). Elsewhere a URI naming
+/// another machine (file://server/p) names no file here: it stays as it is, and reads as none.
+let toPath (uri: string) : string =
+  if not (String.startsWith "file://" uri) then
+    decoded uri
+  else
+    let rest = String.sub uri 7 (String.length uri - 7)
+    // the authority, up to the path's first /: none, or localhost, is this machine
+    let (host, path) =
+      match String.indexOf "/" rest with
+      | Some i -> (String.sub rest 0 i, String.sub rest i (String.length rest - i))
+      | None -> (rest, "/")
+    let p = decoded path
+    if host <> "" && String.toLower host <> "localhost" then
+      if windows then Path.getFullPath ("\\\\" + decoded host + String.replace p "/" "\\") else uri
+    else if windows && String.length p >= 3 && String.byte p 0 = u8 47 && isLetter (String.byte p 1) && String.byte p 2 = u8 58 then
+      // /c:/p: the drive's path, without the / before it
+      Path.getFullPath (String.toUpper (String.sub p 1 1) + String.sub p 2 (String.length p - 2))
+    else
+      Path.getFullPath p
+
+/// A path's file URI, its characters outside the unreserved ones and `/` percent-encoded (as
+/// .NET's Uri writes one): on Windows with `/` between the parts, a drive's path after a `/`
+/// (file:///C:/p) and a share's server as the authority (file://server/share/p).
 let toUri (path: string) : string =
-  let full = Path.getFullPath path
+  // a share's path stays as it is (getFullPath reads \\server as a root's)
+  let share = windows && String.startsWith "\\\\" path
+  let full0 = if share then path else Path.getFullPath path
+  let full = if windows then String.replace full0 "\\" "/" else full0
   let out = Buffer.empty
   for i in 0 .. String.length full - 1 do
     let b = int (String.byte full i)
     let plain = (b >= 97 && b <= 122) || (b >= 65 && b <= 90) || (b >= 48 && b <= 57) || String.contains (String.ofByte (u8 b)) "/-._~!$&'()*+,;=:@"
-    if windows && b = 92 then Buffer.push "/" out
-    else if plain then Buffer.push (String.ofByte (u8 b)) out
-    else Buffer.push ("%" + String.sub hex (b / 16) 1 + String.sub hex (b % 16) 1) out
-  let drive = windows && not (String.startsWith "\\" full || String.startsWith "/" full)
-  "file://" + (if drive then "/" else "") + String.concat (Array.toList (Buffer.toArray out))
+    if plain then Buffer.push (String.ofByte (u8 b)) out else Buffer.push ("%" + String.sub hex (b / 16) 1 + String.sub hex (b % 16) 1) out
+  let encoded = String.concat (Array.toList (Buffer.toArray out))
+  if share then "file:" + encoded
+  else if String.startsWith "/" encoded then "file://" + encoded
+  else "file:///" + encoded
 
 /// One LSP message: `Content-Length: n` headers, a blank line, n bytes of JSON; None at the end
 /// of the input. `first` is a header line already read (protocol detection read it).

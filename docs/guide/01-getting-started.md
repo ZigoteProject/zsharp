@@ -34,6 +34,8 @@ builds itself with the previous release of the compiler (stage 0).
 zs build src/Main.zs --release -o zs-new && src/install.sh zs-new bin   # bin/zs, its library and runtime beside it
 ```
 
+The directory `src/install.sh` is given is the compiler's own, as `bin` or `~/.local/zs`: it replaces the `lib/` there, so it refuses a directory whose `lib/` is something else (a prefix's, as `/usr/local` or `~/.local`), and the checkout itself.
+
 **What's missing:** `zs doctor` lists what builds need and whether it's here: clang 23 or later (programs for this machine), zig (for other targets, a microcontroller and WebAssembly), libclang (`import c`), then git, QEMU, probe-rs, Node and a debugger for the commands that use them, with how to get each one that's missing.
 
 ```text

@@ -1,0 +1,11 @@
+--- zs mcp, not trusted
+  main.zs:3: provider shout not run: the project is not trusted (start the language server with --trust)
+--- zs lsp, not trusted
+  provider shout not run: the project is not trusted (start the language server with --trust)
+built: no
+--- zs lsp --trust
+built: yes
+--- zs lsp, not trusted, after it
+  the project is not trusted, so provider shout is not run; the module from the last build is used
+--- zs mcp, not trusted, after it
+  main.zs:3: warning: the project is not trusted, so provider shout is not run; the module from the last build is used [stale-input]

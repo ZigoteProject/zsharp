@@ -163,7 +163,7 @@ A slice past the end stops the program, naming it: `panic: slice 4..9 of an arra
 
 ## Fixed-size arrays
 
-`fixed<'a, N>` holds N elements inline. It's a value, copied like a record and indexed like an array, and N is a number in the type, so `fixed<u8, 16>` and `fixed<u8, 32>` differ. It's what a C struct's array field is (`uint8_t data[16]`), so `[<CLayout>]` records and `import c` use it.
+`fixed<'a, N>` holds N elements inline. It's a value, copied like a record and indexed like an array, and N is a number in the type (from 1 to 2147483647), so `fixed<u8, 16>` and `fixed<u8, 32>` differ. It's what a C struct's array field is (`uint8_t data[16]`), so `[<CLayout>]` records and `import c` use it.
 - **Elements:** `f.[i]` reads, and `f.[i] <- x` writes when `f`, or the record holding it, is `let mutable`.
 - **Making one:** `Fixed.init (fun i -> …)` and `Fixed.create x`, the length from the type expected of them, or `Fixed.ofArray` from an array of as many elements.
 - **Reading:** `Fixed.toArray`, `map`, `fold`, `iter`, and `for x in f do`. Equality, ordering, hashing and printing go element by element.

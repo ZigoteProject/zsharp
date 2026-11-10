@@ -141,7 +141,7 @@ let written (w: Writer) : span<u8> =
 /// How many more bytes fit: the most an `int` holds for a growing Writer.
 let remaining (w: Writer) : int =
   match w with
-  | Growing _ -> (1 <<< (8 * sizeof<int> -1)) - 1
+  | Growing _ -> ~~~(1 <<< (8 * sizeof<int> -1)) // all bits but the sign's: no overflow
   | Fixed m -> m.capacity - m.length
 
 /// The Writer emptied (its Buffer cleared, or its memory to be written again from the start).
@@ -250,3 +250,23 @@ let appendJsonString (s: string) (out: Writer) : Writer =
         o <- Bytes.put (String.byte hex (int (c &&& u8 15))) o
     i <- j + 1
   Bytes.put (u8 34) o
+
+/// Whether `a` and `b` hold the same bytes, in a time that depends on their lengths alone: every
+/// byte is compared, where `=` stops at the first that differs, so how long it took says how
+/// much of a forged tag was right. For secrets and authentication tags (`Hmac.verify`), as
+/// .NET's `CryptographicOperations.FixedTimeEquals`.
+///
+/// ```zsharp
+/// let tag = String.bytes "secret"
+/// println $"{Bytes.fixedTimeEquals tag tag} {Bytes.fixedTimeEquals tag (String.bytes "secreT")} {Bytes.fixedTimeEquals tag (String.bytes "secrets")}"
+/// // => true false false
+/// ```
+let fixedTimeEquals (a: span<u8>) (b: span<u8>) : bool =
+  // a length is no secret; the bytes' differences OR-ed together, no branch on any of them
+  if Span.length a <> Span.length b then
+    false
+  else
+    let mutable d = u8 0
+    for i in 0 .. Span.length a - 1 do
+      d <- d ||| (a.[i] ^^^ b.[i])
+    d = u8 0

@@ -41,6 +41,9 @@ let private membersText (m: Project.Manifest) : string =
 // failure, with the reasons shown
 let private fetched (offline: bool) (dir: string) : bool =
   match Project.findProject dir with
+  // a checkout or a vendored copy (a dependency's file built or checked): the project it's for
+  // fetched what it needs, and nothing is fetched into it, whose hash the lock checks
+  | Some(Ok m) when Option.isSome (Project.fetchedFor m.root) -> true
   | Some(Ok m) ->
     let errors = Project.fetchDeps m false offline
     for e in errors do
@@ -109,7 +112,9 @@ let build (served: bool) (args: list<string>) : int =
                 0) (membersOf m)
           List.fold max 0 codes
     | file :: _ ->
-      if not (fetched o.offline (dirOf file)) then 1 else Make.build { o with main = file; out = (if o.out = "" then Path.getFileNameWithoutExtension file else o.out) } false
+      // a package's provider built for a project (--deps-of): that project fetched its
+      // dependencies, and nothing is fetched into the package
+      if Option.isNone o.depsOf && not (fetched o.offline (dirOf file)) then 1 else Make.build { o with main = file; out = (if o.out = "" then Path.getFileNameWithoutExtension file else o.out) } false
 
 /// zs run [file.zs] … [-- arguments]: the program built and run with the arguments; its exit code.
 let run (args: list<string>) : int =

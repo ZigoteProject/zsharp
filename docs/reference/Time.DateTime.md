@@ -68,7 +68,8 @@ DateTime.ofParts : int -> int -> int -> int -> int -> int -> int -> option<DateT
 
 The moment of a civil date and time in UTC: `DateTime.ofParts 2026 11 4 8 30 0 0` (year,
 month, day, hour, minute, second, nanoseconds), or `None` when a part is out of its range
-(the day's, for its month and year; the year's, 1678 to 2262).
+(the day's, for its month and year; the year's, 1678 to 2262) or the moment is past the
+last a `DateTime` holds, 2262-04-11T23:47:16.854775807Z.
 
 ### `DateTime.parseIso`
 
@@ -80,5 +81,5 @@ The moment ISO 8601 writes: `2026-11-04T08:30:00Z`, `2026-11-04T08:30:00.25Z`, w
 `+02:00` or `-05:30` instead of `Z` (the offset taken off, the moment in UTC) or no zone at
 all (taken as UTC), without the seconds (`2026-11-04T08:30Z`), or a date alone
 (`2026-11-04`, midnight UTC); a space may stand for the `T`. `None` for anything else, a
-part out of its range included.
+part out of its range or a moment past 2262-04-11T23:47:16.854775807Z included.
 

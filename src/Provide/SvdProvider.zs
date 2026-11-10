@@ -35,16 +35,18 @@ let private numberIn (name: string) (dflt: int) (e: Xml.Element) : int =
   | Some s -> Option.defaultValue dflt (number s)
   | None -> dflt
 
-// one line of a description: the vendor's line breaks and runs of spaces collapsed
+// one line of a description: the vendor's line breaks (any control character) and runs of
+// spaces collapsed
 let private oneLine (s: string) : string =
-  let ws = List.filter (fun (w: string) -> w <> "") (String.split " " (String.replace (String.replace (String.replace s "\n" " ") "\r" " ") "\t" " "))
+  let ws = List.filter (fun (w: string) -> w <> "") (String.split " " (Names.oneLine s))
   String.join " " ws
 
 // a name's words (split at _ and anything that isn't a letter or digit) in PascalCase, each
 // word's rest in lower case: GPIOA is Gpioa, ADC_Common AdcCommon, CR1 Cr1
 let private pascal (name: string) : string =
   let n = String.length name
-  let mutable out = ""
+  // the pieces, joined once (a long name is no quadratic copy)
+  let pieces = Buffer.empty
   let mutable i = 0
   let mutable newWord = true
   while i < n do
@@ -53,12 +55,12 @@ let private pascal (name: string) : string =
     let isLetter = (b >= u8 65 && b <= u8 90) || (b >= u8 97 && b <= u8 122)
     let isDigit = b >= u8 48 && b <= u8 57
     if isLetter || isDigit then
-      out <- out + (if newWord then String.toUpper c else String.toLower c)
+      Buffer.push (if newWord then String.toUpper c else String.toLower c) pieces
       newWord <- isDigit && false
     else
       newWord <- true
     i <- i + 1
-  Names.typeName out
+  Names.typeName (String.concat (Array.toList (Buffer.toArray pieces)))
 
 // a field's name: lower case, in backticks when it isn't a name
 let private fieldName (name: string) : string = Names.fieldName (String.toLower name)
@@ -266,11 +268,12 @@ let private registerText (p: Peripheral) (enums: ref<list<Enum>>) (taken: list<s
   let fieldLines = if List.isEmpty fieldLines then [ $"value: u{bits} = u{bits} {r.reset &&& mask bits}" ] else fieldLines
   let address = p.baseAddress + r.offset
   let conv = string bits
-  List.concat [ [ $"  /// {r.description} ({r.name}, offset 0x{r.offset:x}, {r.access}, reset 0x{r.reset:x})"
+  // a comment holds the file's text on its line
+  List.concat [ [ Names.oneLine $"  /// {r.description} ({r.name}, offset 0x{r.offset:x}, {r.access}, reset 0x{r.reset:x})"
         $"  [<Bits {bits}>]"
         $"  type {typeName} ="
         "    { " + String.join "\n      " fieldLines + " }" ]
-      (if List.isEmpty skipped then [] else [ "  // left out, overlapping a field before it: " + String.join ", " skipped ])
+      (if List.isEmpty skipped then [] else [ Names.oneLine ("  // left out, overlapping a field before it: " + String.join ", " skipped) ])
       [ ""
         $"  module {typeName} ="
         $"    let private address = usize 0x{address:x}" ]
@@ -295,7 +298,10 @@ let provide (file: string) (text: string) (opts: list<string * string>) : result
     | Ok ps ->
       let chosen = if List.isEmpty only then ps else List.filter (fun (p: Peripheral) -> List.contains (String.toUpper p.name) only) ps
       let missing = List.filter (fun (n: string) -> not (List.exists (fun (p: Peripheral) -> String.toUpper p.name = n) ps)) only
+      // a field's name, in lower case, is a record field's
+      let unnamed = Names.unnamed (List.collect (fun (p: Peripheral) -> List.collect (fun (r: Register) -> List.map (fun (f: Field) -> String.toLower f.name) r.fields) p.registers) chosen)
       if not (List.isEmpty missing) then Error ("only: " + String.join ", " missing + " isn't a peripheral of " + Option.defaultValue "" (Xml.childText "name" root) + " (" + String.join ", " (List.map (fun (p: Peripheral) -> p.name) ps) + ")")
+      else if Option.isSome unnamed then Error (file + ": " + Option.defaultValue "" unnamed)
       else
         let peripheral (p: Peripheral) : list<string> =
           let enums : ref<list<Enum>> = ref []
@@ -303,12 +309,12 @@ let provide (file: string) (text: string) (opts: list<string * string>) : result
             // a register of a size the runtime has no access for is left out, named
             let (ok, odd) = List.partition (fun (r: Register) -> r.size = 32 || r.size = 8) p.registers
             let taken = List.map (fun (r: Register) -> pascal r.name) ok
-            List.concat [ (if List.isEmpty odd then [] else [ "  // left out, neither 32 nor 8 bits wide: " + String.join ", " (List.map (fun (r: Register) -> r.name) odd) ])
+            List.concat [ (if List.isEmpty odd then [] else [ Names.oneLine ("  // left out, neither 32 nor 8 bits wide: " + String.join ", " (List.map (fun (r: Register) -> r.name) odd)) ])
                 List.collect (registerText p enums taken) ok ]
           let unions =
             List.collect (fun (e: Enum) -> List.concat [ [ $"  /// A field's values ({e.name})."; $"  type {e.name} =" ]; List.map (fun (c: string) -> "    | " + c) e.cases; [ "" ] ]) enums.Value
-          List.concat [ [ $"/// {p.description} ({p.name}, base 0x{p.baseAddress:x})"
+          List.concat [ [ Names.oneLine $"/// {p.description} ({p.name}, base 0x{p.baseAddress:x})"
                 $"module {pascal p.name} =" ]
               (if List.isEmpty registers then [ "  let private baseAddress = usize 0x" + $"{p.baseAddress:x}"; "" ] else List.append unions registers) ]
-        let header = [ "// provided by svd 0.1 from " + file; "// input: " + file; "" ]
+        let header = [ Names.oneLine ("// provided by svd 0.1 from " + file); Names.oneLine ("// input: " + file); "" ]
         Ok(String.join "\n" (List.append header (List.collect peripheral chosen)))

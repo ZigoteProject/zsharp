@@ -21,7 +21,8 @@ type Writer
 ```
 
 A stream being written (`File.openWrite`, `Console.openStandardOutput`, a process's piped
-input): bytes collect in `buffer` until it's full or flushed.
+input): bytes collect in `buffer` until it's full or flushed. A pipe whose reader has gone (a
+process that has exited) is an `Error` then, not the end of the program.
 
 ## Derives and impls
 

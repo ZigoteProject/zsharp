@@ -9,10 +9,13 @@ let client;
 
 function settings() {
   const c = vscode.workspace.getConfiguration('zsharp');
-  // an empty argument list is still `zs lsp` / `zs mcp`, as in the Zed extension
+  // an empty argument list is still `zs lsp` / `zs mcp`, as in the Zed extension; --trust is
+  // added, so the servers build and run the project's own type providers, as the extension runs
+  // only in a trusted workspace (package.json's untrustedWorkspaces)
   const args = (key, dflt) => {
     const a = c.get(key);
-    return Array.isArray(a) && a.length > 0 ? a : [dflt];
+    const given = Array.isArray(a) && a.length > 0 ? a : [dflt];
+    return given.includes('--trust') ? given : [...given, '--trust'];
   };
   return {
     path: c.get('path') || 'zs',
@@ -59,7 +62,8 @@ function activate(context) {
       restart();
     }),
     // `zs mcp` for the agent. Its tools take only files inside the project, but `run` runs the
-    // program it builds with the user's full rights, unsandboxed.
+    // program it builds with the user's full rights, unsandboxed, and every tool that checks or
+    // builds runs the project's own type providers.
     vscode.lm.registerMcpServerDefinitionProvider('zsharp.mcp', {
       onDidChangeMcpServerDefinitions: changed.event,
       provideMcpServerDefinitions: () => {

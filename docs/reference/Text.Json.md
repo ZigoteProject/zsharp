@@ -49,8 +49,9 @@ The value the document holds, or what didn't fit and where:
 type Json
 ```
 
-A JSON document. A number with no `.` or exponent that fits 64 bits is a `JInt` (an id
-survives), any other a `JNumber`; an object keeps its keys in document order, duplicates too.
+A JSON document. A number with no `.` or exponent that fits 64 bits is a `JInt`, or a `JUInt`
+past `i64`'s range (an id survives), any other a `JNumber`; an object keeps its keys in
+document order, duplicates too.
 
 #### `JNull`
 
@@ -75,6 +76,14 @@ survives), any other a `JNumber`; an object keeps its keys in document order, du
 ```
 
 An integral number that fits an `i64`.
+
+#### `JUInt`
+
+```zsharp
+| JUInt of u64
+```
+
+An integral number past `i64`'s range that fits a `u64` (2^63 to 2^64 - 1).
 
 #### `JNumber`
 
@@ -300,7 +309,7 @@ An integer that fits an `i8`.
 impl ToJson<u64>
 ```
 
-An integer; above `i64`'s range, a `JNumber`.
+An integer; above `i64`'s range, a `JUInt`.
 
 ### `impl FromJson<u64>`
 
@@ -476,7 +485,9 @@ Json.print : Json -> string
 ```
 
 The document as text with no spaces: `{"a":1,"b":[true,null]}`. A `JNumber` prints as
-`string` prints an `f64`, so `JNumber 2.0` is `2`, which reads back as `JInt 2`.
+`string` prints an `f64`, so `JNumber 2.0` is `2`, which reads back as `JInt 2`; on a
+microcontroller or WebAssembly that's six significant digits (`2.5e+15`, `3e-07`), so a
+number with more reads back rounded.
 
 ### `Json.pretty`
 
@@ -503,7 +514,9 @@ Json.parse : string -> result<Json, string>
 
 The document in `text` (RFC 8259: one value, with whitespace around it), or the first
 problem as `line:column: message`, the column in bytes: `3:14: expected ',' or '}' after a
-value`. Arrays and objects nest at most 1,000 levels deep (`parseWith` sets another limit).
+value`. Arrays and objects nest at most 1,000 levels deep, 32 where `int` is 32 bits: a
+microcontroller's stack can be 4 KB, and a level takes some 64 bytes of it to parse, less
+to print or free (`parseWith` sets another limit).
 
 ### `Json.field`
 
@@ -535,7 +548,7 @@ A string's text.
 Json.number : Json -> result<f64, string>
 ```
 
-A number, a `JInt` converted.
+A number, a `JInt` or `JUInt` converted.
 
 ### `Json.int`
 
@@ -543,7 +556,7 @@ A number, a `JInt` converted.
 Json.int : Json -> result<i64, string>
 ```
 
-An integer: a `JInt`, or a `JNumber` that is integral and fits an `i64`.
+An integer: a `JInt`, or a `JUInt` or `JNumber` that fits an `i64` (the `JNumber` integral).
 
 ### `Json.bool`
 

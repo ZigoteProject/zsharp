@@ -1,0 +1,4 @@
+localhost: connected
+no.such.host.invalid: true
+100 connects cancelled, none left open: true
+ports out of range are errors: true

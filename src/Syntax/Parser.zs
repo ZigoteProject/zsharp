@@ -483,6 +483,10 @@ let private closeAngle (p: P) =
     err p "'>'"
     missing p Gt
 
+// a unit's exponent at most, written or made ((m^2)^3 is m^6), either way: no unit means more,
+// and exponents multiply as they're made, here and in the checker
+let private maxExponent = 1000000
+
 /// A unit of measure: m, m/s^2, kg m/s^2, 'u, 1 (inside <...> after a numeric type).
 let rec private measure (p: P) : Ast.SType =
   start p Tree.Measure
@@ -535,10 +539,22 @@ and private term (p: P) : list<string * bool * int> =
     if neg then
       advance p
     if peek p = Int then
-      let k = int (intOf p p.pos.Value)
+      let ki = p.pos.Value
+      let written = int (intOf p ki)
       advance p
-      let k = if neg then -k else k
-      List.map (fun (u, v, e) -> (u, v, e * k)) unitTerm
+      let fits (e: int) = e >= -maxExponent && e <= maxExponent
+      // the exponents raised are within the bound too, so e * k can't overflow
+      let raised =
+        if written >= 0 && fits written then
+          let k = if neg then -written else written
+          List.map (fun (u, v, e) -> (u, v, e * k)) unitTerm
+        else
+          []
+      if written < 0 || not (fits written) || not (List.forall (fun (_, _, e) -> fits e) raised) then
+        failAt p ki $"a unit's exponent is at most {maxExponent} either way"
+        unitTerm
+      else
+        raised
     else
       skip p "exponent"
       unitTerm
@@ -1422,7 +1438,8 @@ and private handleAhead (p: P) : bool =
   else if peek2 p = Indent then
     true
   else
-    // a `with` on the line, outside brackets and not a match's
+    // a `with` on the line, outside brackets and not a match's; a bracket closing around the
+    // `handle` ends its expression, so no handler's `with` comes after it
     let mutable i = p.pos.Value + 1
     let mutable depth = 0
     let mutable matches = 0
@@ -1434,6 +1451,10 @@ and private handleAhead (p: P) : bool =
       | LBrack
       | LBrackBar
       | LBrace -> depth <- depth + 1
+      | RParen
+      | RBrack
+      | BarRBrack
+      | RBrace when depth = 0 -> go <- false
       | RParen
       | RBrack
       | BarRBrack
@@ -2159,7 +2180,12 @@ and private primary (p: P) : Ast.Expr =
       | Error e ->
         failAt p ti e
         plain (Ast.CharLit 0)
-    | Float -> measured p at (plain (Ast.FloatLit(Literal.floatValue (textOf p ti))))
+    | Float ->
+      match Literal.floatValue (textOf p ti) with
+      | Ok f -> measured p at (plain (Ast.FloatLit f))
+      | Error e ->
+        failAt p ti e
+        measured p at (plain (Ast.FloatLit 0.0))
     | Str ->
       // b"…": the string's bytes, a span<u8> of its constant (no copy, nothing at startup)
       let text = textOf p ti
@@ -2342,7 +2368,11 @@ and private hole (p: P) (ti: int) (text: string) (from: int) : Ast.Expr =
     match width with
     | Some w ->
       match (Int.parse (String.trim w) : option<int>) with
-      | Some n -> Some n
+      | Some n when n >= -1000000 && n <= 1000000 -> Some n
+      | Some _ ->
+        // past it, no string is meant (and -n of the lowest int overflows)
+        failAt p ti ("a hole's width is at most a million characters either way, not '," + w + "'")
+        None
       | None ->
         failAt p ti ("a hole's width is a number: {x,10}, or {x,-10} to pad on the right, not '," + w + "' (a tuple in a hole is written {(a, b)})")
         None

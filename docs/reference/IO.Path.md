@@ -82,7 +82,9 @@ Path.getFullPath : string -> string
 
 The path made absolute against the working directory, with `.`, `..` and repeated
 separators worked out on the text (symbolic links aren't followed), as .NET's
-`Path.GetFullPath`.
+`Path.GetFullPath`. On Windows a share (`\\server\share`) is a root, which `..` doesn't
+climb above; `D:x` is from the working directory when that's on drive D, else from `D:\`;
+and a `\\?\` path is left as it is.
 
 ### `Path.getRelativePath`
 

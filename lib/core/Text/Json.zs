@@ -3,8 +3,9 @@
 /// traits, which `[<Derive(Json)>]` writes for a record or a union. Every target has it.
 namespace Text
 
-/// A JSON document. A number with no `.` or exponent that fits 64 bits is a `JInt` (an id
-/// survives), any other a `JNumber`; an object keeps its keys in document order, duplicates too.
+/// A JSON document. A number with no `.` or exponent that fits 64 bits is a `JInt`, or a `JUInt`
+/// past `i64`'s range (an id survives), any other a `JNumber`; an object keeps its keys in
+/// document order, duplicates too.
 type Json =
   /// `null`.
   | JNull
@@ -12,6 +13,8 @@ type Json =
   | JBool of bool
   /// An integral number that fits an `i64`.
   | JInt of i64
+  /// An integral number past `i64`'s range that fits a `u64` (2^63 to 2^64 - 1).
+  | JUInt of u64
   /// Any other number.
   | JNumber of f64
   /// A string, its escapes decoded.
@@ -54,25 +57,33 @@ module Json =
     | _ ->
       "\\u00" + String.sub "0123456789abcdef" (b / 16) 1 + String.sub "0123456789abcdef" (b % 16) 1
 
-  // `s` as a string literal: `"`, `\` and controls escaped, everything else as its UTF-8
+  // `s` as a string literal: `"`, `\` and controls escaped, everything else as its UTF-8; the
+  // pieces (backwards) joined once at the end, as a string added to at each escape is copied
+  // whole each time
   let private quote (s: string) =
     let n = String.length s
-    let mutable out = "\""
+    let mutable pieces = [ "\"" ]
     let mutable from = 0 // the first byte not copied yet
 
     for i in 0 .. n - 1 do
       let b = int (String.byte s i)
       if b = 34 || b = 92 || b < 32 then
-        out <- out + String.sub s from (i - from) + escape b
+        // the run before the escape (none between two escapes), then the escape
+        let before = if i > from then String.sub s from (i - from) :: pieces else pieces
+        pieces <- escape b :: before
         from <- i + 1
 
-    out + String.sub s from (n - from) + "\""
+    if from = 0 then
+      "\"" + s + "\""
+    else
+      String.concat (List.rev ("\"" :: String.sub s from (n - from) :: pieces))
 
   let rec private compact (j: Json) : string =
     match j with
     | JNull -> "null"
     | JBool b -> if b then "true" else "false"
     | JInt n -> string n
+    | JUInt n -> string n
     | JNumber x -> if x - x = 0.0 then string x else "null" // JSON has no spelling for NaN or infinity
     | JString s -> quote s
     | JArray xs -> "[" + String.join "," (List.map compact xs) + "]"
@@ -80,7 +91,9 @@ module Json =
       "{" + String.join "," (List.map (fun (k, v) -> quote k + ":" + compact v) kvs) + "}"
 
   /// The document as text with no spaces: `{"a":1,"b":[true,null]}`. A `JNumber` prints as
-  /// `string` prints an `f64`, so `JNumber 2.0` is `2`, which reads back as `JInt 2`.
+  /// `string` prints an `f64`, so `JNumber 2.0` is `2`, which reads back as `JInt 2`; on a
+  /// microcontroller or WebAssembly that's six significant digits (`2.5e+15`, `3e-07`), so a
+  /// number with more reads back rounded.
   let print (j: Json) = compact j
 
   let rec private indented (indent: string) (j: Json) : string =
@@ -170,16 +183,25 @@ module Json =
             let text = String.sub s start (afterExp - start)
             let intDigits = afterInt - i
 
-            // an integral literal that fits 64 bits: 19 digits at most, compared as text at 19
+            // an integral literal that fits 64 bits: an i64's 19 digits at most, compared as text
+            // at 19; past it, unsigned, a u64's 20 at most, compared at 20
             let limit = if i > start then "9223372036854775808" else "9223372036854775807"
             let fits =
               afterExp = afterInt && (intDigits < 19 || (intDigits = 19 && String.sub s i 19 <= limit))
+            let u64Max = "18446744073709551615"
+            let fitsU64 =
+              afterExp = afterInt && i = start && (intDigits = 19 || (intDigits = 20 && String.sub s i 20 <= u64Max))
 
             if fits then
               let mutable n = i64 0
               for k in i .. afterInt - 1 do
                 n <- n * i64 10 - i64 (byteAt s k - 48) // negative, so i64's lowest fits too
               Ok (JInt (if i > start then n else -n), afterExp)
+            else if fitsU64 then
+              let mutable n = u64 0
+              for k in i .. afterInt - 1 do
+                n <- n * u64 10 + u64 (byteAt s k - 48)
+              Ok (JUInt n, afterExp)
             else
               match String.parseFloat text with
               | Some x -> Ok (JNumber x, afterExp)
@@ -200,18 +222,19 @@ module Json =
     v
 
   // a string's text after its opening quote: one copy of each run without escapes, the escapes
-  // decoded, UTF-8 checked
-  let rec private text (s: string) (i: int) (acc: string) (from: int) : result<string * int, string> =
+  // decoded, UTF-8 checked; the pieces (backwards in acc) joined once at the end, as a string
+  // added to at each escape is copied whole each time
+  let rec private text (s: string) (i: int) (acc: list<string>) (from: int) : result<string * int, string> =
     let b = byteAt s i
 
     if b = 34 then
-      Ok (acc + String.sub s from (i - from), i + 1)
+      Ok (String.concat (List.rev (String.sub s from (i - from) :: acc)), i + 1)
     else if b < 0 then
       fail s i "a string that doesn't end"
     else if b < 32 then
       fail s i "a control character in a string (escape it: \\n, \\t, \\u0001)"
     else if b = 92 then
-      let acc = acc + String.sub s from (i - from)
+      let acc = if i > from then String.sub s from (i - from) :: acc else acc
       let e = byteAt s (i + 1)
       let simple =
         match e with
@@ -226,7 +249,7 @@ module Json =
         | _ -> ""
 
       if simple <> "" then
-        text s (i + 2) (acc + simple) (i + 2)
+        text s (i + 2) (simple :: acc) (i + 2)
       else if e = 117 then
         let u = hex4 s (i + 2)
         if u < 0 then
@@ -236,13 +259,13 @@ module Json =
           let lo = if byteAt s (i + 6) = 92 && byteAt s (i + 7) = 117 then hex4 s (i + 8) else -1
           if lo >= 0xDC00 && lo <= 0xDFFF then
             let c = 0x10000 + ((u - 0xD800) <<< 10) + (lo - 0xDC00)
-            text s (i + 12) (acc + string (char c)) (i + 12)
+            text s (i + 12) (string (char c) :: acc) (i + 12)
           else
             fail s i "a lone surrogate (\\uD800 to \\uDBFF needs a \\uDC00 to \\uDFFF after it)"
         else if u >= 0xDC00 && u <= 0xDFFF then
           fail s i "a lone surrogate (\\uDC00 to \\uDFFF follows a \\uD800 to \\uDBFF)"
         else
-          text s (i + 6) (acc + string (char u)) (i + 6)
+          text s (i + 6) (string (char u) :: acc) (i + 6)
       else
         fail s i "an unknown escape (the escapes are \\\" \\\\ \\/ \\b \\f \\n \\r \\t \\uXXXX)"
     else if b < 0x80 then
@@ -272,7 +295,7 @@ module Json =
     | 123 -> objectAt s (i + 1) depth limit
     | 91 -> arrayAt s (i + 1) depth limit
     | 34 ->
-      let (t, j) = (text s (i + 1) "" (i + 1))?
+      let (t, j) = (text s (i + 1) [] (i + 1))?
       Ok (JString t, j)
     | 116 -> literal s i "true" (JBool true)
     | 102 -> literal s i "false" (JBool false)
@@ -294,7 +317,7 @@ module Json =
     if byteAt s i <> 34 then
       fail s i "expected a key (a string)"
     else
-      let (key, j) = (text s (i + 1) "" (i + 1))?
+      let (key, j) = (text s (i + 1) [] (i + 1))?
       let j = skip s j
 
       if byteAt s j <> 58 then
@@ -332,8 +355,10 @@ module Json =
 
   /// The document in `text` (RFC 8259: one value, with whitespace around it), or the first
   /// problem as `line:column: message`, the column in bytes: `3:14: expected ',' or '}' after a
-  /// value`. Arrays and objects nest at most 1,000 levels deep (`parseWith` sets another limit).
-  let parse (text: string) = parseWith { depth = 1000 } text
+  /// value`. Arrays and objects nest at most 1,000 levels deep, 32 where `int` is 32 bits: a
+  /// microcontroller's stack can be 4 KB, and a level takes some 64 bytes of it to parse, less
+  /// to print or free (`parseWith` sets another limit).
+  let parse (text: string) = parseWith { depth = (if sizeof<int> = 4 then 32 else 1000) } text
 
   // ---- reading
 
@@ -378,17 +403,19 @@ module Json =
     | JString s -> Ok s
     | _ -> Error $"expected a string, got {got j}"
 
-  /// A number, a `JInt` converted.
+  /// A number, a `JInt` or `JUInt` converted.
   let number (j: Json) : result<f64, string> =
     match j with
     | JNumber x -> Ok x
     | JInt n -> Ok (f64 n)
+    | JUInt n -> Ok (f64 n)
     | _ -> Error $"expected a number, got {got j}"
 
-  /// An integer: a `JInt`, or a `JNumber` that is integral and fits an `i64`.
+  /// An integer: a `JInt`, or a `JUInt` or `JNumber` that fits an `i64` (the `JNumber` integral).
   let int (j: Json) : result<i64, string> =
     match j with
     | JInt n -> Ok n
+    | JUInt n when n <= u64 9223372036854775807 -> Ok (i64 n)
     | JNumber x when x - x = 0.0 && f64 (i64 x) = x && x < 9.2e18 && x > -9.2e18 -> Ok (i64 x)
     | _ -> Error $"expected an integer, got {got j}"
 
@@ -537,15 +564,16 @@ impl FromJson<i8> =
     | Ok _ -> Error $"expected an integer that fits i8, got {Json.print j}"
     | Error e -> Error e
 
-/// An integer; above `i64`'s range, a `JNumber`.
+/// An integer; above `i64`'s range, a `JUInt`.
 impl ToJson<u64> =
-  let toJson (n: u64) = if n > u64 9223372036854775807 then JNumber (f64 n) else JInt (i64 n)
+  let toJson (n: u64) = if n > u64 9223372036854775807 then JUInt n else JInt (i64 n)
 
 /// An integer that fits a `u64`.
 impl FromJson<u64> =
   let fromJson (j: Json) : result<u64, string> =
     match j with
     | JInt n when n >= i64 0 -> Ok (u64 n)
+    | JUInt n -> Ok n
     | JNumber x when x >= 0.0 && x < 1.8446744073709552e19 && f64 (u64 x) = x -> Ok (u64 x)
     | _ -> Error $"expected an integer that fits u64, got {Json.print j}"
 

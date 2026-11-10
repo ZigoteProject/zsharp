@@ -110,7 +110,9 @@ Inside an `unsafe` expression, and nowhere else, a program may:
   `add`, `diff`, `alloc`, `free`, `cast`; and make a span over raw memory (`Span.ofPtr`);
 - call a `fnptr<…>` value;
 - read a `[<CLayout>]` union's case ([§11.3](#113-layout));
-- call a function marked `[<Unsafe>]`.
+- call a function marked `[<Unsafe>]`;
+- outside the library, call one of the runtime's hooks (`Native.*`), which the library's
+  functions wrap.
 
 `unsafe` covers the text of its expression. It does not make the enclosing function unsafe to
 call: `[<Unsafe>]` on a function does that, for a function that trusts its arguments, and

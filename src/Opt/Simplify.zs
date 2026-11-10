@@ -410,6 +410,9 @@ let run (types: Map<string, TypeInfo>) (funs: list<MFun>) : list<MFun> =
       match a.k with
       | CLocal y -> if Set.contains y mutables.Value then None else Some y
       | _ -> None
+    // what x is known to be: nothing of a mutable, which an assignment can change after the test
+    // that found it out
+    let learn (x: string) (kn: Known) (env: Map<string, Known>) : Map<string, Known> = if Set.contains x mutables.Value then env else Map.add x kn env
     // each rewrite that builds more code to simplify uses fuel, so the pass always ends
     let fuel = ref (100 + 4 * size f.body)
     let burn () =
@@ -459,8 +462,8 @@ let run (types: Map<string, TypeInfo>) (funs: list<MFun>) : list<MFun> =
         | CBool b -> simp env (if b then t else f)
         | CLocal x when Map.containsKey x env -> matchOf env c asMatch e.ty
         | CLocal x ->
-          let t2 = simp (Map.add x (KLit(CPBool true)) env) t
-          { e with k = CIf(c, t2, simp (Map.add x (KLit(CPBool false)) env) f) }
+          let t2 = simp (learn x (KLit(CPBool true)) env) t
+          { e with k = CIf(c, t2, simp (learn x (KLit(CPBool false)) env) f) }
         | _ ->
           match (if fuel.Value > 0 then pushed env c asMatch true else None) with
           | Some r when burn () -> simp env r
@@ -477,6 +480,11 @@ let run (types: Map<string, TypeInfo>) (funs: list<MFun>) : list<MFun> =
         let a = simp env a0
         let b = simp env b0
         if pureValue a then b else { e with k = CSeq(a, b) }
+      | CLetMut(x, _, _) ->
+        // a mutable of a copy (case of case and inlining name a copy's own afresh) known as one
+        // before its scope is simplified
+        mutables.Value <- Set.add x mutables.Value
+        foldConst { e with k = mapChildren (simp env) e.k }
       | k -> foldConst { e with k = mapChildren (simp env) k }
     and simpLet (env: Map<string, Known>) (e: CExpr) (x: string) (w0: CExpr) (body: CExpr) : CExpr =
       let w = simp env w0
@@ -530,14 +538,14 @@ let run (types: Map<string, TypeInfo>) (funs: list<MFun>) : list<MFun> =
           | _ ->
             let env2 =
               match w.k with
-              | CCtor(_, tag, args) -> Map.add x (KCtor(tag, List.map immutable args)) env
+              | CCtor(_, tag, args) -> learn x (KCtor(tag, List.map immutable args)) env
               | CLocal y ->
                 match Map.tryFind y env with
-                | Some kn -> Map.add x kn env
+                | Some kn -> learn x kn env
                 | None -> env
               | _ ->
                 match literal w with
-                | Some l -> Map.add x (KLit l) env
+                | Some l -> learn x (KLit l) env
                 | None -> env
             let body2 = simp env2 body
             // the body may have become such a match only now
@@ -576,14 +584,14 @@ let run (types: Map<string, TypeInfo>) (funs: list<MFun>) : list<MFun> =
     and plain (env: Map<string, Known>) (s: CExpr) (cases: list<CPat * option<CExpr> * CExpr>) (ty: Ty) : CExpr =
       let caseEnv (p: CPat) : Map<string, Known> =
         match (s.k, p) with
-        | (CLocal x, CPCtor(_, tag, ps)) -> Map.add x (KCtor(tag, List.map patVarName ps)) env
-        | (CLocal x, _) -> if isLiteralPat p && Opt.Literals.patternFits types s.ty p then Map.add x (KLit p) env else env
+        | (CLocal x, CPCtor(_, tag, ps)) -> learn x (KCtor(tag, List.map patVarName ps)) env
+        | (CLocal x, _) -> if isLiteralPat p && Opt.Literals.patternFits types s.ty p then learn x (KLit p) env else env
         | _ -> env
       match cases with
       | [ (CPBool true, None, t); (CPWild, None, f) ] ->
         let (envT, envF) =
           match s.k with
-          | CLocal x -> (Map.add x (KLit(CPBool true)) env, Map.add x (KLit(CPBool false)) env)
+          | CLocal x -> (learn x (KLit(CPBool true)) env, learn x (KLit(CPBool false)) env)
           | _ -> (env, env)
         let t2 = simp envT t
         mk (CIf(s, t2, simp envF f)) ty

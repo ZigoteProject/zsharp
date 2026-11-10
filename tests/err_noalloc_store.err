@@ -1,0 +1,1 @@
+tests/err_noalloc_store.zs:4: error: put is [<NoAlloc>], but put writes the array 'a', which is copied first when anything else holds it

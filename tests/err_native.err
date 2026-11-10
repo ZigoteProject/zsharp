@@ -1,0 +1,4 @@
+tests/err_native.zs:6:13: error: 'Native.parFork' is the library's, a runtime hook nothing checks the arguments of: use it inside `unsafe`
+tests/err_native.zs:10:17: error: 'Native.loopFulfill' is the library's, a runtime hook nothing checks the arguments of: use it inside `unsafe`
+tests/err_native.zs:12:17: error: 'Native.isWindows' is the library's, a runtime hook nothing checks the arguments of: use it inside `unsafe`
+3 errors

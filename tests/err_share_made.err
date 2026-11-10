@@ -1,0 +1,6 @@
+tests/err_share_made.zs:13:3: error: this function crosses threads, but it's what a call returns, which may capture what can't be shared: declare that function's result share<int -> unit>
+tests/err_share_made.zs:17:3: error: this function crosses threads, but it captures 'add', a function that may capture what can't be shared: declare it share<int -> unit>
+tests/err_share_made.zs:23:3: error: this function crosses threads, but it's what a call returns, which may capture what can't be shared: declare that function's result share<int -> unit>
+tests/err_share_made.zs:26:3: error: this function crosses threads, but it captures a value it's given : ref<string>, which can't be shared between threads; share state through Atomic, Mutex or Channel, or return a result per job
+tests/err_share_made.zs:29:3: error: this function crosses threads, but it's a field's value, which may capture what can't be shared: declare the field share<int -> unit>
+5 errors
