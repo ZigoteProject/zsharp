@@ -27,4 +27,16 @@ let j: i64 = -0x8000_0000_0000_0000
 let k: u64 = 0xFFFF_FFFF_FFFF_FFFF
 let l: int = 0xcbf2_9ce4_8422_2325
 
+// a literal in a generic function: the function is of the types that hold it
+let add300 x = x + 300
+let big: u16 = add300 1
+let small: u8 = add300 1
+
+// a constant's literal at each use: decimal is a value, a radix literal its bits
+let two = 200
+let mask = 0xF0
+let n: i8 = two
+let o: i8 = mask
+let p: u8 = two
+
 let main () = ()

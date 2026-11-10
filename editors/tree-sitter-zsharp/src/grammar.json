@@ -3085,13 +3085,18 @@
         ]
       }
     },
-    "break_expression": {
-      "type": "STRING",
-      "value": "break"
-    },
-    "continue_expression": {
-      "type": "STRING",
-      "value": "continue"
+    "leave_expression": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "break"
+        },
+        {
+          "type": "STRING",
+          "value": "continue"
+        }
+      ]
     },
     "let_binding": {
       "type": "SEQ",
@@ -3367,11 +3372,7 @@
         },
         {
           "type": "SYMBOL",
-          "name": "break_expression"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "continue_expression"
+          "name": "leave_expression"
         },
         {
           "type": "SYMBOL",

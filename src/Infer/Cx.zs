@@ -673,18 +673,66 @@ let warnAt (cx: Cx) (kind: string) (at: Span) (msg: string) =
   if not (Set.contains kind cx.silenced.Value) then
     Buffer.push (warning kind at msg) cx.diagnostics
 
-/// An integer literal of a type, at a token (below 0: none): its range is checked at the
-/// declaration's end. A decimal literal is a value of its type; one written in a radix may fill
-/// its type's bits instead (0xFF is an i8's -1), and so may one written elsewhere (a constant's
-/// body at a use), whose text isn't at hand to say which it is.
-let literal (cx: Cx) (ty: Ty) (n: i64) (tok: int) (negated: bool) =
+// whether the token is an integer literal written in a radix (0x, 0b, 0o): a letter after its
+// first digit (a decimal literal has digits and _, which is 95)
+let private radixAt (cx: Cx) (tok: int) : bool =
   let f = cx.file.Value
-  let here = not cx.foreign.Value && tok >= 0 && tok < Array.length f.tokens
-  // 0x, 0b, 0o: a letter after the first digit (a decimal literal has digits and _, which is 95)
-  let second = if here && f.tokens.[tok].length > 2 then int (String.byte f.source.text (f.tokens.[tok].offset + 1)) else 0
-  let radix = second >= 65 && second <> 95
-  let at = if here then spanOf cx tok false else spanOf cx cx.currentStmt.Value true
-  Buffer.push (ty, n, not negated && (radix || not here), at) cx.literals
+  if tok < 0 || tok >= Array.length f.tokens || f.tokens.[tok].length < 3 then
+    false
+  else
+    let second = int (String.byte f.source.text (f.tokens.[tok].offset + 1))
+    second >= 65 && second <> 95
+
+/// e as it's kept to be checked elsewhere (a constant's body at each use, a field's default),
+/// where its text isn't at hand: a literal written in a radix is marked, its place -2.
+let rec keptElsewhere (cx: Cx) (e: Expr) : Expr =
+  match e.e with
+  | Lit _ when radixAt cx e.at -> { e with at = -2 }
+  | _ -> mapExpr (keptElsewhere cx) e
+
+/// An integer type's least and greatest values, as i64s (u64's greatest is past i64's: no
+/// literal's value reaches it), and the greatest its bits hold unsigned.
+let intRange (word: int) (u: string) : i64 * i64 * i64 =
+  let bits =
+    match u with
+    | "i8" | "u8" -> 8
+    | "i16" | "u16" -> 16
+    | "i32" | "u32" -> 32
+    | "i64" | "u64" -> 64
+    | _ -> word * 8
+  let smax: i64 =
+    match bits with
+    | 8 -> 127
+    | 16 -> 32767
+    | 32 -> 2147483647
+    | _ -> 9223372036854775807
+  let umax: i64 =
+    match bits with
+    | 8 -> 255
+    | 16 -> 65535
+    | 32 -> 4294967295
+    | _ -> 9223372036854775807
+  if Set.contains u unsigned then (i64 0, umax, umax) else (i64 0 - smax - i64 1, smax, umax)
+
+/// Whether an integer type holds a literal's value; bits: or its bits do (a radix literal's:
+/// 0xFF is an i8's -1; a desugaring's: ~~~x is x ^^^ -1).
+let holds (word: int) (n: i64) (bits: bool) (u: string) : bool =
+  let (lo, hi, umax) = intRange word u
+  let wide = umax = i64 9223372036854775807
+  (n >= lo && n <= hi) || (bits && (wide || (n >= i64 0 - umax / i64 2 - i64 1 && n <= umax)))
+
+/// An integer literal of a type, at a token: its range is checked at the declaration's end, and
+/// a type variable it's left at is narrowed to the types that hold it (`generalize`). A decimal
+/// literal is a value of its type; one written in a radix may fill its type's bits instead, and
+/// so may one a desugaring made (no token). In an expression written elsewhere the token says
+/// which it was: -2 a radix literal's (`keptElsewhere`, in a constant's own declaration too), any
+/// other a decimal one's.
+let literal (cx: Cx) (ty: Ty) (n: i64) (tok: int) (negated: bool) =
+  let foreign = cx.foreign.Value
+  let radix = tok = -2 || (not foreign && radixAt cx tok)
+  let bits = not negated && (radix || tok = -1)
+  let at = if foreign || tok < 0 then spanOf cx cx.currentStmt.Value true else spanOf cx tok false
+  Buffer.push (ty, n, bits, at) cx.literals
 
 /// What a declaration's check may change of the context: put back when it fails, and when one of
 /// its statements does.
@@ -1082,7 +1130,19 @@ let expect (cx: Cx) (what: string) (expected: Ty) (actual: Ty) : unit / Fails =
         | _ ->
           let e = show cx expected
           let a = show cx actual
-          if Set.contains e nums && Set.contains a nums then
+          // an integer type against a variable narrowed by a literal (`generalize`)
+          let outside (t: Ty) (other: Ty) =
+            match (prune cx.v t, prune cx.v other) with
+            | (TCon(u, []), TVar i) when Set.contains u ints ->
+              match (kindOf cx.v i).allowed with
+              | Some ts -> not (Set.contains u ts) && Set.contains "i64" ts
+              | None -> false
+            | _ -> false
+          if outside expected actual then
+            $": an integer literal used at this type is outside {e}'s range"
+          else if outside actual expected then
+            $": an integer literal used at this type is outside {a}'s range"
+          else if Set.contains e nums && Set.contains a nums then
             $": numbers don't convert on their own; write {e} x"
           else if e = "string" && Set.contains a nums then
             ": interpolate it, $\"{x}\""
@@ -1128,6 +1188,16 @@ let rec spine (cx: Cx) (t: Ty) : list<Ty> =
 /// (Koka's close and open).
 let generalize (cx: Cx) (t: Ty) : list<Kind> =
   let v = cx.v
+  // a literal whose type is still a variable: the variable is of the integer types that hold
+  // it, so a use of the function at one that doesn't is a mismatch at the use
+  for (lt, n, bits, _) in Array.toList (Buffer.toArray cx.literals) do
+    match prune v lt with
+    | TVar i when isFree v i ->
+      let k = kindOf v i
+      match k.allowed with
+      | Some ts -> setKind v i { k with allowed = Some(Set.ofList (List.filter (fun u -> not (Set.contains u ints) || holds cx.word n bits u) (Set.toList ts))) }
+      | None -> ()
+    | _ -> ()
   let rec count (i: int) (t: Ty) : int =
     match prune v t with
     | TVar j -> if i = j then 1 else 0

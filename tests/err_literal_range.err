@@ -1,9 +1,11 @@
 tests/err_literal_range.zs:3:13: error: 256 is outside u8's range, 0 to 255
 tests/err_literal_range.zs:4:14: error: -129 is outside i8's range, -128 to 127
 tests/err_literal_range.zs:5:13: error: 128 is outside i8's range, -128 to 127
-tests/err_literal_range.zs:6:14: error: 65536 is outside u16's range, 0 to 65535
+tests/err_literal_range.zs:6: error: 65536 is outside u16's range, 0 to 65535
 tests/err_literal_range.zs:7:14: error: 4294967296 is outside i32's range, -2147483648 to 2147483647
 tests/err_literal_range.zs:11:5: error: 300 is outside u8's range, 0 to 255
 tests/err_literal_range.zs:16:6: error: -32769 is outside i16's range, -32768 to 32767
 tests/err_literal_range.zs:20: error: 300 is outside u8's range, 0 to 255
-8 errors
+tests/err_literal_range.zs:33: error: annotated expression: expected u8, got int: an integer literal used at this type is outside u8's range
+tests/err_literal_range.zs:38: error: 200 is outside i8's range, -128 to 127
+10 errors

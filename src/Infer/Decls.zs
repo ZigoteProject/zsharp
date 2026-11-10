@@ -967,40 +967,15 @@ let private warnDiscarded (cx: Cx) =
     | None -> ()
   Buffer.clear cx.discarded
 
-// an integer type's least and greatest values, as i64s (u64's greatest is past i64's: no
-// literal's value reaches it), and the greatest its bits hold unsigned
-let private intRange (word: int) (u: string) : i64 * i64 * i64 =
-  let bits =
-    match u with
-    | "i8" | "u8" -> 8
-    | "i16" | "u16" -> 16
-    | "i32" | "u32" -> 32
-    | "i64" | "u64" -> 64
-    | _ -> word * 8
-  let smax: i64 =
-    match bits with
-    | 8 -> 127
-    | 16 -> 32767
-    | 32 -> 2147483647
-    | _ -> 9223372036854775807
-  let umax: i64 =
-    match bits with
-    | 8 -> 255
-    | 16 -> 65535
-    | 32 -> 4294967295
-    | _ -> 9223372036854775807
-  if Set.contains u unsigned then (i64 0, umax, umax) else (i64 0 - smax - i64 1, smax, umax)
-
-// the declaration's integer literals against their types' ranges, now the types are settled. One
-// whose type is still a variable (a generic function's, or one left to be int) isn't checked here.
+// the declaration's integer literals against their types' ranges, now the types are settled (one
+// whose type is still a variable was narrowed to the types that hold it: Cx.generalize).
 let private checkLiterals (cx: Cx) =
   for (t, n, bits, at) in Array.toList (Buffer.toArray cx.literals) do
     match prune cx.v t with
     | TCon(u, _) when Set.contains u ints ->
       let (lo, hi, umax) = intRange cx.word u
       let wide = umax = i64 9223372036854775807
-      // its bits: a radix literal's (0xFF), or a desugaring's (~~~x is x ^^^ -1)
-      if not (n >= lo && n <= hi) && not (bits && (wide || (n >= i64 0 - umax / i64 2 - i64 1 && n <= umax))) then
+      if not (holds cx.word n bits u) then
         let top = if wide && lo = i64 0 then "18446744073709551615" else $"{hi}"
         let shown = if bits && n < i64 0 then $"{u64 n}" else $"{n}"
         Buffer.push (error at $"{shown} is outside {u}'s range, {lo} to {top}") cx.diagnostics
@@ -1062,7 +1037,7 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
       cx.types.Value <- Map.add name { npars = List.length tps; def = RecordDef fs; bits = None } cx.types.Value
       Buffer.push name cx.records
       fieldUses cx name (List.map (fun (f: RecordField) -> (f.name, f.fieldAt)) fields) true
-      cx.recordDefaults.Value <- Map.add name (List.map (fun (f: RecordField) -> f.default) fields) cx.recordDefaults.Value
+      cx.recordDefaults.Value <- Map.add name (List.map (fun (f: RecordField) -> Option.map (keptElsewhere cx) f.default) fields) cx.recordDefaults.Value
       cx.recordScopes.Value <- Map.add name (cx.currentModule.Value, cx.opens.Value) cx.recordScopes.Value
     | UnionTy cases ->
       let caseOf (c: Case) = (qualify cx c.case, List.map (fun (_, st) -> tt st) c.fields)
@@ -1335,7 +1310,7 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
     if isConstant cx body && not (oneBuffer ()) then
       // checked here, so errors point at the definition; then inlined at each use, with its names
       // resolved here (a local at the use site can't capture them)
-      let qbody = qualifyNames cx body
+      let qbody = keptElsewhere cx (qualifyNames cx body)
       let outer = cx.inConst.Value
       cx.inConst.Value <- q
       let c = Exprs.infer cx Map.empty 0 qbody

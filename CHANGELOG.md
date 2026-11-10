@@ -10,7 +10,9 @@ The specification's three defects (ROADMAP's track G, items 1 to 3). What a 0.7 
 - An integer literal outside its type's range is an error at the literal, where it was
   truncated (`let a : u8 = 300` was `44`); a pattern's literal alike. A literal in a radix may
   still fill its type's bits (`let m : i8 = 0xFF`). Write the value meant, or a wider type.
-  Not checked: a literal whose type is a generic function's variable (`tests/err_literal_range.zs`).
+  A generic function with a literal is of the types that hold it (`let f x = x + 300` isn't
+  a function on `u8`), and a constant's literal is checked at each use
+  (`tests/err_literal_range.zs`).
 - `break`, `continue` and `return` ([proposal 0029](docs/proposals/0029-leaving-a-loop.md)):
   a loop and a function left early, with `use` values disposed on the way; `?` as a statement
   of a loop's body returns its failure from the function (it was an error there). The three

@@ -219,9 +219,10 @@ with `/ <>`.
 - An integer literal outside its type's range is an error at the literal: `let a : u8 = 256`,
   `let b : i8 = -129`, and a pattern's literal alike. A decimal literal is a value of its
   type; a literal in another radix may fill its type's bits instead (`0xFF` is an `i8`'s `-1`).
-  The check is made where the declaration settles the literal's type: a literal whose type is
-  a generic function's variable is not checked, and a constant's literal at a use is checked
-  by its bits.
+  A literal whose type stays a variable narrows it to the integer types that hold the
+  literal: `let f x = x + 300` is a function of those types, a use of it at `u8` is a type
+  error at the use, and a literal left without a type is an `int`, or an `i64` where an `int`
+  doesn't hold it. A constant's literal is checked at each use, at the type the use gives it.
 
 ## 3.10 Inference
 

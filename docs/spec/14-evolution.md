@@ -45,7 +45,6 @@ awaiting a proposal.
 | **Named handlers, `mask`** | deferred until a program needs them (proposal 0002) | Not designed. Today an operation always goes to the innermost handler of its effect |
 | **Operations polymorphic in their parameters** | not built (proposal 0002) | Today an operation's own type variable may occur in its result only ([§8.1](08-effects.md#81-declaring-an-effect)) |
 | **Fixed point on vectors**; C's view of a one-case union | planned (proposal 0015) | Library and ABI: SIMD arithmetic for `q7`, `q15`, `q31`; an untagged one-case union crossing to C as its field ([§11.1](11-low-level.md#111-c-interop)) |
-| **Integer literal range errors** | a defect to fix | [§3.9](03-types.md#39-literals) |
 | **`testTask`**, properties of curried parameters, more `Arbitrary` impls | planned (proposals 0009, 0010) | Library only |
 
 ### Targets
@@ -81,7 +80,6 @@ Where the reference implementation at 0.7 differs from this document or from
 
 | Area | This document | The implementation at 0.7 |
 |---|---|---|
-| Integer literals ([§3.9](03-types.md#39-literals)) | a literal outside its type's range is an error | not checked where the type is a generic function's variable (`let f x = x + 300` at `u8`) |
 | `use` and stops ([§8.4](08-effects.md#84-handlers)) | every abandoned `use` is disposed | not for a kept resumption never called, nor for a `use` in a `task { }` body |
 | The `cycle` warning ([§10.4](10-execution.md#104-lifetime)) | best effort | cycles through closures and `dyn` values are not detected |
 | `[<Section>]` ([§11.4](11-low-level.md#114-bare-metal)) | places the storage in the named section | on macOS and Windows the name is dropped and the alignment kept |

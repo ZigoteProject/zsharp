@@ -410,7 +410,7 @@ DESIGN.md, the guide and the source.
 **Design:** none yet. [Chapter 14](docs/spec/14-evolution.md) of the specification lists what
 the syntax reserves and the compiler's known deviations.
 - **Defects** (no proposal needed: the design is clear and the compiler differs):
-  1. **An integer literal outside its type** *(run; done 2026-11-11, `tests/err_literal_range.zs`: checked where the declaration settles the literal's type, a radix literal by its bits; left: a literal whose type is a generic function's variable, `let f x = x + 300` at `u8`, which wants a check after specialization)*: `let a: u8 = 300` compiles and is `44`; a
+  1. **An integer literal outside its type** *(run; done 2026-11-11, `tests/err_literal_range.zs`: checked where the declaration settles the literal's type, a radix literal by its bits; a type variable a literal is left at is narrowed to the types that hold it, so a generic function's use and a constant's are checked too)*: `let a: u8 = 300` compiles and is `44`; a
      negative literal at an unsigned type is already an error. An error at the literal, naming
      the type's range. **Exit test:** `tests/err_literal_range.zs`, with `-129` at `i8`, `256`
      at `u8` and a pattern's literal.
