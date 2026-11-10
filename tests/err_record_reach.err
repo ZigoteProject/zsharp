@@ -1,0 +1,4 @@
+tests/err_record_reach.zs:6:18: error: no record in scope has a field 'text', and ReachLog.Entry, ReachDb.Line all do: say which, (… : ReachLog.Entry), or open its module
+tests/err_record_reach.zs:7:16: error: no record has a field 'token'
+tests/err_record_reach.zs:8:15: error: no record of ReachLog has the fields 'id', 'text', 'who'
+3 errors

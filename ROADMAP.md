@@ -468,7 +468,7 @@ the syntax reserves and the compiler's known deviations.
   12. **Leaving a loop** *(done 2026-11-11, [proposal 0029](docs/proposals/0029-leaving-a-loop.md): `break`, `continue`, `return`, and `?` in a loop's body; `tests/loop_leave.zs`, `loop_leave_use.zs`, `err_loop_leave.zs`; left: the three inside a computation expression, and a range loop with a computed step)*: no `break`, `continue` or early `return`, and `?` in a `for` body
       leaves the body, not the function (DESIGN §2.1's `Iter.forEach` lowering already stops
       on `false`, so `break` is a `false` the body returns).
-  13. **Field attributes for derives:** a JSON key can't be renamed or a field skipped (DESIGN
+  13. **Field attributes for derives** *(a key that's a keyword or isn't a name is a field in backticks, ``` ``type`` ```, tested since 0.7.1; skipping a field, and a key different from the field's name, are what's left)*: a JSON key can't be renamed or a field skipped (DESIGN
       §3.1 "not included"). The position exists since `[<Bit>]` and `[<Width>]`; a derive
       needs to read them (`f.attributes`).
   14. **Lengths and widths:** nothing is generic over `fixed<'a, N>`'s `N` or over a vector

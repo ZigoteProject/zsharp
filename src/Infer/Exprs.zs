@@ -1365,7 +1365,7 @@ and field (cx: Cx) (cr: CExpr) (f: string) : CExpr =
     expect cx "ref cell" (TCon("ref", [ a ])) cr.ty
     mk (CPrim("ref.get", [ cr ])) a
   | (TVar _, _) when Option.isNone (fieldRecord cx f) ->
-    fail $"cannot resolve '.{f}': the type of this expression isn't known here; add a type annotation"
+    noRecord cx $"cannot resolve '.{f}': the type of this expression isn't known here; add a type annotation" [ f ]
   | (TCon(n, []), _) when Option.isSome (cUnionCases cx n) ->
     // a C union's case (0004): its bytes as the case's field
     match List.tryFind (fun (c, _) -> afterLastDot c = f) (Option.get (cUnionCases cx n)) with
@@ -2338,8 +2338,26 @@ and listExpression (cx: Cx) (env: Map<string, Local>) (depth: int) (isArray: boo
 /// scope whose fields fit (all given fields exist, all missing ones have defaults). A constant's
 /// literal keeps the record it built where it's defined: at a use, it means the record its own
 /// module sees.
-and recordLit (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>) (node: Expr) (fields: list<FieldValue>) : CExpr =
+and recordLit (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>) (node: Expr) (fields0: list<FieldValue>) : CExpr =
   let v = cx.v
+  // { Db.id = 1; … } or { Line.id = 1; … }: the first field says the record's module or type,
+  // as in F#, wherever that is
+  let (qualifier, fields) =
+    match fields0 with
+    | f :: more ->
+      match String.lastIndexOf "." f.field with
+      | Some i -> (Some(String.sub f.field 0 i), { f with field = String.sub f.field (i + 1) (String.length f.field - i - 1) } :: more)
+      | None -> (None, fields0)
+    | [] -> (None, fields0)
+  let named (r: string) =
+    match qualifier with
+    | None -> true
+    | Some q ->
+      let m =
+        match beforeLastDot r with
+        | Some x -> x
+        | None -> ""
+      r = q || m = q || String.endsWith ("." + q) r || String.endsWith ("." + q) m
   let given = List.map (fun (f: FieldValue) -> f.field) fields
   let fits (r: string) =
     let defs = List.zip (fieldsOf cx r) (Map.find r cx.recordDefaults.Value)
@@ -2359,8 +2377,10 @@ and recordLit (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>)
     | Some(TCon(n, _)) when isRecord cx n -> n
     | _ when Option.isSome remembered -> Option.get remembered
     | _ ->
-      match inScope cx (List.filter fits (Array.toList (Buffer.toArray cx.records))) with
+      let fitting = List.filter (fun r -> named r && fits r) (Array.toList (Buffer.toArray cx.records))
+      match (if Option.isSome qualifier then fitting else reachable cx fitting) with
       | [ r ] -> r
+      | [] when Option.isSome qualifier -> fail $"no record of {Option.get qualifier} has the fields {quoted given}"
       // the precise error comes from buildRecord
       | [] -> recordOf cx (fresh v kAny) (List.head given)
       | many ->

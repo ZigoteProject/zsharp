@@ -87,7 +87,11 @@ field-init = ID '=' expression ;
   identify a record type among those in scope
   ([§2.4](02-programs.md#24-name-resolution)): the candidates are the types having all the
   fields given, and whose other fields all have defaults; the nearest scope wins, then the
-  later declaration.
+  later declaration. When none in scope is a candidate, the one candidate among all the
+  program's record types is meant, if there is exactly one and its fields may be used here
+  (a private record's may not, outside its module); several is an error naming them.
+- **A qualified first field** names the record's module or type, as in F#, in scope or not:
+  `{ Db.id = 1; text = t }`, `{ Line.id = 1; text = t }`.
 - Every field without a default must be given; no field may be given twice; a field the type
   lacks is an error.
 - An omitted field takes its default, evaluated after the fields given.
@@ -114,7 +118,9 @@ Postfix forms bind tighter than application: `f x.y` is `f (x.y)`.
 ([§4.5](04-declarations.md#45-members)); for a `ref`, `Value`; for a `[<CLayout>]` union, a
 case, in `unsafe` ([§11.3](11-low-level.md#113-layout)). With the type unknown, `name` is
 looked up as a field of the record types in scope (the nearest, then the latest declared);
-if none has it, the access is an error asking for an annotation.
+if none has it, of the one record type in the program that does, when there is exactly one
+whose fields may be used here; otherwise the access is an error asking for an annotation,
+naming the candidates. A record pattern finds its type the same way.
 
 **High-precedence application `f(x)`.** An opening parenthesis directly after an expression,
 with no space, applies it and binds as tightly as `.`: `v.Scale(2.0).Len`, `f(x).y`. This is

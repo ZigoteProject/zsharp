@@ -1651,25 +1651,47 @@ let inScope (cx: Cx) (candidates: list<string>) : list<string> =
     let nearest = List.min (List.map fst ranked)
     List.map snd (List.filter (fun (k, _) -> k = nearest) ranked)
 
+// whether code here may use the record's fields (a private record's are its module's)
+let private usableHere (cx: Cx) (r: string) : bool =
+  match Map.tryFind r cx.privates.Value with
+  | Some owner -> visibleTo cx owner
+  | None -> true
+
+/// The records some field names may mean where their type isn't said: those in scope (`inScope`);
+/// else the one record anywhere that has them, when there's just one and its fields may be used
+/// here: a module used by its qualified names needs no open and no annotation for
+/// `Db.lines () |> List.map (fun l -> l.text)` or `{ role = "user"; content = c }`.
+let reachable (cx: Cx) (candidates: list<string>) : list<string> =
+  match inScope cx candidates with
+  | [] ->
+    match List.filter (usableHere cx) candidates with
+    | [ r ] -> [ r ]
+    | _ -> []
+  | rs -> rs
+
 /// The records with all these fields, in declaration order.
 let recordsWith (cx: Cx) (given: list<string>) : list<string> =
   List.filter (hasFields cx given) (Array.toList (Buffer.toArray cx.records))
 
 /// The error for fields that no record in scope has, naming a record out of scope that has them.
 let noRecord (cx: Cx) (plainMessage: string) (given: list<string>) : 'a / Fails =
-  match List.tryLast (recordsWith cx given) with
-  | Some r when String.contains "." r ->
+  let what =
+    match given with
+    | [ f ] -> $"a field '{f}'"
+    | _ -> "the fields " + quoted given
+  match List.filter (fun r -> String.contains "." r && usableHere cx r) (recordsWith cx given) with
+  | [ r ] ->
     // out of scope, so in a module
     let m = Option.get (beforeLastDot r)
-    let what =
-      match given with
-      | [ f ] -> $"a field '{f}'"
-      | _ -> "the fields " + quoted given
     fail $"no record in scope has {what}; {r} does: open {m}, or annotate (… : {r})"
+  | r :: more ->
+    // several out of scope: one alone would have been taken (`reachable`)
+    fail $"no record in scope has {what}, and {String.join ", " (r :: more)} all do: say which, (… : {r}), or open its module"
   | _ -> fail plainMessage
 
-/// The record a field of a value of unknown type belongs to: the latest in scope.
-let fieldRecord (cx: Cx) (field: string) : option<string> = List.tryLast (inScope cx (recordsWith cx [ field ]))
+/// The record a field of a value of unknown type belongs to: the latest in scope, else the only
+/// one anywhere (`reachable`).
+let fieldRecord (cx: Cx) (field: string) : option<string> = List.tryLast (reachable cx (recordsWith cx [ field ]))
 
 /// The record a field read belongs to: the value's type's, else the latest in scope with it.
 let recordOf (cx: Cx) (t: Ty) (field: string) : string / Fails =

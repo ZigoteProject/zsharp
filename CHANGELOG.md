@@ -67,6 +67,14 @@ The specification's three defects (ROADMAP's track G, items 1 to 3), and proposa
   are reserved words now (`return` outside a computation expression): a value, function or
   parameter named `break`, `continue` or `return` is renamed (`tests/loop_leave.zs`,
   `loop_leave_use.zs`, `err_loop_leave.zs`).
+- A record of a module that isn't opened needs no annotation when it's the only record with
+  the fields: `Db.lines () |> List.map (fun l -> l.text)`, `let f l = l.text`, a literal
+  `{ role = "user"; content = c }` and a record pattern find it, where 0.7.0 asked for an
+  `open` or a type. Two such records are an error that names both. A literal's first field
+  may name its module or type, as in F#: `{ Db.id = 1; text = t }` (`tests/record_reach.zs`,
+  `err_record_reach.zs`).
+- A field named as a keyword, in backticks, is its JSON key (``{ ``type``: string }`` writes
+  `"type"`): it worked in 0.7.0 and is in the guide and a test now (`tests/record_reach.zs`).
 - `1e-3` is a float literal, as DESIGN.md said and F# reads it (`tests/float_exponent.zs`).
 - `compare` is a total order on floats: a NaN is after every number and equal to a NaN, where
   `compare nan x` was `0` for every `x`, so a list with a NaN sorts and a `Map` takes it as a

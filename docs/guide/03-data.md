@@ -23,6 +23,8 @@ let main () =
 
 A record has named fields.
 - **Creating:** write the fields in braces. The record type is found from the field names, among the records in scope ([Programs](08-programs.md#modules)); when two record types share their field names, the expected type decides.
+- **Another module's record** needs no `open` and no annotation when it's the only record with those fields: `Db.lines () |> List.map (fun l -> l.text)` and `{ role = "user"; content = c }` find `Db.Line` and `Ollama.Msg`. When two modules have such a record, say which: `{ Db.id = 1; text = t }` (the first field names the module or the type), or an annotation.
+- **A field named as a keyword** is written in double backticks, and is its JSON key under `[<Derive(Json)>]`: ``{ ``type``: string; emoji: string }`` writes `{"type":…}`, and `r.``type`` ` reads it. Any text can be a field's name this way (``` ``content-type`` ```).
 - **Immutable:** a record's fields can't be assigned. `{ r with field = … }` makes a copy with some fields changed.
 
 ```zsharp

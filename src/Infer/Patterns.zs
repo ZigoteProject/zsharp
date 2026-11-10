@@ -117,7 +117,7 @@ let rec pattern (cx: Cx) (names: ref<Map<string, string>>) (p: Pat) (ty: Ty) : C
       match prune cx.v ty with
       | TCon(n, _) when isRecord cx n -> n
       | _ ->
-        match inScope cx (recordsWith cx given) with
+        match reachable cx (recordsWith cx given) with
         | [] ->
           let s = if List.length given > 1 then "s" else ""
           noRecord cx $"no record has the field{s} {quoted given}" given
