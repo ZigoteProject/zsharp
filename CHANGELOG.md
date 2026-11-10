@@ -11,8 +11,9 @@ with every job green), and what it found is fixed here. The language has its spe
 can be left early: `break`, `continue` and `return`.
 
 Tested as 0.7.0's changes were on the five CI runners up to `be321b3`; what came after it (the
-security review's fixes, the three defects, `break`, `continue` and `return`) has passed the
-suite in the dev container on Linux x86-64 (538 checks, `tests/bootstrap.sh` among them: the
+security review's fixes, the three defects, `break`, `continue` and `return`, effects in a
+task, records found by their fields) has passed the
+suite in the dev container on Linux x86-64 (542 checks, `tests/bootstrap.sh` among them: the
 compiler builds itself to the same bytes), and on the other runners once CI has run this
 release's commit. Not run for it: `./test.sh --valgrind`, `--sanitize` and `--release`. Still
 open from 0.7's plan: the flagship on its Nucleo-F401RE, and the archives on clean machines.
