@@ -105,6 +105,14 @@ two in part and one deferred, with the designs that finish them. What a program 
 - A git dependency is checked out with its files as committed on every OS (`core.autocrlf=false`,
   `core.eol=lf`), so `zs.lock`'s hash of them is the same on Windows.
 
+### Documentation
+- [The language specification](docs/spec/README.md): the language's definition in 14 chapters,
+  from the lexer's rules to the grammar, with what's planned, where the compiler deviates from
+  the design (an integer literal too large for its type is truncated, not refused; `1e-3` isn't
+  a float literal) and what was declined.
+- The README is shorter and by reader: F# programmers, systems programmers, embedded developers,
+  with a section on status and limitations; the full tables stay in `docs/reports`.
+
 ### Tests
 - The suite runs natively on Windows (CI's x64 and arm64 runners): text is checked out with LF
   there too (`.gitattributes`; git for Windows' CRLF failed every comparison), each test program

@@ -29,6 +29,7 @@ file are shown as written.
 18. [Type providers](18-type-providers.md): types from a JSON sample, a CSV file, a SQL schema and its queries, a chip's SVD file or a C header, `import` and `zs provide`, providers of your own
 
 **Reference:**
+- [The language specification](../spec/README.md), the precise definition of the language.
 - [The library reference](../reference/README.md), generated from its doc comments by `zs doc`.
 - [DESIGN.md](../../DESIGN.md), the language design and the reasons behind it.
 - [ROADMAP.md](../../ROADMAP.md), what's done and what's next.

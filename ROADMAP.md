@@ -63,7 +63,9 @@ itself from an earlier release (stage 0: 0.6.1, pinned in `dev`).
 stay here until their last exit tests close: the clean-machine installs (11.5) and the flagship
 on its Nucleo-F401RE (12), what's left of 0.7's first item (the suite is green on the five CI
 runners since 2026-11-07). What follows 0.7 isn't planned
-yet: it's picked from the tracks' *after 0.7* items once users ask, as 0.7's scope was. A change
+yet: it's picked from the tracks' *after 0.7* items once users ask, as 0.7's scope was. Track G
+(the language's gaps the specification found) is the exception: its three defects are fixes, and
+its other items want proposals before the code that would depend on them is written. A change
 to a value's meaning or a library name is listed in `CHANGELOG.md` with what to rewrite, until
 1.0 freezes them.
 
@@ -397,6 +399,96 @@ flags, and the orphan rule for impls. Packages stay source (decision 27).
   - *After 0.7:* a project uses `zsharp/sqlite` after nothing more than `zs add`.
   - *Done in 0.7:* a microcontroller project that depends on a Std package fails with an error naming that package (`tests/project/pkgs.sh`).
   - *After 0.7:* `examples/echo`, rebuilt on `zsharp/http`, serves HTTP.
+
+### Language (G)
+The gaps writing [the specification](docs/spec/README.md) found (2026-11-10): where the language
+says two things, where a guarantee has an exception nobody wrote down, and what a program can't
+say. None is designed: each needs a proposal before code, and the direction given is where to
+start, not a decision. 1.0 isn't near, so these are ordered by what they'd cost to change later,
+not by a release. Items marked *(run)* were reproduced with `zs 0.7.0`; the others are read from
+DESIGN.md, the guide and the source.
+**Design:** none yet. [Chapter 14](docs/spec/14-evolution.md) of the specification lists what
+the syntax reserves and the compiler's known deviations.
+- **Defects** (no proposal needed: the design is clear and the compiler differs):
+  1. **An integer literal outside its type** *(run)*: `let a: u8 = 300` compiles and is `44`; a
+     negative literal at an unsigned type is already an error. An error at the literal, naming
+     the type's range. **Exit test:** `tests/err_literal_range.zs`, with `-129` at `i8`, `256`
+     at `u8` and a pattern's literal.
+  2. **`1e-3`** *(run)*: DESIGN §2.1 lists it as a literal, and the lexer takes `1` and the
+     name `e`. Either the lexer reads an exponent without a fraction, or DESIGN drops it; F#
+     reads it.
+  3. **`compare` on a NaN** *(run)*: `nan = nan` is `false` and `compare nan 1.0` is `0`, so a
+     float sorts and keys a `Map` wrongly. `compare` a total order (IEEE 754's `totalOrder`:
+     NaN after every number), the operators as they are.
+- **What a type means** (these change signatures, so they cost the most later):
+  4. **Effects end at a task and at a thread:** a `task { }` body, a `share<F>` and a callback
+     perform nothing (DESIGN §6.1), so a handler that injects a clock, a log or a disk doesn't
+     reach the code that waits or runs in parallel, which is where a server's code is. Where to start: a handler
+     installed *inside* a task or a job by the function that makes it (`Task.handling`), which
+     needs no resumption to cross a wait; then whether a row may cross a `let!` when every
+     clause on the way resumes last (no continuation captured, so decision 72's seven
+     allocations don't apply). **Exit test:** logstat's `Log` and `Clock` handled once, around
+     tasks and `Array.Parallel.map` both.
+  5. **What "without `unsafe`" guarantees:** an `extern` call, `Mmio.*` and a `[<Target>]`
+     function on a CPU without its features are all written in safe code and are unchecked
+     (DESIGN §5.3 lists the first two as "unsafe on purpose"; the specification's §10.7 has to
+     except them). Either they're called in `unsafe`, as `fnptr` and `[<Unsafe>]` functions
+     are, or the guarantee is "no `unsafe`, no `extern`, no `Mmio`" wherever it's stated. An
+     `import c` module's functions `[<Unsafe>]` by default, with a safe wrapper the package
+     writes, is Rust's answer; the cost is every existing C call.
+  6. **Constraints can't be written** *(run)*: there's no syntax for `'a : Show`, and a type
+     variable in an annotation isn't held generic (`let f (x: 'a) : 'a = x + 1` compiles, at
+     the numbers). So a public function can't state its own type, and an annotation can't
+     catch a function that became less general. F#'s `when 'a : Show` after the type, and an
+     annotated variable rigid.
+  7. **Local functions have one type** *(run)*: `let id x = x` inside a function can't be used
+     at `int` and at `string`. Decide it: generalize them (their captures make instances per
+     use, as top-level functions' are), or keep it and say so in DESIGN §2.1, which says
+     Hindley–Milner without the exception.
+  8. **Conversions and shifts wrap where arithmetic panics** *(run)*: `u8 300` is `44` and
+     `x <<< 70` shifts by 6, silently, beside a `+` that panics. Named conversions that say
+     which (`Int.checked` an option, `Int.truncate`, `Int.saturate`), and whether the bare
+     `u8 x` should panic as `+` does.
+- **What a program can't say:**
+  9. **Traits:** no supertrait (`Ord` doesn't require `Eq`), no default method, and an impl is
+     for a whole type constructor (`impl T<list<int>>` is refused). A `dyn` value isn't
+     `Share`, so no trait object crosses a thread: a `dyn Trait` of a trait whose impls are all
+     of `Share` types, or `share<dyn T>`.
+  10. **Errors don't compose:** `?` never converts an error (`result<_, ParseError>` in a
+      function returning `result<_, AppError>` is mapped by hand at each `?`). A `From`-like
+      trait `?` calls, or the guide's advice made the rule: one error union per program, or
+      `Throw`. And a panic has no boundary below the process: a server's one bad request ends
+      it. A task or a job as a panic's boundary would need unwinding, which decision 5
+      declined; a supervisor process is today's answer, and the guide should say so.
+  11. **One effect per `handle`** *(run)*, no named handler, and an operation generic only in
+      its result ([proposal 0002](docs/proposals/0002-effect-handlers.md)'s unresolved
+      questions): state with logging is a handle in a handle. Several effects in one `handle`
+      is sugar over nesting and costs nothing at run time.
+  12. **Leaving a loop:** no `break`, `continue` or early `return`, and `?` in a `for` body
+      leaves the body, not the function (DESIGN §2.1's `Iter.forEach` lowering already stops
+      on `false`, so `break` is a `false` the body returns).
+  13. **Field attributes for derives:** a JSON key can't be renamed or a field skipped (DESIGN
+      §3.1 "not included"). The position exists since `[<Bit>]` and `[<Width>]`; a derive
+      needs to read them (`f.attributes`).
+  14. **Lengths and widths:** nothing is generic over `fixed<'a, N>`'s `N` or over a vector
+      type's lanes (decisions 49 and 53), so that code is written once per size. Reopen only
+      with a use the per-size modules can't serve.
+- **Resources and text:**
+  15. **A `Dispose` value bound with `let`** is never disposed, and nothing says so: a warning
+      (`undisposed`) where a value whose type has `Dispose` is bound without `use` and isn't
+      returned or stored. With track S's item 10 (a `use` in a task's body under a throw, and
+      under a resumption never called), disposal has no exception left.
+  16. **Strings past ASCII:** `String.length` is bytes, `Char`'s functions classify ASCII, and
+      a slice inside a character panics. A decision on what Core has (grapheme and case
+      functions need tables a chip can't hold), and a package for the rest.
+- **How the language changes after 1.0:**
+  17. **Editions:** `[<Deprecated>]` renames a name; nothing changes a meaning. The symbols
+      with no meaning today (`!`, `<|`, `<<`, `**`) are a program's to define as operators, so
+      giving one a meaning later breaks it. Decide before 1.0 which are reserved, and whether
+      `zs.toml` carries an edition.
+- **Exit tests:** each item's proposal says its own. For the three defects: the tests named,
+  and the specification's deviations table ([§14.3](docs/spec/14-evolution.md#143-known-deviations))
+  without their rows.
 
 ## Ordering rationale
 - **Phase L came before 5 and 6.** Builders, `Task` and optimizations should be built on the language's final shape. Top-level constants also unblocked microcontroller work.
