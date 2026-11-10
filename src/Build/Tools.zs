@@ -110,15 +110,17 @@ let private readPipe (fd: int) : Task<string> =
   Task.spawn (fun () -> Task.blocking (fun () -> if fd < 0 then "" else Result.defaultValue "" (IO.Reader.readToEnd (IO.Reader.ofFd fd))))
 
 // the program's exit code, or 124 (as `timeout` gives) when it's still running after `ms`
-// milliseconds, killed then; no limit for 0
+// milliseconds, killed then; no limit for 0. A killed one is waited for after the kill: a wait
+// that Task.timeout cancels is over at once and leaves the process unwaited (Process.wait), which
+// on Linux would stay a zombie for as long as zs runs (zs mcp's run tool, for one)
 let private waitBounded (p: Diagnostics.Process) (ms: int) : Task<int> =
   if ms <= 0 then
     Diagnostics.Process.wait p
   else
     let late () =
       Diagnostics.Process.kill p |> ignore
-      124
-    Task.map (fun (r: option<int>) -> match r with | Some code -> code | None -> late ()) (Task.timeout ms (Diagnostics.Process.wait p))
+      Task.map (fun (_: int) -> 124) (Diagnostics.Process.wait p)
+    Task.bind (Task.timeout ms (Diagnostics.Process.wait p)) (fun (r: option<int>) -> match r with | Some code -> Task.ret code | None -> late ())
 
 /// Runs the program with these variables added to this process's environment, its standard
 /// output and standard error captured apart and read while it writes them, stopped after `ms`

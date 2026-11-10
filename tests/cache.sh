@@ -53,18 +53,24 @@ XDG_CACHE_HOME=$t/empty bin/zs build "$t/main.zs" -o "$t/fresh/exe" && cmp -s "$
 # an unreadable result is ignored: checked again
 for f in "$t"/cache/zs/checked/*.bin; do head -c 100 "$f" > "$f.cut" && mv "$f.cut" "$f"; done
 bin/zs build "$t/main.zs" -o "$t/f" && echo "unreadable results: $("$t/f" | tr '\n' ' ')"
-# a module's IR is compiled from a file of this build's own: one another build writes and deletes
-# at the same time, at the name the object's key gives, is no matter (here a directory there)
-rm -rf "$t/cache/zs/modules"
-for o in "$t"/cache/zs/objects/*.o; do mkdir "${o%.o}.ll"; done
-rm -f "$t"/cache/zs/objects/*.o
-bin/zs build "$t/main.zs" -o "$t/g" && echo "beside another build's IR: $("$t/g" | tr '\n' ' ')"
-rmdir "$t"/cache/zs/objects/*.ll
-# what a build stopped while clang ran leaves (its IR, a depfile) is removed an hour on, not before
-touch -t 200001010000 "$t/cache/zs/objects/old.o.zs-1.ll" "$t/cache/zs/objects/old.o.zs-1.o.d"
-touch "$t/cache/zs/objects/new.o.zs-2.ll"
-bin/zs build "$t/main.zs" -o "$t/g" && echo "a stopped build's files kept: $(cd "$t/cache/zs/objects" && ls old.* new.* 2>/dev/null | tr '\n' ' ')"
-rm -f "$t/cache/zs/objects/new.o.zs-2.ll"
+# the object cache of a host build's module per file: Windows' builds are one module and keep
+# none, so these two checks are left out there (test.sh drops their lines from cache.expected)
+if [ -d "$t/cache/zs/objects" ]; then
+  # a module's IR is compiled from a file of this build's own: one another build writes and
+  # deletes at the same time, at the name the object's key gives, is no matter (here a directory
+  # there)
+  rm -rf "$t/cache/zs/modules"
+  for o in "$t"/cache/zs/objects/*.o; do mkdir "${o%.o}.ll"; done
+  rm -f "$t"/cache/zs/objects/*.o
+  bin/zs build "$t/main.zs" -o "$t/g" && echo "beside another build's IR: $("$t/g" | tr '\n' ' ')"
+  rmdir "$t"/cache/zs/objects/*.ll
+  # what a build stopped while clang ran leaves (its IR, a depfile) is removed an hour on, not
+  # before
+  touch -t 200001010000 "$t/cache/zs/objects/old.o.zs-1.ll" "$t/cache/zs/objects/old.o.zs-1.o.d"
+  touch "$t/cache/zs/objects/new.o.zs-2.ll"
+  bin/zs build "$t/main.zs" -o "$t/g" && echo "a stopped build's files kept: $(cd "$t/cache/zs/objects" && ls old.* new.* 2>/dev/null | tr '\n' ' ')"
+  rm -f "$t/cache/zs/objects/new.o.zs-2.ll"
+fi
 # a package's C source is kept under a key of every header it includes, not only those beside it:
 # one in the package's include directory changed is a new object, as it is a new import c
 mkdir -p "$t/geo/src" "$t/geo/c/src" "$t/geo/c/include"

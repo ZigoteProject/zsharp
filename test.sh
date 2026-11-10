@@ -190,7 +190,10 @@ if diff <(tests/doctest.sh 2>&1) tests/doctest.expected >"$tmp/doctest.diff"; th
 else echo "FAIL tests/doctest.sh"; cat "$tmp/doctest.diff"; fail=1; fi
 
 # zs provide (0001): the providers' modules, and a program built with them beside it
-if diff <(tests/providers/provide.sh bin/zs 2>&1) tests/providers/provide.expected >"$tmp/provide.diff"; then echo "ok   tests/providers/provide.sh (zs provide json, csv, sql and svd, and one on PATH)"
+# (on Windows up to the checks that need /dev/zero or a shell script as a program)
+provexp=tests/providers/provide.expected
+[ $windows = 1 ] && { sed '/^json: \/dev\/zero /,$d' tests/providers/provide.expected >"$tmp/provide.expected"; provexp=$tmp/provide.expected; }
+if diff <(tests/providers/provide.sh bin/zs 2>&1) "$provexp" >"$tmp/provide.diff"; then echo "ok   tests/providers/provide.sh (zs provide json, csv, sql and svd, and one on PATH)"
 else echo "FAIL tests/providers/provide.sh"; cat "$tmp/provide.diff"; fail=1; fi
 # the Nucleo firmware on the chip's SVD compiles to the same register accesses as the Mmio one,
 # counted in the IR as LLVM's opt optimizes it (LLVM's Windows installer has no opt; its release
@@ -203,7 +206,7 @@ else echo "FAIL tests/providers/svd_nucleo.sh"; echo "$out"; fail=1; fi
 # Windows' builds are one module, through mingw-w64's path (Options.nativeTarget) and not the
 # host's module per file, so they report no module cache and no clang jobs: the rest is the same
 cacheexp=tests/cache.expected
-[ $windows = 1 ] && { sed 's/ module cache .*//' tests/cache.expected >"$tmp/cache.expected"; cacheexp=$tmp/cache.expected; }
+[ $windows = 1 ] && { sed "s/ module cache .*//; /^beside another build's IR: /d; /^a stopped build's files kept: /d" tests/cache.expected >"$tmp/cache.expected"; cacheexp=$tmp/cache.expected; }
 if diff <(tests/cache.sh 2>&1) "$cacheexp" >"$tmp/cache.diff"; then echo "ok   tests/cache.sh (checked library, modules and compiled modules cached)"
 else echo "FAIL tests/cache.sh"; cat "$tmp/cache.diff"; fail=1; fi
 if [ $windows = 1 ]; then echo "skip tests/pgo.sh (no profile runtime for mingw-w64: zig cc links Windows' programs, and zs build refuses --profile-generate there)"

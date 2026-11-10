@@ -47,8 +47,8 @@ mkdir -p "$t/evil" "$t/user/src"
 printf '[package]\nname = "user"\n\n[dependencies]\nevil = { path = "../evil" }\n' > "$t/user/zs.toml"
 printf 'let main () =\n  0\n' > "$t/user/src/main.zs"
 printf '[package]\nname = "evil"\nmain = "/dev/stdin"\n' > "$t/evil/zs.toml"
-(cd "$t/user" && "$zs" build 2>&1 | sed "s|$t|…|")
+(cd "$t/user" && "$zs" build 2>&1 | sed "s|$at|…|")
 printf '[package]\nname = "evil"\n\n[target.cortex-m4]\nheap = "9000000000000000M"\n' > "$t/evil/zs.toml"
-(cd "$t/user" && "$zs" build 2>&1 | sed "s|$t|…|")
+(cd "$t/user" && "$zs" build 2>&1 | sed "s|$at|…|")
 head -c 1100000 /dev/zero | tr '\0' '#' > "$t/evil/zs.toml"
-(cd "$t/user" && "$zs" build 2>&1 | sed "s|$t|…|")
+(cd "$t/user" && "$zs" build 2>&1 | sed "s|$at|…|")
