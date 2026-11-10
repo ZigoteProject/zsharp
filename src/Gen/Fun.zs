@@ -2023,8 +2023,17 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
     else
       let (gt, less) =
         if isFloat t then
+          // a total order, so a float sorts and keys a Map: a NaN is after every number and equal
+          // to a NaN (the operators stay IEEE 754's, where it's unordered)
+          let nan0 = instr em $"fcmp uno {lt} {arg 0}, {arg 0}"
+          let nan1 = instr em $"fcmp uno {lt} {arg 1}, {arg 1}"
           let a = instr em $"fcmp ogt {lt} {arg 0}, {arg 1}"
-          (a, instr em $"fcmp olt {lt} {arg 0}, {arg 1}")
+          let b = instr em $"fcmp olt {lt} {arg 0}, {arg 1}"
+          let num0 = instr em $"xor i1 {nan0}, true"
+          let num1 = instr em $"xor i1 {nan1}, true"
+          let above = instr em $"and i1 {nan0}, {num1}"
+          let below = instr em $"and i1 {num0}, {nan1}"
+          (instr em $"or i1 {a}, {above}", instr em $"or i1 {b}, {below}")
         else
           // a [<Bits>] record orders as its unsigned integer
           let u = if isUnsigned t || Option.isSome (bitsLayoutOf g t) then "u" else "s"

@@ -198,7 +198,9 @@ type, and the result is `bool`.
   reference equality.
 - Strings are compared by their bytes.
 - Floats follow IEEE 754 for the operators: a NaN is unequal to everything, itself included,
-  and every ordered comparison with a NaN is `false`.
+  and every ordered comparison with a NaN is `false`. `compare` is a total order instead, so
+  floats sort and key a `Map`: a NaN is after every number and equal to a NaN (`-0.0` and
+  `0.0` are equal).
 
 ### Boolean
 

@@ -967,6 +967,46 @@ let private warnDiscarded (cx: Cx) =
     | None -> ()
   Buffer.clear cx.discarded
 
+// an integer type's least and greatest values, as i64s (u64's greatest is past i64's: no
+// literal's value reaches it), and the greatest its bits hold unsigned
+let private intRange (word: int) (u: string) : i64 * i64 * i64 =
+  let bits =
+    match u with
+    | "i8" | "u8" -> 8
+    | "i16" | "u16" -> 16
+    | "i32" | "u32" -> 32
+    | "i64" | "u64" -> 64
+    | _ -> word * 8
+  let smax: i64 =
+    match bits with
+    | 8 -> 127
+    | 16 -> 32767
+    | 32 -> 2147483647
+    | _ -> 9223372036854775807
+  let umax: i64 =
+    match bits with
+    | 8 -> 255
+    | 16 -> 65535
+    | 32 -> 4294967295
+    | _ -> 9223372036854775807
+  if Set.contains u unsigned then (i64 0, umax, umax) else (i64 0 - smax - i64 1, smax, umax)
+
+// the declaration's integer literals against their types' ranges, now the types are settled. One
+// whose type is still a variable (a generic function's, or one left to be int) isn't checked here.
+let private checkLiterals (cx: Cx) =
+  for (t, n, bits, at) in Array.toList (Buffer.toArray cx.literals) do
+    match prune cx.v t with
+    | TCon(u, _) when Set.contains u ints ->
+      let (lo, hi, umax) = intRange cx.word u
+      let wide = umax = i64 9223372036854775807
+      // its bits: a radix literal's (0xFF), or a desugaring's (~~~x is x ^^^ -1)
+      if not (n >= lo && n <= hi) && not (bits && (wide || (n >= i64 0 - umax / i64 2 - i64 1 && n <= umax))) then
+        let top = if wide && lo = i64 0 then "18446744073709551615" else $"{hi}"
+        let shown = if bits && n < i64 0 then $"{u64 n}" else $"{n}"
+        Buffer.push (error at $"{shown} is outside {u}'s range, {lo} to {top}") cx.diagnostics
+    | _ -> ()
+  Buffer.clear cx.literals
+
 /// An error found, unless it mentions a declaration that already failed (it's that one's
 /// consequence).
 let private report (cx: Cx) (dg: Diagnostic) =
@@ -1768,6 +1808,7 @@ let private guarded (cx: Cx) (d: Decl) (f: unit -> 'a / <Fails, Mismatched>) : o
     | Fails.fail x, _ ->
       restoreScope cx saved
       Buffer.clear cx.discarded
+      Buffer.clear cx.literals
       Buffer.clear cx.dynCalls
       found x
       flush ()
@@ -1812,6 +1853,7 @@ let rec declareOne (cx: Cx) (d: Decl) : unit / <> =
         declare cx d
         closeDynCalls cx
         warnDiscarded cx
+        checkLiterals cx
       guarded cx d run |> ignore
 
 // ------------------------------------------------------------ cycles (0021)

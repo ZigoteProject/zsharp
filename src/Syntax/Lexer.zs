@@ -210,19 +210,24 @@ let lex (src: Source.Source) : array<Token> =
       else if isDigit c then
         while i < le && (isDigit (at s i) || at s i = 95) do
           i <- i + 1
+        let mutable fraction = false
         if i + 1 < le && at s i = 46 && isDigit (at s (i + 1)) then
+          fraction <- true
           i <- i + 1
           while i < le && (isDigit (at s i) || at s i = 95) do
             i <- i + 1
-          if i < le && (at s i = 101 || at s i = 69) then
+        // an exponent: after a fraction (1.5e-3; one without its digits is the parser's error), or
+        // with its digits after the integer (1e-3, as F# reads it; 1e is 1 and a name)
+        let signed = at s (i + 1) = 45 || at s (i + 1) = 43
+        let exponent =
+          (at s i = 101 || at s i = 69) && (fraction || isDigit (at s (i + 1)) || (signed && isDigit (at s (i + 2))))
+        if exponent then
+          i <- i + 1
+          if i < le && (at s i = 45 || at s i = 43) then
             i <- i + 1
-            if i < le && (at s i = 45 || at s i = 43) then
-              i <- i + 1
-            while i < le && isDigit (at s i) do
-              i <- i + 1
-          Buffer.push { kind = Float; offset = start; length = i - start } toks
-        else
-          Buffer.push { kind = Int; offset = start; length = i - start } toks
+          while i < le && isDigit (at s i) do
+            i <- i + 1
+        Buffer.push { kind = (if fraction || exponent then Float else Int); offset = start; length = i - start } toks
       else if c = 39 && i + 2 < le && (at s (i + 1) = 92 || at s (i + 2) = 39 || charLiteral s (i + 1) le) then
         // a character literal: 'a', '\n', '\u{e9}', 'é' (a type variable 'a has no closing quote)
         i <- i + 1

@@ -410,14 +410,14 @@ DESIGN.md, the guide and the source.
 **Design:** none yet. [Chapter 14](docs/spec/14-evolution.md) of the specification lists what
 the syntax reserves and the compiler's known deviations.
 - **Defects** (no proposal needed: the design is clear and the compiler differs):
-  1. **An integer literal outside its type** *(run)*: `let a: u8 = 300` compiles and is `44`; a
+  1. **An integer literal outside its type** *(run; done 2026-11-11, `tests/err_literal_range.zs`: checked where the declaration settles the literal's type, a radix literal by its bits; left: a literal whose type is a generic function's variable, `let f x = x + 300` at `u8`, which wants a check after specialization)*: `let a: u8 = 300` compiles and is `44`; a
      negative literal at an unsigned type is already an error. An error at the literal, naming
      the type's range. **Exit test:** `tests/err_literal_range.zs`, with `-129` at `i8`, `256`
      at `u8` and a pattern's literal.
-  2. **`1e-3`** *(run)*: DESIGN §2.1 lists it as a literal, and the lexer takes `1` and the
+  2. **`1e-3`** *(run; done 2026-11-11: the lexer reads it, `tests/float_exponent.zs`, and the tree-sitter grammar)*: DESIGN §2.1 lists it as a literal, and the lexer takes `1` and the
      name `e`. Either the lexer reads an exponent without a fraction, or DESIGN drops it; F#
      reads it.
-  3. **`compare` on a NaN** *(run)*: `nan = nan` is `false` and `compare nan 1.0` is `0`, so a
+  3. **`compare` on a NaN** *(run; done 2026-11-11, `tests/compare_nan.zs`; `-0.0` and `0.0` stay equal)*: `nan = nan` is `false` and `compare nan 1.0` is `0`, so a
      float sorts and keys a `Map` wrongly. `compare` a total order (IEEE 754's `totalOrder`:
      NaN after every number), the operators as they are.
 - **What a type means** (these change signatures, so they cost the most later):

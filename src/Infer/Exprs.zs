@@ -371,7 +371,10 @@ and inferNode (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>)
     cx.currentStmt.Value <- node.at
     let c = located cx node.at true (fun () -> inferWith cx env depth hint inner)
     mk (CLine(lineOf cx node.at, c)) c.ty
-  | Lit n -> mk (CInt n) (fresh v kInt)
+  | Lit n ->
+    let t = fresh v kInt
+    literal cx t n node.at false
+    mk (CInt n) t
   | CharLit c -> mk (CInt(i64 c)) tChar
   | FloatLit f -> mk (CFloat f) (fresh v kFloat)
   | BoolLit b -> mk (CBool b) tBool
@@ -650,7 +653,14 @@ and inferNode (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>)
   // a negative literal is one constant: `-2147483648` as an `i32` would otherwise be the
   // positive literal, past the type's range on a 32-bit `int`, negated. It's a signed integer
   // (`let a : u8 = -1` is an error, not 255), and -0x8000_0000_0000_0000 is i64's least
-  | Neg { e = Lit n } -> mk (CInt(Int.wrappingSub (i64 0) n)) (fresh v kSignedInt)
+  | Neg { e = Lit n; at = la } ->
+    let m = Int.wrappingSub (i64 0) n
+    // a radix literal past i64's bits (0xFFFF_FFFF_FFFF_FFFF is -1) has no negative
+    if n < i64 0 && m <> n then
+      fail "this literal is below every integer type's range"
+    let t = fresh v kSignedInt
+    literal cx t m la true
+    mk (CInt m) t
   | Neg a ->
     let ca = inferWith cx env depth hint a
     expect cx "operand of '-'" (fresh v (kTrait "Num")) ca.ty

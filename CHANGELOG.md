@@ -5,6 +5,17 @@
 Windows, natively: the suite runs and passes on CI's Windows x64 and arm64 runners, as on the
 other four (at `be321b3`, the first run with every job green), and what it found is fixed here.
 
+### Language
+The specification's three defects (ROADMAP's track G, items 1 to 3). What a 0.7 program rewrites:
+- An integer literal outside its type's range is an error at the literal, where it was
+  truncated (`let a : u8 = 300` was `44`); a pattern's literal alike. A literal in a radix may
+  still fill its type's bits (`let m : i8 = 0xFF`). Write the value meant, or a wider type.
+  Not checked: a literal whose type is a generic function's variable (`tests/err_literal_range.zs`).
+- `1e-3` is a float literal, as DESIGN.md said and F# reads it (`tests/float_exponent.zs`).
+- `compare` is a total order on floats: a NaN is after every number and equal to a NaN, where
+  `compare nan x` was `0` for every `x`, so a list with a NaN sorts and a `Map` takes it as a
+  key. `=`, `<` and the other operators are IEEE 754's, as before (`tests/compare_nan.zs`).
+
 ### Security and stability
 A review of 0.7.0 ([docs/reports/security-review-0.7.md](docs/reports/security-review-0.7.md))
 found 106 defects (1 critical, 30 high, 48 medium, 27 low); 103 are fixed here, each with a test,

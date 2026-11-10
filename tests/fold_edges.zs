@@ -1,8 +1,8 @@
 // constant folding at its edges (0015 step 4): each line prints a folded expression and the same
 // computed at run time (through mutable variables, which aren't folded), which must agree:
 // u64 values above 2^63, f32 rounding at every step, the sign of zero, conversions narrowed
-// inside others, negative literals down to i64's least (in patterns too), an f32 static widened,
-// and a pattern that isn't a value of its type (left to the code, which compares at its width)
+// inside others, negative literals down to i64's least (in patterns too), and an f32 static
+// widened (a pattern that isn't a value of its type is an error: tests/err_literal_range.zs)
 let widen (a: f32) = float a
 let addsub (b: f32) (c: f32) = (b + c) - b
 
@@ -19,11 +19,6 @@ let describe (x: i64) =
   match x with
   | -0x8000_0000_0000_0000 -> "least"
   | -1 -> "minus one"
-  | _ -> "other"
-
-let byte (x: u8) =
-  match x with
-  | 256 -> "256"
   | _ -> "other"
 
 let main () =
@@ -53,7 +48,6 @@ let main () =
   println $"least: {least} {-0x7FFF_FFFF_FFFF_FFFF}"
   let mutable leastV = -0x7FFF_FFFF_FFFF_FFFF
   leastV <- leastV - 1
-  let mutable zero : u8 = 0
-  println $"patterns: {describe -0x8000_0000_0000_0000} {describe leastV} {describe -1} | {byte 0} {byte zero}"
+  println $"patterns: {describe -0x8000_0000_0000_0000} {describe leastV} {describe -1}"
   println $"static f32: {staticWide.[0]} {widen f1} {staticWide.[1]} {widen fBig}"
   0

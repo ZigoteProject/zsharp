@@ -81,8 +81,7 @@ Where the reference implementation at 0.7 differs from this document or from
 
 | Area | This document | The implementation at 0.7 |
 |---|---|---|
-| Integer literals ([§3.9](03-types.md#39-literals)) | a literal outside its type's range is an error | accepted and truncated: `let a : u8 = 300` is `44` |
-| Float literals ([§1.6](01-lexical.md#16-numeric-literals)) | as implemented: a fraction is required | DESIGN.md lists `1e-3`, which the lexer does not accept |
+| Integer literals ([§3.9](03-types.md#39-literals)) | a literal outside its type's range is an error | not checked where the type is a generic function's variable (`let f x = x + 300` at `u8`) |
 | `use` and stops ([§8.4](08-effects.md#84-handlers)) | every abandoned `use` is disposed | not for a kept resumption never called, nor for a `use` in a `task { }` body |
 | The `cycle` warning ([§10.4](10-execution.md#104-lifetime)) | best effort | cycles through closures and `dyn` values are not detected |
 | `[<Section>]` ([§11.4](11-low-level.md#114-bare-metal)) | places the storage in the named section | on macOS and Windows the name is dropped and the alignment kept |

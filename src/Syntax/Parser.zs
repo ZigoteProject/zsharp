@@ -852,7 +852,7 @@ and private patAtomOf (p: P) : Ast.Pat =
     match t with
     | Id when textIs p ti "_" -> plainPat Ast.PWild
     | Id -> Ast.pat (Ast.PIdent(idName p ti, None)) ti
-    | Int -> plainPat (Ast.PInt(intOf p ti))
+    | Int -> Ast.pat (Ast.PInt(intOf p ti)) ti
     | Char ->
       match Literal.charValue (textOf p ti) with
       | Ok c -> plainPat (Ast.PChar c)
@@ -871,10 +871,11 @@ and private patAtomOf (p: P) : Ast.Pat =
     | Minus
     | Negate ->
       if peek p = Int then
-        let n = intOf p p.pos.Value
+        let ni = p.pos.Value
+        let n = intOf p ni
         advance p
         // wrapping: -0x8000_0000_0000_0000 is i64's least value
-        plainPat (Ast.PNegInt(Int.wrappingSub (i64 0) n))
+        Ast.pat (Ast.PNegInt(Int.wrappingSub (i64 0) n)) ni
       else
         skip p "integer"
         plainPat Ast.PWild
@@ -2173,7 +2174,7 @@ and private primary (p: P) : Ast.Expr =
     let at = here p
     advance p
     match k with
-    | Int -> measured p at (plain (Ast.Lit(intOf p ti)))
+    | Int -> measured p at (Ast.expr (Ast.Lit(intOf p ti)) ti)
     | Char ->
       match Literal.charValue (textOf p ti) with
       | Ok c -> plain (Ast.CharLit c)

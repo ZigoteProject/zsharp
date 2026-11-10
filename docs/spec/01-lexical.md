@@ -119,13 +119,14 @@ INT    = digit { digit | '_' }
        | '0' ( 'x' | 'X' ) hex   { hex   | '_' }
        | '0' ( 'b' | 'B' ) bin   { bin   | '_' }
        | '0' ( 'o' | 'O' ) oct   { oct   | '_' } ;
-FLOAT  = digit { digit | '_' } '.' digit { digit | '_' } [ exponent ] ;
+FLOAT  = digit { digit | '_' } '.' digit { digit | '_' } [ exponent ]
+       | digit { digit | '_' } exponent ;
 exponent = ( 'e' | 'E' ) [ '+' | '-' ] digit { digit } ;
 ```
 
 - `_` separates digits and has no meaning: `1_000_000`, `0xFFFF_FFFF`.
-- A float literal has digits on both sides of its point: `1.0`, `0.5`, `2.5e-3`. `1.`, `.5`
-  and `1e5` are not float literals.
+- A float literal has digits on both sides of its point, or an exponent, or both: `1.0`,
+  `0.5`, `2.5e-3`, `1e5`. `1.` and `.5` are not float literals.
 - A decimal integer literal must fit a signed 64-bit integer; a literal in another radix may
   use all 64 bits (`0xFFFF_FFFF_FFFF_FFFF`). A larger literal is an error.
 - Literals have no sign and no type suffix: `-5` is the negation of `5`
@@ -133,9 +134,6 @@ exponent = ( 'e' | 'E' ) [ '+' | '-' ] digit { digit } ;
   ([§3.9](03-types.md#39-literals)).
 - A numeric literal directly followed by `<` and a unit of measure, with no space, is a
   measured literal: `9.58<s>`, `5<ns>` ([§3.6](03-types.md#36-units-of-measure)).
-
-*Deviation.* DESIGN.md lists `1e-3` among the literals; the lexer requires the fraction
-(`1.0e-3`).
 
 ## 1.7 Character literals
 

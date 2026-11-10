@@ -216,9 +216,12 @@ with `/ <>`.
 - An unannotated top-level constant that is a number keeps its literal constraint: each use
   takes the type it needs ([§4.2](04-declarations.md#42-top-level-values)).
 
-*Deviation.* An integer literal that does not fit its type should be an error. At 0.7 it is
-accepted and truncated to the type's width without a diagnostic: `let a : u8 = 300` is `44`.
-Programs must not rely on this.
+- An integer literal outside its type's range is an error at the literal: `let a : u8 = 256`,
+  `let b : i8 = -129`, and a pattern's literal alike. A decimal literal is a value of its
+  type; a literal in another radix may fill its type's bits instead (`0xFF` is an `i8`'s `-1`).
+  The check is made where the declaration settles the literal's type: a literal whose type is
+  a generic function's variable is not checked, and a constant's literal at a use is checked
+  by its bits.
 
 ## 3.10 Inference
 

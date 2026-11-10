@@ -183,6 +183,10 @@ and CxData =
     /// the values statements drop in the declaration being checked, with their places: warned
     /// about at its end, when their types are settled (unused-value)
     discarded: Buffer<Ty * Span>
+    /// the integer literals of the declaration being checked: each one's type, its value, whether
+    /// it may fill its type's bits (see `literal`), and its place; checked against the type's
+    /// range at the declaration's end, when their types are settled
+    literals: Buffer<Ty * i64 * bool * Span>
     /// trait methods called with an ambient row (0025): the value's type, the row, the trait, the
     /// method and the place; through dyn the row must be empty
     dynCalls: Buffer<Ty * Ty * string * string * int>
@@ -434,6 +438,9 @@ type Cx with
   member c.discarded =
     match c with
     | Cx { discarded = x } -> x
+  member c.literals =
+    match c with
+    | Cx { literals = x } -> x
   member c.dynCalls =
     match c with
     | Cx { dynCalls = x } -> x
@@ -587,6 +594,7 @@ let create (requireMain: bool) (collect: bool) (allModules: list<string>) (manua
       cyclic = ref Set.empty
       inBits = ref false
       discarded = Buffer.empty
+      literals = Buffer.empty
       dynCalls = Buffer.empty
       testValues = Buffer.empty
       currentStmt = ref -1
@@ -665,6 +673,19 @@ let warnAt (cx: Cx) (kind: string) (at: Span) (msg: string) =
   if not (Set.contains kind cx.silenced.Value) then
     Buffer.push (warning kind at msg) cx.diagnostics
 
+/// An integer literal of a type, at a token (below 0: none): its range is checked at the
+/// declaration's end. A decimal literal is a value of its type; one written in a radix may fill
+/// its type's bits instead (0xFF is an i8's -1), and so may one written elsewhere (a constant's
+/// body at a use), whose text isn't at hand to say which it is.
+let literal (cx: Cx) (ty: Ty) (n: i64) (tok: int) (negated: bool) =
+  let f = cx.file.Value
+  let here = not cx.foreign.Value && tok >= 0 && tok < Array.length f.tokens
+  // 0x, 0b, 0o: a letter after the first digit (a decimal literal has digits and _, which is 95)
+  let second = if here && f.tokens.[tok].length > 2 then int (String.byte f.source.text (f.tokens.[tok].offset + 1)) else 0
+  let radix = second >= 65 && second <> 95
+  let at = if here then spanOf cx tok false else spanOf cx cx.currentStmt.Value true
+  Buffer.push (ty, n, not negated && (radix || not here), at) cx.literals
+
 /// What a declaration's check may change of the context: put back when it fails, and when one of
 /// its statements does.
 type Scope =
@@ -727,6 +748,7 @@ let recovered (cx: Cx) (fallback: unit -> Ty) (f: unit -> CExpr / <Fails | 'e>) 
     let scope = saveScope cx
     let trail = mark cx.v
     let discarded = Buffer.length cx.discarded
+    let literals = Buffer.length cx.literals
     let dynCalls = Buffer.length cx.dynCalls
     let attempt () =
       let c = f ()
@@ -737,6 +759,7 @@ let recovered (cx: Cx) (fallback: unit -> Ty) (f: unit -> CExpr / <Fails | 'e>) 
       undo cx.v trail
       restoreScope cx scope
       Buffer.truncate discarded cx.discarded
+      Buffer.truncate literals cx.literals
       Buffer.truncate dynCalls cx.dynCalls
       Fails.report x
       mk CUnit (fallback ())
@@ -760,7 +783,15 @@ let foreignly (cx: Cx) (vetted: bool) (f: unit -> 'r / 'e) : 'r / 'e =
   let outerVetted = cx.foreignVetted.Value
   cx.foreign.Value <- true
   cx.foreignVetted.Value <- vetted
+  let stmt = cx.currentStmt.Value
+  let first = Buffer.length cx.literals
   let r = f ()
+  // its statements aren't here, and its literals are at this use
+  cx.currentStmt.Value <- stmt
+  let its = Array.toList (Buffer.toArray cx.literals) |> List.skip first
+  Buffer.truncate first cx.literals
+  for (t, n, bits, _) in its do
+    Buffer.push (t, n, bits, spanOf cx stmt true) cx.literals
   cx.foreign.Value <- outer
   cx.foreignVetted.Value <- outerVetted
   r
