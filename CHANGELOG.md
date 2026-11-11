@@ -12,8 +12,8 @@ can be left early: `break`, `continue` and `return`.
 
 Tested as 0.7.0's changes were on the five CI runners up to `be321b3`; what came after it (the
 security review's fixes, the three defects, `break`, `continue` and `return`, effects in a
-task, records found by their fields) has passed the
-suite in the dev container on Linux x86-64 (542 checks, `tests/bootstrap.sh` among them: the
+task, records found by their fields, several effects in one `handle`) has passed the
+suite in the dev container on Linux x86-64 (543 checks, `tests/bootstrap.sh` among them: the
 compiler builds itself to the same bytes), and on the other runners once CI has run this
 release's commit. Not run for it: `./test.sh --valgrind`, `--sanitize` and `--release`. Still
 open from 0.7's plan: the flagship on its Nucleo-F401RE, and the archives on clean machines.
@@ -75,6 +75,9 @@ The specification's three defects (ROADMAP's track G, items 1 to 3), and proposa
   handler's clauses resume (`k v`) last: one that doesn't is a panic when a task performs its
   operation, and an effect whose operation never resumes (`Throw`) is still an error in a
   task's body (`tests/task/effects.zs`, `err_effects.zs`, `effects_stop.zs`).
+- A `handle` takes clauses of several effects, as a `match` takes cases (`| Clock.now (), k -> …
+  | Ctx.get (), k -> … | Log.note s, k -> …`), where 0.7.0 wanted a `handle` inside a `handle`:
+  it's those handles nested, the effect of the first clause innermost (`tests/effects/multi.zs`).
 - A record of a module that isn't opened needs no annotation when it's the only record with
   the fields: `Db.lines () |> List.map (fun l -> l.text)`, `let f l = l.text`, a literal
   `{ role = "user"; content = c }` and a record pattern find it, where 0.7.0 asked for an

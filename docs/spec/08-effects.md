@@ -79,9 +79,13 @@ or by an expression and `with` on the same line.
 
 **Static rules.**
 
-- **One effect per handler.** All operation clauses of a `handle` are for operations of one
-  effect, and there must be a clause for **each** of the effect's operations, exactly once.
-  A second effect needs a `handle` of its own, around or inside the first.
+- **Each effect whole.** For every effect a `handle` has a clause of, there must be a clause
+  for **each** of the effect's operations, exactly once.
+- **Several effects.** A `handle` whose clauses are for operations of several effects, in any
+  order, is the handles nested, one per effect in the order of their first clauses: the first
+  effect's handler is innermost and has the `return` clause. The rules below are per effect; so
+  an operation that a clause of the first effect performs, of a later effect of the same
+  `handle`, goes to that effect's clause, and one a later effect's clause performs goes outward.
 - An operation clause is `Effect.op p1 … pn, k -> body`: an irrefutable atomic pattern per
   parameter of the operation, then the name of the **resumption** (`_` when it is not used).
 - At most one `return` clause; without one it is `return x -> x`.

@@ -2135,6 +2135,24 @@ and perform (cx: Cx) (env: Map<string, Local>) (depth: int) (q: string) (args: l
 /// result to the handle's; the return clause maps the body's result (as it is when left out). The
 /// clauses perform in the handle's own row.
 and handleExpr (cx: Cx) (env: Map<string, Local>) (depth: int) (body: Expr) (ops: list<OpClause>) (ret: option<Pat * Expr>) : CExpr =
+  // clauses of several effects: the handles nested, one per effect in the order of their first
+  // clauses, the first innermost (with the return clause). An unknown operation is handleOne's error.
+  let effOf (c: OpClause) : string =
+    match resolveWith cx (fun x -> Map.containsKey x cx.effectOps.Value) c.op with
+    | Some q -> fst (Map.find q cx.effectOps.Value)
+    | None -> ""
+  let first =
+    match ops with
+    | c :: _ -> effOf c
+    | [] -> ""
+  let (mine, rest) = List.partition (fun c -> effOf c = first) ops
+  if first = "" || List.isEmpty rest then
+    handleOne cx env depth body ops ret
+  else
+    handleExpr cx env depth (plain (Handle(body, mine, ret))) rest None
+
+/// A handle of one effect.
+and handleOne (cx: Cx) (env: Map<string, Local>) (depth: int) (body: Expr) (ops: list<OpClause>) (ret: option<Pat * Expr>) : CExpr =
   let v = cx.v
   if List.isEmpty ops then
     fail "a handle has a clause for each operation of its effect: | Effect.op x, k -> …"
@@ -2166,9 +2184,6 @@ and handleExpr (cx: Cx) (env: Map<string, Local>) (depth: int) (body: Expr) (ops
     (full, c)
   let clauses = List.map resolveClause ops
   let eff = fst (Map.find (fst (List.head clauses)) cx.effectOps.Value)
-  for (q, _) in clauses do
-    if fst (Map.find q cx.effectOps.Value) <> eff then
-      fail $"a handle is for one effect: {shortName q}'s clause needs a handle of its own (around this one, or inside it)"
   let info = Map.find eff cx.effects.Value
   let qs = List.map fst clauses
   match List.tryFind (fun q -> List.length (List.filter (fun r -> r = q) qs) > 1) qs with

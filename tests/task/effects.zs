@@ -51,18 +51,18 @@ let counted (f: unit -> Task<int> / <Log | 'e>) : Task<int> * ref<int> / 'e =
 let main () =
   let ticks = ref 100
   let made () =
-    handle (handle work () with
-      | Clock.now (), k ->
-        ticks.Value <- ticks.Value + 1
-        k ticks.Value) with
+    handle work () with
+    | Clock.now (), k ->
+      ticks.Value <- ticks.Value + 1
+      k ticks.Value
     | Ctx.get (), k -> k { name = "aiko"; limit = 3 }
   let (t, lines) = counted made
   println "made: nothing has run yet"
   println $"result {Task.run t}, {lines.Value} lines"
   // the same work under other handlers: another context, a silent log
   let quiet =
-    handle (handle (handle work () with
-        | Clock.now (), k -> k 0) with
-      | Ctx.get (), k -> k { name = "test"; limit = 100 }) with
+    handle work () with
+    | Clock.now (), k -> k 0
+    | Ctx.get (), k -> k { name = "test"; limit = 100 }
     | Log.note _, k -> k ()
   println $"quiet {Task.run quiet}"

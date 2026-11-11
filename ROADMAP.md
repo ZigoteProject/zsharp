@@ -60,7 +60,7 @@ itself from an earlier release (stage 0: 0.6.1, pinned in `dev`).
 
 ### After 0.7
 0.6.2 is out (2026-10-30), 0.7.0 (2026-11-05) and 0.7.1 (2026-11-11: the security review's
-fixes, Windows natively, track G's three defects and `break`, `continue` and `return`). Phases 11.5 and 12
+fixes, Windows natively, track G's three defects, `break`, `continue` and `return`, effects in a task and several effects in one `handle`). Phases 11.5 and 12
 stay here until their last exit tests close: the clean-machine installs (11.5) and the flagship
 on its Nucleo-F401RE (12), what's left of 0.7's first item (the suite is green on the five CI
 runners since 2026-11-07). What follows 0.7 isn't planned
@@ -461,10 +461,10 @@ the syntax reserves and the compiler's known deviations.
       `Throw`. And a panic has no boundary below the process: a server's one bad request ends
       it. A task or a job as a panic's boundary would need unwinding, which decision 5
       declined; a supervisor process is today's answer, and the guide should say so.
-  11. **One effect per `handle`** *(run)*, no named handler, and an operation generic only in
+  11. **No named handler,** and an operation generic only in
       its result ([proposal 0002](docs/proposals/0002-effect-handlers.md)'s unresolved
-      questions): state with logging is a handle in a handle. Several effects in one `handle`
-      is sugar over nesting and costs nothing at run time.
+      questions). *(Several effects in one `handle` are done, in 0.7.1: sugar over nesting,
+      the first clause's effect innermost, at no cost at run time; `tests/effects/multi.zs`.)*
   12. **Leaving a loop** *(done 2026-11-11, [proposal 0029](docs/proposals/0029-leaving-a-loop.md): `break`, `continue`, `return`, and `?` in a loop's body; `tests/loop_leave.zs`, `loop_leave_use.zs`, `err_loop_leave.zs`; left: the three inside a computation expression, and a range loop with a computed step)*: no `break`, `continue` or early `return`, and `?` in a `for` body
       leaves the body, not the function (DESIGN §2.1's `Iter.forEach` lowering already stops
       on `false`, so `break` is a `false` the body returns).

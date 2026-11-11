@@ -151,6 +151,7 @@ let main () =
 - **Once:** a resumption may be called at most once (calling it again panics), or not at all: then `e` stops there, and the clause's value is the handle's.
 - **Deep:** what `k` resumes is handled by the same handler again, so each `State.get` in `counter` meets the clause.
 - **The innermost handler:** with two handlers of one effect, an operation goes to the nearer.
+- **Several effects:** one `handle` takes clauses of several effects, as a `match` takes cases, each effect with all its operations: `| State.get (), k -> … | State.put v, k -> … | Log.log s, k -> …`. It's the handles nested, the effect of the first clause innermost.
 
 A clause that calls `k` and uses what it gives back can collect what's performed:
 
@@ -233,6 +234,9 @@ let reply (text: string) : Task<unit> / Ctx =
 let serve (ctx: Context) =
   handle loop () with
   | Ctx.get (), k -> k ctx
+  | Log.note s, k ->
+    eprintln s
+    k ()
 ```
 
 - **Dependency injection:** a service's context, log, clock or connection is handled once,
