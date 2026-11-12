@@ -931,11 +931,9 @@ let recordParams (cx: Cx) (orig: list<Param>) (pars: list<string * string * Ty>)
 let schemed (cx: Cx) (t: Ty) : Ty =
   let vars = Buffer.empty
   let indexOf (i: int) =
-    let mutable found = -1
     for j in 0 .. Buffer.length vars - 1 do
-      if found < 0 && vars.[j] = i then
-        found <- j
-    found
+      if vars.[j] = i then return j
+    -1
   let rec named (t: Ty) =
     match prune cx.v t with
     | TVar i when Option.isNone (kindOf cx.v i).allowed ->

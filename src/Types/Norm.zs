@@ -58,8 +58,9 @@ let normMeas (v: Vars) (t: Ty) : list<string * int> * list<Ty * int> =
   let addVar (x: Ty) (e: int) =
     let mutable found = -1
     for i in 0 .. Buffer.length vars - 1 do
-      if found < 0 && sameVar v vars.[i] x then
+      if sameVar v vars.[i] x then
         found <- i
+        break
     if found >= 0 then
       powers.[found] <- saturated (powers.[found] + e)
     else
@@ -68,8 +69,9 @@ let normMeas (v: Vars) (t: Ty) : list<string * int> * list<Ty * int> =
   let addUnit (u: string) (e: int) =
     let mutable found = -1
     for i in 0 .. Buffer.length units - 1 do
-      if found < 0 && units.[i] = u then
+      if units.[i] = u then
         found <- i
+        break
     if found >= 0 then
       unitPowers.[found] <- saturated (unitPowers.[found] + e)
     else

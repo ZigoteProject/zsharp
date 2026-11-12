@@ -111,8 +111,9 @@ let showWith (v: Vars) (full: bool) (t: Ty) : string =
   let rowVarName (x: Ty) =
     let mutable found = -1
     for i in 0 .. Buffer.length rowVars - 1 do
-      if found < 0 && sameVar v rowVars.[i] x then
+      if sameVar v rowVars.[i] x then
         found <- i
+        break
     // (one not found, a row shown as a type, is 'e0, as in the F# compiler)
     if found = 0 then "'e" else $"'e{found + 1}"
   // arg: the row of an argument's last arrow, which shows <> when empty

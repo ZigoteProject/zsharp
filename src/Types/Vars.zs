@@ -95,14 +95,12 @@ let prune (v: Vars) (t: Ty) : Ty =
     | None -> b0
     | Some _ ->
       let mutable last = b0
-      let mutable more = true
-      while more do
+      while true do
         match next v last with
         | Some b -> last <- b
-        | None -> more <- false
+        | None -> break
       let mutable c = t
-      let mutable going = true
-      while going do
+      while true do
         match c with
         | TVar i ->
           match v.links.[i] with
@@ -110,8 +108,8 @@ let prune (v: Vars) (t: Ty) : Ty =
             trail v i
             v.links.[i] <- Some last
             c <- b
-          | _ -> going <- false
-        | _ -> going <- false
+          | _ -> break
+        | _ -> break
       last
 
 /// Binds a free variable to a type.
