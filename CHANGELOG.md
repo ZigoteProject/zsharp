@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Compiler
+- The compiler is built by 0.7.1 (stage 0, pinned in `dev` by its SHA-256; it was 0.6.1), so its
+  code may use 0.7's language and library: the first `break` and `return` are in `Types/Vars`,
+  `Types/Norm`, `Types/Show` and `Infer/Cx`. With 0.7.1's `List.collect` in it, lifting closures
+  takes 0.19 s of the compiler building itself where it took 1.2 s (debug, from nothing, 16
+  cores).
+- Faster on its own passes, found with a profiler: reference counting keeps each node's free
+  variables in an array by the node's number, not a `Map` (a tenth off the pass); a string
+  constant's number is counted, not `Map.count`ed (a walk of the map for every new string); a
+  type's name is asked of the vector types' table only when it could be one. The compiler built
+  is the same bytes.
+- [Proposal 0030](docs/proposals/0030-checking-ahead.md), checking modules on the pool: written,
+  its first step built, measured and taken out. It gives the same bytes and no time, because of
+  where an impl derived on demand lives; the proposal says what was found.
+
+### Library
+- `File.readAllBytes` copies each 64 KB it reads whole, where it pushed a byte at a time
+  (`tests/file_bytes.zs` reads a file longer than two reads).
+
 ## 0.7.1 (2026-11-12)
 
 What a review of 0.7.0 found, fixed: 103 of its 106 defects, the memory errors safe code could
