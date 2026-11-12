@@ -62,6 +62,11 @@
   elsewhere: Wine keeps a socket as the host's own, a file without Windows' tag for one, and
   the runtime took it for a file and refused. It's told from a file there by not opening
   (`tests/task/unix_path.zs` under `./test.sh --target x86_64-windows-gnu`).
+- A program built for an Intel Mac from another machine (`--target x86_64-macos`) links when
+  it rounds half to even (`Math.round`, a fixed-point conversion, a vector's `round`): the
+  runtime has `roundeven` there, as it has on Windows (`tests/fixedpoint.zs`,
+  `tests/fold_edges.zs` and `tests/simd/basics.zs` under `./test.sh --target x86_64-macos
+  --build-only`).
 - `./test.sh --target` builds `tests/libstatic.zs`'s library for the target and runs its C
   program under the emulator; it built the host's and linked it with the target's C.
 

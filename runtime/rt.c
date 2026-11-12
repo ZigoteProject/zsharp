@@ -40,9 +40,10 @@
 #define obj_free free
 #endif
 
-#ifdef _WIN32
-// LLVM's llvm.roundeven calls these, and mingw-w64's libm lacks them: the default rounding mode
-// is to nearest, ties to even
+#if defined(_WIN32) || defined(__APPLE__)
+// LLVM's llvm.roundeven calls these where the processor has no instruction for it (an Intel Mac's
+// baseline), and mingw-w64's libm and the macOS one a cross build links lack them: the default
+// rounding mode is to nearest, ties to even
 #include <math.h>
 double roundeven(double x) { return nearbyint(x); }
 float roundevenf(float x) { return nearbyintf(x); }
