@@ -4,13 +4,10 @@ Every phase ends with **exit tests**: programs in `tests/` (or scripted checks) 
 along with the whole `./test.sh`. Design and rationale: [DESIGN.md](DESIGN.md). Learning the
 language: [the guide](docs/guide/README.md).
 
-**Development** happens in a container (`.devcontainer/Containerfile`: Fedora 44, clang/LLVM 23.1
-(LLVM's release), zig, valgrind, gdb, qemu-user, qemu-system-arm, Wine, Node and raylib, plus Rust,
-Swift and OCaml for the host benchmarks; no .NET since the F# compiler went). The compiler builds
-itself from an earlier release (stage 0: 0.6.1, pinned in `dev`).
-- **Commands:** `./dev ./test.sh` runs the suite, plain `./dev` opens a shell, and `./dev --rebuild` rebuilds the image.
-- **One at a time:** run one `./dev` at a time, since runs share `bin/`. The container mounts the repository with a shared SELinux label (`:z`). A tool that mounts it with a private one (`:Z`) cuts off a container that's running.
-- **Test modes:** `./test.sh --valgrind` runs everything under valgrind. `./test.sh --target aarch64-linux-musl` runs it cross-compiled under qemu.
+**Development** happens in a container, and the compiler builds itself from an earlier release
+(stage 0: 0.6.1, pinned in `dev`): `./dev ./test.sh` builds it and runs the suite. Setting up,
+the test modes and the rules are in [AGENTS.md](AGENTS.md) and
+[docs/contributing](docs/contributing/README.md).
 
 ```
  v1, single-threaded:  0 ─ 1 ─ 2 ─ 3 ─ 4 ─ L ─ 5 optimizer I ─ V v1 completion ─ 6 CE + Task

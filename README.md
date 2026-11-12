@@ -185,7 +185,7 @@ export PATH="$PWD/zs-0.7.1-linux-x86_64:$PATH"
 zs doctor                          # what builds need, found or missing
 zs run hello.zs                    # build and run
 zs build hello.zs --release        # optimized, with ThinLTO
-zs new greeter                     # a project: zs.toml, src/main.zs and a test
+zs new greeter                     # a project: zs.toml, src/main.zs with a test
 zs build blink.zs --target cortex-m4 -Os -o blink.elf
 ```
 
@@ -255,7 +255,9 @@ What is planned: [ROADMAP.md](ROADMAP.md). What changed: [CHANGELOG.md](CHANGELO
 | read whole programs | [logstat](examples/logstat/README.md) (a CLI with effects, tasks and property tests), the [Nucleo firmware](examples/nucleo/README.md), [Advent of Code](examples/aoc/README.md), [small tools](examples/tools/README.md) |
 | understand the design | [DESIGN.md](DESIGN.md) and [the proposals](docs/proposals/README.md) |
 | check a number | [docs/reports](docs/reports) |
-| work on the compiler | [src/ARCHITECTURE.md](src/ARCHITECTURE.md) |
+| work on Z# itself | [AGENTS.md](AGENTS.md) (the map, the commands, the rules), [docs/contributing](docs/contributing/README.md), [src/ARCHITECTURE.md](src/ARCHITECTURE.md) |
+
+Every set of documents, and what keeps each current: [docs/README.md](docs/README.md).
 
 ## License
 

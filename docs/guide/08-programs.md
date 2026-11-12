@@ -134,7 +134,7 @@ microcontroller.
 
 | Command | Does |
 |---|---|
-| `zs new <name>` | creates a project: `zs.toml`, `src/main.zs`, `.gitignore` |
+| `zs new <name>` | creates a project: `zs.toml`, `src/main.zs` with a test, `.gitignore` |
 | `zs build` | builds `build/<name>` (`--release` for an optimized one) |
 | `zs run [args…]` | builds and runs, passing the arguments (a chip's image under QEMU, a WebAssembly module under Node) |
 | `zs test [paths…]` | runs the `[<Tests>]` values in `src/` and `tests/` |
