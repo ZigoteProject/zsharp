@@ -615,6 +615,25 @@ static void heap_key_make(void) {
 // after that keeps its state.
 __attribute__((destructor)) static void heap_unload(void) {
     if (__atomic_exchange_n(&heap_keyed, false, __ATOMIC_ACQ_REL)) pthread_key_delete(heap_key);
+#if !ZS_POOL
+    // Without the pool (a sanitizer's or valgrind's build) a state holds no memory but its own:
+    // this thread's and the ended threads' are freed with their counts, so valgrind reports none
+    // at exit. A thread that lives on keeps its own, and one that allocates after this takes a new.
+    pthread_mutex_lock(&counts_mu);
+    heap_state *h = heap_mine;
+    heap_mine = NULL;
+    if (h) h->spare = spare_states; else h = spare_states;
+    spare_states = NULL;
+    while (h) {
+        heap_state *next = h->spare;
+        for (counts **c = &all_counts; *c; c = &(*c)->next)
+            if (*c == h->counts) { *c = h->counts->next; break; }
+        free(h->counts);
+        free(h);
+        h = next;
+    }
+    pthread_mutex_unlock(&counts_mu);
+#endif
 }
 
 __attribute__((noinline)) static heap_state *heap_new(void) {

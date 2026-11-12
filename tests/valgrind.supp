@@ -1,0 +1,10 @@
+# What ./test.sh --valgrind doesn't count. glibc's loader keeps what a dlopen made until the
+# process ends, and getaddrinfo loads the name service's modules with one: reachable, never
+# freed, and not the program's.
+{
+   glibc-dlopen-kept
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:_dl_catch_exception
+}

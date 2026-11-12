@@ -3,7 +3,8 @@
 # every tests/**/*.zs that has an expected .out (run output) or .err (compile error) next to it;
 # other .zs files are modules those tests use. Builds are --strict: the repository's own code has
 # no warnings.
-# --valgrind: also run each program under valgrind (memory errors or leaks fail the test).
+# --valgrind: also run each program under valgrind (memory errors or leaks fail the test), its
+#   threads taking turns in order (--fair-sched: a thread that spins would keep the others out).
 # --target <triple>: cross-compile the programs and C interop tests (zs build --target) and run
 #   them under qemu-user, e.g. --target aarch64-linux-musl, or Wine for x86_64-windows-gnu; the
 #   host-only tool checks are skipped.
@@ -90,7 +91,7 @@ for t in $(find tests -name '*.zs' | sort); do
   else
     run=("${qemu[@]}" "$tmp/exe")
     # panics abort without cleanup by design, so only exit-normally programs are leak-checked
-    [ $valgrind = 1 ] && ! grep -q "^panic:" "$base.out" && run=(valgrind -q --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=all --error-exitcode=99 "$tmp/exe")
+    [ $valgrind = 1 ] && ! grep -q "^panic:" "$base.out" && run=(valgrind -q --fair-sched=yes --suppressions=tests/valgrind.supp --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=all --error-exitcode=99 "$tmp/exe")
     # a sanitized program: its report ends the run with status 99, as valgrind's does; a panic
     # aborts without cleanup, so its leaks aren't counted
     sanenv=()
@@ -887,7 +888,7 @@ else echo "FAIL a library's startup assert after a table"; cat "$tmp/libassert.l
 for c in $(find tests -name main.c | sort); do
   d=$(dirname "$c")
   if bin/zs build "$d/lib.zs" "${tgt[@]}" --lib -o "$tmp/lib.a" 2>"$tmp/build.log" && "${cc[@]}" -I"$tmp" "$c" "$tmp/lib.a" -lm "${syslibs[@]}" -o "$tmp/cexe" 2>>"$tmp/build.log"; then
-    run=("${qemu[@]}" "$tmp/cexe"); [ $buildonly = 1 ] && run=(cat "$d/main.out"); [ $valgrind = 1 ] && run=(valgrind -q --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=all --error-exitcode=99 "$tmp/cexe")
+    run=("${qemu[@]}" "$tmp/cexe"); [ $buildonly = 1 ] && run=(cat "$d/main.out"); [ $valgrind = 1 ] && run=(valgrind -q --fair-sched=yes --suppressions=tests/valgrind.supp --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=all --error-exitcode=99 "$tmp/cexe")
     # a C program's stdout is in text mode on Windows: \n is written \r\n there
     actual=$("${run[@]}" 2>&1); code=$?; actual=${actual//$'\r'/}; [ $code = 99 ] && actual="$actual
 (valgrind reported memory errors or leaks)"
@@ -920,7 +921,7 @@ fi
 # to the loader only when told (zs build tells it for a .so); libhost.so is linked by its path,
 # which every linker takes whatever the file's suffix
 if [ -z "$target" ] && [ $windows = 0 ]; then
-  so="$tmp/so"; mkdir -p "$so"; run=(); [ $valgrind = 1 ] && run=(valgrind -q --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=all --error-exitcode=99)
+  so="$tmp/so"; mkdir -p "$so"; run=(); [ $valgrind = 1 ] && run=(valgrind -q --fair-sched=yes --suppressions=tests/valgrind.supp --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=all --error-exitcode=99)
   whole=(-Wl,--whole-archive "$so/lib.a" -Wl,--no-whole-archive)
   [ "$(uname -s)" = Darwin ] && whole=(-Wl,-force_load,"$so/lib.a" -Wl,-undefined,dynamic_lookup)
   for kind in so whole; do

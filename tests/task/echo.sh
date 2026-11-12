@@ -11,7 +11,7 @@ dir=$(mktemp -d); trap 'rm -rf "$dir"' EXIT
 # no client socket of an earlier run, still closing, holds the port the server listens on
 port=$((10000 + RANDOM % 20000))
 timeout 60 bin/zs build examples/echo/server.zs -o "$dir/server" && timeout 60 bin/zs build examples/echo/client.zs -o "$dir/client" || exit 1
-run=(); [ "${1:-}" = --valgrind ] && run=(valgrind -q --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=all --error-exitcode=99)
+run=(); [ "${1:-}" = --valgrind ] && run=(valgrind -q --fair-sched=yes --suppressions=tests/valgrind.supp --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=all --error-exitcode=99)
 # on the main thread's event loop, then (--threads) on every core's (Task.spawn)
 for threads in "" --threads; do
   timeout 120 "${run[@]}" "$dir/server" $port $threads > "$dir/server.log" 2>&1 & srv=$!

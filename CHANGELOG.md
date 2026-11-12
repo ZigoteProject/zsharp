@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.1 (2026-11-11)
+## 0.7.1 (2026-11-12)
 
 What a review of 0.7.0 found, fixed: 103 of its 106 defects, the memory errors safe code could
 reach among them (below, under Security and stability). Windows, natively: the suite runs and
@@ -13,9 +13,11 @@ can be left early: `break`, `continue` and `return`.
 Tested as 0.7.0's changes were on the five CI runners up to `be321b3`; what came after it (the
 security review's fixes, the three defects, `break`, `continue` and `return`, effects in a
 task, records found by their fields, several effects in one `handle`) has passed the
-suite in the dev container on Linux x86-64 (543 checks, `tests/bootstrap.sh` among them: the
-compiler builds itself to the same bytes), and on the other runners once CI has run this
-release's commit. Not run for it: `./test.sh --valgrind`, `--sanitize` and `--release`. Still
+suite in the dev container on Linux x86-64 (544 checks, `tests/bootstrap.sh` among them: the
+compiler builds itself to the same bytes), built optimized too (`./test.sh --release`, 544), with
+the address and undefined-behaviour sanitizers (`--sanitize`, 536, the 9 that measure the pool
+or the stack guard skipped) and under valgrind (`--valgrind`, 536, the same 9 skipped), and on
+the other runners once CI has run this release's commit. Still
 open from 0.7's plan: the flagship on its Nucleo-F401RE, and the archives on clean machines.
 
 ### Upgrading from 0.7.0
@@ -131,6 +133,11 @@ two in part and one deferred, with the designs that finish them. What a program 
   written by no one else; CI checks the toolchains it downloads.
 
 ### Runtime
+- A program with threads built without the pool (`ZS_NO_POOL`, as under valgrind and the
+  sanitizers) frees each thread's allocator state when it exits: the exiting thread's and the
+  ended threads', two blocks of 64 bytes each that valgrind reported as still reachable, which
+  failed 26 of `./test.sh --valgrind`'s checks. A build with the pool keeps them, with its
+  chunks, as before.
 - On Windows on Arm, a subnormal `f64` prints as on every other target (`3.13983658588571e-319`,
   not `6.5205388442357377e-4932`): numbers are written by the UCRT's own printf on Windows, not
   mingw-w64's, which reads such a value as an 80-bit one where a long double is a double. A NaN
@@ -203,6 +210,16 @@ two in part and one deferred, with the designs that finish them. What a program 
   with a section on status and limitations; the full tables stay in `docs/reports`.
 
 ### Tests
+- `./test.sh --valgrind` runs a program's threads in turn (`--fair-sched=yes`): a thread that
+  spins while it waits for the others kept them out, and `tests/parallel/anythread.zs` ended at
+  its ten minutes. It doesn't count what glibc's loader keeps of the name service's modules
+  that `getaddrinfo` loads (`tests/valgrind.supp`: reachable blocks made under the loader; a
+  program's own are counted). An `i64` to `f32` in one rounding is `tests/fold_f32_i64.zs`,
+  run plain only: valgrind converts through a double, which rounds twice.
+- The checks catch what they're for, tried with defects put in a copy of the runtime: a leaked
+  string, a write past one and a write after a free each fail `--valgrind` and `--sanitize`,
+  `tests/effects/multi.zs` fails with 0.7.0 and with the nesting reversed, and a program's own
+  kept or lost block is reported with the suppressions on.
 - The suite runs natively on Windows (CI's x64 and arm64 runners): text is checked out with LF
   there too (`.gitattributes`; git for Windows' CRLF failed every comparison), each test program
   is stopped after 600 s instead of holding up the rest, a C program linking a Z# library uses

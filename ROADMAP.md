@@ -22,7 +22,7 @@ itself from an earlier release (stage 0: 0.6.1, pinned in `dev`).
 
  done: 0–11, L, V, the third design review, 12's release (0.6.2 on 2026-10-30), and 0.7's
        items 2 to 4 but for what their statuses leave
- now: 0.7.1 (2026-11-11) after 0.7.0 (2026-11-05), with 0.7's first
+ now: 0.7.1 (2026-11-12) after 0.7.0 (2026-11-05), with 0.7's first
       item open: what 11.5 and 12 have left (the suites in CI, clean machines, the board)
 ```
 
@@ -59,7 +59,7 @@ itself from an earlier release (stage 0: 0.6.1, pinned in `dev`).
 ## Next
 
 ### After 0.7
-0.6.2 is out (2026-10-30), 0.7.0 (2026-11-05) and 0.7.1 (2026-11-11: the security review's
+0.6.2 is out (2026-10-30), 0.7.0 (2026-11-05) and 0.7.1 (2026-11-12: the security review's
 fixes, Windows natively, track G's three defects, `break`, `continue` and `return`, effects in a task and several effects in one `handle`). Phases 11.5 and 12
 stay here until their last exit tests close: the clean-machine installs (11.5) and the flagship
 on its Nucleo-F401RE (12), what's left of 0.7's first item (the suite is green on the five CI

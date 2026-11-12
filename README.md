@@ -9,7 +9,7 @@ compiles through LLVM to a single native binary, manages memory by reference cou
 compiler mostly optimizes away, and links directly with C. The same language targets Linux,
 macOS and Windows, bare-metal Cortex-M microcontrollers, and WebAssembly.
 
-> **Status: pre-1.0.** The current release is 0.7.1 (2026-11-11). The language and library
+> **Status: pre-1.0.** The current release is 0.7.1 (2026-11-12). The language and library
 > still change between releases; [CHANGELOG.md](CHANGELOG.md) says what to rewrite. See
 > [Status and limitations](#status-and-limitations) before depending on it.
 

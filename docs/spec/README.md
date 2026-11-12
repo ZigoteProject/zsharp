@@ -1,6 +1,6 @@
 # The Z# Language Specification
 
-**Language version:** 0.7 (compiler `zs 0.7.1`, 2026-11-11).
+**Language version:** 0.7 (compiler `zs 0.7.1`, 2026-11-12).
 **Status:** descriptive. Z# is pre-1.0; the language may change between releases, and every
 change is listed in [CHANGELOG.md](../../CHANGELOG.md). 1.0 is the release that freezes the
 language ([chapter 14](14-evolution.md)).
