@@ -95,7 +95,15 @@ let private vectorsByName : Map<string, string * int> = Map.ofList (List.map (fu
 
 let private masksByName : Map<string, int> = Map.ofList maskTypes
 
-let isVectorName (n: string) : bool = Map.containsKey n vectorsByName
+let isVectorName (n: string) : bool =
+  // f32x4 … u64x8: most names are told apart by their ends, without the table
+  let k = String.length n
+  if k < 4 then
+    false
+  else
+    let first = int (String.byte n 0)
+    let last = int (String.byte n (k - 1))
+    (first = 102 || first = 105 || first = 117) && last >= 48 && last <= 57 && Map.containsKey n vectorsByName
 
 let isMaskName (n: string) : bool = Map.containsKey n masksByName
 
