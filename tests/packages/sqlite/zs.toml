@@ -1,0 +1,7 @@
+# packages/sqlite used as a dependency (tests/packages/sqlite.sh)
+[package]
+name = "sqlite-test"
+main = "src/main.zs"
+
+[dependencies]
+sqlite = { path = "../../../packages/sqlite" }

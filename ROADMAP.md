@@ -394,9 +394,9 @@ flags, and the orphan rule for impls. Packages stay source (decision 27).
   - **From the twelve-dollar server:** `sqlite` starts from its `Fast.Sqlite`: a connection and statements as one-field `[<CLayout>]` records, a step as `Row | Done | Failed`, text columns as spans of SQLite's own bytes (no copy until the next step), and prepared statements kept in a record of the program's. `http`'s server takes item 14 of track S as well as `Task`: a batch of requests answered in place, which is what kept that server ahead of Rust's and F#'s best entries.
 - **Exit tests:**
   - *Done in phase 12:* a diamond (A needs C ≥ 1.1, B needs C ≥ 1.3) resolves to C 1.3 on every machine, and `json` and `json/v2` build in one program.
-  - *After 0.7:* a project uses `zsharp/sqlite` after nothing more than `zs add`.
+  - *After 0.7:* a project uses `zsharp/sqlite` after nothing more than `zs add`. *(2026-11-12: `packages/sqlite` is built, [0032](docs/proposals/0032-first-party-packages.md)'s first step, used as a path dependency: `tests/packages/sqlite.sh`; it has no repository or tags of its own yet.)*
   - *Done in 0.7:* a microcontroller project that depends on a Std package fails with an error naming that package (`tests/project/pkgs.sh`).
-  - *After 0.7:* `examples/echo`, rebuilt on `zsharp/http`, serves HTTP.
+  - *After 0.7:* `examples/echo`, rebuilt on `zsharp/http`, serves HTTP. *(2026-11-12: `packages/tls` and `packages/http` are built, [0032](docs/proposals/0032-first-party-packages.md); `examples/service` serves HTTP over SQLite on them, `tests/packages/http.sh`, and `examples/echo` stays the TCP example.)*
 
 ### Language (G)
 The gaps writing [the specification](docs/spec/README.md) found (2026-11-10): where the language

@@ -1,0 +1,10 @@
+# SQLite for Z# (proposal 0032): c/sqlite3.c and c/sqlite3.h are SQLite's amalgamation,
+# unmodified (https://sqlite.org, public domain; c/VERSION has the release and its hashes),
+# compiled through c/shim.c, which sets its options and adds what C's API needs a macro for
+[package]
+name = "sqlite"
+main = "src/Sqlite.zs"
+
+[c]
+sources = ["c/shim.c"]
+include = ["c"]

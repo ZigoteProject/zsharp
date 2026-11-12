@@ -1,0 +1,7 @@
+# packages/tls used as a dependency (tests/packages/tls.sh)
+[package]
+name = "tls-test"
+main = "src/main.zs"
+
+[dependencies]
+tls = { path = "../../../packages/tls" }

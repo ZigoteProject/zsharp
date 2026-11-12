@@ -1,0 +1,8 @@
+# A small service on the first-party packages (proposal 0032): HTTP in front, SQLite behind
+[package]
+name = "service"
+main = "src/main.zs"
+
+[dependencies]
+http = { path = "../../packages/http" }
+sqlite = { path = "../../packages/sqlite" }

@@ -118,6 +118,22 @@ for t in $(find tests -name '*.zs' | sort); do
   if [ "$actual" == "$expected" ]; then echo "ok   $t"
   else echo "FAIL $t"; diff <(echo "$expected") <(echo "$actual") | head -20; fail=1; fi
 done
+# the first-party packages' programs for a cross target (0032): each built with the target's C
+# and run under its emulator, printing what its script (tests/packages/*.sh) expects on the host
+if [ -n "$target" ]; then
+  zsabs="$PWD/bin/zs"
+  for p in sqlite tls http; do
+    work="$tmp/pkg-$p"; mkdir -p "$work/packages" "$work/tests/packages"
+    cp -r packages/sqlite packages/tls packages/http "$work/packages/" && cp -r "tests/packages/$p" "$work/tests/packages/"
+    exe="$work/exe"; [ $windows = 1 ] && exe="$work/exe.exe"
+    if ! (cd "$work/tests/packages/$p" && rm -rf .zs-cache build && "$zsabs" build --strict "${tgt[@]}" -o "$exe") >"$tmp/pkg.log" 2>&1; then
+      echo "FAIL tests/packages/$p for $target (build)"; head -20 "$tmp/pkg.log"; fail=1
+    elif [ $buildonly = 1 ]; then echo "ok   tests/packages/$p for $target (built, not run)"
+    elif diff <(sed -n '/^== the program$/,/^exit /p' "tests/packages/$p.expected" | sed '1d;$d') <("${qemu[@]}" "$exe" 2>/dev/null | tr -d '\r') >"$tmp/pkg.diff"; then
+      echo "ok   tests/packages/$p for $target"
+    else echo "FAIL tests/packages/$p for $target"; head -20 "$tmp/pkg.diff"; fail=1; fi
+  done
+fi
 # the tools (fmt, LSP, MCP, editors, projects, gdb) are checked on the host only
 if [ -z "$target" ]; then
 # compile time of a mid-sized program, per phase (watched, not enforced)
@@ -383,6 +399,15 @@ else echo "FAIL tests/project/links.sh"; cat "$tmp/links.diff"; fail=1; fi
 if [ $windows = 1 ]; then echo "skip tests/project/depcache.sh (symbolic links, which Git Bash's ln -s copies)"
 elif diff <(tests/project/depcache.sh 2>&1) tests/project/depcache.expected >"$tmp/depcache.diff"; then echo "ok   tests/project/depcache.sh (dependencies' caches in the project, none through a link)"
 else echo "FAIL tests/project/depcache.sh"; cat "$tmp/depcache.diff"; fail=1; fi
+# packages/sqlite as a dependency (0032): the vendored source's hashes, its API, nothing leaked
+if diff <(tests/packages/sqlite.sh 2>&1) tests/packages/sqlite.expected >"$tmp/sqlite.diff"; then echo "ok   tests/packages/sqlite.sh (packages/sqlite: bind, read, transactions, closed handles)"
+else echo "FAIL tests/packages/sqlite.sh"; cat "$tmp/sqlite.diff"; fail=1; fi
+# packages/tls as a dependency (0032): Mbed TLS's hashes, a client and a server over loopback
+if diff <(tests/packages/tls.sh 2>&1) tests/packages/tls.expected >"$tmp/tls.diff"; then echo "ok   tests/packages/tls.sh (packages/tls: handshakes, a megabyte echoed, certificates refused)"
+else echo "FAIL tests/packages/tls.sh"; cat "$tmp/tls.diff"; fail=1; fi
+# packages/http as a dependency (0032): llhttp's hashes, a server and a client, examples/service
+if diff <(tests/packages/http.sh 2>&1) tests/packages/http.expected >"$tmp/http.diff"; then echo "ok   tests/packages/http.sh (packages/http: server, client, limits, TLS; examples/service)"
+else echo "FAIL tests/packages/http.sh"; cat "$tmp/http.diff"; fail=1; fi
 # zs add, zs remove and zs tree, internal modules, and Std in a chip build's dependency (0018)
 if diff <(tests/project/pkgs.sh 2>&1) tests/project/pkgs.expected >"$tmp/pkgs.diff"; then echo "ok   tests/project/pkgs.sh (zs add, remove, tree; internal modules; Std on a chip)"
 else echo "FAIL tests/project/pkgs.sh"; cat "$tmp/pkgs.diff"; fail=1; fi

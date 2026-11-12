@@ -1,0 +1,6 @@
+SQLite 3.54.1, the amalgamation
+https://sqlite.org/2026/sqlite-amalgamation-3540100.zip
+SHA3-256 of the archive, as sqlite.org's download page gives it:
+92281c86e2957f9b9305890f9ac04204caa7b677cc868dc326d942689df28e30
+sqlite3.c and sqlite3.h are that archive's, unmodified: `sha256sum -c SHA256SUMS` in this
+directory checks them. To update: replace the two files, this file and SHA256SUMS in one commit.

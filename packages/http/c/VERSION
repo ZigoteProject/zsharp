@@ -1,0 +1,7 @@
+llhttp 9.4.3, the release's generated C
+https://github.com/nodejs/llhttp/archive/refs/tags/release/v9.4.3.tar.gz
+SHA-256 of that archive as fetched on 2026-11-12 (the project publishes none):
+1eb813c7437b31a87496a1cd3ed79f00746720f5e7e29c79b42c02cb69f36c39
+llhttp/ is that archive's src/*.c, include/llhttp.h and LICENSE, unmodified: `sha256sum -c
+SHA256SUMS` in this directory checks them. To update: replace llhttp/, this file and SHA256SUMS
+in one commit.

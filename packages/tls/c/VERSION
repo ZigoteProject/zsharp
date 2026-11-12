@@ -1,0 +1,8 @@
+Mbed TLS 3.6.7 (a long-term support branch)
+https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.7/mbedtls-3.6.7.tar.bz2
+SHA-256 of the archive, as the release's notes and its sha256sum.txt give it:
+a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6
+mbedtls/ is that archive's library/, include/ and LICENSE, unmodified, without their build
+files (CMakeLists.txt, Makefile, .gitignore): `sha256sum -c SHA256SUMS` in this directory checks
+each file. To update: replace mbedtls/, this file and SHA256SUMS in one commit, and zs.toml's
+list of sources if library/ gained or lost a file.

@@ -93,8 +93,17 @@ A Rust crate or Zig package built as a static library with a C header is C to Z#
 |---|---|---|
 | `packages/xxhash` | xxHash 0.8.3's XXH3, vendored | the compiler's cache keys and lock hashes |
 | `packages/libclang` | the system's libclang, opened when first used | `import c` |
+| `packages/sqlite` | SQLite 3.54.1's amalgamation, vendored and built through `c/shim.c` ([0032](../proposals/0032-first-party-packages.md)) | programs, as a path dependency; `tests/packages/sqlite.sh` |
+| `packages/tls` | Mbed TLS 3.6.7's `library/` and `include/`, vendored, under `c/shim.c` | programs and `packages/http`; `tests/packages/tls.sh` |
+| `packages/http` | llhttp 9.4.3's generated parser, vendored, under `c/shim.c`; depends on `packages/tls` | programs, `examples/service`; `tests/packages/http.sh` |
 
-`src/zs.toml` names both as path dependencies. They're compiled by stage 0 as part of the
+Each of the three keeps its library's release, the archive's hash and where it came from in
+`c/VERSION`, and a hash of every vendored file in `c/SHA256SUMS`, which its test checks: a
+vendored file is never edited. An option a library takes as a `#define` is set in the shim that
+includes it (`sqlite`) or in a header placed before the library's own on the include path
+(`tls`'s `c/config`), since `[c]` has no key for one.
+
+`src/zs.toml` names the first two as path dependencies. They're compiled by stage 0 as part of the
 compiler, so their Z# follows [the compiler's rules](code-style.md#the-compiler-src).
 
 ## Changing the package manager

@@ -1,0 +1,13 @@
+# HTTP/1.1 for Z# (proposal 0032), a server and a client on Net.Tcp, Task and packages/tls:
+# c/llhttp is llhttp 9.4.3's generated parser, unmodified (https://github.com/nodejs/llhttp,
+# MIT, c/llhttp/LICENSE; c/VERSION has the release and its hashes), under c/shim.c
+[package]
+name = "http"
+main = "src/Http.zs"
+
+[dependencies]
+tls = { path = "../tls" }
+
+[c]
+include = ["c/llhttp"]
+sources = ["c/shim.c", "c/llhttp/llhttp.c", "c/llhttp/api.c", "c/llhttp/http.c"]

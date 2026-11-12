@@ -1,0 +1,8 @@
+# packages/http used as a dependency (tests/packages/http.sh)
+[package]
+name = "http-test"
+main = "src/main.zs"
+
+[dependencies]
+http = { path = "../../../packages/http" }
+tls = { path = "../../../packages/tls" }

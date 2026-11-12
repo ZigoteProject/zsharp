@@ -166,6 +166,31 @@ members = ["app", "tool", "libs/*"]   # libs/*: each folder under libs/ with a z
 - **Commands at the root:** `zs build`, `zs test`, `zs fetch`, `zs update`, `zs tree` and `zs vendor` run over every member (a library member isn't built on its own). `zs run`, `zs add` and `zs remove` are run in a member, and say so at the root.
 - **Members** use one another as path dependencies: `text = { path = "../libs/text" }`.
 
+**The repository's packages:** `packages/sqlite` (SQLite), `packages/tls` (TLS, over Mbed TLS)
+and `packages/http` (an HTTP/1.1 server and client) each wrap the C library that does the work,
+and a project names one as a path dependency (`http = { path = "…/packages/http" }`).
+`examples/service` uses two of them:
+
+```fsharp
+open Http
+open Sqlite
+
+let route (db: Db) (req: Request) : Task<Response> =
+  task {
+    match req.method, req.path with
+    | Get, "/notes" -> return notes db
+    | Post, "/notes" -> return add db (Request.text req)
+    | _ -> return Response.text 404 "not found"
+  }
+
+// in main, with the database open:
+//   Task.run (Server.serve { Server.defaults with port = 8080 } (route db))
+```
+
+Values reach SQL only by being bound (`Db.exec db "insert into notes (text) values (?)"
+[ Text text ]`), a server's limits on what a client may send are on by default, and a client
+always verifies a server's certificate.
+
 ## Builds
 
 **Debug and release:**

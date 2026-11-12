@@ -1,0 +1,8 @@
+# The echo server over HTTP (track K's exit test, proposal 0032): server.zs beside this
+# directory is the same idea on a bare TCP socket
+[package]
+name = "echo-http"
+main = "src/main.zs"
+
+[dependencies]
+http = { path = "../../../packages/http" }

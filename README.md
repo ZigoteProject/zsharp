@@ -263,5 +263,9 @@ Every set of documents, and what keeps each current: [docs/README.md](docs/READM
 
 [MIT](LICENSE). The repository includes [xxHash](packages/xxhash/c/LICENSE) and
 [wepoll](runtime/wepoll/LICENSE) (BSD 2-Clause) and
-[tree-sitter's parser headers](editors/tree-sitter-zsharp/src/tree_sitter/LICENSE) (MIT).
+[tree-sitter's parser headers](editors/tree-sitter-zsharp/src/tree_sitter/LICENSE) (MIT),
+[SQLite](packages/sqlite/c/VERSION)'s amalgamation (public domain),
+[Mbed TLS](packages/tls/c/mbedtls/LICENSE) (Apache-2.0) and
+[llhttp](packages/http/c/llhttp/LICENSE) (MIT). A program that uses one of those packages
+carries its library's notice: each package's README says which.
 `import c` loads the system's libclang at run time; no part of LLVM is shipped.

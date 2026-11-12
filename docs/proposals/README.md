@@ -40,7 +40,7 @@ proposal describes a change to it, and [ROADMAP.md](../../ROADMAP.md) says when 
 | 0029 | [Leaving a loop](0029-leaving-a-loop.md) | Implemented | track G's item 12 |
 | 0030 | [Checking ahead](0030-checking-ahead.md) | Proposed; step 1 spiked and taken out (same bytes, no time) | after 0.7.1: the compiler's front half on the pool |
 | 0031 | [Stability and support](0031-stability-and-support.md) | Draft | a design review, before the release after 0.7.1 |
-| 0032 | [First-party packages: `sqlite`, `tls` and `http`](0032-first-party-packages.md) | Draft | a design review, with 0031 |
+| 0032 | [First-party packages: `sqlite`, `tls` and `http`](0032-first-party-packages.md) | Implemented: the three packages, `examples/service` and `examples/echo/http`, the `sql` provider's `rows = "sqlite"`; run on Linux and under QEMU (arm64) and Wine (Windows x64), built for macOS and not yet run there | decision 85, a review of the packages as built |
 
 **Status:**
 - **Draft:** written, with its open questions listed.

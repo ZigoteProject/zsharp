@@ -25,6 +25,34 @@
   once an element). The prelude has `Eq`, `Ord` and `Hash` for `list` as loops now, with the
   results the derived ones gave (`tests/list_long.zs`).
 
+### Packages
+- `packages/sqlite`, the first of [proposal 0032](docs/proposals/0032-first-party-packages.md)'s
+  three: SQLite 3.54.1's amalgamation, unmodified, under a Z# API. `Db.connect`, `prepare`,
+  `exec`, `query` and `transaction` (rolled back by an `Error` or a throw), `Statement.bind`,
+  `step` and `reset`, `Row`'s columns; values reach SQL only by being bound; `use` closes a
+  connection and a statement, and one used after its close is an `Error`, not a freed pointer.
+  A project names it as a path dependency for now (`tests/packages/sqlite.sh`).
+- `packages/tls`: TLS 1.2 and 1.3 over a `TcpStream`, through Mbed TLS 3.6.7. `Tls.connect`
+  and `Tls.accept` give a stream read and written as `Tcp`'s are; a client always verifies the
+  certificate and the name (the system's authorities, or `Tls.Config.clientTrusting`);
+  `Tls.Config.selfSigned` makes a key and a certificate for a test (`tests/packages/tls.sh`).
+- `packages/http`: an HTTP/1.1 server and client on `Tcp`, tasks and `packages/tls`, parsing
+  with llhttp 9.4.3. `Server.serve config handler`, a handler a function from a `Request` to
+  a task of a `Response`, with limits on a head, a body, a slow request, an idle connection
+  and the number of connections; `Server.stop` ends it once the requests being answered have
+  finished. `Client.get`, `post` and `send`, redirects followed; `Client.session` and
+  `sendIn` keep connections open between requests. Bodies are whole, in memory, unless a
+  server asks for requests in pieces (`streamRequests`, `Request.read`) or a handler answers
+  with `Response.stream` (`tests/packages/http.sh`).
+- `import sql (…, rows = "sqlite")`: each named query gets a `run` that runs it on
+  `packages/sqlite` and gives its typed rows, and each table a `fromRow`
+  ([the guide](docs/guide/18-type-providers.md)).
+- `examples/service` (notes over HTTP kept in SQLite) and `examples/echo/http`, on the
+  packages.
+- The three run on Linux x86-64 in the suite, and on Linux arm64 under QEMU and Windows x64
+  under Wine in its cross mode (`./test.sh --target`, which builds and runs each package's
+  test program now); they build for macOS and Windows on Arm and haven't run there.
+
 ### Security and stability
 - A name's lookup under Wine (`Tcp.connect "localhost"`, `Dns.lookup`) stopped the program:
   the runtime read each address of the list in place, and Wine's later ones aren't aligned

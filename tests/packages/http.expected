@@ -1,0 +1,83 @@
+== the vendored source
+llhttp/LICENSE: OK
+llhttp/api.c: OK
+llhttp/http.c: OK
+llhttp/llhttp.c: OK
+llhttp/llhttp.h: OK
+== the program
+== over TCP
+GET /hello: 200 hello
+HEAD /hello: 200 , Content-Length 5
+POST /echo: 200 some text (text/x-test)
+GET /query: 200 query: a=1&b=two%20words
+GET /big: 200 300000 bytes
+GET /moved: 200 hello
+POST /see: 200 query: from=see
+GET /loop: error: too many redirects
+GET /nowhere: 404 no /nowhere
+GET /smuggle: 500 the handler's response can't be sent
+GET /nothing: 204 
+POST /echo, 2000 bytes: 413 Content Too Large
+GET /secret: 200 Bearer abc
+GET /stream: 200 piece 1; piece 2; piece 3;  (chunked)
+== refused by the server
+not HTTP: 400
+a head past the limit: 431
+two requests on a connection: 200, 404
+a request that never ends: 408
+Expect: 100-continue: 100, 200
+a chunked body: 200
+two lengths: 400
+an upgrade asked for, and not given: 200
+a stream to HTTP/1.0, ended by the close: 200
+== over TLS
+GET /hello: 200 hello
+HEAD /hello: 200 , Content-Length 5
+POST /echo: 200 some text (text/x-test)
+GET /query: 200 query: a=1&b=two%20words
+GET /big: 200 300000 bytes
+GET /moved: 200 hello
+POST /see: 200 query: from=see
+GET /loop: error: too many redirects
+GET /nowhere: 404 no /nowhere
+GET /smuggle: 500 the handler's response can't be sent
+GET /nothing: 204 
+POST /echo, 2000 bytes: 413 Content Too Large
+GET /secret: 200 Bearer abc
+GET /stream: 200 piece 1; piece 2; piece 3;  (chunked)
+without the certificate trusted: error: X509 - Certificate verification failed, e.g. CRL, CA or signature check failed: The certificate is not correctly signed by the trusted CA
+plain HTTP to it: []
+== requests' bodies in pieces
+POST /upload, 500000 bytes: 200 500000 bytes, in more than one piece: true
+a handler that doesn't read: 200 
+an unread body, then the next request: 404, 200
+== a session's connections
+two requests: 200 hello; 200 query: second; connections made: 1
+after the server closed it: 200 hello; connections made: 2
+a POST: 200 BBB; connections made: 3
+== a stop
+the request being answered: 200 slow, and whole
+the server: true
+a request after it: error: the socket
+== refused by the client
+ftp://example.org/: error: bad URL: it must begin with http:// or https://
+http://user@example.org/: error: bad URL: a user name in it
+http://example.org:99999/: error: bad URL: its port
+http://exa mple.org/: error: bad URL: its host
+http://127.0.0.1:1/: error: the socket
+a header with a line end: error: not HTTP: a header or the method can't be sent
+exit 0
+== Http.parseRequest, and a property over any bytes (zs fuzz runs the same one)
+3 passed, 0 failed
+== examples/service
+HTTP/1.1 201 Created {"id":1,"text":"buy milk"}
+HTTP/1.1 201 Created {"id":2,"text":"it's \"quoted\"; drop table notes"}
+HTTP/1.1 400 Bad Request a note needs some text
+HTTP/1.1 200 OK [{"id":1,"text":"buy milk"},{"id":2,"text":"it's \"quoted\"; drop table notes"}]
+HTTP/1.1 204 No Content 
+HTTP/1.1 404 Not Found no such note
+HTTP/1.1 200 OK [{"id":2,"text":"it's \"quoted\"; drop table notes"}]
+HTTP/1.1 404 Not Found not found
+== examples/echo/http
+HTTP/1.1 200 OK hello, echo
+HTTP/1.1 200 OK GET /some/path
