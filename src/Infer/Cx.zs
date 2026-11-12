@@ -230,6 +230,10 @@ and CxData =
     /// the library's types and traits, and the dependencies' module prefixes (Json): whose an
     /// impl's trait and type are, for the orphan rule; empty while the library is checked
     libraryNames: ref<Set<string>>
+    /// the names the program's main file declares at its top: it has no module to name them in,
+    /// so they are bare, as the library's own are, and this tells them apart where an opened
+    /// module has the same name (spec 2.4: the current module comes before an opened one)
+    rootNames: ref<Set<string>>
     dependencies: ref<Set<string>>
     /// the types of a group (type A = … and B = …) declared ahead of their own declarations
     ahead: ref<Set<string>>
@@ -498,6 +502,9 @@ type Cx with
   member c.libraryNames =
     match c with
     | Cx { libraryNames = x } -> x
+  member c.rootNames =
+    match c with
+    | Cx { rootNames = x } -> x
   member c.dependencies =
     match c with
     | Cx { dependencies = x } -> x
@@ -614,6 +621,7 @@ let create (requireMain: bool) (collect: bool) (allModules: list<string>) (manua
       foreignVetted = ref false
       skippedC = ref Map.empty
       libraryNames = ref Set.empty
+      rootNames = ref Set.empty
       dependencies = ref Set.empty
       ahead = ref Set.empty
       stopped = ref false
@@ -952,7 +960,11 @@ let schemed (cx: Cx) (t: Ty) : Ty =
 let qualify (cx: Cx) (name: string) : string =
   match cx.currentModule.Value with
   | Some m -> m + "." + name
-  | None -> name
+  | None ->
+    // the main file's own name (the library is checked before libraryNames is set)
+    if not (Set.isEmpty cx.libraryNames.Value) then
+      cx.rootNames.Value <- Set.add name cx.rootNames.Value
+    name
 
 /// The current module and the modules it is nested in, innermost first.
 let enclosing (cx: Cx) : list<string> =
@@ -985,9 +997,14 @@ let resolveWith (cx: Cx) (exists: string -> bool / <Fails | 'e>) (x: string) : o
       match tryIn (enclosing cx) with
       | Some q -> Some q
       | None ->
-        match tryIn cx.opens.Value with
-        | Some q -> Some q
-        | None -> if exists x then Some x else tryIn autoOpens
+        // the main file is the outermost module of what it declares: its own names come
+        // before an opened module's, as a named module's do
+        if Set.contains x cx.rootNames.Value && exists x then
+          Some x
+        else
+          match tryIn cx.opens.Value with
+          | Some q -> Some q
+          | None -> if exists x then Some x else tryIn autoOpens
     match found with
     | Some q ->
       match Map.tryFind q cx.privates.Value with

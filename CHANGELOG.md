@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Compiler
+- A main file's own names come before an opened module's, as the specification says (2.4) and
+  as a named module's already did: with `open Testing`, a file's own `type Model` or a case
+  `Passed` of its own union is the file's, where it was the opened module's and the file didn't
+  compile (`tests/open_own.zs`). A main file that meant the opened module's name where it has
+  one of its own of the same name now gets its own: write the module's name before it
+  (`Testing.Passed`).
 - The compiler is built by 0.7.1 (stage 0, pinned in `dev` by its SHA-256; it was 0.6.1), so its
   code may use 0.7's language and library: the first `break` and `return` are in `Types/Vars`,
   `Types/Norm`, `Types/Show` and `Infer/Cx`. With 0.7.1's `List.collect` in it, lifting closures
