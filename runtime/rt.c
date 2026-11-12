@@ -1365,10 +1365,38 @@ static int c_snprintf(char *buf, size_t size, const char *format, ...) {
 // (glibc's "-nan" for x86's 0.0 / 0.0) and the kind (the UCRT's "-nan(ind)", "nan(snan)")
 static double plain_nan(double v) { return v != v ? __builtin_nan("") : v; }
 
+// a double that is a decimal of at most 15 digits, from 1e-4 to under 1e15 (and 0), written by
+// hand: what "%.15g" writes for it, which reads back as it. Most numbers a program prints are
+// one, and snprintf with strtod costs some 2,000 instructions. 0 for any other double (-0.0 too).
+// m is v * 10^k to the nearest integer, exact under 2^53 as 10^k is, so m / 10^k is the double
+// nearest that decimal: equal to v, the decimal reads back as v, and no other of 15 digits does.
+static int f64_decimal_text(double v, char *out) {
+    double a = v < 0 ? -v : v;
+    if (!(a >= 1e-4 && a < 1e15) && !(v == 0 && !__builtin_signbit(v))) return 0;
+    double p = 1;
+    uint64_t ip = 1;
+    for (int k = 0; a * p < 1e15; k++, p *= 10, ip *= 10) {
+        uint64_t m = (uint64_t)(a * p + 0.5);
+        if ((double)m / p != a) continue;
+        int n = 0;
+        if (v < 0) out[n++] = '-';
+        n += u64_text(m / ip, out + n);
+        if (k) {
+            out[n++] = '.';
+            uint64_t f = m % ip;
+            for (int i = k - 1; i >= 0; i--, f /= 10) out[n + i] = (char)('0' + f % 10);
+            n += k;
+        }
+        return n;
+    }
+    return 0;
+}
+
 // Shortest representation that reads back as the same double; whole numbers print like ints.
 zs_str *zs_str_of_f64(double v) {
     char buf[40];
-    int n = 0;
+    int n = f64_decimal_text(v, buf);
+    if (n) return str_of(buf, n);
     v = plain_nan(v);
     for (int prec = 15; prec <= 17; prec++) {
         n = c_snprintf(buf, sizeof buf, "%.*g", prec, v);
