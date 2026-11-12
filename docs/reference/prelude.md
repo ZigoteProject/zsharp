@@ -372,6 +372,33 @@ The first difference inside records and unions: a record's field by name, a unio
 and field (`.Some`, `.Node[2]`); two cases differ as a whole. Applied the first time a type
 needs it, as `Show` is.
 
+### `impl Eq<list<'a>>`
+
+```zsharp
+impl Eq<list<'a>>
+```
+
+Lists are equal when they're as long and their elements are equal, in order. A loop, where
+the derived impl called itself once an element: a long list is compared in constant stack.
+
+### `impl Ord<list<'a>>`
+
+```zsharp
+impl Ord<list<'a>>
+```
+
+Lists are ordered by their first elements that differ; a list is before a longer one that
+starts with it. A loop, as `Eq`'s.
+
+### `impl Hash<list<'a>>`
+
+```zsharp
+impl Hash<list<'a>>
+```
+
+A list's hash, consistent with its `Eq`: the value the derived impl gave (17 for the empty
+list, and for `x :: rest` that of a case with two fields), added up in a loop.
+
 ### `impl Show<list<'a>>`
 
 ```zsharp

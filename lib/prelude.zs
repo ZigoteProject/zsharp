@@ -211,6 +211,41 @@ let max a b = if a > b then a else b
 /// The smaller of two values.
 let min a b = if a < b then a else b
 
+/// Lists are equal when they're as long and their elements are equal, in order. A loop, where
+/// the derived impl called itself once an element: a long list is compared in constant stack.
+impl Eq<list<'a>> =
+  let equal (a: list<'a>) (b: list<'a>) =
+    let rec go (xs: list<'a>) (ys: list<'a>) =
+      match (xs, ys) with
+      | ([], []) -> true
+      | (x :: xr, y :: yr) -> if x = y then go xr yr else false
+      | _ -> false
+    go a b
+
+/// Lists are ordered by their first elements that differ; a list is before a longer one that
+/// starts with it. A loop, as `Eq`'s.
+impl Ord<list<'a>> =
+  let compare (a: list<'a>) (b: list<'a>) =
+    let rec go (xs: list<'a>) (ys: list<'a>) =
+      match (xs, ys) with
+      | ([], []) -> 0
+      | ([], _) -> -1
+      | (_, []) -> 1
+      | (x :: xr, y :: yr) ->
+        let c = compare x y
+        if c = 0 then go xr yr else c
+    go a b
+
+/// A list's hash, consistent with its `Eq`: the value the derived impl gave (17 for the empty
+/// list, and for `x :: rest` that of a case with two fields), added up in a loop.
+impl Hash<list<'a>> =
+  let hash (xs: list<'a>) =
+    let rec go (h: int) (rest: list<'a>) =
+      match rest with
+      | [] -> h
+      | x :: more -> go (Int.wrappingAdd h (Int.wrappingMul (Int.wrappingAdd 558 (hash x)) 31)) more
+    go 17 xs
+
 /// Lists print as `[1; 2; 3]`.
 impl Show<list<'a>> =
   let show xs =

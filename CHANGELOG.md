@@ -20,6 +20,10 @@
 ### Library
 - `File.readAllBytes` copies each 64 KB it reads whole, where it pushed a byte at a time
   (`tests/file_bytes.zs` reads a file longer than two reads).
+- `=`, `compare` and `hash` on a list run in constant stack: on two lists of 200,000 elements
+  they overflowed the stack in a build without `--release` (the derived impls called themselves
+  once an element). The prelude has `Eq`, `Ord` and `Hash` for `list` as loops now, with the
+  results the derived ones gave (`tests/list_long.zs`).
 
 ## 0.7.1 (2026-11-12)
 
