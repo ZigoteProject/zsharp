@@ -4474,7 +4474,12 @@ zs_int zs_udp_from_port(void) {
 // the bytes written
 static size_t addresses_text(struct addrinfo *res, char *out, size_t cap) {
     size_t used = 0;
-    for (struct addrinfo *a = res; a; a = a->ai_next) {
+    // each node is read through a copy: Wine packs a list's nodes one after another, the later
+    // ones at addresses a struct addrinfo's fields can't be read at (tests/task/connect.zs, under Wine)
+    struct addrinfo node;
+    for (struct addrinfo *next = res; next; next = node.ai_next) {
+        memcpy(&node, (const unsigned char *)(uintptr_t)next, sizeof node);
+        const struct addrinfo *a = &node;
         char h[NI_MAXHOST];
         if (getnameinfo(a->ai_addr, (socklen_t)a->ai_addrlen, h, sizeof h, NULL, 0, NI_NUMERICHOST) != 0) continue;
         size_t n = strlen(h);
@@ -4668,6 +4673,19 @@ static int unix_address(zs_str *path, struct sockaddr_un *a) {
 #define IO_REPARSE_TAG_AF_UNIX 0x80000023L
 #endif
 
+#ifdef _WIN32
+// Under Wine a Unix socket's file is the host's own socket, with no reparse tag: what tells it
+// from a file there is that it can't be opened (no such device), where a file can. Only asked
+// under Wine, so on Windows a file that can't be opened for another reason is still a file.
+static bool wine_socket(const char *path) {
+    HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+    if (!ntdll || !GetProcAddress(ntdll, "wine_get_version")) return false;
+    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, 0, NULL);
+    if (h != INVALID_HANDLE_VALUE) { CloseHandle(h); return false; }
+    return GetLastError() == ERROR_NO_SUCH_DEVICE;
+}
+#endif
+
 // what's at a Unix socket's path before a socket listens there: 0 when it's nothing, or a socket
 // no one listens on (an earlier run's, removed now); else the error, EEXIST for what isn't a
 // socket (a file is never removed) and EADDRINUSE for one a server listens on
@@ -4678,7 +4696,8 @@ static int unix_clear(const struct sockaddr_un *a) {
     HANDLE h = FindFirstFileA(a->sun_path, &d);
     if (h == INVALID_HANDLE_VALUE) return 0; // nothing there, or bind says what's wrong
     FindClose(h);
-    if (!(d.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) || d.dwReserved0 != IO_REPARSE_TAG_AF_UNIX) return EEXIST;
+    bool tagged = (d.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) && d.dwReserved0 == IO_REPARSE_TAG_AF_UNIX;
+    if (!tagged && !wine_socket(a->sun_path)) return EEXIST;
     // a blocking socket, so the answer is the connect's own
     SOCKET s = socket(AF_UNIX, SOCK_STREAM, 0);
     if (s == INVALID_SOCKET) return WSAGetLastError();

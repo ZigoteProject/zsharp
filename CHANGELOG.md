@@ -25,6 +25,18 @@
   once an element). The prelude has `Eq`, `Ord` and `Hash` for `list` as loops now, with the
   results the derived ones gave (`tests/list_long.zs`).
 
+### Security and stability
+- A name's lookup under Wine (`Tcp.connect "localhost"`, `Dns.lookup`) stopped the program:
+  the runtime read each address of the list in place, and Wine's later ones aren't aligned
+  for that. It reads each through a copy (`tests/task/connect.zs` under
+  `./test.sh --target x86_64-windows-gnu`).
+- `Unix.listen` under Wine replaces a socket an earlier run left, as it does on Windows and
+  elsewhere: Wine keeps a socket as the host's own, a file without Windows' tag for one, and
+  the runtime took it for a file and refused. It's told from a file there by not opening
+  (`tests/task/unix_path.zs` under `./test.sh --target x86_64-windows-gnu`).
+- `./test.sh --target` builds `tests/libstatic.zs`'s library for the target and runs its C
+  program under the emulator; it built the host's and linked it with the target's C.
+
 ## 0.7.1 (2026-11-12)
 
 What a review of 0.7.0 found, fixed: 103 of its 106 defects, the memory errors safe code could

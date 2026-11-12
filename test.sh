@@ -869,16 +869,19 @@ fi
 # \r\n on Windows
 mkdir -p "$tmp/libstatic"
 printf '#include <stdio.h>\n#include "libstatic.h"\nint main(void) { printf("%%lld\\n", (long long)total(41)); return 0; }\n' > "$tmp/libstatic/main.c"
-if bin/zs build tests/libstatic.zs --lib -o "$tmp/libstatic/libstatic.a" 2>"$tmp/libstatic.log" \
+# for a cross target the library is the target's and the C program runs under its emulator
+# (built and not run with --build-only)
+static_run=("${qemu[@]}" ./cmain); [ $buildonly = 1 ] && static_run=(echo 122)
+if bin/zs build tests/libstatic.zs "${tgt[@]}" --lib -o "$tmp/libstatic/libstatic.a" 2>"$tmp/libstatic.log" \
    && "${cc[@]}" -I"$tmp/libstatic" "$tmp/libstatic/main.c" "$tmp/libstatic/libstatic.a" -lm "${syslibs[@]}" -o "$tmp/libstatic/cmain" 2>>"$tmp/libstatic.log" \
-   && [ "$("$tmp/libstatic/cmain" | tr -d '\r')" = 122 ]; then echo "ok   tests/libstatic.zs (a library's static constants, from C)"
+   && [ "$(cd "$tmp/libstatic" && "${static_run[@]}" 2>>"$tmp/libstatic.log" | tr -d '\r')" = 122 ]; then echo "ok   tests/libstatic.zs (a library's static constants, from C)"
 else echo "FAIL tests/libstatic.zs"; cat "$tmp/libstatic.log"; fail=1; fi
 # the same under -g and --coverage, which keep the code as written but fold the initializers; and
 # a startup assert among a library's values, wherever it is, refused
 for flag in -g --coverage; do
-  if bin/zs build tests/libstatic.zs --lib $flag -o "$tmp/libstatic/libstatic.a" 2>"$tmp/libstatic.log" \
+  if bin/zs build tests/libstatic.zs "${tgt[@]}" --lib $flag -o "$tmp/libstatic/libstatic.a" 2>"$tmp/libstatic.log" \
      && "${cc[@]}" -I"$tmp/libstatic" "$tmp/libstatic/main.c" "$tmp/libstatic/libstatic.a" -lm "${syslibs[@]}" -o "$tmp/libstatic/cmain" 2>>"$tmp/libstatic.log" \
-     && [ "$(cd "$tmp/libstatic" && ./cmain | tr -d '\r')" = 122 ]; then echo "ok   tests/libstatic.zs --lib $flag"
+     && [ "$(cd "$tmp/libstatic" && "${static_run[@]}" 2>>"$tmp/libstatic.log" | tr -d '\r')" = 122 ]; then echo "ok   tests/libstatic.zs --lib $flag"
   else echo "FAIL tests/libstatic.zs --lib $flag"; cat "$tmp/libstatic.log"; fail=1; fi
 done
 printf 'let table = [| 1; 2; 3 |]\nlet check (n: int) = n * 2 = 5\nassert (check (Array.length table))\n\n[<Export>]\nlet get (i: int) : int = table.[i]\n' > "$tmp/libassert.zs"
