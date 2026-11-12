@@ -319,15 +319,18 @@ let number (e: CExpr) : CExpr =
 /// its own references, less what it binds), for a pass that asks about the same nodes again and
 /// again; a node made since is computed from its children.
 let cachedFreeVars () : CExpr -> Set<string> =
-  let cache = ref Map.empty
+  // by node number: dense from 1, so an array (grown to the largest asked about)
+  let cache : Buffer<option<Set<string>>> = Buffer.empty
   let rec fv (e: CExpr) : Set<string> =
-    match (if e.id > 0 then Map.tryFind e.id cache.Value else None) with
+    match (if e.id > 0 && e.id < Buffer.length cache then cache.[e.id] else None) with
     | Some s -> s
     | None ->
       let below = List.fold (fun (acc: Set<string>) c -> Set.union acc (fv c)) Set.empty (children e.k)
       let s = Set.difference (Set.union below (Set.ofList (List.map fst (ownRefs e)))) (Set.ofList (ownBinders e.k))
       if e.id > 0 then
-        cache.Value <- Map.add e.id s cache.Value
+        while Buffer.length cache <= e.id do
+          Buffer.push None cache
+        cache.[e.id] <- Some s
       s
   fv
 
