@@ -65,17 +65,23 @@ let readAllBytes (path: string) : result<array<u8>, string> =
   | Error e -> Error e
   | Ok r ->
     use reader = r
-    let all = Buffer.empty
+    // each chunk copied whole into storage that doubles
     let chunk = Buffer.create 65536 (u8 0)
-    let rec go () =
+    let mutable all = Buffer.create 65536 (u8 0)
+    let mutable length = 0
+    while true do
       match Reader.readBytes reader chunk with
-      | Ok 0 -> Ok(Buffer.toArray all)
+      | Ok 0 -> break
       | Ok n ->
-        for i in 0 .. n - 1 do
-          Buffer.push chunk.[i] all
-        go ()
-      | Error e -> Error e
-    go ()
+        if length + n > Buffer.length all then
+          let grown = Buffer.create (max (2 * Buffer.length all) (length + n)) (u8 0)
+          Buffer.blit all 0 grown 0 length
+          all <- grown
+        Buffer.blit chunk 0 all length n
+        length <- length + n
+      | Error e -> return Error e
+    Buffer.truncate length all
+    Ok(Buffer.toArray all)
 
 /// Replaces the file's contents with the bytes, as they are (creating it if needed).
 let writeAllBytes (path: string) (bytes: span<u8>) : result<unit, string> =
