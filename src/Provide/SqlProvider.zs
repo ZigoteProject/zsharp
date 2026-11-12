@@ -354,7 +354,51 @@ let queries (tables: list<Table>) (text: string) : result<list<Query>, string> =
   build (groups lines None []) []
 
 /// The options `zs provide sql` takes.
-let options : list<string> = [ "types"; "queries" ]
+let options : list<string> = [ "types"; "queries"; "rows" ]
+
+// with rows = "sqlite": a type without its option<…>, and whether it had one
+let private underOption (ty: string) : string * bool =
+  if String.startsWith "option<" ty then (String.sub ty 7 (String.length ty - 8), true) else (ty, false)
+
+// the expression that reads column `i` of the sqlite package's `row` as a value of type `ty`;
+// None for a type its rows don't hold
+let private readColumn (ty: string) (i: int) : option<string> =
+  let at = string i
+  let (inner, optional) = underOption ty
+  let plain =
+    if inner = "int" then Some ("int (Sqlite.Row.int row " + at + ")")
+    else if inner = "f64" then Some ("Sqlite.Row.real row " + at)
+    else if inner = "string" then Some ("Sqlite.Row.text row " + at)
+    else if inner = "array<u8>" then Some ("Sqlite.Row.blob row " + at)
+    else if inner = "bool" then Some ("Sqlite.Row.int row " + at + " <> i64 0")
+    else None
+  if optional then Option.map (fun (e: string) -> "(if Sqlite.Row.isNull row " + at + " then None else Some (" + e + "))") plain
+  else plain
+
+// the expression that makes the sqlite package's value of `e`, an expression of type `ty`
+let private bindValue (ty: string) (e: string) : option<string> =
+  let (inner, optional) = underOption ty
+  let plain (x: string) =
+    if inner = "int" then Some ("Sqlite.Int (i64 " + x + ")")
+    else if inner = "f64" then Some ("Sqlite.Real " + x)
+    else if inner = "string" then Some ("Sqlite.Text " + x)
+    else if inner = "array<u8>" then Some ("Sqlite.Blob " + x)
+    else if inner = "bool" then Some ("Sqlite.Int (if " + x + " then i64 1 else i64 0)")
+    else None
+  if optional then Option.map (fun (v: string) -> "(match " + e + " with | Some v -> " + v + " | None -> Sqlite.Null)") (plain "v")
+  else plain e
+
+// a record of the fields read from the sqlite package's row, in order; Error names a field
+// whose type its rows don't hold
+let private rowReader (fields: list<string * string>) : result<string, string> =
+  let one (i: int) (nt: string * string) =
+    match readColumn (snd nt) i with
+    | Some e -> Ok (Names.fieldName (fst nt) + " = " + e)
+    | None -> Error ("rows: " + fst nt + " is " + snd nt + ", which a row of sqlite's doesn't hold")
+  let read = List.mapi one fields
+  match List.tryPick (fun (r: result<string, string>) -> (match r with | Error e -> Some e | Ok _ -> None)) read with
+  | Some e -> Error e
+  | None -> Ok ("{ " + String.join "; " (List.choose (fun (r: result<string, string>) -> (match r with | Ok x -> Some x | Error _ -> None)) read) + " }")
 
 /// The module for the schema in `text`, read from `file`: `types = "users.email:string"`
 /// overrides a column's type by table and column, `queries = "queries.sql"` (a path beside the
@@ -369,9 +413,14 @@ let provideWith (file: string) (text: string) (opts: list<string * string>) (que
         | Some i -> Some(String.trim (String.sub item 0 i), String.trim (String.sub item (i + 1) (String.length item - i - 1)))
         | None -> None) (String.split "," v)
     | _ -> []
+  let rows =
+    match List.tryFind (fun (n, _) -> n = "rows") opts with
+    | Some(_, v) -> v
+    | None -> ""
   match tables text with
   | Error e -> Error (file + ": " + e)
   | Ok [] -> Error (file + ": no CREATE TABLE")
+  | Ok _ when rows <> "" && rows <> "sqlite" -> Error (file + ": rows: \"" + rows + "\" isn't a package this provider writes rows for (sqlite)")
   | Ok ts ->
     // a column's name is a field's
     let unnamed = Names.unnamed (List.collect (fun (t: Table) -> List.map (fun (c: Column) -> c.name) t.columns) ts)
@@ -384,6 +433,24 @@ let provideWith (file: string) (text: string) (opts: list<string * string>) (que
         | Error e -> Error (qfile + ": " + e)
         | Ok qs ->
           let literal = Names.literal
+          // with rows = "sqlite": the query run on a connection of that package's
+          let runner (q: Query) : list<string> =
+            let binds = List.map (fun (nt: string * string) -> Option.defaultValue "Sqlite.Null" (bindValue (snd nt) ("p." + Names.fieldName (fst nt)))) q.parameters
+            let taking = not (List.isEmpty q.parameters)
+            let args = if taking then "(args p)" else "[]"
+            let head = if taking then "  let run (db: Sqlite.Db) (p: Params) : " else "  let run (db: Sqlite.Db) : "
+            let reader =
+              match rowReader q.row with
+              | Ok r when not (List.isEmpty q.row) -> [ "  /// A row it gives, read from sqlite's."; "  let fromRow (row: Sqlite.Row) : Row = " + r ]
+              | _ -> []
+            let run =
+              if q.kind = "exec" then [ "  /// Runs it: how many rows it changed."; head + "result<int, Sqlite.Error> = Sqlite.Db.exec db sql " + args ]
+              else if List.isEmpty reader then []
+              else if q.kind = "one" then [ "  /// Runs it: its row, when there's one."; head + "result<option<Row>, Sqlite.Error> = Sqlite.Db.query db sql " + args + " fromRow |> Result.map List.tryHead" ]
+              else [ "  /// Runs it: its rows, in order."; head + "result<list<Row>, Sqlite.Error> = Sqlite.Db.query db sql " + args + " fromRow" ]
+            List.concat [ (if taking then [ "  /// Its parameters as sqlite binds them, in order."; "  let args (p: Params) : list<Sqlite.Value> = [ " + String.join "; " binds + " ]" ] else [])
+                  reader
+                  run ]
           let one (q: Query) : list<string> =
             let field (nt: string * string) = Names.fieldName (fst nt) + ": " + snd nt + (if String.startsWith "option<" (snd nt) then " = None" else "")
             List.concat [ [ Names.oneLine ("/// From \"" + qfile + "\": " + q.name + " (:" + q.kind + "): " + q.sql)
@@ -396,6 +463,7 @@ let provideWith (file: string) (text: string) (opts: list<string * string>) (que
                   "  let parameters = [ " + String.join "; " (List.map (fun (nt: string * string) -> literal (fst nt)) q.parameters) + " ]" ]
                 (if List.isEmpty q.parameters then [] else [ "  /// Its parameters, typed from the columns they meet."; "  type Params = { " + String.join "; " (List.map field q.parameters) + " }" ])
                 (if List.isEmpty q.row then [] else [ "  /// A row it gives."; "  type Row = { " + String.join "; " (List.map field q.row) + " }" ])
+                (if rows = "sqlite" then runner q else [])
                 [ "" ] ]
           // a parameter's or a column's name is a field's
           match Names.unnamed (List.collect (fun (q: Query) -> List.append (List.map fst q.parameters) (List.map fst q.row)) qs) with
@@ -404,6 +472,17 @@ let provideWith (file: string) (text: string) (opts: list<string * string>) (que
     match queryModules with
     | Error e -> Error e
     | Ok queryLines ->
+      // with rows = "sqlite": a table's record read from a row of all its columns, in order
+      let reading (t: Table) : list<string> =
+        let typed (c: Column) =
+          let ty =
+            match List.tryFind (fun (k, _) -> k = t.name + "." + c.name) overrides with
+            | Some(_, over) -> over
+            | None -> c.ty
+          (c.name, if c.nullable then "option<" + ty + ">" else ty)
+        match rowReader (List.map typed t.columns) with
+        | Ok r when rows = "sqlite" -> [ "  /// A row of all its columns in order (`select *`), read from sqlite's."; "  let fromRow (row: Sqlite.Row) : " + Names.typeName t.name + " = " + r ]
+        | _ -> []
       let decl (t: Table) : list<string> =
         let typeName = Names.typeName t.name
         let field (c: Column) =
@@ -420,8 +499,8 @@ let provideWith (file: string) (text: string) (opts: list<string * string>) (que
           "  /// The table's name."
           "  let table = " + literal t.name
           "  /// Its columns, in order."
-          "  let columns = [ " + String.join "; " (List.map (fun (c: Column) -> literal c.name) t.columns) + " ]"
-          "" ]
+          "  let columns = [ " + String.join "; " (List.map (fun (c: Column) -> literal c.name) t.columns) + " ]" ]
+        |> fun (lines: list<string>) -> List.append lines (List.append (reading t) [ "" ])
       let inputs = List.append [ Names.oneLine ("// input: " + file) ] (match queryText with | Some(q, _) -> [ Names.oneLine ("// input: " + q) ] | None -> [])
       let header = List.concat [ [ Names.oneLine ("// provided by sql 0.1 from " + file) ]; inputs; [ "" ] ]
       Ok(String.join "\n" (List.concat [ header; List.collect decl ts; queryLines ]))

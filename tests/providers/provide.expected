@@ -1,7 +1,7 @@
 c      a C header's declarations, as import c reads them (options: none; a package's include directories through import c)
 json   a document's records with the Json derive, from a sample (options: root, types)
 csv    a file's rows as a Row record, from the header and the rows (options: separator, hasHeaders, types)
-sql    a schema's tables as records, from its CREATE TABLEs (options: types, queries)
+sql    a schema's tables as records, from its CREATE TABLEs (options: types, queries, rows)
 svd    a microcontroller's peripherals as modules of [<Bits>] registers, from its SVD file (options: only)
 --- json
 // provided by json 0.1 from weather.json
@@ -215,6 +215,15 @@ module OrdersFor =
   type Row = { id: int; total: f64; buyer: string; n: int }
 
 sql: queries: nowhere.sql not found beside schema.sql
+exit 1
+--- sql with rows for the sqlite package (a query's and a table's functions)
+  /// Its parameters as sqlite binds them, in order.
+  let args (p: Params) : list<Sqlite.Value> = [ Sqlite.Text p.name; (match p.email with | Some v -> Sqlite.Text v | None -> Sqlite.Null); Sqlite.Int (if p.active then i64 1 else i64 0) ]
+  /// Runs it: how many rows it changed.
+  let run (db: Sqlite.Db) (p: Params) : result<int, Sqlite.Error> = Sqlite.Db.exec db sql (args p)
+  /// A row of all its columns in order (`select *`), read from sqlite's.
+  let fromRow (row: Sqlite.Row) : Orders = { id = int (Sqlite.Row.int row 0); user_id = int (Sqlite.Row.int row 1); total = Sqlite.Row.real row 2; note = (if Sqlite.Row.isNull row 3 then None else Some (Sqlite.Row.text row 3)); payload = (if Sqlite.Row.isNull row 4 then None else Some (Sqlite.Row.blob row 4)) }
+sql: schema.sql: rows: "postgres" isn't a package this provider writes rows for (sqlite)
 exit 1
 sql: bad.sql: query Bad: no column 'nope' in users
 exit 1

@@ -136,8 +136,21 @@ let lookup (id: int) =
   (Db.GetUser.sql, Db.GetUser.parameters)      // "SELECT id, name, email FROM users WHERE id = ?", [ "id" ]
 ```
 
-A driver package runs the text with the parameters and builds the `Row`; the provider gives it
-what to type against, and nothing runs at compile time but the reading of the two files.
+With `rows = "sqlite"` as well, each query has a `run` that runs it on a connection of
+`packages/sqlite` (the project names that package as a dependency): `:one` gives an option of
+its `Row`, `:many` a list, `:exec` the number of rows changed, the parameters bound in order
+and each row read by its columns' types. A table's module gets `fromRow` for a `select *`.
+
+```fsharp
+module Db = import sql ("schema.sql", queries = "queries.sql", rows = "sqlite")
+
+let name (db: Sqlite.Db) (id: int) : result<option<string>, Sqlite.Error> =
+  Db.GetUser.run db { id = id } |> Result.map (Option.map (fun (u: Db.GetUser.Row) -> u.name))
+```
+
+Without it, a driver package runs the text with the parameters and builds the `Row`; the
+provider gives it what to type against. Nothing runs at compile time but the reading of the
+two files.
 
 **`svd`**, from a microcontroller's SVD file (the vendor's description of its peripherals;
 `only = "GPIOA,RCC"` keeps the module to the peripherals a program uses): a module per

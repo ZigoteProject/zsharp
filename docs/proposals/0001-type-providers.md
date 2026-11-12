@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Implemented (decision 56) in 0.7, 2026-11-03 and 2026-11-04: `zs provide`, the `import` form (both spellings, the cache, the hidden module), the editor's side (checked by a scripted session, `tests/lsp/providers.sh`; not yet in Zed itself), `json`, `csv`, `sql` with typed queries (question 5), `svd`, providers on PATH and from packages (question 3), and `import c` on the protocol (question 2); `tests/providers/`, `examples/providers`, guide chapter 18. Left, after 0.7: a JSON Schema as `json`'s input (a schema is read as a sample), and `rows = "sqlite"`, which waits for the `zsharp/sqlite` package |
+| **Status** | Implemented (decision 56) in 0.7, 2026-11-03 and 2026-11-04: `zs provide`, the `import` form (both spellings, the cache, the hidden module), the editor's side (checked by a scripted session, `tests/lsp/providers.sh`; not yet in Zed itself), `json`, `csv`, `sql` with typed queries (question 5), `svd`, providers on PATH and from packages (question 3), and `import c` on the protocol (question 2); `tests/providers/`, `examples/providers`, guide chapter 18. Left, after 0.7: a JSON Schema as `json`'s input (a schema is read as a sample) (`rows = "sqlite"` came on 2026-11-12, with `packages/sqlite`) |
 | **Decided at** | the third design review ([ROADMAP](../../ROADMAP.md#third-design-review-)): spelling as proposed; `import c` joins the protocol when phase 11's libclang work touches it |
 | **Builds** | track P ([ROADMAP](../../ROADMAP.md#type-providers-p)), after phase 11 |
 | **Rests on** | decisions 20 (no compile-time code), 27 (source packages), 34 (new syntax needs a design discussion) and 39 ("Simple") in [DESIGN §13](../../DESIGN.md#13-decisions) |
@@ -10,7 +10,7 @@
 
 - [x] Approved in principle
 - [ ] Discussion
-- [x] Implementation (2026-11-03): `zs provide`, the `import` form (both spellings, the cache, the hidden module), the editor's side (watched inputs, rename's refusal), `svd`, `sql` and providers on PATH with the cache fallback (`src/Provide/`, `Build/Modules.provided`, `tests/providers/`, `examples/providers`, guide chapter 18). Then providers from packages (`[provider] main = …`, built by zs as a process; question 3) and `svd`'s enumerated values as unions. Then `import c` on the protocol (question 2: the named form and `zs provide c`; the bare form keeps its path). Then typed SQL queries (question 5, the subset a schema can type: `queries = …`, a module per named query with its text, `Params` and `Row`; a driver package runs them). Left: a JSON Schema as `json`'s input, read as a sample today, and `rows = "sqlite"`, which waits for the package
+- [x] Implementation (2026-11-03): `zs provide`, the `import` form (both spellings, the cache, the hidden module), the editor's side (watched inputs, rename's refusal), `svd`, `sql` and providers on PATH with the cache fallback (`src/Provide/`, `Build/Modules.provided`, `tests/providers/`, `examples/providers`, guide chapter 18). Then providers from packages (`[provider] main = …`, built by zs as a process; question 3) and `svd`'s enumerated values as unions. Then `import c` on the protocol (question 2: the named form and `zs provide c`; the bare form keeps its path). Then typed SQL queries (question 5, the subset a schema can type: `queries = …`, a module per named query with its text, `Params` and `Row`; a driver package runs them). Left: a JSON Schema as `json`'s input, read as a sample today; `rows = "sqlite"` came on 2026-11-12, with `packages/sqlite`
 
 ## Summary
 
@@ -292,7 +292,7 @@ module Users =
 ```
 
 - **Types:** `INTEGER` is `int`, `REAL` `f64`, `TEXT` `string`, `BLOB` `array<u8>`, `BOOLEAN` `bool`; a column is `option` unless `NOT NULL` or a primary key. SQLite's dialect first, where the first-party `zsharp/sqlite` package is (track K); the common subset of Postgres's types too.
-- **Rows:** with `rows = "sqlite"`, a `fromRow` per table for that package's rows, built from the column names.
+- **Rows:** with `rows = "sqlite"`, a `fromRow` per table for that package's rows, built from the column names. *(Built 2026-11-12, with [0032](0032-first-party-packages.md)'s package: a `fromRow` per table by column order, and per named query `args`, `fromRow` and `run`, which runs it on a `Sqlite.Db`; `tests/packages/sqlite`.)*
 - **Queries** typed from a file of named queries, as sqlc does, are the valuable half and need a SQL parser that types a query against the schema: *Unresolved questions*.
 
 ### Order of implementation

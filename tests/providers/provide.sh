@@ -16,6 +16,10 @@ echo "--- sql"
 echo "--- sql with named queries (one query's module)"
 "$zs" provide sql schema.sql --queries=queries.sql | sed -n '/^module OrdersFor/,/^$/p'
 "$zs" provide sql schema.sql --queries=nowhere.sql; echo "exit $?"
+echo "--- sql with rows for the sqlite package (a query's and a table's functions)"
+"$zs" provide sql schema.sql --queries=queries.sql --rows=sqlite | sed -n '/^module AddUser/,/^$/p' | grep -A1 '^  /// \(Its parameters as\|Runs it\)'
+"$zs" provide sql schema.sql --rows=sqlite | grep -A1 'read from sqlite' | sed -n '4,5p'
+"$zs" provide sql schema.sql --rows=postgres; echo "exit $?"
 printf -- '-- name: Bad :one\nSELECT nope FROM users;\n' > "$dir/bad.sql"; "$zs" provide sql schema.sql --queries="$dir/bad.sql" 2>&1 | sed "s|$at/||"; echo "exit ${PIPESTATUS[0]}"
 echo "--- svd (GPIOA only; the module's head and one register)"
 # (tr: BSD's wc, macOS's, pads its count)
