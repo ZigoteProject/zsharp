@@ -1,0 +1,15 @@
+1 2 Some a 2.5
+1 2 Some a 2.5
+1 2 None 1
+1 2 None 1
+1 2 None 1
+1 2 None 1
+1 2 None 3
+1 2 Some last 1
+error missing key y
+error at y: expected an integer, got "two"
+error at label: expected a string, got 3
+error missing key x
+error expected an object, got [1,2]
+1 2 3 4 [a; b]
+error at tags[1]: expected a string, got 7

@@ -42,53 +42,154 @@ module Json =
   /// How `parseWith` reads: arrays and objects nest at most `depth` levels.
   type Options = { depth: int = 1000 }
 
-  // ---- printing
+  // ---- printing: into one Buffer, replaced by one twice as large when full, runs of bytes
+  // copied in whole (`Buffer.push`, and so a `Bytes.Writer`, adds a byte at a time). Each function
+  // writes at `at` and gives the index after what it wrote. The Buffer is in a cell so it can be
+  // replaced; a function reads the cell once, as each read is reference counted.
 
-  // the text of a byte that a string literal escapes
-  let private escape (b: int) =
-    match b with
-    | 34 -> "\\\""
-    | 92 -> "\\\\"
-    | 10 -> "\\n"
-    | 13 -> "\\r"
-    | 9 -> "\\t"
-    | 8 -> "\\b"
-    | 12 -> "\\f"
-    | _ ->
-      "\\u00" + String.sub "0123456789abcdef" (b / 16) 1 + String.sub "0123456789abcdef" (b % 16) 1
-
-  // `s` as a string literal: `"`, `\` and controls escaped, everything else as its UTF-8; the
-  // pieces (backwards) joined once at the end, as a string added to at each escape is copied
-  // whole each time
-  let private quote (s: string) =
-    let n = String.length s
-    let mutable pieces = [ "\"" ]
-    let mutable from = 0 // the first byte not copied yet
-
-    for i in 0 .. n - 1 do
-      let b = int (String.byte s i)
-      if b = 34 || b = 92 || b < 32 then
-        // the run before the escape (none between two escapes), then the escape
-        let before = if i > from then String.sub s from (i - from) :: pieces else pieces
-        pieces <- escape b :: before
-        from <- i + 1
-
-    if from = 0 then
-      "\"" + s + "\""
+  // the Buffer, with room for `n` bytes from `at`
+  let private room (n: int) (buf: ref<Buffer<u8>>) (at: int) : Buffer<u8> =
+    let b = buf.Value
+    if at + n <= Buffer.length b then
+      b
     else
-      String.concat (List.rev ("\"" :: String.sub s from (n - from) :: pieces))
+      let grown = Buffer.create (max (2 * Buffer.length b) (at + n)) (u8 0)
+      Buffer.blit b 0 grown 0 at
+      buf.Value <- grown
+      grown
 
-  let rec private compact (j: Json) : string =
+  let private put (c: int) (buf: ref<Buffer<u8>>) (at: int) : int =
+    let b = room 1 buf at
+    b.[at] <- u8 c
+    at + 1
+
+  let private add (bytes: span<u8>) (buf: ref<Buffer<u8>>) (at: int) : int =
+    let n = Span.length bytes
+    Buffer.blit bytes 0 (room n buf at) at n
+    at + n
+
+  let private hex = "0123456789abcdef"
+
+  // the escape of byte `c` (`"`, `\` or a control), at most 6 bytes, which `b` has room for
+  let private escape (c: int) (b: Buffer<u8>) (at: int) : int =
+    let short =
+      match c with
+      | 34 | 92 -> c
+      | 10 -> 110 // n
+      | 13 -> 114 // r
+      | 9 -> 116 // t
+      | 8 -> 98 // b
+      | 12 -> 102 // f
+      | _ -> 0
+    b.[at] <- u8 92
+    if short <> 0 then
+      b.[at + 1] <- u8 short
+      at + 2
+    else
+      b.[at + 1] <- u8 117 // u
+      b.[at + 2] <- u8 48
+      b.[at + 3] <- u8 48
+      b.[at + 4] <- String.byte hex (c / 16)
+      b.[at + 5] <- String.byte hex (c % 16)
+      at + 6
+
+  // `s` as a string literal: `"`, `\` and controls escaped, everything else as its UTF-8, each
+  // run between escapes found 16 bytes at a time and copied whole
+  let private quoted (s: string) (buf: ref<Buffer<u8>>) (start: int) : int =
+    let src = String.bytes s
+    let n = Span.length src
+    // room for what's left of `s` as it is and the closing quote: made again at each escape
+    let mutable b = room (n + 2) buf start
+    b.[start] <- u8 34
+    let mutable at = start + 1
+    let mutable i = 0
+    while i < n do
+      let mutable j = i
+      let mutable wide = true
+      while wide && j + 16 <= n do
+        let v = U8x16.load src j
+        if Mask16.any (U8x16.lessThan v (U8x16.splat (u8 32))) || Mask16.any (U8x16.equal v (U8x16.splat (u8 34))) || Mask16.any (U8x16.equal v (U8x16.splat (u8 92))) then
+          wide <- false
+        else
+          j <- j + 16
+      while j < n && src.[j] >= u8 32 && src.[j] <> u8 34 && src.[j] <> u8 92 do
+        j <- j + 1
+      Buffer.blit src i b at (j - i)
+      at <- at + (j - i)
+      if j < n then
+        b <- room (n - j + 6) buf at
+        at <- escape (int src.[j]) b at
+      i <- j + 1
+    b.[at] <- u8 34
+    at + 1
+
+  // an integer in decimal, its digits taken from a negative number so the lowest i64 works too
+  let private integer (n: i64) (buf: ref<Buffer<u8>>) (at: int) : int =
+    let x = if n < i64 0 then n else -n
+    let mutable digits = 1
+    let mutable p = x
+    while p <= i64 -10 do
+      p <- p / i64 10
+      digits <- digits + 1
+    let total = if n < i64 0 then digits + 1 else digits
+    let b = room total buf at
+    if n < i64 0 then
+      b.[at] <- u8 45
+    let mutable q = x
+    for k in 1 .. digits do
+      b.[at + total - k] <- u8 (i64 48 - q % i64 10)
+      q <- q / i64 10
+    at + total
+
+  // a new line indented `depth` levels when indenting, nothing when compact (`depth` < 0)
+  let private line (depth: int) (buf: ref<Buffer<u8>>) (at: int) : int =
+    if depth < 0 then
+      at
+    else
+      let b = room (1 + 2 * depth) buf at
+      b.[at] <- u8 10
+      for k in 1 .. 2 * depth do
+        b.[at + k] <- u8 32
+      at + 1 + 2 * depth
+
+  // `j` written at `at`: compact when `depth` < 0, else indented, `depth` levels deep already
+  let rec private write (depth: int) (j: Json) (buf: ref<Buffer<u8>>) (at: int) : int =
+    let inner = if depth < 0 then depth else depth + 1
+
     match j with
-    | JNull -> "null"
-    | JBool b -> if b then "true" else "false"
-    | JInt n -> string n
-    | JUInt n -> string n
-    | JNumber x -> if x - x = 0.0 then string x else "null" // JSON has no spelling for NaN or infinity
-    | JString s -> quote s
-    | JArray xs -> "[" + String.join "," (List.map compact xs) + "]"
-    | JObject kvs ->
-      "{" + String.join "," (List.map (fun (k, v) -> quote k + ":" + compact v) kvs) + "}"
+    | JNull -> add b"null" buf at
+    | JBool b -> add (if b then b"true" else b"false") buf at
+    | JInt n -> integer n buf at
+    | JUInt n -> add (String.bytes (string n)) buf at
+    // JSON has no spelling for NaN or infinity
+    | JNumber x -> add (String.bytes (if x - x = 0.0 then string x else "null")) buf at
+    | JString s -> quoted s buf at
+    | JArray [] -> add b"[]" buf at
+    | JObject [] -> add b"{}" buf at
+    | JArray xs -> put 91 buf at |> writeElements inner xs buf |> line depth buf |> put 93 buf
+    | JObject kvs -> put 123 buf at |> writeMembers inner kvs buf |> line depth buf |> put 125 buf
+
+  and private writeElements (depth: int) (xs: list<Json>) (buf: ref<Buffer<u8>>) (at: int) : int =
+    match xs with
+    | [] -> at
+    | x :: rest ->
+      let after = line depth buf at |> write depth x buf
+      writeElements depth rest buf (if List.isEmpty rest then after else put 44 buf after)
+
+  and private writeMembers (depth: int) (kvs: list<string * Json>) (buf: ref<Buffer<u8>>) (at: int) : int =
+    match kvs with
+    | [] -> at
+    | (k, v) :: rest ->
+      let colon = line depth buf at |> quoted k buf |> put 58 buf
+      let after = write depth v buf (if depth < 0 then colon else put 32 buf colon)
+      writeMembers depth rest buf (if List.isEmpty rest then after else put 44 buf after)
+
+  let private render (depth: int) (j: Json) : string =
+    let buf = ref (Buffer.create 64 (u8 0))
+    let n = write depth j buf 0
+    String.ofBytes buf.Value.[0 .. n - 1]
+
+  let private compact (j: Json) = render -1 j
 
   /// The document as text with no spaces: `{"a":1,"b":[true,null]}`. A `JNumber` prints as
   /// `string` prints an `f64`, so `JNumber 2.0` is `2`, which reads back as `JInt 2`; on a
@@ -96,22 +197,9 @@ module Json =
   /// number with more reads back rounded.
   let print (j: Json) = compact j
 
-  let rec private indented (indent: string) (j: Json) : string =
-    let inner = indent + "  "
-
-    match j with
-    | JArray [] -> "[]"
-    | JObject [] -> "{}"
-    | JArray xs ->
-      "[\n" + String.join ",\n" (List.map (fun x -> inner + indented inner x) xs) + "\n" + indent + "]"
-    | JObject kvs ->
-      let field (k, v) = inner + quote k + ": " + indented inner v
-      "{\n" + String.join ",\n" (List.map field kvs) + "\n" + indent + "}"
-    | _ -> compact j
-
   /// The document indented by two spaces, `"key": value`, an element per line, `[]` and `{}`
   /// inline, with no newline at the end.
-  let pretty (j: Json) = indented "" j
+  let pretty (j: Json) = render 0 j
 
   // ---- parsing: each function reads from byte i and gives the value and the byte after it
 
@@ -221,14 +309,34 @@ module Json =
       v <- if v < 0 || h < 0 then -1 else v * 16 + h
     v
 
+  // the first byte from `start` that a string's text doesn't hold as it is (a `"`, a `\`, a
+  // control, a byte of a UTF-8 sequence), or the length: 16 bytes at a time while none is one
+  let private plain (b: span<u8>) (start: int) : int =
+    let n = Span.length b
+    let mutable j = start
+    let mutable wide = true
+    while wide && j + 16 <= n do
+      let v = U8x16.load b j
+      // a byte less 32, wrapping, is under 96 for 32 to 127
+      if Mask16.any (U8x16.greaterOrEqual (v - U8x16.splat (u8 32)) (U8x16.splat (u8 96))) || Mask16.any (U8x16.equal v (U8x16.splat (u8 34))) || Mask16.any (U8x16.equal v (U8x16.splat (u8 92))) then
+        wide <- false
+      else
+        j <- j + 16
+    while j < n && b.[j] >= u8 32 && b.[j] < u8 128 && b.[j] <> u8 34 && b.[j] <> u8 92 do
+      j <- j + 1
+    j
+
   // a string's text after its opening quote: one copy of each run without escapes, the escapes
   // decoded, UTF-8 checked; the pieces (backwards in acc) joined once at the end, as a string
   // added to at each escape is copied whole each time
-  let rec private text (s: string) (i: int) (acc: list<string>) (from: int) : result<string * int, string> =
+  let rec private text (s: string) (start: int) (acc: list<string>) (from: int) : result<string * int, string> =
+    let i = plain (String.bytes s) start
     let b = byteAt s i
 
     if b = 34 then
-      Ok (String.concat (List.rev (String.sub s from (i - from) :: acc)), i + 1)
+      // a string without escapes is one piece
+      let last = String.sub s from (i - from)
+      Ok ((if List.isEmpty acc then last else String.concat (List.rev (last :: acc))), i + 1)
     else if b < 0 then
       fail s i "a string that doesn't end"
     else if b < 32 then
@@ -638,8 +746,10 @@ impl FromJson<list<'a>> =
       match xs with
       | [] -> Ok (List.rev acc)
       | x :: rest ->
-        let v = (fromJson x |> Json.within $"[{i}]")?
-        go (i + 1) rest (v :: acc)
+        // the index's text is made only for an error
+        match fromJson x with
+        | Ok v -> go (i + 1) rest (v :: acc)
+        | Error e -> Json.within $"[{i}]" (Error e)
     let xs = (Json.array j)?
     go 0 xs []
 
@@ -731,9 +841,21 @@ derive FromJson =
     match Shape.kind with
     | RecordKind ->
       let kvs = (Json.object j)?
+      // a document's keys mostly come in the fields' order, so the key after the last one found
+      // is tried first; it's the first of its name, as those before it were other fields'
+      let next = ref kvs
       Shape.build (fun f ->
-        match (List.tryFind (fun (k, _) -> k = f.name) kvs, f.default) with
-        | (Some (_, v), _) -> fromJson v |> Json.within f.name
+        let found =
+          match next.Value with
+          | (k, v) :: rest when k = f.name ->
+            next.Value <- rest
+            Some v
+          | _ ->
+            match List.tryFind (fun (k, _) -> k = f.name) kvs with
+            | Some (_, v) -> Some v
+            | None -> None
+        match (found, f.default) with
+        | (Some v, _) -> fromJson v |> Json.within f.name
         | (None, Some d) -> Ok d
         | (None, None) -> fromJson JNull |> Result.mapError (fun _ -> $"missing key {f.name}"))
     | UnionKind ->
