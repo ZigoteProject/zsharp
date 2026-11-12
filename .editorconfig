@@ -1,0 +1,44 @@
+# Editor settings that match what the suite enforces (zs fmt: two spaces, 100 columns) and what
+# .gitattributes checks out (LF everywhere). https://editorconfig.org
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# Z#: zs fmt's layout
+[*.zs]
+indent_style = space
+indent_size = 2
+max_line_length = 100
+
+[*.{sh,toml,yml,yaml,json,js,mjs,scm}]
+indent_style = space
+indent_size = 2
+
+[{dev,*.sh}]
+max_line_length = 120
+
+[*.md]
+indent_style = space
+indent_size = 2
+max_line_length = 100
+
+# C follows each file's own style: only the settings above
+
+# expected output and test data are compared byte for byte: an editor changes nothing in them
+[*.{out,err,expected,in,csv,locale,charmap}]
+insert_final_newline = unset
+trim_trailing_whitespace = unset
+end_of_line = unset
+charset = unset
+
+# generated or vendored: left as they come
+[{editors/tree-sitter-zsharp/src/**,packages/*/c/**,runtime/wepoll/**,docs/reference/**}]
+insert_final_newline = unset
+trim_trailing_whitespace = unset
+indent_style = unset
+indent_size = unset
+max_line_length = unset

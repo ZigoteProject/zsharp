@@ -1,0 +1,40 @@
+name: Idea or request
+description: Something Z# should do, or do differently
+labels: [idea]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the problem before the solution. A change to the language is decided through a proposal (docs/proposals); ROADMAP.md says what's already planned.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you were writing, and what got in the way. A program that shows it helps most.
+    validations:
+      required: true
+  - type: textarea
+    id: today
+    attributes:
+      label: What you do today instead
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you'd like
+      description: Optional. How it would look in a program, and what F#, Rust or another language does.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - The language
+        - The library
+        - The compiler and builds
+        - Tools and editors
+        - Packages
+        - Microcontrollers and targets
+        - Documentation
+    validations:
+      required: true

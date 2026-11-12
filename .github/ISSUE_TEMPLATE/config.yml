@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a vulnerability
+    url: https://github.com/ZigoteProject/zsharp/security/advisories/new
+    about: Privately, never as a public issue. SECURITY.md says what counts.
+  - name: Learn the language
+    url: https://github.com/ZigoteProject/zsharp/blob/master/docs/guide/README.md
+    about: The guide, 18 chapters of small whole programs.
