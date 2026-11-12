@@ -38,6 +38,7 @@ proposal describes a change to it, and [ROADMAP.md](../../ROADMAP.md) says when 
 | 0027 | [More microcontrollers](0027-more-microcontrollers.md) | Implemented in part (phase 12): the Nucleo-F401RE, RTT and probe-rs, not yet run on the board itself; the other boards are a draft | a design review, before phase 12's M4 (one real board) |
 | 0028 | [Written constraints](0028-written-constraints.md) | Approved in principle; not built | track G's item 6, before packages publish signatures |
 | 0029 | [Leaving a loop](0029-leaving-a-loop.md) | Implemented | track G's item 12 |
+| 0030 | [Checking ahead](0030-checking-ahead.md) | Proposed; step 1 spiked and taken out (same bytes, no time) | after 0.7.1: the compiler's front half on the pool |
 
 **Status:**
 - **Draft:** written, with its open questions listed.
