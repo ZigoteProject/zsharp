@@ -10,14 +10,14 @@ with every job green), and what it found is fixed here. The language has its spe
 (an integer literal outside its type, `1e-3`, `compare` on a NaN), and a loop and a function
 can be left early: `break`, `continue` and `return`.
 
-Tested as 0.7.0's changes were on the five CI runners up to `be321b3`; what came after it (the
-security review's fixes, the three defects, `break`, `continue` and `return`, effects in a
-task, records found by their fields, several effects in one `handle`) has passed the
-suite in the dev container on Linux x86-64 (544 checks, `tests/bootstrap.sh` among them: the
-compiler builds itself to the same bytes), built optimized too (`./test.sh --release`, 544), with
-the address and undefined-behaviour sanitizers (`--sanitize`, 536, the 9 that measure the pool
-or the stack guard skipped) and under valgrind (`--valgrind`, 536, the same 9 skipped), and on
-the other runners once CI has run this release's commit. Still
+Archives for Linux, macOS and Windows on x86-64 and arm64, each built on Linux x86-64 by
+`src/release.sh` from a fresh clone at `18f216d`, whose compiler builds itself to the same bytes.
+At that commit every job of CI passes: the suite in the dev container on Linux x86-64, and on
+the macOS (arm64 and x86-64), Windows (x64 and arm64) and Linux arm64 runners with the compiler
+built there. In the dev container the suite passes plain (544 checks, `tests/bootstrap.sh`
+among them), built optimized (`./test.sh --release`, 544), with the address and
+undefined-behaviour sanitizers (`--sanitize`, 536, the 9 that measure the pool or the stack
+guard skipped) and under valgrind (`--valgrind`, 536, the same 9 skipped). Still
 open from 0.7's plan: the flagship on its Nucleo-F401RE, and the archives on clean machines.
 
 ### Upgrading from 0.7.0
