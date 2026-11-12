@@ -113,6 +113,7 @@ let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string,
       funcs = Buffer.empty
       generated = ref Set.empty
       strings = ref Map.empty
+      stringCount = ref 0
       fnTable = fnTable
       referenced = ref Set.empty
       referencedOrder = Buffer.empty

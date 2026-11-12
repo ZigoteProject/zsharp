@@ -46,6 +46,8 @@ and GData =
     funcs: Buffer<string>
     generated: ref<Set<string>>
     strings: ref<Map<string, string>>
+    /// how many strings has: the next one's number (Map.count walks the map)
+    stringCount: ref<int>
     fnTable: Map<string, MFun>
     referenced: ref<Set<string>>
     referencedOrder: Buffer<string>
@@ -102,6 +104,9 @@ type G with
   member g.strings =
     match g with
     | G { strings = x } -> x
+  member g.stringCount =
+    match g with
+    | G { stringCount = x } -> x
   member g.fnTable =
     match g with
     | G { fnTable = x } -> x
@@ -696,7 +701,8 @@ let strGlobal (g: G) (s: string) : string =
   | Some name -> name
   | None ->
     let n = String.length s
-    let name = $"@.str.{Map.count g.strings.Value}"
+    let name = $"@.str.{g.stringCount.Value}"
+    g.stringCount.Value <- g.stringCount.Value + 1
     topLine g $"{name} = private unnamed_addr constant {{ i_W, i_W, [{n + 1} x i8] }} {{ i_W 0, i_W {n}, [{n + 1} x i8] c\"{encoded s}\\00\" }}"
     g.strings.Value <- Map.add s name g.strings.Value
     name
