@@ -44,7 +44,7 @@ Everything runs in the dev container (podman), through `./dev`. Don't build on t
 ```
 
 - **Stage 0.** `src/` is built by an earlier release, pinned by version and SHA-256 in `dev`
-  (0.6.1 today), unpacked into `build/stage0/`. So **compiler code may use only what that release's
+  (0.7.1 today), unpacked into `build/stage0/`. So **compiler code may use only what that release's
   language and library have**; `lib/` and `tests/` may use everything.
 - **`bin/lib` is a copy** of `lib/` made at install time: after editing `lib/*.zs`, reinstall
   (`./dev src/install.sh build/zs bin`) or rerun the suite.

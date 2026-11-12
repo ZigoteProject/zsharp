@@ -26,7 +26,7 @@ it and builds the image the first time.
 ## Stage 0
 
 The compiler is written in Z#, so building it needs a compiler. That one is **stage 0**: a
-release pinned in `dev` by version and SHA-256 (0.6.1 today), taken from `dist/` or downloaded
+release pinned in `dev` by version and SHA-256 (0.7.1 today), taken from `dist/` or downloaded
 from the repository's releases, and unpacked into `build/stage0/`. Inside the container it's
 `$ZS_STAGE0`.
 
