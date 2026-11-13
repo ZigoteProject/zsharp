@@ -19,7 +19,9 @@ ok   app/counts
 libs/text/src/Text.zs
 ok   text/counts words
 ok   text/counts lines
-3 passed, 0 failed
+libs/text/tests/TextTests.zs
+ok   tests/sees src and its helpers
+4 passed, 0 failed
 == zs tree at the root
 app 0.1.0 (app)
 ├─ text 0.1.0 (path ../libs/text)

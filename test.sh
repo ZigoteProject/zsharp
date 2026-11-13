@@ -295,7 +295,8 @@ else echo "skip tests/fuzz/fuzz.sh (no libFuzzer runtime)"; fi
 if [ "$(tests/ztest/bench.sh 2>&1)" = "$(cat tests/ztest/bench.expected)" ]; then echo "ok   tests/ztest/bench.sh (zs bench, testFaster)"
 else echo "FAIL tests/ztest/bench.sh"; diff <(tests/ztest/bench.sh 2>&1) tests/ztest/bench.expected; fail=1; fi
 
-# projects: a CLI tool built from zs.toml with a path dependency; zs test over a project; two
+# projects: a CLI tool built from zs.toml with a path dependency; zs test over a project (src/
+# and tests/, whose files name src's modules as the program does); two
 # dependencies with a Util.zs each (0018 K1) and one with C code ([c], K4); zs new
 zs="$PWD/bin/zs"
 proj=$( (cd tests/project/wc && "$zs" build >/dev/null && ./build/wc sample.txt missing.txt; echo "exit $?"
@@ -308,7 +309,7 @@ wc: cannot open missing.txt: No such file or directory
 exit 1
 4 sample.txt
 2 3 6 
-2 passed, 0 failed
+3 passed, 0 failed
 alpha: the alpha util 9
 beta: the beta util module, 4 words
 the alpha util / the beta util module / 16

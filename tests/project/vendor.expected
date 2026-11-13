@@ -4,7 +4,7 @@ zs.lock entries with a hash: 1
 0
 == vendored
 vendored text v1 into vendor/text
-src zs.toml 
+src tests zs.toml 
 words 3
 checkouts made: 0
 == a vendored copy that was edited
