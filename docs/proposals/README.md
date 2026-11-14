@@ -42,6 +42,7 @@ proposal describes a change to it, and [ROADMAP.md](../../ROADMAP.md) says when 
 | 0031 | [Stability and support](0031-stability-and-support.md) | Draft | a design review, before the release after 0.7.1 |
 | 0032 | [First-party packages: `sqlite`, `tls` and `http`](0032-first-party-packages.md) | Implemented: the three packages, `examples/service` and `examples/echo/http`, the `sql` provider's `rows = "sqlite"`; run on Linux and under QEMU (arm64) and Wine (Windows x64), built for macOS and not yet run there | decision 85, a review of the packages as built |
 | 0033 | [A library's panic as its host's error, and typed handles](0033-library-failure-and-typed-handles.md) | Draft | a design review |
+| 0034 | [C calls, registers and CPU features inside `unsafe`](0034-c-calls-in-unsafe.md) | Draft | track G's item 5; a design review |
 
 **Status:**
 - **Draft:** written, with its open questions listed.

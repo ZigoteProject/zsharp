@@ -427,7 +427,7 @@ the syntax reserves and the compiler's known deviations.
      clause on the way resumes last (no continuation captured, so decision 72's seven
      allocations don't apply). **Exit test:** logstat's `Log` and `Clock` handled once, around
      tasks and `Array.Parallel.map` both.
-  5. **What "without `unsafe`" guarantees:** an `extern` call, `Mmio.*` and a `[<Target>]`
+  5. **What "without `unsafe`" guarantees** *([proposal 0034](docs/proposals/0034-c-calls-in-unsafe.md), a draft: all three inside `unsafe`, a warning first)*: an `extern` call, `Mmio.*` and a `[<Target>]`
      function on a CPU without its features are all written in safe code and are unchecked
      (DESIGN §5.3 lists the first two as "unsafe on purpose"; the specification's §10.7 has to
      except them). Either they're called in `unsafe`, as `fnptr` and `[<Unsafe>]` functions
