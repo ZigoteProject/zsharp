@@ -75,6 +75,15 @@
   --build-only`).
 - `./test.sh --target` builds `tests/libstatic.zs`'s library for the target and runs its C
   program under the emulator; it built the host's and linked it with the target's C.
+- `Task.waitFor` with a number that isn't an open descriptor is a panic (`waiting for a
+  descriptor that isn't open`). The event loop sized its table by the number: a large one put
+  the task's callback outside the table, memory a program without `unsafe` could write, and a
+  negative one doubled the size without end (`tests/task/panic_wait_descriptor.zs`,
+  `panic_wait_negative.zs`). On Windows it was a panic already.
+- On Windows, a `TcpStream`, `TcpListener` or `UdpSocket` built with a number of the program's
+  own (each is a case over an `int`) is no socket, and each call on it an `Error`: `Udp.port`,
+  `receive`, `send` and `Tcp.accept` read the runtime's table of sockets at that number, past
+  its end (`tests/task/socket_made_up.zs`, under `./test.sh --target x86_64-windows-gnu`).
 
 ## 0.7.1 (2026-11-12)
 

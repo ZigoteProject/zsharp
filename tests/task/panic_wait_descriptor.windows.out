@@ -1,0 +1,2 @@
+before
+panic: only a socket can be waited for on Windows

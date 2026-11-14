@@ -3441,7 +3441,9 @@ static pthread_mutex_t socks_mu = PTHREAD_MUTEX_INITIALIZER;
 
 static SOCKET *sk_slot(size_t i) { return &atomic_load_explicit(&sock_chunks[i / SOCK_CHUNK], memory_order_acquire)[i % SOCK_CHUNK]; }
 static bool is_sock(zs_int fd) { return fd >= SOCK_BASE && (size_t)(fd - SOCK_BASE) < atomic_load_explicit(&nsocks, memory_order_acquire); }
-static SOCKET sk_of(zs_int fd) { return *sk_slot((size_t)(fd - SOCK_BASE)); }
+// a number that isn't a socket's (a TcpStream or UdpSocket built with one of the program's own)
+// is no socket: Winsock refuses it, where its slot would be read from outside the table
+static SOCKET sk_of(zs_int fd) { return is_sock(fd) ? *sk_slot((size_t)(fd - SOCK_BASE)) : INVALID_SOCKET; }
 
 static int sk_add(SOCKET s) {
     if (s == INVALID_SOCKET) return -1;
@@ -3730,6 +3732,12 @@ void zs_loop_wait(zs_int fd, bool write, void *cb) {
     if (!is_sock(fd)) zs_panic_c("only a socket can be waited for on Windows");
 #endif
     if ((size_t)FD_SLOT(fd) >= L.nfds) {
+#ifndef _WIN32
+        // Task.waitFor takes any number, and the table is sized by it: only an open descriptor's,
+        // which the system's limit bounds (a negative one would double the size without end, a
+        // large one overflow it and put the callback outside the table)
+        if (fd < 0 || fd > INT_MAX || fcntl((int)fd, F_GETFD) < 0) zs_panic_c("waiting for a descriptor that isn't open");
+#endif
         size_t n = L.nfds ? L.nfds : 64;
         while (n <= (size_t)FD_SLOT(fd)) n *= 2;
         fd_wait *f = realloc(L.fds, n * sizeof(fd_wait));

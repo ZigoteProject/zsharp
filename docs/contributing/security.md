@@ -48,6 +48,9 @@ A new feature that reads something states which row it's in before it's written.
   one (`Spsc` was Share and assumed one producer).
 - A stack overflow, an exhausted heap or descriptor table is a panic or an `Error`, on a chip
   too. Nothing is overwritten.
+- A number that names something of the runtime's (a descriptor, a socket, a process, a Signal)
+  is checked where it's used: the types that carry one are public, so a program can build one
+  with any number (`Task.waitFor` sized the event loop's table by its argument).
 - Changes run under `--sanitize`, `--sanitize=thread` and `--valgrind`.
 
 ### The library
