@@ -15,6 +15,8 @@ echo "== the program"
 ZS_LEAKCHECK=1 timeout 600 "$zs" run --strict; echo "exit $?"
 echo "== Http.parseRequest, and a property over any bytes (zs fuzz runs the same one)"
 timeout 600 "$zs" test src/Wire.zs 2>&1 | tail -1
+echo "== a session's connections, outside the package"
+timeout 120 "$zs" check src/Handles.zs 2>&1 | grep -o "error: the fields of .*"
 echo "== examples/service"
 cd "$t/examples/service" && rm -rf .zs-cache build && timeout 600 "$zs" build --strict >/dev/null || echo "the build failed"
 ./build/service 0 "$t/notes.db" 2> "$t/service.log" & server=$!

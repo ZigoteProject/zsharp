@@ -21,3 +21,6 @@ not a host name
 /nonexistent/cert.pem: cannot open /nonexistent/cert.pem: No such file or directory
 the system's authorities: ok
 exit 0
+== Mbed TLS's pointers, outside the package
+error: the fields of 'Tls.Connected' are private to module Tls
+error: the fields of 'Tls.Connected' are private to module Tls

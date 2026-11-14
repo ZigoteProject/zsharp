@@ -906,26 +906,31 @@ module Client =
         dispose h.held.conn
         dispose h.held.parser
 
+  // a session's connections. A private type, so its field is private too: a program can't
+  // keep the list past the session's close and put it back, with parsers that are freed
+  type private Idle = { waiting: ref<list<Kept>> }
+
   /// A client that keeps its connections: a request to a server it has asked before goes on
   /// the connection that's still open (`Client.session`, `Client.sendIn`). `use` closes them.
   type Session =
     { /// The limits and the trust of each request.
       config: Config
       /// The connections open and not in use.
-      idle: ref<list<Kept>>
+      idle: Idle
       /// How many connections it has made.
       made: ref<int> }
 
   /// `use` closes the session's connections.
   impl Dispose<Session> =
     let dispose (s: Session) =
-      for k in s.idle.Value do
+      for k in s.idle.waiting.Value do
         dispose k.conn
         dispose k.parser
-      s.idle.Value <- []
+      s.idle.waiting.Value <- []
 
   /// A session with no connection yet.
-  let session (config: Config) : Session = { config = config; idle = ref []; made = ref 0 }
+  let session (config: Config) : Session =
+    { config = config; idle = { waiting = ref [] }; made = ref 0 }
 
   // the request on the connection, and its response; the connection goes back to the session
   // when it can carry another
@@ -954,10 +959,10 @@ module Client =
         if method = Head then zs_http_no_body p (i32 1)
         let! got = response k.conn p k.buf [||] config.maxBodyBytes
         match got, session with
-        | Ok (r, clean), Some s when clean && zs_http_keep_alive p <> i32 0 && List.length s.idle.Value < 8 ->
+        | Ok (r, clean), Some s when clean && zs_http_keep_alive p <> i32 0 && List.length s.idle.waiting.Value < 8 ->
           zs_http_next p
           held.kept.Value <- true
-          s.idle.Value <- k :: s.idle.Value
+          s.idle.waiting.Value <- k :: s.idle.waiting.Value
           return Ok r
         | Ok (r, _), _ -> return Ok r
         | Error e, _ -> return Error e
@@ -997,12 +1002,12 @@ module Client =
     let again = method = Get || method = Head || method = Put || method = Delete || method = Options
     let waiting =
       match session with
-      | Some s when again -> List.tryFind (fun (k: Kept) -> k.key = key) s.idle.Value
+      | Some s when again -> List.tryFind (fun (k: Kept) -> k.key = key) s.idle.waiting.Value
       | _ -> None
     match session, waiting with
     | Some s, Some k ->
       task {
-        s.idle.Value <- List.filter (fun (o: Kept) -> o.id <> k.id) s.idle.Value
+        s.idle.waiting.Value <- List.filter (fun (o: Kept) -> o.id <> k.id) s.idle.waiting.Value
         let! r = exchange config session method u headers body k
         match r with
         | Error (Io _) -> return! fresh ()

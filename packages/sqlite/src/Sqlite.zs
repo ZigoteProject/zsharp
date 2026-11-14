@@ -38,17 +38,24 @@ type Value =
   /// Bytes.
   | Blob of array<u8>
 
+// SQLite's pointer to a connection and to a statement, until each is closed. A private type
+// each, so the field is private too: a program can't keep a pointer past its close and put it
+// back, nor give a statement a connection's, which SQLite would follow into freed memory
+type private Connection = { connection: ref<option<cptr>> }
+
+type private Compiled = { compiled: ref<option<cptr>> }
+
 /// A connection to a database (`Db.connect`); `use` closes it.
 type Db =
   { /// SQLite's connection, until it's closed.
-    handle: ref<option<cptr>> }
+    handle: Connection }
 
 /// A compiled statement (`Db.prepare`); `use` finalizes it.
 type Statement =
   { /// The connection it was prepared on.
     db: Db
     /// SQLite's statement, until it's finalized.
-    handle: ref<option<cptr>> }
+    handle: Compiled }
 
 /// A statement standing at a row of its result, until its next `Statement.step` or
 /// `Statement.reset`: `Row`'s functions read its columns.
@@ -78,25 +85,25 @@ type Options =
 /// `use` closes the connection. Statements still open keep working until each is finalized.
 impl Dispose<Db> =
   let dispose (db: Db) =
-    match db.handle.Value with
+    match db.handle.connection.Value with
     | Some p ->
-      db.handle.Value <- None
+      db.handle.connection.Value <- None
       Native.sqlite3_close_v2 p |> ignore
     | None -> ()
 
 /// `use` finalizes the statement.
 impl Dispose<Statement> =
   let dispose (s: Statement) =
-    match s.handle.Value with
+    match s.handle.compiled.Value with
     | Some p ->
-      s.handle.Value <- None
+      s.handle.compiled.Value <- None
       Native.sqlite3_finalize p |> ignore
     | None -> ()
 
 // the error for a result code: the connection's message when it's open, else the code's own
 let private errorOf (db: Db) (code: i32) : Error =
   let message =
-    match db.handle.Value with
+    match db.handle.connection.Value with
     | Some p -> String.ofCStr (Native.sqlite3_errmsg p)
     | None -> String.ofCStr (Native.sqlite3_errstr code)
   let primary = int code &&& 0xFF
@@ -131,7 +138,7 @@ module Statement =
   /// Binds the values to the statement's parameters (`?`, `?1`, `:name`) in order, replacing
   /// what was bound. An `Error` when their number isn't the statement's.
   let bind (s: Statement) (args: list<Value>) : result<unit, Error> =
-    match s.handle.Value with
+    match s.handle.compiled.Value with
     | None -> Error Closed
     | Some p ->
       let wants = int (Native.sqlite3_bind_parameter_count p)
@@ -150,7 +157,7 @@ module Statement =
 
   /// Runs the statement to its next row, or to its end.
   let step (s: Statement) : Step =
-    match s.handle.Value with
+    match s.handle.compiled.Value with
     | None -> Failed Closed
     | Some p ->
       let code = Native.sqlite3_step p
@@ -165,7 +172,7 @@ module Statement =
 
   /// Puts the statement back at its start, to run again with what's bound.
   let reset (s: Statement) : unit =
-    match s.handle.Value with
+    match s.handle.compiled.Value with
     | Some p -> Native.sqlite3_reset p |> ignore
     | None -> ()
 
@@ -175,7 +182,7 @@ module Row =
   // SQLite's statement, with the column checked against the row it stands at
   let private at (r: Row) (column: int) : cptr =
     let (RowOf s) = r
-    match s.handle.Value with
+    match s.handle.compiled.Value with
     | None -> panic "Sqlite.Row: the statement is closed"
     | Some p ->
       let n = int (Native.sqlite3_data_count p)
@@ -194,7 +201,7 @@ module Row =
   /// How many columns the row has.
   let count (r: Row) : int =
     let (RowOf s) = r
-    match s.handle.Value with
+    match s.handle.compiled.Value with
     | Some p -> int (Native.sqlite3_data_count p)
     | None -> 0
 
@@ -269,7 +276,7 @@ module Db =
       if Ptr.isNull raw then
         Error (Other (int code, "out of memory"))
       else
-        let db = { handle = ref (Some p) }
+        let db = { handle = { connection = ref (Some p) } }
         if code = i32 0 then
           Ok db
         else
@@ -282,7 +289,7 @@ module Db =
 
   /// Compiles one statement. Text after it (a second statement) is an `Error`.
   let prepare (db: Db) (sql: string) : result<Statement, Error> =
-    match db.handle.Value with
+    match db.handle.connection.Value with
     | None -> Error Closed
     | Some p ->
       let out: ptr<cptr> = unsafe Ptr.alloc 1
@@ -298,7 +305,7 @@ module Db =
       else if Ptr.isNull raw then
         Error (Other (Native.SQLITE_MISUSE, "no statement in the text"))
       else
-        Ok { db = db; handle = ref (Some made) }
+        Ok { db = db; handle = { compiled = ref (Some made) } }
 
   /// Runs a statement that gives no rows (an insert, an update, `create table`) with the values
   /// bound to its parameters: how many rows it changed.
@@ -315,7 +322,7 @@ module Db =
           | Row _ -> true
           | _ -> false) do
           last <- Statement.step s
-        match last, db.handle.Value with
+        match last, db.handle.connection.Value with
         | Failed e, _ -> Error e
         | _, Some p -> Ok (int (Native.sqlite3_changes64 p))
         | _, None -> Error Closed
@@ -323,7 +330,7 @@ module Db =
   /// The row id of the last row this connection inserted (an `integer primary key`'s value),
   /// 0 when it has inserted none.
   let lastInsertId (db: Db) : i64 =
-    match db.handle.Value with
+    match db.handle.connection.Value with
     | Some p -> Native.sqlite3_last_insert_rowid p
     | None -> i64 0
 

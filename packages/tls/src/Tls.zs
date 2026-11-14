@@ -38,15 +38,22 @@ type Error =
   /// with Mbed TLS's code and its message.
   | Failed of code: int * message: string
 
+// Mbed TLS's pointer to a configuration and to a connection, until each is released. A private
+// type each, so the field is private too: a program can't keep a pointer past its release and
+// put it back, nor give a stream a configuration's, which Mbed TLS would read as a connection
+type private Configured = { configured: ref<option<cptr>> }
+
+type private Connected = { connected: ref<option<cptr>> }
+
 /// What a client asks of a server: the certificates it trusts. `use` releases it.
 type ClientConfig =
   { /// Mbed TLS's configuration with the roots, until it's released.
-    roots: ref<option<cptr>> }
+    roots: Configured }
 
 /// What a server presents: its certificate and key. `use` releases it.
 type ServerConfig =
   { /// Mbed TLS's configuration with the certificate and key, until it's released.
-    identity: ref<option<cptr>> }
+    identity: Configured }
 
 /// A connection under TLS (`Tls.connect`, `Tls.accept`). `use` closes it and its socket;
 /// `Tls.close` first tells the peer.
@@ -54,7 +61,7 @@ type TlsStream =
   { /// The socket under it.
     tcp: TcpStream
     /// Mbed TLS's connection, until it's closed.
-    handle: ref<option<cptr>>
+    handle: Connected
     /// Where bytes from the socket are read before they're decrypted.
     scratch: Buffer<u8> }
 
@@ -68,19 +75,19 @@ let private release (cell: ref<option<cptr>>) : unit =
 
 /// `use` releases the configuration; connections made from it go on.
 impl Dispose<ClientConfig> =
-  let dispose (c: ClientConfig) = release c.roots
+  let dispose (c: ClientConfig) = release c.roots.configured
 
 /// `use` releases the configuration; connections made from it go on.
 impl Dispose<ServerConfig> =
-  let dispose (c: ServerConfig) = release c.identity
+  let dispose (c: ServerConfig) = release c.identity.configured
 
 /// `use` closes the connection and its socket, without a notice to the peer (`Tls.close`
 /// sends one).
 impl Dispose<TlsStream> =
   let dispose (s: TlsStream) =
-    match s.handle.Value with
+    match s.handle.connected.Value with
     | Some p ->
-      s.handle.Value <- None
+      s.handle.connected.Value <- None
       zs_tls_conn_free p
       dispose s.tcp
     | None -> ()
@@ -112,7 +119,8 @@ module Config =
   /// A client's configuration that trusts the system's certificate authorities (`SSL_CERT_FILE`
   /// names another bundle, as for OpenSSL).
   let client () : result<ClientConfig, Error> =
-    made (zs_tls_client_config (String.bytes "")) |> Result.map (fun h -> { roots = h })
+    made (zs_tls_client_config (String.bytes ""))
+    |> Result.map (fun h -> { roots = { configured = h } })
 
   /// A client's configuration that trusts only the certificates in `pem` (PEM text): a private
   /// authority's, or one server's own.
@@ -120,13 +128,14 @@ module Config =
     if String.isEmpty pem then
       Error (Failed (0, "no certificate in the text"))
     else
-      made (zs_tls_client_config (String.bytes pem)) |> Result.map (fun h -> { roots = h })
+      made (zs_tls_client_config (String.bytes pem))
+      |> Result.map (fun h -> { roots = { configured = h } })
 
   /// A server's configuration from PEM text: its certificate, followed by the chain above it,
   /// and its private key.
   let server (certificate: string) (key: string) : result<ServerConfig, Error> =
     made (zs_tls_server_config (String.bytes certificate) (String.bytes key))
-    |> Result.map (fun h -> { identity = h })
+    |> Result.map (fun h -> { identity = { configured = h } })
 
   /// A server's configuration from two PEM files.
   let ofFiles (certificate: string) (key: string) : result<ServerConfig, Error> =
@@ -180,7 +189,7 @@ let private flush (s: TlsStream) (p: cptr) : Task<result<unit, Error>> =
 // done. The handle is looked up again after each wait, since the stream may be closed meanwhile.
 let rec private drive (s: TlsStream) (atEnd: result<int, Error>) (step: cptr -> i32) : Task<result<int, Error>> =
   task {
-    match s.handle.Value with
+    match s.handle.connected.Value with
     | None -> return Error Closed
     | Some p ->
       let r = int (step p)
@@ -199,7 +208,7 @@ let rec private drive (s: TlsStream) (atEnd: result<int, Error>) (step: cptr -> 
           return! drive s atEnd step
         else
           let! got = Tcp.read s.tcp s.scratch
-          match got, s.handle.Value with
+          match got, s.handle.connected.Value with
           | _, None -> return Error Closed
           | Error e, _ -> return Error (Io e)
           | Ok 0, _ -> return Error Truncated
@@ -231,7 +240,10 @@ let private start (config: ref<option<cptr>>) (host: string) (stream: TcpStream)
         dispose stream
         return Error (failure (zs_tls_last_error ()))
       else
-        let s = { tcp = stream; handle = ref (Some p); scratch = Buffer.create 16384 (u8 0) }
+        let s =
+          { tcp = stream
+            handle = { connected = ref (Some p) }
+            scratch = Buffer.create 16384 (u8 0) }
         // closed unless the handshake ends well: on a failure, and when the task is cancelled
         use starting = { stream = s; kept = ref false }
         let! shaken = drive s (Error Truncated) (fun c -> zs_tls_handshake c)
@@ -252,12 +264,12 @@ let connect (config: ClientConfig) (host: string) (stream: TcpStream) : Task<res
       return Error (Failed (0, "not a host name"))
     }
   else
-    start config.roots host stream
+    start config.roots.configured host stream
 
 /// TLS as a server over an accepted socket: the handshake. The stream owns the socket from
 /// here, and closes it on a failure.
 let accept (config: ServerConfig) (stream: TcpStream) : Task<result<TlsStream, Error>> =
-  start config.identity "" stream
+  start config.identity.configured "" stream
 
 /// Reads what has arrived into `buf`, waiting for at least one byte: how many, or 0 when the
 /// peer has closed its side. A connection that ends without that notice is `Truncated`.
@@ -268,7 +280,7 @@ let read (s: TlsStream) (buf: Buffer<u8>) : Task<result<int, Error>> =
       return Ok 0
     else
       let! got = drive s (Ok 0) (fun p -> zs_tls_read p (usize want))
-      match got, s.handle.Value with
+      match got, s.handle.connected.Value with
       | Ok n, Some p when n > 0 ->
         let plain = Buffer.ofSpan (unsafe (Span.ofPtr (zs_tls_plain p) n))
         Buffer.blit plain 0 buf 0 n

@@ -69,6 +69,8 @@ a header with a line end: error: not HTTP: a header or the method can't be sent
 exit 0
 == Http.parseRequest, and a property over any bytes (zs fuzz runs the same one)
 3 passed, 0 failed
+== a session's connections, outside the package
+error: the fields of 'Http.Client.Idle' are private to module Http.Client
 == examples/service
 HTTP/1.1 201 Created {"id":1,"text":"buy milk"}
 HTTP/1.1 201 Created {"id":2,"text":"it's \"quoted\"; drop table notes"}

@@ -66,6 +66,11 @@ A new feature that reads something states which row it's in before it's written.
   spin.
 - **`unsafe`** is small and behind a function that validates. `[<Unsafe>]` marks a function that
   trusts its arguments.
+- **A pointer from C is in a private type.** A public record's fields can be read and written
+  by anyone, a `ref`'s contents replaced: a handle that is a public `ref<option<cptr>>` lets
+  safe code keep the pointer past its close and put it back. A private record holds it
+  (`Bytes.Writer`'s memory, `Sqlite.Db`'s connection), one type for each kind of pointer, and
+  a test checks that reading it outside the module doesn't compile.
 - Don't write cryptography beyond what's there. Bind a reviewed library as a package.
 
 ### The servers: `zs lsp`, `zs mcp`, the build server
@@ -105,6 +110,8 @@ A new feature that reads something states which row it's in before it's written.
       validated before use: lengths, depths, names, paths, links?
 - [ ] Can safe code reach memory it doesn't own, or a race, through this?
 - [ ] Is every new `unsafe` minimal, commented and behind a checking function?
+- [ ] Can a program build or change a value the C side trusts (a public field, a case over a
+      number), and is it checked where it's used?
 - [ ] Does anything new run code, start a process or touch the network? Under whose trust?
 - [ ] Does a failure give an `Error` or a diagnostic, not a crash, a hang or a partial write?
 - [ ] Is every new download pinned and checksummed?

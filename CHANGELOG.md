@@ -84,6 +84,12 @@
   own (each is a case over an `int`) is no socket, and each call on it an `Error`: `Udp.port`,
   `receive`, `send` and `Tcp.accept` read the runtime's table of sockets at that number, past
   its end (`tests/task/socket_made_up.zs`, under `./test.sh --target x86_64-windows-gnu`).
+- `packages/sqlite`, `tls` and `http` keep their pointers from C in private types: a `Db`'s,
+  a `Statement`'s and a `TlsStream`'s `handle` and a TLS configuration's pointer were public
+  `ref<option<cptr>>`s, and a `Session`'s `idle` a public list, so a program without `unsafe`
+  could keep a pointer, close its handle and put the pointer back (SQLite then read a freed
+  statement), or put a connection's where a statement's goes. Reading or writing one outside
+  its package is a compile error now (`tests/packages/sqlite.sh`, `tls.sh`, `http.sh`).
 
 ## 0.7.1 (2026-11-12)
 

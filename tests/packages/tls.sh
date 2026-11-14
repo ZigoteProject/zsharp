@@ -14,3 +14,5 @@ cp -r packages/tls "$t/packages/" && cp -r tests/packages/tls "$t/tests/packages
 cd "$t/tests/packages/tls" && rm -rf .zs-cache build
 echo "== the program"
 ZS_LEAKCHECK=1 timeout 600 "$zs" run --strict; echo "exit $?"
+echo "== Mbed TLS's pointers, outside the package"
+timeout 120 "$zs" check src/Handles.zs 2>&1 | grep -o "error: the fields of .*"

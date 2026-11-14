@@ -44,6 +44,8 @@ row 1
 closed
 error: unable to open database file (14)
 exit 0
-== across threads, and a borrowed column outside unsafe
+== across threads, a borrowed column outside unsafe, and SQLite's pointers outside the package
 captures 'db' : Sqlite.Db, which holds ref<option<cptr>>, which can't be shared between threads
 error: 'Sqlite.Row.textSpan' is unsafe: use it inside `unsafe`
+error: the fields of 'Sqlite.Compiled' are private to module Sqlite
+error: the fields of 'Sqlite.Compiled' are private to module Sqlite
