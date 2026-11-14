@@ -36,6 +36,10 @@
   type of `abstract` members, `^a`, `int[]`, a statement outside a function, and the names
   `box`, `lazy`, `stdout`, `new`, `ResizeArray`, `Dictionary` and `System.…`
   (`tests/newcomer/`).
+- For work on this repository: `./test.sh --only <text>` runs the programs in `tests/` whose path
+  has the text and nothing else; the suite ends with the count of failures and each `FAIL` line
+  again; `./dev -i` passes its standard input to the command; `.mcp.json` starts the compiler's
+  MCP server for an agent.
 
 ### Library
 - `File.readAllBytes` copies each 64 KB it reads whole, where it pushed a byte at a time

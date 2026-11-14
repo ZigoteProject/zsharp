@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "zs": { "command": "./dev", "args": ["-i", "bin/zs", "mcp"] }
+  }
+}

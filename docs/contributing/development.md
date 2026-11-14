@@ -53,7 +53,8 @@ again, or the edit isn't seen.
 ## The test suite
 
 `./test.sh` builds the compiler, installs it into `bin/`, and runs every check. It prints
-`ok`, `skip` or `FAIL` per check and exits non-zero on any failure.
+`ok`, `skip` or `FAIL` per check and exits non-zero on any failure. Its last lines are the count
+of failures and each `FAIL` line again, or `all passed`: read a long log from its end.
 
 | Mode | Adds |
 |---|---|
@@ -63,6 +64,7 @@ again, or the edit isn't seen.
 | `--release` | programs built optimized, which must print the same |
 | `--target <triple>` | cross-compiled and run under qemu-user or Wine (`aarch64-linux-musl`, `x86_64-windows-gnu`) |
 | `--zs <binary>` | test that compiler instead of building `src/` (what CI's native jobs do) |
+| `--only <text>` | the programs in `tests/` whose path has the text, and none of the tool checks |
 
 How tests are written, the file conventions and which tests a change needs:
 [testing](testing.md).
@@ -71,6 +73,20 @@ How tests are written, the file conventions and which tests a change needs:
 
 The suite is long. Rebuild the compiler, run the one test, and run everything once at the end.
 Put a timeout on anything that could hang (`timeout 60 bin/zs …`), as CI does.
+
+```sh
+./dev ./test.sh --only tests/newcomer/          # rebuild the compiler, run those programs
+./dev ./test.sh --zs build/zs --only open_own   # the compiler as last built, one program
+diff <(./dev tests/cache.sh 2>&1) tests/cache.expected   # a script's check, by hand
+```
+
+## An agent's tools
+
+`.mcp.json` at the root gives an MCP client that reads it (Claude Code does) the compiler's own
+server, `./dev -i bin/zs mcp`: `check`, `type_at`, `explain`, `docs`, `guide`, `run` and `test`
+on the checkout's files, from the compiler the suite last built (so run the suite once first).
+It is started without `--trust`. It runs beside a suite, reading `bin/`: while `src/install.sh`
+replaces `bin/lib` a call can fail, and is asked again.
 
 ## Finding out why
 

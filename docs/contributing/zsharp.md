@@ -124,6 +124,7 @@ The namespaces (`Collections`, `Text`, `IO`, …) are open everywhere: `List.map
 ./dev bin/zs fmt file.zs         # format in place
 ```
 
-`zs mcp` exposes `check`, `type_at`, `definition`, `build` and `run` to an agent; `zs lsp` is the
+`zs mcp` exposes `check`, `type_at`, `definition`, `docs`, `guide`, `build`, `run` and `test` to an
+agent ([.mcp.json](development.md#an-agents-tools) starts it here); `zs lsp` is the
 editor's server. When unsure whether something is valid Z#, check it with the compiler rather
 than reasoning from F#.

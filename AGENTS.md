@@ -38,6 +38,7 @@ Everything runs in the dev container (podman), through `./dev`. Don't build on t
 
 ```sh
 ./dev ./test.sh                  # build the compiler from src/, then run every check
+./dev ./test.sh --only <text>    # build it, then run only the tests/ programs with <text> in their path
 ./dev bin/zs run hello.zs        # use the compiler the suite just built
 ./dev bin/zs check file.zs       # type-check only: fast
 ./dev                            # a shell in the container
@@ -48,8 +49,10 @@ Everything runs in the dev container (podman), through `./dev`. Don't build on t
   language and library have**; `lib/` and `tests/` may use everything.
 - **`bin/lib` is a copy** of `lib/` made at install time: after editing `lib/*.zs`, reinstall
   (`./dev src/install.sh build/zs bin`) or rerun the suite.
-- **The suite is long.** While iterating, build and run the one test; run the whole suite before
-  calling a change done.
+- **The suite is long.** While iterating, build and run the one test (`--only`); run the whole
+  suite before calling a change done. Its last lines list every failure.
+- **`.mcp.json`** starts the compiler's MCP server (`./dev -i bin/zs mcp`) for an agent whose
+  client reads it: `check`, `type_at`, `docs`, `guide` instead of guessing from F#.
 
 More: [development](docs/contributing/development.md), [testing](docs/contributing/testing.md).
 

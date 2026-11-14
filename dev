@@ -31,6 +31,9 @@ if [ ! -x "build/stage0/$name/zs" ]; then
   tar -xzf "$archive" -C build/stage0 && rm "$archive"
 fi
 tty=(); [ -t 0 ] && tty=(-it)
+# -i: the command reads this script's standard input where that isn't a terminal (./dev -i bin/zs
+# mcp, an MCP client's pipe); without it such a run has none
+[ "${1:-}" = "-i" ] && { shift; [ -t 0 ] || tty=(-i); }
 mkdir -p bin
 exec podman run --rm "${tty[@]}" --userns=keep-id -v "$PWD":/work:z -v zsharp-home:/tmp/home:U \
   -e HOME=/tmp/home -e "ZS_STAGE0=/work/build/stage0/$name/zs" -w /work "$image" "${@:-bash}"

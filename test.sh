@@ -19,9 +19,21 @@
 #   --sanitize: objects from malloc, as under valgrind), so a write past an object, a use after its
 #   free, a leak or undefined behaviour in the runtime or the generated code fails the test; a
 #   program that panics is exempt from the leak check, as under valgrind.
+# --only <text>: the programs whose path has the text (--only tests/newcomer/, --only open_own)
+#   and nothing else, while a change is made: no tool checks, no benchmarks, no bootstrap. With
+#   --zs build/zs the compiler isn't rebuilt either.
+# Every FAIL line is printed again at the end, after their count.
 set -u
 cd "$(dirname "$0")"
-valgrind=0; target=""; tgt=(); qemu=(); zsbin=""; buildonly=0; syslibs=(); rel=(); san=()
+valgrind=0; target=""; tgt=(); qemu=(); zsbin=""; buildonly=0; syslibs=(); rel=(); san=(); only=""
+# each FAIL line kept as it's printed, for the end
+failed=()
+echo() { builtin echo "$@"; [[ ${1:-} != FAIL\ * ]] || failed+=("$1"); }
+finish() {
+  if [ ${#failed[@]} -gt 0 ]; then builtin echo; builtin echo "${#failed[@]} failed:"; printf '%s\n' "${failed[@]}"
+  elif [ "$fail" = 0 ]; then builtin echo; builtin echo "all passed"; fi
+  exit "$fail"
+}
 while [ $# -gt 0 ]; do
   case $1 in
     --valgrind) valgrind=1; export ZS_NO_POOL=1 ;; # objects from malloc, so valgrind sees each one
@@ -35,6 +47,7 @@ while [ $# -gt 0 ]; do
     --zs) zsbin=$2; shift ;;
     --release) rel=(--release) ;;
     --sanitize) san=(--sanitize) ;;
+    --only) only=$2; shift ;;
   esac
   shift
 done
@@ -67,9 +80,12 @@ arch=$(uname -m); [ -n "$target" ] && arch=${target%%-*}
 # runtime isn't built for)
 cc=(clang); [ -n "$target" ] && cc=(zig cc -target "$target")
 [ $windows = 1 ] && [ -z "$target" ] && cc=(zig cc -target "$arch-windows-gnu")
+ran=0
 for t in $(find tests -name '*.zs' | sort); do
   base=${t%.zs}
   [ -f "$base.out" ] || [ -f "$base.err" ] || continue
+  [ -z "$only" ] || [[ $t == *"$only"* ]] || continue
+  ran=$((ran + 1))
   # base.host-only: the reason it can't run cross-compiled under qemu-user
   if [ -n "$target" ] && [ -f "$base.host-only" ]; then echo "skip $t ($(cat "$base.host-only"))"; continue; fi
   # base.x86_64-only: the reason it's about x86-64 (its CPU features, its intrinsics): skipped in a
@@ -118,6 +134,10 @@ for t in $(find tests -name '*.zs' | sort); do
   if [ "$actual" == "$expected" ]; then echo "ok   $t"
   else echo "FAIL $t"; diff <(echo "$expected") <(echo "$actual") | head -20; fail=1; fi
 done
+if [ -n "$only" ]; then
+  [ $ran -gt 0 ] || { echo "FAIL --only $only: no program in tests/ with an expected .out or .err has it in its path"; fail=1; }
+  finish
+fi
 # the first-party packages' programs for a cross target (0032): each built with the target's C
 # and run under its emulator, printing what its script (tests/packages/*.sh) expects on the host
 if [ -n "$target" ]; then
@@ -983,4 +1003,4 @@ if [ -z "$target" ]; then
   if out=$(tests/bootstrap.sh bin/zs 2>&1); then echo "ok   tests/bootstrap.sh ($(echo "$out" | paste -sd ';' - | sed 's/;/; /g'))"
   else echo "FAIL tests/bootstrap.sh"; echo "$out"; fail=1; fi
 fi
-exit $fail
+finish
