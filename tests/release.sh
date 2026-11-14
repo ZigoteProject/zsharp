@@ -9,6 +9,7 @@ t=$(cd "$(mktemp -d)" && pwd -P); trap 'rm -rf "$t"' EXIT
 mkdir -p "$t/zsharp/src"
 cp src/release.sh src/install.sh src/zs.toml "$t/zsharp/src/"
 cp -r lib runtime "$t/zsharp/"
+mkdir "$t/zsharp/docs" && cp -r docs/guide "$t/zsharp/docs/"  # the guide, installed too
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' src/zs.toml)
 printf '#!/bin/sh\nwhile [ $# -gt 1 ]; do [ "$1" = -o ] && out=$2; shift; done\ncp "$0" "$out"\n' >"$t/stage0"
 chmod +x "$t/stage0"

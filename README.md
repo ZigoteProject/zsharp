@@ -209,7 +209,7 @@ One `zs` binary holds the compiler and its tools.
 | **Debugging** | `zs build -g`: DWARF for gdb and lldb, also on optimized builds; `--sanitize`, `--sanitize=thread` |
 | **Editors** | `zs lsp` (hover, rename, completion, code actions, allocation hints), `zs fmt`, `zs doc`; extensions for [Zed](editors/zed), [VS Code](editors/vscode) and [JetBrains IDEs](editors/rider); a [tree-sitter grammar](editors/tree-sitter-zsharp) |
 | **Type providers** | `import json`, `csv`, `sql`, `svd`, `c`: declarations generated from a file at compile time; `zs provide` prints them to keep |
-| **AI agents** | `zs mcp`: an MCP server exposing `check`, `type_at`, `definition`, `build`, `run` |
+| **AI agents** | `zs mcp`: an MCP server exposing `check`, `type_at`, `definition`, `docs`, `guide`, `build`, `run`, `test` |
 
 ## Platforms
 

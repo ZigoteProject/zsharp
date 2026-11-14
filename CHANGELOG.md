@@ -23,6 +23,15 @@
   its first step built, measured and taken out. It gives the same bytes and no time, because of
   where an impl derived on demand lives; the proposal says what was found.
 
+### Tooling
+- `zs mcp` has two more tools for an agent. `test` runs a file's tests, or the project's, as
+  `zs test` does; `guide` gives a chapter of the guide, and without one the chapter on what isn't
+  F#, which the server's instructions tell an agent to read first. The guide is installed beside
+  `zs` (`guide/`, by `src/install.sh`, so in a release's archive).
+- `--no-trust` on `zs build`, `zs run` and `zs test`: the project's own type providers are
+  neither built nor run, as under `zs mcp` without `--trust`, whose `test` tool runs `zs test`
+  so (`tests/lsp/trust.sh`).
+
 ### Library
 - `File.readAllBytes` copies each 64 KB it reads whole, where it pushed a byte at a time
   (`tests/file_bytes.zs` reads a file longer than two reads).

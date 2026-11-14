@@ -16,10 +16,10 @@ own=$(sed -n 's/^version = "\(.*\)"$/\1/p' src/zs.toml)
 case $version in
   [0-9]*)
     [ "$version" = "$own" ] || { echo "release $version, but src/zs.toml's version is $own" >&2; exit 1; }
-    # what's archived is the tree as it is (src/ built, lib/ and runtime/ copied): a numbered
-    # release has nothing there that git doesn't, changed, added or ignored
-    dirty=$(git status --porcelain --untracked-files=all --ignored -- src lib runtime)
-    [ -z "$dirty" ] || { printf 'release %s, but src/, lib/ or runtime/ differ from what git has (commit or remove it):\n%s\n' "$version" "$dirty" >&2; exit 1; } ;;
+    # what's archived is the tree as it is (src/ built, lib/, runtime/ and docs/guide/ copied): a
+    # numbered release has nothing there that git doesn't, changed, added or ignored
+    dirty=$(git status --porcelain --untracked-files=all --ignored -- src lib runtime docs/guide)
+    [ -z "$dirty" ] || { printf 'release %s, but src/, lib/, runtime/ or docs/guide/ differ from what git has (commit or remove it):\n%s\n' "$version" "$dirty" >&2; exit 1; } ;;
 esac
 arch=$(uname -m); [ "$arch" = arm64 ] && arch=aarch64
 host=$(uname -s | tr A-Z a-z); [ "$host" = darwin ] && host=macos

@@ -93,7 +93,21 @@ let private tools : list<string * string * Json> =
     ("emit_llvm", "The LLVM IR a Z# program compiles to.", schema [ fileArg ] [ "file" ])
     ("format", "A Z# file in the canonical layout (zs fmt). Returns the formatted text; the file is not changed.", schema [ fileArg ] [ "file" ])
     ("definition", "Where the name at a position in a Z# file is defined (1-based line and column): file:line:column and the defining line, in the program's files or the library's.", schema [ fileArg; ("line", "integer", "1-based line"); ("column", "integer", "1-based column") ] [ "file"; "line"; "column" ])
-    ("explain", "The name at a position in a Z# file explained: its type with constraints, its effects in words, where it is defined, and its doc comment.", schema [ fileArg; ("line", "integer", "1-based line"); ("column", "integer", "1-based column") ] [ "file"; "line"; "column" ]) ]
+    ("explain", "The name at a position in a Z# file explained: its type with constraints, its effects in words, where it is defined, and its doc comment.", schema [ fileArg; ("line", "integer", "1-based line"); ("column", "integer", "1-based column") ] [ "file"; "line"; "column" ])
+    ("test", "Run a Z# file's tests (zs test), or the project's with no file, each in a process of its own (5 minute limit). Returns each test's result and the count.", schema [ fileArg ] [])
+    ("guide", "A chapter of the Z# guide. With no chapter: how Z# differs from F#, which to read before writing Z# (it reads as F# and isn't), and the chapters' names.", schema [ ("chapter", "string", "Part of a chapter's name, such as effects, 07 or c-interop") ] []) ]
+
+// the guide's chapters: guide/ beside the compiler (an installed one), else docs/guide of the
+// checkout the compiler was built in
+let private guideDir () : string =
+  let dir = Path.getDirectoryName (Build.Tools.selfPath ())
+  let beside = Path.combine dir "guide"
+  if File.exists (Path.combine beside "README.md") then
+    beside
+  else
+    match Build.Tools.findUp dir "docs/guide/README.md" with
+    | Some root -> Path.combine (Path.combine root "docs") "guide"
+    | None -> beside
 
 // where a hover's token is: its module, and its 1-based line and column
 let private placeOf (c: Build.Check.Checked) (h: Infer.Cx.Hover) : option<Build.Modules.Loaded * int * int> =
@@ -280,6 +294,43 @@ let private call (name: string) (args: Json) (trusted: bool) : result<string, st
         | Error why ->
           let src = Syntax.Source.make 0 file text
           if Array.length diags > 0 then Error(formatErrors [ src ] (Array.toList diags)) else Error why
+  else if name = "test" then
+    // zs test in a process of its own: it prints as it goes, and this process's output is the
+    // protocol's. A package's type provider is run only with --trust, as by build
+    let files =
+      match Rpc.field "file" args with
+      | JNull -> Ok []
+      | v ->
+        match projectFile (Rpc.text v) with
+        | Ok file -> Ok [ file ]
+        | Error e -> Error e
+    match files with
+    | Error e -> Error e
+    | Ok fs ->
+      let flags = if trusted then [] else [ "--no-trust" ]
+      match Build.Tools.runBounded [] 300000 (Build.Tools.selfPath ()) ("test" :: List.append fs flags) with
+      | Error e -> Error e
+      | Ok r ->
+        let status = if r.code = 124 then "killed after 5 minutes" else $"exit code {r.code}"
+        Ok $"{status}\n--- stdout\n{limit 20000 r.out}\n--- stderr\n{limit 20000 r.err}"
+  else if name = "guide" then
+    let dir = guideDir ()
+    let wanted =
+      match Rpc.field "chapter" args with
+      | JNull -> "from-fsharp"
+      | v -> String.toLower (Rpc.text v)
+    let chapters =
+      match Directory.listRecursive dir with
+      | Ok files -> List.sort (List.filter (fun (f: string) -> String.endsWith ".md" f && f <> "README.md") files)
+      | Error _ -> []
+    let names = String.join ", " (List.map (fun (f: string) -> String.sub f 0 (String.length f - 3)) chapters)
+    match List.tryFind (fun (f: string) -> String.contains wanted f) chapters with
+    | None when List.isEmpty chapters -> Error $"the guide isn't beside zs: no chapters in {Diag.Render.path dir}"
+    | None -> Error $"no chapter of the guide matches '{wanted}': {names}"
+    | Some f ->
+      match File.readAllText (Path.combine dir f) with
+      | Ok text -> Ok $"{limit 100000 text}\n\nThe guide's chapters: {names}"
+      | Error e -> Error e
   else
     Error $"unknown tool '{name}'"
 
@@ -298,7 +349,7 @@ let private answer (out: IO.Writer) (trusted: bool) (msg: Json) =
       | JString v -> v
       | _ -> "2025-06-18"
     let caps = JObject [ ("tools", JObject [ ("listChanged", JBool false) ]); ("resources", JObject []) ]
-    let instructions = "Z# compiler tools. Use check before build or run; use type_at and docs instead of guessing types and library names."
+    let instructions = "Z# compiler tools. Z# reads as F# and isn't F#: read guide before writing it. Use check before build or run; use type_at and docs instead of guessing types and library names."
     respond out id (JObject [ ("protocolVersion", JString version); ("capabilities", caps); ("serverInfo", JObject [ ("name", JString "zs"); ("version", JString Build.Tools.version) ]); ("instructions", JString instructions) ])
   else if meth = "ping" then
     respond out id (JObject [])

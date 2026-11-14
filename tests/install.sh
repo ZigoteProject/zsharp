@@ -9,6 +9,7 @@ t=$(cd "$(mktemp -d)" && pwd -P); trap 'rm -rf "$t"' EXIT  # resolved, as the sc
 mkdir -p "$t/zsharp/src" "$t/work"
 cp src/install.sh "$t/zsharp/src/"
 cp -r lib runtime "$t/zsharp/"
+mkdir "$t/zsharp/docs" && cp -r docs/guide "$t/zsharp/docs/"  # the guide, installed too
 # the script from $t/work, its own messages (not cp's, which differ between systems), its exit code
 run() {
   (cd "$t/work" && "$t/zsharp/src/install.sh" "$@") 2>"$t/err"

@@ -24,10 +24,15 @@ here=$(cygpath -m "$PWD" 2>/dev/null || pwd)
   echo '{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"definition","arguments":{"file":"tests/mcp/sample.zs","line":5,"column":17}}}'
   echo '{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"explain","arguments":{"file":"tests/mcp/sample.zs","line":5,"column":21}}}'
   echo '{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"explain","arguments":{"file":"tests/mcp/sample.zs","line":6,"column":3}}}'
+  echo '{"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"test","arguments":{"file":"tests/mcp/tests.zs"}}}'
+  echo '{"jsonrpc":"2.0","id":15,"method":"tools/call","params":{"name":"guide","arguments":{}}}'
+  echo '{"jsonrpc":"2.0","id":16,"method":"tools/call","params":{"name":"guide","arguments":{"chapter":"nothing"}}}'
 } | ZS_NO_SERVER=1 TMPDIR=$tmp "$zs" mcp | sed "s|$here|.|g" | while IFS= read -r line; do
   # (isError's true or false as [a-z]*: BSD's sed, macOS's, has no \| in a basic regex)
   case "$line" in
     *'"tools":['*) printf '%s\n' "$line" | grep -o '"name":"[a-z_]*"' | tr '\n' ' '; echo ;;
+    # the guide's chapter on F#: its first line, and not the text the guide is free to change
+    *'"id":15,'*) printf '%s\n' "$line" | sed 's/.*"text":"\([^\\]*\).*"}[]],"isError":\([a-z]*\).*/[\2] \1 …/' ;;
     *'"content"'*) printf '%s\n' "$line" | sed 's/.*"text":"\(.*\)"}[]],"isError":\([a-z]*\).*/[\2] \1/' ;;
     *) printf '%s\n' "$line" | grep -o '"protocolVersion":"[^"]*"' ;;
   esac

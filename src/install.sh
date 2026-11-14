@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Installs a Z# compiler binary into a directory as zs expects to find itself: zs, the library
 # (lib/), the runtime's C (rt.c, rt-embedded.c), the boards' linker scripts and interrupt tables
-# (boards/) and the Node host for WebAssembly (run-wasm.mjs).
+# (boards/), the Node host for WebAssembly (run-wasm.mjs) and the guide (guide/).
 #   src/install.sh <zs binary> <directory>
 # Both paths are the caller's, from where it runs. The directory is the compiler's own: its lib/
 # and wepoll/ are replaced, so one whose lib/ or wepoll/ is something else (a prefix's, as
@@ -40,3 +40,6 @@ mv "$dir/wepoll.new" "$dir/wepoll"
 cp runtime/rt.c runtime/rt-embedded.c runtime/run-wasm.mjs runtime/utf8.rc runtime/utf8.manifest "$dir/"
 mkdir -p "$dir/boards"
 cp runtime/boards/*.ld runtime/boards/*.irq "$dir/boards/"
+# the guide's chapters, which zs mcp's guide tool reads to an agent
+mkdir -p "$dir/guide"
+cp docs/guide/*.md "$dir/guide/"

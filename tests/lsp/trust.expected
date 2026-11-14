@@ -2,6 +2,10 @@
   main.zs:3: provider shout not run: the project is not trusted (start the language server with --trust)
 --- zs lsp, not trusted
   provider shout not run: the project is not trusted (start the language server with --trust)
+--- zs build --no-trust
+  main.zs:3: error: provider shout not run: the project is not trusted (start the language server with --trust)
+--- zs test main.zs --no-trust
+  main.zs:3: error: provider shout not run: the project is not trusted (start the language server with --trust)
 built: no
 --- zs lsp --trust
 built: yes

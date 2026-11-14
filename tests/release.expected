@@ -3,6 +3,6 @@
 -rwxr-xr-x 0/0
 drwxr-xr-x 0/0
 --- a numbered release, with files git doesn't have
-release <version>, but src/, lib/ or runtime/ differ from what git has (commit or remove it):
+release <version>, but src/, lib/, runtime/ or docs/guide/ differ from what git has (commit or remove it):
 ?? lib/extra.zs
 !! lib/core/stale.ll

@@ -224,6 +224,9 @@ let parse (args: list<string>) : result<Options * list<string>, string> =
     | "--profile-use" :: file :: more -> go { o with profileUse = Some file; release = true } others more
     | "--time" :: more -> go { o with time = true } others more
     | "--check-ir" :: more -> go { o with checkIr = true } others more
+    // a package's type provider neither built nor run, as zs mcp has it without --trust (its
+    // test tool runs zs test so)
+    | "--no-trust" :: more -> go { o with trusted = false } others more
     | a :: more ->
       if Set.contains a levels then go { o with opt = Some a } others more
       else if String.startsWith "--cpu=" a then go { o with cpu = Some(String.sub a 6 (String.length a - 6)) } others more

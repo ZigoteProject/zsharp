@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # A package's type provider (0001) in the servers: zs mcp and zs lsp without --trust neither build
 # nor run it (an error at the import, nothing built); zs lsp --trust builds and runs it, which
-# leaves its module; untrusted again, that module is used, with a warning. Prints each check's
+# leaves its module; untrusted again, that module is used, with a warning. zs build and zs test
+# with --no-trust neither build nor run it either. Prints each check's
 # messages, and whether the provider's program was built.
 set -u
 zs=$(realpath "${1:-bin/zs}")
@@ -36,6 +37,12 @@ echo "--- zs mcp, not trusted"
 mcp
 echo "--- zs lsp, not trusted"
 lsp
+# --no-trust on a command, which zs mcp's test tool runs zs test with: the errors, without the
+# quoted source
+for c in build "test main.zs"; do
+  echo "--- zs $c --no-trust"
+  (cd "$dir/pkg" && ZS_NO_SERVER=1 "$zs" $c --no-trust 2>&1) | grep -v '^ [ 0-9]* | ' | sed 's/^/  /'
+done
 echo "built: $(built)"
 echo "--- zs lsp --trust"
 lsp --trust
