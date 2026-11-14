@@ -1,0 +1,1 @@
+tests/newcomer/entry_point.zs:2: error: there's no [<EntryPoint>]: a program starts at let main (), which returns the exit code; Environment.args () is its arguments

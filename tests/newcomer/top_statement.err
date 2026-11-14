@@ -1,0 +1,1 @@
+tests/newcomer/top_statement.zs:2:1: error: expected 'let', 'type' or 'extern', found 'println': a statement goes in a function, and a program starts at let main ()

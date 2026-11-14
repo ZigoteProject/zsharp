@@ -1,0 +1,1 @@
+tests/newcomer/array_brackets.zs:2:19: error: there's no T[]: an array's type is written array<T>

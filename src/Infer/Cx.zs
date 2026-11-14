@@ -1029,7 +1029,7 @@ let unknown (cx: Cx) (what: string) (x: string) : 'a / Fails =
   | None ->
     if x = "!" then
       fail "'!' isn't an operator: write not x (F#'s !r is r.Value)"
-    else if x = "printfn" || x = "printf" || x = "eprintfn" then
+    else if x = "printfn" || x = "printf" || x = "eprintfn" || String.endsWith "Console.WriteLine" x || String.endsWith "Console.Write" x then
       fail ("there's no " + x + ": print with println $\"…{x}…\" (print for no newline, Console.Error.writeLine for errors)")
     else if x = "sprintf" || x = "failwithf" then
       fail ("there's no " + x + ": interpolate, $\"…{x}…\"")
@@ -1041,6 +1041,20 @@ let unknown (cx: Cx) (what: string) (x: string) : 'a / Fails =
       fail "return belongs in a computation expression (task { }, result { }); a function's last expression is its result"
     else if x = "async" || String.startsWith "Async." x then
       fail "there's no Async: write task { }, and run it with Task.run"
+    else if String.startsWith "System." x then
+      fail $"there's no {x}: .NET's library isn't Z#'s, which has its own Console, File, String and collections"
+    else if x = "box" || x = "unbox" then
+      fail ("there's no " + x + ": no type holds a value of any type; a union has a case for each, and dyn Trait holds the types that have the trait")
+    else if x = "lazy" then
+      fail "there's no lazy: a value computed when it's asked for is a function, fun () -> …"
+    else if x = "stdout" || x = "stderr" || x = "stdin" then
+      fail ("there's no " + x + ": print and println write to standard output, Console.Error.writeLine to standard error, and Console.readLine reads a line")
+    else if x = "new" then
+      fail "there's no new: a record is written { field = value }, and a library type is made by its module's function (Buffer.empty, HashMap.empty)"
+    else if x = "ResizeArray" then
+      fail "there's no ResizeArray: an array that grows is a Buffer (Buffer.empty, Buffer.push)"
+    else if x = "Dictionary" then
+      fail "there's no Dictionary: a Map is a value (Map.add gives a new one), a HashMap is changed in place"
     else if x = cx.currentDef.Value then
       fail $"'{x}' calls itself: declare it with let rec"
     else if x <> "" && Syntax.Lexer.isOpChar (int (String.byte x 0)) then

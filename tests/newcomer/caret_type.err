@@ -1,0 +1,1 @@
+tests/newcomer/caret_type.zs:2:20: error: there's no ^a: a function's constraints are inferred from the traits it uses; write 'a

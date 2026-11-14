@@ -640,6 +640,10 @@ let rec private tyAtom (p: P) : Ast.SType =
       expect p RParen "')'"
       finish p
       t
+    | Caret ->
+      errAt p "there's no ^a: a function's constraints are inferred from the traits it uses; write 'a"
+      skip p "type"
+      Ast.STName("", [])
     | _ ->
       skip p "type"
       Ast.STName("", [])
@@ -650,6 +654,10 @@ let rec private tyAtom (p: P) : Ast.SType =
     Buffer.push p.pos.Value p.typeNames
     t <- Ast.STName(name p, [ t ])
     finish p
+  if peek p = LBrack && peek2 p = RBrack then
+    errAt p "there's no T[]: an array's type is written array<T>"
+    bump p
+    bump p
   t
 
 and private tupleTy (p: P) : Ast.SType =
@@ -2756,6 +2764,8 @@ let private attributes (p: P) : list<string * list<string>> =
   listOf attrs
 
 let private typeBody (p: P) : Ast.TypeBody =
+  if peek p = Abstract then
+    errAt p "an interface is a trait in Z#: trait Name<'a> = with its abstract members, and an impl of it for each type"
   if peek p = Member || peek p = Static then
     // only members: a type with no values
     Ast.UnionTy []
@@ -3328,6 +3338,14 @@ and private declOf (p: P) : Ast.Decl =
   | Extern -> externDecl p ln
   | Let when patternAhead p -> patternDecl p ln
   | Let -> letDecl p ln
+  | Id when isWord p "exception" ->
+    errAt p "exceptions aren't in Z#: an error is a value, a union's case returned in a result (Error e) or thrown with Throw.throw"
+    recover p false
+    Ast.decl (Ast.Open "") ln
+  | Id ->
+    errAt p $"expected 'let', 'type' or 'extern', found {found p}: a statement goes in a function, and a program starts at let main ()"
+    recover p false
+    Ast.decl (Ast.Open "") ln
   | _ ->
     err p "'let', 'type' or 'extern'"
     recover p false

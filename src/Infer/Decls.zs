@@ -1367,6 +1367,8 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
     | Some full ->
       cx.opens.Value <- full :: cx.opens.Value
       cx.resolved.Value <- Map.empty
+    | None when m = "System" || String.startsWith "System." m || String.startsWith "FSharp." m || String.startsWith "Microsoft." m ->
+      fail $"unknown module '{m}': .NET's library isn't Z#'s, whose own (Console, File, String, List and the rest) needs no open"
     | None -> fail $"unknown module '{m}'"
   | ModuleHeader _ -> ()
   | NestedModule(name0, _) ->
@@ -1741,6 +1743,8 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
             cx.optOut.Value <- Set.add ("Ord", name) cx.optOut.Value
         | "Cyclic" -> cx.cyclic.Value <- Set.union cx.cyclic.Value (Set.ofList names)
         | _ -> fail $"unknown attribute '{a}'"
+    | _ when List.exists (fun (a: string * list<string>) -> fst a = "EntryPoint") attrs ->
+      fail "there's no [<EntryPoint>]: a program starts at let main (), which returns the exit code; Environment.args () is its arguments"
     | _ -> fail "attributes are only supported on type declarations yet"
   | TypeAlias(name0, tps, target) ->
     let q = qualify cx name0

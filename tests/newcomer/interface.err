@@ -1,0 +1,1 @@
+tests/newcomer/interface.zs:3:3: error: an interface is a trait in Z#: trait Name<'a> = with its abstract members, and an impl of it for each type

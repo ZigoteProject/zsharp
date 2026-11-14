@@ -31,6 +31,11 @@
 - `--no-trust` on `zs build`, `zs run` and `zs test`: the project's own type providers are
   neither built nor run, as under `zs mcp` without `--trust`, whose `test` tool runs `zs test`
   so (`tests/lsp/trust.sh`).
+- More of what an F# programmer (or a model that learned F#) writes first is answered with what
+  Z# has: `open System`, `Console.WriteLine`, `[<EntryPoint>]`, an `exception` declaration, a
+  type of `abstract` members, `^a`, `int[]`, a statement outside a function, and the names
+  `box`, `lazy`, `stdout`, `new`, `ResizeArray`, `Dictionary` and `System.…`
+  (`tests/newcomer/`).
 
 ### Library
 - `File.readAllBytes` copies each 64 KB it reads whole, where it pushed a byte at a time

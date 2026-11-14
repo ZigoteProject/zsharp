@@ -1,0 +1,8 @@
+tests/newcomer/dotnet.zs:3:11: error: there's no box: no type holds a value of any type; a union has a case for each, and dyn Trait holds the types that have the trait
+tests/newcomer/dotnet.zs:4:11: error: there's no lazy: a value computed when it's asked for is a function, fun () -> …
+tests/newcomer/dotnet.zs:5:3: error: there's no stdout: print and println write to standard output, Console.Error.writeLine to standard error, and Console.readLine reads a line
+tests/newcomer/dotnet.zs:6:12: error: there's no new: a record is written { field = value }, and a library type is made by its module's function (Buffer.empty, HashMap.empty)
+tests/newcomer/dotnet.zs:7:12: error: there's no ResizeArray: an array that grows is a Buffer (Buffer.empty, Buffer.push)
+tests/newcomer/dotnet.zs:8:11: error: there's no Dictionary: a Map is a value (Map.add gives a new one), a HashMap is changed in place
+tests/newcomer/dotnet.zs:9:11: error: there's no System.Environment.ProcessorCount: .NET's library isn't Z#'s, which has its own Console, File, String and collections
+7 errors

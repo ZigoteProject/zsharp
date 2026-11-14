@@ -1,0 +1,1 @@
+tests/newcomer/console_writeline.zs:3:3: error: there's no Console.WriteLine: print with println $"…{x}…" (print for no newline, Console.Error.writeLine for errors)

@@ -1,0 +1,1 @@
+tests/newcomer/open_system.zs:2: error: unknown module 'System': .NET's library isn't Z#'s, whose own (Console, File, String, List and the rest) needs no open

@@ -1,0 +1,1 @@
+tests/newcomer/exception.zs:2:1: error: exceptions aren't in Z#: an error is a value, a union's case returned in a result (Error e) or thrown with Throw.throw
