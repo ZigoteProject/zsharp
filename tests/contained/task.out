@@ -1,0 +1,18 @@
+panic: request 3
+panic: at once
+(Ok 30, Error { message = request 3 }, Error { message = at once }, Ok ready)
+panic: request 3
+panic: request 3
+panic: request 3
+panic: request 3
+4 of 20 failed; the first five: [Ok 0; Ok 1; Ok 5; Error { message = request 3 }; Ok 30]
+panic: request 3
+Ok [1; 5] Error { message = request 3 }
+None [held in a job]
+panic: request 3
+Ok (Error { message = request 3 }, Ok 5)
+panic: request 3
+Error { message = request 3 }
+panic: request 3
+panic: request 3
+Error { message = request 3 } Error { message = request 3 } Ok 5

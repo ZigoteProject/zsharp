@@ -93,7 +93,7 @@ let private timedOn (lines: Buffer<string * float>) (name: string) (f: 'a -> 'b 
 /// What the split build left: its parts (in order: each program module's own functions, then its
 /// copies; or the one module of a program of one file), the settings its code was made with (for
 /// the runtime) and the lines --time shows.
-type Built = { parts: list<Part>; checkedHeap: bool; wideVectors: bool; threaded: bool; lines: list<string * float> }
+type Built = { parts: list<Part>; checkedHeap: bool; wideVectors: bool; threaded: bool; contained: bool; lines: list<string * float> }
 
 /// The program's modules: each one's object from the module cache (`cached`, by key), or its LLVM
 /// IR, made for the modules a change reached. A program of one file is one module.
@@ -282,7 +282,7 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
       // by name: the order the run made them in depends on what else it made
       let funs = List.map (fun (n: string) -> Map.find n byName) (Set.toList funsHere)
       let facts =
-        List.filter (fun x -> x <> "") [ (if Compile.usesPrim Compile.heapPrims funs then "weak" else ""); (if Compile.wideVectors types.Value funs then "wide" else ""); (if Compile.threaded prog.externs funs || List.exists (fun (e: Core.Ir.Export) -> e.interrupt) prog.exports then "threads" else "") ]
+        List.filter (fun x -> x <> "") [ (if Compile.usesPrim Compile.heapPrims funs then "weak" else ""); (if Compile.wideVectors types.Value funs then "wide" else ""); (if Compile.threaded prog.externs funs || List.exists (fun (e: Core.Ir.Export) -> e.interrupt) prog.exports then "threads" else ""); (if Compile.usesPrim Compile.containedPrims funs then "contained" else "") ]
       let deps = List.append (List.map (fun d -> (d, "check", Map.find d keyOf)) (List.sort checks)) (List.map (fun d -> (d, "abi", "")) (List.sort calls))
       let w : World = { deps = deps; abi = abi; facts = facts }
       made.Value <- Map.add u.file { mfuns = funs; calls = [] } made.Value
@@ -362,12 +362,14 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
   let allFacts = List.collect (fun (p: string * World) -> (snd p).facts) (Map.toList worlds.Value)
   let checkedHeap = List.contains "weak" allFacts
   let wideVectors = List.contains "wide" allFacts
-  let threaded = List.contains "threads" allFacts
+  // a contained job's outside is marked shared, as another thread's data is
+  let contained = List.contains "contained" allFacts
+  let threaded = contained || List.contains "threads" allFacts
   let level = Options.optLevel o
   // a module's object: under a key of its world, and of what code generation adds
   let objectKey (u: Check.Unit) =
     let w = Map.find u.file worlds.Value
-    let settled = $"{level = "-Os"} {checkedHeap} {wideVectors} {threaded} {o.target} {o.cpu} {Array.length mods}"
+    let settled = $"{level = "-Os"} {checkedHeap} {wideVectors} {threaded} {contained} {o.target} {o.cpu} {Array.length mods}"
     Tools.hashOf (List.append [ "module"; pre u; settled ] (List.map (fun (d, kind, h) -> d + " " + kind + " " + h) w.deps))
   // a module of a program of several files is two LLVM modules: its own functions, and its copies
   // of library functions and generic instances, which change only when the copies it needs do
@@ -406,7 +408,8 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
       targets = prog.targets
       cpu = o.cpu
       wideVectors = wideVectors
-      threaded = threaded }
+      threaded = threaded
+      contained = contained }
   let stub (a: AbiFun) : MFun / <> =
     { name = a.aname
       pars = List.mapi (fun i t -> ($"a{i}", t)) a.apars
@@ -498,7 +501,7 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
   Buffer.push ("LLVM IR", float (int sw.ElapsedNanoseconds) / 1000000.0) timedLines
   match result with
   | Error e -> Error e
-  | Ok ps -> Ok { parts = ps; checkedHeap = checkedHeap; wideVectors = wideVectors; threaded = threaded; lines = Array.toList (Buffer.toArray timedLines) }
+  | Ok ps -> Ok { parts = ps; checkedHeap = checkedHeap; wideVectors = wideVectors; threaded = threaded; contained = contained; lines = Array.toList (Buffer.toArray timedLines) }
 
 // ---- objects and the link
 
@@ -651,7 +654,7 @@ let link (o: Options.Options) (built: Built) (linked: Modules.Linked) : result<l
   // the runtime optimized in a debug build too (a program debugs its own code)
   let rt = Options.runtimeDir ()
   let rtFile = Path.combine rt "rt.c"
-  let defines = List.append (if built.threaded then [ "-DZS_THREADS" ] else []) (if Option.isSome (Environment.getVariable "ZS_NO_POOL") then [ "-DZS_NO_POOL" ] else [])
+  let defines = List.concat [ (if built.threaded then [ "-DZS_THREADS" ] else []); (if built.contained then [ "-DZS_CONTAINED" ] else []); (if Option.isSome (Environment.getVariable "ZS_NO_POOL") then [ "-DZS_NO_POOL" ] else []) ]
   let rtFlags = List.append (if useLto o then flags else List.concat [ [ "-O2" ]; Compile.cpuFlags o; profile; Options.sectionFlags o ]) defines
   let runtime = job (Result.defaultValue "" (File.readAllText rtFile)) (Some rtFile) rtFlags None
   let ofPart (p: Part) : option<Job> =

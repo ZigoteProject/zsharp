@@ -42,6 +42,20 @@
   MCP server for an agent.
 
 ### Library
+- **Contained jobs** ([proposal 0035](docs/proposals/0035-contained-jobs.md), decision 86): a
+  panic has a boundary below the process. `Contained.run f` runs a `share<…>` function with
+  memory of its own: `Ok` its result, or `Error` with the message of the panic that ended it,
+  and the program goes on. `Contained.task` does it for a task and the tasks it waits for on its
+  loop, so a server answers a request that finds a bug with a failure and keeps its other
+  connections (`examples/service` answers 500). Nothing unwinds: the thread jumps to the job's
+  entry, the job's memory goes at once, the mutexes it held are unlocked with the value they
+  had, and the descriptors, timers and waits the runtime made for it are closed. What a job
+  returns, sends or puts in a mutex is copied out of its memory; what its caller shared with it
+  isn't copied either way. Not contained: a stack overflow, running out of memory, what a C
+  library holds, and work forked to other threads. Linux, macOS and Windows; a program that
+  doesn't use `Contained` is the same bytes as before (`tests/contained/`, which the suite also
+  runs under the address and thread sanitizers; the guide's
+  [Errors](docs/guide/07-errors.md#containing-a-panic)).
 - `File.readAllBytes` copies each 64 KB it reads whole, where it pushed a byte at a time
   (`tests/file_bytes.zs` reads a file longer than two reads).
 - `=`, `compare` and `hash` on a list run in constant stack: on two lists of 200,000 elements

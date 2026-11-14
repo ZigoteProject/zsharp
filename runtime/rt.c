@@ -319,6 +319,15 @@ int32_t zs_fuzz_drive(void (*cb)(void *, const uint8_t *), void *user, const cha
 #endif
 }
 
+_Noreturn void zs_panic_c(const char *msg);
+// a panic no contained job can be the boundary of (0035): the runtime is out of memory, or
+// stops with one of its locks held or its tables half changed
+#ifdef ZS_CONTAINED
+_Noreturn static void zs_fatal(const char *msg);
+#else
+#define zs_fatal zs_panic_c
+#endif
+
 // ---- Z# names in a panic's backtrace (0011): the program's own symbol table (.symtab, which
 // a build keeps; its functions are internal, so nothing else names them), read from the
 // executable at the panic and sorted by address; a frame's function is the nearest symbol at or
@@ -482,9 +491,23 @@ static _Thread_local bool in_panic;
 
 // the message by its length: a Z# string may hold a NUL (a property's case shown in it), which
 // would end it early as a C string
+#ifdef ZS_CONTAINED
+// A contained job (0035) is a panic's boundary: the panic says what it always did, then the
+// thread jumps to the job's entry (job_panicked, which comes back only when no job is running
+// here). Not for zs_fatal's, which stop the program as before.
+static _Thread_local bool panic_fatal;
+typedef struct cjob cjob;
+static _Thread_local cjob *cur; // the job this thread is running: NULL outside every one
+static void job_panicked(const char *msg, size_t len);
+#endif
+
 _Noreturn static void panic_with(const char *msg, size_t len) {
     if (in_panic) stop();
     in_panic = true;
+#ifdef ZS_CONTAINED
+    // a contained panic lets the next one through; one that stops the program never does
+    while (atomic_flag_test_and_set(&panicking)) sched_yield();
+#else
     if (atomic_flag_test_and_set(&panicking))
         for (;;) {
 #ifdef _WIN32
@@ -493,6 +516,10 @@ _Noreturn static void panic_with(const char *msg, size_t len) {
             pause();
 #endif
         }
+#endif
+#ifdef ZS_CONTAINED
+    if (!cur || panic_fatal) // the counts are written once, when the program ends
+#endif
     coverage_dump();
     fflush(stdout);
     fputs("panic: ", stderr);
@@ -515,10 +542,24 @@ _Noreturn static void panic_with(const char *msg, size_t len) {
     void (*hook)(const char *) = panic_hook;
     panic_hook = NULL; // a panic inside the hook stops at once
     if (hook) hook(msg);
+#ifdef ZS_CONTAINED
+    if (!panic_fatal) {
+        panic_hook = hook;
+        job_panicked(msg, len);
+        panic_hook = NULL;
+    }
+#endif
     stop();
 }
 
 _Noreturn void zs_panic_c(const char *msg) { panic_with(msg, strlen(msg)); }
+
+#ifdef ZS_CONTAINED
+_Noreturn static void zs_fatal(const char *msg) {
+    panic_fatal = true;
+    zs_panic_c(msg);
+}
+#endif
 
 _Noreturn void zs_panic(zs_str *msg) { panic_with(msg->data, (size_t)msg->len); }
 
@@ -564,6 +605,13 @@ static int64_t live, allocations, mallocs;
 #define ZS_POOL 1
 #define POOL_MAX 256
 #define POOL_CHUNK ((size_t)64 * 1024)
+#endif
+#if defined(ZS_CONTAINED) && !defined(ZS_THREADS)
+#error "ZS_CONTAINED needs ZS_THREADS: a job's outside is marked as another thread's is"
+#endif
+// (a program with contained jobs keeps the byte without the pool too: it says which objects are
+// a job's)
+#if ZS_POOL || defined(ZS_CONTAINED)
 #define FROM(p) (((uint8_t *)(p))[6])
 #define SYSTEM 0xFF
 #endif
@@ -578,6 +626,10 @@ typedef struct heap_state {
 #if ZS_POOL
     void *free[POOL_MAX / 8 + 1];
     char *next, *end;
+#ifdef ZS_CONTAINED
+    void *job_blocks; // blocks of jobs that ended, for the next ones (job_block)
+    int job_nblocks;
+#endif
 #endif
     char unused; // a member whatever the build
 } heap_state;
@@ -606,7 +658,7 @@ static void heap_end(void *arg) {
 }
 
 static void heap_key_make(void) {
-    if (pthread_key_create(&heap_key, heap_end) != 0) zs_panic_c("pthread_key_create failed");
+    if (pthread_key_create(&heap_key, heap_end) != 0) zs_fatal("pthread_key_create failed");
     __atomic_store_n(&heap_keyed, true, __ATOMIC_RELEASE);
 }
 
@@ -650,7 +702,7 @@ __attribute__((noinline)) static heap_state *heap_new(void) {
     if (!h) {
         h = aligned_alloc(64, (sizeof(heap_state) + 63) & ~(size_t)63); // a cache line of its own
         counts *c = aligned_alloc(64, 64);
-        if (!h || !c) zs_panic_c("out of memory");
+        if (!h || !c) zs_fatal("out of memory");
         memset(h, 0, sizeof *h);
         memset(c, 0, 64);
         h->counts = c;
@@ -683,13 +735,107 @@ static inline heap_state *heap_of_thread(void) { return &heap_here; }
 #if ZS_POOL
 static void pool_chunk(heap_state *h) {
     h->next = malloc(POOL_CHUNK);
-    if (!h->next) zs_panic_c("out of memory");
+    if (!h->next) zs_fatal("out of memory");
     h->end = h->next + POOL_CHUNK;
     COUNT_IN(h, mallocs, 1);
 }
 #endif
 
+#ifdef ZS_CONTAINED
+// ---- contained jobs (0035), the allocator's part. A job's objects come from memory of its own,
+// which goes at once when the job ends: byte 6 of an object's header says so (JOB_ARENA: bumped
+// through the job's blocks; JOB_BIG: the system allocator's, listed in the job). The rest is at
+// the end of this file.
+#define JOB_ARENA 0xFD
+#define JOB_BIG 0xFE
+static inline bool job_object(const void *p) { return (uint8_t)(FROM(p) - JOB_ARENA) < 2; }
+static void *job_alloc(cjob *j, size_t size, size_t align);
+static void job_free(void *p);
+
+// the jump to a job's entry: registers only, no signal mask. On Windows, setjmp without a frame
+// (a longjmp to one with a frame unwinds every frame between through its tables, as an
+// exception does; without, it's a plain jump)
+#include <setjmp.h>
+typedef jmp_buf job_jmp;
+#ifdef _WIN32
+#define JOB_SET(b) _setjmp((b), NULL)
+#define JOB_JUMP(b) longjmp((b), 1)
+#else
+#define JOB_SET(b) _setjmp(b)
+#define JOB_JUMP(b) _longjmp((b), 1)
+#endif
+
+// a value from outside that a job keeps alive until it ends: its count is the job's, given up
+// with the type's drop function
+typedef struct {
+    void *p;
+    void (*drop)(void *);
+} held;
+
+typedef struct held_chunk {
+    struct held_chunk *next;
+    int n;
+    held e[254];
+} held_chunk;
+
+// before a job's object that the system allocator made: the job's list of them, and the job
+typedef struct jbig {
+    struct jbig *prev, *next;
+    cjob *job;
+    void *base; // what the allocator gave
+} jbig;
+
+struct zs_handle;
+struct zs_weak;
+struct par_job;
+struct job;
+struct outcome;
+
+struct cjob {
+    cjob *parent;  // the job it was started in (NULL: none), whose memory its result goes to
+    job_jmp entry; // where a panic in it jumps
+    // its memory: blocks bumped through (the newest first), the objects the system allocator
+    // made (a ring through this), and how many of its objects haven't died
+    void *blocks;
+    char *bump, *end;
+    jbig bigs;
+    zs_int live;
+    // what it keeps alive outside
+    held few[6];
+    int nfew;
+    held_chunk *more;
+    // what a failure undoes: the mutexes it holds (Mutex.update), the descriptors it opened,
+    // the pool jobs it forked and hasn't joined
+    atomic_int **locks;
+    int nlocks, lockcap;
+    zs_int *fds;
+    int nfds, fdcap;
+    struct par_job *forks;
+    // what points into it from the runtime, taken out when it ends: a thread's handles C
+    // holds, its weak cells, the event loop's callbacks (how many), what other threads will
+    // hand the loop for it
+    struct zs_handle *handles;
+    struct zs_weak *weaks;
+    size_t pending;
+    struct job *inbox;
+    // a task's job (Contained.task) outlives the call that started it: among its parent's (or
+    // its thread's), with what to call to cancel it, and whether its task has given its result
+    cjob *children, *prev, *next;
+    void *cancel;
+    bool task, finished, cancelling;
+    struct outcome *out;
+    // a failure's message
+    char *message;
+    size_t mlen;
+};
+
+static void job_hold(cjob *j, void *p, void (*drop)(void *));
+#endif
+
 void *zs_alloc(zs_int size) {
+#ifdef ZS_CONTAINED
+    if (cur) return job_alloc(cur, (size_t)size, 8);
+#endif
     heap_state *h = heap_of_thread();
     COUNT_IN(h, live, 1);
     COUNT_IN(h, allocations, 1);
@@ -710,14 +856,17 @@ void *zs_alloc(zs_int size) {
         return p;
     }
     p = obj_malloc((size_t)size);
-    if (!p) zs_panic_c("out of memory");
+    if (!p) zs_fatal("out of memory");
     COUNT_IN(h, mallocs, 1);
     FROM(p) = SYSTEM;
     return p;
 #else
     void *p = obj_malloc((size_t)size);
-    if (!p) zs_panic_c("out of memory");
+    if (!p) zs_fatal("out of memory");
     COUNT_IN(h, mallocs, 1);
+#ifdef ZS_CONTAINED
+    FROM(p) = SYSTEM;
+#endif
     return p;
 #endif
 }
@@ -726,12 +875,15 @@ void *zs_alloc(zs_int size) {
 // Compile.wideVectors): each object aligned to 64 bytes, so a vector field or element is aligned
 // as LLVM expects
 void *zs_alloc_wide(zs_int size) {
+#ifdef ZS_CONTAINED
+    if (cur) return job_alloc(cur, (size_t)size, 64);
+#endif
     COUNT(live, 1);
     COUNT(allocations, 1);
     COUNT(mallocs, 1);
     void *p = aligned_alloc(64, ((size_t)size + 63) & ~(size_t)63);
-    if (!p) zs_panic_c("out of memory");
-#if ZS_POOL
+    if (!p) zs_fatal("out of memory");
+#if ZS_POOL || defined(ZS_CONTAINED)
     FROM(p) = SYSTEM;
 #endif
     return p;
@@ -763,7 +915,7 @@ static void print_stats(void) {
 void *zs_ptr_alloc(zs_int n, zs_int size) {
     if (n < 0) zs_panic_c("Ptr.alloc: negative count");
     void *p = calloc((size_t)(n ? n : 1), (size_t)size);
-    if (!p) zs_panic_c("out of memory");
+    if (!p) zs_fatal("out of memory");
     return p;
 }
 
@@ -802,6 +954,12 @@ int64_t zs_ticks(void) {
 }
 
 void zs_free(void *p) {
+#ifdef ZS_CONTAINED
+    if (job_object(p)) {
+        job_free(p);
+        return;
+    }
+#endif
     heap_state *h = heap_of_thread();
     COUNT_IN(h, live, -1);
 #if ZS_POOL
@@ -812,7 +970,7 @@ void zs_free(void *p) {
     } else if (c == SYSTEM) {
         obj_free(p);
     } else {
-        zs_panic_c("an object's header was overwritten (zs_free)");
+        zs_fatal("an object's header was overwritten (zs_free)");
     }
 #else
     obj_free(p);
@@ -826,17 +984,41 @@ void zs_free(void *p) {
 // belongs to the thread that made it, and a use on another one panics, naming its type.
 #include <pthread.h>
 
+#ifdef ZS_CONTAINED
+typedef struct zs_handle {
+#else
 typedef struct {
+#endif
     ZS_HEADER;
     void (*drop)(void *);
     void *obj;
     const char *type;
     pthread_t owner;
     bool shared;
+#ifdef ZS_CONTAINED
+    // a thread's handle made in a contained job is the job's: used only in it, and emptied
+    // when it ends (C may hold the handle longer). A Share value's was copied out of the job
+    // (the compiler's crossing), and is no job's.
+    cjob *job;
+    struct zs_handle *jprev, *jnext;
+#endif
 } zs_handle;
 
 zs_handle *zs_handle_new(void *obj, void (*drop)(void *), bool shared, const char *type) {
+#ifdef ZS_CONTAINED
+    // C keeps it: never in a job's memory
+    cjob *j = cur;
+    cur = NULL;
     zs_handle *h = zs_alloc((zs_int)sizeof(zs_handle));
+    cur = j;
+    h->job = shared ? NULL : j;
+    h->jprev = NULL;
+    h->jnext = h->job ? j->handles : NULL;
+    if (h->jnext) h->jnext->jprev = h;
+    if (h->job) j->handles = h;
+#else
+    zs_handle *h = zs_alloc((zs_int)sizeof(zs_handle));
+#endif
     h->rc = 1;
     h->drop = drop;
     h->obj = obj;
@@ -859,8 +1041,19 @@ void *zs_handle_get(zs_handle *h) {
     if (!h) zs_panic_c("a null zs_handle was passed to Z#");
     handle_check(h, "a call into Z#");
     int32_t *rc = h->obj;
+#ifdef ZS_CONTAINED
+    if (!rc) zs_panic_c("a zs_handle made in a contained job was used after the job ended");
+    // a thread's value may hold what changes (a ref, a Buffer): it stays on its side of a job
+    if (!h->shared && h->job != cur) zs_panic_c("a zs_handle was used on the other side of a contained job from where it was made");
+    if (*rc > 0) (*rc)++;
+    else if (*rc < 0) {
+        __atomic_fetch_sub(rc, 1, __ATOMIC_RELAXED);
+        if (cur) job_hold(cur, rc, h->drop); // a job counts nothing outside: held until it ends
+    }
+#else
     if (*rc > 0) (*rc)++;
     else if (*rc < 0) __atomic_fetch_sub(rc, 1, __ATOMIC_RELAXED); // a shared object's count
+#endif
     return h->obj;
 }
 
@@ -877,8 +1070,23 @@ void zs_release(zs_handle *h) {
     if (h->shared ? __atomic_fetch_sub(&h->rc, 1, __ATOMIC_ACQ_REL) > 1 : --h->rc > 0) return;
     void *obj = h->obj;
     void (*drop)(void *) = h->drop;
+#ifdef ZS_CONTAINED
+    // the object is given up where it was taken: in the handle's job, or outside every one
+    cjob *j = h->job, *here = cur;
+    if (j) {
+        if (h->jprev) h->jprev->jnext = h->jnext;
+        else j->handles = h->jnext;
+        if (h->jnext) h->jnext->jprev = h->jprev;
+    }
+    zs_free(h);
+    if (!obj) return; // its job ended, and its object with it
+    cur = j;
+    drop(obj);
+    cur = here;
+#else
     zs_free(h);
     drop(obj);
+#endif
 }
 
 // a callback C calls on another thread than the one that passed it (callback<F>, unless
@@ -917,7 +1125,7 @@ static void *tab_get(const ptrtab *t, const void *k) {
 static void tab_put(ptrtab *t, void *k, void *v) {
     if (2 * (t->count + 1) > t->cap) {
         ptrtab n = {calloc(t->cap ? 2 * t->cap : 16, sizeof(void *)), calloc(t->cap ? 2 * t->cap : 16, sizeof(void *)), t->cap ? 2 * t->cap : 16, 0};
-        if (!n.keys || !n.vals) zs_panic_c("out of memory");
+        if (!n.keys || !n.vals) zs_fatal("out of memory");
         for (size_t i = 0; i < t->cap; i++)
             if (t->keys[i]) tab_put(&n, t->keys[i], t->vals[i]);
         free(t->keys);
@@ -970,6 +1178,12 @@ typedef struct zs_weak {
     void *target;
     struct zs_weak *next; // the object's cell of another thread
     pthread_t owner;
+#ifdef ZS_CONTAINED
+    // a cell made in a contained job is in the job's memory: that job's alone (another's, or
+    // the thread's outside it, has one of its own), and out of the table when the job ends
+    cjob *job;
+    struct zs_weak *jprev, *jnext;
+#endif
 } zs_weak;
 
 static ptrtab weaks;
@@ -990,11 +1204,22 @@ zs_weak *zs_weak_new(void *target) {
     HEAP_LOCK();
     bool dies = __atomic_load_n((int32_t *)target, __ATOMIC_RELAXED) != 0; // a static object never does: its cells aren't in the table
     zs_weak *first = dies ? tab_get(&weaks, target) : NULL, *w = first;
+#ifdef ZS_CONTAINED
+    while (w && !(pthread_equal(w->owner, self) && w->job == cur)) w = w->next;
+#else
     while (w && !pthread_equal(w->owner, self)) w = w->next;
+#endif
     if (w) {
         w->rc++;
     } else {
         w = zs_alloc((zs_int)sizeof(zs_weak));
+#ifdef ZS_CONTAINED
+        w->job = cur;
+        w->jprev = NULL;
+        w->jnext = cur ? cur->weaks : NULL;
+        if (w->jnext) w->jnext->jprev = w;
+        if (cur) cur->weaks = w;
+#endif
         w->rc = 1;
         w->target = dies ? target : (void *)((uintptr_t)target | 1); // the low bit: static
         w->owner = self;
@@ -1026,6 +1251,12 @@ void *zs_weak_target(zs_weak *w) {
         int32_t c = __atomic_load_n(t, __ATOMIC_RELAXED);
         if (c > 0) {
             *t = c + 1;
+#ifdef ZS_CONTAINED
+        } else if (cur) {
+            // a job counts nothing outside it: what it can reach it holds until it ends, and a
+            // shared object of its own lives as long as it does
+            if (c == 0) t = NULL;
+#endif
         } else {
             for (;;) {
                 if (c == 0) { // another thread is freeing it
@@ -1060,6 +1291,13 @@ void zs_weak_free(zs_weak *w) {
         }
     }
     HEAP_UNLOCK();
+#ifdef ZS_CONTAINED
+    if (w->job) {
+        if (w->jprev) w->jprev->jnext = w->jnext;
+        else w->job->weaks = w->jnext;
+        if (w->jnext) w->jnext->jprev = w->jprev;
+    }
+#endif
     zs_free_checked(w);
 }
 
@@ -1104,13 +1342,16 @@ static ptrtab arena_blocks; // each block's address -> its arena
 
 static char *arena_block(zs_arena *a) {
     char *b = aligned_alloc(ARENA_BLOCK, ARENA_BLOCK);
-    if (!b) zs_panic_c("out of memory");
+    if (!b) zs_fatal("out of memory");
     COUNT(mallocs, 1);
     *(block_head *)b = (block_head){a ? a->blocks : NULL, a};
     return b;
 }
 
 void zs_arena_open(void) {
+#ifdef ZS_CONTAINED
+    if (cur) return; // a job's memory is an arena already: Arena.with inside one adds nothing
+#endif
     char *b = arena_block(NULL);
     zs_arena *a = (zs_arena *)(b + ARENA_HEAD);
     *a = (zs_arena){arena, b, b + ARENA_HEAD + ((sizeof(zs_arena) + 15) & ~(size_t)15), b + ARENA_BLOCK, 0, true};
@@ -1130,6 +1371,9 @@ static void arena_release(zs_arena *a) {
 }
 
 void zs_arena_close(void) {
+#ifdef ZS_CONTAINED
+    if (cur) return;
+#endif
     zs_arena *a = arena;
     arena = a->parent;
     HEAP_LOCK();
@@ -1139,6 +1383,9 @@ void zs_arena_close(void) {
 }
 
 void *zs_alloc_checked(zs_int size) {
+#ifdef ZS_CONTAINED
+    if (cur) return job_alloc(cur, (size_t)size, 8);
+#endif
     zs_arena *a = arena;
     if (!a || (size_t)size > ARENA_BLOCK / 4) return zs_alloc(size); // a big object is malloc's
     size_t n = ((size_t)size + 7) & ~(size_t)7; // 8-byte aligned, as the pool's (a program whose objects may hold vectors has no arenas: its objects are zs_alloc_wide's)
@@ -1156,12 +1403,22 @@ void *zs_alloc_checked(zs_int size) {
     HEAP_UNLOCK();
     COUNT(live, 1);
     COUNT(allocations, 1);
+#ifdef ZS_CONTAINED
+    FROM(p) = SYSTEM; // not a job's: the block's memory is whatever it was
+#endif
     return p;
 }
 
 void zs_free_checked(void *p) {
     HEAP_LOCK();
     weaks_die(p);
+#ifdef ZS_CONTAINED
+    if (job_object(p)) {
+        HEAP_UNLOCK();
+        job_free(p);
+        return;
+    }
+#endif
     zs_arena *a = arena_blocks.count ? tab_get(&arena_blocks, (void *)((uintptr_t)p & ~(uintptr_t)(ARENA_BLOCK - 1))) : NULL;
     if (a) {
         COUNT(live, -1);
@@ -1193,7 +1450,7 @@ __attribute__((constructor)) static void zs_init(void) {
 // a string of len bytes and its NUL: a length past what a word holds (a sum or product of
 // lengths on a 32-bit target) can't be allocated, and mustn't wrap to a small object
 static zs_str *str_new(int64_t len) {
-    if (len < 0 || len > (int64_t)INTPTR_MAX - (int64_t)sizeof(zs_str) - 1) zs_panic_c("out of memory");
+    if (len < 0 || len > (int64_t)INTPTR_MAX - (int64_t)sizeof(zs_str) - 1) zs_fatal("out of memory");
     zs_str *s = zs_alloc((zs_int)sizeof(zs_str) + (zs_int)len + 1);
     s->rc = 1;
     s->len = len;
@@ -1454,7 +1711,7 @@ zs_str *zs_str_of_lanes(const void *p, zs_int kind, zs_int n) {
     static const int sizes[] = {4, 8, 1, 2, 4, 8, 1, 2, 4, 8, 1};
     size_t cap = 64, len = 0;
     char *buf = malloc(cap);
-    if (!buf) zs_panic_c("out of memory");
+    if (!buf) zs_fatal("out of memory");
     buf[len++] = '<';
     for (zs_int i = 0; i < n; i++) {
         const char *q = (const char *)p + i * sizes[kind];
@@ -1475,7 +1732,7 @@ zs_str *zs_str_of_lanes(const void *p, zs_int kind, zs_int n) {
         if (len + (size_t)s->len + 3 > cap) {
             cap = 2 * (len + (size_t)s->len + 3);
             char *nb = realloc(buf, cap);
-            if (!nb) zs_panic_c("out of memory");
+            if (!nb) zs_fatal("out of memory");
             buf = nb;
         }
         if (i > 0) {
@@ -1667,7 +1924,7 @@ zs_str *zs_str_replace(zs_str *s, zs_str *old, zs_str *with) {
     if (old->len == 0) return str_of(s->data, s->len);
     int64_t n = 0, grow, len;
     for (int64_t i = 0; (i = zs_str_index_of(s, old, i)) >= 0; i += old->len) n++;
-    if (__builtin_mul_overflow(n, (int64_t)with->len - old->len, &grow) || __builtin_add_overflow((int64_t)s->len, grow, &len)) zs_panic_c("out of memory");
+    if (__builtin_mul_overflow(n, (int64_t)with->len - old->len, &grow) || __builtin_add_overflow((int64_t)s->len, grow, &len)) zs_fatal("out of memory");
     zs_str *r = str_new(len);
     int64_t i = 0, o = 0, j;
     while ((j = zs_str_index_of(s, old, i)) >= 0) {
@@ -1885,7 +2142,7 @@ bool zs_parse_float(zs_str *s, double *out) {
     char *buf = small;
     if (s->len >= (zs_int)sizeof small) {
         buf = malloc((size_t)s->len + 1);
-        if (!buf) zs_panic_c("out of memory");
+        if (!buf) zs_fatal("out of memory");
     }
     memcpy(buf, s->data, (size_t)s->len);
     buf[s->len] = 0;
@@ -1924,7 +2181,7 @@ static ssize_t getline(char **line, size_t *cap, FILE *f) {
         if (n + 2 > *cap) {
             *cap = *cap ? 2 * *cap : 128;
             char *l = realloc(*line, *cap);
-            if (!l) zs_panic_c("out of memory");
+            if (!l) zs_fatal("out of memory");
             *line = l;
         }
         (*line)[n++] = (char)c;
@@ -2097,13 +2354,13 @@ _Noreturn void zs_exit(zs_int code) {
 // read write at the buffer's offset from address 0)
 static char *buf_new(size_t cap) {
     char *b = malloc(cap);
-    if (!b) zs_panic_c("out of memory");
+    if (!b) zs_fatal("out of memory");
     return b;
 }
 
 static char *buf_grow(char *b, size_t *cap) {
     char *nb = *cap > SIZE_MAX / 2 ? NULL : realloc(b, *cap * 2);
-    if (!nb) zs_panic_c("out of memory");
+    if (!nb) zs_fatal("out of memory");
     *cap *= 2;
     return nb;
 }
@@ -2512,7 +2769,7 @@ void zs_dir_delete_tree(zs_str *path) {
     size_t n = 1, cap = 16, wcap = (size_t)path->len + 256;
     tree_dir *st = malloc(cap * sizeof(tree_dir));
     char *where = malloc(wcap); // the path of the directory on top, for an error's message
-    if (!st || !where) zs_panic_c("out of memory");
+    if (!st || !where) zs_fatal("out of memory");
     // without a trailing slash, which would have a link followed
     size_t len = (size_t)path->len;
     while (len > 1 && path->data[len - 1] == '/') len--;
@@ -2571,12 +2828,12 @@ void zs_dir_delete_tree(zs_str *path) {
             DIR *c = cfd < 0 ? NULL : fdopendir(cfd);
             if (c) {
                 size_t at = strlen(where), len = strlen(e->d_name);
-                if (n == cap && !(st = realloc(st, (cap *= 2) * sizeof(tree_dir)))) zs_panic_c("out of memory");
-                if (at + len + 2 > wcap && !(where = realloc(where, wcap = 2 * (at + len + 2)))) zs_panic_c("out of memory");
+                if (n == cap && !(st = realloc(st, (cap *= 2) * sizeof(tree_dir)))) zs_fatal("out of memory");
+                if (at + len + 2 > wcap && !(where = realloc(where, wcap = 2 * (at + len + 2)))) zs_fatal("out of memory");
                 where[at] = '/';
                 memcpy(where + at + 1, e->d_name, len + 1);
                 st[n++] = (tree_dir){c, strdup(e->d_name), at, false};
-                if (!st[n - 1].name) zs_panic_c("out of memory");
+                if (!st[n - 1].name) zs_fatal("out of memory");
                 continue;
             }
             if (cfd >= 0) close(cfd);
@@ -2626,7 +2883,7 @@ static int win_errno(void) {
 static char *tree_path(const char *dir, const char *name) {
     size_t a = strlen(dir), b = strlen(name);
     char *p = malloc(a + b + 2);
-    if (!p) zs_panic_c("out of memory");
+    if (!p) zs_fatal("out of memory");
     memcpy(p, dir, a);
     p[a] = '\\';
     memcpy(p + a + 1, name, b + 1);
@@ -2655,7 +2912,7 @@ void zs_dir_delete_tree(zs_str *path) {
     size_t n = 1, cap = 16;
     tree_dir *st = malloc(cap * sizeof(tree_dir));
     char *root = strdup(path->data);
-    if (!st || !root) zs_panic_c("out of memory");
+    if (!st || !root) zs_fatal("out of memory");
     st[0] = (tree_dir){INVALID_HANDLE_VALUE, root};
     bool ok = true;
     while (ok && n > 0) {
@@ -2694,7 +2951,7 @@ void zs_dir_delete_tree(zs_str *path) {
         char *p = tree_path(top->dir, f.cFileName);
         DWORD fa = f.dwFileAttributes;
         if ((fa & FILE_ATTRIBUTE_DIRECTORY) && !(fa & FILE_ATTRIBUTE_REPARSE_POINT)) {
-            if (n == cap && !(st = realloc(st, (cap *= 2) * sizeof(tree_dir)))) zs_panic_c("out of memory");
+            if (n == cap && !(st = realloc(st, (cap *= 2) * sizeof(tree_dir)))) zs_fatal("out of memory");
             st[n++] = (tree_dir){INVALID_HANDLE_VALUE, p};
             continue;
         }
@@ -2781,7 +3038,7 @@ static zs_int proc_add(zs_int pid, void *h) {
     if (nprocs == procs_cap) {
         size_t cap = procs_cap ? 2 * procs_cap : 16;
         proc *p = realloc(procs, cap * sizeof(proc));
-        if (!p) zs_panic_c("out of memory");
+        if (!p) zs_fatal("out of memory");
         procs = p;
         procs_cap = cap;
     }
@@ -2896,7 +3153,7 @@ static void quote_arg(char **buf, size_t *len, size_t *cap, const char *arg) {
     if (*len + 2 * n + 4 > *cap) {
         *cap = 2 * (*len + 2 * n + 4);
         *buf = realloc(*buf, *cap);
-        if (!*buf) zs_panic_c("out of memory");
+        if (!*buf) zs_fatal("out of memory");
     }
     char *b = *buf;
     if (*len) b[(*len)++] = ' ';
@@ -2953,7 +3210,7 @@ static bool bat_arg(char **buf, size_t *len, size_t *cap, const char *arg) {
     if (*len + 8 * n + 4 > *cap) { // a % takes 8 bytes, a " or \ at most 2
         *cap = 2 * (*len + 8 * n + 4);
         *buf = realloc(*buf, *cap);
-        if (!*buf) zs_panic_c("out of memory");
+        if (!*buf) zs_fatal("out of memory");
     }
     char *b = *buf;
     b[(*len)++] = ' ';
@@ -2989,7 +3246,7 @@ static char *bat_line(const char *script, zs_str *args) {
     if (strchr(script, '"') || (n && script[n - 1] == '\\')) return NULL;
     size_t cap = n + 64, len;
     char *b = malloc(cap);
-    if (!b) zs_panic_c("out of memory");
+    if (!b) zs_fatal("out of memory");
     len = (size_t)snprintf(b, cap, "cmd.exe /e:ON /v:OFF /d /c \"\"%s\"", script);
     for (int64_t i = 0; i < args->len; i += (int64_t)strlen(args->data + i) + 1)
         if (!bat_arg(&b, &len, &cap, args->data + i)) {
@@ -2999,7 +3256,7 @@ static char *bat_line(const char *script, zs_str *args) {
     if (len + 2 > cap) {
         cap = len + 2;
         b = realloc(b, cap);
-        if (!b) zs_panic_c("out of memory");
+        if (!b) zs_fatal("out of memory");
     }
     b[len++] = '"';
     b[len] = 0;
@@ -3064,7 +3321,7 @@ static zs_int win_start(zs_str *prog, zs_str *args, zs_str *env, bool hasEnv, zs
     char *block = NULL;
     if (hasEnv) {
         block = calloc((size_t)env->len + 2, 1);
-        if (!block) zs_panic_c("out of memory");
+        if (!block) zs_fatal("out of memory");
         memcpy(block, env->data, (size_t)env->len);
     }
     console_flush();
@@ -3187,7 +3444,7 @@ static char **split_nul(zs_str *s, char *first) {
     int64_t count = 0;
     for (int64_t i = 0; i < s->len; i++) count += i == 0 || s->data[i - 1] == 0;
     char **v = malloc(sizeof(char *) * (size_t)(count + 2));
-    if (!v) zs_panic_c("out of memory");
+    if (!v) zs_fatal("out of memory");
     int64_t k = 0;
     if (first) v[k++] = first;
     for (int64_t i = 0; i < s->len; i++)
@@ -3393,7 +3650,7 @@ zs_int zs_process_waiter(zs_int n) {
     int w[2];
     if (wake_pair(w) != 0) return -EMFILE;
     zs_int *arg = malloc(2 * sizeof(zs_int));
-    if (!arg) zs_panic_c("out of memory");
+    if (!arg) zs_fatal("out of memory");
     arg[0] = n;
     arg[1] = w[1];
     pthread_attr_t at;
@@ -3461,7 +3718,7 @@ static int sk_add(SOCKET s) {
         }
         if (i % SOCK_CHUNK == 0) {
             SOCKET *c = malloc(SOCK_CHUNK * sizeof(SOCKET));
-            if (!c) zs_panic_c("out of memory");
+            if (!c) zs_fatal("out of memory");
             atomic_store_explicit(&sock_chunks[i / SOCK_CHUNK], c, memory_order_release);
         }
         atomic_store_explicit(&nsocks, i + 1, memory_order_release);
@@ -3633,6 +3890,13 @@ typedef struct job {
     struct job *next;
     struct job *prev_t, *next_t; // a token not yet used, in its loop's list of them
     int refs;                    // a token's: its loop's and the spawned task's (under box->mu)
+#ifdef ZS_CONTAINED
+    // done is a contained job's closure: among those its job waits for, until it comes back to
+    // the loop; orphan once that job has ended (done has gone with it, and isn't called)
+    cjob *owner;
+    struct job *oprev, *onext;
+    bool orphan;
+#endif
 } job;
 
 // what other threads hand a loop, under mu; freed when the loop has closed and no token for it
@@ -3680,15 +3944,94 @@ static int64_t now_ns(void) {
     return (int64_t)t.tv_sec * 1000000000 + t.tv_nsec;
 }
 
+// The loop's callbacks and contained jobs (0035). A closure made in a job is in the job's
+// memory, which says whose it is (cb_job): the loop runs it in that job (job_resume), counts it
+// in the job while it holds it (pending), and takes it out, uncalled, when the job ends. Any
+// other closure a job hands the loop is from outside it, where the job counts nothing: the loop
+// takes a count of its own, and runs it outside the job.
+#ifdef ZS_CONTAINED
+static cjob *cb_job(void *cb);
+static void job_resume(cjob *j, void *cb);
+static void job_kill_children(cjob *j);
+static void *cb_take(void *cb) {
+    cjob *j = cb_job(cb);
+    if (j) j->pending++;
+    else if (cur && *(int32_t *)cb < 0) __atomic_fetch_sub((int32_t *)cb, 1, __ATOMIC_RELAXED);
+    return cb;
+}
+// the loop's reference given up, in the closure's job
+static void cb_drop(void *cb) {
+    cjob *j = cb_job(cb), *here = cur;
+    if (j) j->pending--;
+    cur = j;
+    zs_clo_drop(cb);
+    cur = here;
+}
+static void cb_run(void *cb) {
+    cjob *j = cb_job(cb), *here = cur;
+    if (j) j->pending--;
+    if (j == here) {
+        zs_clo_run(cb);
+    } else if (j) {
+        job_resume(j, cb);
+    } else { // from outside every job
+        cur = NULL;
+        zs_clo_run(cb);
+        cur = here;
+    }
+}
+// a job's closure another thread will hand back (a helper job's done, a token's): the job
+// waits for it
+static void *inbox_take(job *j, void *done) {
+    cjob *o = cb_job(done);
+    j->owner = o;
+    if (o) {
+        j->onext = o->inbox;
+        if (j->onext) j->onext->oprev = j;
+        o->inbox = j;
+    } else if (cur && *(int32_t *)done < 0) {
+        __atomic_fetch_sub((int32_t *)done, 1, __ATOMIC_RELAXED);
+    }
+    return done;
+}
+static void inbox_leave(job *j) {
+    cjob *o = j->owner;
+    if (!o) return;
+    if (j->oprev) j->oprev->onext = j->onext;
+    else o->inbox = j->onext;
+    if (j->onext) j->onext->oprev = j->oprev;
+    j->owner = NULL;
+}
+// a closure from outside every job given up (work for another thread, which a job copied out)
+static void out_drop(void *c) {
+    cjob *here = cur;
+    cur = NULL;
+    zs_clo_drop(c);
+    cur = here;
+}
+#else
+#define cb_take(cb) (cb)
+#define cb_drop zs_clo_drop
+#define cb_run zs_clo_run
+#define out_drop zs_clo_drop
+#endif
+
 static void ensure_ep(void) {
-    if (L.ep == POLL_NONE && (L.ep = poll_new()) == POLL_NONE) zs_panic_c("epoll_create1 or kqueue failed");
+    if (L.ep == POLL_NONE && (L.ep = poll_new()) == POLL_NONE) zs_fatal("epoll_create1 or kqueue failed");
 }
 
+// a callback into the ready queue: zs_loop_post itself, but in a program with contained jobs,
+// where a callback is counted in its job when it's handed to the loop
+#ifdef ZS_CONTAINED
+static void queue_push(void *cb) {
+#else
+#define queue_push zs_loop_post
 void zs_loop_post(void *cb) {
+#endif
     if (L.qlen == L.qcap) {
         size_t cap = L.qcap ? 2 * L.qcap : 64;
         void **q = malloc(cap * sizeof(void *));
-        if (!q) zs_panic_c("out of memory");
+        if (!q) zs_fatal("out of memory");
         for (size_t i = 0; i < L.qlen; i++) q[i] = L.queue[(L.qhead + i) % L.qcap];
         free(L.queue);
         L.queue = q;
@@ -3697,6 +4040,10 @@ void zs_loop_post(void *cb) {
     }
     L.queue[(L.qhead + L.qlen++) % L.qcap] = cb;
 }
+
+#ifdef ZS_CONTAINED
+void zs_loop_post(void *cb) { queue_push(cb_take(cb)); }
+#endif
 
 static void *queue_pop(void) {
     void *cb = L.queue[L.qhead];
@@ -3721,7 +4068,7 @@ static void fd_arm(zs_int fd) {
     fd_wait *w = &L.fds[FD_SLOT(fd)];
     uint32_t want = (w->read ? LOOP_IN : 0) | (w->write ? LOOP_OUT : 0);
     if (want == w->armed) return;
-    if (poll_set(L.ep, (int)fd, w->armed, want) != 0) zs_panic_c("epoll_ctl or kevent failed (a descriptor that isn't a socket or pipe?)");
+    if (poll_set(L.ep, (int)fd, w->armed, want) != 0) zs_fatal("epoll_ctl or kevent failed (a descriptor that isn't a socket or pipe?)");
     w->armed = want;
 }
 
@@ -3741,14 +4088,14 @@ void zs_loop_wait(zs_int fd, bool write, void *cb) {
         size_t n = L.nfds ? L.nfds : 64;
         while (n <= (size_t)FD_SLOT(fd)) n *= 2;
         fd_wait *f = realloc(L.fds, n * sizeof(fd_wait));
-        if (!f) zs_panic_c("out of memory");
+        if (!f) zs_fatal("out of memory");
         memset(f + L.nfds, 0, (n - L.nfds) * sizeof(fd_wait));
         L.fds = f;
         L.nfds = n;
     }
     void **slot = write ? &L.fds[FD_SLOT(fd)].write : &L.fds[FD_SLOT(fd)].read;
     if (*slot) zs_panic_c("two tasks wait for the same descriptor at once");
-    *slot = cb;
+    *slot = cb_take(cb);
     L.waits++;
     fd_arm(fd);
 }
@@ -3762,7 +4109,7 @@ void zs_loop_unwait(zs_int fd, bool write) {
     *slot = NULL;
     L.waits--;
     fd_arm(fd);
-    zs_clo_drop(cb);
+    cb_drop(cb);
 }
 
 static void heap_set(size_t i, zs_timer *t) {
@@ -3807,18 +4154,18 @@ zs_int zs_loop_timer(zs_int ms, void *cb) {
     if (L.ntimers == L.heapcap) {
         L.heapcap = L.heapcap ? 2 * L.heapcap : 64;
         zs_timer **h = realloc(L.heap, L.heapcap * sizeof(zs_timer *));
-        if (!h) zs_panic_c("out of memory");
+        if (!h) zs_fatal("out of memory");
         L.heap = h;
     }
     zs_timer *t = malloc(sizeof(zs_timer));
-    if (!t) zs_panic_c("out of memory");
+    if (!t) zs_fatal("out of memory");
     // a deadline past the clock's range is one that never comes: the range's end
     int64_t now = now_ns();
     int64_t at = ms <= 0 ? now : (int64_t)ms > (INT64_MAX - now) / 1000000 ? INT64_MAX : now + (int64_t)ms * 1000000;
     // ids wrap on a 32-bit word: one still in use, or 0 (the table's empty key), is skipped
     do L.next_timer++;
     while (L.next_timer == 0 || tab_get(&L.timers, (void *)L.next_timer));
-    *t = (zs_timer){at, (zs_int)L.next_timer, cb, 0};
+    *t = (zs_timer){at, (zs_int)L.next_timer, cb_take(cb), 0};
     L.heap[L.ntimers++] = t;
     heap_up(L.ntimers - 1);
     tab_put(&L.timers, (void *)(uintptr_t)t->id, t);
@@ -3832,7 +4179,7 @@ void zs_loop_untimer(zs_int id) {
     heap_remove(t);
     void *cb = t->cb;
     free(t);
-    zs_clo_drop(cb);
+    cb_drop(cb);
 }
 
 static void box_free(inbox *b) {
@@ -3855,7 +4202,7 @@ static inbox *box_get(void) {
     if (!L.box) {
         ensure_ep();
         inbox *b = calloc(1, sizeof(inbox));
-        if (!b || wake_pair(b->wake) != 0) zs_panic_c("pipe failed");
+        if (!b || wake_pair(b->wake) != 0) zs_fatal("pipe failed");
         pthread_mutex_init(&b->mu, NULL);
         pthread_cond_init(&b->cv, NULL);
         b->refs = 1;
@@ -3898,12 +4245,15 @@ static void *helper_main(void *arg) {
 void zs_loop_blocking(void *work, void *done) {
     inbox *b = box_get();
     job *j = malloc(sizeof(job));
-    if (!j) zs_panic_c("out of memory");
+    if (!j) zs_fatal("out of memory");
     *j = (job){work, done, NULL, NULL, NULL, NULL, 0};
+#ifdef ZS_CONTAINED
+    inbox_take(j, done);
+#endif
     pthread_mutex_lock(&b->mu);
     if (!b->helping) {
         b->helping = true;
-        if (spawn(&b->helper, helper_main, b) != 0) zs_panic_c("pthread_create failed");
+        if (spawn(&b->helper, helper_main, b) != 0) zs_fatal("pthread_create failed");
     }
     if (b->todo) b->todo_last->next = j;
     else b->todo = j;
@@ -3918,8 +4268,11 @@ void zs_loop_blocking(void *work, void *done) {
 zs_int zs_loop_expect(void *done) {
     inbox *b = box_get();
     job *j = malloc(sizeof(job));
-    if (!j) zs_panic_c("out of memory");
+    if (!j) zs_fatal("out of memory");
     *j = (job){NULL, done, b, NULL, NULL, NULL, 2};
+#ifdef ZS_CONTAINED
+    inbox_take(j, done);
+#endif
     pthread_mutex_lock(&b->mu);
     b->refs++;
     j->next_t = b->tokens;
@@ -3964,11 +4317,23 @@ static void box_take(void) {
     }
     for (job *next; order; order = next) {
         next = order->next;
+#ifdef ZS_CONTAINED
+        if (order->orphan) { // its job ended meanwhile: nothing waits for it
+            if (order->work) out_drop(order->work);
+            L.jobs--;
+            free(order);
+            continue;
+        }
+        if (order->owner) { // the loop's now, as any callback of the job's
+            order->owner->pending++;
+            inbox_leave(order);
+        }
+#endif
         if (!order->work && !order->done) L.stopping = true; // the program is ending (loops_stop)
-        if (order->work && order->done) zs_clo_drop(order->work);
-        else if (order->work) zs_loop_post(order->work);
+        if (order->work && order->done) out_drop(order->work);
+        else if (order->work) queue_push(order->work);
         if (order->done) {
-            zs_loop_post(order->done);
+            queue_push(order->done);
             L.jobs--;
         }
         free(order); // a token: the spawned task let go when it fulfilled it
@@ -4050,7 +4415,7 @@ static void loops_stop(void) {
     atomic_store(&T.stopping, true);
     for (int k = 0; k < T.n; k++) {
         job *j = calloc(1, sizeof(job)); // neither work nor done: stop
-        if (!j) zs_panic_c("out of memory");
+        if (!j) zs_fatal("out of memory");
         pthread_mutex_lock(&T.boxes[k]->mu);
         box_put(T.boxes[k], j);
         pthread_mutex_unlock(&T.boxes[k]->mu);
@@ -4075,9 +4440,9 @@ static void loops_start(void) {
     T.n = (int)n;
     T.boxes = calloc((size_t)n, sizeof(inbox *));
     T.threads = calloc((size_t)n, sizeof(pthread_t));
-    if (!T.boxes || !T.threads) zs_panic_c("out of memory");
+    if (!T.boxes || !T.threads) zs_fatal("out of memory");
     for (int k = 0; k < T.n; k++)
-        if (spawn(&T.threads[k], loop_main, (void *)(intptr_t)k) != 0) zs_panic_c("pthread_create failed");
+        if (spawn(&T.threads[k], loop_main, (void *)(intptr_t)k) != 0) zs_fatal("pthread_create failed");
     pthread_mutex_lock(&T.mu);
     while (T.ready < T.n) pthread_cond_wait(&T.cv, &T.mu);
     pthread_mutex_unlock(&T.mu);
@@ -4092,7 +4457,7 @@ void zs_loop_spawn(void *work) {
     if (atomic_load(&T.stopping)) return; // ponytail: the work's closure is left, not dropped
     inbox *b = T.boxes[atomic_fetch_add(&T.next, 1) % (unsigned)T.n];
     job *j = malloc(sizeof(job));
-    if (!j) zs_panic_c("out of memory");
+    if (!j) zs_fatal("out of memory");
     *j = (job){work, NULL, NULL, NULL, NULL, NULL, 0};
     pthread_mutex_lock(&b->mu);
     box_put(b, j);
@@ -4136,7 +4501,7 @@ bool zs_loop_step(void) {
     if (L.stepping) zs_panic_c("Task.run inside a task: use let! there instead");
     L.stepping = true;
     for (size_t n = L.qlen; n > 0 && L.qlen; n--) {
-        zs_clo_run(queue_pop());
+        cb_run(queue_pop());
         L.ran++;
     }
     L.stepping = false;
@@ -4145,7 +4510,7 @@ bool zs_loop_step(void) {
         zs_timer *t = L.heap[0];
         heap_remove(t);
         tab_remove(&L.timers, (void *)(uintptr_t)t->id);
-        zs_loop_post(t->cb);
+        queue_push(t->cb);
         free(t);
     }
     int timeout = -1;
@@ -4168,7 +4533,7 @@ bool zs_loop_step(void) {
     ensure_ep();
     poll_event evs[256];
     int k = poll_wait(L.ep, evs, 256, timeout);
-    if (k < 0 && errno != EINTR) zs_panic_c("epoll_wait or kevent failed");
+    if (k < 0 && errno != EINTR) zs_fatal("epoll_wait or kevent failed");
     for (int i = 0; i < k; i++) {
         int fd = evs[i].fd;
         if (L.box && fd == L.box->wake[0]) {
@@ -4178,12 +4543,12 @@ bool zs_loop_step(void) {
         fd_wait *w = &L.fds[FD_SLOT(fd)];
         uint32_t e = evs[i].ready;
         if (w->read && (e & LOOP_IN)) {
-            zs_loop_post(w->read);
+            queue_push(w->read);
             w->read = NULL;
             L.waits--;
         }
         if (w->write && (e & LOOP_OUT)) {
-            zs_loop_post(w->write);
+            queue_push(w->write);
             w->write = NULL;
             L.waits--;
         }
@@ -4195,6 +4560,10 @@ bool zs_loop_step(void) {
 // Task.run has finished: what still waits goes (uncalled), the helper thread stops, and the
 // loop's memory is freed (a later Task.run starts afresh)
 void zs_loop_close(void) {
+#ifdef ZS_CONTAINED
+    // the tasks' jobs still on it end here, with what the loop holds for them
+    job_kill_children(cur);
+#endif
     inbox *b = L.box;
     if (b) {
         pthread_mutex_lock(&b->mu);
@@ -4207,8 +4576,14 @@ void zs_loop_close(void) {
         // what's left is this loop's: its closures go here
         for (job *j = b->todo, *next; j; j = next) {
             next = j->next;
-            zs_clo_drop(j->work);
+            out_drop(j->work);
+#ifdef ZS_CONTAINED
+            if (j->owner) j->owner->pending++; // which cb_drop takes back
+            inbox_leave(j);
+            if (!j->orphan) cb_drop(j->done);
+#else
             zs_clo_drop(j->done);
+#endif
             free(j);
         }
         pthread_mutex_lock(&b->mu);
@@ -4217,7 +4592,13 @@ void zs_loop_close(void) {
         // the tokens still out: their done closures are this loop's (dropped here); a token
         // stays in the list until its zs_loop_fulfill comes, or the program ends
         for (job *j = b->tokens; j; j = j->next_t) {
+#ifdef ZS_CONTAINED
+            if (j->owner) j->owner->pending++;
+            inbox_leave(j);
+            if (!j->orphan) cb_drop(j->done);
+#else
             zs_clo_drop(j->done);
+#endif
             j->done = NULL;
             j->refs--;
         }
@@ -4225,21 +4606,25 @@ void zs_loop_close(void) {
         pthread_mutex_unlock(&b->mu);
         for (job *j = ready, *next; j; j = next) {
             next = j->next;
-            if (j->work) zs_clo_drop(j->work);
-            if (j->done) zs_clo_drop(j->done);
+            if (j->work) out_drop(j->work);
+#ifdef ZS_CONTAINED
+            if (j->owner) j->owner->pending++;
+            inbox_leave(j);
+#endif
+            if (j->done) cb_drop(j->done);
             free(j);
         }
         if (last) box_free(b);
     }
-    while (L.qlen) zs_clo_drop(queue_pop());
+    while (L.qlen) cb_drop(queue_pop());
     for (size_t fd = 0; fd < L.nfds; fd++) {
-        if (L.fds[fd].read) zs_clo_drop(L.fds[fd].read);
-        if (L.fds[fd].write) zs_clo_drop(L.fds[fd].write);
+        if (L.fds[fd].read) cb_drop(L.fds[fd].read);
+        if (L.fds[fd].write) cb_drop(L.fds[fd].write);
     }
     while (L.ntimers) {
         zs_timer *t = L.heap[--L.ntimers];
         tab_remove(&L.timers, (void *)(uintptr_t)t->id);
-        zs_clo_drop(t->cb);
+        cb_drop(t->cb);
         free(t);
     }
     if (L.ep != POLL_NONE) poll_close(L.ep);
@@ -4632,7 +5017,7 @@ zs_int zs_dns_start(zs_str *host) {
     lookups_reap();
     lookup *l = calloc(1, sizeof *l);
     char *h = malloc((size_t)host->len + 1);
-    if (!l || !h) zs_panic_c("out of memory");
+    if (!l || !h) zs_fatal("out of memory");
     memcpy(h, host->data, (size_t)host->len);
     h[host->len] = 0;
     int p[2];
@@ -4818,7 +5203,14 @@ zs_int zs_fd_write(zs_int fd, const uint8_t *data, zs_int len, zs_int off, zs_in
 #endif
 }
 
+#ifdef ZS_CONTAINED
+static void job_fd_closed(zs_int fd);
+#endif
+
 void zs_fd_close(zs_int fd) {
+#ifdef ZS_CONTAINED
+    job_fd_closed(fd);
+#endif
     if ((size_t)FD_SLOT(fd) < L.nfds) { // what waits for it can't happen any more
         zs_loop_unwait(fd, false);
         zs_loop_unwait(fd, true);
@@ -4863,10 +5255,21 @@ zs_str *zs_error_text(zs_int e) {
 // to do while enough others can sleeps until it's needed again. Spares are at most twice the
 // cores: past that, a job waits without one.
 
+#ifdef ZS_CONTAINED
+typedef struct par_job {
+#else
 typedef struct {
+#endif
     void (*run)(void *clo, void *out);
     void *clo;
     atomic_int done;
+#ifdef ZS_CONTAINED
+    // forked in a contained job and not joined yet: a failure of that job takes it back unrun,
+    // or leaves it to the thread running it (done 2), which then gives its result up
+    cjob *owner;
+    struct par_job *oprev, *onext;
+    void (*drop)(void *slot);
+#endif
     _Alignas(64) char result[]; // what run stores (a SIMD vector, say)
 } par_job;
 
@@ -4916,7 +5319,7 @@ static pthread_key_t slotKey;            // gives a forking thread's deque back 
 
 static par_ring *ring_new(long long cap) {
     par_ring *r = calloc(1, sizeof(par_ring) + (size_t)cap * sizeof(_Atomic(par_job *)));
-    if (!r) zs_panic_c("out of memory");
+    if (!r) zs_fatal("out of memory");
     r->cap = cap;
     return r;
 }
@@ -4937,7 +5340,7 @@ static void dq_push(par_deque *q, par_job *j) {
             atomic_store_explicit(&n->slot[i & (n->cap - 1)], atomic_load_explicit(&a->slot[i & (a->cap - 1)], memory_order_relaxed), memory_order_relaxed);
         pthread_mutex_lock(&P.oldmu);
         void **o = realloc(P.old, (P.nold + 1) * sizeof(void *));
-        if (!o) zs_panic_c("out of memory");
+        if (!o) zs_fatal("out of memory");
         P.old = o;
         P.old[P.nold++] = a;
         pthread_mutex_unlock(&P.oldmu);
@@ -4980,8 +5383,24 @@ static par_job *dq_steal(par_deque *q) {
 }
 
 static void run_job(par_job *j) {
+#ifdef ZS_CONTAINED
+    // forked work is in no contained job, whichever thread runs it (a join in one runs others'
+    // work, and its own, on its stack): its memory is no job's, and its panic stops the program
+    cjob *here = cur;
+    cur = NULL;
+    j->run(j->clo, j->result);
+    int open = 0;
+    if (!atomic_compare_exchange_strong(&j->done, &open, 1)) { // (seq_cst: after the store of 2)
+        // the contained job that forked it failed meanwhile and left it (done is 2): no one
+        // joins it, so its result is given up here
+        if (j->drop) j->drop(j->result);
+        obj_free(j);
+    }
+    cur = here;
+#else
     j->run(j->clo, j->result);
     atomic_store_explicit(&j->done, 1, memory_order_release);
+#endif
 }
 
 // a job from another thread's deque, starting at a different one each time
@@ -5012,7 +5431,7 @@ static void slot_take(void) {
     if (P.nfreed > 0) k = P.freed[--P.nfreed];
     else {
         k = atomic_load(&P.slots);
-        if (k >= P.cap) zs_panic_c("too many threads use the thread pool at once");
+        if (k >= P.cap) zs_fatal("too many threads use the thread pool at once");
         dq_init(&P.deques[k]);
         atomic_store_explicit(&P.slots, k + 1, memory_order_release); // after the deque is there
     }
@@ -5061,9 +5480,9 @@ static void par_block(void) {
         pthread_cond_signal(&P.sparecv);
     } else {
         pthread_t *t = realloc(P.spareThreads, (size_t)(P.nspare + 1) * sizeof(pthread_t));
-        if (!t) zs_panic_c("out of memory");
+        if (!t) zs_fatal("out of memory");
         P.spareThreads = t;
-        if (spawn(&P.spareThreads[P.nspare], spare_main, NULL) != 0) zs_panic_c("pthread_create failed");
+        if (spawn(&P.spareThreads[P.nspare], spare_main, NULL) != 0) zs_fatal("pthread_create failed");
         P.nspare++;
     }
     pthread_mutex_unlock(&P.mu);
@@ -5160,7 +5579,7 @@ static void pool_start(void) {
     P.deques = calloc((size_t)P.cap, sizeof(par_deque));
     P.freed = calloc((size_t)P.cap, sizeof(int));
     P.threads = calloc((size_t)n, sizeof(pthread_t));
-    if (!P.deques || !P.freed || !P.threads) zs_panic_c("out of memory");
+    if (!P.deques || !P.freed || !P.threads) zs_fatal("out of memory");
     for (int k = 0; k < P.n; k++) dq_init(&P.deques[k]);
     atomic_init(&P.slots, P.n);
     pthread_mutex_init(&P.mu, NULL);
@@ -5170,7 +5589,7 @@ static void pool_start(void) {
     pthread_key_create(&slotKey, slot_give);
     me = P.n - 1; // the thread starting the pool runs jobs with the last deque
     for (int k = 0; k < P.n - 1; k++)
-        if (spawn(&P.threads[k], worker_main, (void *)(intptr_t)k) != 0) zs_panic_c("pthread_create failed");
+        if (spawn(&P.threads[k], worker_main, (void *)(intptr_t)k) != 0) zs_fatal("pthread_create failed");
     atomic_store(&poolUp, true);
     stop_at_exit();
 }
@@ -5190,13 +5609,26 @@ zs_int zs_par_workers(void) {
 }
 
 // a job running clo (the job takes its reference) with run, whose result takes size bytes
+#ifdef ZS_CONTAINED
+// (drop: what gives the result up, if the contained job that forked it fails before its join)
+void *zs_par_fork_in(void *clo, void (*run)(void *, void *), zs_int size, void (*drop)(void *)) {
+#else
 void *zs_par_fork(void *clo, void (*run)(void *, void *), zs_int size) {
+#endif
     par_enter();
     par_job *j = aligned_alloc(64, (sizeof(par_job) + (size_t)size + 63) & ~(size_t)63);
-    if (!j) zs_panic_c("out of memory");
+    if (!j) zs_fatal("out of memory");
     j->run = run;
     j->clo = clo;
     atomic_init(&j->done, 0);
+#ifdef ZS_CONTAINED
+    j->owner = cur;
+    j->drop = drop;
+    j->oprev = NULL;
+    j->onext = cur ? cur->forks : NULL;
+    if (j->onext) j->onext->oprev = j;
+    if (cur) cur->forks = j;
+#endif
     dq_push(&P.deques[me], j);
     if (atomic_load(&P.sleeping) > 0) { // seq_cst, after the push's: see run_jobs
         pthread_mutex_lock(&P.mu);
@@ -5218,8 +5650,20 @@ void *zs_par_join(void *jv) {
         if (x) run_job(x);
         else sched_yield();
     }
+#ifdef ZS_CONTAINED
+    if (j->owner) {
+        if (j->oprev) j->oprev->onext = j->onext;
+        else j->owner->forks = j->onext;
+        if (j->onext) j->onext->oprev = j->oprev;
+        j->owner = NULL;
+    }
+#endif
     return j->result;
 }
+
+#ifdef ZS_CONTAINED
+void *zs_par_fork(void *clo, void (*run)(void *, void *), zs_int size) { return zs_par_fork_in(clo, run, size, NULL); }
+#endif
 
 void zs_par_free(void *j) { obj_free(j); }
 
@@ -5271,6 +5715,33 @@ void zs_unlock(atomic_int *l) {
     }
 }
 
+#ifdef ZS_CONTAINED
+// Mutex.update's lock in a program with contained jobs: a job lists the mutexes it holds, and a
+// panic in the update's function unlocks them (the value under each is the one before)
+void zs_job_lock(atomic_int *l) {
+    zs_lock(l);
+    cjob *j = cur;
+    if (!j) return;
+    if (j->nlocks == j->lockcap) {
+        j->lockcap = j->lockcap ? 2 * j->lockcap : 4;
+        j->locks = realloc(j->locks, (size_t)j->lockcap * sizeof *j->locks);
+        if (!j->locks) zs_fatal("out of memory");
+    }
+    j->locks[j->nlocks++] = l;
+}
+
+void zs_job_unlock(atomic_int *l) {
+    cjob *j = cur;
+    if (j)
+        for (int k = j->nlocks - 1; k >= 0; k--)
+            if (j->locks[k] == l) {
+                j->locks[k] = j->locks[--j->nlocks];
+                break;
+            }
+    zs_unlock(l);
+}
+#endif
+
 // ---- channels (Channel): a bounded queue for any number of senders and receivers, a ring of
 // fixed-size slots holding the values' bytes (the compiler marked them shared), under a lock.
 // With capacity 0, a send waits for a receiver to take its value (a rendezvous): the ring is
@@ -5292,8 +5763,16 @@ typedef struct {
 void *zs_chan_new(zs_int cap, zs_int size, void (*drop)(void *)) {
     // the slots, past what can be allocated a panic (wrapped, a small block sends would overrun)
     size_t bytes;
-    if (__builtin_mul_overflow((size_t)(cap == 0 ? 1 : cap), (size_t)(size ? size : 1), &bytes)) zs_panic_c("out of memory");
+    if (__builtin_mul_overflow((size_t)(cap == 0 ? 1 : cap), (size_t)(size ? size : 1), &bytes)) zs_fatal("out of memory");
+#ifdef ZS_CONTAINED
+    // others may keep it: never in a job's memory (the compiler has the job hold it, zs_job_made)
+    cjob *here = cur;
+    cur = NULL;
     zs_chan *c = zs_alloc((zs_int)sizeof(zs_chan));
+    cur = here;
+#else
+    zs_chan *c = zs_alloc((zs_int)sizeof(zs_chan));
+#endif
     c->rc = 1;
     pthread_mutex_init(&c->mu, NULL);
     pthread_cond_init(&c->not_empty, NULL);
@@ -5307,7 +5786,7 @@ void *zs_chan_new(zs_int cap, zs_int size, void (*drop)(void *)) {
     c->closed = false;
     c->drop = drop;
     c->slots = malloc(bytes);
-    if (!c->slots) zs_panic_c("out of memory");
+    if (!c->slots) zs_fatal("out of memory");
     return c;
 }
 
@@ -5332,6 +5811,16 @@ void zs_chan_send(zs_chan *c, void *slot) {
     if (c->closed) {
         pthread_mutex_unlock(&c->mu);
         if (told) par_unblock();
+#ifdef ZS_CONTAINED
+        // the value goes nowhere: given up here (a contained job copied it out to send it, and
+        // the panic leaves no one else to)
+        if (cur && c->drop) {
+            cjob *here = cur;
+            cur = NULL;
+            c->drop(slot);
+            cur = here;
+        }
+#endif
         zs_panic_c("Channel.send: the channel is closed");
     }
     memcpy(c->slots + ((c->head + c->len) % c->cap) * c->size, slot, (size_t)c->size);
@@ -5417,9 +5906,16 @@ void *zs_spsc_new(zs_int cap, zs_int size, void (*drop)(void *)) {
     if (cap < 1) zs_panic_c("an Spsc holds at least one value");
     zs_int n = 2, slot, bytes; // past what can be allocated a panic
     while (n < cap)
-        if (__builtin_mul_overflow(n, 2, &n)) zs_panic_c("out of memory");
-    if (__builtin_add_overflow(size, (zs_int)sizeof(uintptr_t), &slot) || __builtin_mul_overflow(n, slot, &bytes) || __builtin_add_overflow(bytes, (zs_int)sizeof(zs_spsc), &bytes)) zs_panic_c("out of memory");
+        if (__builtin_mul_overflow(n, 2, &n)) zs_fatal("out of memory");
+    if (__builtin_add_overflow(size, (zs_int)sizeof(uintptr_t), &slot) || __builtin_mul_overflow(n, slot, &bytes) || __builtin_add_overflow(bytes, (zs_int)sizeof(zs_spsc), &bytes)) zs_fatal("out of memory");
+#ifdef ZS_CONTAINED
+    cjob *here = cur; // as a channel: never in a job's memory
+    cur = NULL;
     zs_spsc *q = zs_alloc(bytes);
+    cur = here;
+#else
+    zs_spsc *q = zs_alloc(bytes);
+#endif
     q->rc = 1;
     q->cap = cap;
     q->size = size;
@@ -5475,6 +5971,567 @@ void zs_spsc_free(zs_spsc *q) {
         for (uintptr_t p = q->head; p != q->tail; p++) q->drop(spsc_value(q, p));
     zs_free_checked(q);
 }
+
+#ifdef ZS_CONTAINED
+// ---- contained jobs (0035, lib/std/Threading/Contained.zs): a function run with memory of its
+// own, whose panic ends it and not the program. Nothing unwinds: the thread jumps to the job's
+// entry, the job's memory goes at once, and what the runtime did for it is undone. That's sound
+// because of one rule, which everything here keeps:
+//
+//   a job owns no count outside its memory, and nothing outside holds a pointer into it.
+//
+// - Its objects are allocated in it (job_alloc), whoever asks: compiled code or this file.
+// - What it reaches outside is marked shared (the compiler's crossings), and in a job a shared
+//   object's count doesn't change (zs_dup_shared, zs_release_shared): the job holds each such
+//   value once (job_hold) until it ends, and the runtime gives those up then.
+// - What leaves it is copied out (the compiler's copy functions, between zs_job_out and
+//   zs_job_back), so no pointer to its memory is in a channel, a mutex or another thread's job.
+// - What the runtime keeps for it (the loop's callbacks, weak cells, a thread's handles, the
+//   pool jobs it forked) is found from the job, and taken out when it ends.
+//
+// A job is a thread's: started, run and ended on one thread.
+#define JOB_BLOCK ((size_t)64 * 1024)
+#define JOB_SPARE 16 // blocks a thread keeps for its next jobs
+
+// a block's start, on a JOB_BLOCK boundary: an object in it finds its job from its address
+typedef struct jblock {
+    struct jblock *next;
+    cjob *job;
+} jblock;
+
+#define JBLOCK_HEAD ((size_t)64)
+
+#ifdef _WIN32
+#define FD_OF(slot) ((zs_int)(slot) + SOCK_BASE)
+#else
+#define FD_OF(slot) ((zs_int)(slot))
+#endif
+
+// what a job gives the code that started it: whether it failed, the panic's message, or its
+// result's bytes (copied into the starter's memory). A task's job also has what to call, outside
+// it, once it has ended.
+typedef struct outcome {
+    cjob *job; // NULL once it has ended
+    void *done;
+    bool failed;
+    char *message;
+    size_t mlen;
+    void *result;
+    void (*drop)(void *slot); // gives the result up
+} outcome;
+
+static _Thread_local cjob *roots;     // the tasks' jobs started on this thread outside every job
+static _Thread_local cjob *finishing; // between zs_job_finish and zs_job_finished
+static _Thread_local ptrtab copied;   // a copy under way: each object met twice, and its copy
+
+static cjob *job_of(const void *p) {
+    if (FROM(p) == JOB_ARENA) return ((const jblock *)((uintptr_t)p & ~(uintptr_t)(JOB_BLOCK - 1)))->job;
+    return ((const jbig *)p - 1)->job;
+}
+
+// the job a closure is in: NULL for one from outside every job (a static one too)
+static cjob *cb_job(void *cb) { return job_object(cb) ? job_of(cb) : NULL; }
+
+static void *job_alloc(cjob *j, size_t size, size_t align) {
+    heap_state *h = heap_of_thread();
+    COUNT_IN(h, live, 1);
+    COUNT_IN(h, allocations, 1);
+    j->live++;
+#if ZS_POOL
+    size_t n = (size + 7) & ~(size_t)7;
+    if (n <= JOB_BLOCK / 4) {
+        char *at = (char *)(((uintptr_t)j->bump + (align - 1)) & ~(uintptr_t)(align - 1));
+        if (!j->bump || at + n > j->end) {
+            jblock *b = h->job_blocks;
+            if (b) {
+                h->job_blocks = b->next;
+                h->job_nblocks--;
+            } else {
+                b = aligned_alloc(JOB_BLOCK, JOB_BLOCK);
+                if (!b) zs_fatal("out of memory");
+                COUNT_IN(h, mallocs, 1);
+            }
+            b->next = j->blocks;
+            b->job = j;
+            j->blocks = b;
+            at = (char *)b + JBLOCK_HEAD;
+            j->end = (char *)b + JOB_BLOCK;
+        }
+        j->bump = at + n;
+        FROM(at) = JOB_ARENA;
+        return at;
+    }
+#endif
+    // the system allocator's (a big object; with ZS_NO_POOL every one, so a sanitizer sees each):
+    // in the job's ring, behind what says whose it is
+    size_t head = align > 16 ? 64 : sizeof(jbig);
+    void *base = align > 16 ? aligned_alloc(64, (head + size + 63) & ~(size_t)63) : obj_malloc(head + size);
+    if (!base) zs_fatal("out of memory");
+    COUNT_IN(h, mallocs, 1);
+    char *p = (char *)base + head;
+    jbig *g = (jbig *)p - 1;
+    g->job = j;
+    g->base = base;
+    g->next = j->bigs.next;
+    g->prev = &j->bigs;
+    g->next->prev = g;
+    j->bigs.next = g;
+    FROM(p) = JOB_BIG;
+    return p;
+}
+
+// one of a job's objects has died: a big one's memory goes now, the others' with the job
+// ponytail: a small object's memory isn't used again, so a job that runs long only grows (a job
+// a connection, not a request, on the echo server: 40 KB a connection after 20 round trips).
+// Free lists by size in the job, as the pool's, when a long-lived job is wanted (0035's
+// question 2)
+static void job_free(void *p) {
+    COUNT(live, -1);
+    job_of(p)->live--;
+    if (FROM(p) == JOB_BIG) {
+        jbig *g = (jbig *)p - 1;
+        g->prev->next = g->next;
+        g->next->prev = g->prev;
+        obj_free(g->base);
+    }
+}
+
+// a shared object's count: unchanged in a job (which counts nothing outside it), and for an
+// object of a job's own (it lives as long as its job, whatever is marked on it since)
+void zs_dup_shared(int32_t *rc) {
+    if (!cur && !job_object(rc)) __atomic_fetch_sub(rc, 1, __ATOMIC_RELAXED);
+}
+
+bool zs_release_shared(int32_t *rc) { return !cur && !job_object(rc) && __atomic_fetch_add(rc, 1, __ATOMIC_ACQ_REL) == -1; }
+
+// the job keeps p (an object from outside, marked shared, whose count this is) until it ends
+static void job_hold(cjob *j, void *p, void (*drop)(void *)) {
+    if (!p || *(int32_t *)p == 0 || job_object(p)) return; // static, or a job's own: it outlives this
+    held *e;
+    if (j->nfew < (int)(sizeof j->few / sizeof *j->few)) {
+        e = &j->few[j->nfew++];
+    } else {
+        if (!j->more || j->more->n == (int)(sizeof j->more->e / sizeof *j->more->e)) {
+            held_chunk *c = malloc(sizeof *c);
+            if (!c) zs_fatal("out of memory");
+            c->next = j->more;
+            c->n = 0;
+            j->more = c;
+        }
+        e = &j->more->e[j->more->n++];
+    }
+    *e = (held){p, drop};
+}
+
+// from compiled code, where a value arrives in a job (Mutex.get, Channel.receive, a pool job's
+// result): nothing outside one, where the count is the caller's
+void zs_job_hold(void *p, void (*drop)(void *)) {
+    if (cur) job_hold(cur, p, drop);
+}
+
+// an Atomic, a Mutex or a Channel made in a job (outside its memory: others may keep it): shared
+// from its making, the job's reference held
+void zs_job_made(void *p, void (*drop)(void *)) {
+    if (!cur) return;
+    *(int32_t *)p = -1;
+    job_hold(cur, p, drop);
+}
+
+// around what a job does outside its memory (a copy out of it, a count taken or given up for
+// what a mutex holds): the thread is in no job meanwhile
+void *zs_job_out(void) {
+    cjob *j = cur;
+    cur = NULL;
+    return j;
+}
+
+void zs_job_back(void *j) { cur = j; }
+
+bool zs_job_in(void) { return cur != NULL; }
+
+// a copy out of a job keeps the sharing between the job's objects: one met again (its count
+// isn't 1) is looked up
+void *zs_copy_seen(void *p) { return tab_get(&copied, p); }
+
+void zs_copy_note(void *p, void *q) { tab_put(&copied, p, q); }
+
+void zs_copy_done(void) {
+    if (!copied.cap) return;
+    free(copied.keys);
+    free(copied.vals);
+    copied = (ptrtab){0};
+}
+
+// a descriptor the runtime opened for a job: closed if the job fails
+void zs_job_fd(zs_int fd) {
+    cjob *j = cur;
+    if (!j || fd < 0) return;
+    if (j->nfds == j->fdcap) {
+        j->fdcap = j->fdcap ? 2 * j->fdcap : 8;
+        j->fds = realloc(j->fds, (size_t)j->fdcap * sizeof *j->fds);
+        if (!j->fds) zs_fatal("out of memory");
+    }
+    j->fds[j->nfds++] = fd;
+}
+
+// closed by the job that opened it, or by one inside that one
+static void job_fd_closed(zs_int fd) {
+    for (cjob *j = cur; j; j = j->parent)
+        for (int k = j->nfds - 1; k >= 0; k--)
+            if (j->fds[k] == fd) {
+                j->fds[k] = j->fds[--j->nfds];
+                return;
+            }
+}
+
+// a closure C may call on any thread, and keep: it can't be one of a job's
+void zs_job_callback(void) {
+    if (cur) zs_panic_c("a callback C may call on any thread (callback<share<F>>) was passed in a contained job: C may keep it past the job's end");
+}
+
+// the loop lets go of a job's callbacks, uncalled: its ready queue, its descriptors, its timers
+static void loop_forget(cjob *j) {
+    size_t kept = 0;
+    for (size_t i = 0; i < L.qlen; i++) {
+        void *cb = L.queue[(L.qhead + i) % L.qcap];
+        if (cb_job(cb) != j) L.queue[(L.qhead + kept++) % L.qcap] = cb;
+    }
+    L.qlen = kept;
+    for (size_t k = 0; k < L.nfds; k++) {
+        fd_wait *w = &L.fds[k];
+        bool mine = false;
+        if (w->read && cb_job(w->read) == j) w->read = NULL, L.waits--, mine = true;
+        if (w->write && cb_job(w->write) == j) w->write = NULL, L.waits--, mine = true;
+        if (mine) fd_arm(FD_OF(k));
+    }
+    for (size_t i = 0; i < L.ntimers;) {
+        zs_timer *t = L.heap[i];
+        if (cb_job(t->cb) != j) {
+            i++;
+            continue;
+        }
+        heap_remove(t);
+        tab_remove(&L.timers, (void *)(uintptr_t)t->id);
+        free(t);
+        i = 0; // ponytail: the heap moved, so from its start again; a job's timers are few
+    }
+    j->pending = 0;
+}
+
+static void job_kill(cjob *j);
+
+// the tasks' jobs started in j (or, for NULL, on this thread outside every job) end, unfinished
+static void job_kill_children(cjob *j) {
+    cjob **list = j ? &j->children : &roots;
+    while (*list) job_kill(*list);
+}
+
+// The job ends, by returning or (failed) by a panic or being cancelled: what the runtime did for
+// it is undone, its memory goes whatever is live in it, and what it held outside is given up.
+static void job_end(cjob *j, bool failed) {
+    cjob *here = cur;
+    job_kill_children(j);
+    if (failed) {
+        // a mutex it holds: unlocked, with the value it had (Mutex.update stores when its
+        // function returns)
+        while (j->nlocks) zs_unlock(j->locks[--j->nlocks]);
+        // what it opened and didn't close (no `use` was disposed on the way)
+        while (j->nfds) zs_fd_close(j->fds[--j->nfds]);
+        // what it forked and didn't join, the newest first, as they are on this thread's deque.
+        // One no thread has taken is taken back, unrun. One a thread took is that thread's: it
+        // gives its result up when it's done (the job doesn't wait: what it forked may be waiting
+        // for the job)
+        while (j->forks) {
+            par_job *f = j->forks;
+            j->forks = f->onext;
+            if (f->onext) f->onext->oprev = NULL;
+            f->owner = NULL;
+            par_job *x = dq_pop(&P.deques[me]);
+            int open = 0;
+            cur = NULL;
+            if (x == f) {
+                zs_clo_drop(f->clo);
+                obj_free(f);
+            } else {
+                if (x) dq_push(&P.deques[me], x);
+                if (!atomic_compare_exchange_strong(&f->done, &open, 2)) { // it has run already
+                    if (f->drop) f->drop(f->result);
+                    obj_free(f);
+                }
+            }
+            cur = here;
+        }
+    } else {
+        for (par_job *f = j->forks; f; f = f->onext) f->owner = NULL;
+    }
+    free(j->locks);
+    free(j->fds);
+    if (j->pending) loop_forget(j);
+    for (job *b = j->inbox, *next; b; b = next) {
+        next = b->onext;
+        b->orphan = true;
+        b->owner = NULL;
+        b->done = NULL;
+    }
+    if (j->weaks) {
+        // out of their objects' chains, as zs_weak_free takes one
+        HEAP_LOCK();
+        for (zs_weak *w = j->weaks; w; w = w->jnext) {
+            if (!w->target || ((uintptr_t)w->target & 1)) continue;
+            zs_weak *first = tab_get(&weaks, w->target);
+            if (first == w) {
+                tab_remove(&weaks, w->target);
+                if (w->next) tab_put(&weaks, w->target, w->next);
+            } else {
+                for (zs_weak *p = first; p; p = p->next)
+                    if (p->next == w) {
+                        p->next = w->next;
+                        break;
+                    }
+            }
+        }
+        HEAP_UNLOCK();
+    }
+    for (zs_handle *h = j->handles, *next; h; h = next) {
+        next = h->jnext;
+        h->obj = NULL;
+        h->job = NULL;
+    }
+    if (io_error && job_object(io_error) && job_of(io_error) == j) io_error = NULL;
+    if (j->task) {
+        if (j->prev) j->prev->next = j->next;
+        else if (j->parent) j->parent->children = j->next;
+        else roots = j->next;
+        if (j->next) j->next->prev = j->prev;
+    }
+    // its memory
+    for (jbig *g = j->bigs.next, *next; g != &j->bigs; g = next) {
+        next = g->next;
+        obj_free(g->base);
+    }
+#if ZS_POOL
+    heap_state *h = heap_of_thread();
+    for (jblock *b = j->blocks, *next; b; b = next) {
+        next = b->next;
+        if (h->job_nblocks < JOB_SPARE) {
+            b->next = h->job_blocks;
+            h->job_blocks = b;
+            h->job_nblocks++;
+        } else {
+            obj_free(b);
+        }
+    }
+#endif
+    COUNT(live, -j->live);
+    // what it held outside: its starter's now when that's a job too and has its result (which
+    // may refer to them), else given up, outside every job
+    if (!failed && j->parent) {
+        for (int k = 0; k < j->nfew; k++) job_hold(j->parent, j->few[k].p, j->few[k].drop);
+        if (j->more) {
+            held_chunk *last = j->more;
+            while (last->next) last = last->next;
+            if (j->parent->more) {
+                last->next = j->parent->more->next;
+                j->parent->more->next = j->more;
+            } else {
+                j->parent->more = j->more;
+            }
+        }
+    } else {
+        cur = NULL;
+        for (int k = 0; k < j->nfew; k++) j->few[k].drop(j->few[k].p);
+        for (held_chunk *c = j->more, *next; c; c = next) {
+            next = c->next;
+            for (int k = 0; k < c->n; k++) c->e[k].drop(c->e[k].p);
+            free(c);
+        }
+        cur = here;
+    }
+    free(j);
+}
+
+// the job has ended: its outcome says how, for the code that started it
+static void job_settle(cjob *j, bool failed) {
+    outcome *o = j->out;
+    cjob *here = cur;
+    o->job = NULL;
+    o->failed = failed;
+    o->message = j->message;
+    o->mlen = j->mlen;
+    if (failed && o->result) {
+        // a panic after its result was copied out: the copy goes, where it was made
+        cur = j->parent;
+        if (j->finished && o->drop) o->drop(o->result);
+        cur = here;
+        obj_free(o->result);
+        o->result = NULL;
+    }
+    job_end(j, failed);
+}
+
+// a task's job has ended: what waits for it outside goes on (in the job it's in, if any)
+static void job_over(cjob *j, bool failed) {
+    void *done = j->out->done;
+    j->out->done = NULL;
+    job_settle(j, failed);
+    cb_run(done);
+}
+
+// a task's job ends unfinished (cancelled, or its starter or its loop is ending): as a failure,
+// with nothing told
+static void job_kill(cjob *j) {
+    outcome *o = j->out;
+    void *done = o->done;
+    job_settle(j, true);
+    free(o->message);
+    free(o);
+    if (done) cb_drop(done);
+}
+
+// Runs call(c) in the job: the entry a panic in it jumps to. When that ends the job (it
+// panicked, or its task gave its result), it's over. What's needed after the jump is in memory
+// (volatile): the jump brings back the stack, and no register is to be trusted after it.
+static void job_enter(cjob *j0, void (*call)(void *), void *c) {
+    cjob *volatile j = j0;
+    cjob *volatile here = cur;
+    volatile bool stepping = L.stepping;
+    volatile int depth = L.depth;
+    cur = j0;
+    volatile bool failed = JOB_SET(j0->entry) != 0;
+    if (!failed) {
+        call(c);
+    } else {
+        // the loop as it was when the job was entered (the panic left a callback half run)
+        L.stepping = stepping;
+        L.depth = depth;
+    }
+    cur = here;
+    cjob *ended = j;
+    if (ended->cancelling || !(failed || ended->finished)) return;
+    if (ended->task) job_over(ended, failed);
+    else job_settle(ended, failed);
+}
+
+static void job_resume(cjob *j, void *cb) { job_enter(j, zs_clo_run, cb); }
+
+// a panic on a thread that's in a job: to the job's entry, with its message (which may be in
+// the job's memory). Comes back when no job is running here: the panic stops the program.
+static void job_panicked(const char *msg, size_t len) {
+    cjob *j = cur;
+    if (!j) return;
+    char *m = malloc(len ? len : 1);
+    if (!m) return;
+    memcpy(m, msg, len);
+    free(j->message);
+    j->message = m;
+    j->mlen = len;
+    finishing = NULL;
+    in_panic = false;
+    atomic_flag_clear(&panicking);
+    JOB_JUMP(j->entry);
+}
+
+static cjob *job_new(bool task) {
+    cjob *j = calloc(1, sizeof *j);
+    outcome *o = task ? NULL : calloc(1, sizeof *o);
+    if (!j || (!task && !o)) zs_fatal("out of memory");
+    j->parent = cur;
+    j->bigs.prev = j->bigs.next = &j->bigs;
+    j->task = task;
+    j->out = o;
+    if (o) o->job = j;
+    return j;
+}
+
+// Contained.run: clo (marked shared by the compiler, its reference the job's until it ends) run
+// by run (in the program's IR: it calls clo and copies its result out, zs_job_finish). The
+// outcome, for zs_job_failed and then zs_job_message or zs_job_result.
+void *zs_job_run(void *clo, void (*run)(void *clo)) {
+    cjob *j = job_new(false);
+    outcome *o = j->out;
+    job_hold(j, clo, zs_clo_drop);
+    job_enter(j, run, clo);
+    return o;
+}
+
+// The job's result is ready: room for its size bytes, in the memory of what started the job,
+// where the thread is until zs_job_finished (the compiler copies the result out in between).
+void *zs_job_finish(zs_int size, void (*drop)(void *)) {
+    cjob *j = cur;
+    if (!j || j->finished || finishing) zs_panic_c("a contained job's result was given twice, or outside it");
+    outcome *o = j->out;
+    o->result = aligned_alloc(64, ((size_t)(size > 0 ? size : 1) + 63) & ~(size_t)63);
+    if (!o->result) zs_fatal("out of memory");
+    o->drop = drop;
+    finishing = j;
+    cur = j->parent;
+    return o->result;
+}
+
+void zs_job_finished(void) {
+    cjob *j = finishing;
+    finishing = NULL;
+    j->finished = true;
+    cur = j;
+}
+
+bool zs_job_failed(outcome *o) { return o->failed; }
+
+// the panic's message, in the caller's memory; the outcome goes
+zs_str *zs_job_message(outcome *o) {
+    zs_str *s = str_of(o->message ? o->message : "", (zs_int)o->mlen);
+    free(o->message);
+    free(o);
+    return s;
+}
+
+// the result's bytes, which the caller moves out before zs_job_close
+void *zs_job_result(outcome *o) { return o->result; }
+
+void zs_job_close(outcome *o) {
+    obj_free(o->result);
+    free(o);
+}
+
+// Contained.task: an outcome for a job to come
+void *zs_job_open(void) {
+    outcome *o = calloc(1, sizeof *o);
+    if (!o) zs_fatal("out of memory");
+    return o;
+}
+
+// starts it: body (marked shared, the job's until it ends) runs in a new job, and starts the
+// task there; done runs here, outside it, once the job has ended
+void zs_job_start(outcome *o, void *body, void *done) {
+    cjob *j = job_new(true);
+    j->out = o;
+    o->job = j;
+    o->done = cb_take(done);
+    cjob **list = j->parent ? &j->parent->children : &roots;
+    j->next = *list;
+    if (*list) (*list)->prev = j;
+    *list = j;
+    job_hold(j, body, zs_clo_drop);
+    job_enter(j, zs_clo_call, body);
+}
+
+// in a task's job: f cancels its task (run in the job when what waits for it is cancelled)
+void zs_job_on_cancel(void *f) {
+    if (!cur || !cur->task) zs_panic_c("Contained: not in a task's job");
+    cur->cancel = f;
+}
+
+// what waits for the job was cancelled: its task is cancelled in it (its `use` values disposed,
+// its waits undone), and it ends, with nothing told
+void zs_job_cancel(outcome *o) {
+    cjob *j = o->job;
+    for (cjob *c = cur; c; c = c->parent)
+        if (c == j) zs_panic_c("a contained task was cancelled from inside its own job");
+    j->cancelling = true;
+    if (j->cancel) job_enter(j, zs_clo_call, j->cancel);
+    job_kill(j);
+}
+#endif
 
 // ---- CPU features ([<Multiversion>]): whether the CPU has each of the features, named as LLVM
 // names them and separated by commas ("avx2,fma"). A name it doesn't know is a feature it

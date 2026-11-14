@@ -458,6 +458,10 @@ the syntax reserves and the compiler's known deviations.
       `Throw`. And a panic has no boundary below the process: a server's one bad request ends
       it. A task or a job as a panic's boundary would need unwinding, which decision 5
       declined; a supervisor process is today's answer, and the guide should say so.
+      *Built without unwinding
+      ([proposal 0035](docs/proposals/0035-contained-jobs.md), decision 86):* `Contained.run`
+      and `Contained.task` run a `share<…>` function with memory of its own, and a panic in it
+      is its caller's `Error`.
   11. **No named handler,** and an operation generic only in
       its result ([proposal 0002](docs/proposals/0002-effect-handlers.md)'s unresolved
       questions). *(Several effects in one `handle` are done, in 0.7.1: sugar over nesting,

@@ -1,0 +1,4 @@
+tests/contained/err_share.zs:6:11: error: function crossing threads: Buffer<int> can't be shared between threads (it isn't Share)
+tests/contained/err_share.zs:10:5: error: this function crosses threads, but it captures 'count' : ref<int>, which can't be shared between threads; share state through Atomic, Mutex or Channel, or return a result per job
+tests/contained/err_share.zs:14:11: error: function crossing threads: ref<int> can't be shared between threads (it isn't Share)
+3 errors

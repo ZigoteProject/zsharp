@@ -181,6 +181,20 @@ for t in tests/parallel/basics tests/parallel/anythread tests/parallel/spsc test
   else echo "FAIL $t.zs under ThreadSanitizer"; head -40 "$tmp/tsan.log"; fail=1; fi
 done
 
+# contained jobs (0035) under the sanitizers. A panic there isn't the program's end, so what a
+# failed job leaves behind is a leak like any other (the loop above counts none for a program
+# that prints a panic); each of a job's objects is malloc's own, so a use of one after its job
+# has ended is seen; and under ThreadSanitizer the jobs on the pool's threads race on nothing
+for t in tests/contained/basics tests/contained/c tests/contained/copies tests/contained/crossings tests/contained/parallel tests/contained/resources tests/contained/server tests/contained/task; do
+  [ $windows = 1 ] && { echo "skip $t.zs under the sanitizers (none for mingw-w64)"; continue; }
+  for how in --sanitize --sanitize=thread; do
+    if bin/zs build $t.zs -o "$tmp/job" $how 2>"$tmp/job.log" \
+       && actual=$(ASAN_OPTIONS=exitcode=99:detect_leaks=1 UBSAN_OPTIONS=exitcode=99 timeout 300 "$tmp/job" 2>&1 </dev/null) \
+       && [ "$actual" = "$(cat $t.out)" ]; then echo "ok   $t.zs with $how"
+    else echo "FAIL $t.zs with $how"; cat "$tmp/job.log"; echo "${actual:-}" | head -40; fail=1; fi
+  done
+done
+
 # the pool's one worker going to sleep as jobs are forked: woken for each one (a wake-up lost
 # hangs it, with nothing polling the deques to find the job)
 if bin/zs build --strict tests/parallel/wake.zs -o "$tmp/wake" 2>"$tmp/wake.log" \

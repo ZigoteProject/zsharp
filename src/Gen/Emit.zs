@@ -189,7 +189,11 @@ type Options =
     /// from zs_alloc_wide, aligned for the vector
     wideVectors: bool
     /// the program runs code on more than one thread: shared objects' counts change atomically
-    threaded: bool }
+    threaded: bool
+    /// the program has contained jobs (0035): a shared object's count goes through the runtime
+    /// (which leaves it alone in a job), a value leaving a job is copied out of its memory, and
+    /// one arriving in a job is held by it
+    contained: bool }
 
 /// Whether the target's machine word is 32 bits: a Cortex-M's (thumb…) or WebAssembly's (wasm32).
 let word32 (target: string) : bool = Types.Repr.wordBytes target = 4
@@ -238,6 +242,11 @@ let private runtimeList : list<string * (string * string * list<string>)> =
     ("Loop.spawn", ("zs_loop_spawn", "void", [ "ptr!" ]))
     ("Loop.expect", ("zs_loop_expect", "i_W", [ "ptr!" ]))
     ("Loop.fulfill", ("zs_loop_fulfill", "void", [ "i_W" ]))
+    ("Contained.open", ("zs_job_open", "ptr", []))
+    ("Contained.start", ("zs_job_start", "void", [ "ptr"; "ptr!"; "ptr!" ]))
+    ("Contained.message", ("zs_job_message", "ptr", [ "ptr" ]))
+    ("Contained.onCancel", ("zs_job_on_cancel", "void", [ "ptr!" ]))
+    ("Contained.cancel", ("zs_job_cancel", "void", [ "ptr" ]))
     ("Loop.irqWait", ("zs_loop_irq_wait", "void", [ "i_W"; "ptr!" ]))
     ("Loop.irqUnwait", ("zs_loop_irq_unwait", "void", [ "i_W" ]))
     ("Signal.new", ("zs_signal_new", "i_W", []))

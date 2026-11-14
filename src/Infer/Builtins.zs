@@ -220,6 +220,19 @@ let builtins : Map<string, Builtin> =
       b "Native.parFork" "par.fork" [ kAny ] (f (TCon("share", [ f tUnit a ])) tCPtr) 1
       b "Native.parJoin" "par.join" [ kAny ] (f tCPtr a) 1
       b "Native.parWorkers" "par.workers" [] (f tUnit tInt) 1
+      // contained jobs (0035, Std's Contained): a function run in memory of its own, whose
+      // panic ends it and not the program. A job's outcome is the runtime's, read once
+      b "Native.containedRun" "contained.run" [ kShare ] (f (TCon("share", [ f tUnit a ])) tCPtr) 1
+      b "Native.containedFailed" "contained.failed" [] (f tCPtr tBool) 1
+      b "Native.containedMessage" "Contained.message" [] (f tCPtr tStr) 1
+      b "Native.containedTake" "contained.take" [ kShare ] (f tCPtr a) 1
+      // a task's job: started with what to run once it has ended, and its task's result given
+      // and its cancellation named from inside it
+      b "Native.containedOpen" "Contained.open" [] (f tUnit tCPtr) 1
+      b "Native.containedStart" "Contained.start" [] (f tCPtr (f (TCon("share", [ f tUnit tUnit ])) (f (f tUnit tUnit) tUnit))) 3
+      b "Native.containedFinish" "contained.finish" [ kShare ] (f a tUnit) 1
+      b "Native.containedOnCancel" "Contained.onCancel" [] (f (f tUnit tUnit) tUnit) 1
+      b "Native.containedCancel" "Contained.cancel" [] (f tCPtr tUnit) 1
       // what threads share (Std's Threading): an Atomic holds a number, bool or char, a Mutex
       // and a Channel any value that can be shared
       b "Threading.Atomic.make" "atomic.make" [ kAtomic ] (f a atomic) 1

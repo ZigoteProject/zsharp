@@ -80,6 +80,8 @@ HTTP/1.1 204 No Content
 HTTP/1.1 404 Not Found no such note
 HTTP/1.1 200 OK [{"id":2,"text":"it's \"quoted\"; drop table notes"}]
 HTTP/1.1 404 Not Found not found
+HTTP/1.1 500 Internal Server Error a bug in this request
+HTTP/1.1 200 OK [{"id":2,"text":"it's \"quoted\"; drop table notes"}]
 == examples/echo/http
 HTTP/1.1 200 OK hello, echo
 HTTP/1.1 200 OK GET /some/path

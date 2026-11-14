@@ -1,0 +1,10 @@
+row 0 [a; t0] Dot Some after 0
+row 1 [a; t1] Circle 1.5 Some after 1
+row 2 [a; t2] Poly [(2, 2); (0, 0)] None
+and a string 7
+603 6
+1000000 499999500000 100000 9
+an array apart costs 2 allocations more: its own and its copy's
+giving back a list of 1000 strings cost 2 allocations: Ok 1000
+panic: nearly
+Error { message = nearly }

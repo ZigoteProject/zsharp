@@ -278,7 +278,7 @@ let private call (name: string) (args: Json) (trusted: bool) : result<string, st
           Error(formatErrors sources errors)
         else
           match Build.Compile.generate (options file "") (Build.Check.programOf c) false with
-          | Ok(_, ir, _, _) -> Ok(limit 100000 ir)
+          | Ok(_, ir, _, _, _) -> Ok(limit 100000 ir)
           | Error(Build.Compile.InPass e) -> Error $"{Diag.Render.path file}:{e.line}: {e.message}"
           | Error(Build.Compile.InTool m) -> Error m
   else if name = "format" then

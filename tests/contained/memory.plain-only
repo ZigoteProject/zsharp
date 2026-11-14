@@ -1,0 +1,1 @@
+it measures the job's blocks, which a sanitizer's or valgrind's build doesn't have

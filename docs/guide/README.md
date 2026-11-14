@@ -15,7 +15,7 @@ file are shown as written.
 4. [Functions](04-functions.md): closures, pipelines, generics, members and named arguments, tuple parameters
 5. [Collections](05-collections.md): lists (list expressions and ranges), arrays and Buffers, spans and slices, fixed-size arrays, Map, Set, HashMap
 6. [Traits](06-traits.md): operators, equality and printing, impls, `dyn` values, derives
-7. [Errors](07-errors.md): results and `?`, panics, overflow (wrapping, checked and saturating arithmetic)
+7. [Errors](07-errors.md): results and `?`, panics, a panic contained in a job, overflow (wrapping, checked and saturating arithmetic)
 8. [Programs](08-programs.md): modules, projects and dependencies (`zs add`, vendoring, workspaces), files and processes, tests and properties, units of measure
 9. [C interop](09-c-interop.md): `extern`, `import c`, structs by value, callbacks, pointers and `unsafe`, exporting to C (handles, shared libraries), cross-compiling
 10. [Tools](10-tools.md): the `zs` command line, formatting, docs, properties and fuzzing, debugging, Zed and other editors

@@ -328,3 +328,79 @@ atomic:
 keep:
   ret i1 false
 }"""
+
+/// The runtime's functions for contained jobs (0035, runtime/rt.c with ZS_CONTAINED): declared
+/// in a program that has them, so one without is the text it was.
+let containedDeclares = """declare ptr @zs_par_fork_in(ptr, ptr, i_W, ptr)
+declare void @zs_dup_shared(ptr)
+declare zeroext i1 @zs_release_shared(ptr)
+declare ptr @zs_job_out()
+declare void @zs_job_back(ptr)
+declare zeroext i1 @zs_job_in()
+declare void @zs_job_hold(ptr, ptr)
+declare void @zs_job_made(ptr, ptr)
+declare ptr @zs_copy_seen(ptr)
+declare void @zs_copy_note(ptr, ptr)
+declare void @zs_copy_done()
+declare void @zs_job_fd(i_W)
+declare void @zs_job_callback()
+declare void @zs_job_lock(ptr)
+declare void @zs_job_unlock(ptr)
+declare ptr @zs_job_run(ptr, ptr)
+declare ptr @zs_job_finish(i_W, ptr)
+declare void @zs_job_finished()
+declare zeroext i1 @zs_job_failed(ptr)
+declare ptr @zs_job_result(ptr)
+declare void @zs_job_close(ptr)
+declare ptr @zs_job_open()
+declare void @zs_job_start(ptr, ptr, ptr)
+declare ptr @zs_job_message(ptr)
+declare void @zs_job_on_cancel(ptr)
+declare void @zs_job_cancel(ptr)
+"""
+
+/// zs.dup and zs.release in a program with contained jobs (0035), in place of the threaded ones:
+/// a shared object's count is the runtime's to change, which doesn't in a job (a job counts
+/// nothing outside its memory) nor for an object of a job's own.
+let containedDup = """define private void @zs.dup(ptr %p) alwaysinline {
+entry:
+  %rc = load atomic i32, ptr %p monotonic, align 4
+  %local = icmp sgt i32 %rc, 0
+  br i1 %local, label %inc, label %other
+inc:
+  %n = add i32 %rc, 1
+  store i32 %n, ptr %p
+  br label %done
+other:
+  %shared = icmp slt i32 %rc, 0
+  br i1 %shared, label %atomic, label %done
+atomic:
+  call void @zs_dup_shared(ptr %p)
+  br label %done
+done:
+  ret void
+}"""
+
+let containedRelease = """define private i1 @zs.release(ptr %p) alwaysinline {
+entry:
+  %rc = load atomic i32, ptr %p monotonic, align 4
+  %last = icmp eq i32 %rc, 1
+  br i1 %last, label %yes, label %no
+yes:
+  ret i1 true
+no:
+  %more = icmp sgt i32 %rc, 1
+  br i1 %more, label %dec, label %other
+dec:
+  %n = sub i32 %rc, 1
+  store i32 %n, ptr %p
+  ret i1 false
+other:
+  %shared = icmp slt i32 %rc, 0
+  br i1 %shared, label %atomic, label %keep
+atomic:
+  %gone = call zeroext i1 @zs_release_shared(ptr %p)
+  ret i1 %gone
+keep:
+  ret i1 false
+}"""

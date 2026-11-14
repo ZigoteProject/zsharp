@@ -199,6 +199,9 @@ let heapPrims : Set<string> = Set.ofList [ "weak.new"; "arena.with" ]
 // on Task.blocking's helper thread, values threads share
 let private threadPrims : Set<string> = Set.ofList [ "par.fork"; "Loop.blocking"; "Loop.spawn"; "atomic.make"; "mutex.make"; "chan.make" ]
 
+/// The primitives of a program with contained jobs (code generation's contained).
+let containedPrims : Set<string> = Set.ofList [ "contained.run"; "Contained.start" ]
+
 // whether C may call the C function's callback on any thread (a callback<share<F>> parameter)
 let private anyThread (externs: Map<string, Core.Ir.ExternSig>) (n: string) : bool =
   let shareCallback (t: Ty) =
@@ -363,7 +366,7 @@ let private readText (path: string) : string =
 
 /// The program's LLVM IR after the passes (and, for --lib, its C header), with the program it's
 /// of (a test build, zs test's, has the file's test entry for main) and whether it runs threads.
-let generate (o: Options.Options) (prog0: Program) (testBuild: bool) : result<Program * string * string * bool, Failure> =
+let generate (o: Options.Options) (prog0: Program) (testBuild: bool) : result<Program * string * string * bool * bool, Failure> =
   let prog = if testBuild then { prog0 with funs = List.filter (fun (f: Core.Ir.FunDef) -> f.name <> "main") prog0.funs } else prog0
   let startupAssert (v: string * string) = String.contains ".$assert" (fst v) || String.startsWith "$assert" (fst v)
   match (if o.isLib then prog.values else []) with
@@ -387,7 +390,9 @@ let generate (o: Options.Options) (prog0: Program) (testBuild: bool) : result<Pr
     | Ok(types, funs) ->
       // a library's handles may be used on any thread of its C host
       // an interrupt handler preempts the program as a thread does (0012)
-      let threads = threaded prog.externs funs || (o.isLib && exportsHandles prog) || List.exists (fun (e: Core.Ir.Export) -> e.interrupt) prog.exports
+      // a contained job's outside is marked shared, as another thread's data is
+      let contained = usesPrim containedPrims funs
+      let threads = contained || threaded prog.externs funs || (o.isLib && exportsHandles prog) || List.exists (fun (e: Core.Ir.Export) -> e.interrupt) prog.exports
       let level = Options.optLevel o
       let gopts : Gen.Emit.Options =
         { debugInfo = o.debugInfo
@@ -403,10 +408,11 @@ let generate (o: Options.Options) (prog0: Program) (testBuild: bool) : result<Pr
           targets = prog.targets
           cpu = o.cpu
           wideVectors = wideVectors types funs
-          threaded = threads }
+          threaded = threads
+          contained = contained }
       match timed o.time "LLVM IR" (fun () -> Gen.Module.compile gopts types prog.externs prog.exports prog.tests prog.values prog.clayouts prog.placements None funs) with
       | Error(line, msg) -> Error(InPass { file = ""; line = line; message = msg })
-      | Ok(ir, header) -> Ok(prog, ir, header, threads)
+      | Ok(ir, header) -> Ok(prog, ir, header, threads, contained)
 
 /// The program built (one module): its LLVM IR (kept as out.ll with --emit-llvm), and clang with
 /// the runtime, for the host, another target (zig cc links), a microcontroller, or as a library
@@ -414,7 +420,7 @@ let generate (o: Options.Options) (prog0: Program) (testBuild: bool) : result<Pr
 let make (o: Options.Options) (prog0: Program) (linked: Modules.Linked) (testBuild: bool) : result<unit, Failure> =
   match generate o prog0 testBuild with
   | Error e -> Error e
-  | Ok(prog, ir, header, threads) ->
+  | Ok(prog, ir, header, threads, contained) ->
     let level = Options.optLevel o
     let scratch = if o.emitLlvm then "" else Result.defaultValue "" (Directory.createTemp "zs-build-")
     let ll = if o.emitLlvm then Path.changeExtension o.out ".ll" else Path.combine scratch "program.ll"
@@ -428,7 +434,7 @@ let make (o: Options.Options) (prog0: Program) (linked: Modules.Linked) (testBui
       // of threads at once (0008) though it gives no handles. ZS_NO_POOL: objects from malloc,
       // one by one, for valgrind (a sanitized build has that too)
       let runtimeThreads = threads || (o.isLib && Option.isNone o.mcu)
-      let defines = List.append (if runtimeThreads then [ "-DZS_THREADS" ] else []) (if Option.isSome (Environment.getVariable "ZS_NO_POOL") then [ "-DZS_NO_POOL" ] else [])
+      let defines = List.concat [ (if runtimeThreads then [ "-DZS_THREADS" ] else []); (if contained then [ "-DZS_CONTAINED" ] else []); (if Option.isSome (Environment.getVariable "ZS_NO_POOL") then [ "-DZS_NO_POOL" ] else []) ]
       let san =
         // zs fuzz: libFuzzer's coverage instrumentation and its runtime without a main (the test
         // binary's runner drives it), with the sanitizers; a panic aborts (ZS_FUZZ)

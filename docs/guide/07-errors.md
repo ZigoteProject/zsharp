@@ -61,7 +61,8 @@ Some A.L. None
 ## Panics
 
 A panic prints a message to standard error and ends the program with exit status 134.
-- **No unwinding:** nothing is cleaned up, and a panic can't be caught.
+- **No unwinding:** nothing is cleaned up, and a panic can't be caught. A
+  [contained job](#containing-a-panic) is the one place it ends less than the program.
 - **When to use one:** for bugs, not for errors a caller should handle.
 
 **What panics:**
@@ -92,6 +93,109 @@ panic: List.head: empty list
 **In a C program:** a panic in a Z# library ends the host process too. The host can set a hook that runs first ([C interop](09-c-interop.md)).
 
 **Backtraces:** a panic also prints a backtrace. On Linux it names the Z# functions the panic came through, an `at` line each, the program's `main` last (a function inlined into another is part of it). A release build's is shorter: often only the function the panic is in, and sometimes no `at` line at all. Set `ZS_BACKTRACE=0` to leave it out, as these examples do. In a test run with `zs test`, a panic fails that one test only ([Programs](08-programs.md#tests)).
+
+## Containing a panic
+
+A panic is a bug, and a program that does many independent things (a server's requests, a
+tool's files) shouldn't lose them all to a bug in one. `Contained.run f` runs `f` as a
+**contained job**: `Ok` with its result, or `Error` with the message of the panic that ended
+it. The program goes on.
+
+```zsharp
+type Order = { item: string; quantity: int }
+
+// a bug: there's no price for a pear
+let price (o: Order) : int =
+  let prices = [ ("apple", 3); ("plum", 5) ]
+  let (_, each) = List.find (fun (name, _) -> name = o.item) prices
+  each * o.quantity
+
+let main () =
+  let orders = [ { item = "apple"; quantity = 2 }; { item = "pear"; quantity = 1 }; { item = "plum"; quantity = 4 } ]
+  for o in orders do
+    match Contained.run (fun () -> price o) with
+    | Ok total -> println $"{o.item}: {total}"
+    | Error bug -> println $"{o.item}: failed ({bug.message})"
+  0
+```
+
+```text
+apple: 6
+panic: List.find: no element satisfies the predicate
+pear: failed (List.find: no element satisfies the predicate)
+plum: 20
+```
+
+- **It's still a panic:** the message and backtrace are printed, as for any other. A contained
+  job is for a supervisor, which reports the failure and carries on. Errors a caller handles
+  are still `result` values.
+- **Nothing unwinds,** and nothing needs to. A job's function is a `share<…>`
+  ([Parallelism](14-parallel.md#what-can-cross-to-another-thread)): what it captures must be
+  Share, as its result must. So the cells it changes are ones it made, and what it shares with
+  the rest of the program is immutable, or an `Atomic`, a `Mutex` or a `Channel`. A panic
+  leaves nothing half changed that anything else can reach.
+- **A job has memory of its own,** which goes at once when it ends. Its result is copied out of
+  it (what the caller shared with the job comes back as it was, not as a copy), and so is what
+  it sends on a channel or puts in a mutex. A large result costs its size.
+- **A job's memory only grows** until the job ends: what it drops isn't used again (but for
+  big objects). So a job is a piece of work that ends, a request or a file, not a connection
+  that stays open or a worker that runs all day.
+- **When a job fails,** no `use` in it is disposed. The runtime undoes what it did for the job
+  instead: a `Mutex.update` under way leaves the mutex unlocked with the value it had, and the
+  files, sockets and timers opened in the job are closed.
+
+**Tasks.** `Contained.task` runs a task, and the tasks it waits for on its loop, as one job:
+a panic in any of them is its `Error`, and the other tasks on the loop go on. A server runs
+each request this way:
+
+```zsharp
+// a request's work: it waits, and one request in four finds a bug
+let answer (request: int) : Task<string> =
+  task {
+    do! Task.sleep 1
+    let parts = [| "a"; "b"; "c" |]
+    return $"request {request} got {parts.[request % 4]}"
+  }
+
+// each request is a job: its panic is its own failure
+let serve (request: int) : Task<string> =
+  task {
+    let! r = Contained.task (fun () -> answer request)
+    match r with
+    | Ok reply -> return reply
+    | Error bug -> return $"request {request} failed: {bug.message}"
+  }
+
+let main () =
+  for line in Task.run (Task.all (List.map serve [ 1; 2; 3; 4 ])) do
+    println line
+  0
+```
+
+```text
+panic: index out of bounds
+request 1 got b
+request 2 got c
+request 3 failed: index out of bounds
+request 4 got a
+```
+
+Cancelling a contained task cancels its task as any other: its `use` values are disposed.
+
+**What crosses into a job must be Share,** and that decides how a service is written. A
+request's method, path and body are Share; a database connection is a C library's and isn't.
+So the job does the request's own work (what's asked, what the answer is made of) and the
+connection is used outside it, as `examples/service` does.
+
+**Not contained:**
+- a stack overflow and running out of memory, which stop the program;
+- what the job did outside itself before it failed: bytes written, a message sent, a mutex set;
+- what a C library holds for it (a statement, a session), which isn't released;
+- work it started on other threads (`Parallel.both`, `Task.spawn`, `Task.blocking`): that work
+  isn't in the job, and a panic there stops the program.
+
+For those, a process of its own is still the answer, as `zs test` gives every test. Contained
+jobs are for programs on Linux, macOS and Windows, not for a chip or WebAssembly.
 
 ## Overflow
 

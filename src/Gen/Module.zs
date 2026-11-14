@@ -92,10 +92,15 @@ let private unsignedInts : Set<string> = Set.ofList [ "u8"; "u16"; "u32"; "u64" 
 let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string, ExternSig>) (exports: list<Export>) (tests: list<string>) (values: list<string * string>) (clayouts: Set<string>) (placements: Map<string, string * int>) (part: option<Part>) (funs: list<MFun>) : result<string * string, int * string> =
   // one address in the whole program
   let shared = if Option.isSome part then "linkonce_odr hidden" else "private"
-  let pre0 = if opts.threaded then replaceDef (replaceDef Prelude.prelude Prelude.threadedDup) Prelude.threadedRelease else Prelude.prelude
+  let pre0 =
+    if opts.contained then replaceDef (replaceDef Prelude.prelude Prelude.containedDup) Prelude.containedRelease
+    else if opts.threaded then replaceDef (replaceDef Prelude.prelude Prelude.threadedDup) Prelude.threadedRelease
+    else Prelude.prelude
   let pre = String.replace (String.replace pre0 "@zs.none = private constant" $"@zs.none = {shared} constant") "@zs.noelems = private constant" $"@zs.noelems = {shared} constant"
   let top = Buffer.empty
   Buffer.push pre top
+  if opts.contained then
+    Buffer.push Prelude.containedDeclares top
   let fnTable = Map.ofList (List.map (fun (f: MFun) -> (f.name, f)) funs)
   let mainFile =
     match List.tryFind (fun (f: MFun) -> f.name = "main") funs with

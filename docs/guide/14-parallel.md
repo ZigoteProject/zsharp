@@ -30,7 +30,9 @@ let main () =
 
 **Panics:** a panic on any thread stops the whole program, with one report even when several
 threads panic at once. On Linux and macOS, a stack overflow on one of the pool's threads, or on
-a task's loop, is such a panic: `panic: stack overflow (recursion too deep)`.
+a task's loop, is such a panic: `panic: stack overflow (recursion too deep)`. A panic in a
+[contained job](07-errors.md#containing-a-panic) ends that job only, on whichever thread it runs;
+the work a job forks onto the pool isn't in the job.
 
 ## What can cross to another thread
 

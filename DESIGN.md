@@ -116,6 +116,7 @@ let sumTo n =                            // imperative code is fine; mutation st
 - **Panics:** for bugs, not errors a caller handles. These all panic: an out-of-bounds index, division by zero, integer overflow, a failed `assert`, an explicit `panic`, and on Linux, macOS and a chip a program's stack overflow (`panic: stack overflow (recursion too deep)`; a library leaves its C host's signals alone; a chip's stack is at the bottom of RAM, §10).
   - A panic prints a message (and a backtrace where the C library supports it: on Linux with the Z# functions' names, read from the executable's symbol table; `ZS_BACKTRACE=0` leaves it out), then stops the program at once: no unwinding, no cleanup, exit status 134, no core dump. `ZS_ABORT=1` makes it a real `abort()` for a debugger.
   - Panics can't be caught. So there are no landing pads, and nothing unwinds through C frames.
+  - One boundary below the process: a **contained job** (§7.2). `Contained.run` runs a `share<…>` function with memory of its own, and a panic in it ends the job, whose caller gets `Error` with the message. Still nothing unwinds: the thread jumps to the job's entry, and the job's memory goes whole.
   - In a C program that uses a Z# library, a panic ends the host process too. `zs_set_panic_hook` lets the host log, flush or save its state first (§11).
 - **Strings:** `$"x = {p.x}"` interpolation, where any expression with `Show` can go in a hole. `+` joins strings. A string can span lines (its line breaks are part of it), and `"""…"""` is raw: quotes and backslashes stay as written. `b"Content-Length: "` is a byte string: the literal's bytes as a `span<u8>` of its constant, with nothing copied or made at startup.
 - **Modules:** one file is one module, with `open`, qualified names and `private`. `module Name` on the first line renames it.
@@ -377,6 +378,7 @@ before it. Mutable cells can: a `ref` or `Buffer` holding a value that points ba
 **Escape hatches:** `Arena.with (fun () -> …)` for bulk allocation that's freed at once, and raw
 `ptr<'a>` inside `unsafe` expressions (§11).
 - **Arenas:** what the function allocates comes from the arena's 64 KB blocks, bumped through, one malloc each (on a chip, blocks of its heap: an eighth of it, 4 KB at most). An object dying frees nothing, and the blocks go together when the arena's last object has: when the function returns, or later if something it made lives on. So an arena can't be misused into a dangling pointer, and needs no escape analysis or annotations. Objects in an arena are counted as any others; only their memory is the arena's.
+  - **A contained job's memory** (§7.2) is an arena that doesn't wait for its last object: it goes when the job ends, whatever is live in it, because nothing outside the job holds a pointer into it. `Arena.with` inside a job adds nothing.
 
 ### 5.3 What code without `unsafe` guarantees
 
@@ -520,6 +522,32 @@ Written down before the optimizer was tuned (phase 5), so that phase 7 didn't un
 - **Not chosen:**
   - **Atomic counts everywhere,** as in Swift: every count pays for the rare shared value.
   - **Copying at the crossing,** as in Erlang, or allowing only unique values to cross: a parallel map over one large shared tree, the common case, needs sharing.
+
+### 7.2 Contained jobs
+
+A panic is a bug, and a bug in one request shouldn't end the others
+([proposal 0035](docs/proposals/0035-contained-jobs.md), decision 86). `Contained.run f` runs
+`f` as a **contained job**: `Ok` its result, or `Error` with the message of the panic that ended
+it. `Contained.task` does the same for a task and the tasks it waits for on its loop.
+
+```fsharp
+Contained.run  : share<unit -> 'a> -> result<'a, Panic>              // 'a is Share
+Contained.task : share<unit -> Task<'a>> -> Task<result<'a, Panic>>
+```
+
+- **No unwinding, still.** Unwinding puts a program's state right on the way out. A job has none to put right: its function is a `share<F>`, so the cells it writes are ones it made, and what it shares with the rest is immutable or an `Atomic`, a `Mutex` or a `Channel`, whose every change is whole. A panic prints as any other, then the thread jumps to the job's entry (registers only), and the job's memory goes.
+- **One rule keeps a job's memory separable:** *a job owns no count outside its memory, and nothing outside holds a pointer into it.*
+  - **Its memory:** blocks of its own, bumped through, and the system allocator's for big objects, which the job lists. An object's header says it's a job's (the byte the pool uses, §5.2), so the runtime and compiled code can tell without a table.
+  - **In:** the function crosses as at any crossing of §7.1 (marked shared), and the job holds it. In a job a shared object's count doesn't change: a `dup` or a drop of one asks the runtime, which leaves it alone on a thread that's in a job. What keeps those objects alive is the job, which holds each value that came in until it ends.
+  - **Arriving later:** what `Mutex.get` and `Mutex.update` give, a channel's message, a pool job's result, a handle's value from C: marked shared and held by the job. A `Mutex`, a `Channel` or an `Atomic` the job makes is allocated outside its memory (others may keep it) and held the same way.
+  - **Out:** a value leaving a job is copied out of its memory by a function per type, as the marking is: the job's result (into its caller's memory), a channel's message, what goes into a mutex, the function given to `Parallel.*`, `Task.spawn` or `Task.blocking`, a Share value's handle for C. The job's objects are copied, the sharing between them kept; an object from outside is referred to, with a count for the copy. So what the caller shared with a job comes back as the caller's own object, not a copy.
+  - **The end,** by returning or by a panic: the job's memory goes, then what it held is given up. A job in a job hands what it held to the outer one when it returns, since its result may refer to it.
+- **What a failure undoes.** No `use` is disposed and no count is dropped on the way, so the runtime undoes what it did for the job: a mutex held by `Mutex.update` is unlocked, its value the one before (the update stores when its function returns: nothing to poison); the descriptors the runtime opened for the job (files, sockets, pipes) are closed; its waits and timers leave the event loop; its weak references leave the table; a thread's handle C still holds is emptied (a use of it panics); a pool job it forked and hadn't joined is taken back unrun, or left to the thread running it, which drops its result.
+- **Tasks.** A callback the event loop holds is a closure, and a closure made in a job is in the job's memory: the loop finds its job from its address, runs it there (the job's memory, its entry for a panic), and takes it out when the job ends. A panic in any resume ends the job, and what waited for it outside gets `Error`. Cancelling it cancels its task inside the job first, so `use` values are disposed as in any cancelled task.
+- **Not contained:** a stack overflow and running out of memory stop the program, as do the runtime's own failures (a thread that can't start). What a C library holds for the job isn't closed, and a job can't give C a `callback<share<F>>` (C may keep it past the job: a panic). What already happened outside stays happened. Work forked onto other threads isn't in the job: it runs outside every job, and its own panic stops the program.
+- **No handlers from outside:** a `share<F>` performs no effect its caller handles (§6.1), so a job's handlers are installed in it.
+- **What it costs a program without one:** nothing. The runtime's part is compiled in only for a program that uses `Contained`, as its threads' part is; such a program counts shared objects through the runtime, and tests one thread-local at each place a value crosses.
+- **Where:** Linux, macOS and Windows. Not a chip (a firmware resets) and not WebAssembly: `Contained` is in `Std`.
 
 ## 8. SIMD
 
@@ -769,7 +797,7 @@ checker, so tools can't drift from the compiler.
 | 2 | Memory | Perceus RC, no GC; borrowing, reuse, moves | decided |
 | 3 | `int` width | the machine word (64-bit; 32 on Cortex-M); `i64` always 64-bit | decided (changed for microcontrollers: 64-bit `int` cost 1.5–2× in array loops there) |
 | 4 | Integer overflow | traps in every build; explicit wrapping operations and `[<Wrapping>]` functions; division by zero traps | decided |
-| 5 | Panics | message (+ backtrace), exit 134, no unwinding, no core dump, can't be caught; a C host can set a hook that runs first (`zs_set_panic_hook`) | decided |
+| 5 | Panics | message (+ backtrace), exit 134, no unwinding, no core dump, can't be caught, except by a contained job's caller (decision 86); a C host can set a hook that runs first (`zs_set_panic_hook`) | decided |
 | 6 | Unreachable match case | an error (F# warns) | decided |
 | 7 | Array semantics | copy-on-write values; `Buffer<'a>` for shared mutation | decided |
 | 8 | Union representation | plain values when non-recursive with ≤ 4 non-heap fields (enums a byte, one case with fields no tag: decision 66); boxed otherwise, with a tag only when several cases have fields, cases without fields as static cells, and `option`'s shape over a pointer as the pointer itself | decided |
@@ -850,5 +878,6 @@ checker, so tools can't drift from the compiler.
 | 83 | Package versions (K2, [0018](docs/proposals/0018-packages.md) item 2) | `version = "1.2"` on a git dependency takes its tags `v1.2.3`, at least 1.2.0 below 2.0.0, by minimal version selection (Go's: each package gets the highest minimum asked for it, through the manifests of the releases met); `zs.lock` records the release and commit; a major of 2 or more is another package under its own key | decided, built in phase 12 |
 | 84 | Impls across packages (K9) | Rust's orphan rule: an impl written lives in its trait's package or its type's (a derive goes with its type); another implementation for a type that isn't yours is a one-case wrapper, free by decision 66. A hand-written impl applies from where it's checked on, and a use before it is an error naming where to write it | decided, built in phase 12 |
 | 85 | First-party packages ([0032](docs/proposals/0032-first-party-packages.md)) | `packages/sqlite`, `packages/tls` and `packages/http` wrap SQLite, Mbed TLS and llhttp, each vendored unmodified with its release and hashes recorded and checked by the suite, under a Z# API with no `unsafe` in it but what's marked `[<Unsafe>]`. A handle is closed by `use`, is an error after its close (never a freed pointer) and stays on its thread. Values reach SQL only by being bound; a TLS client always verifies; a server's limits are on by default. A body is whole unless a server asks for requests in pieces (`streamRequests`) or a handler answers with `Response.stream`. `http` depends on `tls` | approved as built, 2026-11-12; the client stays a small one over llhttp until a program needs libcurl's rest, and the packages stay in this repository until the index gives them names |
+| 86 | Contained jobs ([0035](docs/proposals/0035-contained-jobs.md)) | `Contained.run : share<unit -> 'a> -> result<'a, Panic>` and `Contained.task` run a function, or a task and what it waits for, with memory of its own: a panic in it ends the job and not the program, and its caller gets `Error` with the message. Nothing unwinds: the thread jumps to the job's entry. It's sound because a job owns no count outside its memory and nothing outside holds a pointer into it: what comes in is marked shared and held, what goes out is copied (§7.2). A stack overflow, running out of memory, C's resources and work forked to other threads aren't contained. No syntax; nothing in a program that doesn't use it | built as designed but for three things found on the way (the proposal's history has them): an object is a job's by its header, not by its count's sign; a `callback<share<F>>` can't be passed in a job; a thread's handle doesn't cross a job's boundary |
 
 Proposals elaborate decisions 23 ([0002](docs/proposals/0002-effect-handlers.md)), 27 ([0007](docs/proposals/0007-incremental-builds.md), [0018](docs/proposals/0018-packages.md)), 29 ([0022](docs/proposals/0022-targets-macos-windows.md)), 33 ([0019](docs/proposals/0019-syntax-tree.md)), 40 ([0021](docs/proposals/0021-warnings.md)), 42 ([0012](docs/proposals/0012-interrupts-noalloc-intrinsics.md)), 52 ([0003](docs/proposals/0003-spans-and-slices.md)), 53 and 70 ([0004](docs/proposals/0004-c-layout.md)), 54 and 55 ([0005](docs/proposals/0005-ergonomics.md)), 56 ([0001](docs/proposals/0001-type-providers.md)), 63 ([0010](docs/proposals/0010-properties-and-fuzzing.md)), 66 ([0015](docs/proposals/0015-fixed-point.md)), 68 ([0012](docs/proposals/0012-interrupts-noalloc-intrinsics.md)), 69 ([0014](docs/proposals/0014-placement.md)) and 71 ([0016](docs/proposals/0016-async-bare-metal.md)).
