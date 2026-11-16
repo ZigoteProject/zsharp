@@ -2,7 +2,28 @@
 
 ## Unreleased
 
+### Language
+- **Columns** ([proposal 0037](docs/proposals/0037-columns.md), decision 88): `[<Derive(Columns)>]`
+  on a record gives it `columns<'r>`, an array of it stored field by field. `c.[i]` is a row,
+  `c.[i].f` one element of one column, `c.f` the column (an `array`), `for row in c` each row;
+  `c.[i] <- row` and `c.[i].f <- v` write in place in a `let mutable`, under an array's
+  copy-on-write. `Columns.init`, `create`, `ofArray`, `toArray`, `map`, `length`, `get` and `set`
+  are its functions. On 4,000,000 records of 56 bytes (`bench/columns/`), a sum of one field is
+  0.92 ns an element where an array of records takes 1.46, 0.07 with `[<FastMath>]` where the
+  array of records takes 1.59, and a step that updates two fields 0.60 where it takes 3.0: what
+  an array per field by hand gives. `ColumnBuffer` isn't built.
+
 ### Compiler
+- An element of an array in a `let mutable` record's field is written in place
+  (`r.counts.[i] <- v`, `tests/record_array_write.zs`): each write copied the array, the record
+  still holding it. 1,000 such writes made 1,000 arrays and now make none.
+- A `derive` reads its type's layout (decision 87, `tests/derive_layout.zs`): `sizeof<'self>` and
+  `alignof<'self>` are the derived type's (they were a machine word's for every type), and a
+  record's field has `f.offset`, its place in bytes, so a derive can report padding or check a
+  field order. A layout attribute goes beside others in one list: `[<CLayout; Derive(Json)>]`
+  and `[<Bits 32; Derive(Json)>]` were `unknown attribute`. `offsetof` of a `[<Bits>]` record's
+  field is an error now, where it gave a byte offset for a bit: remove it, the field has no
+  address of its own.
 - A main file's own names come before an opened module's, as the specification says (2.4) and
   as a named module's already did: with `open Testing`, a file's own `type Model` or a case
   `Passed` of its own union is the file's, where it was the opened module's and the file didn't
@@ -64,6 +85,12 @@
   results the derived ones gave (`tests/list_long.zs`).
 
 ### Packages
+- `packages/zlayout`: a layout inspector. `[<Derive(Inspect)>]` on a record or union and
+  `Inspect.inspect "Name" value |> printReport 64 true` print its size, each field's offset and
+  padding, a field order that would be smaller, and what fits a cache line; `Heap` estimates
+  what an array, a string or a list's cells ask of the allocator, `Cache` lines for an array, and
+  `Width` the narrowest integer that held a run's samples. It reads the compiler's own facts in
+  the derive (`sizeof<'self>`, `f.offset`), and the suite runs its tests.
 - `packages/sqlite`, the first of [proposal 0032](docs/proposals/0032-first-party-packages.md)'s
   three: SQLite 3.54.1's amalgamation, unmodified, under a Z# API. `Db.connect`, `prepare`,
   `exec`, `query` and `transaction` (rolled back by an `Error` or a throw), `Statement.bind`,

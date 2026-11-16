@@ -365,9 +365,10 @@ if [ "$(tests/iter/loops.sh bin/zs 2>&1)" == "$(cat tests/iter/loops.expected)" 
 else echo "FAIL tests/iter/loops.sh"; diff <(tests/iter/loops.sh bin/zs 2>&1) tests/iter/loops.expected; fail=1; fi
 
 # the first-party packages: their own tests, with their C through [c] (0018 item 4)
-pk=$( (cd packages/xxhash && "$zs" test | tail -1; cd ../libclang && "$zs" test | tail -1) 2>&1 )
+pk=$( (cd packages/xxhash && "$zs" test | tail -1; cd ../libclang && "$zs" test | tail -1; cd ../zlayout && "$zs" test | tail -1) 2>&1 )
 if [ "$pk" = "1 passed, 0 failed
-2 passed, 0 failed" ]; then echo "ok   packages (xxhash, libclang)"
+2 passed, 0 failed
+14 passed, 0 failed" ]; then echo "ok   packages (xxhash, libclang, zlayout)"
 else echo "FAIL packages"; echo "$pk"; fail=1; fi
 
 # git dependencies against a local repository: tags, branches, zs.lock, zs update, re-fetching

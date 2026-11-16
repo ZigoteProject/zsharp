@@ -142,6 +142,10 @@ type User = { name: string; age: int = 18 }
   | `r.fields`, `c.fields` | the fields of the record, or of the value's case |
   | `f.name`, `f.index`, `f.value` | a field's name, position, and value at the field's own type |
   | `f.default` | a record field's default as `Some v`, or `None` |
+  | `f.offset` | a record field's offset in bytes, `offsetof<'self>` of it ([§11.3](11-low-level.md#113-layout)); an error for a union case's field |
+  | `sizeof<'self>`, `alignof<'self>` | the size and alignment of the type derived for |
+  | `Shape.field f x` | field `f` of another value `x`, of a record with the same field |
+  | `Shape.record (fun f -> …)` | the record expected there, from a value per field |
   | `c.name`, `c.index`, `c.count` | the case's name, position and number of fields |
   | `Shape.pair a b` | `Same c`, with `f.left` and `f.right` per field, or `Different (i, j)` |
   | `Shape.kind` | `RecordKind` or `UnionKind`, with no value at hand |

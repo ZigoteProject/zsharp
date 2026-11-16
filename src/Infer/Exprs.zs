@@ -174,6 +174,8 @@ let layoutType (cx: Cx) (kind: string) (st: SType) (field: string) : Ty * int =
     match prune cx.v t with
     | TCon(n, _) ->
       match Map.tryFind n cx.types.Value with
+      | Some { def = RecordDef _ } when Option.isSome (bitsLayout cx n) ->
+        fail $"offsetof is a field's place in bytes, and {shortName n} is a [<Bits>] record: its fields are bits of one integer"
       | Some { def = RecordDef fs } ->
         match List.tryFind (fun (_, (f, _)) -> f = field) (List.mapi (fun i x -> (i, x)) fs) with
         | Some(i, _) -> (t, i)
@@ -190,6 +192,47 @@ let layoutValue (cx: Cx) (kind: string) (t: Ty) (index: int) : option<int> =
   | "sizeof" -> Option.map fst (Types.Repr.layout cx.v types cx.word t)
   | "alignof" -> Option.map snd (Types.Repr.layout cx.v types cx.word t)
   | _ -> Types.Repr.offsetOf cx.v types cx.word t index
+
+// ---- columns (0037): a row type's columns are the record [<Derive(Columns)>] declared for it
+// (Ty.columnsOf), each field an array, and the checker reads c.[i], c.[i].f and their writes as
+// that record's arrays'
+
+/// The type of a place read with nothing checked: a local, or a field (of a field…) of one whose
+/// record is known.
+let rec private pathType (cx: Cx) (env: Map<string, Local>) (e: Expr) : option<Ty> =
+  match e.e with
+  | Var x -> Option.map (fun (l: Local) -> prune cx.v l.ty) (Map.tryFind x env)
+  | Field(r, f) ->
+    match pathType cx env r with
+    | Some(TCon(n, args)) when isRecord cx n -> Option.map (fun (_, t) -> prune cx.v (substGen cx.v args t)) (List.tryFind (fun (g, _) -> g = f) (fieldsOf cx n))
+    | _ -> None
+  | _ -> None
+
+/// A place that holds some row type's columns: their record, its type arguments and its fields.
+let private columnsAt (cx: Cx) (env: Map<string, Local>) (e: Expr) : option<string * list<Ty> * list<string>> =
+  match pathType cx env e with
+  | Some(TCon(n, args)) when isColumns n -> Some(n, args, List.map fst (fieldsOf cx n))
+  | _ -> None
+
+/// The columns of a `let mutable` that holds columns. Such a variable is a `let mutable` per
+/// column (x$f in the scope, and x$ marking x as split), so a write to an element finds its array
+/// in a variable of its own and is in place, as a write to a `let mutable` array is.
+let private splitOf (cx: Cx) (env: Map<string, Local>) (x: string) : option<list<string>> =
+  match (Map.tryFind x env, Map.tryFind (x + "$") env) with
+  | (Some l, Some m) when l.u = m.u ->
+    match prune cx.v l.ty with
+    | TCon(n, _) when isColumns n -> Some(List.map fst (fieldsOf cx n))
+    | _ -> None
+  | _ -> None
+
+let private isColumnOf (fields: option<list<string>>) (f: string) : bool =
+  match fields with
+  | Some fs -> List.contains f fs
+  | None -> false
+
+let private uncaptured (x: string) (l: Local) (depth: int) : unit / Fails =
+  if l.depth < depth then
+    fail $"mutable variable '{x}' cannot be captured by a closure; use a ref cell (let x = ref …; x.Value <- …)"
 
 /// An expression's Core, with the type expected of it, if known.
 let rec inferWith (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>) (e: Expr) : CExpr =
@@ -380,6 +423,14 @@ and inferNode (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>)
   | BoolLit b -> mk (CBool b) tBool
   | StrLit s -> mk (CStr s) (fresh v kStrLit)
   | UnitLit -> mk CUnit tUnit
+  | Var x when Option.isSome (splitOf cx env x) ->
+    // columns in a let mutable: the record of its columns' variables
+    let l = Map.find x env
+    uncaptured x l depth
+    let column (f: string) : FieldValue = { field = f; nameAt = -1; value = plain (Var(x + "$" + f)) }
+    let r = inferWith cx env depth (Some l.ty) (plain (RecordLit(List.map column (Option.get (splitOf cx env x)))))
+    recordKey cx node.at x l.ty false (keyOf cx env x) false
+    r
   | Var x ->
     let r = located cx node.at false (fun () -> value cx env depth x)
     // a generic constant (Map.empty) shows its scheme, as F# does: an instance of its own, not
@@ -557,9 +608,22 @@ and inferNode (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>)
       | Some t -> t
       | None -> fresh v kAny
     let cv = recovered cx fallback value
-    let l = localOf (uniq cx x) cv.ty true depth
-    let cr = inferWith cx (Map.add x l env) depth hint rest
-    mk (CLetMut(l.u, cv, cr)) cr.ty
+    match prune v cv.ty with
+    | TCon(n, args) when isColumns n ->
+      // columns (0037): a let mutable per column, each holding its array alone (splitOf)
+      let whole = localOf (uniq cx x) cv.ty true depth
+      let tmp = uniq cx "$columns"
+      let cols = List.map (fun (f, ft) -> (f, localOf (uniq cx (x + "$" + f)) (substGen v args ft) true depth)) (fieldsOf cx n)
+      let envC = List.fold (fun (m: Map<string, Local>) (f, l) -> Map.add (x + "$" + f) l m) (Map.add (x + "$") whole (Map.add x whole env)) cols
+      let cr = inferWith cx envC depth hint rest
+      let bind (acc: CExpr) (item: int * (string * Local)) : CExpr =
+        let (i, (_, l)) = item
+        mk (CLetMut(l.u, mk (CField(mk (CLocal tmp) cv.ty, i)) l.ty, acc)) acc.ty
+      mk (CLet(tmp, cv, List.fold bind cr (List.rev (List.indexed cols)))) cr.ty
+    | _ ->
+      let l = localOf (uniq cx x) cv.ty true depth
+      let cr = inferWith cx (Map.add x l env) depth hint rest
+      mk (CLetMut(l.u, cv, cr)) cr.ty
   | Assign(lhs, rhs) -> assign cx env depth lhs rhs
   | While(c, b) ->
     let cc = inf c
@@ -584,23 +648,39 @@ and inferNode (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>)
     let cbody = infer cx (Map.add x l env) depth body
     expect cx "body of 'for'" tUnit cbody.ty
     mk (CFor(l.u, ca, cs, cb, cbody)) tUnit
+  | Index(a, i) when Option.isSome (columnsAt cx env a) ->
+    // c.[i] on columns (0037): the row, a field from each column
+    let (n, args, fields) = Option.get (columnsAt cx env a)
+    let at (f: string) : FieldValue = { field = f; nameAt = -1; value = plain (Index(plain (Field(a, f)), plain (Var "$at"))) }
+    let row = plain (Let(plainPat (PIdent("$at", None)), None, i, plain (RecordLit(List.map at fields))))
+    inferWith cx env depth (Some(TCon(columnsRow n, args))) row
   | Index(a, i) ->
     let ca = inf a
-    let ci = inf i
-    let el = fresh v kAny
-    match prune v ca.ty with
-    | TCon("fixed", [ fel; _ ]) ->
-      expect cx "array index" tInt ci.ty
-      mk (CPrim("fixed.get", [ ca; ci ])) fel
-    | t ->
-      let container =
-        match t with
-        | TCon("Buffer", _) -> "Buffer"
-        | TCon("span", _) -> "span"
-        | _ -> "array"
-      expect cx "indexing" (TCon(container, [ el ])) ca.ty
-      expect cx "array index" tInt ci.ty
-      mk (CPrim("array.get", [ ca; ci ])) el
+    let onColumns =
+      match prune v ca.ty with
+      | TCon(n, _) -> isColumns n
+      | _ -> false
+    if onColumns then
+      // columns that aren't a variable's or a field's (a call's result): held, then as above
+      let l = localOf (uniq cx "$columns") ca.ty false depth
+      let c = inferWith cx (Map.add "$columns" l env) depth hint { node with e = Index(plain (Var "$columns"), i) }
+      mk (CLet(l.u, ca, c)) c.ty
+    else
+      let ci = inf i
+      let el = fresh v kAny
+      match prune v ca.ty with
+      | TCon("fixed", [ fel; _ ]) ->
+        expect cx "array index" tInt ci.ty
+        mk (CPrim("fixed.get", [ ca; ci ])) fel
+      | t ->
+        let container =
+          match t with
+          | TCon("Buffer", _) -> "Buffer"
+          | TCon("span", _) -> "span"
+          | _ -> "array"
+        expect cx "indexing" (TCon(container, [ el ])) ca.ty
+        expect cx "array index" tInt ci.ty
+        mk (CPrim("array.get", [ ca; ci ])) el
   | ArrayLit xs ->
     let el = fresh v kAny
     let elHint =
@@ -731,10 +811,16 @@ and inferNode (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>)
         | TCon(n, _) when isRecord cx n -> Some h
         | _ -> None
       | None -> None
+    match Option.map (prune v) recordHint with
+    | Some(TCon(n, _)) when isColumns n && List.exists (fun (f: FieldValue) -> f.nameAt >= 0) fields ->
+      fail "columns aren't written as a record: Columns.ofArray, Columns.init and Columns.create make them, every column one length"
+    | _ -> ()
     recordLit cx env depth recordHint node fields
   | Update(r, fields) ->
     let cr = inf r
     let rname = recordOf cx cr.ty (List.head fields).field
+    if isColumns rname && List.exists (fun (f: FieldValue) -> f.nameAt >= 0) fields then
+      fail "a column isn't replaced whole, since every column is one length: write its elements (c.[i].f <- v)"
     fieldUses cx rname (List.map (fun (f: FieldValue) -> (f.field, f.nameAt)) fields) false
     let (rty, targs) = instType cx rname
     expect cx "record update" rty cr.ty
@@ -756,6 +842,13 @@ and inferNode (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>)
       let old (i: int) (_: Map<string, Local>) = mk (CField(mk (CLocal tmp) cr.ty, i)) (substGen v targs (snd (List.item i defs)))
       let built = buildRecord cx env depth rname targs fields old
       mk (CLet(tmp, cr, built)) built.ty
+  | Field({ e = Var x }, f) when isColumnOf (splitOf cx env x) f ->
+    // a column of columns in a let mutable: its variable
+    uncaptured x (Map.find x env) depth
+    inf (plain (Var(x + "$" + f)))
+  | Field({ e = Index(a, i) }, f) when isColumnOf (Option.map (fun (_, _, fs) -> fs) (columnsAt cx env a)) f ->
+    // c.[i].f: one element of one column, the others not read
+    inf { node with e = Index(plain (Field(a, f)), i) }
   | Field(r, f) ->
     match caseThrough cx env r f with
     | Some c -> inf { node with e = Var c }
@@ -1077,7 +1170,48 @@ and assign (cx: Cx) (env: Map<string, Local>) (depth: int) (lhs: Expr) (rhs: Exp
     match a.e with
     | Var x -> if isMutLocal x then Some x else None
     | _ -> None
+  // a field of a let mutable record, nested or not: p.pos.x <- v is
+  // p <- { p with pos = { p.pos with x = v } }
+  let rec rebuild (place: Expr) (w: Expr) : Expr =
+    match place.e with
+    | Field(q, g) -> rebuild q (plain (Update(q, [ { field = g; nameAt = -1; value = w } ])))
+    | _ -> w
+  let seq (es: list<Expr>) : Expr = List.reduce (fun (x: Expr) (y: Expr) -> plain (Seq(x, y))) es
+  let wholeColumn () : CExpr / Fails =
+    fail "a column isn't replaced whole, since every column is one length: write its elements (c.[i].f <- v)"
   match lhs.e with
+  // columns (0037)
+  | Field({ e = Index(a, i) }, f) when isColumnOf (Option.map (fun (_, _, fs) -> fs) (columnsAt cx env a)) f ->
+    // c.[i].f <- v: an element of one column
+    assign cx env depth (plain (Index(plain (Field(a, f)), i))) rhs
+  | Index({ e = Field({ e = Var x }, f) }, i) when isColumnOf (splitOf cx env x) f ->
+    // … of columns in a let mutable: the column's own variable, written in place
+    assign cx env depth (plain (Index(plain (Var(x + "$" + f)), i))) rhs
+  | Index(a, i) when Option.isSome (columnsAt cx env a) ->
+    // c.[i] <- row: that element of each column
+    let (n, args, fields) = Option.get (columnsAt cx env a)
+    let rowTy = TCon(columnsRow n, args)
+    let ci = inf i
+    expect cx "index" tInt ci.ty
+    let cv = inferHint cx env depth rowTy rhs
+    expect cx "row" rowTy cv.ty
+    let li = localOf (uniq cx "$at") tInt false depth
+    let lr = localOf (uniq cx "$row") rowTy false depth
+    let one (f: string) = plain (Assign(plain (Index(plain (Field(a, f)), plain (Var "$at"))), plain (Field(plain (Var "$row"), f))))
+    let writes = infer cx (Map.add "$row" lr (Map.add "$at" li env)) depth (seq (List.map one fields))
+    mk (CLet(li.u, ci, mk (CLet(lr.u, cv, writes)) tUnit)) tUnit
+  | Var x when Option.isSome (splitOf cx env x) ->
+    // columns in a let mutable, assigned whole: each column's variable
+    let l = Map.find x env
+    uncaptured x l depth
+    let cv = inferHint cx env depth l.ty rhs
+    expect cx $"value assigned to '{x}'" l.ty cv.ty
+    let ln = localOf (uniq cx "$columns") l.ty false depth
+    let one (f: string) = plain (Assign(plain (Var(x + "$" + f)), plain (Field(plain (Var "$columns"), f))))
+    let writes = infer cx (Map.add "$columns" ln env) depth (seq (List.map one (Option.get (splitOf cx env x))))
+    mk (CLet(ln.u, cv, writes)) tUnit
+  | Field({ e = Var x }, f) when isColumnOf (splitOf cx env x) f -> wholeColumn ()
+  | Field(r, f) when isColumnOf (Option.map (fun (_, _, fs) -> fs) (columnsAt cx env r)) f -> wholeColumn ()
   | Var x ->
     match Map.tryFind x env with
     | Some l when l.mut ->
@@ -1122,9 +1256,24 @@ and assign (cx: Cx) (env: Map<string, Local>) (depth: int) (lhs: Expr) (rhs: Exp
       expect cx "array index" tInt ci.ty
       mk (CArraySet(l.u, ci, cv)) tUnit
     | _ when Option.isSome inRecord ->
-      // an element of an array in a let mutable record's field: the record with the array
-      // changed (in place when both are unique)
-      inf (plain (Assign(a, plain (Call(libraryName "Collections.Array.set", [ a; i; rhs ])))))
+      // an element of an array in a let mutable record's field. The array is taken out of the
+      // record for the write (an empty one in its place) and put back after, so the write finds
+      // it held once and is in place: left in the record it's held twice, and each write copied it
+      let root = plain (Var(Option.get inRecord))
+      let ci = inf i
+      expect cx "array index" tInt ci.ty
+      let cv =
+        match pathType cx env a with
+        | Some(TCon("array", [ el ])) -> inferHint cx env depth el rhs
+        | _ -> inf rhs
+      let li = localOf (uniq cx "$at") tInt false depth
+      let lv = localOf (uniq cx "$value") cv.ty false depth
+      let steps =
+        [ plain (Assign(root, rebuild a (plain (ArrayLit []))))
+          plain (Assign(plain (Index(plain (Var "$taken"), plain (Var "$at"))), plain (Var "$value")))
+          plain (Assign(root, rebuild a (plain (Var "$taken")))) ]
+      let write = infer cx (Map.add "$value" lv (Map.add "$at" li env)) depth (plain (LetMut("$taken", None, a, seq steps)))
+      mk (CLet(li.u, ci, mk (CLet(lv.u, cv, write)) tUnit)) tUnit
     | _ ->
       fail "arrays are values: to change one, declare it with `let mutable a = …` and write `a.[i] <- x`, or use `Array.set a i x`, which returns the changed array (Buffer<'a> is the shared mutable alternative)"
   | Field(r, f) ->
@@ -1140,12 +1289,6 @@ and assign (cx: Cx) (env: Map<string, Local>) (depth: int) (lhs: Expr) (rhs: Exp
     else if f = "Value" && isRef (inf r) then
       refSet ()
     else if Option.isSome (mutableRoot lhs) then
-      // a field of a let mutable record, nested or not: p.pos.x <- v is
-      // p <- { p with pos = { p.pos with x = v } }
-      let rec rebuild (place: Expr) (w: Expr) : Expr =
-        match place.e with
-        | Field(q, g) -> rebuild q (plain (Update(q, [ { field = g; nameAt = -1; value = w } ])))
-        | _ -> w
       inf (plain (Assign(plain (Var(Option.get (mutableRoot lhs))), rebuild lhs rhs)))
     else
       fail "record fields are immutable: declare the record with `let mutable` to assign one of its fields, or use { r with field = … }"

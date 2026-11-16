@@ -486,6 +486,26 @@ let private explained (context: string) (f: unit -> 'r / <Fails | 'e>) : 'r / <F
   | Fails.fail x, _ -> Fails.fail { x with message = context + ": " + x.message }
   | Fails.report x, k -> k (Fails.report { x with message = context + ": " + x.message })
 
+// [<Derive(Columns)>] (0037): the record of a row type's columns, declared the first time one of
+// the derive's three parts is applied: the row's fields, each an array. It isn't among the records
+// a literal's fields are looked up in, so `{ x = 1.0; y = 2.0 }` stays the row; its equality,
+// ordering and printing aren't derived (an array has none)
+let private declareColumns (cx: Cx) (tname: string) : unit / Fails =
+  let info = Map.find tname cx.types.Value
+  let cols = columnsOf tname
+  match info.def with
+  | RecordDef fs when Option.isNone info.bits ->
+    if not (Map.containsKey cols cx.types.Value) then
+      cx.types.Value <- Map.add cols { npars = info.npars; def = RecordDef(List.map (fun (f, t) -> (f, TCon("array", [ t ]))) fs); bits = None } cx.types.Value
+      cx.recordDefaults.Value <- Map.add cols (List.map (fun _ -> None) fs) cx.recordDefaults.Value
+      match Map.tryFind tname cx.recordScopes.Value with
+      | Some scope -> cx.recordScopes.Value <- Map.add cols scope cx.recordScopes.Value
+      | None -> ()
+      for tr in [ "Eq"; "Ord"; "Hash"; "Show"; "Diff" ] do
+        cx.optOut.Value <- Set.add (tr, cols) cx.optOut.Value
+  | RecordDef _ -> fail $"{shortName tname} is a [<Bits>] record, one integer: an array of it is already as dense as its columns would be"
+  | _ -> fail $"columns are a record's fields, each stored apart, and {shortName tname} is a union"
+
 /// Implements trait `tr` for the types `tnames` (declared together, so they may hold each other)
 /// by expanding `derive tr` for each: every impl is registered before any body is checked. An
 /// error in one says so first (context of the type: "Derive(Json) on Callback").
@@ -525,9 +545,23 @@ let private deriveImpls (cx: Cx) (context: string -> string) (tr: string) (tname
     | CUnionDef _ -> fail $"a C union has no tag to tell its cases apart, so nothing can be derived for {shortName tname}"
     | _ -> ()
     let npars = (Map.find tname cx.types.Value).npars
-    let head = STName(tname, List.init npars (fun i -> STVar $"t{i}"))
-    let defs = List.map (fun (d: Definition) -> { d with dbody = hygienic d.dbody }) (Derive.expand tname head (shapeOf cx tname) (Map.find tr cx.derives.Value))
-    explained (context tname) (fun () -> startImpl cx false tr head [] defs)
+    let vars = List.init npars (fun i -> STVar $"t{i}")
+    let row = STName(tname, vars)
+    // Columns' three parts (0037, lib/core/Columns.zs) are impls for the row and for its columns:
+    // the trait, its head and its other parameter, which the part's code calls 'other
+    let (itrait, head, others) =
+      match tr with
+      | "ColumnsColumnar"
+      | "ColumnsRow"
+      | "ColumnsRows" ->
+        explained $"Derive(Columns) on {shortName tname}" (fun () -> declareColumns cx tname)
+        let cols = STName(columnsOf tname, vars)
+        if tr = "ColumnsRow" then (libraryName "Columns.Row", row, [ cols ])
+        else if tr = "ColumnsColumnar" then (libraryName "Columns.Columnar", cols, [ row ])
+        else (libraryName "Iter", cols, [ row ])
+      | _ -> (tr, row, [])
+    let defs = List.map (fun (d: Definition) -> { d with dbody = hygienic d.dbody }) (Derive.expand tname head (List.tryHead others) (shapeOf cx tname) (Map.find tr cx.derives.Value))
+    explained (context tname) (fun () -> startImpl cx false itrait head others defs)
   let started = List.map (fun (n: string) -> (n, start n)) tnames
   for (tname, st) in started do
     explained (context tname) (fun () -> finishImpl cx st)
@@ -1697,8 +1731,13 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
       | _ -> []
     cx.types.Value <- Map.add q { info with def = CUnionDef cases } cx.types.Value
     cx.clayouts.Value <- Set.add q cx.clayouts.Value
-  | Attrs(attrs, inner) ->
-    declare cx inner
+  | Attrs(all, inner) ->
+    // [<CLayout; Derive(Json)>], [<Bits 32; NoComparison>]: the layout attribute declares the
+    // type, as it does alone, and the others then apply to it
+    let (layout, attrs) = List.partition (fun (a, _) -> List.length all > 1 && (a = "CLayout" || a = "Bits")) all
+    if List.length layout > 1 then
+      fail "a type takes one of [<CLayout>] and [<Bits>], once"
+    declare cx (if List.isEmpty layout then inner else { d with d = Attrs(layout, inner) })
     match inner.d with
     | TypeDecl(name0, _, _, _) ->
       let name = qualify cx name0

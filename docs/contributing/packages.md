@@ -96,6 +96,7 @@ A Rust crate or Zig package built as a static library with a C header is C to Z#
 | `packages/sqlite` | SQLite 3.54.1's amalgamation, vendored and built through `c/shim.c` ([0032](../proposals/0032-first-party-packages.md)) | programs, as a path dependency; `tests/packages/sqlite.sh` |
 | `packages/tls` | Mbed TLS 3.6.7's `library/` and `include/`, vendored, under `c/shim.c` | programs and `packages/http`; `tests/packages/tls.sh` |
 | `packages/http` | llhttp 9.4.3's generated parser, vendored, under `c/shim.c`; depends on `packages/tls` | programs, `examples/service`; `tests/packages/http.sh` |
+| `packages/zlayout` | a layout inspector in Z#, no C: a derive that reports a record's offsets and padding, and estimates of what arrays, strings and lists ask of the heap | programs, as a path dependency; its own tests, which hold its heap model to the runtime's sizes |
 
 Each of the three keeps its library's release, the archive's hash and where it came from in
 `c/VERSION`, and a hash of every vendored file in `c/SHA256SUMS`, which its test checks: a

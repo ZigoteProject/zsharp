@@ -1,0 +1,11 @@
+tests/err_columns.zs:6: error: Derive(Columns) on Shape: columns are a record's fields, each stored apart, and Shape is a union
+tests/err_columns.zs:14: error: columns<Plain> needs Plain to derive its columns: [<Derive(Columns)>] on the record
+tests/err_columns.zs:16: error: columns holds a record's fields, a column each, and int isn't a record
+tests/err_columns.zs:18:35: error: columns aren't written as a record: Columns.ofArray, Columns.init and Columns.create make them, every column one length
+tests/err_columns.zs:20:52: error: a column isn't replaced whole, since every column is one length: write its elements (c.[i].f <- v)
+tests/err_columns.zs:24:3: error: a column isn't replaced whole, since every column is one length: write its elements (c.[i].f <- v)
+tests/err_columns.zs:27:33: error: a slice needs an array, a Buffer, a span or a string, not columns<Point>
+tests/err_columns.zs:29:32: error: operator '=' does not support type columns<Point> (it needs Eq)
+tests/err_columns.zs:33:14: error: mutable variable 'm' cannot be captured by a closure; use a ref cell (let x = ref …; x.Value <- …)
+tests/err_columns.zs:36:41: error: Point has no field or member 'z'
+10 errors

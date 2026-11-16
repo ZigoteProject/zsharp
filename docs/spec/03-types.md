@@ -79,12 +79,25 @@ the library modules of the same names.
 | `fixed<'a, N>` | exactly `N` elements held inline; `N` is an integer literal ≥ 1 | [§11.3](11-low-level.md#113-layout) |
 | `span<'a>` | a window into an array, a string's bytes or a `Buffer` | [§10.2](10-execution.md#102-values-and-cells) |
 | `Buffer<'a>` | a shared, growable, mutable array | §10.2 |
+| `columns<R>` | the rows of a record type `R` that derives `Columns`, stored a field to an array | below |
 | `ref<'a>` | a mutable cell | §10.2 |
 | `weak<'a>` | a reference that does not keep its object alive | [§10.4](10-execution.md#104-lifetime) |
 | `Atomic<'a>`, `Mutex<'a>`, `Channel<'a>`, `Spsc<'a>` | cells made for threads and interrupt handlers | [§10.6](10-execution.md#106-threads-and-share) |
 | `share<F>`, `callback<F>`, `fnptr<F>` | function kinds | [§3.7](#37-function-types) |
 | `ptr<'a>` | a raw pointer | [§11.2](11-low-level.md#112-unsafe) |
 | `dyn Trait` | a value of any type implementing `Trait` | [§7.4](07-traits.md#74-dyn) |
+
+**Columns.** `columns<R>` is written for a record type `R` declared with `[<Derive(Columns)>]`
+([§7.5](07-traits.md#75-derive)); for any other type it is an error, and so is a type variable
+as its argument. It is a value, as an array is, holding for each field `f : F` of `R` a column
+`array<F>`, every column of one length. With `c : columns<R>`: `c.f` is the column; `c.[i]` is
+the record of each column's element `i`; `c.[i].f` is the element `i` of column `f` and reads
+no other column; `c.[i] <- row` and `c.[i].f <- v` are places where `c` is one
+([§5.8](05-expressions.md#58-blocks-and-bindings)), writing those elements under an array's
+copy-on-write. A record literal or `{ c with … }` of a `columns` type and an assignment to a
+whole column are errors. It implements `Iter` (its rows) and has no `Eq`, `Ord`, `Hash` or
+`Show`. The functions of `Columns` take any `columns` type through the traits
+`Columns.Columnar` and `Columns.Row`, which the derive implements.
 
 `fixed` is the only type that takes a number as an argument; there are no type-level numbers
 elsewhere, and the length is not a type variable.

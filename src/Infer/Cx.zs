@@ -1438,6 +1438,18 @@ let rec toTyWith (cx: Cx) (pureArrows: bool) (tparams: option<list<string>>) (st
       | STVar _ when cx.currentModule.Value = Some "Collections.Fixed" -> toTy tparams len
       | _ -> fail "fixed needs a positive number of elements, written as a literal"
     TCon("fixed", [ toTy tparams el; n ])
+  | STName("columns", [ row ]) when not (Map.containsKey "columns" cx.types.Value) ->
+    // columns<Particle> (0037): the record of Particle's columns, which [<Derive(Columns)>] on
+    // Particle declared
+    match prune cx.v (toTy tparams row) with
+    | TCon(n, args) when Map.containsKey (columnsOf n) cx.types.Value -> TCon(columnsOf n, args)
+    | TCon(n, _) when Map.containsKey n cx.types.Value ->
+      match (Map.find n cx.types.Value).def with
+      | RecordDef _ -> fail $"columns<{shortName n}> needs {shortName n} to derive its columns: [<Derive(Columns)>] on the record"
+      | _ -> fail $"columns holds a record's fields, a column each, and {shortName n} is a union"
+    | TVar _
+    | TGen _ -> fail "columns<'a> can't be written for a row type that isn't known: name the record, or leave the annotation out (a function over any columns needs none)"
+    | t -> fail $"columns holds a record's fields, a column each, and {Types.Show.show cx.v t} isn't a record"
   | STName(d, []) when String.length d > 0 && String.byte d 0 >= u8 48 && String.byte d 0 <= u8 57 ->
     fail "only fixed takes a number as a type argument"
   | STName(n, args) ->
