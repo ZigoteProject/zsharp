@@ -45,6 +45,7 @@ proposal describes a change to it, and [ROADMAP.md](../../ROADMAP.md) says when 
 | 0034 | [C calls, registers and CPU features inside `unsafe`](0034-c-calls-in-unsafe.md) | Draft | track G's item 5; a design review |
 | 0035 | [Contained jobs: a panic's boundary inside a program](0035-contained-jobs.md) | Draft | a design review |
 | 0036 | [Snapshots: a value's memory as bytes](0036-snapshots.md) | Draft; builds only if a measurement asks for it | a design review |
+| 0037 | [Tasks and jobs on one runtime](0037-tasks-and-jobs-on-one-runtime.md) | Draft | a design review |
 
 **Status:**
 - **Draft:** written, with its open questions listed.
