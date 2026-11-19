@@ -51,6 +51,16 @@ Everything runs in the dev container (podman), through `./dev`. Don't build on t
   (`./dev src/install.sh build/zs bin`) or rerun the suite.
 - **The suite is long.** While iterating, build and run the one test (`--only`); run the whole
   suite before calling a change done. Its last lines list every failure.
+- **Iterating on `lib/` or `tests/` only:** `./dev ./test.sh --zs build/zs --only <text>` skips
+  rebuilding the compiler (it still reinstalls `bin/` from `build/zs`).
+- **A test is a `tests/**/*.zs` with a sibling `.out` or `.err`;** a `.zs` without one is a module
+  others use. `.err` compares only the error lines, not the source snippets under them. Skips are
+  sibling marker files holding the reason (`.host-only`, `.x86_64-only`, `.posix-only`,
+  `.plain-only`); `.same-ir` names a program that must compile to identical LLVM IR;
+  `.windows.out` overrides `.out` on Windows.
+- **The suite runs with `ZS_LEAKCHECK=1 ZS_BACKTRACE=0 ZS_NO_SERVER=1 ZS_CHECK_IR=1`** and
+  `--strict`: set the same to reproduce a test's output by hand (leaked objects are reported at
+  exit and are part of the output).
 - **`.mcp.json`** starts the compiler's MCP server (`./dev -i bin/zs mcp`) for an agent whose
   client reads it: `check`, `type_at`, `docs`, `guide` instead of guessing from F#.
 
