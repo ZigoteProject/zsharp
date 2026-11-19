@@ -193,7 +193,11 @@ type Options =
     /// the program has contained jobs (0035): a shared object's count goes through the runtime
     /// (which leaves it alone in a job), a value leaving a job is copied out of its memory, and
     /// one arriving in a job is held by it
-    contained: bool }
+    contained: bool
+    /// --sanitize and --sanitize=thread: the attribute on every function (sanitize_address,
+    /// sanitize_thread) without which the sanitizer's pass checks none of its loads and stores;
+    /// "" for none
+    sanitizer: string }
 
 /// Whether the target's machine word is 32 bits: a Cortex-M's (thumb…) or WebAssembly's (wasm32).
 let word32 (target: string) : bool = Types.Repr.wordBytes target = 4

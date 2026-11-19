@@ -409,7 +409,9 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
       cpu = o.cpu
       wideVectors = wideVectors
       threaded = threaded
-      contained = contained }
+      contained = contained
+      // a sanitized build is one module (Make.build), never this
+      sanitizer = "" }
   let stub (a: AbiFun) : MFun / <> =
     { name = a.aname
       pars = List.mapi (fun i t -> ($"a{i}", t)) a.apars

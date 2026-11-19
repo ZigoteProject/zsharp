@@ -72,6 +72,12 @@
 - `zs doc` lists a trait or an effect declared in a module, with its methods, and a module
   declared in a file, with its doc comment: the reference has `ColumnBuffer.Buffered`'s `push`,
   `length` and the rest, and `Option.Builder`, which it left out.
+- `--sanitize` and `--sanitize=thread` check the program's own code, as they said: every function
+  has the sanitizer's attribute, without which LLVM's pass checked the runtime's C and none of
+  Z#'s. A write past a block in `unsafe` code is reported now, and so is a race in it, also under
+  `zs test --stress` (`tests/sanitize.sh`, `tests/ztest/tsan.sh`). An access of no bytes (a unit
+  held in an object) isn't checked: AddressSanitizer took one at an object's end for one past it,
+  and its report crashed.
 - `zs mcp` has two more tools for an agent. `test` runs a file's tests, or the project's, as
   `zs test` does; `guide` gives a chapter of the guide, and without one the chapter on what isn't
   F#, which the server's instructions tell an agent to read first. The guide is installed beside
@@ -87,7 +93,9 @@
 - For work on this repository: `./test.sh --only <text>` runs the programs in `tests/` whose path
   has the text and nothing else; the suite ends with the count of failures and each `FAIL` line
   again; `./dev -i` passes its standard input to the command; `.mcp.json` starts the compiler's
-  MCP server for an agent.
+  MCP server for an agent. The suite's fuzzer (`tests/fuzz.sh`) takes the day's date as its seed,
+  so each day's run breaks other programs; and the pool, tasks and Alt run under `zs test
+  --stress` with ThreadSanitizer.
 
 ### Library
 - **Contained jobs** ([proposal 0035](docs/proposals/0035-contained-jobs.md), decision 86): a

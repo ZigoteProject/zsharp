@@ -168,7 +168,7 @@ let main () =
 ## Checking for races
 
 `zs build --sanitize=thread` builds with ThreadSanitizer, which reports two threads touching the
-same memory without synchronizing. Code without `unsafe` can't race; C code, and C callbacks
-called from other threads, can. `zs test --stress 10m` ([Tools](10-tools.md#the-zs-command))
+same memory without synchronizing. Code without `unsafe` can't race; code in `unsafe`, C code,
+and C callbacks called from other threads, can. `zs test --stress 10m` ([Tools](10-tools.md#the-zs-command))
 runs a file's tests at random on every core, over and over for that long, each run its own
 process, so a failure that one run hides (a race in C code, a timeout under load) shows.

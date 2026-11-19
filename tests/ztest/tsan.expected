@@ -1,0 +1,5 @@
+planted:
+FAIL planted/a byte two threads write
+stress: runs of 1 tests for 2 s, some failed
+the pool, tasks and Alt:
+stress: runs of 5 tests for 10 s, 0 failed

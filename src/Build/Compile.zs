@@ -409,7 +409,8 @@ let generate (o: Options.Options) (prog0: Program) (testBuild: bool) : result<Pr
           cpu = o.cpu
           wideVectors = wideVectors types funs
           threaded = threads
-          contained = contained }
+          contained = contained
+          sanitizer = (if not o.sanitize then "" else if o.threadSanitizer then "sanitize_thread" else "sanitize_address") }
       match timed o.time "LLVM IR" (fun () -> Gen.Module.compile gopts types prog.externs prog.exports prog.tests prog.values prog.clayouts prog.placements None funs) with
       | Error(line, msg) -> Error(InPass { file = ""; line = line; message = msg })
       | Ok(ir, header) -> Ok(prog, ir, header, threads, contained)

@@ -194,6 +194,11 @@ for t in tests/contained/basics tests/contained/c tests/contained/copies tests/c
     else echo "FAIL $t.zs with $how"; cat "$tmp/job.log"; echo "${actual:-}" | head -40; fail=1; fi
   done
 done
+# the sanitizers check Z#'s code too, not only the runtime's: a write past a block in unsafe code
+# is reported, and a unit at an object's end (an access of no bytes) isn't
+if [ $windows = 1 ]; then echo "skip tests/sanitize.sh (no sanitizers for mingw-w64)"
+elif [ "$(tests/sanitize.sh 2>&1)" = "$(cat tests/sanitize.expected)" ]; then echo "ok   tests/sanitize.sh (AddressSanitizer in Z#'s code)"
+else echo "FAIL tests/sanitize.sh"; diff <(tests/sanitize.sh 2>&1) tests/sanitize.expected; fail=1; fi
 
 # the pool's one worker going to sleep as jobs are forked: woken for each one (a wake-up lost
 # hangs it, with nothing polling the deques to find the job)
@@ -286,9 +291,12 @@ else
      && [ "$("$tmp/ulist")" = 20000 ] && [ "$("$tmp/ulets")" = 4999 ] && [ "$("$tmp/uifs")" = 8642 ]; then echo "ok   the compiler with ulimit -s unlimited (its pool threads' stacks)"
   else echo "FAIL the compiler with ulimit -s unlimited"; grep -v '^ *[0-9]* | ' "$tmp/unlimited.log" | head -3; fail=1; fi
 fi
-# programs broken at random: errors, never a crash, a panic or a hang of zs check or zs fmt
-if out=$(tests/fuzz.sh 2>&1); then echo "ok   tests/fuzz.sh ($(echo "$out" | tail -1))"
-else echo "FAIL tests/fuzz.sh"; echo "$out" | tail -20; fail=1; fi
+# programs broken at random: errors, never a crash, a panic or a hang of zs check or zs fmt. The
+# seed is the day's (UTC), so each day's run breaks other programs and a failure reproduces that
+# day: ZS_FUZZ_SEED=<seed> tests/fuzz.sh
+fuzz_seed=${ZS_FUZZ_SEED:-$(date -u +%Y%m%d)}
+if out=$(ZS_FUZZ_SEED=$fuzz_seed tests/fuzz.sh 2>&1); then echo "ok   tests/fuzz.sh (seed $fuzz_seed: $(echo "$out" | tail -1))"
+else echo "FAIL tests/fuzz.sh (seed $fuzz_seed)"; echo "$out" | tail -20; fail=1; fi
 
 # host benchmarks against C: a Z# program needing more than 5% more instructions than in
 # bench/host/baseline.txt fails (bench/host/run.sh shows times; --update after an improvement).
@@ -309,6 +317,10 @@ else echo "FAIL tests/ztest/update.sh"; diff <(tests/ztest/update.sh 2>&1) tests
 # zs test --stress (D4): a failure every fifth run, and a leak every seventh, found in four seconds
 if [ "$(tests/ztest/stress.sh 2>&1)" = "$(cat tests/ztest/stress.expected)" ]; then echo "ok   tests/ztest/stress.sh (zs test --stress)"
 else echo "FAIL tests/ztest/stress.sh"; diff <(tests/ztest/stress.sh 2>&1) tests/ztest/stress.expected; fail=1; fi
+# and under ThreadSanitizer: the pool, tasks and Alt race on nothing, and a planted race is found
+if [ $windows = 1 ]; then echo "skip tests/ztest/tsan.sh (no ThreadSanitizer for mingw-w64)"
+elif [ "$(tests/ztest/tsan.sh 2>&1)" = "$(cat tests/ztest/tsan.expected)" ]; then echo "ok   tests/ztest/tsan.sh (zs test --stress under ThreadSanitizer)"
+else echo "FAIL tests/ztest/tsan.sh"; diff <(tests/ztest/tsan.sh 2>&1) tests/ztest/tsan.expected; fail=1; fi
 # zs test --coverage (D10): the lines run and not run per file, and coverage.lcov
 if [ "$(tests/ztest/coverage.sh 2>&1)" = "$(cat tests/ztest/coverage.expected)" ]; then echo "ok   tests/ztest/coverage.sh (zs test --coverage)"
 else echo "FAIL tests/ztest/coverage.sh"; diff <(tests/ztest/coverage.sh 2>&1) tests/ztest/coverage.expected; fail=1; fi
