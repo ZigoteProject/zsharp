@@ -7,6 +7,16 @@ nothing is built in between: `Seq.map`, `filter` and `take` over a generator, co
 it's yielded, with nothing allocated per element. A sequence is computed again each time it's
 consumed.
 
+## Modules
+
+### `Seq`
+
+```zsharp
+module Seq
+```
+
+Functions on `Seq`.
+
 ## Types
 
 ### `Seq`

@@ -5,6 +5,16 @@ which take work from one another when they run out). A function another thread r
 `share<…>`: what it captures must be Share (immutable values; or an Atomic, Mutex or Channel
 for what threads change), so no two threads change the same data at once.
 
+## Modules
+
+### `Parallel`
+
+```zsharp
+module Parallel
+```
+
+Functions that run work on the thread pool.
+
 ## Functions
 
 ### `Parallel.workers`

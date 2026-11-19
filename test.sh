@@ -809,6 +809,11 @@ elif ! diff -rq -x README.md "$tmp/ref" docs/reference >/dev/null; then
 elif missing=$(for p in "$tmp/ref"/*.md; do grep -q "($(basename "$p"))" docs/reference/README.md || basename "$p"; done) && [ -n "$missing" ]; then
   echo "FAIL docs/reference/README.md doesn't link: $missing"; fail=1
 else echo "ok   library documented; docs/reference current"; fi
+# zs doc (and the language server's hover, which reads a file the same way) on a module whose
+# block has a line of two spaces, which zs fmt would take out of a file kept here
+printf 'module M =\n  /// one\n  let a = 1\n  \n  /// two\n  let b = 2\n\nlet main () = 0\n' > "$tmp/twospaces.zs"
+if bin/zs doc "$tmp/twospaces.zs" > "$tmp/twospaces.md" 2>&1 && grep -q '### `M.b`' "$tmp/twospaces.md"; then echo "ok   zs doc on a line of two spaces in a module"
+else echo "FAIL zs doc on a line of two spaces in a module"; head -5 "$tmp/twospaces.md"; fail=1; fi
 
 # the repository's own Z# code is formatted (zs fmt); the tests of parse errors don't parse, so
 # they have no layout to check

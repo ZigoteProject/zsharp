@@ -170,8 +170,10 @@ let showWith (v: Vars) (full: bool) (t: Ty) : string =
       | ([], _) -> "1/" + String.join " " neg
       | _ -> String.join " " pos + "/" + String.join " " neg
     | TCon(n, []) when isDynName n && not full -> "dyn " + shortName (String.sub n 4 (String.length n - 4))
-    // a row type's columns, as programs write the type (0037)
-    | TCon(n, args) when isColumns n -> "columns<" + show false (TCon(columnsRow n, args)) + ">"
+    // a row type's columns, as programs write the type (0037); in full the name no program's own
+    // type can have, which keys its drop function and its instances
+    | TCon(n, args) when isColumns n && not full -> "columns<" + show false (TCon(columnsRow n, args)) + ">"
+    | TCon(n, args) when isColumnBuffer n && not full -> "ColumnBuffer<" + show false (TCon(columnarRow n, args)) + ">"
     | TCon(n, args) ->
       let n = if full then n else shortName n
       if List.isEmpty args then n else n + "<" + String.join ", " (List.map (show false) args) + ">"

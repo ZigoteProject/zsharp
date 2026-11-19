@@ -489,20 +489,21 @@ let private explained (context: string) (f: unit -> 'r / <Fails | 'e>) : 'r / <F
 // [<Derive(Columns)>] (0037): the record of a row type's columns, declared the first time one of
 // the derive's three parts is applied: the row's fields, each an array. It isn't among the records
 // a literal's fields are looked up in, so `{ x = 1.0; y = 2.0 }` stays the row; its equality,
-// ordering and printing aren't derived (an array has none)
+// ordering and printing aren't derived (an array has none). Its ColumnBuffer is declared with it,
+// the same fields each a Buffer
 let private declareColumns (cx: Cx) (tname: string) : unit / Fails =
   let info = Map.find tname cx.types.Value
-  let cols = columnsOf tname
   match info.def with
   | RecordDef fs when Option.isNone info.bits ->
-    if not (Map.containsKey cols cx.types.Value) then
-      cx.types.Value <- Map.add cols { npars = info.npars; def = RecordDef(List.map (fun (f, t) -> (f, TCon("array", [ t ]))) fs); bits = None } cx.types.Value
-      cx.recordDefaults.Value <- Map.add cols (List.map (fun _ -> None) fs) cx.recordDefaults.Value
-      match Map.tryFind tname cx.recordScopes.Value with
-      | Some scope -> cx.recordScopes.Value <- Map.add cols scope cx.recordScopes.Value
-      | None -> ()
-      for tr in [ "Eq"; "Ord"; "Hash"; "Show"; "Diff" ] do
-        cx.optOut.Value <- Set.add (tr, cols) cx.optOut.Value
+    for (cols, holder) in [ (columnsOf tname, "array"); (columnBufferOf tname, "Buffer") ] do
+      if not (Map.containsKey cols cx.types.Value) then
+        cx.types.Value <- Map.add cols { npars = info.npars; def = RecordDef(List.map (fun (f, t) -> (f, TCon(holder, [ t ]))) fs); bits = None } cx.types.Value
+        cx.recordDefaults.Value <- Map.add cols (List.map (fun _ -> None) fs) cx.recordDefaults.Value
+        match Map.tryFind tname cx.recordScopes.Value with
+        | Some scope -> cx.recordScopes.Value <- Map.add cols scope cx.recordScopes.Value
+        | None -> ()
+        for tr in [ "Eq"; "Ord"; "Hash"; "Show"; "Diff" ] do
+          cx.optOut.Value <- Set.add (tr, cols) cx.optOut.Value
   | RecordDef _ -> fail $"{shortName tname} is a [<Bits>] record, one integer: an array of it is already as dense as its columns would be"
   | _ -> fail $"columns are a record's fields, each stored apart, and {shortName tname} is a union"
 
@@ -527,16 +528,37 @@ let private deriveImpls (cx: Cx) (context: string -> string) (tr: string) (tname
       match List.tryFind (fun a -> Map.containsKey a cx.traitAliases.Value) [ inHome; x ] with
       | Some a -> Some(Map.find a cx.traitAliases.Value)
       | None -> None
+  // and a module's function named in one of the library's derives (Columns.length, Buffer.push) is
+  // the library's as the derive's module sees it, even where the program has a module of that
+  // name of its own. A program's derive is resolved where it's used, as its other names are, and
+  // a runtime hook (Native.*) is left to need unsafe as anywhere
+  let ofLibrary = Set.contains tr cx.libraryNames.Value
+  let libraryOf (x: string) : option<string> =
+    if not ofLibrary || not (String.contains "." x) || String.startsWith "global::" x || String.startsWith "Native." x then
+      None
+    else
+      let inHome =
+        match home with
+        | Some m -> [ m + "." + x ]
+        | None -> []
+      let known (q: string) = not (String.startsWith "Native." q) && (Map.containsKey q cx.globals.Value || Map.containsKey q cx.traitAliases.Value || Map.containsKey q Builtins.builtins)
+      Option.map libraryName (List.tryFind known (List.concat [ inHome; List.map (fun (ns: string) -> ns + "." + x) autoOpens; [ x ] ]))
   let rec hygienic (e: Expr) : Expr =
     match e.e with
     | Var x ->
       match methodOf x with
       | Some m -> { e with e = Var m }
-      | None -> e
+      | None ->
+        match libraryOf x with
+        | Some q -> { e with e = Var q }
+        | None -> e
     | Call(x, args) ->
       match methodOf x with
       | Some m -> { e with e = Call(m, List.map hygienic args) }
-      | None -> mapExpr hygienic e
+      | None ->
+        match libraryOf x with
+        | Some q -> { e with e = Call(q, List.map hygienic args) }
+        | None -> mapExpr hygienic e
     | _ -> mapExpr hygienic e
   // may run in the middle of another function
   let saved = cx.tyvars.Value
@@ -547,17 +569,24 @@ let private deriveImpls (cx: Cx) (context: string -> string) (tr: string) (tname
     let npars = (Map.find tname cx.types.Value).npars
     let vars = List.init npars (fun i -> STVar $"t{i}")
     let row = STName(tname, vars)
-    // Columns' three parts (0037, lib/core/Columns.zs) are impls for the row and for its columns:
-    // the trait, its head and its other parameter, which the part's code calls 'other
+    // Columns' parts (0037, lib/core/Columns.zs) are impls for the row, its columns and its
+    // ColumnBuffer: the trait, its head and its other parameter, which the part's code calls 'other
     let (itrait, head, others) =
       match tr with
-      | "ColumnsColumnar"
-      | "ColumnsRow"
-      | "ColumnsRows" ->
+      | "Collections.ColumnsColumnar"
+      | "Collections.ColumnsRow"
+      | "Collections.ColumnsRows"
+      | "Collections.ColumnsBuffered"
+      | "Collections.ColumnsBufferRow"
+      | "Collections.ColumnsBufferRows" ->
         explained $"Derive(Columns) on {shortName tname}" (fun () -> declareColumns cx tname)
         let cols = STName(columnsOf tname, vars)
-        if tr = "ColumnsRow" then (libraryName "Columns.Row", row, [ cols ])
-        else if tr = "ColumnsColumnar" then (libraryName "Columns.Columnar", cols, [ row ])
+        let buffer = STName(columnBufferOf tname, vars)
+        if tr = "Collections.ColumnsRow" then (libraryName "Collections.Columns.Row", row, [ cols ])
+        else if tr = "Collections.ColumnsColumnar" then (libraryName "Collections.Columns.Columnar", cols, [ row ])
+        else if tr = "Collections.ColumnsBuffered" then (libraryName "Collections.ColumnBuffer.Buffered", buffer, [ row ])
+        else if tr = "Collections.ColumnsBufferRow" then (libraryName "Collections.ColumnBuffer.BufferRow", row, [ buffer ])
+        else if tr = "Collections.ColumnsBufferRows" then (libraryName "Iter", buffer, [ row ])
         else (libraryName "Iter", cols, [ row ])
       | _ -> (tr, row, [])
     let defs = List.map (fun (d: Definition) -> { d with dbody = hygienic d.dbody }) (Derive.expand tname head (List.tryHead others) (shapeOf cx tname) (Map.find tr cx.derives.Value))
@@ -968,6 +997,13 @@ let rec private declaredNames (d: Decl) : list<string> =
 
 // the trait methods called through dyn with an ambient row (0025): their arguments must perform
 // nothing, checked once the value's type is known
+// what a type being declared is while its body is checked: a record one of no fields (which no
+// record declared is), a union or a type with no body one of no cases
+let private placeholder (body: TypeBody) : TypeDef =
+  match body with
+  | RecordTy _ -> RecordDef []
+  | UnionTy _ -> UnionDef []
+
 let private closeDynCalls (cx: Cx) =
   let v = cx.v
   let calls = Array.toList (Buffer.toArray cx.dynCalls)
@@ -979,6 +1015,51 @@ let private closeDynCalls (cx: Cx) =
         let performs = String.join ", " (List.map (show cx) (fst (rowParts v row)))
         failLine tok $"this performs {performs}, but {m} is called through dyn {shortName tr}, where its arguments must perform nothing: call it on the value's own type, or handle it inside"
     | _ -> ()
+
+// the trait methods a module called, once it's checked (its impls known, those after a use too):
+// one at a type nothing gave, whose default (int, as a literal's) lacks the trait, is an error
+// where it's called, not a build's with no place. Quiet after another error, which may be why
+// nothing gave it; one error a type, the method that makes it (ColumnBuffer.empty ()) first, and
+// none for a type one told of determines (Columns.length c after its Columns.ofArray)
+let private checkResultCalls (cx: Cx) (quiet: bool) =
+  let v = cx.v
+  let calls = List.sortBy (fun (_, _, _, _, makes) -> if makes then 0 else 1) (Array.toList (Buffer.toArray cx.resultCalls))
+  Buffer.clear cx.resultCalls
+  if not quiet then
+    let told = ref Set.empty
+    let isTold (p: Ty) =
+      match prune v p with
+      | TVar q -> Set.contains q told.Value
+      | _ -> false
+    let errors = Buffer.empty
+    for (t, name, owner, tok, makes) in calls do
+      match prune v t with
+      | TVar r when not (Set.contains r told.Value) ->
+        let k = kindOf v r
+        let follows = List.exists (fun (p: string * list<Ty>) -> List.exists isTold (snd p)) (Map.toList k.params)
+        match defaultOf k with
+        | TCon(d, _) when not follows ->
+          let lacks (tr: string) = not (hasBuiltinImpl tr d || Map.containsKey (tr, d) cx.impls.Value)
+          if List.exists lacks (Set.toList k.traits) then
+            // and the types it determines (the columns of rows of no type)
+            told.Value <- Set.add r told.Value
+            for (_, ps) in Map.toList k.params do
+              for p in ps do
+                match prune v p with
+                | TVar q -> told.Value <- Set.add q told.Value
+                | _ -> ()
+            // a call the compiler wrote is said as what was written
+            let what =
+              if name = "Iter.forEach" then "the type a `for` goes over isn't known here: annotate what it's given"
+              else if name = "Dispose.dispose" then "the type `use` disposes of isn't known here: annotate its value"
+              else if makes then $"the type {name} makes isn't known here: nothing it's used with gives it; annotate the value"
+              else $"the type {name} is called at isn't known here: annotate what it's given"
+            Buffer.push (tok, $"{what} (it needs a type with {shortName owner})") errors
+        | _ -> ()
+      | _ -> ()
+    // in the order they're written
+    for (tok, message) in List.sortBy fst (Array.toList (Buffer.toArray errors)) do
+      Buffer.push (error (spanOf cx tok true) message) cx.diagnostics
 
 // the values the declaration's statements dropped, now their types are settled (unused-value)
 let private warnDiscarded (cx: Cx) =
@@ -1044,13 +1125,13 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
       | UnionTy _ -> Map.empty
     Buffer.push (name, d.named, fieldAts, Set.contains "cycle" cx.silenced.Value) cx.typesHere
     let defined = Map.containsKey name cx.types.Value
+    // one of a group stays ahead until the group ends (its columns come after it)
     let wasAhead = Set.contains name cx.ahead.Value
-    if defined && wasAhead then
-      cx.ahead.Value <- Set.remove name cx.ahead.Value
     if Set.contains name prims || Option.isSome (builtinCons name) || (defined && not wasAhead) then
       fail $"type '{name}' is already defined"
-    // registered first so the body can refer to the type itself
-    cx.types.Value <- Map.add name { npars = List.length tps; def = UnionDef []; bits = None } cx.types.Value
+    // registered first so the body can refer to the type itself: a record as one of no fields,
+    // which no record declared is (the checker tells it apart by that)
+    cx.types.Value <- Map.add name { npars = List.length tps; def = placeholder body; bits = None } cx.types.Value
     let tt (st: SType) = toTy cx (Some tps) st
     match body with
     | RecordTy fields ->
@@ -1151,8 +1232,8 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
     let need (i: int) (k: Kind) =
       let one (tr: string) =
         match Map.tryFind tr k.params with
-        | Some ps2 -> $"{show cx (TGen i)} : {tr}<{String.join ", " (List.map (show cx) ps2)}>"
-        | None -> $"{show cx (TGen i)} : {tr}"
+        | Some ps2 -> $"{show cx (TGen i)} : {shortName tr}<{String.join ", " (List.map (show cx) ps2)}>"
+        | None -> $"{show cx (TGen i)} : {shortName tr}"
       List.map one (Set.toList k.traits)
     let needs = List.concat (List.mapi need g.kinds)
     if not (List.isEmpty needs) && Buffer.length hv > 0 && hv.[Buffer.length hv - 1].name = name then
@@ -1267,17 +1348,19 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
     // type A = … and B = …: the names first, so each body may name the others
     let named (it: Decl) =
       match it.d with
-      | TypeDecl(n, tps, _, _) -> (it, qualify cx n, List.length tps)
-      | Private { d = TypeDecl(n, tps, _, _) } -> (it, qualify cx n, List.length tps)
+      | TypeDecl(n, tps, body, _) -> (it, qualify cx n, List.length tps, body)
+      | Private { d = TypeDecl(n, tps, body, _) } -> (it, qualify cx n, List.length tps, body)
       | _ -> failLine it.dat "'and' joins records and unions"
     let names = List.map named items
-    for (it, n, npars) in names do
+    for (it, n, npars, body) in names do
       if Set.contains n prims || Option.isSome (builtinCons n) || Map.containsKey n cx.types.Value then
         failLine it.dat $"type '{n}' is already defined"
-      cx.types.Value <- Map.add n { npars = npars; def = UnionDef []; bits = None } cx.types.Value
+      cx.types.Value <- Map.add n { npars = npars; def = placeholder body; bits = None } cx.types.Value
       cx.ahead.Value <- Set.add n cx.ahead.Value
     for it in items do
       located cx it.dat true (fun () -> declare cx it)
+    for (_, n, _, _) in names do
+      cx.ahead.Value <- Set.remove n cx.ahead.Value
     // a record holds its fields: one of the group reaching itself through records and tuples
     // would be of no size
     let rec reaches (target: string) (seen: Set<string>) (t: Ty) : bool =
@@ -1289,7 +1372,7 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
         | Some { def = RecordDef fs } -> List.exists (fun (_, ft) -> reaches target (Set.add n seen) (substGen v args ft)) fs
         | _ -> false
       | _ -> false
-    for (it, n, _) in names do
+    for (it, n, _, _) in names do
       match (Map.find n cx.types.Value).def with
       | RecordDef fs ->
         if List.exists (fun (_, ft) -> reaches n Set.empty ft) fs then
@@ -1828,10 +1911,13 @@ let private guarded (cx: Cx) (d: Decl) (f: unit -> 'a / <Fails, Mismatched>) : o
       Buffer.clear cx.discarded
       Buffer.clear cx.literals
       Buffer.clear cx.dynCalls
+      Buffer.clear cx.resultCalls
       found x
       flush ()
       for n in declaredNames d do
         cx.failed.Value <- Set.add (qualify cx n) (Set.add n cx.failed.Value)
+        // a group that failed isn't one being declared any more
+        cx.ahead.Value <- Set.remove (qualify cx n) cx.ahead.Value
       if not cx.collect then
         cx.stopped.Value <- true
       None
@@ -2012,9 +2098,11 @@ let check (cx: Cx) (file: InFile) (modName: option<string>) (decls: list<Decl>) 
   | None -> ()
   Buffer.clear cx.testValues
   Buffer.clear cx.typesHere
+  Buffer.clear cx.resultCalls
   cx.cyclic.Value <- Set.empty
   for d in decls do
     declareOne cx d
+  checkResultCalls cx (errorCount cx > 0)
   warnCycles cx
   // the program's [<Tests>] values, run by the test binary's entry (0009)
   if Option.isNone modName && Buffer.length cx.testValues > 0 then

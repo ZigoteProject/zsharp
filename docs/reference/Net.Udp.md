@@ -5,6 +5,24 @@ their sender; and `Dns`, name lookup off the event loop's thread. A call that wo
 waits for the event loop instead, so other tasks go on meanwhile, and a name `Udp.send` is
 given is looked up off the loop's thread (`Udp.bind` looks its own up where it's called).
 
+## Modules
+
+### `Udp`
+
+```zsharp
+module Udp
+```
+
+Functions on UDP sockets.
+
+### `Dns`
+
+```zsharp
+module Dns
+```
+
+Name lookup.
+
 ## Types
 
 ### `UdpSocket`

@@ -1,0 +1,15 @@
+3 3 3
+panic: a ColumnBuffer's columns have different lengths: a column was pushed to or truncated alone (ColumnBuffer.push, pop and truncate change every column)
+set: found
+panic: a ColumnBuffer's columns have different lengths: a column was pushed to or truncated alone (ColumnBuffer.push, pop and truncate change every column)
+truncate: found
+panic: a ColumnBuffer's columns have different lengths: a column was pushed to or truncated alone (ColumnBuffer.push, pop and truncate change every column)
+clear: found
+panic: a ColumnBuffer's columns have different lengths: a column was pushed to or truncated alone (ColumnBuffer.push, pop and truncate change every column)
+pop: found
+panic: a ColumnBuffer's columns have different lengths: a column was pushed to or truncated alone (ColumnBuffer.push, pop and truncate change every column)
+a row written: found
+panic: a ColumnBuffer's columns have different lengths: a column was pushed to or truncated alone (ColumnBuffer.push, pop and truncate change every column)
+for: found
+3 4
+panic: a ColumnBuffer's columns have different lengths: a column was pushed to or truncated alone (ColumnBuffer.push, pop and truncate change every column)

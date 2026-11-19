@@ -220,6 +220,27 @@ p0 p1 p2
 
 A function over any columns needs no annotation (`let last c = Columns.get c (Columns.length c - 1)`); `columns<'a>` can't be written for a row type that isn't named. Columns have no `=`, as arrays have none.
 
+`ColumnBuffer<'r>` is to `columns<'r>` what `Buffer<'a>` is to `array<'a>`: shared, mutable and growing, for a table that is built up row by row. The same derive gives it. `ColumnBuffer.push row b` adds a row at the end of every column, `pop`, `truncate` and `clear` take rows off, and `b.[i] <- row` and `b.[i].f <- v` write through any binding, seen through every reference. `b.f` is the column, a `Buffer` that shares the ColumnBuffer's storage: write its elements, but push, pop and truncate the ColumnBuffer, since a column's length is every column's (one changed alone is a panic at the next `ColumnBuffer.push`, `truncate` or `length`). `ColumnBuffer.empty ()` needs its type from where it's used, as below, or `zs check` says it isn't known; `create`, `ofArray` and `ofColumns` take theirs from the rows.
+
+```zsharp
+[<Derive(Columns)>]
+type Hit = { at: int; damage: f32 }
+
+let main () =
+  let hits : ColumnBuffer<Hit> = ColumnBuffer.empty ()
+  for i in 0 .. 3 do
+    ColumnBuffer.push { at = i; damage = f32 (i * 2) } hits
+  hits.[1].damage <- f32 10.0
+  println $"{ColumnBuffer.length hits} {hits.[1]} {Array.sum (Buffer.toArray hits.damage)}"
+  println $"{ColumnBuffer.pop hits} {ColumnBuffer.length hits}"
+  0
+```
+
+```text
+4 { at = 1; damage = 10 } 20
+Some { at = 3; damage = 6 } 3
+```
+
 ## Map and Set
 
 **`Map<'k, 'v>`:** a persistent sorted map, a balanced tree with O(log n) operations. Adding or removing gives a new map that shares most of its structure with the old one, and the old one stays valid. Keys need an ordering, which every number, string, record, union and tuple has.

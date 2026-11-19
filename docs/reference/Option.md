@@ -3,6 +3,17 @@
 Functions on options, values that may be missing: `Some x` or `None` (the type is in the
 prelude).
 
+## Modules
+
+### `Option.Builder`
+
+```zsharp
+module Builder
+```
+
+The `option { }` builder: `let! x = o` stops with `None` when `o` is `None`, and `return x`
+is `Some x`.
+
 ## Types
 
 #### `option#IsSome`

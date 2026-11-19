@@ -208,10 +208,15 @@ let rec private pathType (cx: Cx) (env: Map<string, Local>) (e: Expr) : option<T
     | _ -> None
   | _ -> None
 
-/// A place that holds some row type's columns: their record, its type arguments and its fields.
+/// Whether a type's name is a row type's columns' or its ColumnBuffer's: c.[i] and c.[i].f are
+/// read and written the same way on both, through arrays or through Buffers.
+let private isColumnar (n: string) : bool = isColumns n || isColumnBuffer n
+
+/// A place that holds some row type's columns or ColumnBuffer: their record, its type arguments
+/// and its fields.
 let private columnsAt (cx: Cx) (env: Map<string, Local>) (e: Expr) : option<string * list<Ty> * list<string>> =
   match pathType cx env e with
-  | Some(TCon(n, args)) when isColumns n -> Some(n, args, List.map fst (fieldsOf cx n))
+  | Some(TCon(n, args)) when isColumnar n -> Some(n, args, List.map fst (fieldsOf cx n))
   | _ -> None
 
 /// The columns of a `let mutable` that holds columns. Such a variable is a `let mutable` per
@@ -224,6 +229,21 @@ let private splitOf (cx: Cx) (env: Map<string, Local>) (x: string) : option<list
     | TCon(n, _) when isColumns n -> Some(List.map fst (fieldsOf cx n))
     | _ -> None
   | _ -> None
+
+// whether a trait method's type takes the trait's type (TGen 0) in a parameter, so that an
+// argument gives it, or only returns it
+let rec private headIn (t: Ty) : bool =
+  match t with
+  | TGen 0 -> true
+  | TCon(_, xs)
+  | TTuple xs -> List.exists headIn xs
+  | TFun(a, b, _) -> headIn a || headIn b
+  | _ -> false
+
+let rec private headInParams (t: Ty) : bool =
+  match t with
+  | TFun(a, b, _) -> headIn a || headInParams b
+  | _ -> false
 
 let private isColumnOf (fields: option<list<string>>) (f: string) : bool =
   match fields with
@@ -306,7 +326,8 @@ and checkCaptures (cx: Cx) (c: CExpr) (f: Ty) =
         fail $"this function crosses threads, but it captures {what}{through}, a function that may capture what can't be shared: declare it share<{show cx t}>"
       | _ ->
         fail $"this function crosses threads, but it captures {what}{through} : {show cx t}{holds}, which can't be shared between threads; share state through Atomic, Mutex or Channel, or return a result per job"
-    | Some Differ ->
+    | Some Differ
+    | Some(OtherDiffer(_, _, _, _)) ->
       fail $"this function crosses threads, but it captures {what}{through} : {show cx t}, which can't be shared between threads; share state through Atomic, Mutex or Channel, or return a result per job"
     | None -> ()
   // how many parameters a function a call names takes (0: not known, as a parameter's)
@@ -653,12 +674,12 @@ and inferNode (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>)
     let (n, args, fields) = Option.get (columnsAt cx env a)
     let at (f: string) : FieldValue = { field = f; nameAt = -1; value = plain (Index(plain (Field(a, f)), plain (Var "$at"))) }
     let row = plain (Let(plainPat (PIdent("$at", None)), None, i, plain (RecordLit(List.map at fields))))
-    inferWith cx env depth (Some(TCon(columnsRow n, args))) row
+    inferWith cx env depth (Some(TCon(columnarRow n, args))) row
   | Index(a, i) ->
     let ca = inf a
     let onColumns =
       match prune v ca.ty with
-      | TCon(n, _) -> isColumns n
+      | TCon(n, _) -> isColumnar n
       | _ -> false
     if onColumns then
       // columns that aren't a variable's or a field's (a call's result): held, then as above
@@ -814,12 +835,14 @@ and inferNode (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>)
     match Option.map (prune v) recordHint with
     | Some(TCon(n, _)) when isColumns n && List.exists (fun (f: FieldValue) -> f.nameAt >= 0) fields ->
       fail "columns aren't written as a record: Columns.ofArray, Columns.init and Columns.create make them, every column one length"
+    | Some(TCon(n, _)) when isColumnBuffer n && List.exists (fun (f: FieldValue) -> f.nameAt >= 0) fields ->
+      fail "a ColumnBuffer isn't written as a record: ColumnBuffer.empty, create and ofColumns make one, every column one length"
     | _ -> ()
     recordLit cx env depth recordHint node fields
   | Update(r, fields) ->
     let cr = inf r
     let rname = recordOf cx cr.ty (List.head fields).field
-    if isColumns rname && List.exists (fun (f: FieldValue) -> f.nameAt >= 0) fields then
+    if isColumnar rname && List.exists (fun (f: FieldValue) -> f.nameAt >= 0) fields then
       fail "a column isn't replaced whole, since every column is one length: write its elements (c.[i].f <- v)"
     fieldUses cx rname (List.map (fun (f: FieldValue) -> (f.field, f.nameAt)) fields) false
     let (rty, targs) = instType cx rname
@@ -843,8 +866,12 @@ and inferNode (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>)
       let built = buildRecord cx env depth rname targs fields old
       mk (CLet(tmp, cr, built)) built.ty
   | Field({ e = Var x }, f) when isColumnOf (splitOf cx env x) f ->
-    // a column of columns in a let mutable: its variable
-    uncaptured x (Map.find x env) depth
+    // a column of columns in a let mutable: its variable (a private row's fields are its module's)
+    let l = Map.find x env
+    uncaptured x l depth
+    match prune v l.ty with
+    | TCon(n, _) -> located cx node.at false (fun () -> fieldsVisible cx n)
+    | _ -> ()
     inf (plain (Var(x + "$" + f)))
   | Field({ e = Index(a, i) }, f) when isColumnOf (Option.map (fun (_, _, fs) -> fs) (columnsAt cx env a)) f ->
     // c.[i].f: one element of one column, the others not read
@@ -1179,27 +1206,66 @@ and assign (cx: Cx) (env: Map<string, Local>) (depth: int) (lhs: Expr) (rhs: Exp
   let seq (es: list<Expr>) : Expr = List.reduce (fun (x: Expr) (y: Expr) -> plain (Seq(x, y))) es
   let wholeColumn () : CExpr / Fails =
     fail "a column isn't replaced whole, since every column is one length: write its elements (c.[i].f <- v)"
+  // what isn't a variable's or a field's (an element, a call's result, a ref's Value), held, then
+  // written as one in a variable is: a ColumnBuffer's elements as a Buffer's are
+  let held (ca: CExpr) (place: Expr -> Expr) =
+    let l = localOf (uniq cx "$held") ca.ty false depth
+    let c = assign cx (Map.add "$held" l env) depth (place (plain (Var "$held"))) rhs
+    mk (CLet(l.u, ca, c)) tUnit
+  let columnsValue () : CExpr / Fails =
+    fail "columns are values: to change a row, declare them with `let mutable c = …` and write `c.[i] <- row`, or use `Columns.set c i row`, which returns the changed columns (ColumnBuffer<'r> is the shared mutable alternative)"
   match lhs.e with
   // columns (0037)
   | Field({ e = Index(a, i) }, f) when isColumnOf (Option.map (fun (_, _, fs) -> fs) (columnsAt cx env a)) f ->
-    // c.[i].f <- v: an element of one column
-    assign cx env depth (plain (Index(plain (Field(a, f)), i))) rhs
+    // c.[i].f <- v: an element of one column (of columns, a value, only in a let mutable)
+    match columnsAt cx env a with
+    | Some(n, _, _) when isColumns n && Option.isNone (mutableRoot a) -> columnsValue ()
+    | _ -> assign cx env depth (plain (Index(plain (Field(a, f)), i))) rhs
+  | Field({ e = Index(a, _) }, f) when Option.isSome (columnsAt cx env a) ->
+    // … where f isn't one of the row's fields
+    let (n, args, _) = Option.get (columnsAt cx env a)
+    fail $"{show cx (TCon(columnarRow n, args))} has no field '{f}'"
   | Index({ e = Field({ e = Var x }, f) }, i) when isColumnOf (splitOf cx env x) f ->
-    // … of columns in a let mutable: the column's own variable, written in place
+    // … of columns in a let mutable: the column's own variable, written in place (the program's
+    // variable, not the column's, named if it's captured; a private row's fields its module's)
+    let l = Map.find x env
+    uncaptured x l depth
+    match prune v l.ty with
+    | TCon(n, _) -> located cx lhs.at false (fun () -> fieldsVisible cx n)
+    | _ -> ()
     assign cx env depth (plain (Index(plain (Var(x + "$" + f)), i))) rhs
   | Index(a, i) when Option.isSome (columnsAt cx env a) ->
-    // c.[i] <- row: that element of each column
+    // c.[i] <- row: that element of each column (a captured let mutable named once, not per
+    // column; a private row's fields once)
+    match mutableRoot a with
+    | Some x -> uncaptured x (Map.find x env) depth
+    | None -> ()
     let (n, args, fields) = Option.get (columnsAt cx env a)
-    let rowTy = TCon(columnsRow n, args)
+    if isColumns n && Option.isNone (mutableRoot a) then
+      columnsValue () |> ignore
+    located cx lhs.at false (fun () -> fieldsVisible cx n)
+    let rowTy = TCon(columnarRow n, args)
+    // a ColumnBuffer is held first, as `ColumnBuffer.set b i row` takes it, and its columns'
+    // lengths checked as set's are; columns in a let mutable are written in their variables
+    let buffer = isColumnBuffer n
+    let ca = if buffer then inf a else mk CUnit tUnit
+    let lb = localOf (uniq cx "$held") ca.ty false depth
+    let at = if buffer then plain (Var "$held") else a
+    let envB = if buffer then Map.add "$held" lb env else env
     let ci = inf i
     expect cx "index" tInt ci.ty
     let cv = inferHint cx env depth rowTy rhs
     expect cx "row" rowTy cv.ty
     let li = localOf (uniq cx "$at") tInt false depth
     let lr = localOf (uniq cx "$row") rowTy false depth
-    let one (f: string) = plain (Assign(plain (Index(plain (Field(a, f)), plain (Var "$at"))), plain (Field(plain (Var "$row"), f))))
-    let writes = infer cx (Map.add "$row" lr (Map.add "$at" li env)) depth (seq (List.map one fields))
-    mk (CLet(li.u, ci, mk (CLet(lr.u, cv, writes)) tUnit)) tUnit
+    let one (f: string) = plain (Assign(plain (Index(plain (Field(at, f)), plain (Var "$at"))), plain (Field(plain (Var "$row"), f))))
+    let writes = infer cx (Map.add "$row" lr (Map.add "$at" li envB)) depth (seq (List.map one fields))
+    let row = mk (CLet(li.u, ci, mk (CLet(lr.u, cv, writes)) tUnit)) tUnit
+    if buffer then
+      let lengths = infer cx envB depth (plain (Call(libraryName "Collections.ColumnBuffer.length", [ plain (Var "$held") ])))
+      mk (CLet(lb.u, ca, mk (CSeq(lengths, row)) tUnit)) tUnit
+    else
+      row
   | Var x when Option.isSome (splitOf cx env x) ->
     // columns in a let mutable, assigned whole: each column's variable
     let l = Map.find x env
@@ -1207,8 +1273,12 @@ and assign (cx: Cx) (env: Map<string, Local>) (depth: int) (lhs: Expr) (rhs: Exp
     let cv = inferHint cx env depth l.ty rhs
     expect cx $"value assigned to '{x}'" l.ty cv.ty
     let ln = localOf (uniq cx "$columns") l.ty false depth
-    let one (f: string) = plain (Assign(plain (Var(x + "$" + f)), plain (Field(plain (Var "$columns"), f))))
-    let writes = infer cx (Map.add "$columns" ln env) depth (seq (List.map one (Option.get (splitOf cx env x))))
+    // each column's variable from the value's field, as the let mutable took them (the program
+    // reads no field here, so a private row's columns may be assigned whole)
+    let one (i: int) (f: string) : CExpr =
+      let lf = Map.find (x + "$" + f) env
+      mk (CAssign(lf.u, mk (CField(mk (CLocal ln.u) l.ty, i)) lf.ty)) tUnit
+    let writes = List.reduce (fun (a: CExpr) (b: CExpr) -> mk (CSeq(a, b)) tUnit) (List.mapi one (Option.get (splitOf cx env x)))
     mk (CLet(ln.u, cv, writes)) tUnit
   | Field({ e = Var x }, f) when isColumnOf (splitOf cx env x) f -> wholeColumn ()
   | Field(r, f) when isColumnOf (Option.map (fun (_, _, fs) -> fs) (columnsAt cx env r)) f -> wholeColumn ()
@@ -1231,6 +1301,8 @@ and assign (cx: Cx) (env: Map<string, Local>) (depth: int) (lhs: Expr) (rhs: Exp
     let inPlaceVar = mutVar a
     let inRecord = mutableRoot a
     match prune v ca.ty with
+    | TCon(n, _) when isColumnBuffer n -> held ca (fun (h: Expr) -> plain (Index(h, i)))
+    | TCon(n, _) when isColumns n -> columnsValue ()
     | TCon("span", _) -> fail "a span is read-only: slice the Buffer (b.[i..j]) for a window you can write to"
     | TCon("fixed", _) when inPlace ->
       // an element of a fixed-size array in a let mutable, or in its record: the place gets the
@@ -1276,6 +1348,14 @@ and assign (cx: Cx) (env: Map<string, Local>) (depth: int) (lhs: Expr) (rhs: Exp
       mk (CLet(li.u, ci, mk (CLet(lv.u, cv, write)) tUnit)) tUnit
     | _ ->
       fail "arrays are values: to change one, declare it with `let mutable a = …` and write `a.[i] <- x`, or use `Array.set a i x`, which returns the changed array (Buffer<'a> is the shared mutable alternative)"
+  | Field({ e = Index(a, i) }, f) when Option.isNone (pathType cx env a) ->
+    // x.[i].f <- v where x isn't a variable's or a field's (an element, a call's result, a ref's
+    // Value): held, then written as through a variable, so a ColumnBuffer's row's field (Value
+    // too) is its column's element; columns, a value, aren't written so
+    let ca = inf a
+    match prune v ca.ty with
+    | TCon(n, _) when isColumns n -> columnsValue ()
+    | _ -> held ca (fun (h: Expr) -> plain (Field(plain (Index(h, i)), f)))
   | Field(r, f) ->
     let refSet () =
       let cr = inf r
@@ -1291,7 +1371,10 @@ and assign (cx: Cx) (env: Map<string, Local>) (depth: int) (lhs: Expr) (rhs: Exp
     else if Option.isSome (mutableRoot lhs) then
       inf (plain (Assign(plain (Var(Option.get (mutableRoot lhs))), rebuild lhs rhs)))
     else
-      fail "record fields are immutable: declare the record with `let mutable` to assign one of its fields, or use { r with field = … }"
+      // a column of what isn't a variable's or a field's, replaced whole, is what it is anywhere
+      match prune v (inf r).ty with
+      | TCon(n, _) when isColumnar n && List.exists (fun (g, _) -> g = f) (fieldsOf cx n) -> wholeColumn ()
+      | _ -> fail "record fields are immutable: declare the record with `let mutable` to assign one of its fields, or use { r with field = … }"
   | _ -> fail "only mutable variables, their fields and elements, and ref cells can be assigned"
 
 /// A window (a span, or a Buffer of a Buffer) of elements i to j, or a string's copy; a bound left
@@ -1709,6 +1792,9 @@ and traitMethod (cx: Cx) (x: string) : CExpr =
   let kinds = List.concat [ [ head ]; List.init (n - 1) (fun _ -> kAny); (if ambient then [ kRow ] else []) ]
   let (t, inst) = instantiate cx kinds tm.ty
   let qname = tm.owner + "." + tm.name
+  // the type the method is called at, checked once the declaration's types are settled: given by
+  // an argument, or only by the result (ColumnBuffer.empty)
+  Buffer.push (List.item 0 inst, shortName (shownName x), tm.owner, cx.currentStmt.Value, not (headInParams tm.ty)) cx.resultCalls
   // through dyn, the ambient row is empty: checked once the value's type is known
   if ambient then
     Buffer.push (List.item 0 inst, List.item n inst, tm.owner, tm.name, cx.currentStmt.Value) cx.dynCalls
@@ -1993,9 +2079,21 @@ and callQ (cx: Cx) (env: Map<string, Local>) (depth: int) (f: string) (args: lis
 /// Type-checks arguments against a (curried) function type; gives them and the result type.
 and checkArgs (cx: Cx) (env: Map<string, Local>) (depth: int) (fty: Ty) (args: list<Expr>) (name: option<string>) : list<CExpr> * Ty =
   let v = cx.v
+  // a function as programs write it: Channel.send, not Threading.Channel.send; but a program's
+  // own module named like a namespace (Net.f) keeps its name, the short one not this function
+  let shown (f: string) : string =
+    let s = shortName f
+    if s = f then
+      f
+    else
+      let back =
+        handle resolveName cx s with
+        | Fails.fail _, _ -> None
+        | Fails.report _, k -> k ()
+      if back = Some f then s else f
   let what (i: int) =
     match name with
-    | Some f -> $"argument {i + 1} of '{f}'"
+    | Some f -> $"argument {i + 1} of '{shown f}'"
     | None -> $"argument {i + 1}"
   // a lambda with an unannotated parameter is typed after the other arguments, which may tell it
   // what it's applied to: List.map (fun s -> s.Length) names, and so names |> List.map (fun s ->
@@ -2063,7 +2161,7 @@ and checkArgs (cx: Cx) (env: Map<string, Local>) (depth: int) (fty: Ty) (args: l
         t.Value <- r
       | ty ->
         match name with
-        | Some f -> fail $"'{f}' is applied to too many arguments"
+        | Some f -> fail $"'{shown f}' is applied to too many arguments"
         | None -> fail $"this value is not a function; it has type {show cx ty}"
       ca
     let cargs = List.mapi one args
@@ -2561,7 +2659,10 @@ and recordLit (cx: Cx) (env: Map<string, Local>) (depth: int) (hint: option<Ty>)
           List.last exact
   if remembers then
     cx.literalRecords.Value <- Map.add key rname cx.literalRecords.Value
-  fieldUses cx rname (List.map (fun (f: FieldValue) -> (f.field, f.nameAt)) fields) false
+  // the columns of a let mutable, put back together by the checker (no field written here):
+  // the program's own uses of their fields are checked where it makes them
+  if not (isColumnar rname && List.forall (fun (f: FieldValue) -> f.nameAt < 0) fields) then
+    fieldUses cx rname (List.map (fun (f: FieldValue) -> (f.field, f.nameAt)) fields) false
   let (_, targs) = instType cx rname
   let defaults = Map.find rname cx.recordDefaults.Value
   let fallback (i: int) (scope: Map<string, Local>) =

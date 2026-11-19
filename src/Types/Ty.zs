@@ -275,6 +275,16 @@ let isColumns (n: string) : bool = String.endsWith "$columns" n
 /// The row type a columns record is of.
 let columnsRow (n: string) : string = String.sub n 0 (String.length n - 8)
 
+/// The record that holds a row type's ColumnBuffer (0037), `Particle$buffer`: a field for each of
+/// the row's, a `Buffer` of it, declared beside its columns.
+let columnBufferOf (row: string) : string = row + "$buffer"
+
+/// Whether a type's name is a row type's ColumnBuffer's (not a Buffer's own cell, `$buffer`).
+let isColumnBuffer (n: string) : bool = n <> bufferType && String.endsWith "$buffer" n
+
+/// The row type of a columns record or a ColumnBuffer record.
+let columnarRow (n: string) : string = String.sub n 0 (String.length n - (if isColumns n then 8 else 7))
+
 /// windowType's record: its owner, a pointer to its first element, and its length.
 let windowDef : TypeInfo =
   { npars = 1

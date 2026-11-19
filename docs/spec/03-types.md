@@ -80,6 +80,7 @@ the library modules of the same names.
 | `span<'a>` | a window into an array, a string's bytes or a `Buffer` | [§10.2](10-execution.md#102-values-and-cells) |
 | `Buffer<'a>` | a shared, growable, mutable array | §10.2 |
 | `columns<R>` | the rows of a record type `R` that derives `Columns`, stored a field to an array | below |
+| `ColumnBuffer<R>` | the same rows in a `Buffer` per field: shared and growing | below |
 | `ref<'a>` | a mutable cell | §10.2 |
 | `weak<'a>` | a reference that does not keep its object alive | [§10.4](10-execution.md#104-lifetime) |
 | `Atomic<'a>`, `Mutex<'a>`, `Channel<'a>`, `Spsc<'a>` | cells made for threads and interrupt handlers | [§10.6](10-execution.md#106-threads-and-share) |
@@ -98,6 +99,20 @@ copy-on-write. A record literal or `{ c with … }` of a `columns` type and an a
 whole column are errors. It implements `Iter` (its rows) and has no `Eq`, `Ord`, `Hash` or
 `Show`. The functions of `Columns` take any `columns` type through the traits
 `Columns.Columnar` and `Columns.Row`, which the derive implements.
+
+**ColumnBuffer.** `ColumnBuffer<R>` is written for the same record types, and is to `columns<R>`
+what `Buffer<'a>` is to `array<'a>`: shared and growing, a `Buffer<F>` for each field `f : F`,
+every one of one length. With `b : ColumnBuffer<R>`: `b.f` is the column, the Buffer itself;
+`b.[i]` and `b.[i].f` read as a `columns`' do; `b.[i] <- row` and `b.[i].f <- v` write those
+elements through any binding, as a Buffer's are written, seen through every reference.
+`ColumnBuffer.push`, `pop` and `truncate` change every column's length, and one column's length
+changed alone (through `b.f`) is a panic at the next of them, or at a row's write. A record literal or `{ b with … }`
+of a `ColumnBuffer` type and an assignment to a whole column are errors. It implements `Iter` and
+has no `Eq`, `Ord`, `Hash` or `Show`; the functions of `ColumnBuffer` take any through the
+traits `ColumnBuffer.Buffered` and `ColumnBuffer.BufferRow`. A private record's fields are
+private through its columns too, and where a program has a type, an alias or a module named
+`columns`, `Columns` or `ColumnBuffer` of its own, that is what the name means
+([§2.4](02-programs.md#24-name-resolution)).
 
 `fixed` is the only type that takes a number as an argument; there are no type-level numbers
 elsewhere, and the length is not a type variable.
@@ -285,4 +300,7 @@ function's parameters (its result) and after a `let`'s pattern assert the type. 
 is required only where the rules above say the type must be known.
 
 **Defaults.** After a top-level declaration is checked, a literal constraint left unresolved
-becomes `int` or `f64` ([§3.9](#39-literals)), except in a constant, which keeps it.
+becomes `int` or `f64` ([§3.9](#39-literals)), except in a constant, which keeps it. A trait
+method called at a type nothing gives (`ColumnBuffer.empty ()` unannotated) is that type's default,
+`int`, if `int` implements the trait (with an impl anywhere in its module, after the call too);
+otherwise it's an error at the call, once the module is checked, also in a function never called.

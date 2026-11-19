@@ -4,6 +4,16 @@ Unix sockets for tasks: `Tcp`'s calls over a path in the file system instead of 
 a port, for processes on one machine (the build server's socket). A listener and a connection
 are `Tcp`'s types, so `Tcp.read`, `Tcp.write` and `use` work on them as they are.
 
+## Modules
+
+### `Unix`
+
+```zsharp
+module Unix
+```
+
+Functions on Unix sockets.
+
 ## Functions
 
 ### `Unix.listen`

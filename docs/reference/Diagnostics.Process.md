@@ -2,6 +2,16 @@
 
 Running other programs.
 
+## Modules
+
+### `Process`
+
+```zsharp
+module Process
+```
+
+Functions for running programs.
+
 ## Types
 
 ### `ProcessResult`

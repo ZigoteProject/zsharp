@@ -2,6 +2,16 @@
 
 Persistent sorted sets, a `Map` to unit underneath.
 
+## Modules
+
+### `Set`
+
+```zsharp
+module Set
+```
+
+Functions on `Set`.
+
 ## Types
 
 ### `Set`

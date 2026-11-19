@@ -8,6 +8,16 @@ one. One task waits on a signal at a time. A handler may reach a signal, as it m
 or an `Spsc`: the handler pushes what it read to an `Spsc` and sets the signal, and the task
 pops it.
 
+## Modules
+
+### `Signal`
+
+```zsharp
+module Signal
+```
+
+Functions on signals: `create` (a program has at most 32), `set` and `wait`.
+
 ## Types
 
 ### `Signal`

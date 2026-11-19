@@ -133,10 +133,18 @@ let rec unify (v: Vars) (h: Hooks<'c>) (c: 'c) (a: Ty) (b: Ty) : unit / <Mismatc
     if occurs v r t || not (satisfies v h c k t) then
       differ ()
     bind v r t
-    // the impl for t's head determines the trait's other parameters
+    // the impl for t's head determines the trait's other parameters; one that differs is said
+    // so, since the two types being compared are both t by now
     for (tr, ps) in Map.toList k.params do
       match h.implParams c tr t with
-      | Some os -> List.iter2 (unify v h c) ps os
+      | Some os ->
+        let other (p: Ty) (o: Ty) =
+          handle unify v h c p o with
+          | Mismatched.throw m, _ ->
+            match m with
+            | Differ -> Mismatched.throw (OtherDiffer(tr, t, p, o))
+            | _ -> Mismatched.throw m
+        List.iter2 other ps os
       | None -> ()
   | (TCon(x, xs), TCon(y, ys)) when x = y && Set.contains x nums -> unifyMeas v (measOf xs) (measOf ys)
   | (TMeas _, _)

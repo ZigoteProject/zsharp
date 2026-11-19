@@ -2,6 +2,16 @@
 
 Numbers beyond the built-in ones: `Random`, a seeded generator of pseudo-random numbers.
 
+## Modules
+
+### `Random`
+
+```zsharp
+module Random
+```
+
+Functions on `Random`.
+
 ## Types
 
 ### `Random`

@@ -94,8 +94,10 @@ let private checkModules (cx: Infer.Cx.Cx) (lib: list<Modules.Loaded>) (prog: li
         for e in Infer.Cx.withEnclosing n do
           cx.moduleNames.Value <- Set.add e cx.moduleNames.Value
       cx.manualImpls.Value <- Set.union cx.manualImpls.Value (Set.ofList (impls prog))
-      // whose a trait or a type is, for the orphan rule (K9)
-      cx.libraryNames.Value <- Set.union (Set.ofList (List.map fst (Map.toList cx.types.Value))) cx.traitNames.Value
+      // whose a trait or a type is, for the orphan rule (K9); and the library's derives, whose
+      // calls of a module's function are the library's (Decls.deriveImpls)
+      let libraryDerives = Set.ofList (List.map fst (Map.toList cx.derives.Value))
+      cx.libraryNames.Value <- Set.union (Set.union (Set.ofList (List.map fst (Map.toList cx.types.Value))) cx.traitNames.Value) libraryDerives
       cx.dependencies.Value <- Set.ofList (List.choose (fun (m: Modules.Loaded) -> m.package) prog)
       for p in prog do
         for (n, why) in p.skippedC do

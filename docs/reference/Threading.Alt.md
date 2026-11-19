@@ -5,6 +5,33 @@ a task can wait for, alone or as a branch of a choice of which exactly one happe
 a task giving a value with one taking it; a Mailbox holds what's posted to it. All of it is for
 the tasks of one event loop: a Ch or Mailbox can't cross threads (it isn't Share).
 
+## Modules
+
+### `Alt`
+
+```zsharp
+module Alt
+```
+
+Functions on events.
+
+### `Ch`
+
+```zsharp
+module Ch
+```
+
+Functions on channels. When a give meets a take, the side that was waiting goes on first,
+then the one that met it (as with `Task.fulfill`), unless the first cancelled it.
+
+### `Mailbox`
+
+```zsharp
+module Mailbox
+```
+
+Functions on mailboxes.
+
 ## Types
 
 ### `Alt`

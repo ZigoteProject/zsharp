@@ -2,6 +2,16 @@
 
 Last in, first out.
 
+## Modules
+
+### `Stack`
+
+```zsharp
+module Stack
+```
+
+Functions on `Stack`.
+
 ## Types
 
 ### `Stack`

@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Implemented in part (decision 88): steps 1 to 3, the value type, its columns and its writes (`tests/columns.zs`, `tests/columns_write.zs`, `tests/err_columns.zs`, `bench/columns/`), with the differences under *As built*; `ColumnBuffer` (step 4) and the compiler's own tables (step 5) wait |
+| **Status** | Implemented in part (decision 88): steps 1 to 4, the value type, its columns, its writes and `ColumnBuffer` (`tests/columns.zs`, `tests/columns_write.zs`, `tests/err_columns.zs`, `tests/column_buffer.zs`, `bench/columns/`), with the differences under *As built*; the compiler's own tables (step 5) wait |
 | **Decided at** | the user's request to build it (2026-11-16), without a design review: the unresolved questions below are still open |
 | **Builds** | [track G](../../ROADMAP.md#language-g), in the steps under *Order of implementation*; step 5 (the compiler's own tables) waits for a stage 0 that has the type |
 | **Rests on** | decisions 20 (derive, no macros or comptime: a derive can't declare a type), 39 (a feature replaces code people write by hand and needs no runtime) and 78 (the compiler's tables are arrays indexed by ids) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §5.1](../../DESIGN.md#51-representation) (arrays are values with copy-on-write, `Buffer`, spans), [§8](../../DESIGN.md#8-simd) (SIMD) and [§9.1](../../DESIGN.md#91-optimization-strategy) (monomorphization) |
@@ -10,7 +10,7 @@
 
 - [x] Approved in principle (built at the user's request)
 - [ ] Discussion
-- [x] Implementation (steps 1 to 3; not `ColumnBuffer`, tuples or single columns as rows, or `columns<'a>` written with a type variable)
+- [x] Implementation (steps 1 to 4; not tuples or single columns as rows, or `columns<'a>` written with a type variable)
 
 ## Summary
 
@@ -37,15 +37,14 @@ let first (ps: columns<Particle>) : Particle = ps.[0]     // a row, built from e
 - `ps.age` is the column, an `array<f32>`: every function that reads an array reads it
   (`Array.sum`, `Array.fold`, `F32x8.load`, a slice), with nothing new in the library.
 - It is a value with copy-on-write, as `array<'a>` is, every column of one length.
-  `ColumnBuffer<'r>` is its shared, growing counterpart, as `Buffer<'a>` is `array<'a>`'s
-  (not built).
+  `ColumnBuffer<'r>` is its shared, growing counterpart, as `Buffer<'a>` is `array<'a>`'s.
 
 Changing `array<Particle>` to `columns<Particle>` in a signature changes the layout and leaves
 the loops as they are, so which layout is faster is measured, not argued.
 
 ## As built
 
-Steps 1 to 3, on 2026-11-16. The text from *Motivation* on is the draft's, kept as the record of
+Steps 1 to 4, on 2026-11-16. The text from *Motivation* on is the draft's, kept as the record of
 what was proposed; where the two differ, this section and [DESIGN §5.1](../../DESIGN.md#51-representation)
 say what the compiler does.
 
@@ -96,6 +95,30 @@ say what the compiler does.
 - **A cost to know:** `ps <- step dt ps` passes columns the variable still holds, so the step's
   first write to each column copies it. A step's result given straight to the next step
   (a recursive loop, or a `let`) is held once and written in place.
+- **`ColumnBuffer<'r>`** (step 4) is the same derive's, declared beside the columns: a record
+  with the row's fields, each a `Buffer` (`Types.Ty.columnBufferOf`). `b.[i]`, `b.[i].f` and
+  their writes take the columns' path in the checker, and their writes are a `Buffer`'s, through
+  any binding, also where `b` is an element, a call's result or a ref's `Value` (held, as a read
+  holds it). `b.f` is the column, a `Buffer` sharing the storage, not the draft's slice of it: a
+  slice pushed to or held across a growth is a write that's lost, where the column is the column
+  however the buffer grows. A column pushed to or truncated alone would mix rows, so `length`,
+  `set`, `push`, `truncate` and a row's write (`b.[i] <- row`, its receiver held first, as `set`
+  takes it) check that every column is one length as they begin, and panic if one isn't
+  (`tests/column_buffer_lengths.zs`); `b.[i]`, `b.[i].f` and `b.[i].f <- v` reach their own
+  columns only. A `Buffer` isn't `Share`, so a column doesn't
+  cross threads: unresolved question 7 stays open (tasks on one loop may each write a column,
+  taking turns, but none writes in parallel). Its functions are a trait,
+  `ColumnBuffer.Buffered<'b, 'r>`, and functions over it. Each column grows on its own, as a
+  `Buffer` does, not the draft's one object laid out for the capacity. `ColumnBuffer.empty ()`
+  takes its type from where it's used, since a trait is dispatched by its first parameter; where
+  nothing gives it, `zs check` says so at the call, as for any trait method only its result gives
+  the type of (it was a build's error with no place, naming `int`).
+- **Names, as a file's own come first:** `lib/core/Columns.zs` is in `Collections`, as `Buffer`
+  is, so a program's own module `Columns` or `ColumnBuffer` is its own, and so is a type or an
+  alias named `columns` or `ColumnBuffer` (`tests/columns_own_names.zs`,
+  `tests/columns_own_modules.zs`). The derive's code calls the library's functions whatever the
+  program names its own (a derive's `M.f` is the library's as the derive's module sees it). A
+  private row's fields are private through its columns and its ColumnBuffer too.
 - **Found on the way:** an element of an array in a `let mutable` record's field (`r.a.[i] <- v`)
   copied the array at every write. It's written in place now (`tests/record_array_write.zs`),
   which columns in a record's field need and every such record gets.
@@ -414,3 +437,12 @@ None: no text is read or written but `Show`'s, which is the rows'.
   It came from writing a layout inspector as a package (`zlayout`), whose README could only tell
   a reader to "test a structure-of-arrays layout", by hand.
 - **2026-11-16:** steps 1 to 3 built, as *As built* says, after a prototype written by hand showed three things: the columns' record of the same field names took the row's record literals (so it isn't among the records a literal is looked up in), an array has no `Eq`, and a write to an array in a record's field copied the array.
+- **2026-11-16:** step 4 built, `ColumnBuffer`, as *As built* says, with the exit property
+  against a model (`tests/column_buffer.zs`).
+- **2026-11-19:** a review of step 4 found 30 defects, each reproduced, and they're fixed, as
+  *As built* says: a program's own `columns` or `ColumnBuffer` type sharing the derived one's drop
+  function (a crash in safe code); every `Buffer` named `ColumnBuffer<<T>>`; a private row's
+  fields reachable through its columns; a program's own module, type or alias of those names
+  refused; writes through an element, a call or a ref refused with wrong advice; a column's length
+  changed alone mixing rows; `ColumnBuffer.empty ()` with no type a build's error with no place;
+  the reference missing the traits' methods; and the messages and tests around them.

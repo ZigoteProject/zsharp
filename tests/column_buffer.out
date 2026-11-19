@@ -1,0 +1,15 @@
+4 { x = 2; age = 20; id = 2; name = p2 } p1 { x = 3; age = 30; id = 3; name = p3 }
+99 42 { x = -1; age = -2; id = -3; name = last } [0; 99; 20; -2]
+zero 4 2
+0:0 1:99 42:20 -3:-2 
+Some { x = -1; age = -2; id = -3; name = last } 3 [0; 99; 20]
+[0; 99; 20] [0; 99; 20] [7; 99; 20]
+2 { x = 5; age = 50; id = 5; name = p5 }
+0 None
+{ first = 3; second = c } { first = 3; second = c } [1; 2; 3]
+w 4
+held 6 -5
+test a ColumnBuffer agrees with a Buffer of rows
+ok   a ColumnBuffer agrees with a Buffer of rows
+1 passed, 0 skipped
+panic: index out of bounds

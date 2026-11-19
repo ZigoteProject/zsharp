@@ -1,0 +1,1 @@
+tests/err_noalloc_buffer_discard.zs:4: error: drain is [<NoAlloc>], but drain drops the option<ref<$buffer<int>>> it discards, which may free it

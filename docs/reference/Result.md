@@ -3,6 +3,17 @@
 Functions on results, the outcome of something that can fail: `Ok value` or `Error err` (the
 type is in the prelude).
 
+## Modules
+
+### `Result.Builder`
+
+```zsharp
+module Builder
+```
+
+The `result { }` builder: `let! x = r` stops with the `Error` when `r` is one, and
+`return x` is `Ok x`.
+
 ## Functions
 
 ### `Result.map`

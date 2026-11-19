@@ -3,6 +3,16 @@
 Time: `DateTime`, a moment in UTC, and `Duration`, a length of time in nanoseconds
 (`i64<ns>`, so that a plain number isn't one). `DateTime.utcNow` reads the clock (Std).
 
+## Modules
+
+### `DateTime`
+
+```zsharp
+module DateTime
+```
+
+Functions on `DateTime`.
+
 ## Types
 
 ### `ns`

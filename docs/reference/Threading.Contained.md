@@ -20,6 +20,16 @@ job did outside itself before it failed (bytes written, a message sent), what a 
 holds for it, and work it started on other threads (`Parallel`, `Task.spawn`), whose own
 panic stops the program.
 
+## Modules
+
+### `Contained`
+
+```zsharp
+module Contained
+```
+
+Functions that run contained jobs.
+
 ## Types
 
 ### `Panic`

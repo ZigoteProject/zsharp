@@ -7,6 +7,32 @@ is rounded half up, as the chips' rounding multiplies do; `Show` prints the deci
 many digits as the format needs to tell neighbours apart. A format is a one-case union, so it
 is its integer's size (decision 66) and allocates nothing.
 
+## Modules
+
+### `Q7`
+
+```zsharp
+module Q7
+```
+
+Functions on `q7`.
+
+### `Q15`
+
+```zsharp
+module Q15
+```
+
+Functions on `q15`.
+
+### `Q31`
+
+```zsharp
+module Q31
+```
+
+Functions on `q31`.
+
 ## Types
 
 ### `q7`

@@ -4,6 +4,24 @@ Readers and writers: a file, a pipe or a standard stream read or written through
 as bytes or as text. They block, as reading a file does; a task that must not stall its loop
 reads on `Task.blocking`'s thread. `use` closes one (a writer is flushed first).
 
+## Modules
+
+### `Reader`
+
+```zsharp
+module Reader
+```
+
+Functions on `Reader`.
+
+### `Writer`
+
+```zsharp
+module Writer
+```
+
+Functions on `Writer`.
+
 ## Types
 
 ### `Reader`

@@ -3,6 +3,16 @@
 Persistent sorted maps: an AVL tree, as in OCaml's Map, so every operation is O(log n) and
 leaves the old map intact.
 
+## Modules
+
+### `Map`
+
+```zsharp
+module Map
+```
+
+Functions on `Map`.
+
 ## Types
 
 ### `Map`

@@ -11,9 +11,33 @@
   are its functions. On 4,000,000 records of 56 bytes (`bench/columns/`), a sum of one field is
   0.92 ns an element where an array of records takes 1.46, 0.07 with `[<FastMath>]` where the
   array of records takes 1.59, and a step that updates two fields 0.60 where it takes 3.0: what
-  an array per field by hand gives. `ColumnBuffer` isn't built.
+  an array per field by hand gives. The same derive gives `ColumnBuffer<'r>`, the shared,
+  growing form, as `Buffer<'a>` is `array<'a>`'s: `ColumnBuffer.push`, `pop`, `truncate`,
+  `clear`, `empty`, `create`, `ofArray`, `ofColumns` and `toColumns`, `b.[i]` and `b.[i].f`
+  written through any binding, and `b.f` the column, a `Buffer` (`tests/column_buffer.zs`, with a
+  property against a `Buffer` of rows). A column pushed to or truncated alone through `b.f` is a
+  panic at the next `ColumnBuffer.push`, `pop` or `truncate`, not rows that mix two. Both are in
+  `Collections`, so a program's own module, type or alias named `Columns`, `columns` or
+  `ColumnBuffer` is its own; a private row's fields are private through its columns too. A
+  program's own `module Collections` holding a module named `Columns` or `ColumnBuffer` is
+  `already defined`, as one holding `Queue` is: rename it.
 
 ### Compiler
+- A trait method at a type nothing gives (`ColumnBuffer.empty ()` unannotated, rows of no type, a
+  `Zero.zero ()` of a program's own) is an error where it's called, once its module is checked,
+  which `zs check` and the editor show: it passed the check, and the build stopped with
+  `int has no built-in …` and no place. One whose default, `int`, has the trait still builds, its
+  impl before the call or after it. A function holding such a call that's never called built,
+  being never made, and is an error now: annotate the type the call is at.
+- A derive's call to a module's function (`Columns.length`, `Buffer.push`) is the library's, as
+  the derive's module sees it, even where the program has a module of that name: a program's own
+  `Columns.length` changed what the derived `for row in c` counted.
+- A type whose impl of a trait is for another parameter than the one given says so:
+  `ColumnBuffer<P> is a ColumnBuffer.Buffered of P, not of int`, where the message was
+  `expected ColumnBuffer<P>, got ColumnBuffer<P>`. A function or a trait in an error is named as
+  programs write it, `argument 2 of 'Channel.send'` and `does not implement ToJson`, not
+  `Threading.Channel.send` and `Text.ToJson` (a program's own module named like a namespace, `Net`,
+  keeps its name).
 - An element of an array in a `let mutable` record's field is written in place
   (`r.counts.[i] <- v`, `tests/record_array_write.zs`): each write copied the array, the record
   still holding it. 1,000 such writes made 1,000 arrays and now make none.
@@ -45,6 +69,9 @@
   where an impl derived on demand lives; the proposal says what was found.
 
 ### Tooling
+- `zs doc` lists a trait or an effect declared in a module, with its methods, and a module
+  declared in a file, with its doc comment: the reference has `ColumnBuffer.Buffered`'s `push`,
+  `length` and the rest, and `Option.Builder`, which it left out.
 - `zs mcp` has two more tools for an agent. `test` runs a file's tests, or the project's, as
   `zs test` does; `guide` gives a chapter of the guide, and without one the chapter on what isn't
   F#, which the server's instructions tell an agent to read first. The guide is installed beside

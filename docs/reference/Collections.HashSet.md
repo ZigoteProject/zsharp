@@ -2,6 +2,16 @@
 
 Hash sets, for elements with `Hash` and `Eq`.
 
+## Modules
+
+### `HashSet`
+
+```zsharp
+module HashSet
+```
+
+Functions on `HashSet`.
+
 ## Types
 
 ### `HashSet`
