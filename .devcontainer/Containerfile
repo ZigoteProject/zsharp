@@ -39,4 +39,7 @@ ENV PATH=/opt/llvm/bin:$PATH \
 # aarch64's
 RUN dnf install -y --setopt=install_weak_deps=False wine-core && dnf clean all
 
+# Rocq checks the proofs (proofs/check.sh): the prover and its standard library
+RUN dnf install -y --setopt=install_weak_deps=False rocq rocq-stdlib && dnf clean all
+
 WORKDIR /work
