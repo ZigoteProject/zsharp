@@ -96,8 +96,9 @@
   error naming the function and the variable. The suite runs with it, so every program of
   `tests/` checks the pass
   ([report](docs/reports/ownership-check.md); `tests/owned-mutants.sh` puts seven mistakes into
-  the pass, each caught). The judgment's core is proved sound in Rocq (`proofs/Ownership.v`,
-  `proofs/check.sh`): a program it accepts never touches a freed cell and leaks none.
+  the pass, each caught). Its rules are proved sound in Rocq (`proofs/`, `proofs/check.sh`), for
+  the core, for calls with borrowed parameters and for reuse tokens: a program they accept
+  never touches a freed cell, leaks none, and never builds a cell in memory another still has.
 - For work on this repository: `./test.sh --only <text>` runs the programs in `tests/` whose path
   has the text and nothing else; the suite ends with the count of failures and each `FAIL` line
   again; `./dev -i` passes its standard input to the command; `.mcp.json` starts the compiler's

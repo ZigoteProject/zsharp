@@ -13,10 +13,10 @@ gets is given away once on every path, and nothing is read once its last referen
 is a judgment on the pass's *output*, which a checker of 300 lines decides
 (`Core.Check.owned`, run by `zs build --check-ir`, which `./test.sh` sets), and whose soundness
 is proved once and covers whatever the pass becomes. The checker is built and runs in every
-build of the suite. The proof is written for the judgment's core (`proofs/Ownership.v`, checked
-by Rocq 9.3 with no axioms): a program the judgment accepts never touches a freed cell and
-leaves none behind. What the proof's calculus leaves out is listed under *What it doesn't
-cover*.
+build of the suite. The proof is written for the judgment's core, for calls and for reuse
+tokens (`proofs/`, three files checked by Rocq 9.3 with no axioms): a program the judgment
+accepts never touches a freed cell, leaves none behind, and never builds a cell in memory
+another cell still has. What the proofs leave out is listed under *What it doesn't cover*.
 
 `src/ARCHITECTURE.md` said `Check` did this already. It checked that a `dup` or a `drop` named
 a bound variable of its type, and no more.
@@ -78,16 +78,28 @@ or to the check.
 
 ## What it doesn't cover
 
-- **The proof is of a core, and of the judgment, not of the code that checks it.**
-  `proofs/Ownership.v` has cells built from variables, borrowed field reads, `dup`, `drop`,
-  reads and branches, over a heap of counted cells where a freed cell's fields are dropped in
-  turn. Its theorems: `safe` (no read, dup or drop of a cell that isn't in the heap) and
-  `no_leak` (the heap is empty when the program and its drops are done). Its invariant: a
-  cell's count is the references to it from pending drops, variables and other cells, and a
-  borrowed variable is a field of its holder's cell while that cell is in the heap. Not in the
-  calculus: functions and borrowed parameters, join points, loops, `dropfields`, reuse tokens
-  and `let mutable`. And `Core.Check.owned` is Z#, written to follow the judgment's rules by
-  hand: nothing ties the two but reading them side by side, and the mutants.
+- **The proofs are of the judgment, not of the code that checks it.** `Core.Check.owned` is
+  Z#, written to follow the judgment's rules by hand: nothing ties the two but reading them
+  side by side, and the mutants.
+- **What the proofs have:**
+  - `proofs/Ownership.v`: cells built from variables, borrowed field reads, `dup`, `drop`,
+    reads and branches, over a heap of counted cells where a freed cell's fields are dropped
+    in turn. `safe`: no read, dup or drop of a cell that isn't in the heap. `no_leak`: the
+    heap is empty when the program and its drops are done. The invariant: a cell's count is
+    the references to it from pending drops, variables and other cells, and a borrowed
+    variable is a field of its holder's cell while that cell is in the heap.
+  - `proofs/Calls.v`: functions with owned and borrowed parameters, each body checked alone
+    against the table its callers are checked against, on a machine with a stack. `msafe` and
+    `mno_leak` are the two theorems again, for every frame. What a callee borrows stays in
+    the heap because its caller, which doesn't run meanwhile, keeps it alive; and the proof
+    asks nothing of the table, which is why borrow inference needs no proof of its own.
+  - `proofs/Tokens.v`: every cell has an address; a drop that finds the last reference keeps
+    the cell's address as a token, and a cell is built at its token's address without a look
+    at what's there. `distinct`: no two cells in the heap have the same address, so a cell
+    built in a token is built over nothing a read can still reach.
+- **What they don't have:** a token held across a call (`Tokens.v` is one frame, `Calls.v` has
+  no addresses); the fields `dropfields` moves out of a dying cell (the proofs' drop that
+  keeps a token drops every field); join points, loops and `let mutable`; closures.
 - **A moved-out mutable's reads.** After `slot.take x`, `x` may still be read while the taker
   hasn't given the value away (`x <- f x (g x)`); the check allows any read of it until it's
   filled, and doesn't follow the taker.
@@ -105,8 +117,8 @@ or to the check.
 ## Next
 
 In the order of what they'd find for their cost: the `task.held` equation in the walk; the
-taker of a moved-out mutable; then the calculus grown to what the checker has that it lacks
-(calls with borrowed parameters first, then `dropfields` and tokens, which is where reuse in
-place has to be shown not to change a cell something else still reads). `./test.sh` runs
+taker of a moved-out mutable; then the proofs grown to what the checker has that they lack
+(the kept fields of `dropfields` first, which need a borrowed variable to know which field it
+is; then addresses under calls). `./test.sh` runs
 `proofs/check.sh`, and skips it in an image built before Rocq was added to
 `.devcontainer/Containerfile`.

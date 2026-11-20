@@ -12,9 +12,9 @@
 
    Also here, for the proofs that build on this one: the statements and rules of reuse tokens
    (a drop that keeps a unique cell's memory as a token, a cell built in a token, a token
-   freed) and of calls, and [ext], the references that frames waiting on a call hold, which the
-   counts of this file's one frame are added to. In this file a token's statements are the
-   plain ones (a drop, a new cell), and a call doesn't step.
+   freed: Tokens.v) and of calls (Calls.v), and [ext], the references that frames waiting on a
+   call hold, which the counts of this file's one frame are added to. In this file a token's
+   statements are the plain ones (a drop, a new cell), and a call doesn't step.
 
    Checked by: proofs/check.sh *)
 From Stdlib Require Import List Arith Lia.
@@ -94,6 +94,9 @@ Section Core.
 Variable sg : nat -> option (list bool).
 (* the references to each cell that the frames waiting on a call hold *)
 Variable ext : loc -> nat.
+
+(* a lemma depends on the two only where its statement names them *)
+Set Default Proof Using "Type".
 
 Inductive chk : cstate -> list stmt -> cstate -> Prop :=
 | chk_nil s : chk s [] s
@@ -213,6 +216,7 @@ Proof. unfold occ. apply count_occ_In. Qed.
 Lemma vcount_notin e cnf vs x k l :
   ~ In x vs -> vcount e (upd cnf x k) vs l = vcount e cnf vs l.
 Proof.
+  clear sg ext.
   induction vs as [|v vs IH]; simpl; intros Hn; [reflexivity|].
   rewrite IH by tauto. rewrite upd_neq by (intros ->; tauto). reflexivity.
 Qed.
@@ -222,6 +226,7 @@ Lemma vcount_setn e cnf vs x k l :
   vcount e (upd cnf x k) vs l + (if Nat.eqb (e x) l then cnf x else 0)
   = vcount e cnf vs l + (if Nat.eqb (e x) l then k else 0).
 Proof.
+  clear sg ext.
   induction vs as [|v vs IH]; simpl; intros Hnd Hin; [tauto|].
   inversion Hnd; subst. destruct Hin as [->|Hin].
   - rewrite upd_eq. rewrite vcount_notin by assumption. destruct (Nat.eqb (e x) l); lia.
@@ -239,6 +244,7 @@ Qed.
 
 Lemma vcount_pos e cnf vs v : In v vs -> cnf v > 0 -> vcount e cnf vs (e v) > 0.
 Proof.
+  clear sg ext.
   induction vs as [|w vs IH]; simpl; intros Hin Hp; [tauto|].
   destruct Hin as [->|Hin].
   - rewrite Nat.eqb_refl. lia.
@@ -516,6 +522,7 @@ Qed.
 
 Lemma alive_cb s vs c v : inv s vs c -> alive s v -> cb s v = true.
 Proof.
+  clear sg.
   intros I. destruct 1.
   - apply (i_wf1 _ _ _ I). assumption.
   - apply (i_wf2 _ _ _ I) in H. tauto.
@@ -781,13 +788,23 @@ Proof.
   exact (pres_dec _ _ _ _ _ _ _ k _ _ I1 Hl).
 Qed.
 
-Ltac same := split; [reflexivity|intros v Hv; split; [assumption|reflexivity]].
+(* the tokens not yet used, after a step *)
+Definition ctnext (c : cfg) (f : var -> bool) : var -> bool :=
+  match pend c, code c with
+  | [], SDropTok _ t :: _ => upd f t true
+  | [], SNewAt _ t _ :: _ => upd f t false
+  | [], SFree t :: _ => upd f t false
+  | _, _ => f
+  end.
+
+Ltac same := split; [reflexivity|split; [intros v Hv; split; [assumption|reflexivity]|reflexivity]].
 
 (* a step keeps it; and it rebinds no variable, nor changes what the caller lends *)
 Theorem pres s vs c c' r :
   inv s vs c -> chk s (code c) r -> step c c' ->
   exists s' vs' r', inv s' vs' c' /\ chk s' (code c') r' /\ le r' r /\
-    cbor s' = cbor s /\ (forall v, cb s v = true -> cb s' v = true /\ env c' v = env c v).
+    cbor s' = cbor s /\ (forall v, cb s v = true -> cb s' v = true /\ env c' v = env c v) /\
+    ct s' = ctnext c (ct s).
 Proof.
   intros I Hc Hs. destruct Hs; simpl in *.
   - exists s, vs, r. split; [eapply pres_free; eauto|split; [assumption|split; [apply le_refl|same]]].
@@ -795,13 +812,13 @@ Proof.
   - inversion Hc; subst.
     match goal with Ht : takes s ys _, Hf : cb s x = false |- _ =>
       destruct (pres_new _ _ _ _ _ _ _ k _ I Hf Ht) as [vs' I'];
-      pose proof (takes_same _ _ _ Ht) as (_ & Sb & _ & Sr) end.
+      pose proof (takes_same _ _ _ Ht) as (_ & Sb & St & Sr) end.
     eexists _, vs', r. split; [eassumption|split; [eassumption|split; [apply le_refl|]]].
-    split; [exact Sr|]. intros v Hv. simpl. rewrite Sb. assert (v <> x) by congruence.
-    rewrite !upd_neq by assumption. auto.
+    split; [exact Sr|split; [|exact St]]. intros v Hv. simpl. rewrite Sb.
+    assert (v <> x) by congruence. rewrite !upd_neq by assumption. auto.
   - inversion Hc; subst. eexists _, vs, r.
     split; [eapply pres_field; eauto|split; [eassumption|split; [apply le_refl|]]].
-    split; [reflexivity|]. intros v Hv. simpl. assert (v <> x) by congruence.
+    split; [reflexivity|split; [|reflexivity]]. intros v Hv. simpl. assert (v <> x) by congruence.
     rewrite !upd_neq by assumption. auto.
   - inversion Hc; subst.
     match goal with Ha : alive s x, Hx : _ (e x) = Some _ |- _ =>
@@ -828,11 +845,11 @@ Proof.
   - inversion Hc; subst.
     match goal with Ht : takes s ys _, Hf : cb s x = false |- _ =>
       destruct (pres_new _ _ _ _ _ _ _ k _ (inv_code _ _ _ _ _ _ _ (SNew x ys :: k) I) Hf Ht) as [vs' I'];
-      pose proof (takes_same _ _ _ Ht) as (_ & Sb & _ & Sr) end.
+      pose proof (takes_same _ _ _ Ht) as (_ & Sb & St & Sr) end.
     eexists _, vs', r.
     split; [apply inv_sett; eassumption|split; [eassumption|split; [apply le_refl|]]].
-    split; [exact Sr|]. intros v Hv. simpl. rewrite Sb. assert (v <> x) by congruence.
-    rewrite !upd_neq by assumption. auto.
+    split; [exact Sr|split; [|simpl; rewrite St; reflexivity]]. intros v Hv. simpl. rewrite Sb.
+    assert (v <> x) by congruence. rewrite !upd_neq by assumption. auto.
   - inversion Hc; subst. eexists _, vs, r.
     split; [apply inv_sett; eapply inv_code; eauto|split; [eassumption|split; [apply le_refl|same]]].
 Qed.
@@ -851,6 +868,41 @@ Proof.
         [rewrite upd_eq in Hl; try discriminate; try (injection Hl as <- <-); try lia; eauto
         |rewrite upd_neq in Hl by assumption; eauto]
     end.
+Qed.
+
+(* while it holds, the next action finds its cell *)
+Lemma inv_safe s vs c r : inv s vs c -> lent_ok s c -> chk s (code c) r -> ~ faults c.
+Proof.
+  intros I L Hk. unfold faults. destruct c as [H n e pd cd]. simpl in *. destruct pd as [|l pd].
+  - destruct cd as [|st cd]; [auto|].
+    destruct st; auto; inversion Hk; subst;
+      match goal with
+      | Ha : alive s _ |- _ => exact (alive_dom _ _ _ _ I L Ha)
+      | Hx : cn s _ > 0 |- _ => exact (alive_dom _ _ _ _ I L (alive_own _ _ Hx))
+      end.
+  - apply (i_dom _ _ _ I l). unfold tot. simpl. rewrite occ_cons, Nat.eqb_refl. lia.
+Qed.
+
+(* with no reference held anywhere, the heap is empty: a cell only other cells point to would
+   need one numbered after it, and the last has none *)
+Lemma inv_empty s vs c :
+  inv s vs c -> (forall l, ext l = 0) -> (forall v, cn s v = 0) -> pend c = [] ->
+  forall l, hp c l = None.
+Proof.
+  intros I Hext F1 Hpend.
+  assert (forall k l, nxt c <= l + k -> hp c l = None) as G.
+  { induction k as [|k IH]; intros l Hl.
+    - apply (i_bound _ _ _ I). lia.
+    - destruct (hp c l) as [[m fs]|] eqn:E; [|reflexivity]. exfalso.
+      pose proof (i_cnt _ _ _ I l m fs E) as C. pose proof (i_pos _ _ _ I l m fs E) as P.
+      unfold tot in C. rewrite Hpend, (Hext l) in C. rewrite vcount_zero in C by exact F1.
+      assert (occ l [] = 0) as O by reflexivity.
+      assert (hsum (hp c) l (nxt c) > 0) as Hp by lia.
+      destruct (hsum_pos _ _ _ Hp) as (i & Hi & Hfc). unfold fcount in Hfc.
+      destruct (hp c i) as [[m' fs']|] eqn:Ei; [|lia].
+      apply occ_in in Hfc. pose proof (i_old _ _ _ I i m' fs' l Ei Hfc) as Lt.
+      rewrite IH in Ei by lia. discriminate. }
+  intros l. apply (G (nxt c) l). lia.
 Qed.
 
 (* ---- the judgment accepts something: a cell in a cell, its field read and kept past it *)
@@ -909,14 +961,7 @@ Theorem safe sg p r c : chk sg s0 p r -> final r -> steps (init p) c -> ~ faults
 Proof.
   intros Hc Hf Hs. destruct (reach _ _ _ _ Hc Hf Hs) as (s & vs & r' & I & Hk & _ & Hb).
   assert (lent_ok s c) as L by (intros v Hv; rewrite Hb in Hv; discriminate).
-  unfold faults. destruct c as [H n e pd cd]. simpl in *. destruct pd as [|l pd].
-  - destruct cd as [|st cd]; [auto|].
-    destruct st; auto; inversion Hk; subst;
-      match goal with
-      | Ha : alive s _ |- _ => exact (alive_dom sg _ _ _ _ _ I L Ha)
-      | Hx : cn s _ > 0 |- _ => exact (alive_dom sg _ _ _ _ _ I L (alive_own _ _ Hx))
-      end.
-  - apply (i_dom _ _ _ _ I l). unfold tot. simpl. rewrite occ_cons, Nat.eqb_refl. lia.
+  eapply inv_safe; eassumption.
 Qed.
 
 (* and when it ends, with every drop done, nothing is left in the heap *)
@@ -927,19 +972,7 @@ Proof.
   intros Hc Hf Hs Hcode Hpend.
   destruct (reach _ _ _ _ Hc Hf Hs) as (s & vs & r' & I & Hk & Hfr & _).
   rewrite Hcode in Hk. inversion Hk; subst. destruct Hfr as [F1 _].
-  assert (forall k l, nxt c <= l + k -> hp c l = None) as G.
-  { induction k as [|k IH]; intros l Hl.
-    - apply (i_bound _ _ _ _ I). lia.
-    - destruct (hp c l) as [[m fs]|] eqn:E; [|reflexivity]. exfalso.
-      pose proof (i_cnt _ _ _ _ I l m fs E) as C. pose proof (i_pos _ _ _ _ I l m fs E) as P.
-      unfold tot, ext0 in C. rewrite Hpend in C. rewrite vcount_zero in C by exact F1.
-      assert (occ l [] = 0) as O by reflexivity.
-      assert (hsum (hp c) l (nxt c) > 0) as Hp by lia.
-      destruct (hsum_pos _ _ _ Hp) as (i & Hi & Hfc). unfold fcount in Hfc.
-      destruct (hp c i) as [[m' fs']|] eqn:Ei; [|lia].
-      apply occ_in in Hfc. pose proof (i_old _ _ _ _ I i m' fs' l Ei Hfc) as Lt.
-      rewrite IH in Ei by lia. discriminate. }
-  intros l. apply (G (nxt c) l). lia.
+  eapply inv_empty; [exact I|reflexivity|exact F1|exact Hpend].
 Qed.
 
 Print Assumptions safe.
