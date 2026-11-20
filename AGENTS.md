@@ -25,6 +25,7 @@ One binary, `zs`, is the compiler and every tool: `build`, `run`, `check`, `test
 | `runtime/` | the C runtime: `rt.c` (hosts), `rt-embedded.c` (chips), `boards/`, the WebAssembly host |
 | `packages/` | packages the compiler depends on: `libclang`, `xxhash` |
 | `tests/` | the suite's programs and scripts; `test.sh` at the root runs it |
+| `proofs/` | Rocq proofs of what the compiler's checks rest on; `proofs/check.sh` checks them |
 | `examples/`, `bench/` | whole programs; benchmarks (`bench/host` is gated by the suite) |
 | `editors/` | the tree-sitter grammar and the Zed, VS Code and JetBrains extensions |
 | `docs/` | guide, specification, library reference, proposals, reports ([index](docs/README.md)) |

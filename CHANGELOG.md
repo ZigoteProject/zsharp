@@ -90,6 +90,14 @@
   type of `abstract` members, `^a`, `int[]`, a statement outside a function, and the names
   `box`, `lazy`, `stdout`, `new`, `ResizeArray`, `Dictionary` and `System.…`
   (`tests/newcomer/`).
+- `zs build --check-ir` checks reference counting: after the pass, every reference a function
+  gets is given away once on every path, nothing is read once its last reference went, a reuse
+  token is used once and a `let mutable` moved out is filled again; a failure is an internal
+  error naming the function and the variable. The suite runs with it, so every program of
+  `tests/` checks the pass
+  ([report](docs/reports/ownership-check.md); `tests/owned-mutants.sh` puts seven mistakes into
+  the pass, each caught). The judgment's core is proved sound in Rocq (`proofs/Ownership.v`,
+  `proofs/check.sh`): a program it accepts never touches a freed cell and leaks none.
 - For work on this repository: `./test.sh --only <text>` runs the programs in `tests/` whose path
   has the text and nothing else; the suite ends with the count of failures and each `FAIL` line
   again; `./dev -i` passes its standard input to the command; `.mcp.json` starts the compiler's

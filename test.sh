@@ -1030,6 +1030,14 @@ if [ -z "$target" ]; then
   else echo "FAIL tests/stats/parallel_unique.zs"; cat "$tmp/pu.log"; ZS_STATS=1 "$tmp/pu" 2>&1 | tail -2; fail=1; fi
 fi
 
+# the proofs (proofs/): what the ownership check's rules rest on, checked by Rocq, each theorem
+# with no axiom
+if [ -z "$target" ]; then
+  if ! command -v rocq >/dev/null; then echo "skip proofs/check.sh (no rocq; rebuild the dev image)"
+  elif out=$(proofs/check.sh 2>&1) && ! echo "$out" | grep -q -v '^Closed under the global context$'; then echo "ok   proofs/check.sh ($(echo "$out" | wc -l) theorems, no axioms)"
+  else echo "FAIL proofs/check.sh"; echo "$out" | head -20; fail=1; fi
+fi
+
 # the bootstrap (0020): the compiler builds itself to the same bytes
 if [ -z "$target" ]; then
   if out=$(tests/bootstrap.sh bin/zs 2>&1); then echo "ok   tests/bootstrap.sh ($(echo "$out" | paste -sd ';' - | sed 's/;/; /g'))"

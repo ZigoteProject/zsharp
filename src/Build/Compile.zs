@@ -129,6 +129,13 @@ let constantInits (types: Map<string, TypeInfo>) (kept: string -> bool) (mayInli
 /// can't go on. What must not touch the heap isn't checked (lower does it; the editor shows what
 /// does). A debug build keeps every function whole (no inlining), so breakpoints on them hit.
 /// cant: the functions the target can't run (unrunnable).
+/// After reference counting, with --check-ir: every function's counts checked (Core.Check.owned).
+let ownedAfter (on: bool) (types: Map<string, TypeInfo>) (borrowed: Map<string, Set<int>>) (funs: list<MFun>) : unit / Stops =
+  if on then
+    match Core.Check.owned types borrowed funs with
+    | Some what -> Stops.stop { file = ""; line = 0; message = "internal error (--check-ir): " + what }
+    | None -> ()
+
 let counted (prog0: Program) (debugInfo: bool) (time: bool) (checkIr: bool) (cant: Map<string, string * string>) : result<Program * Map<string, TypeInfo> * list<MFun>, PassError> =
   let prog = Opt.Mono.lowered prog0
   // functions called from outside keep their signatures (main, the tests, C exports)
@@ -159,7 +166,9 @@ let counted (prog0: Program) (debugInfo: bool) (time: bool) (checkIr: bool) (can
     // that starts it
     let machines = Set.ofList (List.map (fun (f: MFun) -> f.name) (List.filter (fun (f: MFun) -> waits f.body) lifted))
     let entries = Set.union fixedNames machines
-    let rced = check "reference counting" (stage "rc" (timed time "reference counting" (fun () -> Opt.Rc.lower types (Opt.Rc.borrowing types entries lifted) lifted)))
+    let borrowed = Opt.Rc.borrowing types entries lifted
+    let rced = check "reference counting" (stage "rc" (timed time "reference counting" (fun () -> Opt.Rc.lower types borrowed lifted)))
+    ownedAfter checkIr types borrowed rced
     Ok(prog, types, rced)
   handle passes () with
   | Stops.stop e, _ -> Error e

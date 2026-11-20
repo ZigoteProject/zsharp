@@ -323,9 +323,10 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
       Opt.Rc.lower typesNow all mfuns
     let counted = timedOn timedLines "reference counting" (Array.Parallel.map count) inputs
     for k in 0 .. Buffer.length counting - 1 do
-      let (u, externals, _) = counting.[k]
+      let (u, externals, all) = counting.[k]
       let mine = check "reference counting" counted.[k]
       Compile.dumpAt "rc" mine
+      Compile.ownedAfter o.checkIr typesNow all mine
       made.Value <- Map.add u.file { mfuns = mine; calls = List.map (fun g -> Map.find g abiFun.Value) externals } made.Value
   // a module's code is current when what it was made from is: its checked result's key and the
   // library's (in its key), the generic functions it copied, and the ABIs of the modules it calls;
