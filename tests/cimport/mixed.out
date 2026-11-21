@@ -1,0 +1,15 @@
+f1 2.5
+fi 3 7
+id 11 12.5
+cf -2 1.5
+fa [|2.5; 1.5|]
+nest 2 12
+ii -2 1
+fii 2.5 -3 2
+dp 1.5 10
+after floats 32136
+after ints 5432136
+narrow 2147516541
+int 2147483647 -5
+unsigned 2147483647
+short 300 -32767

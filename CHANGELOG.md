@@ -23,6 +23,19 @@
   `already defined`, as one holding `Queue` is: rename it.
 
 ### Compiler
+- **RISC-V Linux, as a target** (a start: built, not yet run): `--target riscv64-linux-musl` and
+  `riscv64-linux-gnu` build a program and a library for 64-bit RISC-V (RV64GC) through `zig cc`.
+  C's boundary follows its convention, LP64D: a struct of up to 16 bytes goes in one or two
+  integer registers and a bigger one by a pointer to a copy; a struct that is one float, two, or
+  a float and an integer goes field by field in float and integer registers while they last; an
+  integer narrower than a register is widened in it (an `i32` by its sign, an `u32` too), in
+  externs, `import c`, `[<Export>]` and callbacks. The runtime's stack-overflow panic and
+  `[<Multiversion>]`'s one-letter extensions (`"v"`) are there. What the compiler writes for
+  `tests/cimport/`, `tests/cexport/` and 1,600 generated signatures is what clang writes for the
+  same C, and every program of the suite builds for it
+  (`./test.sh --target riscv64-linux-musl --build-only`); none has run yet (qemu-user's
+  `qemu-riscv64` would: `./test.sh --target riscv64-linux-musl` in the dev container), so it
+  isn't a supported platform. `tests/cimport/mixed.zs` has the shapes it tells apart.
 - **FreeBSD, as a target** (a start: built, not yet run): `--target x86_64-freebsd` and
   `aarch64-freebsd` build a program, a library and the compiler itself for FreeBSD through
   `zig cc`, as the other cross targets do. The runtime's event loop is kqueue's there, a `Mutex`'s

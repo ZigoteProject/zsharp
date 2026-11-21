@@ -429,6 +429,7 @@ let cCall (fx: F) (callee: string) (s: ExternSig) (args: list<CExpr>) (vs: list<
   // handles made for the call, released after it
   let handles = Buffer.empty
   let npars = List.length s.pars
+  let int32 = cParam g (TCon("i32", [])) + " "
   let pass (i: int) (av: CExpr * string) : string =
     let (a, v) = av
     match tyName a.ty with
@@ -472,14 +473,15 @@ let cCall (fx: F) (callee: string) (s: ExternSig) (args: list<CExpr>) (vs: list<
           let slot = slotFor g em pt
           emit em $"store {llty g pt} {v}, ptr {slot}"
           $"{byval g pt} {slot}"
-    // C default argument promotions for variadic arguments
-    | "bool" -> "i32 " + instr em $"zext i1 {v} to i32"
+    // C default argument promotions for variadic arguments (an int widened in its register
+    // where the target asks it, as a fixed one is)
+    | "bool" -> int32 + instr em $"zext i1 {v} to i32"
     | "i8"
-    | "i16" -> "i32 " + instr em $"sext {llty g a.ty} {v} to i32"
+    | "i16" -> int32 + instr em $"sext {llty g a.ty} {v} to i32"
     | "u8"
-    | "u16" -> "i32 " + instr em $"zext {llty g a.ty} {v} to i32"
+    | "u16" -> int32 + instr em $"zext {llty g a.ty} {v} to i32"
     | "f32" -> "double " + instr em $"fpext float {v} to double"
-    | n when Set.contains n prims && n <> "unit" -> $"{llty g a.ty} {v}"
+    | n when Set.contains n prims && n <> "unit" -> $"{cParam g a.ty} {v}"
     | _ -> fail fx $"a {showT g a.ty} cannot be passed to a C variadic function"
   let passed = List.filter (fun (x: string) -> x <> "") (List.mapi pass (List.zip args vs))
   let retSlot = if sret then Some(slotFor g em s.ret) else None
@@ -491,7 +493,9 @@ let cCall (fx: F) (callee: string) (s: ExternSig) (args: list<CExpr>) (vs: list<
   let fnTy =
     if s.variadic then
       let sretT = if sret then [ $"ptr sret({llty g s.ret})" ] else []
-      ret + " (" + String.join ", " (List.concat [ sretT; cParamList g s.pars sret; [ "..." ] ]) + ")"
+      // a function type has no attributes: a parameter's widening is the argument's, above
+      let bare (p: string) = if String.endsWith " signext" p || String.endsWith " zeroext" p then String.sub p 0 (String.length p - 8) else p
+      ret + " (" + String.join ", " (List.concat [ sretT; List.map bare (cParamList g s.pars sret); [ "..." ] ]) + ")"
     else
       ret
   let call = $"call {fnTy} {callee}({argv})"

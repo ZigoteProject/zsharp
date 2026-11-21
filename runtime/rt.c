@@ -93,6 +93,8 @@ static uintptr_t fault_sp(void *context) {
     return (uintptr_t)uc->uc_mcontext.sp;
 #elif defined(__linux__) && defined(__arm__)
     return (uintptr_t)uc->uc_mcontext.arm_sp;
+#elif defined(__linux__) && defined(__riscv)
+    return (uintptr_t)uc->uc_mcontext.__gregs[2]; // REG_SP
 #elif defined(__FreeBSD__) && defined(__x86_64__)
     return (uintptr_t)uc->uc_mcontext.mc_rsp;
 #elif defined(__FreeBSD__) && defined(__aarch64__)
@@ -6659,6 +6661,13 @@ static bool cpu_has(const char *f, size_t n) {
     HAS("bf16", hw2 & (1ul << 14));
 #undef HAS
     return false;
+}
+#elif defined(__riscv) && defined(__linux__)
+#include <sys/auxv.h>
+static bool cpu_has(const char *f, size_t n) {
+    // the kernel's hwcap has a bit for each one-letter extension ("v", "c"), a for bit 0; the
+    // longer names ("zbb") aren't in it, so they're extensions it doesn't have
+    return n == 1 && f[0] >= 'a' && f[0] <= 'z' && (getauxval(AT_HWCAP) >> (f[0] - 'a') & 1);
 }
 #elif defined(__aarch64__) && defined(__APPLE__)
 #include <sys/sysctl.h>

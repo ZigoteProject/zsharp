@@ -25,6 +25,11 @@ runtime's port and the link are in, and the suite builds every program for them
 (`./test.sh --target x86_64-freebsd --build-only`). Nothing runs them yet and there is no runner,
 so they aren't in the table.
 
+RISC-V Linux (`--target riscv64-linux-musl`, `riscv64-linux-gnu`) is at the same point: its C
+convention (LP64D, `abiRiscv64` in `src/Gen/Layout.zs`) and the runtime's port are in and the
+suite builds for it; it has not run under `qemu-riscv64` yet. The RISC-V chips are proposal 0027's
+and not started.
+
 ## Adding a board (a chip already supported)
 
 A target is a row found by name (`Options.mcus` in `src/`): the core's flags, the board's

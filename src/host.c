@@ -19,6 +19,8 @@ const char *zs_host_arch(void) {
     return "x86_64";
 #elif defined(__aarch64__)
     return "aarch64";
+#elif defined(__riscv) && __riscv_xlen == 64
+    return "riscv64";
 #else
     return "unknown";
 #endif

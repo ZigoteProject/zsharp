@@ -188,6 +188,9 @@ let heap (g: G) (t: Ty) : bool = needsRc g.v g.types t
 
 let isArm64 (g: G) : bool = g.opts.arch = "aarch64"
 
+/// 64-bit RISC-V, whose C ABI here is LP64D's (the hard-float one Linux uses).
+let isRiscv64 (g: G) : bool = g.opts.arch = "riscv64"
+
 /// Windows: the Microsoft x64 convention on x86-64 (on arm64, Windows's is AAPCS64's for
 /// structs), LLP64.
 let isWindows (g: G) : bool = String.contains "-windows" g.opts.target
@@ -546,6 +549,52 @@ let abiArm32 (g: G) (t: Ty) (isResult: bool) : Abi =
   else if align = 8 then Pieces [ $"[{(size + 7) / 8} x i64]" ]
   else Pieces [ $"[{(size + 3) / 4} x i32]" ]
 
+// whether a C type has a union in it, at any depth
+let rec private hasCUnion (g: G) (t: Ty) : bool =
+  if Option.isSome (cUnion g t) then
+    true
+  else
+    match t with
+    | TCon("fixed", [ el; _ ]) -> hasCUnion g el
+    | TCon(n, _) ->
+      match Map.tryFind n g.types with
+      | Some { def = RecordDef fs } -> List.exists (fun (_, ft) -> hasCUnion g ft) fs
+      | _ -> false
+    | _ -> false
+
+// a scalar field's size in a 64-bit C struct
+let private scalarBytes (s: string) : int =
+  match s with
+  | "i8" -> 1
+  | "i16" -> 2
+  | "i32"
+  | "float" -> 4
+  | _ -> 8
+
+/// LP64D's float rule: a struct that is, its nested structs and arrays laid flat, one float or
+/// double, two of them, or one with one integer, goes field by field in float registers (and an
+/// integer one), while there are registers for all of it. A union never does, nor a struct with
+/// a pointer (clang's and GCC's reading of "integer").
+let riscvFloats (g: G) (t: Ty) : option<list<string>> =
+  let isF (s: string) = s = "float" || s = "double"
+  let (_, _, scalars) = cLayout g t
+  match scalars with
+  | [ (_, a) ] when isF a && not (hasCUnion g t) -> Some [ a ]
+  | [ (o1, a); (o2, b) ] when (isF a || isF b) && a <> "ptr" && b <> "ptr" && o2 >= o1 + scalarBytes a && not (hasCUnion g t) -> Some [ a; b ]
+  | _ -> None
+
+/// LP64D (riscv64) otherwise, and for a result always: a struct of up to 8 bytes as one integer
+/// register's i64, up to 16 as two, anything bigger by a pointer to a copy the caller made (a
+/// result through an sret pointer). `floats`: whether the float rule's registers are there.
+let abiRiscv64 (g: G) (t: Ty) (floats: bool) : Abi =
+  match (if floats then riscvFloats g t else None) with
+  | Some ps -> Pieces ps
+  | None ->
+    let (size, _, _) = cLayout g t
+    if size > 16 then Memory
+    else if size > 8 then Pieces [ "[2 x i64]" ]
+    else Pieces [ "i64" ]
+
 /// Microsoft x64: a struct of 1, 2, 4 or 8 bytes as an integer that size, any other by a pointer
 /// to a copy (or returned through an sret pointer).
 let abiWin64 (g: G) (t: Ty) : Abi =
@@ -561,6 +610,9 @@ let abiFor (g: G) (t: Ty) (isResult: bool) : Abi =
     abiArm64 g t isResult
   else if isArm32 g then
     abiArm32 g t isResult
+  else if isRiscv64 g then
+    // a result has the two registers of each kind the float rule can ask for
+    abiRiscv64 g t true
   else if isWindows g then
     abiWin64 g t
   else if isWasm g then
@@ -585,7 +637,27 @@ let abiFor (g: G) (t: Ty) (isResult: bool) : Abi =
 
 let abiOf (g: G) (t: Ty) : Abi = abiFor g t false
 
-let cParam (g: G) (t: Ty) : string = if llty g t = "i1" then "i1 zeroext" else llty g t
+/// What RISC-V (riscv64) asks of an integer narrower than a register, passed or returned in
+/// one: widened there, a 32-bit one by its sign whatever its type's (C's callee and caller both
+/// assume it), an 8- or 16-bit one as its type is. "" elsewhere, and for every other type.
+let cExt (g: G) (t: Ty) : string =
+  if not (isRiscv64 g) then
+    ""
+  else
+    match llty g t with
+    | "i32" -> "signext"
+    | "i8"
+    | "i16" ->
+      match t with
+      | TCon("i8", _)
+      | TCon("i16", _) -> "signext"
+      | _ -> "zeroext"
+    | _ -> ""
+
+let cParam (g: G) (t: Ty) : string =
+  if llty g t = "i1" then "i1 zeroext"
+  else if cExt g t <> "" then llty g t + " " + cExt g t
+  else llty g t
 
 /// How each parameter of a C function is passed. x86-64 System V: a struct goes in registers only
 /// when all its eightbytes fit in the ones left (6 for integers, less one for an sret pointer, and
@@ -593,6 +665,42 @@ let cParam (g: G) (t: Ty) : string = if llty g t = "i1" then "i1 zeroext" else l
 /// scalar past the registers goes on the stack by itself, which LLVM does. AAPCS64's and AAPCS's
 /// rules for the arrays they're given are LLVM's own (AAPCS splits one between the last core
 /// registers and the stack), as Microsoft x64's four slots by position are.
+// LP64D's: eight integer registers (one the sret pointer's) and eight float ones; a struct under
+// the float rule takes it only while the registers it needs are left, and is an integer
+// convention's struct otherwise (one that doesn't fit the registers left goes on the stack, or
+// half of it, which LLVM does from the pieces)
+let private cModesRiscv64 (g: G) (pars: list<Ty>) (sret: bool) : list<Abi> =
+  let ints = ref (if sret then 7 else 8)
+  let floats = ref 8
+  let take (n: int) = ints.Value <- max 0 (ints.Value - n)
+  let mode (t: Ty) : Abi =
+    match t with
+    | TCon("callback", _)
+    | TCon("span", _) ->
+      take 2
+      Scalar
+    | TCon("unit", []) -> Scalar
+    | _ ->
+      let lt = llty g t
+      if not (String.startsWith "{" lt) || lt = "{}" then
+        if (lt = "double" || lt = "float") && floats.Value > 0 then floats.Value <- floats.Value - 1 else take 1
+        Scalar
+      else
+        let fit (ps: list<string>) =
+          let nf = List.length (List.filter (fun (p: string) -> p = "float" || p = "double") ps)
+          nf <= floats.Value && List.length ps - nf <= ints.Value
+        match riscvFloats g t with
+        | Some ps when fit ps ->
+          let nf = List.length (List.filter (fun (p: string) -> p = "float" || p = "double") ps)
+          floats.Value <- floats.Value - nf
+          take (List.length ps - nf)
+          Pieces ps
+        | _ ->
+          let (size, _, _) = cLayout g t
+          take (if size > 8 && size <= 16 then 2 else 1)
+          abiRiscv64 g t false
+  List.map mode pars
+
 let cModes (g: G) (pars: list<Ty>) (sret: bool) : list<Abi> =
   let ints = ref (if sret then 5 else 6)
   let sses = ref 8
@@ -621,14 +729,14 @@ let cModes (g: G) (pars: list<Ty>) (sret: bool) : list<Abi> =
           else
             Memory
       | Memory -> Memory
-  List.map mode pars
+  if isRiscv64 g then cModesRiscv64 g pars sret else List.map mode pars
 
-/// A struct passed in memory: x86-64 System V copies it onto the stack (byval); AAPCS64 and
-/// Microsoft x64 pass a pointer to a copy the caller made.
+/// A struct passed in memory: x86-64 System V copies it onto the stack (byval); AAPCS64,
+/// Microsoft x64 and RISC-V pass a pointer to a copy the caller made.
 let byval (g: G) (t: Ty) : string =
   let (_, a, _) = cLayout g t
   // AAPCS's stack slots are words: a copy is aligned to 4 at least
-  if isArm64 g || isWindows g then "ptr" else $"ptr byval({llty g t}) align {(if isArm32 g then max 4 a else a)}"
+  if isArm64 g || isWindows g || isRiscv64 g then "ptr" else $"ptr byval({llty g t}) align {(if isArm32 g then max 4 a else a)}"
 
 /// LLVM return type for a C result, and whether it is returned through an sret pointer.
 let cRet (g: G) (t: Ty) : string * bool =
@@ -636,7 +744,7 @@ let cRet (g: G) (t: Ty) : string * bool =
   | TCon("unit", []) -> ("void", false)
   | _ ->
     match abiFor g t true with
-    | Scalar -> ((if llty g t = "i1" then "zeroext i1" else llty g t), false)
+    | Scalar -> ((if llty g t = "i1" then "zeroext i1" else if cExt g t <> "" then cExt g t + " " + llty g t else llty g t), false)
     | Pieces [ p ] -> (p, false)
     | Pieces ps -> ("{ " + String.join ", " ps + " }", false)
     | Memory -> ("void", true)
@@ -648,21 +756,27 @@ let slotFor (g: G) (em: Emitter) (t: Ty) : string =
   alloca em $"{slot} = alloca {{ {llty g t}, [16 x i8] }}, align 8"
   slot
 
+// where each piece is in the struct's bytes: an eightbyte each, or under RISC-V's float rule,
+// whose two pieces are the two fields themselves, each field's own offset
+let private pieceOffsets (g: G) (t: Ty) (count: int) : list<int> =
+  let (_, _, scalars) = cLayout g t
+  if isRiscv64 g && count = 2 && List.length scalars = 2 then List.map fst scalars else List.init count (fun k -> 8 * k)
+
 let toPieces (g: G) (em: Emitter) (t: Ty) (v: string) (pieces: list<string>) : list<string * string> =
   let slot = slotFor g em t
   emit em $"store {llty g t} {v}, ptr {slot}"
-  let piece (k: int) (pt: string) =
-    let p = instr em $"getelementptr i8, ptr {slot}, i_W {8 * k}"
+  let piece (at: int) (pt: string) =
+    let p = instr em $"getelementptr i8, ptr {slot}, i_W {at}"
     (pt, instr em $"load {pt}, ptr {p}")
-  List.mapi piece pieces
+  List.map2 piece (pieceOffsets g t (List.length pieces)) pieces
 
 let fromPieces (g: G) (em: Emitter) (t: Ty) (pieces: list<string * string>) : string =
   let slot = slotFor g em t
-  let piece (k: int) (pp: string * string) =
+  let piece (at: int) (pp: string * string) =
     let (pt, pv) = pp
-    let p = instr em $"getelementptr i8, ptr {slot}, i_W {8 * k}"
+    let p = instr em $"getelementptr i8, ptr {slot}, i_W {at}"
     emit em $"store {pt} {pv}, ptr {p}"
-  List.iteri piece pieces
+  List.iter2 piece (pieceOffsets g t (List.length pieces)) pieces
   instr em $"load {llty g t}, ptr {slot}"
 
 /// The LLVM parameter types (with attributes) a C parameter of this type becomes, passed so.
