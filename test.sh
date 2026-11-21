@@ -8,8 +8,8 @@
 # --target <triple>: cross-compile the programs and C interop tests (zs build --target) and run
 #   them under qemu-user, e.g. --target aarch64-linux-musl, or Wine for x86_64-windows-gnu; the
 #   host-only tool checks are skipped.
-# --build-only: with --target, build every program and C interop test and run none (macOS's,
-#   where nothing here runs them); a failed build fails the test.
+# --build-only: with --target, build every program and C interop test and run none (macOS's and
+#   FreeBSD's, where nothing here runs them); a failed build fails the test.
 # --zs <binary>: test that compiler, installed as bin/zs with the library and runtime beside it,
 #   instead of building src/.
 # --release: build the programs optimized (zs build --release), so what LLVM's optimizer may assume
@@ -41,6 +41,8 @@ while [ $# -gt 0 ]; do
       case $target in
         *-windows-*) qemu=(timeout 120 wine); syslibs=(-lws2_32 -lapi-ms-win-core-synch-l1-2-0)
           export LANG=C.UTF-8 WINEDEBUG=-all XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/tmp/zs-xdg-$UID}; mkdir -p "$XDG_RUNTIME_DIR" ;;
+        # what a C program linking a Z# library names there: the threads' library and backtrace's
+        *-freebsd*) qemu=("qemu-${target%%-*}"); syslibs=(-lpthread -lexecinfo) ;;
         *) qemu=("qemu-${target%%-*}") ;;
       esac ;;
     --build-only) buildonly=1 ;;
@@ -56,6 +58,7 @@ done
 windows=0; [[ $target == *-windows-* ]] && windows=1
 case $(uname -s) in
   MINGW* | MSYS* | CYGWIN*) windows=1; syslibs=(-lws2_32 -lapi-ms-win-core-synch-l1-2-0) ;;
+  FreeBSD) syslibs=(-lpthread -lexecinfo) ;;
 esac
 if [ -z "$zsbin" ]; then
   [ -x "${ZS_STAGE0:-}" ] || { echo "no stage 0 compiler (\$ZS_STAGE0): run the tests through ./dev"; exit 1; }

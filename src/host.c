@@ -5,6 +5,10 @@
 #include <windows.h>
 #elif defined(__APPLE__)
 #include <mach-o/dyld.h>
+#elif defined(__FreeBSD__)
+#include <sys/types.h>
+#include <sys/sysctl.h>
+#include <unistd.h>
 #else
 #include <unistd.h>
 #endif
@@ -26,6 +30,8 @@ const char *zs_host_os(void) {
     return "windows";
 #elif defined(__APPLE__)
     return "macos";
+#elif defined(__FreeBSD__)
+    return "freebsd";
 #else
     return "linux";
 #endif
@@ -43,6 +49,11 @@ const char *zs_host_exe(void) {
 #ifdef __APPLE__
     uint32_t n = sizeof raw;
     if (_NSGetExecutablePath(raw, &n) != 0) raw[0] = 0;
+#elif defined(__FreeBSD__)
+    // the kernel's name for it: /proc isn't mounted there as it comes
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1};
+    size_t n = sizeof raw;
+    if (sysctl(mib, 4, raw, &n, NULL, 0) != 0) raw[0] = 0;
 #else
     strcpy(raw, "/proc/self/exe");
 #endif

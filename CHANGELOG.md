@@ -23,6 +23,15 @@
   `already defined`, as one holding `Queue` is: rename it.
 
 ### Compiler
+- **FreeBSD, as a target** (a start: built, not yet run): `--target x86_64-freebsd` and
+  `aarch64-freebsd` build a program, a library and the compiler itself for FreeBSD through
+  `zig cc`, as the other cross targets do. The runtime's event loop is kqueue's there, a `Mutex`'s
+  waiting threads sleep in the kernel (`_umtx_op`), a stack overflow is a panic that says so, a
+  panic's backtrace names Z#'s functions, and `[<Multiversion>]` reads the CPU's features;
+  programs link `libthr` and `libexecinfo`. `zs doctor` on FreeBSD names `pkg`'s packages, and
+  `import c` finds an `llvm<N>` package's libclang. Every program of the suite builds for it
+  (`./test.sh --target x86_64-freebsd --build-only`); none has run on FreeBSD yet, there is no
+  release archive and no CI runner, so it isn't a supported platform.
 - A trait method at a type nothing gives (`ColumnBuffer.empty ()` unannotated, rows of no type, a
   `Zero.zero ()` of a program's own) is an error where it's called, once its module is checked,
   which `zs check` and the editor show: it passed the check, and the build stopped with

@@ -6,7 +6,7 @@ extern zs_host_os : unit -> cstr
 extern zs_host_env_count : unit -> i64
 extern zs_host_env_at : i64 -> cstr
 
-/// The operating system the compiler runs on: linux, macos or windows.
+/// The operating system the compiler runs on: linux, macos, freebsd or windows.
 let hostOs () : string = String.ofCStr (zs_host_os ())
 
 /// This compiler's release: src/zs.toml's version, which test.sh checks it against.

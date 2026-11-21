@@ -1401,7 +1401,8 @@ let test (args: list<string>) : int =
     /// machine can't work.
 let doctor () : int =
   let os = Tools.hostOs ()
-  let pick (mac: string) (linux: string) (windows: string) = if os = "macos" then mac else if os = "windows" then windows else linux
+  let pick (mac: string) (linux: string) (windows: string) (freebsd: string) =
+    if os = "macos" then mac else if os = "windows" then windows else if os = "freebsd" then freebsd else linux
   // a tool's first line of output, when it runs
   let version (program: string) (args: list<string>) : option<string> =
     match Tools.runSplit program args with
@@ -1420,7 +1421,7 @@ let doctor () : int =
   report (if libOk then Some(Diag.Render.path lib) else None) "library" "Core and Std" "reinstall zs, or set ZS_LIB to its lib/"
   report (if rtOk then Some(Diag.Render.path rt) else None) "runtime" "rt.c and the boards" "reinstall zs, or set ZS_RUNTIME"
   let clang = version "clang" [ "--version" ]
-  let getClang = pick "brew install llvm, with $(brew --prefix llvm)/bin first on PATH" "LLVM's release (apt's clang may be older), first on PATH" "winget install LLVM.LLVM"
+  let getClang = pick "brew install llvm, with $(brew --prefix llvm)/bin first on PATH" "LLVM's release (apt's clang may be older), first on PATH" "winget install LLVM.LLVM" "pkg install llvm23, with /usr/local/llvm23/bin first on PATH (the base system's clang is older)"
   // the IR is LLVM 23's (its coroutine intrinsics): an older clang builds some programs, not tasks
   let major =
     match Option.bind (fun (v: string) -> Option.map (fun (at: int) -> String.sub v (at + 14) (String.length v - at - 14)) (String.indexOf "clang version " v)) clang with
@@ -1430,13 +1431,13 @@ let doctor () : int =
   match clang with
   | Some v when not recent -> println $"--   {"clang",-16} {v}: too old, LLVM 23 or later is needed (a task's code uses its coroutines): {getClang}"
   | _ -> report clang "clang" "builds for this machine" getClang
-  report (version "zig" [ "version" ]) "zig" "builds for other targets, chips and WebAssembly" (pick "brew install zig" "your distribution's zig, or ziglang.org/download" "winget install zig.zig")
-  report (if Libclang.available () then Some "found" else None) "libclang" "import c" (pick "brew install llvm, or set ZS_LIBCLANG to a libclang.dylib" "apt install libclang-dev, or set ZS_LIBCLANG" "LLVM's release has libclang.dll beside clang.exe")
-  report (version "git" [ "--version" ]) "git" "git dependencies" (pick "xcode-select --install, or brew install git" "apt install git" "winget install Git.Git")
-  report (version "qemu-system-arm" [ "--version" ]) "qemu-system-arm" "zs run on a chip's QEMU board" (pick "brew install qemu" "apt install qemu-system-arm" "winget install SoftwareFreedomConservancy.QEMU")
+  report (version "zig" [ "version" ]) "zig" "builds for other targets, chips and WebAssembly" (pick "brew install zig" "your distribution's zig, or ziglang.org/download" "winget install zig.zig" "pkg install zig")
+  report (if Libclang.available () then Some "found" else None) "libclang" "import c" (pick "brew install llvm, or set ZS_LIBCLANG to a libclang.dylib" "apt install libclang-dev, or set ZS_LIBCLANG" "LLVM's release has libclang.dll beside clang.exe" "pkg install llvm23, or set ZS_LIBCLANG to a libclang.so")
+  report (version "git" [ "--version" ]) "git" "git dependencies" (pick "xcode-select --install, or brew install git" "apt install git" "winget install Git.Git" "pkg install git")
+  report (version "qemu-system-arm" [ "--version" ]) "qemu-system-arm" "zs run on a chip's QEMU board" (pick "brew install qemu" "apt install qemu-system-arm" "winget install SoftwareFreedomConservancy.QEMU" "pkg install qemu")
   report (version "probe-rs" [ "--version" ]) "probe-rs" "zs run on a real board" "https://probe.rs/docs/getting-started/installation"
-  report (version "node" [ "--version" ]) "node" "zs run for WebAssembly" (pick "brew install node" "apt install nodejs" "winget install OpenJS.NodeJS")
-  let debugger = if os = "macos" then "lldb" else "gdb"
-  report (version debugger [ "--version" ]) debugger "zs build -g's debugger" (pick "xcode-select --install" "apt install gdb" "LLVM's release has lldb")
+  report (version "node" [ "--version" ]) "node" "zs run for WebAssembly" (pick "brew install node" "apt install nodejs" "winget install OpenJS.NodeJS" "pkg install node")
+  let debugger = if os = "macos" || os = "freebsd" then "lldb" else "gdb"
+  report (version debugger [ "--version" ]) debugger "zs build -g's debugger" (pick "xcode-select --install" "apt install gdb" "LLVM's release has lldb" "the base system has lldb, and so does pkg install llvm23")
   if libOk && rtOk && recent then 0 else 1
 

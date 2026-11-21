@@ -11,8 +11,8 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
-#if defined(__GLIBC__) || defined(__APPLE__)
-#include <execinfo.h> // backtraces; musl (cross-compiled builds) has none
+#if defined(__GLIBC__) || defined(__APPLE__) || defined(__FreeBSD__)
+#include <execinfo.h> // backtraces; musl (cross-compiled builds) has none; FreeBSD: libexecinfo
 #endif
 
 // Windows (x86_64-windows-gnu: mingw-w64 over the UCRT, threads through winpthreads): Winsock
@@ -40,10 +40,10 @@
 #define obj_free free
 #endif
 
-#if defined(_WIN32) || defined(__APPLE__)
+#if defined(_WIN32) || defined(__APPLE__) || defined(__FreeBSD__)
 // LLVM's llvm.roundeven calls these where the processor has no instruction for it (an Intel Mac's
-// baseline), and mingw-w64's libm and the macOS one a cross build links lack them: the default
-// rounding mode is to nearest, ties to even
+// baseline), and mingw-w64's libm, the macOS one a cross build links and FreeBSD's lack them: the
+// default rounding mode is to nearest, ties to even
 #include <math.h>
 double roundeven(double x) { return nearbyint(x); }
 float roundevenf(float x) { return nearbyintf(x); }
@@ -69,7 +69,7 @@ float roundevenf(float x) { return nearbyintf(x); }
 #if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
 #define ZS_SANITIZED 1
 #endif
-#if (defined(__linux__) || defined(__APPLE__)) && !defined(ZS_SANITIZED)
+#if (defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__)) && !defined(ZS_SANITIZED)
 #define ZS_OVERFLOW_GUARD 1
 #endif
 
@@ -93,6 +93,10 @@ static uintptr_t fault_sp(void *context) {
     return (uintptr_t)uc->uc_mcontext.sp;
 #elif defined(__linux__) && defined(__arm__)
     return (uintptr_t)uc->uc_mcontext.arm_sp;
+#elif defined(__FreeBSD__) && defined(__x86_64__)
+    return (uintptr_t)uc->uc_mcontext.mc_rsp;
+#elif defined(__FreeBSD__) && defined(__aarch64__)
+    return (uintptr_t)uc->uc_mcontext.mc_gpregs.gp_sp;
 #else
     (void)uc;
     return 0;
@@ -331,9 +335,25 @@ _Noreturn static void zs_fatal(const char *msg);
 // ---- Z# names in a panic's backtrace (0011): the program's own symbol table (.symtab, which
 // a build keeps; its functions are internal, so nothing else names them), read from the
 // executable at the panic and sorted by address; a frame's function is the nearest symbol at or
-// below it. Linux's ELF; elsewhere the C library's backtrace_symbols_fd stands.
-#if defined(__linux__)
+// below it. Linux's and FreeBSD's ELF; elsewhere the C library's backtrace_symbols_fd stands.
+#if defined(__linux__) || defined(__FreeBSD__)
 #include <elf.h>
+#ifdef __FreeBSD__
+#include <sys/sysctl.h>
+#endif
+
+// the running executable, opened to read (FreeBSD has no /proc as it comes: the kernel names it)
+static FILE *open_self(void) {
+#ifdef __FreeBSD__
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1};
+    char path[PATH_MAX];
+    size_t n = sizeof path;
+    if (sysctl(mib, 4, path, &n, NULL, 0) != 0) return NULL;
+    return fopen(path, "rb");
+#else
+    return fopen("/proc/self/exe", "rb");
+#endif
+}
 
 _Noreturn void zs_panic_c(const char *msg);
 
@@ -354,7 +374,7 @@ static int symbol_order(const void *a, const void *b) {
 
 static bool load_symbols(void) {
     if (symbols) return true;
-    FILE *f = fopen("/proc/self/exe", "rb");
+    FILE *f = open_self();
     if (!f) return false;
     if (fseek(f, 0, SEEK_END) != 0) return false;
     long size = ftell(f);
@@ -526,12 +546,12 @@ _Noreturn static void panic_with(const char *msg, size_t len) {
     fwrite(msg, 1, len, stderr);
     fputc('\n', stderr);
     fflush(stderr); // the UCRT buffers it when it isn't a console
-#if defined(__GLIBC__) || defined(__APPLE__)
+#if defined(__GLIBC__) || defined(__APPLE__) || defined(__FreeBSD__)
     const char *bt = getenv("ZS_BACKTRACE");
     if (!bt || strcmp(bt, "0") != 0) {
         void *frames[64];
         int n = backtrace(frames, 64);
-#if defined(__linux__)
+#if defined(__linux__) || defined(__FreeBSD__)
         if (load_symbols()) print_frames(frames + 1, n - 1);
         else backtrace_symbols_fd(frames + 1, n - 1, 2);
 #else
@@ -3087,7 +3107,7 @@ static zs_int proc_wait(zs_int n) {
         pthread_mutex_unlock(&procs_mu);
         int status = 0;
         pid_t w = -1;
-#ifdef __linux__
+#if defined(__linux__) || defined(__FreeBSD__)
         // waited for without reaping it, then reaped under the lock: a kill, which takes it too,
         // reaches the process or its zombie, never an id that's free for another
         siginfo_t si;
@@ -3743,9 +3763,9 @@ static void sk_close(zs_int fd) {
 #define S(fd) (fd)
 #endif
 
-// the kernel's readiness queue: epoll on Linux, kqueue on macOS. poll_set changes what it
-// watches a descriptor for (LOOP_IN, LOOP_OUT) from had to want; poll_wait gives what's ready,
-// a hang-up or an error as both
+// the kernel's readiness queue: epoll on Linux, kqueue on macOS and FreeBSD. poll_set changes
+// what it watches a descriptor for (LOOP_IN, LOOP_OUT) from had to want; poll_wait gives what's
+// ready, a hang-up or an error as both
 #define LOOP_IN 1u
 #define LOOP_OUT 2u
 typedef struct { int fd; uint32_t ready; } poll_event;
@@ -3770,7 +3790,7 @@ static int poll_wait(poll_q q, poll_event *evs, int max, int timeout_ms) {
     }
     return k;
 }
-#elif defined(__APPLE__)
+#elif defined(__APPLE__) || defined(__FreeBSD__)
 #include <sys/event.h>
 typedef int poll_q;
 #define POLL_NONE (-1)
@@ -5668,7 +5688,8 @@ void *zs_par_fork(void *clo, void (*run)(void *, void *), zs_int size) { return 
 void zs_par_free(void *j) { obj_free(j); }
 
 // ---- locks (Mutex): a 32-bit word, 0 free, 1 held, 2 held with threads waiting (Drepper,
-// "Futexes are tricky"); on Linux, macOS and Windows the waiting threads sleep in the kernel
+// "Futexes are tricky"); on Linux, macOS, FreeBSD and Windows the waiting threads sleep in the
+// kernel
 #ifdef __linux__
 #include <linux/futex.h>
 #include <sys/syscall.h>
@@ -5683,6 +5704,12 @@ int __ulock_wait(uint32_t op, void *addr, uint64_t value, uint32_t timeout_us);
 int __ulock_wake(uint32_t op, void *addr, uint64_t wake_value);
 static void futex_wait(atomic_int *l, int v) { __ulock_wait(1 | 0x01000000, l, (uint64_t)v, 0); }
 static void futex_wake(atomic_int *l) { __ulock_wake(1 | 0x01000000, l, 0); }
+#elif defined(__FreeBSD__)
+// the kernel's own (what libthr's locks sleep in): the wait returns at once if the word changed
+#include <sys/types.h>
+#include <sys/umtx.h>
+static void futex_wait(atomic_int *l, int v) { _umtx_op(l, UMTX_OP_WAIT_UINT_PRIVATE, (u_long)(unsigned)v, NULL, NULL); }
+static void futex_wake(atomic_int *l) { _umtx_op(l, UMTX_OP_WAKE_PRIVATE, 1, NULL, NULL); }
 #else
 static void futex_wait(atomic_int *l, int v) { (void)l, (void)v, sched_yield(); }
 static void futex_wake(atomic_int *l) { (void)l; }
@@ -6536,8 +6563,9 @@ void zs_job_cancel(outcome *o) {
 // ---- CPU features ([<Multiversion>]): whether the CPU has each of the features, named as LLVM
 // names them and separated by commas ("avx2,fma"). A name it doesn't know is a feature it
 // doesn't have.
-#if (defined(__x86_64__) || defined(__i386__)) && (defined(__APPLE__) || defined(_WIN32))
-// cpuid itself: Zig's compiler-rt has __builtin_cpu_supports's tables (__cpu_model) on Linux only.
+#if (defined(__x86_64__) || defined(__i386__)) && (defined(__APPLE__) || defined(_WIN32) || defined(__FreeBSD__))
+// cpuid itself: Zig's compiler-rt has __builtin_cpu_supports's tables (__cpu_model) on Linux only
+// (FreeBSD's cross builds link it too).
 // AVX and AVX-512 also need the OS to save their registers (xgetbv)
 #include <cpuid.h>
 static bool cpu_has(const char *f, size_t n) {
@@ -6603,11 +6631,18 @@ static bool cpu_has(const char *f, size_t n) {
 #undef HAS
     return false;
 }
-#elif defined(__aarch64__) && defined(__linux__)
+#elif defined(__aarch64__) && (defined(__linux__) || defined(__FreeBSD__))
 #include <sys/auxv.h>
 static bool cpu_has(const char *f, size_t n) {
-    // the kernel's hwcap bits (asm/hwcap.h), written out for older headers
+    // the kernel's hwcap bits (asm/hwcap.h), written out for older headers; FreeBSD's are the
+    // same bits, read with its own call
+#ifdef __FreeBSD__
+    unsigned long hw = 0, hw2 = 0;
+    elf_aux_info(AT_HWCAP, &hw, sizeof hw);
+    elf_aux_info(AT_HWCAP2, &hw2, sizeof hw2);
+#else
     unsigned long hw = getauxval(AT_HWCAP), hw2 = getauxval(AT_HWCAP2);
+#endif
 #define HAS(name, bits) \
     if (n == sizeof(name) - 1 && !memcmp(f, name, n)) return (bits) != 0
     HAS("neon", 1);

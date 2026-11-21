@@ -251,19 +251,24 @@ let clangTriple (o: Options) : string =
   | [ a; "macos" ] -> a + "-apple-macos"
   | _ -> o.target
 
-/// The operating system built for: "macos", "windows", "linux", or "none" (a chip, WebAssembly);
-/// a native build's is the host's.
+/// The operating system built for: "macos", "windows", "linux", "freebsd", or "none" (a chip,
+/// WebAssembly); a native build's is the host's.
 let targetOs (o: Options) : string =
   if o.target = "" then Tools.hostOs ()
   else if String.contains "-macos" o.target then "macos"
   else if String.contains "-windows" o.target then "windows"
   else if String.contains "-linux" o.target then "linux"
+  else if String.contains "-freebsd" o.target then "freebsd"
   else "none"
 
 /// What the runtime links on the target beyond the C library: on Windows, Winsock (the loop,
-/// sockets) and the API set with WaitOnAddress (Mutex).
+/// sockets) and the API set with WaitOnAddress (Mutex); on FreeBSD, the threads' library (the C
+/// library's own pthread functions do nothing) and the backtrace's.
 let systemLibs (o: Options) : list<string> =
-  if String.contains "-windows" o.target then [ "-lws2_32"; "-lapi-ms-win-core-synch-l1-2-0" ] else []
+  match targetOs o with
+  | "windows" -> [ "-lws2_32"; "-lapi-ms-win-core-synch-l1-2-0" ]
+  | "freebsd" -> [ "-lpthread"; "-lexecinfo" ]
+  | _ -> []
 
 /// The optimization level for clang: what was asked, else -O2 for a release build or a chip and
 /// -O0 for a debug build.

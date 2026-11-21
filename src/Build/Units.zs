@@ -728,6 +728,6 @@ let link (o: Options.Options) (built: Built) (linked: Modules.Linked) : result<l
       else if lld () then [ "-fuse-ld=lld" ]
       else []
     let linkSw = Diagnostics.Stopwatch.startNew ()
-    match Tools.run "clang" (List.concat [ flags; ltoLink; Options.unusedLinkFlags o; files; libs; [ "-o"; o.out; "-lm" ] ]) with
+    match Tools.run "clang" (List.concat [ flags; ltoLink; Options.unusedLinkFlags o; files; libs; [ "-o"; o.out; "-lm" ]; Options.systemLibs o ]) with
     | Error e -> Error e
     | Ok () -> Ok [ clangLine; ("link", float (int linkSw.ElapsedNanoseconds) / 1000000.0) ]

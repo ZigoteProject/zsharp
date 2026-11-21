@@ -81,7 +81,8 @@ static int absolute(const char *p, int n) {
 
 // $ZS_LIBCLANG; else the libclang of the first clang on PATH (its ../lib); else by a full path, on
 // Windows LLVM's install and on macOS Homebrew's and then Xcode's; else on Linux the system's, by
-// its name and then its versioned names, newest first. Never a bare name where the loader would
+// its name and then its versioned names, newest first, and on FreeBSD a package's (llvm<N>'s, in a
+// directory of its own the loader doesn't look in), newest first. Never a bare name where the loader would
 // look in the current directory, a project's (Windows's does, and macOS's): a libclang put there
 // would run in zs lsp, zs mcp and zs build, which open libclang for an import c
 static void *open_libclang(void) {
@@ -121,6 +122,12 @@ static void *open_libclang(void) {
                        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/libclang.dylib"};
   for (size_t i = 0; i < sizeof mac / sizeof *mac; i++)
     if (access(mac[i], R_OK) == 0) return open_at(mac[i]);
+  return NULL;
+#elif defined(__FreeBSD__)
+  for (int v = 40; v >= 23; v--) {
+    snprintf(path, sizeof path, "/usr/local/llvm%d/lib/libclang.so", v);
+    if (access(path, R_OK) == 0) return open_at(path);
+  }
   return NULL;
 #else
   // ld.so looks for a bare name in the system's directories, not the current one

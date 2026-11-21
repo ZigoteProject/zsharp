@@ -7,3 +7,10 @@
 
 #define MBEDTLS_THREADING_C
 #define MBEDTLS_THREADING_PTHREAD
+
+// FreeBSD: platform_util.c asks the system's headers for POSIX 2001 alone, which hides the
+// explicit_bzero it then calls there: declared here as <strings.h> declares it (no header
+// included: this file is read before the library's sources say what they want of them)
+#ifdef __FreeBSD__
+void explicit_bzero(void *, __SIZE_TYPE__);
+#endif

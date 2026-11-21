@@ -551,7 +551,7 @@ let make (o: Options.Options) (prog0: Program) (linked: Modules.Linked) (testBui
             let r2 = andThen (fun () -> cc (List.concat [ opt; pic; defines; [ "-c" ]; san; [ runtimeFile "rt.c"; "-o"; rto ] ])) r1
             let archive () =
               File.delete o.out |> ignore
-              if String.endsWith ".so" o.out then cc (List.concat [ opt; [ "-shared" ]; lookup; san; [ obj; rto ]; linkArgs linked; [ "-o"; o.out; "-lm" ] ]) else Tools.run "llvm-ar" [ "rcs"; o.out; obj; rto ]
+              if String.endsWith ".so" o.out then cc (List.concat [ opt; [ "-shared" ]; lookup; san; [ obj; rto ]; linkArgs linked; [ "-o"; o.out; "-lm" ]; Options.systemLibs o ]) else Tools.run "llvm-ar" [ "rcs"; o.out; obj; rto ]
             let r3 = andThen archive r2
             File.writeAllText (Path.changeExtension o.out ".h") header |> ignore
             File.delete obj |> ignore
@@ -567,7 +567,7 @@ let make (o: Options.Options) (prog0: Program) (linked: Modules.Linked) (testBui
             File.delete obj |> ignore
             r2
           else
-            timed o.time "clang" (fun () -> Tools.run "clang" (List.concat [ opt; profile; defines; Options.sectionFlags o; Options.unusedLinkFlags o; [ "-Wno-override-module" ]; san; [ ll; runtimeFile "rt.c" ]; linkArgs linked; fuzzLink; [ "-o"; o.out; "-lm" ] ]))
+            timed o.time "clang" (fun () -> Tools.run "clang" (List.concat [ opt; profile; defines; Options.sectionFlags o; Options.unusedLinkFlags o; [ "-Wno-override-module" ]; san; [ ll; runtimeFile "rt.c" ]; linkArgs linked; fuzzLink; [ "-o"; o.out; "-lm" ]; Options.systemLibs o ]))
       if not o.emitLlvm then
         File.delete ll |> ignore
         Directory.delete scratch |> ignore
