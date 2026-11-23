@@ -154,6 +154,12 @@
   (`tests/noalloc.zs`), and 4,000,000 calls on short lines take 32 ms where they took 96.
   `String.splitLines`, which asks every line whether it ends with `\r`, makes one string fewer
   a line.
+- `HashMap` walks a bucket in loops of its own, with the key a parameter, where it made a closure
+  for each walk: `tryFind` and `containsKey` allocate nothing (one or two objects before),
+  `remove` nothing, and `add` one cell, the entry's (four or five before). A bucket nothing else
+  refers to is rebuilt in its own cells, and one without the key isn't rebuilt at all.
+  `bench/host/wordfreq` takes 160 ms where it took 189, on 1,000,000 words with the same
+  compiler (`tests/hashmap_reuse.zs` counts what each one allocates).
 
 ### Packages
 - `packages/zlayout`: a layout inspector. `[<Derive(Inspect)>]` on a record or union and

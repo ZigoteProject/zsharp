@@ -18,13 +18,34 @@ module HashMap =
   /// An empty hash map (with no buckets yet: the first `add` makes them).
   let empty : HashMap<'k, 'v> = { buckets = [||]; size = 0 }
 
+  // A bucket's walks are loops of their own, with the key a parameter: no closure is made for one.
+
+  // the value of key's entry in a bucket
+  let rec private findIn key (b: list<'k * 'v>) =
+    match b with
+    | [] -> None
+    | (k, v) :: rest -> if k = key then Some v else findIn key rest
+
+  // whether a bucket has key's entry
+  let rec private hasIn key (b: list<'k * 'v>) =
+    match b with
+    | [] -> false
+    | (k, _) :: rest -> if k = key then true else hasIn key rest
+
+  // the bucket without key's entry, the others in their order (acc: those passed, reversed); a
+  // unique bucket is rebuilt in its own cells
+  let rec private withoutIn key (acc: list<'k * 'v>) (b: list<'k * 'v>) =
+    match b with
+    | [] -> List.rev acc
+    | (k, v) :: rest ->
+      if k = key then withoutIn key acc rest else withoutIn key ((k, v) :: acc) rest
+
   /// The value bound to `key`, or `None`.
   let tryFind key (m: HashMap<'k, 'v>) =
     if Array.length m.buckets = 0 then
       None
     else
-      let b = m.buckets.[bucketOf key (Array.length m.buckets)]
-      List.tryFind (fun (k, _) -> k = key) b |> Option.map snd
+      findIn key m.buckets.[bucketOf key (Array.length m.buckets)]
 
   /// Whether the map binds `key`.
   let containsKey key (m: HashMap<'k, 'v>) = Option.isSome (HashMap.tryFind key m)
@@ -52,9 +73,14 @@ module HashMap =
     let mutable buckets = m.buckets // m's last use, so a unique map's array stays unique
     let i = bucketOf key (Array.length buckets)
     let old = buckets.[i]
-    let present = List.exists (fun (k, _) -> k = key) old
-    buckets.[i] <- (key, value) :: List.filter (fun (k, _) -> k <> key) old
-    { buckets = buckets; size = if present then size else size + 1 }
+    if hasIn key old then
+      // taken out of the array first, so a unique map's bucket is unique too
+      buckets.[i] <- []
+      buckets.[i] <- (key, value) :: withoutIn key [] old
+      { buckets = buckets; size = size }
+    else
+      buckets.[i] <- (key, value) :: old
+      { buckets = buckets; size = size + 1 }
 
   // the map without `key`, which has buckets
   let private removeFrom key (m: HashMap<'k, 'v>) =
@@ -62,9 +88,13 @@ module HashMap =
     let mutable buckets = m.buckets // m's last use, so a unique map's array stays unique
     let i = bucketOf key (Array.length buckets)
     let old = buckets.[i]
-    let present = List.exists (fun (k, _) -> k = key) old
-    buckets.[i] <- List.filter (fun (k, _) -> k <> key) old
-    { buckets = buckets; size = if present then size - 1 else size }
+    if hasIn key old then
+      buckets.[i] <- [] // as in add
+      buckets.[i] <- withoutIn key [] old
+      { buckets = buckets; size = size - 1 }
+    else
+      // nothing to take out: the map as it was, its array not copied
+      { buckets = buckets; size = size }
 
   /// The map without `key`.
   let remove key (m: HashMap<'k, 'v>) =

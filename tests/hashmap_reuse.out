@@ -1,0 +1,5 @@
+2,000 lookups: 0 allocations, 1000 found
+1,000 updates: 1000 allocations; 1,000 removes: 0; 1,000 adds: 1000
+Some 2 Some 9 None Some 7 Some 2 None
+1000 1000 1001 999 1000
+true 340 340
