@@ -4,7 +4,7 @@
 // interpolation of one string, which is that string; a Buffer's numbers written in place, the
 // Buffer a parameter's or a top-level value's (directly, and through a name for it), a record's
 // field, an element of a Buffer of Buffers, the value written read from the same Buffer: each
-// write frees nothing
+// write frees nothing; a string's prefix and suffix compared in place
 type Point = { x: int; y: int }
 
 [<NoAlloc>]
@@ -58,6 +58,9 @@ let markSpare () = (Option.get spare).[0] <- 3
 [<NoAlloc>]
 let markSlot (slots: Buffer<option<Buffer<int>>>) (i: int) = (Option.get slots.[i]).[1] <- 4
 
+[<NoAlloc>]
+let isTest (name: string) = String.startsWith "test_" name && not (String.endsWith ".tmp" name)
+
 let main () =
   let ring = { data = Buffer.create 2 (u8 0); head = ref 0 }
   push ring (u8 4)
@@ -81,4 +84,5 @@ let main () =
   println (orNone None)
   shout "hey"
   println (same "as is")
+  println $"{isTest "test_a.zs"} {isTest "test_a.tmp"} {isTest "a_test"}"
   0

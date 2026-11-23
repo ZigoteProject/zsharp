@@ -20,13 +20,20 @@ let lastIndexOf (sub: string) (s: string) =
     if i < 0 then found else go (Some i) (i + 1)
   go None 0
 
+// whether p's bytes are s's from byte `at` on, where p fits: compared in place, nothing copied
+let private matchesAt (p: string) (s: string) (at: int) =
+  let n = String.length p
+  let mutable i = 0
+  while i < n && String.byte s (at + i) = String.byte p i do
+    i <- i + 1
+  i = n
+
 /// Whether `s` begins with `p`.
-let startsWith (p: string) (s: string) =
-  String.length p <= String.length s && String.sub s 0 (String.length p) = p
+let startsWith (p: string) (s: string) = String.length p <= String.length s && matchesAt p s 0
 
 /// Whether `s` ends with `p`.
 let endsWith (p: string) (s: string) =
-  String.length p <= String.length s && String.sub s (String.length s - String.length p) (String.length p) = p
+  String.length p <= String.length s && matchesAt p s (String.length s - String.length p)
 
 /// The pieces of `s` between occurrences of `sep`: `String.split ", " "a, b" = ["a"; "b"]`.
 let split (sep: string) (s: string) =
