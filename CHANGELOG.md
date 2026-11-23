@@ -160,6 +160,11 @@
   refers to is rebuilt in its own cells, and one without the key isn't rebuilt at all.
   `bench/host/wordfreq` takes 160 ms where it took 189, on 1,000,000 words with the same
   compiler (`tests/hashmap_reuse.zs` counts what each one allocates).
+- `Binary`'s writer takes the map of the strings it has written out of its `ref` before adding
+  one, where the `ref` holding it too made every string written for the first time copy the whole
+  map's bucket array: writing 20,000 distinct strings took 197 ms and takes 3.5 (72,773
+  allocations, 52,785). Anything the compiler keeps in the cache is written through it
+  (`tests/binary.zs` counts the allocations).
 
 ### Packages
 - `packages/zlayout`: a layout inspector. `[<Derive(Inspect)>]` on a record or union and
