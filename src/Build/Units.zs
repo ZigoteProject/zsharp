@@ -336,10 +336,20 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
   while not (List.isEmpty pending) do
     let todo = Buffer.empty
     let later = Buffer.empty
-    let inRound (f: string) = Array.exists (fun (t: Check.Unit) -> t.file = f) (Buffer.toArray todo) || Array.exists (fun (t: Check.Unit) -> t.file = f) (Buffer.toArray later)
+    // the files queued so far in this round, kept as each goes in: a copy of the whole buffer
+    // for every module waiting on one is quadratic
+    let todoFiles = ref Set.empty
+    let laterFiles = ref Set.empty
+    let inRound (f: string) = Set.contains f todoFiles.Value || Set.contains f laterFiles.Value
     // made now, unless a module before it waits: it may call that one, whose ABI isn't known
     // until the next round
-    let remake (u: Check.Unit) = if Buffer.length later > 0 then Buffer.push u later else Buffer.push u todo
+    let remake (u: Check.Unit) =
+      if Buffer.length later > 0 then
+        laterFiles.Value <- Set.add u.file laterFiles.Value
+        Buffer.push u later
+      else
+        todoFiles.Value <- Set.add u.file todoFiles.Value
+        Buffer.push u todo
     for u in pending do
       match loadWorld (pre u) with
       | Some w ->
