@@ -58,27 +58,30 @@ let private sourceOf (st: State) (path: string) : string =
   | Ok t -> String.replace t "\r\n" "\n"
   | Error _ -> ""
 
-// a file's lines, split again only when its text isn't the one they were split from
-let private cachedLines (st: State) (path: string) : string * array<string> =
-  let text = sourceOf st path
+// a file's lines, split again only when its text isn't the one they were split from. The text
+// kept is the one read, so a hit compares it without copying it to normalize its line breaks.
+let private linesOf (st: State) (path: string) : array<string> =
+  let text = match Build.Modules.readSource st.texts.Value path with Ok t -> t | Error _ -> ""
   match Map.tryFind path st.lines.Value with
-  | Some(had, ls) when had = text -> (had, ls)
+  | Some(had, ls) when had = text -> ls
   | _ ->
-    let ls = Array.ofList (String.split "\n" text)
+    let ls = Array.ofList (String.split "\n" (String.replace text "\r\n" "\n"))
     st.lines.Value <- Map.add path (text, ls) st.lines.Value
-    (text, ls)
-
-let private linesOf (st: State) (path: string) : array<string> = snd (cachedLines st path)
+    ls
 
 let private lineText (st: State) (path: string) (line: int) : string =
   let lines = linesOf st path
   if line >= 1 && line <= Array.length lines then lines.[line - 1] else ""
 
-// the characters in text's bytes from `at` for `n` bytes, where the length is all that's wanted
+// the characters in text's bytes from `at` for `n` bytes: String.charCount of that part, decoded
+// where it is rather than copied to be counted
 let private charsIn (text: string) (at: int) (n: int) : int =
   let mutable count = 0
-  for i in at .. at + n - 1 do
-    if (String.byte text i &&& u8 0xC0) <> u8 0x80 then count <- count + 1
+  let mutable i = at
+  while i < at + n do
+    let (_, next) = String.decodeAt text i
+    count <- count + 1
+    i <- next
   count
 
 let private chars (s: string) = String.charCount s
@@ -200,10 +203,7 @@ let private analysisOf (st: State) (path: string) : option<Analysis> = Map.tryFi
 
 let private hoversAt (st: State) (path: string) : list<Spot> =
   match analysisOf st path with
-  | Some a ->
-    // the path's first, so the other files' hovers aren't made into a list
-    let here = Array.filter (fun (s: Spot) -> s.path = path) a.spots
-    Array.toList (Array.filter (fun (s: Spot) -> not (String.startsWith "$" s.h.name)) here)
+  | Some a -> List.filter (fun (s: Spot) -> s.path = path && not (String.startsWith "$" s.h.name)) (Array.toList a.spots)
   | None -> []
 
 let private atPosition (line: int) (ch: int) (s: Spot) = s.line = line + 1 && ch >= s.col - 1 && ch < s.col - 1 + s.len
@@ -1046,6 +1046,7 @@ let private answer (st: State) (msg: Json) : bool =
     st.texts.Value <- Map.remove path st.texts.Value
     st.results.Value <- Map.remove path st.results.Value
     st.madeOf.Value <- Map.remove path st.madeOf.Value
+    st.lines.Value <- Map.remove path st.lines.Value
     notify st "textDocument/publishDiagnostics" (JObject [ ("uri", JString(Rpc.toUri path)); ("diagnostics", JArray []) ])
   else if meth = "textDocument/hover" then
     respond st id (hover st (docPath ()) (line ()) (character ()))
