@@ -70,6 +70,10 @@ let private tState : Ty = tInt
 
 let private state () : CExpr = mk (CPrim("eff.state", [])) tState
 
+/// A composed disposal chain's type: what the yield state's fifth field holds, called with no
+/// value when a kept resumption is dropped without being called.
+let private dropTy : Ty = tfun tCPtr tUnit
+
 let private intE (n: int) : CExpr = mk (CInt(i64 n)) tInt
 
 let private isState (n: int) : CExpr = mk (CBin("=", state (), intE n)) tBool
@@ -280,28 +284,40 @@ let private lowerAll (types0: Map<string, TypeInfo>) (effects: Map<string, Effec
             let y = fresh "$y"
             let snaps = List.map (fun (o, n, t) -> (o, fresh n, n, t)) ctx.muts
             let rctx = { ctx with muts = List.map (fun (o, s, _, t) -> (o, s, t)) snaps }
-            let rpars = List.concat [ [ (c, contTy) ]; List.map (fun (_, s, _, t) -> (s, t)) snaps; [ (p, tCPtr) ] ]
+            let rpars =
+              List.concat [ [ (c, contTy) ]
+                List.map (fun (_, s, _, t) -> (s, t)) snaps
+                [ (p, tCPtr) ] ]
             let rty = arrows rpars ctx.ret
             let rlocal = local resume rty
             // the continuation of this frame: resume applied to all but p
             let contOf (cv: CExpr) (vals: list<CExpr>) = mk (CApp(rlocal, cv :: vals)) resumeTy
             let extendWith (vals: Ctx -> list<CExpr>) (cx: Ctx) =
               let inner = fresh "$inner"
-              mk (CLet(inner, mk (CPrim("eff.takeCont", [])) contTy, mk (CPrim("eff.setCont", [ contOf (local inner contTy) (vals cx) ])) tUnit)) tUnit
+              mk (CLet(inner,
+                  mk (CPrim("eff.takeCont", [])) contTy,
+                  mk (CPrim("eff.setCont", [ contOf (local inner contTy) (vals cx) ])) tUnit)) tUnit
             // the yield goes on up: a clause resuming later takes this frame's rest along; a stop
-            // disposes what the scopes open here bound, since nothing runs the rest
-            let bubble (x: CExpr) (extend: CExpr) = seqE (mk (CIf(isState 1, extend, disposals ctx (unitE ()))) tUnit) (seqE (mk (CPrim("eff.forget", [ x ])) tUnit) (dummy ()))
+            // disposes what the scopes open here bound, since nothing runs the rest, and a clause
+            // keeping the resumption takes the scopes' disposal chain along too
+            let bubble (x: CExpr) (extend: CExpr) =
+              seqE (mk (CIf(isState 1, seqE extend (extendDrop ctx), disposals ctx (unitE ()))) tUnit) (seqE (mk (CPrim("eff.forget", [ x ])) tUnit) (dummy ()))
             let snapVals (cx: Ctx) = List.map (fun (o, _, _, t) -> local (cur cx o) t) snaps
             let rbody =
               let yv = local y callE.ty
               let again = extendWith snapVals rctx
-              mk (CLet(y, mk (CApp(local c contTy, [ local p tCPtr ])) callE.ty, mk (CIf(yielding (), bubble yv again, jump rctx yv)) ctx.ret)) ctx.ret
+              mk (CLet(y,
+                  mk (CApp(local c contTy, [ local p tCPtr ])) callE.ty,
+                  mk (CIf(yielding (), bubble yv again, jump rctx yv)) ctx.ret)) ctx.ret
             let x = fresh "$r"
             let xv = local x callE.ty
             // the mutable variables' values now, for the continuation
             let snapshot = extendWith (fun _ -> List.map (fun (_, s, _, t) -> local s t) snaps) ctx
-            let first = List.fold (fun (acc: CExpr) (snap: string * string * string * Ty) -> match snap with (_, s, n, t) -> mk (CLet(s, local n t, acc)) acc.ty) snapshot (List.rev snaps)
-            let main = mk (CLet(x, callE, mk (CIf(yielding (), bubble xv first, jump ctx xv)) ctx.ret)) ctx.ret
+            let first =
+              List.fold (fun (acc: CExpr) (snap: string * string * string * Ty) ->
+                match snap with (_, s, n, t) -> mk (CLet(s, local n t, acc)) acc.ty) snapshot (List.rev snaps)
+            let main =
+              mk (CLet(x, callE, mk (CIf(yielding (), bubble xv first, jump ctx xv)) ctx.ret)) ctx.ret
             mk (CLetRec([ (resume, rpars, rbody) ], main)) ctx.ret
           | Tail -> panic "unreachable"
         withJoin ctx k callE.ty made
@@ -647,7 +663,27 @@ let private lowerAll (types0: Map<string, TypeInfo>) (effects: Map<string, Effec
             give cx k (mk (mapChildren take e.k) (ev e.ty)))
     /// The disposals of the `use` scopes open in ctx, the newest first, then rest: what a stop
     /// passing over them runs where the function returns for it.
-    and disposals (ctx: Ctx) (rest: CExpr) : CExpr = List.fold (fun (acc: CExpr) (d: unit -> CExpr) -> seqE (d ()) acc) rest (List.rev ctx.uses)
+    and disposals (ctx: Ctx) (rest: CExpr) : CExpr =
+      List.fold (fun (acc: CExpr) (d: unit -> CExpr) -> seqE (d ()) acc) rest (List.rev ctx.uses)
+    /// This frame's link in the disposal chain of the continuation being made: the frames within
+    /// first (what they put there, called as a stop unwinds them), then the `use` scopes open in
+    /// ctx, the newest first. The chain's head is the yield state's fifth field, taken and set at
+    /// each frame that extends the continuation; the clause that keeps a resumption stores it in
+    /// the resumption's cell, whose drop runs it when nothing resumes.
+    and extendDrop (ctx: Ctx) : CExpr =
+      let taken = fresh "$drop"
+      let composed =
+        match ctx.uses with
+        | [] -> local taken dropTy
+        | _ ->
+          let u = fresh "$du"
+          let callInner = mk (CPrim("eff.runDrop", [ local taken dropTy ])) tUnit
+          let mine =
+            List.fold (fun (acc: CExpr) (d: unit -> CExpr) -> seqE (d ()) acc) (unitE ()) (List.rev ctx.uses)
+          mk (CLam([ (u, tCPtr) ], seqE callInner mine)) dropTy
+      mk (CLet(taken,
+          mk (CPrim("eff.takeDrop", [])) dropTy,
+          mk (CPrim("eff.setDrop", [ composed ])) tUnit)) tUnit
     /// The type a loop's round gives: whether to go on, then the loop's state (the for loop's
     /// variable, then the mutable variables in scope).
     and roundTy (ctx: Ctx) (xs: list<Ty>) : Ty =
@@ -717,7 +753,8 @@ let private lowerAll (types0: Map<string, TypeInfo>) (effects: Map<string, Effec
         let r = fresh "$r"
         let callE = mk (CApp(roundLocal, List.map (fun (c, t, _) -> local c t) cells)) rty
         let rv = local r rty
-        let onYield = seqE (mk (CIf(isState 1, extend (), disposals ctx (unitE ()))) tUnit) (seqE (mk (CPrim("eff.forget", [ rv ])) tUnit) (seqE (mk (CAssign(yielded, mk (CBool true) tBool)) tUnit) (mk (CAssign(go, mk (CBool false) tBool)) tUnit)))
+        let onYield =
+          seqE (mk (CIf(isState 1, seqE (extend ()) (extendDrop ctx), disposals ctx (unitE ()))) tUnit) (seqE (mk (CPrim("eff.forget", [ rv ])) tUnit) (seqE (mk (CAssign(yielded, mk (CBool true) tBool)) tUnit) (mk (CAssign(go, mk (CBool false) tBool)) tUnit)))
         let assignAll (more: CExpr) (vals: list<CExpr>) =
           let step (acc: CExpr) (cv: (string * Ty * string) * CExpr) =
             match cv with
@@ -726,21 +763,34 @@ let private lowerAll (types0: Map<string, TypeInfo>) (effects: Map<string, Effec
         let onRound = unpack rv assignAll
         let roundOnce = mk (CLet(r, callE, mk (CIf(yielding (), onYield, onRound)) tUnit)) tUnit
         let loopCode = mk (CWhile(local go tBool, roundOnce)) tUnit
-        let after = mk (CIf(local yielded tBool, mk (CPrim("eff.dummy", [])) ctx.ret, exitWith (List.map (fun (c, t, _) -> local c t) (List.skip nx cells)))) ctx.ret
+        let after =
+          mk (CIf(local yielded tBool,
+              mk (CPrim("eff.dummy", [])) ctx.ret,
+              exitWith (List.map (fun (c, t, _) -> local c t) (List.skip nx cells)))) ctx.ret
         let body1 = seqE loopCode after
-        let body2 = mk (CLetMut(go, mk (CBool true) tBool, mk (CLetMut(yielded, mk (CBool false) tBool, body1)) ctx.ret)) ctx.ret
-        List.fold (fun (acc: CExpr) (cell: string * Ty * string) -> match cell with (c, t, p) -> mk (CLetMut(c, local p t, acc)) acc.ty) body2 (List.rev cells)
+        let body2 =
+          mk (CLetMut(go,
+              mk (CBool true) tBool,
+              mk (CLetMut(yielded, mk (CBool false) tBool, body1)) ctx.ret)) ctx.ret
+        List.fold (fun (acc: CExpr) (cell: string * Ty * string) ->
+          match cell with (c, t, p) -> mk (CLetMut(c, local p t, acc)) acc.ty) body2 (List.rev cells)
       // a round resumed: its result, then driving on (or, yielding again, this once more)
       let c = fresh "$c"
       let p = fresh "$p"
       let y = fresh "$y"
       let yv = local y rty
       let resumed = mk (CApp(local c contTy, [ local p tCPtr ])) rty
-      let again = seqE (mk (CIf(isState 1, extend (), disposals ctx (unitE ()))) tUnit) (seqE (mk (CPrim("eff.forget", [ yv ])) tUnit) (mk (CPrim("eff.dummy", [])) ctx.ret))
-      let goOn = unpack yv (fun more vals -> mk (CIf(more, mk (CApp(driveLocal, vals)) ctx.ret, exitWith (List.skip nx vals))) ctx.ret)
+      let again =
+        seqE (mk (CIf(isState 1, seqE (extend ()) (extendDrop ctx), disposals ctx (unitE ()))) tUnit) (seqE (mk (CPrim("eff.forget", [ yv ])) tUnit) (mk (CPrim("eff.dummy", [])) ctx.ret))
+      let goOn =
+        unpack yv (fun more vals ->
+          mk (CIf(more, mk (CApp(driveLocal, vals)) ctx.ret, exitWith (List.skip nx vals))) ctx.ret)
       let rpars = [ (c, contTy); (p, tCPtr) ]
       let rb = mk (CLet(y, resumed, mk (CIf(yielding (), again, goOn)) ctx.ret)) ctx.ret
-      let start = mk (CApp(driveLocal, List.append (List.map (fun (_, _, w) -> w) xs) (List.map (fun (o, _, t) -> local (cur ctx o) t) ms))) ctx.ret
+      let start =
+        mk (CApp(driveLocal,
+            List.append (List.map (fun (_, _, w) -> w) xs) (List.map (fun (o, _, t) ->
+                local (cur ctx o) t) ms))) ctx.ret
       let drive = mk (CLetRec([ (driveFn, dps, driveBody); (resumeFn, rpars, rb) ], start)) ctx.ret
       let withRound = mk (CLetFun(roundFn, false, rps, rbody, drive)) ctx.ret
       mk (CLetFun(exitFn, false, eps, ebody, withRound)) ctx.ret
@@ -792,40 +842,54 @@ let private lowerAll (types0: Map<string, TypeInfo>) (effects: Map<string, Effec
         // continuation (the clause, which the dispatch runs, is just that answer)
         let stopWith (answer: CExpr) =
           let cp = fresh "$cp"
-          let clause = mk (CLam([ (cp, tCPtr) ], lowerBody { outer with ret = ansTy } answer)) (tfun tCPtr ansTy)
-          lowered (seqE (mk (CPrim("eff.startFinal", [ mv; clause ])) tUnit) (mk (CPrim("eff.dummy", [])) resTy))
+          let clause =
+            mk (CLam([ (cp, tCPtr) ], lowerBody { outer with ret = ansTy } answer)) (tfun tCPtr ansTy)
+          lowered (seqE (mk (CPrim("eff.startFinal", [ mv; clause ])) tUnit) (mk (CPrim("eff.dummy",
+                  [])) resTy))
         // a path that does something else with k: a yield to the handle, whose clause is the path
         // with k the resumption (the continuation made on the way there, once)
         let control (path: CExpr) =
           let cp = fresh "$cp"
           let ckTy = tfun tCPtr ansTy
           let cont = fresh "$cont"
+          let chaind = fresh "$chaind"
           let cell = fresh "$once"
           let x = fresh "$v"
-          let c = fresh "$c"
-          let optTy = TCon("option", [ contTy ])
-          let cellTy = TCon("ref", [ optTy ])
-          let some = tagOf "option" "Some"
-          let none = tagOf "option" "None"
+          let onceTy = TCon("eff.resumption", [])
+          let cellTy = TCon("ref", [ onceTy ])
           let resumeArgTy =
             match kty with
             | TFun(a, _, _) -> ev a
             | _ -> tUnit
           let kRowT = List.head (rowsOf 1 kty)
           let kev = List.map (fun l -> (fresh "$ev", frameT l)) (labelsOf v kRowT)
-          let boxed = if resumeArgTy = tUnit then mk (CPrim("eff.null", [])) tCPtr else mk (CPrim("eff.box", [ local x resumeArgTy ])) tCPtr
-          let resetCell = mk (CPrim("ref.set", [ local cell cellTy; mk (CCtor("option", none, [])) optTy ])) tUnit
-          let someCase = (CPCtor("option", some, [ CPVar(c, contTy) ]), None, seqE resetCell (callDisp (mk (CApp(local c contTy, [ boxed ])) bt)))
-          let noneCase = (CPCtor("option", none, []), None, mk (CPrim("panic", [ mk (CStr "resumption called twice (one-shot)") tStr ])) ansTy)
-          let resume = mk (CMatch(mk (CPrim("ref.get", [ local cell cellTy ])) optTy, [ someCase; noneCase ])) ansTy
+          let boxed =
+            if resumeArgTy = tUnit then
+              mk (CPrim("eff.null", [])) tCPtr
+            else
+              mk (CPrim("eff.box", [ local x resumeArgTy ])) tCPtr
+          let onceV =
+            mk (CPrim("eff.resumption", [ local cont contTy; local chaind dropTy ])) onceTy
+          // the resumption taken: its chain for the call (a second call's panic is in the take)
+          let wv = fresh "$w"
+          let cv = fresh "$ch"
+          let wexpr = mk (CPrim("ref.get", [ local cell cellTy ])) onceTy
+          let take = mk (CPrim("eff.resumeTake", [ local wv onceTy ])) contTy
+          let called = callDisp (mk (CApp(local cv contTy, [ boxed ])) bt)
+          let resume = mk (CLet(wv, wexpr, mk (CLet(cv, take, called)) ansTy)) ansTy
           let kLam = mk (CLam((x, resumeArgTy) :: kev, resume)) (ev kty)
           let withK = mk (CLet(k, kLam, lowerBody { outer with ret = ansTy } path)) ansTy
-          let made = mk (CLet(cell, mk (CPrim("ref", [ mk (CCtor("option", some, [ local cont contTy ])) optTy ])) cellTy, withK)) ansTy
-          let clauseBody = mk (CLet(cont, mk (CPrim("eff.asClosure", [ local cp tCPtr ])) contTy, made)) ansTy
+          let made = mk (CLet(cell, mk (CPrim("ref", [ onceV ])) cellTy, withK)) ansTy
+          let withChaind = mk (CLet(chaind, mk (CPrim("eff.takeDrop", [])) dropTy, made)) ansTy
+          let clauseBody =
+            mk (CLet(cont, mk (CPrim("eff.asClosure", [ local cp tCPtr ])) contTy, withChaind)) ansTy
           let clause = mk (CLam([ (cp, tCPtr) ], clauseBody)) ckTy
           let p = fresh "$p"
-          let initial = if resTy = tUnit then unitE () else mk (CPrim("eff.unbox", [ local p tCPtr ])) resTy
-          let start = mk (CPrim("eff.start", [ mv; clause; mk (CLam([ (p, tCPtr) ], initial)) (tfun tCPtr resTy) ])) tUnit
+          let initial =
+            if resTy = tUnit then unitE () else mk (CPrim("eff.unbox", [ local p tCPtr ])) resTy
+          let start =
+            mk (CPrim("eff.start",
+                [ mv; clause; mk (CLam([ (p, tCPtr) ], initial)) (tfun tCPtr resTy) ])) tUnit
           lowered (seqE start (mk (CPrim("eff.dummy", [])) resTy))
         // runs where it's performed: a path resuming last gives the result, the others stop or
         // yield

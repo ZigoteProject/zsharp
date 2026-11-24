@@ -1933,7 +1933,8 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
     // OS. Defined by the programs that have effects (each module that uses them, merged by the
     // linker), so the others and the runtime are as they were.
     yieldGlobals g
-    let field (i: int) = instr em $"getelementptr {{ i_W, i_W, ptr, ptr }}, ptr @zs_yield, i32 0, i32 {i}"
+    let field (i: int) =
+      instr em $"getelementptr {{ i_W, i_W, ptr, ptr, ptr }}, ptr @zs_yield, i32 0, i32 {i}"
     match op with
     | "eff.state" -> instr em $"load i_W, ptr {field 0}"
     | "eff.marker" -> instr em $"load i_W, ptr {field 1}"
@@ -1944,11 +1945,13 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
       m
     | "eff.start"
     | "eff.startFinal" ->
-      // a yield to the handler with the marker: its clause, and the continuation so far (none
-      // when the clause never resumes)
+      // a yield to the handler with the marker: its clause, the continuation so far (none when
+      // the clause never resumes) and the disposal of the scopes that continuation passes
+      // through, composed as the yield unwinds (none at the start)
       emit em $"store i_W {arg 0}, ptr {field 1}"
       emit em $"store ptr {arg 1}, ptr {field 2}"
       emit em $"store ptr {(if op = "eff.start" then arg 2 else "null")}, ptr {field 3}"
+      emit em $"store ptr @zs.nodrop, ptr {field 4}"
       emit em $"store i_W {(if op = "eff.start" then 1 else 2)}, ptr {field 0}"
       "zeroinitializer"
     | "eff.takeClause" ->
@@ -1964,6 +1967,64 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
     | "eff.setCont" ->
       emit em $"store ptr {arg 0}, ptr {field 3}"
       "zeroinitializer"
+    | "eff.takeDrop" ->
+      let d = instr em $"load ptr, ptr {field 4}"
+      emit em $"store ptr null, ptr {field 4}"
+      d
+    | "eff.setDrop" ->
+      emit em $"store ptr {arg 0}, ptr {field 4}"
+      "zeroinitializer"
+    | "eff.runDrop" ->
+      // the composed disposal chain, run if there is one (the chain's end is the static no-op),
+      // then its reference given up: the caller's body owns it for this call
+      let d = arg 0
+      let has = instr em $"icmp ne ptr {d}, null"
+      let yes = fresh em "drop"
+      let no = fresh em "nodrop"
+      emit em $"br i1 {has}, label %{yes}, label %{no}"
+      enter em yes
+      let codep = instr em $"getelementptr {{ i_W, ptr }}, ptr {d}, i32 0, i32 1"
+      let code = instr em $"load ptr, ptr {codep}"
+      emit em $"call {{}} {code}(ptr {d}, ptr null)"
+      emit em $"br label %{no}"
+      enter em no
+      dropValue g em (argTy 0) (arg 0)
+      "zeroinitializer"
+    | "eff.resumption" ->
+      // the clause's one-shot cell for a resumption it keeps: { count, taken, the chain, the
+      // composed disposal }; dropped un-called, the disposal runs (dropFn's case)
+      let cell = "{ i_W, i_W, ptr, ptr }"
+      let c = instr em $"call ptr @zs_alloc(i_W {sizeOf em cell})"
+      emit em $"store i32 1, ptr {c}"
+      let tp = instr em $"getelementptr {cell}, ptr {c}, i32 0, i32 1"
+      emit em $"store i_W 0, ptr {tp}"
+      let cp = instr em $"getelementptr {cell}, ptr {c}, i32 0, i32 2"
+      emit em $"store ptr {arg 0}, ptr {cp}"
+      let dp = instr em $"getelementptr {cell}, ptr {c}, i32 0, i32 3"
+      emit em $"store ptr {arg 1}, ptr {dp}"
+      c
+    | "eff.resumeTake" ->
+      // the resumption called: the chain for it, another reference kept for the call, and the
+      // cell marked so its drop frees without disposing what already ran; a second call is the
+      // one-shot panic. The cell's reference is this take's (the caller's binding), given up
+      // here: the one the cell's own drop releases is the ref's
+      let cell = "{ i_W, i_W, ptr, ptr }"
+      let tp = instr em $"getelementptr {cell}, ptr {arg 0}, i32 0, i32 1"
+      let taken = instr em $"load i_W, ptr {tp}"
+      let again = instr em $"icmp ne i_W {taken}, 0"
+      let yes = fresh em "again"
+      let no = fresh em "first"
+      emit em $"br i1 {again}, label %{yes}, label %{no}"
+      enter em yes
+      emit em $"call void @zs_panic_c(ptr {cstrConst g "resumption called twice (one-shot)"})"
+      emit em "unreachable"
+      enter em no
+      let cp = instr em $"getelementptr {cell}, ptr {arg 0}, i32 0, i32 2"
+      let chain = instr em $"load ptr, ptr {cp}"
+      emit em $"call void @zs.dup(ptr {chain})"
+      emit em $"store i_W 1, ptr {tp}"
+      dropValue g em (argTy 0) (arg 0)
+      chain
     | "eff.box" ->
       // the value a resumption gives, in a slot its continuation's first function reads
       let slot = "%" + fresh em "resumed"
@@ -2346,9 +2407,10 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
     let failed = instr em $"call zeroext i1 @zs_job_failed(ptr {arg 0})"
     // a panic may have left an effect's yield half way (a `use` disposed as one passed): over
     yieldGlobals g
-    for i in [ 0; 2; 3 ] do
+    for i in [ 0; 2; 3; 4 ] do
       let lt = if i = 0 then "i_W" else "ptr"
-      let fp = instr em $"getelementptr {{ i_W, i_W, ptr, ptr }}, ptr @zs_yield, i32 0, i32 {i}"
+      let fp =
+        instr em $"getelementptr {{ i_W, i_W, ptr, ptr, ptr }}, ptr @zs_yield, i32 0, i32 {i}"
       let was = instr em $"load {lt}, ptr {fp}"
       let now = instr em $"select i1 {failed}, {lt} {(if i = 0 then "0" else "null")}, {lt} {was}"
       emit em $"store {lt} {now}, ptr {fp}"

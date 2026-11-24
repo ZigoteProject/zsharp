@@ -3,6 +3,20 @@
 ## Unreleased
 
 ### Language
+- **Every abandoned `use` is disposed** (roadmap S10, the two exceptions of the specification's
+  [§8.4](spec/08-effects.md#84-handlers)): a resumption a clause kept and never called now
+  disposes the `use` scopes of the frames it would have resumed, newest first, when it is
+  dropped — a generator its consumer left mid-iteration disposes what its body bound — and a
+  stop inside a `task { }` body (a handle there that doesn't resume) disposes a `use` written
+  in the task's braces as any stop does, and takes it off the task's Cancel, so a later
+  cancellation doesn't dispose it twice. Before, both freed what they bound without disposing
+  it; a program whose `Dispose.dispose` only worked because it was never called now sees it
+  called. Nothing else changes: a resumption that is called disposes as its scopes end, once,
+  and a second call of a one-shot resumption still panics (`tests/effects/use_resume.zs`,
+  `tests/task/effects_use.zs`; the parser marks a task's `use` scopes as any other, Evidence
+  threads a disposal chain beside the continuation and the kept resumption's cell runs it on
+  its drop).
+
 - **Columns** ([proposal 0037](docs/proposals/0037-columns.md), decision 88): `[<Derive(Columns)>]`
   on a record gives it `columns<'r>`, an array of it stored field by field. `c.[i]` is a row,
   `c.[i].f` one element of one column, `c.f` the column (an `array`), `for row in c` each row;

@@ -683,6 +683,13 @@ and dropFn (g: G) (t: Ty) : string =
   match t with
   | TFun _ -> "@zs.drop.clo"
   | TCon(n, _) when isDynName n -> "@zs.drop.dyn"
+  | TCon("eff.resumption", _) ->
+    // a kept resumption (Evidence): its cell holds the continuation chain it would resume and the
+    // chain's disposal, composed as the yield unwound. Dropped without being called, that disposal
+    // runs; called, the chain was taken out and only the memory goes
+    if firstTime g "@zs.drop.resumption" then
+      helper g "define private void @zs.drop.resumption(ptr %p) {\nentry:\n  %last = call i1 @zs.release(ptr %p)\n  br i1 %last, label %free, label %done\nfree:\n  %takenp = getelementptr { i_W, i_W, ptr, ptr }, ptr %p, i32 0, i32 1\n  %taken = load i_W, ptr %takenp\n  %chainp = getelementptr { i_W, i_W, ptr, ptr }, ptr %p, i32 0, i32 2\n  %chain = load ptr, ptr %chainp\n  %dispp = getelementptr { i_W, i_W, ptr, ptr }, ptr %p, i32 0, i32 3\n  %disp = load ptr, ptr %dispp\n  %kept = icmp ne ptr %disp, null\n  %untaken = icmp eq i_W %taken, 0\n  %run = and i1 %kept, %untaken\n  br i1 %run, label %dispose, label %plain\ndispose:\n  %codep = getelementptr { i_W, ptr }, ptr %disp, i32 0, i32 1\n  %code = load ptr, ptr %codep\n  call {} %code(ptr %disp, ptr null)\n  br label %plain\nplain:\n  call void @zs.drop.clo(ptr %chain)\n  br i1 %kept, label %release, label %freed\nrelease:\n  call void @zs.drop.clo(ptr %disp)\n  br label %freed\nfreed:\n  call void @zs_free(ptr %p)\n  ret void\ndone:\n  ret void\n}\n\n"
+    "@zs.drop.resumption"
   | TCon("weak", _) ->
     // a weak reference's cell: the runtime frees it (and forgets its object)
     if firstTime g "@zs.drop.weak" then
@@ -1087,13 +1094,20 @@ let jobRunner (g: G) (rt: Ty) : string =
   name
 
 /// The effect handlers' yield state (Evidence), defined by the modules that use it and merged by
-/// the linker: zs_yield { state, the marker yielded to, the clause, the continuation so far },
+/// the linker: zs_yield { state, the marker yielded to, the clause, the continuation so far, the
+/// disposal of the scopes the continuation would pass through },
 /// and the last marker made. One per thread on an OS.
 let yieldGlobals (g: G) =
   if firstTime g "zs_yield" then
     let tls = if String.contains "-none-" g.opts.target || isWasm g then "" else "thread_local "
-    helper g $"@zs_yield = linkonce_odr hidden {tls}global {{ i_W, i_W, ptr, ptr }} zeroinitializer\n"
+    helper g $"@zs_yield = linkonce_odr hidden {tls}global {{ i_W, i_W, ptr, ptr, ptr }} zeroinitializer\n"
     helper g $"@zs_yield_marker = linkonce_odr hidden {tls}global i_W 0\n"
+    // the disposal chain's initial value: a static closure (count 0, so never dup'd, released or
+    // freed) doing nothing, so a composed chain never holds null as a closure value
+    let nodropFn =
+      "define linkonce_odr hidden {} @zs.nodrop.fn(ptr %clo, ptr %arg) {\nentry:\n  ret {} zeroinitializer\n}\n"
+    helper g nodropFn
+    helper g "@zs.nodrop = linkonce_odr hidden constant { i_W, ptr } { i_W 0, ptr @zs.nodrop.fn }\n"
 
 /// A closure of f holding nothing: a static one.
 let staticClosure (g: G) (f: string) : string =

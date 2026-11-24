@@ -260,7 +260,20 @@ let oneCase (g: G) (t: Ty) : option<list<Ty>> =
   | _ -> None
 
 // the types whose values are pointers to objects (or C pointers)
-let private pointers : Set<string> = Set.ofList [ "cstr"; "cptr"; "string"; "array"; "ref"; "weak"; "ptr"; "fnptr"; "Atomic"; "Mutex"; "Channel"; "Spsc" ]
+let private pointers : Set<string> =
+  Set.ofList [ "cstr"
+    "cptr"
+    "string"
+    "array"
+    "ref"
+    "weak"
+    "ptr"
+    "fnptr"
+    "Atomic"
+    "Mutex"
+    "Channel"
+    "Spsc"
+    "eff.resumption" ]
 
 // a mask's lanes
 let private maskLanes (n: string) : int = snd (List.find (fun (m, _) -> m = n) maskTypes)

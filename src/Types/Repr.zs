@@ -13,6 +13,8 @@ let rec private heapIn (v: Vars) (types: Map<string, TypeInfo>) (visiting: Set<s
   | TCon("Buffer", _)
   | TCon("span", _)
   | TCon("weak", _)
+  // a kept resumption's cell (Evidence): what it holds is released when it's dropped
+  | TCon("eff.resumption", _)
   | TFun _ -> true
   | TCon(n, _) when isCellType n -> true
   | TCon("share", [ f ]) -> heapIn v types visiting f
