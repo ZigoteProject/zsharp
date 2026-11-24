@@ -1004,6 +1004,14 @@ let private placeholder (body: TypeBody) : TypeDef =
   | RecordTy _ -> RecordDef []
   | UnionTy _ -> UnionDef []
 
+// the placeholder registered, with a record's (no) defaults beside it: a body that fails to check
+// leaves it, and a record is looked up in both
+let private holdPlace (cx: Cx) (name: string) (npars: int) (body: TypeBody) =
+  cx.types.Value <- Map.add name { npars = npars; def = placeholder body; bits = None } cx.types.Value
+  match body with
+  | RecordTy _ -> cx.recordDefaults.Value <- Map.add name [] cx.recordDefaults.Value
+  | UnionTy _ -> ()
+
 let private closeDynCalls (cx: Cx) =
   let v = cx.v
   let calls = Array.toList (Buffer.toArray cx.dynCalls)
@@ -1131,7 +1139,7 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
       fail $"type '{name}' is already defined"
     // registered first so the body can refer to the type itself: a record as one of no fields,
     // which no record declared is (the checker tells it apart by that)
-    cx.types.Value <- Map.add name { npars = List.length tps; def = placeholder body; bits = None } cx.types.Value
+    holdPlace cx name (List.length tps) body
     let tt (st: SType) = toTy cx (Some tps) st
     match body with
     | RecordTy fields ->
@@ -1355,7 +1363,7 @@ let rec private declare (cx: Cx) (d: Decl) : unit / <Fails, Mismatched> =
     for (it, n, npars, body) in names do
       if Set.contains n prims || Option.isSome (builtinCons n) || Map.containsKey n cx.types.Value then
         failLine it.dat $"type '{n}' is already defined"
-      cx.types.Value <- Map.add n { npars = npars; def = placeholder body; bits = None } cx.types.Value
+      holdPlace cx n npars body
       cx.ahead.Value <- Set.add n cx.ahead.Value
     for it in items do
       located cx it.dat true (fun () -> declare cx it)

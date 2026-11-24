@@ -215,6 +215,11 @@
   test program now); they build for macOS and Windows on Arm and haven't run there.
 
 ### Security and stability
+- `zs check` panicked (`Map.find: key not found`) on a record whose field has an unknown type
+  when the record was then built where its type is expected (an `impl` of it, say), as
+  `tests/fuzz.sh` found with seed 20261124. The type registered ahead of its body now has its
+  defaults registered beside it, so the unknown type is the one error
+  (`tests/err_record_unknown_field_type.zs`).
 - A name's lookup under Wine (`Tcp.connect "localhost"`, `Dns.lookup`) stopped the program:
   the runtime read each address of the list in place, and Wine's later ones aren't aligned
   for that. It reads each through a copy (`tests/task/connect.zs` under
