@@ -363,7 +363,9 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
             | None -> if inRound d then 2 else 0
         let states = List.map state w.deps
         if List.contains 0 states then remake u
-        else if List.contains 2 states then Buffer.push u later
+        else if List.contains 2 states then
+          laterFiles.Value <- Set.add u.file laterFiles.Value
+          Buffer.push u later
         else accept u w
       | None -> remake u
     if Buffer.length todo > 0 then
