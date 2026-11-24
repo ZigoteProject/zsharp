@@ -162,9 +162,9 @@
   compiler (`tests/hashmap_reuse.zs` counts what each one allocates).
 - `Binary`'s writer takes the map of the strings it has written out of its `ref` before adding
   one, where the `ref` holding it too made every string written for the first time copy the whole
-  map's bucket array: writing 20,000 distinct strings took 197 ms and takes 3.5 (72,773
-  allocations, 52,785). Anything the compiler keeps in the cache is written through it
-  (`tests/binary.zs` counts the allocations).
+  map's bucket array: writing 20,000 distinct strings took 197 ms and takes 3.5 (52,786
+  allocations where it made 72,774). Anything the compiler keeps in the cache is written through
+  it (`tests/binary.zs` counts the allocations).
 
 ### Packages
 - `packages/zlayout`: a layout inspector. `[<Derive(Inspect)>]` on a record or union and
