@@ -1,0 +1,4 @@
+outside a job: 1
+in a job: Ok 42
+panic: a callback C may call on any thread (callback<share<F>>) was passed in a contained job: C may keep it past the job's end
+true, and the total is still 1

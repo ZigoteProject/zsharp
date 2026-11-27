@@ -32,6 +32,9 @@ type State =
     /// started with --trust: a package's type provider is built and run (else the module from
     /// the last build, or an error at the import)
     trusted: bool
+    /// each file's lines, split once for the text they were: the document's last analysis split
+    /// each file of its program, and a request asked for lines before the next analysis
+    lines: ref<Map<string, string * array<string>>>
     out: IO.Writer }
 
 let private num (n: int) = Rpc.num n
@@ -55,11 +58,31 @@ let private sourceOf (st: State) (path: string) : string =
   | Ok t -> String.replace t "\r\n" "\n"
   | Error _ -> ""
 
-let private linesOf (st: State) (path: string) : array<string> = Array.ofList (String.split "\n" (sourceOf st path))
+// a file's lines, split again only when its text isn't the one they were split from. The text
+// kept is the one read, so a hit compares it without copying it to normalize its line breaks.
+let private linesOf (st: State) (path: string) : array<string> =
+  let text = match Build.Modules.readSource st.texts.Value path with Ok t -> t | Error _ -> ""
+  match Map.tryFind path st.lines.Value with
+  | Some(had, ls) when had = text -> ls
+  | _ ->
+    let ls = Array.ofList (String.split "\n" (String.replace text "\r\n" "\n"))
+    st.lines.Value <- Map.add path (text, ls) st.lines.Value
+    ls
 
 let private lineText (st: State) (path: string) (line: int) : string =
   let lines = linesOf st path
   if line >= 1 && line <= Array.length lines then lines.[line - 1] else ""
+
+// the characters in text's bytes from `at` for `n` bytes: String.charCount of that part, decoded
+// where it is rather than copied to be counted
+let private charsIn (text: string) (at: int) (n: int) : int =
+  let mutable count = 0
+  let mutable i = at
+  while i < at + n do
+    let (_, next) = String.decodeAt text i
+    count <- count + 1
+    i <- next
+  count
 
 let private chars (s: string) = String.charCount s
 
@@ -93,7 +116,8 @@ let private spotsOf (c: Build.Check.Checked) : array<Spot> =
     | Some m when h.token >= 0 && h.token < Array.length m.tree.tokens ->
       let t = m.tree.tokens.[h.token]
       let (line, col) = Syntax.Source.position m.source t.offset
-      Some { path = Map.find h.file full; line = line; col = col; len = chars (String.sub m.source.text t.offset t.length); h = h }
+      // its length in characters, counted where it is: never copied to be counted
+      Some { path = Map.find h.file full; line = line; col = col; len = charsIn m.source.text t.offset t.length; h = h }
     | _ -> None
   Array.ofList (List.choose one (Array.toList (Buffer.toArray c.cx.hovers)))
 
@@ -871,8 +895,14 @@ let private inlayHints (st: State) (path: string) (fromLine: int) (toLine: int) 
   | Some a ->
     let v = a.checked.cx.v
     let spots = List.filter (fun (h: Spot) -> h.line - 1 >= fromLine && h.line - 1 <= toLine) (hoversAt st path)
-    let distinct = List.fold (fun (acc: list<Spot>) (h: Spot) -> if List.exists (fun (o: Spot) -> o.line = h.line && o.col = h.col) acc then acc else List.append acc [ h ]) [] (List.filter (fun (h: Spot) -> h.h.inlay && not (String.startsWith "_" h.h.name)) spots)
-    let types = List.map (fun (h: Spot) -> JObject [ ("position", pos (h.line - 1) (h.col - 1 + chars h.h.name)); ("label", JString(": " + show a h.h.ty)); ("kind", num 1) ]) distinct
+    // a hint on each place once (two hovers can name one), made as it's kept: one pass
+    let types =
+      List.rev (fst (List.fold (fun (acc, seen) (h: Spot) ->
+        let key = (h.line, h.col)
+        if Set.contains key seen then (acc, seen)
+        else
+          let t = JObject [ ("position", pos (h.line - 1) (h.col - 1 + chars h.h.name)); ("label", JString(": " + show a h.h.ty)); ("kind", num 1) ]
+          (t :: acc, Set.add key seen)) ([], Set.empty) (List.filter (fun (h: Spot) -> h.h.inlay && not (String.startsWith "_" h.h.name)) spots)))
     // a function's effects, when it has some its declaration doesn't write: before its `=`, so an
     // effect that leaked into it shows (/ Yield<int>)
     let effectHint (h: Spot) : option<Json> =
@@ -910,7 +940,8 @@ let private inlayHints (st: State) (path: string) (fromLine: int) (toLine: int) 
       let line = lineText st path h.line
       JObject [ ("position", pos (h.line - 1) (chars line)); ("label", JString("// " + show a h.h.ty)); ("kind", num 1); ("paddingLeft", JBool true) ]
     let funs = List.filter (fun (h: Spot) -> h.h.isDef && not h.h.inlay && h.h.key <> "" && isFun h.h.ty && defines h) spots
-    let oneALine = List.fold (fun (acc: list<Spot>) (h: Spot) -> if List.exists (fun (o: Spot) -> o.line = h.line) acc then acc else List.append acc [ h ]) [] funs
+    let oneALine = List.rev (fst (List.fold (fun (acc, seen) (h: Spot) ->
+      if Set.contains h.line seen then (acc, seen) else (h :: acc, Set.add h.line seen)) ([], Set.empty) funs))
     // what the lines do to the heap, when the editor asked (allocationHints)
     let heap =
       if st.hints.Value then
@@ -1015,6 +1046,7 @@ let private answer (st: State) (msg: Json) : bool =
     st.texts.Value <- Map.remove path st.texts.Value
     st.results.Value <- Map.remove path st.results.Value
     st.madeOf.Value <- Map.remove path st.madeOf.Value
+    st.lines.Value <- Map.remove path st.lines.Value
     notify st "textDocument/publishDiagnostics" (JObject [ ("uri", JString(Rpc.toUri path)); ("diagnostics", JArray []) ])
   else if meth = "textDocument/hover" then
     respond st id (hover st (docPath ()) (line ()) (character ()))
@@ -1078,7 +1110,10 @@ let private answer (st: State) (msg: Json) : bool =
 /// ends). `first`: a header line protocol detection already read; `trusted`: --trust, the
 /// project's own type providers built and run.
 let serve (input: IO.Reader) (first: option<string>) (trusted: bool) : int =
-  let st : State = { texts = ref Map.empty; results = ref Map.empty; madeOf = ref Map.empty; docCache = ref Map.empty; watched = ref Set.empty; hints = ref false; trusted = trusted; out = Console.openStandardOutput () }
+  let st : State =
+    { texts = ref Map.empty; results = ref Map.empty; madeOf = ref Map.empty
+      docCache = ref Map.empty; watched = ref Set.empty; hints = ref false
+      trusted = trusted; lines = ref Map.empty; out = Console.openStandardOutput () }
   let mutable pending = first
   let mutable running = true
   while running do

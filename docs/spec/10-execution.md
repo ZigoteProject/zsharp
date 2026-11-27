@@ -94,7 +94,8 @@ last object dies, so an object that escapes `f` stays valid and keeps the region
 A **panic** is the response to a bug: a condition the program should not have reached. A
 panic prints a message (and where available a backtrace) to standard error and **ends the
 process at once**, with exit status 134. It does not unwind: no `use` is disposed, no handler
-runs, and nothing can catch it.
+runs, and nothing can catch it. The one exception is a panic inside a contained job
+([§10.6.1](#1061-contained-jobs)), which ends the job and not the process.
 
 These conditions panic, in every build:
 
@@ -110,11 +111,13 @@ These conditions panic, in every build:
 | stack overflow, where the platform reports it | `stack overflow (recursion too deep)` |
 | a `[<Bits>]` field written with a value too wide, or read with bits naming no case | |
 | a `callback` or a thread-bound handle used on another thread | names the type |
+| a `callback<share<F>>` passed, or a thread-bound handle used, across a contained job's boundary | |
 | a library function's stated precondition (`List.head []`, `Option.get None`) | names the function |
 
 - Recoverable errors are values: `result`, `option` ([§5.9](05-expressions.md#59-control-flow))
   or the `Throw` effect ([§8.6](08-effects.md#86-the-built-in-effects)).
-- A panic on any thread ends the whole process. In a library linked into a C program, a panic
+- A panic on any thread ends the whole process, unless that thread is running a contained job
+  ([§10.6.1](#1061-contained-jobs)). In a library linked into a C program, a panic
   ends the host too; the host may register a hook that runs first
   ([§11.1](11-low-level.md#111-c-interop)).
 - Under the test runner each test is a process, so a panic fails that test only.
@@ -168,6 +171,55 @@ threads; values used inside one task need not be `Share`.
 *Implementation.* Reference counts are non-atomic for objects used by one thread. When a
 value crosses, the objects reachable from it are marked shared, and only those are counted
 atomically from then on. Shared objects are never updated in place.
+
+### 10.6.1 Contained jobs
+
+`Contained.run f`, for `f : share<unit -> 'a>` with `'a` `Share`, evaluates `f ()` as a
+**contained job**, and `Contained.task f`, for `f : share<unit -> Task<'a>>`, runs the task
+`f ()` makes, and every task it waits for on the same event loop, as one. Neither is available
+on bare metal or WebAssembly (`Contained` is a `Std` module).
+
+**Result.** `Ok v` where the job's function (or task) gives `v`; `Error { message = m }` where
+a panic with message `m` occurs on the job's thread while the job is running. The panic prints
+as any other ([§10.5](#105-panics)) and the host's hook runs; then the job ends and evaluation
+continues after the call. The innermost job running on the thread is the one that ends.
+
+**What a job observes.** A job's function is a `share<F>`: it reads `Share` values of its
+caller's, and changes only cells it creates and the cells made for sharing (`Atomic`, `Mutex`,
+`Channel`, `Spsc`). The values it is given and its result behave as in a call. A value that
+leaves the job (its result, a channel's message, a mutex's new value, a function given to
+`Parallel.*`, `Task.spawn` or `Task.blocking`) is a copy where the job created it, and the
+caller's own object where the caller did; the difference is observable only as allocation.
+
+**When a job fails,**
+
+- no `use` binding of the job is disposed, and no code of the job runs again;
+- a `Mutex` held by a `Mutex.update` in progress is unlocked, and holds the value it had before
+  that update;
+- the file descriptors the runtime opened for the job and the job did not close are closed, and
+  what waited for them, its timers and its waits for other threads' results are dropped;
+- a `weak` reference made in the job no longer exists, and neither does any object the job
+  created and did not send out;
+- what the job did outside itself before the panic stays done: bytes written, a message sent,
+  a mutex or an atomic changed.
+
+**When a contained task is cancelled,** its task is cancelled inside the job first, as any task
+is (its `use` bindings are disposed, [§9](09-computations.md)), and the job then ends without a
+result.
+
+**Not contained.** These end the process as outside a job: a stack overflow; running out of
+memory; a failure of the runtime itself (a thread or a descriptor queue it cannot create).
+Work the job starts on other threads (`Parallel.*`, `Task.spawn`, `Task.blocking`) is not part
+of the job: a panic there ends the process, and a job that fails does not wait for or cancel a
+task it spawned. Resources a C library holds for the job are not released. Passing a
+`callback<share<F>>` to C inside a job panics, and a thread-bound handle
+([§11.1](11-low-level.md#111-c-interop)) made on one side of a job's boundary panics when used
+on the other.
+
+*Implementation.* Nothing unwinds: the thread jumps to the job's entry. A job's objects are in
+memory of its own, freed whole when it ends; in a job a shared object's count is not changed,
+and the job holds what came in from outside until it ends. A value leaving a job is copied by
+a function per type, which keeps the sharing between the job's objects.
 
 ## 10.7 Safety summary
 

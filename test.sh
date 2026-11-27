@@ -8,8 +8,8 @@
 # --target <triple>: cross-compile the programs and C interop tests (zs build --target) and run
 #   them under qemu-user, e.g. --target aarch64-linux-musl, or Wine for x86_64-windows-gnu; the
 #   host-only tool checks are skipped.
-# --build-only: with --target, build every program and C interop test and run none (macOS's,
-#   where nothing here runs them); a failed build fails the test.
+# --build-only: with --target, build every program and C interop test and run none (macOS's and
+#   FreeBSD's, where nothing here runs them); a failed build fails the test.
 # --zs <binary>: test that compiler, installed as bin/zs with the library and runtime beside it,
 #   instead of building src/.
 # --release: build the programs optimized (zs build --release), so what LLVM's optimizer may assume
@@ -41,6 +41,8 @@ while [ $# -gt 0 ]; do
       case $target in
         *-windows-*) qemu=(timeout 120 wine); syslibs=(-lws2_32 -lapi-ms-win-core-synch-l1-2-0)
           export LANG=C.UTF-8 WINEDEBUG=-all XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/tmp/zs-xdg-$UID}; mkdir -p "$XDG_RUNTIME_DIR" ;;
+        # what a C program linking a Z# library names there: the threads' library and backtrace's
+        *-freebsd*) qemu=("qemu-${target%%-*}"); syslibs=(-lpthread -lexecinfo) ;;
         *) qemu=("qemu-${target%%-*}") ;;
       esac ;;
     --build-only) buildonly=1 ;;
@@ -56,6 +58,7 @@ done
 windows=0; [[ $target == *-windows-* ]] && windows=1
 case $(uname -s) in
   MINGW* | MSYS* | CYGWIN*) windows=1; syslibs=(-lws2_32 -lapi-ms-win-core-synch-l1-2-0) ;;
+  FreeBSD) syslibs=(-lpthread -lexecinfo) ;;
 esac
 if [ -z "$zsbin" ]; then
   [ -x "${ZS_STAGE0:-}" ] || { echo "no stage 0 compiler (\$ZS_STAGE0): run the tests through ./dev"; exit 1; }
@@ -181,6 +184,25 @@ for t in tests/parallel/basics tests/parallel/anythread tests/parallel/spsc test
   else echo "FAIL $t.zs under ThreadSanitizer"; head -40 "$tmp/tsan.log"; fail=1; fi
 done
 
+# contained jobs (0035) under the sanitizers. A panic there isn't the program's end, so what a
+# failed job leaves behind is a leak like any other (the loop above counts none for a program
+# that prints a panic); each of a job's objects is malloc's own, so a use of one after its job
+# has ended is seen; and under ThreadSanitizer the jobs on the pool's threads race on nothing
+for t in tests/contained/basics tests/contained/c tests/contained/copies tests/contained/crossings tests/contained/parallel tests/contained/resources tests/contained/server tests/contained/task; do
+  [ $windows = 1 ] && { echo "skip $t.zs under the sanitizers (none for mingw-w64)"; continue; }
+  for how in --sanitize --sanitize=thread; do
+    if bin/zs build $t.zs -o "$tmp/job" $how 2>"$tmp/job.log" \
+       && actual=$(ASAN_OPTIONS=exitcode=99:detect_leaks=1 UBSAN_OPTIONS=exitcode=99 timeout 300 "$tmp/job" 2>&1 </dev/null) \
+       && [ "$actual" = "$(cat $t.out)" ]; then echo "ok   $t.zs with $how"
+    else echo "FAIL $t.zs with $how"; cat "$tmp/job.log"; echo "${actual:-}" | head -40; fail=1; fi
+  done
+done
+# the sanitizers check Z#'s code too, not only the runtime's: a write past a block in unsafe code
+# is reported, and a unit at an object's end (an access of no bytes) isn't
+if [ $windows = 1 ]; then echo "skip tests/sanitize.sh (no sanitizers for mingw-w64)"
+elif [ "$(tests/sanitize.sh 2>&1)" = "$(cat tests/sanitize.expected)" ]; then echo "ok   tests/sanitize.sh (AddressSanitizer in Z#'s code)"
+else echo "FAIL tests/sanitize.sh"; diff <(tests/sanitize.sh 2>&1) tests/sanitize.expected; fail=1; fi
+
 # the pool's one worker going to sleep as jobs are forked: woken for each one (a wake-up lost
 # hangs it, with nothing polling the deques to find the job)
 if bin/zs build --strict tests/parallel/wake.zs -o "$tmp/wake" 2>"$tmp/wake.log" \
@@ -272,9 +294,12 @@ else
      && [ "$("$tmp/ulist")" = 20000 ] && [ "$("$tmp/ulets")" = 4999 ] && [ "$("$tmp/uifs")" = 8642 ]; then echo "ok   the compiler with ulimit -s unlimited (its pool threads' stacks)"
   else echo "FAIL the compiler with ulimit -s unlimited"; grep -v '^ *[0-9]* | ' "$tmp/unlimited.log" | head -3; fail=1; fi
 fi
-# programs broken at random: errors, never a crash, a panic or a hang of zs check or zs fmt
-if out=$(tests/fuzz.sh 2>&1); then echo "ok   tests/fuzz.sh ($(echo "$out" | tail -1))"
-else echo "FAIL tests/fuzz.sh"; echo "$out" | tail -20; fail=1; fi
+# programs broken at random: errors, never a crash, a panic or a hang of zs check or zs fmt. The
+# seed is the day's (UTC), so each day's run breaks other programs and a failure reproduces that
+# day: ZS_FUZZ_SEED=<seed> tests/fuzz.sh
+fuzz_seed=${ZS_FUZZ_SEED:-$(date -u +%Y%m%d)}
+if out=$(ZS_FUZZ_SEED=$fuzz_seed tests/fuzz.sh 2>&1); then echo "ok   tests/fuzz.sh (seed $fuzz_seed: $(echo "$out" | tail -1))"
+else echo "FAIL tests/fuzz.sh (seed $fuzz_seed)"; echo "$out" | tail -20; fail=1; fi
 
 # host benchmarks against C: a Z# program needing more than 5% more instructions than in
 # bench/host/baseline.txt fails (bench/host/run.sh shows times; --update after an improvement).
@@ -295,6 +320,10 @@ else echo "FAIL tests/ztest/update.sh"; diff <(tests/ztest/update.sh 2>&1) tests
 # zs test --stress (D4): a failure every fifth run, and a leak every seventh, found in four seconds
 if [ "$(tests/ztest/stress.sh 2>&1)" = "$(cat tests/ztest/stress.expected)" ]; then echo "ok   tests/ztest/stress.sh (zs test --stress)"
 else echo "FAIL tests/ztest/stress.sh"; diff <(tests/ztest/stress.sh 2>&1) tests/ztest/stress.expected; fail=1; fi
+# and under ThreadSanitizer: the pool, tasks and Alt race on nothing, and a planted race is found
+if [ $windows = 1 ]; then echo "skip tests/ztest/tsan.sh (no ThreadSanitizer for mingw-w64)"
+elif [ "$(tests/ztest/tsan.sh 2>&1)" = "$(cat tests/ztest/tsan.expected)" ]; then echo "ok   tests/ztest/tsan.sh (zs test --stress under ThreadSanitizer)"
+else echo "FAIL tests/ztest/tsan.sh"; diff <(tests/ztest/tsan.sh 2>&1) tests/ztest/tsan.expected; fail=1; fi
 # zs test --coverage (D10): the lines run and not run per file, and coverage.lcov
 if [ "$(tests/ztest/coverage.sh 2>&1)" = "$(cat tests/ztest/coverage.expected)" ]; then echo "ok   tests/ztest/coverage.sh (zs test --coverage)"
 else echo "FAIL tests/ztest/coverage.sh"; diff <(tests/ztest/coverage.sh 2>&1) tests/ztest/coverage.expected; fail=1; fi
@@ -351,9 +380,11 @@ if [ "$(tests/iter/loops.sh bin/zs 2>&1)" == "$(cat tests/iter/loops.expected)" 
 else echo "FAIL tests/iter/loops.sh"; diff <(tests/iter/loops.sh bin/zs 2>&1) tests/iter/loops.expected; fail=1; fi
 
 # the first-party packages: their own tests, with their C through [c] (0018 item 4)
-pk=$( (cd packages/xxhash && "$zs" test | tail -1; cd ../libclang && "$zs" test | tail -1) 2>&1 )
+pk=$( (cd packages/xxhash && "$zs" test | tail -1; cd ../libclang && "$zs" test | tail -1; cd ../zlayout && "$zs" test | tail -1; cd ../logger && "$zs" test | tail -1) 2>&1 )
 if [ "$pk" = "1 passed, 0 failed
-2 passed, 0 failed" ]; then echo "ok   packages (xxhash, libclang)"
+2 passed, 0 failed
+14 passed, 0 failed
+22 passed, 0 failed" ]; then echo "ok   packages (xxhash, libclang, zlayout, logger)"
 else echo "FAIL packages"; echo "$pk"; fail=1; fi
 
 # git dependencies against a local repository: tags, branches, zs.lock, zs update, re-fetching
@@ -794,6 +825,11 @@ elif ! diff -rq -x README.md "$tmp/ref" docs/reference >/dev/null; then
 elif missing=$(for p in "$tmp/ref"/*.md; do grep -q "($(basename "$p"))" docs/reference/README.md || basename "$p"; done) && [ -n "$missing" ]; then
   echo "FAIL docs/reference/README.md doesn't link: $missing"; fail=1
 else echo "ok   library documented; docs/reference current"; fi
+# zs doc (and the language server's hover, which reads a file the same way) on a module whose
+# block has a line of two spaces, which zs fmt would take out of a file kept here
+printf 'module M =\n  /// one\n  let a = 1\n  \n  /// two\n  let b = 2\n\nlet main () = 0\n' > "$tmp/twospaces.zs"
+if bin/zs doc "$tmp/twospaces.zs" > "$tmp/twospaces.md" 2>&1 && grep -q '### `M.b`' "$tmp/twospaces.md"; then echo "ok   zs doc on a line of two spaces in a module"
+else echo "FAIL zs doc on a line of two spaces in a module"; head -5 "$tmp/twospaces.md"; fail=1; fi
 
 # the repository's own Z# code is formatted (zs fmt); the tests of parse errors don't parse, so
 # they have no layout to check
@@ -996,6 +1032,14 @@ if [ -z "$target" ]; then
      && [ "$(ZS_STATS=1 "$tmp/pu" 2>&1 >/dev/null | grep -o '[0-9]* objects marked shared')" = "0 objects marked shared" ]; then
     echo "ok   tests/stats/parallel_unique.zs (nothing marked shared)"
   else echo "FAIL tests/stats/parallel_unique.zs"; cat "$tmp/pu.log"; ZS_STATS=1 "$tmp/pu" 2>&1 | tail -2; fail=1; fi
+fi
+
+# the proofs (proofs/): what the ownership check's rules rest on, checked by Rocq, each theorem
+# with no axiom
+if [ -z "$target" ]; then
+  if ! command -v rocq >/dev/null; then echo "skip proofs/check.sh (no rocq; rebuild the dev image)"
+  elif out=$(proofs/check.sh 2>&1) && ! echo "$out" | grep -q -v '^Closed under the global context$'; then echo "ok   proofs/check.sh ($(echo "$out" | wc -l) theorems, no axioms)"
+  else echo "FAIL proofs/check.sh"; echo "$out" | head -20; fail=1; fi
 fi
 
 # the bootstrap (0020): the compiler builds itself to the same bytes

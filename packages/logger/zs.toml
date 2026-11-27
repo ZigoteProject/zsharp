@@ -1,0 +1,6 @@
+# Logging for Z#: records with a level and fields, sinks any thread may write to, and a `Log`
+# effect so that code that logs says so in its type and a test can read what it logged.
+[package]
+name = "logger"
+version = "0.1.0"
+main = "src/Logger.zs"

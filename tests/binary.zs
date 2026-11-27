@@ -1,5 +1,6 @@
 // Binary (0020): values to bytes and back: derived records and unions, the library's types,
-// strings written once, and errors for bytes that hold no value.
+// strings written once — many of them, each taking its number without copying the map of them —
+// and errors for bytes that hold no value.
 [<Derive(Binary)>]
 type Point = { x: int; y: f64; name: string }
 
@@ -82,4 +83,12 @@ let main () =
   let lits: result<list<int>, string> = Binary.ofBytes (Binary.toBytes [ 70000; 1073741824 ])
   let tenth: result<f64, string> = Binary.ofBytes (Binary.toBytes 0.1)
   println $"{lits} {tenth} {Array.length (Binary.toBytes 70000)}"
+  // 20,000 strings written the first time each: its number in the map is taken without copying
+  // the map, so a string costs its bytes' Buffer, its bytes and its entry, not its bucket array
+  let names = List.init 20000 (fun i -> $"name{i}")
+  let before = Runtime.allocations ()
+  let bytes = Binary.toBytes names
+  let written = Runtime.allocations () - before
+  let readBack: result<list<string>, string> = Binary.ofBytes bytes
+  println $"{written} allocations for 20,000 strings, {Array.length bytes} bytes, {readBack = Ok names}"
   0

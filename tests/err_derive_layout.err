@@ -1,0 +1,5 @@
+tests/err_derive_layout.zs:20: error: f.offset is a record field's place in bytes; a union's cases have no offsets
+tests/err_derive_layout.zs:24: error: Derive(Offsets) on Control: field on: offsetof is a field's place in bytes, and Control is a [<Bits>] record: its fields are bits of one integer
+tests/err_derive_layout.zs:27: error: a type takes one of [<CLayout>] and [<Bits>], once
+tests/err_derive_layout.zs:30: error: offsetof is a field's place in bytes, and Control is a [<Bits>] record: its fields are bits of one integer
+4 errors

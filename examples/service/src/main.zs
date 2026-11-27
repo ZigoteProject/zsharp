@@ -2,6 +2,7 @@
 //   GET /notes          every note, as JSON
 //   POST /notes         the body is a new note's text; answers with it and its id
 //   DELETE /notes/<id>  removes one
+//   GET /crash          a request whose handling has a bug: that request fails, the server goes on
 // Usage: service [port] [database]   (port 8080 and notes.db by default)
 //   curl -d 'buy milk' localhost:8080/notes; curl localhost:8080/notes
 open Http
@@ -39,14 +40,39 @@ let remove (db: Db) (id: string) : Response =
     | Ok _ -> Response.empty 204
     | Error e -> failed e
 
+/// What a request asks for.
+type Asked =
+  | Every
+  | New of string
+  | Gone of string
+  | Unknown
+
+// what the request asks for, from what it sent: the part of a request's work that a bug in it
+// is most likely in (here, one put there to be found)
+let asked (m: Method) (path: string) (body: string) : Asked =
+  match m, path with
+  | Get, "/notes" -> Every
+  | Post, "/notes" -> New body
+  | Delete, p when String.startsWith "/notes/" p -> Gone(String.sub p 7 (String.length p - 7))
+  | Get, "/crash" -> panic "a bug in this request"
+  | _ -> Unknown
+
+// A request's own work runs as a contained job: a panic in it is this request's failure (a
+// 500), and the server and its other requests go on. What crosses into a job must be Share:
+// the request's method, path and body are; the database's connection isn't (it's a C library's,
+// and stays whole whatever a request does), so the job says what's asked and the answer is
+// made outside it.
 let route (db: Db) (req: Request) : Task<Response> =
   task {
-    match req.method, req.path with
-    | Get, "/notes" -> return notes db
-    | Post, "/notes" -> return add db (Request.text req)
-    | Delete, path when String.startsWith "/notes/" path ->
-      return remove db (String.sub path 7 (String.length path - 7))
-    | _ -> return Response.text 404 "not found"
+    let m = req.method
+    let path = req.path
+    let body = Request.text req
+    match Contained.run (fun () -> asked m path body) with
+    | Error bug -> return Response.text 500 bug.message
+    | Ok Every -> return notes db
+    | Ok(New text) -> return add db text
+    | Ok(Gone id) -> return remove db id
+    | Ok Unknown -> return Response.text 404 "not found"
   }
 
 let main () =

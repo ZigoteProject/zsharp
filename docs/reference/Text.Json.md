@@ -4,6 +4,16 @@ JSON (RFC 8259): one `Json` type for any document, `Json.parse`, `Json.print` an
 `Json.pretty`, accessors that say where a document didn't fit, and the `ToJson` and `FromJson`
 traits, which `[<Derive(Json)>]` writes for a record or a union. Every target has it.
 
+## Modules
+
+### `Json`
+
+```zsharp
+module Json
+```
+
+Parsing, printing and reading JSON documents.
+
 ## Traits
 
 ### `ToJson`

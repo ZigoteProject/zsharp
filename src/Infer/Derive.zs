@@ -4,8 +4,14 @@
 ///   match Shape.pair a b with Same c -> .. | Different (i, j) -> ..   both values at once
 ///   match Shape.kind with RecordKind -> .. | UnionKind -> ..   picked statically
 ///   for f in c.fields do body   one copy of body per field (each typed at that field's type)
-///   f.name f.index f.value f.left f.right f.default  c.name c.index c.count   field and case facts
-///     (f.default: Some of a record field's default, None for a field without one)
+///   f.name f.index f.value f.left f.right f.default f.offset  c.name c.index c.count   field and
+///     case facts (f.default: Some of a record field's default, None for a field without one;
+///     f.offset: a record field's offset in bytes, offsetof<'self> of it)
+///   sizeof<'self> alignof<'self> offsetof<'self> "field"   the layout of the type derived for
+///   Shape.field f x   field f of another value x: one of a record with the same fields (0037's
+///     columns of a row type, which has the row's fields, each an array)
+///   Shape.record (fun f -> e)   a record from a value per field: the record expected there, which
+///     has these fields ('self, or the trait's other parameter, written 'other)
 ///   Shape.build (fun f -> e)   a record from per-field results (stops at the first Error)
 ///   Shape.buildCase name (fun f -> e)   the named union case from per-field results, or None
 ///   Shape.cases   a union's cases with no value in hand: { name; index; count; rank } each, a
@@ -85,8 +91,8 @@ let private seqOf (es: list<Expr>) : Expr =
   | _ -> List.reduce (fun a b -> plain (Seq(a, b))) es
 
 /// The derive's definitions for one type: its name, the impl's head type (`self` in the derive),
-/// its shape.
-let expand (tname: string) (head: SType) (shape: ShapeInfo) (defs: list<Definition>) : list<Definition> / Fails =
+/// the trait's other parameter where the impl has one (`other`), its shape.
+let expand (tname: string) (head: SType) (other: option<SType>) (shape: ShapeInfo) (defs: list<Definition>) : list<Definition> / Fails =
   let count = ref 0
   let fresh (p: string) =
     count.Value <- count.Value + 1
@@ -94,6 +100,7 @@ let expand (tname: string) (head: SType) (shape: ShapeInfo) (defs: list<Definiti
   let rec substTy (st: SType) : SType =
     match st with
     | STVar "self" -> head
+    | STVar "other" when Option.isSome other -> Option.get other
     | STName(n, args) -> STName(n, List.map substTy args)
     | STTuple ts -> STTuple(List.map substTy ts)
     | STFun(a, b) -> STFun(substTy a, substTy b)
@@ -203,6 +210,10 @@ let expand (tname: string) (head: SType) (shape: ShapeInfo) (defs: list<Definiti
         match fi.fdefault with
         | Some d -> plain (Call("Some", [ d ]))
         | None -> var "None"
+      | (FieldB fi, "offset") ->
+        match shape with
+        | RecordShape _ -> plain (LayoutOf("offsetof", head, fi.fname))
+        | UnionShape(_, _) -> fail $"{x}.offset is a record field's place in bytes; a union's cases have no offsets"
       | (FieldB fi, "value")
       | (FieldB fi, "left")
       | (FieldB fi, "right") ->
@@ -215,6 +226,18 @@ let expand (tname: string) (head: SType) (shape: ShapeInfo) (defs: list<Definiti
         | Some y -> y
         | None -> fail $"{x}.{prop} is not available here"
       | _ -> fail $"unknown shape property '{x}.{prop}'"
+    | Call("Shape.field", [ { e = Var f }; x ]) when Map.containsKey f env ->
+      match Map.find f env with
+      | FieldB fi -> plain (Field(ex env x, fi.fname))
+      | CaseB _ -> fail $"'{f}' is a record or a case, not a field"
+    | Call("Shape.record", [ { e = Lambda([ { param = { pat = PIdent(f, None) } } ], body) } ]) ->
+      match shape with
+      | RecordShape fields ->
+        let one (i: int) (p: string * option<Expr>) : FieldValue =
+          let fname = fst p
+          { field = fname; nameAt = -1; value = plain (DeriveCtx($"field {fname}", ex (Map.add f (FieldB(field fname i None None None)) env) body)) }
+        plain (RecordLit(List.mapi one fields))
+      | UnionShape(_, _) -> fail "Shape.record needs a record"
     | Call("Shape.build", [ { e = Lambda([ { param = { pat = PIdent(f, None) } } ], body) } ]) ->
       match shape with
       | RecordShape fields ->
@@ -254,6 +277,7 @@ let expand (tname: string) (head: SType) (shape: ShapeInfo) (defs: list<Definiti
       let one (c: Clause) = { pattern = placelessPat c.pattern; guard = Option.map (ex env) c.guard; body = ex env c.body }
       plain (Match(ex env sc, List.map one cases))
     | TryBind(p, a, b) -> plain (TryBind(placelessPat p, ex env a, ex env b))
+    | LayoutOf(kind, t, f) -> plain (LayoutOf(kind, substTy t, f))
     | _ ->
       let m = mapExpr (ex env) e
       { m with at = -1 }

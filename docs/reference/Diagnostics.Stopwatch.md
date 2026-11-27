@@ -2,6 +2,16 @@
 
 Measuring elapsed time.
 
+## Modules
+
+### `Stopwatch`
+
+```zsharp
+module Stopwatch
+```
+
+Functions on `Stopwatch`.
+
 ## Types
 
 ### `Stopwatch`

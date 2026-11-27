@@ -183,6 +183,64 @@ let main () =
 [|15; 20; 30|] 65 [|0; 10; 20; 30|] false
 ```
 
+## Columns
+
+An `array<Particle>` holds whole records one after another. `columns<Particle>` holds the same rows field by field, each field's values together in an array of their own (a *structure of arrays*), and is used as the array of records it stands for. A loop that reads one or two fields of many records then reads only those fields' memory, and a loop over one column of numbers is one the compiler can do several elements an instruction.
+- **Asking for it:** `[<Derive(Columns)>]` on a record gives it `columns<'r>`; `Columns.init`, `Columns.create` and `Columns.ofArray` make one, and `Columns.toArray` gives the records back.
+- **Rows:** `c.[i]` is row `i`, a record built from every column, and `for row in c do` gives each. `c.[i].f` reads one element of one column.
+- **Columns:** `c.f` is the column, an `array`, so `Array.sum c.age`, a slice of it and `F32x8.load c.x i` work as on any array.
+- **A value,** as an array is: with `let mutable c`, `c.[i] <- row` and `c.[i].f <- v` write in place when nothing else holds the column, and a copy of the column otherwise. A column isn't replaced whole and `columns` aren't written as a record literal, so every column has one length.
+- **Which to use:** columns when loops use a few fields of each record; an array when they use most of each record, or reach rows in no order. Changing `array<Particle>` to `columns<Particle>` leaves the loops as they are, so measure both.
+
+```zsharp
+[<Derive(Columns)>]
+type Particle = { x: f32; vx: f32; age: f32; name: string }
+
+let step (dt: f32) (ps: columns<Particle>) : columns<Particle> =
+  let mutable ps = ps
+  for i in 0 .. Columns.length ps - 1 do
+    ps.[i].x <- ps.[i].x + ps.[i].vx * dt
+    ps.[i].age += dt
+  ps
+
+let main () =
+  let ps = Columns.init 3 (fun i -> { x = f32 i; vx = f32 2.0; age = f32 0.0; name = $"p{i}" })
+  let moved = step (f32 0.5) ps
+  println $"{moved.[2]} {ps.[2].x}"
+  println $"{Array.toList moved.x} {Array.sum moved.age} {Columns.length moved}"
+  println (String.join " " [ for p in moved -> p.name ])
+  0
+```
+
+```text
+{ x = 3; vx = 2; age = 0.5; name = p2 } 2
+[1; 2; 3] 1.5 3
+p0 p1 p2
+```
+
+A function over any columns needs no annotation (`let last c = Columns.get c (Columns.length c - 1)`); `columns<'a>` can't be written for a row type that isn't named. Columns have no `=`, as arrays have none.
+
+`ColumnBuffer<'r>` is to `columns<'r>` what `Buffer<'a>` is to `array<'a>`: shared, mutable and growing, for a table that is built up row by row. The same derive gives it. `ColumnBuffer.push row b` adds a row at the end of every column, `pop`, `truncate` and `clear` take rows off, and `b.[i] <- row` and `b.[i].f <- v` write through any binding, seen through every reference. `b.f` is the column, a `Buffer` that shares the ColumnBuffer's storage: write its elements, but push, pop and truncate the ColumnBuffer, since a column's length is every column's (one changed alone is a panic at the next `ColumnBuffer.push`, `truncate` or `length`). `ColumnBuffer.empty ()` needs its type from where it's used, as below, or `zs check` says it isn't known; `create`, `ofArray` and `ofColumns` take theirs from the rows.
+
+```zsharp
+[<Derive(Columns)>]
+type Hit = { at: int; damage: f32 }
+
+let main () =
+  let hits : ColumnBuffer<Hit> = ColumnBuffer.empty ()
+  for i in 0 .. 3 do
+    ColumnBuffer.push { at = i; damage = f32 (i * 2) } hits
+  hits.[1].damage <- f32 10.0
+  println $"{ColumnBuffer.length hits} {hits.[1]} {Array.sum (Buffer.toArray hits.damage)}"
+  println $"{ColumnBuffer.pop hits} {ColumnBuffer.length hits}"
+  0
+```
+
+```text
+4 { at = 1; damage = 10 } 20
+Some { at = 3; damage = 6 } 3
+```
+
 ## Map and Set
 
 **`Map<'k, 'v>`:** a persistent sorted map, a balanced tree with O(log n) operations. Adding or removing gives a new map that shares most of its structure with the old one, and the old one stays valid. Keys need an ordering, which every number, string, record, union and tuple has.

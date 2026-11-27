@@ -331,12 +331,15 @@ let docItems (text: string) : list<DocItem> =
   // the type, extension, trait or module whose block we are in, and which it is
   let mutable container = ""
   let mutable containerKind = ""
+  // the module block a trait or an effect declared in it is in ("" outside one)
+  let mutable moduleBlock = ""
   for i in 0 .. Array.length lines - 1 do
     let l = lines.[i]
     let add (kind: string) (key: string) = Buffer.push { kind = kind; key = key; title = header l; line = i + 1; doc = docAbove lines (i + 1) } items
     if String.length l > 0 && not (isSpaceByte (String.byte l 0)) && not (String.startsWith "//" l) && not (String.startsWith "[<" l) then
       container <- ""
       containerKind <- ""
+      moduleBlock <- ""
       // module Collections.List / namespace Collections: what the file's names start with
       let headerWord = if word "module" l 0 >= 0 then "module" else if word "namespace" l 0 >= 0 then "namespace" else ""
       let headerEnd = if headerWord = "" then -1 else ident true l (word headerWord l 0)
@@ -401,8 +404,22 @@ let docItems (text: string) : list<DocItem> =
                 if moduleEnd >= 0 && String.startsWith "=" (String.sub l (spaces0 l moduleEnd) (String.length l - spaces0 l moduleEnd)) then
                   container <- prefix + String.sub l (word "module" l 0) (moduleEnd - word "module" l 0)
                   containerKind <- "module"
+                  moduleBlock <- container
+                  add "submodule" container
     else if container <> "" then
       let t = String.trim l
+      // at a module block's indentation: a trait or an effect of the module (Inner.Name, its
+      // `abstract` lines its methods), or after one, the module's own definitions again
+      let atBlock = moduleBlock <> "" && String.length l > 2 && String.startsWith "  " l && not (isSpaceByte (String.byte l 2))
+      let nestedWord = if not atBlock then "" else if word "trait" t 0 >= 0 then "trait" else if word "effect" t 0 >= 0 then "effect" else ""
+      let nestedEnd = if nestedWord = "" then -1 else ident false t (word nestedWord t 0)
+      if nestedEnd >= 0 then
+        container <- moduleBlock + "." + String.sub t (word nestedWord t 0) (nestedEnd - word nestedWord t 0)
+        containerKind <- nestedWord
+        add nestedWord container
+      else if atBlock && containerKind <> "module" then
+        container <- moduleBlock
+        containerKind <- "module"
       let caseEnd = if String.startsWith "|" t then ident false t (spaces0 t 1) else -1
       let isCase = caseEnd >= 0 && String.byte t (spaces0 t 1) >= u8 65 && String.byte t (spaces0 t 1) <= u8 90
       let afterLet = word "let" t 0
@@ -505,6 +522,7 @@ let doc (src: string) : int =
       match Option.bind (fun (h: DocItem) -> h.doc) fileHeader with
       | Some text -> println $"{text}\n"
       | None -> ()
+      section "Modules" [ "submodule" ]
       section "Traits" [ "trait"; "method" ]
       section "Effects" [ "effect"; "operation" ]
       section "Types" [ "type"; "case"; "member" ]

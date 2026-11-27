@@ -2,6 +2,16 @@
 
 Lowest priority first.
 
+## Modules
+
+### `PriorityQueue`
+
+```zsharp
+module PriorityQueue
+```
+
+Functions on `PriorityQueue`.
+
 ## Types
 
 ### `PriorityQueue`

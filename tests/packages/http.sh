@@ -32,6 +32,10 @@ ask DELETE /notes/1 ''
 ask DELETE /notes/1 ''
 ask GET /notes ''
 ask GET /elsewhere ''
+# a request whose handling panics is that request's failure (a contained job, 0035): the next
+# one is answered
+ask GET /crash ''
+ask GET /notes ''
 kill $server 2>/dev/null; wait $server 2>/dev/null
 echo "== examples/echo/http"
 cd "$t/examples/echo/http" && timeout 600 "$zs" build --strict >/dev/null || echo "the build failed"

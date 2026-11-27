@@ -1,0 +1,13 @@
+-1
+  dispose w1
+dropped
+  dispose w2
+-1 0
+after
+-1
+  dispose inner
+  dispose outer
+gone
+took true
+  dispose gen
+left

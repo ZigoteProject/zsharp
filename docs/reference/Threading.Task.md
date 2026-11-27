@@ -8,6 +8,16 @@ waits for an interrupt with `Irq.wait`, or for a handler's `Signal`. Threads and
 descriptors aren't there: `Task.spawn`, `Task.blocking` and `Task.waitFor` are errors on a
 chip.
 
+## Modules
+
+### `Task`
+
+```zsharp
+module Task
+```
+
+Functions on tasks.
+
 ## Types
 
 ### `Cancel`

@@ -1,0 +1,10 @@
+ok 42
+panic: index out of bounds
+failed: index out of bounds
+xs is [1; 2; 3]
+a, b, c [1; 4; 9] [3; 6]
+panic: inner
+caught inner
+panic: three
+failed: three
+done

@@ -1,5 +1,31 @@
 # Binary
 
+## Modules
+
+### `BinaryWriter`
+
+```zsharp
+module BinaryWriter
+```
+
+The forms values are made of: bytes, variable-length integers, floats and strings.
+
+### `BinaryReader`
+
+```zsharp
+module BinaryReader
+```
+
+Reading what `BinaryWriter` wrote; each says when the bytes end too early.
+
+### `Binary`
+
+```zsharp
+module Binary
+```
+
+`toBytes` and `ofBytes`.
+
 ## Traits
 
 ### `Binary`

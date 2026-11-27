@@ -16,6 +16,8 @@ examples/raylib/demo
 .cache/
 bench/mcu/out/
 .claude/
+# the harness plugin's task list
+/Plans.md
 editors/vscode/node_modules/
 editors/vscode/*.vsix
 editors/rider/.gradle/

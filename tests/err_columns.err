@@ -1,0 +1,47 @@
+tests/err_columns.zs:6: error: Derive(Columns) on Shape: columns are a record's fields, each stored apart, and Shape is a union
+tests/err_columns.zs:14: error: columns<Plain> needs Plain to derive its columns: [<Derive(Columns)>] on the record
+tests/err_columns.zs:16: error: columns holds a record's fields, a column each, and int isn't a record
+tests/err_columns.zs:18:35: error: columns aren't written as a record: Columns.ofArray, Columns.init and Columns.create make them, every column one length
+tests/err_columns.zs:20:52: error: a column isn't replaced whole, since every column is one length: write its elements (c.[i].f <- v)
+tests/err_columns.zs:24:3: error: a column isn't replaced whole, since every column is one length: write its elements (c.[i].f <- v)
+tests/err_columns.zs:27:33: error: a slice needs an array, a Buffer, a span or a string, not columns<Point>
+tests/err_columns.zs:29:32: error: operator '=' does not support type columns<Point> (it needs Eq)
+tests/err_columns.zs:33:14: error: mutable variable 'm' cannot be captured by a closure; use a ref cell (let x = ref …; x.Value <- …)
+tests/err_columns.zs:36:41: error: Point has no field or member 'z'
+tests/err_columns.zs:38: error: ColumnBuffer<Plain> needs Plain to derive its columns: [<Derive(Columns)>] on the record
+tests/err_columns.zs:40:46: error: a ColumnBuffer isn't written as a record: ColumnBuffer.empty, create and ofColumns make one, every column one length
+tests/err_columns.zs:42:44: error: a column isn't replaced whole, since every column is one length: write its elements (c.[i].f <- v)
+tests/err_columns.zs:44:52: error: Point has no field or member 'z'
+tests/err_columns.zs:55: error: ColumnBuffer holds a record's fields, a column each, and Shade is a union
+tests/err_columns.zs:57: error: ColumnBuffer holds a record's fields, a column each, and int isn't a record
+tests/err_columns.zs:59: error: ColumnBuffer<'a> can't be written for a row type that isn't known: name the record, or leave the annotation out (a function over any ColumnBuffer needs none)
+tests/err_columns.zs:61: error: ColumnBuffer holds a record's fields, a column each, and columns<Point> is already Point's columns: write ColumnBuffer<Point>
+tests/err_columns.zs:63: error: columns holds a record's fields, a column each, and ColumnBuffer<Point> is already Point's columns: write columns<Point>
+tests/err_columns.zs:65: error: ColumnBuffer<Control>: Control is a [<Bits>] record, one integer: an array or a Buffer of it is already as dense as its columns would be
+tests/err_columns.zs:69:44: error: a column isn't replaced whole, since every column is one length: write its elements (c.[i].f <- v)
+tests/err_columns.zs:73:20: error: a column isn't replaced whole, since every column is one length: write its elements (c.[i].f <- v)
+tests/err_columns.zs:75:44: error: a slice needs an array, a Buffer, a span or a string, not ColumnBuffer<Point>
+tests/err_columns.zs:77:43: error: operator '=' does not support type ColumnBuffer<Point> (it needs Eq)
+tests/err_columns.zs:79:45: error: Point has no field 'z'
+tests/err_columns.zs:86:44: error: Sized has no field 'Twice'
+tests/err_columns.zs:91:14: error: mutable variable 'm' cannot be captured by a closure; use a ref cell (let x = ref …; x.Value <- …)
+tests/err_columns.zs:96:14: error: mutable variable 'm' cannot be captured by a closure; use a ref cell (let x = ref …; x.Value <- …)
+tests/err_columns.zs:102:20: error: columns are values: to change a row, declare them with `let mutable c = …` and write `c.[i] <- row`, or use `Columns.set c i row`, which returns the changed columns (ColumnBuffer<'r> is the shared mutable alternative)
+tests/err_columns.zs:104:22: error: columns are values: to change a row, declare them with `let mutable c = …` and write `c.[i] <- row`, or use `Columns.set c i row`, which returns the changed columns (ColumnBuffer<'r> is the shared mutable alternative)
+tests/err_columns.zs:106:38: error: columns are values: to change a row, declare them with `let mutable c = …` and write `c.[i] <- row`, or use `Columns.set c i row`, which returns the changed columns (ColumnBuffer<'r> is the shared mutable alternative)
+tests/err_columns.zs:109:41: error: argument 2 of 'ColumnBuffer.push': ColumnBuffer<Point> is a ColumnBuffer.Buffered of Point, not of int
+tests/err_columns.zs:111:21: error: argument 1 of 'Columns.length': Plain does not implement Columns.Columnar; write impl Columns.Columnar<Plain> = …
+tests/err_columns.zs:115: error: record 'Node' cannot contain itself; use a union
+tests/err_columns.zs:118: error: ColumnBuffer holds a record's fields, a column each, and Tree is a union
+tests/err_columns.zs:123: error: ColumnBuffer<Item> can't be named in the group that declares Item: a group's [<Derive(Columns)>] declares its columns after the group
+tests/err_columns.zs:128: error: ColumnBuffer holds a record's fields, a column each, and Handle is a union
+tests/err_columns.zs:132: error: ColumnBuffer<First> can't be named in the group that declares First: a group's [<Derive(Columns)>] declares its columns after the group
+tests/err_columns.zs:134: error: ColumnBuffer holds a record's fields, a column each, and Kind is a union
+tests/err_columns.zs:149:15: error: the fields of 'Vault.Secret' are private to module Vault
+tests/err_columns.zs:153:3: error: the fields of 'Vault.Secret' are private to module Vault
+tests/err_columns.zs:157:3: error: the fields of 'Vault.Secret' are private to module Vault
+tests/err_columns.zs:159:51: error: the fields of 'Vault.Secret' are private to module Vault
+tests/err_columns.zs:161:46: error: the fields of 'Vault.Secret' are private to module Vault
+tests/err_columns.zs:165:5: error: the fields of 'Vault.Secret' are private to module Vault
+tests/err_columns.zs:169:3: error: the fields of 'Vault.Secret' are private to module Vault
+46 errors

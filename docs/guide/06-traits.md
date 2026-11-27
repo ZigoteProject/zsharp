@@ -182,6 +182,7 @@ total area 9.14
 
 `derive Name` writes an impl once for every record and union, the way the automatic `Show` is written in the standard library.
 - **Inside a derive:** `Shape.of x` matches the value as a `Record` or a `Union` case, and `for f in r.fields` runs once per field. In the loop, `f.name`, `f.index` and `f.value` describe the field.
+- **Layout:** `sizeof<'self>` and `alignof<'self>` are the type's size and alignment, and a record's field has `f.offset`, its place in bytes ([C interop](09-c-interop.md)): a derive can print a type's padding or check a field order.
 - **Expansion:** the derive is expanded for each type at compile time, and each copy is type-checked at that type. A field whose type lacks the impl is an error that names the field.
 - **Applying it:** `[<Derive(Name)>]` on a type applies a derive.
 

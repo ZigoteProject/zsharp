@@ -429,6 +429,7 @@ let cCall (fx: F) (callee: string) (s: ExternSig) (args: list<CExpr>) (vs: list<
   // handles made for the call, released after it
   let handles = Buffer.empty
   let npars = List.length s.pars
+  let int32 = cParam g (TCon("i32", [])) + " "
   let pass (i: int) (av: CExpr * string) : string =
     let (a, v) = av
     match tyName a.ty with
@@ -440,6 +441,9 @@ let cCall (fx: F) (callee: string) (s: ExternSig) (args: list<CExpr>) (vs: list<
         match fn with
         | TCon("share", [ fg ]) ->
           // C may call it on any thread: what it captured is shared; the closure is the user data
+          // (and C may keep it: not one of a contained job's, whose memory goes with the job)
+          if g.opts.contained then
+            emit em "call void @zs_job_callback()"
           shareValue g em fg v
           $"ptr {thunk g fg true}, ptr {v}"
         | _ ->
@@ -469,14 +473,15 @@ let cCall (fx: F) (callee: string) (s: ExternSig) (args: list<CExpr>) (vs: list<
           let slot = slotFor g em pt
           emit em $"store {llty g pt} {v}, ptr {slot}"
           $"{byval g pt} {slot}"
-    // C default argument promotions for variadic arguments
-    | "bool" -> "i32 " + instr em $"zext i1 {v} to i32"
+    // C default argument promotions for variadic arguments (an int widened in its register
+    // where the target asks it, as a fixed one is)
+    | "bool" -> int32 + instr em $"zext i1 {v} to i32"
     | "i8"
-    | "i16" -> "i32 " + instr em $"sext {llty g a.ty} {v} to i32"
+    | "i16" -> int32 + instr em $"sext {llty g a.ty} {v} to i32"
     | "u8"
-    | "u16" -> "i32 " + instr em $"zext {llty g a.ty} {v} to i32"
+    | "u16" -> int32 + instr em $"zext {llty g a.ty} {v} to i32"
     | "f32" -> "double " + instr em $"fpext float {v} to double"
-    | n when Set.contains n prims && n <> "unit" -> $"{llty g a.ty} {v}"
+    | n when Set.contains n prims && n <> "unit" -> $"{cParam g a.ty} {v}"
     | _ -> fail fx $"a {showT g a.ty} cannot be passed to a C variadic function"
   let passed = List.filter (fun (x: string) -> x <> "") (List.mapi pass (List.zip args vs))
   let retSlot = if sret then Some(slotFor g em s.ret) else None
@@ -488,7 +493,9 @@ let cCall (fx: F) (callee: string) (s: ExternSig) (args: list<CExpr>) (vs: list<
   let fnTy =
     if s.variadic then
       let sretT = if sret then [ $"ptr sret({llty g s.ret})" ] else []
-      ret + " (" + String.join ", " (List.concat [ sretT; cParamList g s.pars sret; [ "..." ] ]) + ")"
+      // a function type has no attributes: a parameter's widening is the argument's, above
+      let bare (p: string) = if String.endsWith " signext" p || String.endsWith " zeroext" p then String.sub p 0 (String.length p - 8) else p
+      ret + " (" + String.join ", " (List.concat [ sretT; List.map bare (cParamList g s.pars sret); [ "..." ] ]) + ")"
     else
       ret
   let call = $"call {fnTy} {callee}({argv})"
@@ -645,6 +652,10 @@ let private forEachIndex (em: Emitter) (n: string) (body: string -> unit) =
 
 // the bits of an integer's LLVM type (i32: 32), a float's (float: 32, double: 64)
 let private bitsOf (t: string) : int = if t = "float" then 32 else if t = "double" then 64 else toInt (String.sub t 1 (String.length t - 1))
+
+// the runtime's functions that give a descriptor they opened: a contained job that fails closes
+// its own (0035)
+let private opensDescriptor : Set<string> = Set.ofList [ "File.open"; "Tcp.listen"; "Tcp.accept"; "Tcp.connect"; "Udp.bind"; "Dns.start"; "Unix.listen"; "Unix.connect"; "Process.pipe" ]
 
 /// SIMD vectors and masks (DESIGN §8): their functions, a module per type (F32x8.load).
 let private simdPrim (fx: F) (op: string) (args: list<CExpr>) (vs: list<string>) (ty: Ty) (borrowed0: bool) (unchecked: bool) : string =
@@ -1921,11 +1932,9 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
     // to, the clause, the continuation so far }, and the last marker made. One per thread on an
     // OS. Defined by the programs that have effects (each module that uses them, merged by the
     // linker), so the others and the runtime are as they were.
-    if firstTime g "zs_yield" then
-      let tls = if String.contains "-none-" g.opts.target || isWasm g then "" else "thread_local "
-      helper g $"@zs_yield = linkonce_odr hidden {tls}global {{ i_W, i_W, ptr, ptr }} zeroinitializer\n"
-      helper g $"@zs_yield_marker = linkonce_odr hidden {tls}global i_W 0\n"
-    let field (i: int) = instr em $"getelementptr {{ i_W, i_W, ptr, ptr }}, ptr @zs_yield, i32 0, i32 {i}"
+    yieldGlobals g
+    let field (i: int) =
+      instr em $"getelementptr {{ i_W, i_W, ptr, ptr, ptr }}, ptr @zs_yield, i32 0, i32 {i}"
     match op with
     | "eff.state" -> instr em $"load i_W, ptr {field 0}"
     | "eff.marker" -> instr em $"load i_W, ptr {field 1}"
@@ -1936,11 +1945,13 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
       m
     | "eff.start"
     | "eff.startFinal" ->
-      // a yield to the handler with the marker: its clause, and the continuation so far (none
-      // when the clause never resumes)
+      // a yield to the handler with the marker: its clause, the continuation so far (none when
+      // the clause never resumes) and the disposal of the scopes that continuation passes
+      // through, composed as the yield unwinds (none at the start)
       emit em $"store i_W {arg 0}, ptr {field 1}"
       emit em $"store ptr {arg 1}, ptr {field 2}"
       emit em $"store ptr {(if op = "eff.start" then arg 2 else "null")}, ptr {field 3}"
+      emit em $"store ptr @zs.nodrop, ptr {field 4}"
       emit em $"store i_W {(if op = "eff.start" then 1 else 2)}, ptr {field 0}"
       "zeroinitializer"
     | "eff.takeClause" ->
@@ -1956,6 +1967,64 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
     | "eff.setCont" ->
       emit em $"store ptr {arg 0}, ptr {field 3}"
       "zeroinitializer"
+    | "eff.takeDrop" ->
+      let d = instr em $"load ptr, ptr {field 4}"
+      emit em $"store ptr null, ptr {field 4}"
+      d
+    | "eff.setDrop" ->
+      emit em $"store ptr {arg 0}, ptr {field 4}"
+      "zeroinitializer"
+    | "eff.runDrop" ->
+      // the composed disposal chain, run if there is one (the chain's end is the static no-op),
+      // then its reference given up: the caller's body owns it for this call
+      let d = arg 0
+      let has = instr em $"icmp ne ptr {d}, null"
+      let yes = fresh em "drop"
+      let no = fresh em "nodrop"
+      emit em $"br i1 {has}, label %{yes}, label %{no}"
+      enter em yes
+      let codep = instr em $"getelementptr {{ i_W, ptr }}, ptr {d}, i32 0, i32 1"
+      let code = instr em $"load ptr, ptr {codep}"
+      emit em $"call {{}} {code}(ptr {d}, ptr null)"
+      emit em $"br label %{no}"
+      enter em no
+      dropValue g em (argTy 0) (arg 0)
+      "zeroinitializer"
+    | "eff.resumption" ->
+      // the clause's one-shot cell for a resumption it keeps: { count, taken, the chain, the
+      // composed disposal }; dropped un-called, the disposal runs (dropFn's case)
+      let cell = "{ i_W, i_W, ptr, ptr }"
+      let c = instr em $"call ptr @zs_alloc(i_W {sizeOf em cell})"
+      emit em $"store i32 1, ptr {c}"
+      let tp = instr em $"getelementptr {cell}, ptr {c}, i32 0, i32 1"
+      emit em $"store i_W 0, ptr {tp}"
+      let cp = instr em $"getelementptr {cell}, ptr {c}, i32 0, i32 2"
+      emit em $"store ptr {arg 0}, ptr {cp}"
+      let dp = instr em $"getelementptr {cell}, ptr {c}, i32 0, i32 3"
+      emit em $"store ptr {arg 1}, ptr {dp}"
+      c
+    | "eff.resumeTake" ->
+      // the resumption called: the chain for it, another reference kept for the call, and the
+      // cell marked so its drop frees without disposing what already ran; a second call is the
+      // one-shot panic. The cell's reference is this take's (the caller's binding), given up
+      // here: the one the cell's own drop releases is the ref's
+      let cell = "{ i_W, i_W, ptr, ptr }"
+      let tp = instr em $"getelementptr {cell}, ptr {arg 0}, i32 0, i32 1"
+      let taken = instr em $"load i_W, ptr {tp}"
+      let again = instr em $"icmp ne i_W {taken}, 0"
+      let yes = fresh em "again"
+      let no = fresh em "first"
+      emit em $"br i1 {again}, label %{yes}, label %{no}"
+      enter em yes
+      emit em $"call void @zs_panic_c(ptr {cstrConst g "resumption called twice (one-shot)"})"
+      emit em "unreachable"
+      enter em no
+      let cp = instr em $"getelementptr {cell}, ptr {arg 0}, i32 0, i32 2"
+      let chain = instr em $"load ptr, ptr {cp}"
+      emit em $"call void @zs.dup(ptr {chain})"
+      emit em $"store i_W 1, ptr {tp}"
+      dropValue g em (argTy 0) (arg 0)
+      chain
     | "eff.box" ->
       // the value a resumption gives, in a slot its continuation's first function reads
       let slot = "%" + fresh em "resumed"
@@ -2067,10 +2136,18 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
   | "String.ofCStr" -> instr em $"call ptr @zs_str_from_c(ptr {arg 0})"
   | _ when Map.containsKey op runtimePrims ->
     let (fn, ret, pts) = Map.find op runtimePrims
-    // work for another thread: moved there (decision 75)
-    if op = "Loop.blocking" || op = "Loop.spawn" then
-      moveValue g em (argTy 0) (arg 0)
-    let real = List.filter (fun (av: CExpr * string) -> not (isUnitTy (fst av).ty)) (List.zip args vs)
+    // work for another thread: moved there (decision 75), out of a contained job first
+    let passed =
+      if op = "Loop.blocking" || op = "Loop.spawn" then
+        let work = outValue g em (argTy 0) (arg 0)
+        moveValue g em (argTy 0) work
+        work :: List.tail vs
+      else
+        vs
+    // a contained job's body: what it captured is outside the job, marked as for another thread
+    if op = "Contained.start" then
+      shareValue g em (argTy 1) (arg 1)
+    let real = List.filter (fun (av: CExpr * string) -> not (isUnitTy (fst av).ty)) (List.zip args passed)
     let pass (pt: string) (av: CExpr * string) : string =
       let (a, v) = av
       if pt = "bytes" then
@@ -2098,6 +2175,9 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
       if not (borrowed0 && k = 0) && not (String.endsWith "!" (List.item k pts)) then
         dropValue g em a.ty v
     List.iteri release real
+    // a descriptor opened in a contained job: closed if the job fails
+    if g.opts.contained && Set.contains op opensDescriptor then
+      emit em $"call void @zs_job_fd(i_W {r})"
     r
   | "String.length" ->
     let lp = instr em $"getelementptr i8, ptr {arg 0}, i_W HDR1"
@@ -2300,24 +2380,66 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
       match argTy 0 with
       | TFun(_, r, _) -> r
       | t -> panic $"par.fork of {showT g t}"
-    moveValue g em (argTy 0) (arg 0)
-    instr em $"call ptr @zs_par_fork(ptr {arg 0}, ptr {parRunner g rt}, i_W {sizeOf em (llty g rt)})"
+    let work = outValue g em (argTy 0) (arg 0)
+    moveValue g em (argTy 0) work
+    if g.opts.contained then
+      // (a contained job that fails before its join waits for the job, and drops its result)
+      instr em $"call ptr @zs_par_fork_in(ptr {work}, ptr {parRunner g rt}, i_W {sizeOf em (llty g rt)}, ptr {slotDrop g rt})"
+    else
+      instr em $"call ptr @zs_par_fork(ptr {work}, ptr {parRunner g rt}, i_W {sizeOf em (llty g rt)})"
   | "par.join" ->
     // the job's result (moved out), once it has run: here, or on the thread that stole it
     let rp = instr em $"call ptr @zs_par_join(ptr {arg 0})"
     let r = instr em $"load {llty g ty}, ptr {rp}"
     emit em $"call void @zs_par_free(ptr {arg 0})"
+    arriveValue g em ty r
     r
+  | "contained.run" ->
+    // a contained job (0035): the closure's objects shared (it stays the caller's side's: the
+    // job holds it), run by the runtime in a job, whose runner copies the result out
+    let rt =
+      match argTy 0 with
+      | TFun(_, r, _) -> r
+      | t -> panic $"contained.run of {showT g t}"
+    shareValue g em (argTy 0) (arg 0)
+    instr em $"call ptr @zs_job_run(ptr {arg 0}, ptr {jobRunner g rt})"
+  | "contained.failed" ->
+    let failed = instr em $"call zeroext i1 @zs_job_failed(ptr {arg 0})"
+    // a panic may have left an effect's yield half way (a `use` disposed as one passed): over
+    yieldGlobals g
+    for i in [ 0; 2; 3; 4 ] do
+      let lt = if i = 0 then "i_W" else "ptr"
+      let fp =
+        instr em $"getelementptr {{ i_W, i_W, ptr, ptr, ptr }}, ptr @zs_yield, i32 0, i32 {i}"
+      let was = instr em $"load {lt}, ptr {fp}"
+      let now = instr em $"select i1 {failed}, {lt} {(if i = 0 then "0" else "null")}, {lt} {was}"
+      emit em $"store {lt} {now}, ptr {fp}"
+    failed
+  | "contained.take" ->
+    // the job's result (moved out of its outcome, which goes)
+    let rp = instr em $"call ptr @zs_job_result(ptr {arg 0})"
+    let r = instr em $"load {llty g ty}, ptr {rp}"
+    emit em $"call void @zs_job_close(ptr {arg 0})"
+    r
+  | "contained.finish" ->
+    // a task's job's result (the job ends when its callback returns: nothing of it is dropped)
+    finishJob g em (argTy 0) (arg 0)
+    "zeroinitializer"
   | "par.workers" -> instr em "call i_W @zs_par_workers()"
   | "atomic.make" ->
     let (st, toStore, _) = atomicRep g em (argTy 0)
     let cell = $"{{ i_W, {st} }}"
-    let r = instr em $"call ptr @zs_alloc(i_W {sizeOf em cell})"
-    emit em $"store i32 1, ptr {r}"
+    let size = sizeOf em cell
+    // (others may keep it: outside a contained job's memory, the job holding its reference)
+    let r = ref ""
+    outside g em (fun () -> r.Value <- instr em $"call ptr @zs_alloc(i_W {size})")
+    emit em $"store i32 1, ptr {r.Value}"
     let sv = toStore (arg 0)
-    let vp = instr em $"getelementptr {cell}, ptr {r}, i32 0, i32 1"
+    let vp = instr em $"getelementptr {cell}, ptr {r.Value}, i32 0, i32 1"
     emit em $"store {st} {sv}, ptr {vp}"
-    r
+    if g.opts.contained then
+      emit em $"call void @zs_job_made(ptr {r.Value}, ptr {dropFn g ty})"
+    r.Value
   | "atomic.get"
   | "atomic.set"
   | "atomic.exchange"
@@ -2373,14 +2495,19 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
     // { count, lock, value }: what it holds is always shared
     let vt = argTy 0
     let cell = $"{{ i_W, i32, {llty g vt} }}"
-    shareValue g em vt (arg 0)
-    let r = instr em $"call ptr @zs_alloc(i_W {sizeOf em cell})"
-    emit em $"store i32 1, ptr {r}"
-    let lp = instr em $"getelementptr {cell}, ptr {r}, i32 0, i32 1"
+    let v = outValue g em vt (arg 0)
+    shareValue g em vt v
+    let size = sizeOf em cell
+    let r = ref ""
+    outside g em (fun () -> r.Value <- instr em $"call ptr @zs_alloc(i_W {size})")
+    emit em $"store i32 1, ptr {r.Value}"
+    let lp = instr em $"getelementptr {cell}, ptr {r.Value}, i32 0, i32 1"
     emit em $"store i32 0, ptr {lp}"
-    let vp = instr em $"getelementptr {cell}, ptr {r}, i32 0, i32 2"
-    emit em $"store {llty g vt} {arg 0}, ptr {vp}"
-    r
+    let vp = instr em $"getelementptr {cell}, ptr {r.Value}, i32 0, i32 2"
+    emit em $"store {llty g vt} {v}, ptr {vp}"
+    if g.opts.contained then
+      emit em $"call void @zs_job_made(ptr {r.Value}, ptr {dropFn g ty})"
+    r.Value
   | "mutex.get"
   | "mutex.set"
   | "mutex.update" ->
@@ -2396,30 +2523,42 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
       match op with
       | "mutex.get" ->
         // a reference of its own, taken under the lock: a set may drop the old value
+        // (in a contained job the count is taken outside it, and is the job's to hold)
         emit em $"call void @zs_lock(ptr {lp})"
         let v = instr em $"load {lt}, ptr {vp}"
-        dupValue g em vt v
+        outside g em (fun () -> dupValue g em vt v)
         emit em $"call void @zs_unlock(ptr {lp})"
+        if g.opts.contained then
+          holdValue g em vt v
         v
       | "mutex.set" ->
-        shareValue g em vt (arg 1)
+        let nv = outValue g em vt (arg 1)
+        shareValue g em vt nv
         emit em $"call void @zs_lock(ptr {lp})"
         let old = instr em $"load {lt}, ptr {vp}"
-        emit em $"store {lt} {arg 1}, ptr {vp}"
+        emit em $"store {lt} {nv}, ptr {vp}"
         emit em $"call void @zs_unlock(ptr {lp})"
-        dropValue g em vt old
+        outside g em (fun () -> dropValue g em vt old)
         "zeroinitializer"
       | _ ->
-        // f's result replaces the value, under the lock (f gets the mutex's reference)
-        emit em $"call void @zs_lock(ptr {lp})"
+        // f's result replaces the value, under the lock (f gets the mutex's reference). In a
+        // contained job the lock is listed (a panic in f unlocks it, the value still the one
+        // before), f's result is copied out of the job, and the mutex's reference to the old
+        // value, which the job's code didn't count, is given up outside it
+        let locks = if g.opts.contained then "zs_job_" else "zs_"
+        emit em $"call void @{locks}lock(ptr {lp})"
         let old = instr em $"load {lt}, ptr {vp}"
         let cp = instr em $"getelementptr {{ i_W, ptr }}, ptr {arg 1}, i32 0, i32 1"
         let code = instr em $"load ptr, ptr {cp}"
-        let v = instr em $"call {lt} {code}(ptr {arg 1}, {lt} {old})"
+        let made = instr em $"call {lt} {code}(ptr {arg 1}, {lt} {old})"
+        let v = outValue g em vt made
         shareValue g em vt v
         emit em $"store {lt} {v}, ptr {vp}"
-        dupValue g em vt v
-        emit em $"call void @zs_unlock(ptr {lp})"
+        outside g em (fun () -> dupValue g em vt v)
+        dropInJob g em vt old
+        emit em $"call void @{locks}unlock(ptr {lp})"
+        if g.opts.contained then
+          holdValue g em vt v
         dropValue g em (argTy 1) (arg 1)
         v
     dropValue g em (argTy 0) (arg 0)
@@ -2430,15 +2569,19 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
       | TCon("Channel", [ x ]) -> x
       | t -> panic $"chan.make of {showT g t}"
     check g em (instr em $"icmp sge i_W {arg 0}, 0") "a channel's capacity can't be negative"
-    instr em $"call ptr @zs_chan_new(i_W {arg 0}, i_W {sizeOf em (llty g vt)}, ptr {slotDrop g vt})"
+    let c = instr em $"call ptr @zs_chan_new(i_W {arg 0}, i_W {sizeOf em (llty g vt)}, ptr {slotDrop g vt})"
+    if g.opts.contained then
+      emit em $"call void @zs_job_made(ptr {c}, ptr {dropFn g ty})"
+    c
   | "chan.send" ->
     // the value moves into the channel, to the one thread that receives it (the runtime copies
     // its bytes)
     let vt = argTy 1
-    moveValue g em vt (arg 1)
+    let sent = outValue g em vt (arg 1)
+    moveValue g em vt sent
     let slot = "%" + fresh em "sent"
     alloca em $"{slot} = alloca {llty g vt}"
-    emit em $"store {llty g vt} {arg 1}, ptr {slot}"
+    emit em $"store {llty g vt} {sent}, ptr {slot}"
     emit em $"call void @zs_chan_send(ptr {arg 0}, ptr {slot})"
     dropValue g em (argTy 0) (arg 0)
     "zeroinitializer"
@@ -2461,6 +2604,7 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
     enter em gotL
     let x = "$recv" + fresh em ""
     let v = instr em $"load {llty g t}, ptr {slot}"
+    arriveValue g em t v
     let some = gen fx (Map.add x (Ssa v) env) false (mk (CCtor("option", tagOf "Some", [ mk (CLocal x) t ])) ty)
     let fromSome = current em
     emit em $"br label %{doneL}"
@@ -2479,20 +2623,24 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
       match ty with
       | TCon("Spsc", [ x ]) -> x
       | t -> panic $"spsc.create of {showT g t}"
-    instr em $"call ptr @zs_spsc_new(i_W {arg 0}, i_W {sizeOf em (llty g vt)}, ptr {slotDrop g vt})"
+    let q = instr em $"call ptr @zs_spsc_new(i_W {arg 0}, i_W {sizeOf em (llty g vt)}, ptr {slotDrop g vt})"
+    if g.opts.contained then
+      emit em $"call void @zs_job_made(ptr {q}, ptr {dropFn g ty})"
+    q
   | "spsc.push" ->
     // the value moves into the queue, for the other side; a full queue leaves it here, dropped
     let vt = argTy 1
-    moveValue g em vt (arg 1)
+    let pushed = outValue g em vt (arg 1)
+    moveValue g em vt pushed
     let slot = "%" + fresh em "pushed"
     alloca em $"{slot} = alloca {llty g vt}"
-    emit em $"store {llty g vt} {arg 1}, ptr {slot}"
+    emit em $"store {llty g vt} {pushed}, ptr {slot}"
     let ok = instr em $"call i1 @zs_spsc_push(ptr {arg 0}, ptr {slot})"
     let fullL = fresh em "full"
     let doneL = fresh em "pushed"
     emit em $"br i1 {ok}, label %{doneL}, label %{fullL}"
     enter em fullL
-    dropValue g em vt (arg 1)
+    outside g em (fun () -> dropValue g em vt pushed)
     emit em $"br label %{doneL}"
     enter em doneL
     dropValue g em (argTy 0) (arg 0)
@@ -2515,6 +2663,7 @@ and prim (fx: F) (env: Map<string, Binding>) (op0: string) (args: list<CExpr>) (
     enter em gotL
     let x = "$pop" + fresh em ""
     let v = instr em $"load {llty g t}, ptr {slot}"
+    arriveValue g em t v
     let some = gen fx (Map.add x (Ssa v) env) false (mk (CCtor("option", tagOf "Some", [ mk (CLocal x) t ])) ty)
     let fromSome = current em
     emit em $"br label %{doneL}"

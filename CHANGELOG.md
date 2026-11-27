@@ -2,7 +2,88 @@
 
 ## Unreleased
 
+### Language
+- **Every abandoned `use` is disposed** (roadmap S10, the two exceptions of the specification's
+  [§8.4](spec/08-effects.md#84-handlers)): a resumption a clause kept and never called now
+  disposes the `use` scopes of the frames it would have resumed, newest first, when it is
+  dropped — a generator its consumer left mid-iteration disposes what its body bound — and a
+  stop inside a `task { }` body (a handle there that doesn't resume) disposes a `use` written
+  in the task's braces as any stop does, and takes it off the task's Cancel, so a later
+  cancellation doesn't dispose it twice. Before, both freed what they bound without disposing
+  it; a program whose `Dispose.dispose` only worked because it was never called now sees it
+  called. Nothing else changes: a resumption that is called disposes as its scopes end, once,
+  and a second call of a one-shot resumption still panics (`tests/effects/use_resume.zs`,
+  `tests/task/effects_use.zs`; the parser marks a task's `use` scopes as any other, Evidence
+  threads a disposal chain beside the continuation and the kept resumption's cell runs it on
+  its drop).
+
+- **Columns** ([proposal 0037](docs/proposals/0037-columns.md), decision 88): `[<Derive(Columns)>]`
+  on a record gives it `columns<'r>`, an array of it stored field by field. `c.[i]` is a row,
+  `c.[i].f` one element of one column, `c.f` the column (an `array`), `for row in c` each row;
+  `c.[i] <- row` and `c.[i].f <- v` write in place in a `let mutable`, under an array's
+  copy-on-write. `Columns.init`, `create`, `ofArray`, `toArray`, `map`, `length`, `get` and `set`
+  are its functions. On 4,000,000 records of 56 bytes (`bench/columns/`), a sum of one field is
+  0.92 ns an element where an array of records takes 1.46, 0.07 with `[<FastMath>]` where the
+  array of records takes 1.59, and a step that updates two fields 0.60 where it takes 3.0: what
+  an array per field by hand gives. The same derive gives `ColumnBuffer<'r>`, the shared,
+  growing form, as `Buffer<'a>` is `array<'a>`'s: `ColumnBuffer.push`, `pop`, `truncate`,
+  `clear`, `empty`, `create`, `ofArray`, `ofColumns` and `toColumns`, `b.[i]` and `b.[i].f`
+  written through any binding, and `b.f` the column, a `Buffer` (`tests/column_buffer.zs`, with a
+  property against a `Buffer` of rows). A column pushed to or truncated alone through `b.f` is a
+  panic at the next `ColumnBuffer.push`, `pop` or `truncate`, not rows that mix two. Both are in
+  `Collections`, so a program's own module, type or alias named `Columns`, `columns` or
+  `ColumnBuffer` is its own; a private row's fields are private through its columns too. A
+  program's own `module Collections` holding a module named `Columns` or `ColumnBuffer` is
+  `already defined`, as one holding `Queue` is: rename it.
+
 ### Compiler
+- **RISC-V Linux, as a target** (a start: built, not yet run): `--target riscv64-linux-musl` and
+  `riscv64-linux-gnu` build a program and a library for 64-bit RISC-V (RV64GC) through `zig cc`.
+  C's boundary follows its convention, LP64D: a struct of up to 16 bytes goes in one or two
+  integer registers and a bigger one by a pointer to a copy; a struct that is one float, two, or
+  a float and an integer goes field by field in float and integer registers while they last; an
+  integer narrower than a register is widened in it (an `i32` by its sign, an `u32` too), in
+  externs, `import c`, `[<Export>]` and callbacks. The runtime's stack-overflow panic and
+  `[<Multiversion>]`'s one-letter extensions (`"v"`) are there. What the compiler writes for
+  `tests/cimport/`, `tests/cexport/` and 1,600 generated signatures is what clang writes for the
+  same C, and every program of the suite builds for it
+  (`./test.sh --target riscv64-linux-musl --build-only`); none has run yet (qemu-user's
+  `qemu-riscv64` would: `./test.sh --target riscv64-linux-musl` in the dev container), so it
+  isn't a supported platform. `tests/cimport/mixed.zs` has the shapes it tells apart.
+- **FreeBSD, as a target** (a start: built, not yet run): `--target x86_64-freebsd` and
+  `aarch64-freebsd` build a program, a library and the compiler itself for FreeBSD through
+  `zig cc`, as the other cross targets do. The runtime's event loop is kqueue's there, a `Mutex`'s
+  waiting threads sleep in the kernel (`_umtx_op`), a stack overflow is a panic that says so, a
+  panic's backtrace names Z#'s functions, and `[<Multiversion>]` reads the CPU's features;
+  programs link `libthr` and `libexecinfo`. `zs doctor` on FreeBSD names `pkg`'s packages, and
+  `import c` finds an `llvm<N>` package's libclang. Every program of the suite builds for it
+  (`./test.sh --target x86_64-freebsd --build-only`); none has run on FreeBSD yet, there is no
+  release archive and no CI runner, so it isn't a supported platform.
+- A trait method at a type nothing gives (`ColumnBuffer.empty ()` unannotated, rows of no type, a
+  `Zero.zero ()` of a program's own) is an error where it's called, once its module is checked,
+  which `zs check` and the editor show: it passed the check, and the build stopped with
+  `int has no built-in …` and no place. One whose default, `int`, has the trait still builds, its
+  impl before the call or after it. A function holding such a call that's never called built,
+  being never made, and is an error now: annotate the type the call is at.
+- A derive's call to a module's function (`Columns.length`, `Buffer.push`) is the library's, as
+  the derive's module sees it, even where the program has a module of that name: a program's own
+  `Columns.length` changed what the derived `for row in c` counted.
+- A type whose impl of a trait is for another parameter than the one given says so:
+  `ColumnBuffer<P> is a ColumnBuffer.Buffered of P, not of int`, where the message was
+  `expected ColumnBuffer<P>, got ColumnBuffer<P>`. A function or a trait in an error is named as
+  programs write it, `argument 2 of 'Channel.send'` and `does not implement ToJson`, not
+  `Threading.Channel.send` and `Text.ToJson` (a program's own module named like a namespace, `Net`,
+  keeps its name).
+- An element of an array in a `let mutable` record's field is written in place
+  (`r.counts.[i] <- v`, `tests/record_array_write.zs`): each write copied the array, the record
+  still holding it. 1,000 such writes made 1,000 arrays and now make none.
+- A `derive` reads its type's layout (decision 87, `tests/derive_layout.zs`): `sizeof<'self>` and
+  `alignof<'self>` are the derived type's (they were a machine word's for every type), and a
+  record's field has `f.offset`, its place in bytes, so a derive can report padding or check a
+  field order. A layout attribute goes beside others in one list: `[<CLayout; Derive(Json)>]`
+  and `[<Bits 32; Derive(Json)>]` were `unknown attribute`. `offsetof` of a `[<Bits>]` record's
+  field is an error now, where it gave a byte offset for a bit: remove it, the field has no
+  address of its own.
 - A main file's own names come before an opened module's, as the specification says (2.4) and
   as a named module's already did: with `open Testing`, a file's own `type Model` or a case
   `Passed` of its own union is the file's, where it was the opened module's and the file didn't
@@ -24,6 +105,15 @@
   where an impl derived on demand lives; the proposal says what was found.
 
 ### Tooling
+- `zs doc` lists a trait or an effect declared in a module, with its methods, and a module
+  declared in a file, with its doc comment: the reference has `ColumnBuffer.Buffered`'s `push`,
+  `length` and the rest, and `Option.Builder`, which it left out.
+- `--sanitize` and `--sanitize=thread` check the program's own code, as they said: every function
+  has the sanitizer's attribute, without which LLVM's pass checked the runtime's C and none of
+  Z#'s. A write past a block in `unsafe` code is reported now, and so is a race in it, also under
+  `zs test --stress` (`tests/sanitize.sh`, `tests/ztest/tsan.sh`). An access of no bytes (a unit
+  held in an object) isn't checked: AddressSanitizer took one at an object's end for one past it,
+  and its report crashed.
 - `zs mcp` has two more tools for an agent. `test` runs a file's tests, or the project's, as
   `zs test` does; `guide` gives a chapter of the guide, and without one the chapter on what isn't
   F#, which the server's instructions tell an agent to read first. The guide is installed beside
@@ -36,20 +126,67 @@
   type of `abstract` members, `^a`, `int[]`, a statement outside a function, and the names
   `box`, `lazy`, `stdout`, `new`, `ResizeArray`, `Dictionary` and `System.…`
   (`tests/newcomer/`).
+- `zs build --check-ir` checks reference counting: after the pass, every reference a function
+  gets is given away once on every path, nothing is read once its last reference went, a reuse
+  token is used once and a `let mutable` moved out is filled again; a failure is an internal
+  error naming the function and the variable. The suite runs with it, so every program of
+  `tests/` checks the pass
+  ([report](docs/reports/ownership-check.md); `tests/owned-mutants.sh` puts seven mistakes into
+  the pass, each caught). Its rules are proved sound in Rocq (`proofs/`, `proofs/check.sh`), for
+  the core, for calls with borrowed parameters and for reuse tokens: a program they accept
+  never touches a freed cell, leaks none, and never builds a cell in memory another still has.
 - For work on this repository: `./test.sh --only <text>` runs the programs in `tests/` whose path
   has the text and nothing else; the suite ends with the count of failures and each `FAIL` line
   again; `./dev -i` passes its standard input to the command; `.mcp.json` starts the compiler's
-  MCP server for an agent.
+  MCP server for an agent. The suite's fuzzer (`tests/fuzz.sh`) takes the day's date as its seed,
+  so each day's run breaks other programs; and the pool, tasks and Alt run under `zs test
+  --stress` with ThreadSanitizer.
 
 ### Library
+- **Contained jobs** ([proposal 0035](docs/proposals/0035-contained-jobs.md), decision 86): a
+  panic has a boundary below the process. `Contained.run f` runs a `share<…>` function with
+  memory of its own: `Ok` its result, or `Error` with the message of the panic that ended it,
+  and the program goes on. `Contained.task` does it for a task and the tasks it waits for on its
+  loop, so a server answers a request that finds a bug with a failure and keeps its other
+  connections (`examples/service` answers 500). Nothing unwinds: the thread jumps to the job's
+  entry, the job's memory goes at once, the mutexes it held are unlocked with the value they
+  had, and the descriptors, timers and waits the runtime made for it are closed. What a job
+  returns, sends or puts in a mutex is copied out of its memory; what its caller shared with it
+  isn't copied either way. Not contained: a stack overflow, running out of memory, what a C
+  library holds, and work forked to other threads. Linux, macOS and Windows; a program that
+  doesn't use `Contained` is the same bytes as before (`tests/contained/`, which the suite also
+  runs under the address and thread sanitizers; the guide's
+  [Errors](docs/guide/07-errors.md#containing-a-panic)).
 - `File.readAllBytes` copies each 64 KB it reads whole, where it pushed a byte at a time
   (`tests/file_bytes.zs` reads a file longer than two reads).
 - `=`, `compare` and `hash` on a list run in constant stack: on two lists of 200,000 elements
   they overflowed the stack in a build without `--release` (the derived impls called themselves
   once an element). The prelude has `Eq`, `Ord` and `Hash` for `list` as loops now, with the
   results the derived ones gave (`tests/list_long.zs`).
+- `String.startsWith` and `String.endsWith` compare the bytes in place, where they copied the
+  part they compared: they allocate nothing, so a `[<NoAlloc>]` function may call them
+  (`tests/noalloc.zs`), and 4,000,000 calls on short lines take 32 ms where they took 96.
+  `String.splitLines`, which asks every line whether it ends with `\r`, makes one string fewer
+  a line.
+- `HashMap` walks a bucket in loops of its own, with the key a parameter, where it made a closure
+  for each walk: `tryFind` and `containsKey` allocate nothing (one or two objects before),
+  `remove` nothing, and `add` one cell, the entry's (four or five before). A bucket nothing else
+  refers to is rebuilt in its own cells, and one without the key isn't rebuilt at all.
+  `bench/host/wordfreq` takes 160 ms where it took 189, on 1,000,000 words with the same
+  compiler (`tests/hashmap_reuse.zs` counts what each one allocates).
+- `Binary`'s writer takes the map of the strings it has written out of its `ref` before adding
+  one, where the `ref` holding it too made every string written for the first time copy the whole
+  map's bucket array: writing 20,000 distinct strings took 197 ms and takes 3.5 (52,786
+  allocations where it made 72,774). Anything the compiler keeps in the cache is written through
+  it (`tests/binary.zs` counts the allocations).
 
 ### Packages
+- `packages/zlayout`: a layout inspector. `[<Derive(Inspect)>]` on a record or union and
+  `Inspect.inspect "Name" value |> printReport 64 true` print its size, each field's offset and
+  padding, a field order that would be smaller, and what fits a cache line; `Heap` estimates
+  what an array, a string or a list's cells ask of the allocator, `Cache` lines for an array, and
+  `Width` the narrowest integer that held a run's samples. It reads the compiler's own facts in
+  the derive (`sizeof<'self>`, `f.offset`), and the suite runs its tests.
 - `packages/sqlite`, the first of [proposal 0032](docs/proposals/0032-first-party-packages.md)'s
   three: SQLite 3.54.1's amalgamation, unmodified, under a Z# API. `Db.connect`, `prepare`,
   `exec`, `query` and `transaction` (rolled back by an `Error` or a throw), `Statement.bind`,
@@ -78,6 +215,11 @@
   test program now); they build for macOS and Windows on Arm and haven't run there.
 
 ### Security and stability
+- `zs check` panicked (`Map.find: key not found`) on a record whose field has an unknown type
+  when the record was then built where its type is expected (an `impl` of it, say), as
+  `tests/fuzz.sh` found with seed 20261124. The type registered ahead of its body now has its
+  defaults registered beside it, so the unknown type is the one error
+  (`tests/err_record_unknown_field_type.zs`).
 - A name's lookup under Wine (`Tcp.connect "localhost"`, `Dns.lookup`) stopped the program:
   the runtime read each address of the list in place, and Wine's later ones aren't aligned
   for that. It reads each through a copy (`tests/task/connect.zs` under

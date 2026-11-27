@@ -1,0 +1,6 @@
+# Layout inspection for Z#: a derive that reports a record's fields, offsets and padding, and
+# estimates of what arrays, strings and lists ask of the heap. The suite runs its tests, which
+# hold its offsets to the compiler's offsetof and its heap model to the runtime's sizes.
+[package]
+name = "zlayout"
+main = "src/Zlayout.zs"

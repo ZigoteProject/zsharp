@@ -1,0 +1,14 @@
+Ok ([0; 1; 1; 2; 3], fib 20 is 6765)
+Ok 182
+panic: on the pool
+panic: on the pool
+panic: on the pool
+panic: on the pool
+panic: on the pool
+panic: on the pool
+panic: on the pool
+panic: on the pool
+8 failed, the others gave 30730
+panic: before the join
+Error { message = before the join }
+4950

@@ -15,16 +15,53 @@ open Fun
 let resolveWord (opts: Options) (ir: string) : string =
   let (w, h1, h2) = if word32 opts.target then ("i32", "4", "8") else ("i64", "8", "16")
   // -Os: optsize on every function definition. LLVM's unroller and vectorizer go by this
-  // attribute (clang adds it to C functions), not by the -Os flag alone
+  // attribute (clang adds it to C functions), not by the -Os flag alone; and a sanitizer's
+  // pass checks only the functions with its attribute
+  let attrs = String.trim ((if opts.optimizeSize then "optsize " else "") + opts.sanitizer)
   let sized (line: string) : string =
-    if opts.optimizeSize && String.startsWith "define " line && String.endsWith "{" line then
+    if attrs <> "" && String.startsWith "define " line && String.endsWith "{" line then
       match String.indexOf " !dbg " line with
-      | Some i when i > 0 -> String.sub line 0 i + " optsize" + String.sub line i (String.length line - i)
-      | _ -> String.sub line 0 (String.length line - 1) + "optsize {"
+      | Some i when i > 0 -> String.sub line 0 i + " " + attrs + String.sub line i (String.length line - i)
+      | _ -> String.sub line 0 (String.length line - 1) + attrs + " {"
     else
       line
+  // AddressSanitizer checks an access of no bytes (a unit in memory, a record or a tuple of units)
+  // as one byte at its address, so one at an object's end is reported, and the report crashes
+  // (LLVM 23): it touches nothing. Its type is braces and brackets of nothing else ({},
+  // { {}, {} }, [4 x {}]): the type's text to where its brackets close
+  let typeAt (s: string) : string =
+    let n = String.length s
+    let mutable depth = 0
+    let mutable i = 0
+    let mutable stop = false
+    while not stop && i < n do
+      let c = String.byte s i
+      if c = u8 123 || c = u8 91 then depth <- depth + 1
+      else if c = u8 125 || c = u8 93 then depth <- depth - 1
+      else if depth = 0 && (c = u8 32 || c = u8 44) then stop <- true
+      if not stop then i <- i + 1
+    String.sub s 0 i
+  let noBytes (t: string) : bool =
+    let mutable ok = t <> ""
+    for i in 0 .. String.length t - 1 do
+      if not (String.contains (String.ofByte (String.byte t i)) "{}[], x0123456789") then
+        ok <- false
+    ok
+  let quiet (line: string) : string =
+    if opts.sanitizer <> "sanitize_address" then
+      line
+    else
+      let access =
+        if String.startsWith "  store " line then Some(String.sub line 8 (String.length line - 8))
+        else
+          match String.indexOf " = load " line with
+          | Some i when String.startsWith "  %" line -> Some(String.sub line (i + 8) (String.length line - i - 8))
+          | _ -> None
+      match access with
+      | Some rest when noBytes (typeAt rest) -> line + ", !nosanitize !{}"
+      | _ -> line
   let one (line0: string) : string =
-    let line = sized line0
+    let line = quiet (sized line0)
     let (head0, tail) =
       match String.indexOf " c\"" line with
       | Some cut -> (String.sub line 0 cut, String.sub line cut (String.length line - cut))
@@ -32,7 +69,7 @@ let resolveWord (opts: Options) (ir: string) : string =
     let head1 = if opts.wideVectors then String.replace head0 "@zs_alloc(" "@zs_alloc_wide(" else head0
     let head2 = if opts.checkedHeap then String.replace (String.replace head1 "@zs_alloc(" "@zs_alloc_checked(") "@zs_free(" "@zs_free_checked(" else head1
     String.replace (String.replace (String.replace head2 "i_W" w) "HDR2" h2) "HDR1" h1 + tail
-  if opts.optimizeSize || opts.wideVectors || opts.checkedHeap then
+  if attrs <> "" || opts.wideVectors || opts.checkedHeap then
     String.join "\n" (List.map one (String.split "\n" ir))
   else
     // one pass over the text, what's between the placeholders copied whole, and a string
@@ -92,10 +129,15 @@ let private unsignedInts : Set<string> = Set.ofList [ "u8"; "u16"; "u32"; "u64" 
 let compile (opts: Options) (types: Map<string, TypeInfo>) (externs: Map<string, ExternSig>) (exports: list<Export>) (tests: list<string>) (values: list<string * string>) (clayouts: Set<string>) (placements: Map<string, string * int>) (part: option<Part>) (funs: list<MFun>) : result<string * string, int * string> =
   // one address in the whole program
   let shared = if Option.isSome part then "linkonce_odr hidden" else "private"
-  let pre0 = if opts.threaded then replaceDef (replaceDef Prelude.prelude Prelude.threadedDup) Prelude.threadedRelease else Prelude.prelude
+  let pre0 =
+    if opts.contained then replaceDef (replaceDef Prelude.prelude Prelude.containedDup) Prelude.containedRelease
+    else if opts.threaded then replaceDef (replaceDef Prelude.prelude Prelude.threadedDup) Prelude.threadedRelease
+    else Prelude.prelude
   let pre = String.replace (String.replace pre0 "@zs.none = private constant" $"@zs.none = {shared} constant") "@zs.noelems = private constant" $"@zs.noelems = {shared} constant"
   let top = Buffer.empty
   Buffer.push pre top
+  if opts.contained then
+    Buffer.push Prelude.containedDeclares top
   let fnTable = Map.ofList (List.map (fun (f: MFun) -> (f.name, f)) funs)
   let mainFile =
     match List.tryFind (fun (f: MFun) -> f.name = "main") funs with

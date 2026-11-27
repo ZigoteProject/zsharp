@@ -1,0 +1,4 @@
+0 499500 1000000 in
+1 0 499500 499500
+1000 1
+panic: index out of bounds

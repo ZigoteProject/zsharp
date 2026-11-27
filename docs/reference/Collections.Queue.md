@@ -2,6 +2,16 @@
 
 First in, first out.
 
+## Modules
+
+### `Queue`
+
+```zsharp
+module Queue
+```
+
+Functions on `Queue`.
+
 ## Types
 
 ### `Queue`

@@ -5,6 +5,16 @@ that would block waits for the event loop instead, so other tasks go on meanwhil
 name `Tcp.connect` is given is looked up off the loop's thread (`Tcp.listen` looks its own
 up where it's called, before it gives the listener).
 
+## Modules
+
+### `Tcp`
+
+```zsharp
+module Tcp
+```
+
+Functions on TCP sockets.
+
 ## Types
 
 ### `TcpListener`

@@ -68,7 +68,10 @@ module BinaryWriter =
       uvarint w (u64 (String.length s))
       for b in String.bytes s do
         byte w b
-      w.strings.Value <- HashMap.add s (HashMap.count w.strings.Value) w.strings.Value
+      // taken out of the ref first: the ref holding it too would make each add copy its array
+      let seen = w.strings.Value
+      w.strings.Value <- HashMap.empty
+      w.strings.Value <- HashMap.add s (HashMap.count seen) seen
 
 /// Reading what `BinaryWriter` wrote; each says when the bytes end too early.
 module BinaryReader =

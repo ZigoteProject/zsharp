@@ -1,0 +1,114 @@
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+panic: holding a file
+100 jobs failed holding the file; descriptors left open: 0
+returned open: true
+Ok (Some 4, Some 2) Some 2
+panic: holding weak references
+Error { message = holding weak references } Some 2 Some 2
+Ok 3 after [n is 1; n is 2]
+panic: too big
+Error { message = too big }
+2 after [n is 2]
+panic: in an arena
+Ok 499500 Ok 1000 Error { message = in an arena }
+panic: not waiting
+Error { message = not waiting }
+Ok 105

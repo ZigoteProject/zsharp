@@ -161,7 +161,8 @@ layout-fact = ( 'sizeof' | 'alignof' ) '<' type '>'
 alignment and field offset of `T` in bytes on the target. For a `[<CLayout>]` type they are
 C's; for any other type they describe the reference implementation's representation
 ([§10.3](10-execution.md#103-representation)) and are implementation-defined. In a generic
-function they are known when it is instantiated.
+function they are known when it is instantiated, and in a `derive` `'self` is the type derived
+for. `offsetof` of a `[<Bits>]` record's field is an error: its fields are bits of one integer.
 
 With a top-level `assert` ([§4.7](04-declarations.md#47-top-level-assert)), they check a
 layout at compile time: `assert (sizeof<Packet> = 20)`.

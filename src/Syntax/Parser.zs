@@ -1271,10 +1271,13 @@ and private seq (p: P) : Ast.Expr =
         plain (Ast.Call(Ast.libraryName "Threading.Task.disposeOnCancel", [ var "$cancel"; var x ]))
       let disposed =
         plain (Ast.Call(Ast.libraryName "Threading.Task.disposed", [ var "$cancel"; var id; var x ]))
+      // the scope marked too (as outside a task): a stop passing over it inside the task (a handle
+      // in its body that doesn't resume) disposes x and takes the registration off the Cancel
+      let scope = plain (Ast.Call(Ast.libraryName "Native.useScope", [ after ]))
       stmt (plain (Ast.Let(binder,
             None,
             v,
-            letIn id onCancel (letIn "$use" after (plain (Ast.Seq(disposed, var "$use")))))))
+            letIn id onCancel (letIn "$use" scope (plain (Ast.Seq(disposed, var "$use")))))))
     else
       // the scope marked (Native.useScope, gone after the effects pass): a throw passing over it
       // disposes x on the way (Evidence)

@@ -2,6 +2,16 @@
 
 The console: standard input, output and error.
 
+## Modules
+
+### `Console.Error`
+
+```zsharp
+module Error
+```
+
+Standard error.
+
 ## Functions
 
 ### `Console.write`

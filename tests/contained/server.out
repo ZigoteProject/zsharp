@@ -1,0 +1,18 @@
+panic: a bug in the connection that had answered 2
+panic: a bug in the connection that had answered 2
+client: [HELLO0; AGAIN; BYE]
+client: [HELLO1; AGAIN; BYE]
+client: [ONE; TWO; 500]
+client: [HELLO3; AGAIN; BYE]
+client: [HELLO4; AGAIN; BYE]
+client: [ONE; TWO; 500]
+client: [HELLO6; AGAIN; BYE]
+client: [HELLO7; AGAIN; BYE]
+server: answered 3
+server: answered 3
+server: failed (a bug in the connection that had answered 2)
+server: answered 3
+server: answered 3
+server: failed (a bug in the connection that had answered 2)
+server: answered 3
+server: answered 3

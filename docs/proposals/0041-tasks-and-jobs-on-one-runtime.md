@@ -1,12 +1,12 @@
-# Proposal 0037: tasks and jobs on one runtime
+# Proposal 0041: tasks and jobs on one runtime
 
 | | |
 |---|---|
 | **Status** | Draft |
 | **Decided at** | not yet: a design review |
 | **Builds** | after 0.7, a step at a time: each step is its own change, with its measurement first |
-| **Rests on** | decisions 21 (one cold `Task`), 22 and 48 (a loop per thread; tasks don't move), 47 (`share<F>`), 71 (the same `Task` on a chip), 72 (`Task` is a state machine, not an `Async` effect), 75 (crossings move) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §6](../../DESIGN.md#6-concurrency-task), [§7](../../DESIGN.md#7-parallelism) and §7.1 |
-| **Related** | [0008 threads](0008-threads.md) (the pool any thread forks onto, spares, cancelling across threads); [0016](0016-async-bare-metal.md) (the chip's loop); [0002](0002-effect-handlers.md) and track G's item 4 (effects in a task); [0035](0035-contained-jobs.md) (a failure's boundary); track S's item 14 (completion-based I/O) |
+| **Rests on** | decisions 21 (one cold `Task`), 22 and 48 (a loop per thread; tasks don't move), 47 (`share<F>`), 71 (the same `Task` on a chip), 72 (`Task` is a state machine, not an `Async` effect), 75 (crossings move), 86 (contained jobs) in [DESIGN §13](../../DESIGN.md#13-decisions); [DESIGN §6](../../DESIGN.md#6-concurrency-task), [§7](../../DESIGN.md#7-parallelism) and §7.1 |
+| **Related** | [0008 threads](0008-threads.md) (the pool any thread forks onto, spares, cancelling across threads); [0016](0016-async-bare-metal.md) (the chip's loop); [0002](0002-effect-handlers.md) and track G's item 4 (effects in a task); [0035](0035-contained-jobs.md) (a failure's boundary, built: `Contained.task`); [0039](0039-verifying-the-runtime.md) (the pool's deque checked with CBMC, which step 1 puts spawns on); track S's item 14 (completion-based I/O) |
 | **Changes** | `runtime/rt.c` (the loop threads, `Task.blocking`'s helper, `Channel`'s waits); `lib/std/Threading/Channel.zs` and `Alt.zs`; DESIGN §6 and §7; the guide's chapters 13 and 14. No syntax, no new type, nothing on a chip |
 
 - [ ] Approved in principle
@@ -78,10 +78,12 @@ started, `select { }`, a fiber's effect context, parking `Mutex`, a `Failed` sta
   (`src/ARCHITECTURE.md`, *In 0.7.1*). It's never set across a wait, so it has nothing to save.
   The draft's `EffectContext { frames: EffectFrame[] }` is a handler stack, which evidence
   passing replaced: frames are arguments, and a task's are in its closure already.
-- **`Failed`, `Result<'a, Error>`, "child failure propagation".** A panic stops the program and
-  can't be caught (decision 5), and an effect whose operation never resumes (`Throw`) is an
-  error in a task's row. A task has no failure to propagate; an error is a `result` in its
-  value. A panic's boundary is 0035's subject and needs its memory design, not a state here.
+- **`Failed`, `Result<'a, Error>`, "child failure propagation".** A panic stops the program
+  (decision 5) except inside a contained job, whose caller gets `Error` (decision 86:
+  `Contained.task` for a task and what it waits for on its loop), and an effect whose operation
+  never resumes (`Throw`) is an error in a task's row. So a task has no failure state to add:
+  an error is a `result` in its value, and a panic's boundary is a contained job, built with
+  the memory design it needs.
 - **"A contended lock should suspend the fiber."** `Mutex` has `get`, `set` and `update`, whose
   function is plain: it can't wait, so no task holds a `Mutex` across a wait. There's no
   `Semaphore`.
@@ -199,7 +201,11 @@ not here. Nothing is built for it before that number exists.
   item 4, with its own design (which clauses may resume after a wait, and what a stop cancels).
   This proposal doesn't change it and doesn't depend on it.
 - **Completion-based I/O:** track S's item 14.
-- **Failure:** 0035.
+- **Failure:** contained jobs (0035, decision 86), built. `Contained.task` contains what runs
+  on its loop; work it starts on other threads (`Task.spawn`, `Parallel`) isn't contained and its
+  panic stops the program. Steps 1 and 2 move only such work (a spawn waiting to start, a
+  blocking call), so they change nothing that a contained job contains: a `share<F>` leaving a
+  job is copied out of its memory at the crossing, as it is today.
 
 ### Order of implementation
 
@@ -212,6 +218,8 @@ not here. Nothing is built for it before that number exists.
 ## Drawbacks
 
 - **Blocking calls at once** is a change of behaviour a test can miss (2 above).
+- **Spawns on the pool's deque** make 0039's model of it cover a second kind of entry: the
+  model is extended before step 1 lands, not after.
 - **A loop thread with a deque** is registered with the pool for as long as it lives; the
   `PAR_OTHERS` deques (1,024) bound the threads that fork, as now.
 - **A second way to use a `Channel`,** and a second channel type still (`Ch`, for one loop,

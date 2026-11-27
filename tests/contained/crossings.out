@@ -1,0 +1,12 @@
+Ok 4 [10; 11; 12; 13] Some 1,2,3 Some second 1
+panic: in update
+Error { message = in update } [10; 11; 12; 13]
+[8; 7]
+panic: after
+Error { message = after } [99] Some sent before the panic 2
+6 inside! Some [a; b]
+panic: lost
+failed: lost
+Ok over the boundary Some [boundary; the; over]
+panic: Channel.send: the channel is closed
+Error { message = Channel.send: the channel is closed }

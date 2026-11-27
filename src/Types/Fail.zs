@@ -24,10 +24,13 @@ let failLine (token: int) (message: string) : 'a / Fails = Fails.fail { message 
 /// Reports a failure on the line of a token, with no column, and goes on.
 let reportLine (token: int) (message: string) : unit / Fails = Fails.report { message = message; token = token; lineOnly = true }
 
-/// Why two types don't unify: they differ, or one lacks a trait's impl (the trait, the type).
+/// Why two types don't unify: they differ, one lacks a trait's impl (the trait, the type), or a
+/// type's impl of a trait is for another parameter than the one given (the trait, the type, the
+/// parameter given, the impl's).
 type Mismatch =
   | Differ
   | NoImpl of string * Ty
+  | OtherDiffer of string * Ty * Ty * Ty
 
 /// Unification's one way out.
 effect Mismatched =

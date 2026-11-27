@@ -41,7 +41,7 @@ and private structFields (g: G) (t: Ty) : list<Ty> =
     | CUnionDef _ -> []
   | _ -> []
 
-/// dup or drop for a struct value: applied to each field that holds a count.
+/// dup, drop or hold for a struct value: applied to each field that holds a count.
 and structHelper (g: G) (kind: string) (t: Ty) : string =
   let name = $"@\"{kind}.{showF g t}\""
   if firstTime g name then
@@ -49,7 +49,9 @@ and structHelper (g: G) (kind: string) (t: Ty) : string =
     let one (i: int) (ft: Ty) =
       if heap g ft then
         let f = instr em $"extractvalue {llty g t} %v, {i}"
-        if kind = "dup" then dupValue g em ft f else dropValue g em ft f
+        if kind = "dup" then dupValue g em ft f
+        else if kind = "hold" then holdValue g em ft f
+        else dropValue g em ft f
     List.iteri one (structFields g t)
     emit em "ret void"
     helper g $"define private void {name}({llty g t} %v) {{\n{bodyOf em}}}\n\n"
@@ -186,6 +188,195 @@ and walkFn (g: G) (t: Ty) : string =
     enter em "done"
     emit em "ret void"
     helper g $"define private void {name}(ptr %p, i1 %move) {{\n{bodyOf em}}}\n\n"
+  name
+
+/// A value from outside held by the thread's contained job, if it's in one (0035): the job
+/// counts nothing outside its memory, so the count that came with the value is the job's to
+/// keep until it ends, when the runtime gives it up. Outside a job, nothing.
+and holdValue (g: G) (em: Emitter) (t: Ty) (v: string) =
+  if heap g t then
+    match llty g t with
+    | "ptr" -> emit em $"call void @zs_job_hold(ptr {v}, ptr {dropFn g t})"
+    | lt -> emit em $"call void {structHelper g "hold" t}({lt} {v})"
+
+/// Copies the value in a slot out of a contained job (0035), in place: each of the job's
+/// objects it holds is replaced by a copy made where the thread is now, with all under it the
+/// same way.
+and copyAt (g: G) (em: Emitter) (t: Ty) (slot: string) =
+  if heap g t then
+    emit em $"call void {copyFn g t}(ptr {slot})"
+
+/// In a copy function, the job's object %p cloned where the thread is now, `bytes` its size:
+/// the clone's name, its count 1, its tag and all after its header word copied, itself stored in
+/// %slot. An object other references reach (its count isn't 1) is looked up first and noted
+/// after, so the copy keeps the sharing between the job's objects: found, its copy gets a
+/// reference and goes in the slot, and the function returns.
+and cloneAt (g: G) (em: Emitter) (bytes: unit -> string) : string =
+  let rc = instr em "load i32, ptr %p"
+  let one = instr em $"icmp eq i32 {rc}, 1"
+  let againL = fresh em "again"
+  let seenL = fresh em "seen"
+  let makeL = fresh em "make"
+  let noteL = fresh em "note"
+  let madeL = fresh em "made"
+  emit em $"br i1 {one}, label %{makeL}, label %{againL}"
+  enter em againL
+  let q = instr em "call ptr @zs_copy_seen(ptr %p)"
+  let isNew = instr em $"icmp eq ptr {q}, null"
+  emit em $"br i1 {isNew}, label %{makeL}, label %{seenL}"
+  enter em seenL
+  emit em $"call void @zs.dup(ptr {q})"
+  emit em $"store ptr {q}, ptr %slot"
+  emit em "ret void"
+  enter em makeL
+  let n = bytes ()
+  let c = instr em $"call ptr @zs_alloc(i_W {n})"
+  emit em $"store i32 1, ptr {c}"
+  let tp = instr em "getelementptr i8, ptr %p, i_W 4"
+  let tag = instr em $"load i16, ptr {tp}"
+  let tq = instr em $"getelementptr i8, ptr {c}, i_W 4"
+  emit em $"store i16 {tag}, ptr {tq}"
+  let src = instr em "getelementptr i8, ptr %p, i_W HDR1"
+  let dst = instr em $"getelementptr i8, ptr {c}, i_W HDR1"
+  let rest = instr em $"sub i_W {n}, HDR1"
+  emit em $"call void @llvm.memcpy.p0.p0.i_W(ptr {dst}, ptr {src}, i_W {rest}, i1 false)"
+  emit em $"store ptr {c}, ptr %slot"
+  emit em $"br i1 {one}, label %{madeL}, label %{noteL}"
+  enter em noteL
+  emit em $"call void @zs_copy_note(ptr %p, ptr {c})"
+  emit em $"br label %{madeL}"
+  enter em madeL
+  c
+
+/// copyout.T(slot): the T in the slot copied out of a contained job, in place. An object is the
+/// job's when byte 6 of its header says so (the runtime's JOB_ARENA and JOB_BIG): it's cloned
+/// (cloneAt) and what the clone holds copied in turn. Any other is from outside the job, shared
+/// or static, and stays: the copy takes a reference to it. So a copy shares what the job shared,
+/// and no pointer into the job's memory is left in it. A type that isn't Share has no copy: a
+/// closure's description names one for what it captured whatever that is, and never calls it.
+and copyFn (g: G) (t: Ty) : string =
+  let name = $"@\"copyout.{showF g t}\""
+  let tail (callee: string) = tailKeyword g name callee
+  if firstTime g name then
+    let em = emitter ()
+    // the values at these addresses copied in turn, the last by a tail call (a long list is
+    // copied in a loop)
+    let fields (fs: list<Ty * string>) =
+      match List.rev fs with
+      | [] -> emit em "ret void"
+      | (lt, lp) :: before ->
+        for (ft, fp) in List.rev before do
+          copyAt g em ft fp
+        let callee = copyFn g lt
+        emit em $"{tail callee}call void {callee}(ptr {lp})"
+        emit em "ret void"
+    let never () = panicWith g em "a value that isn't Share was copied out of a contained job"
+    let isStruct =
+      match t with
+      | TTuple _
+      | TCon("fixed", _) -> true
+      | TCon(n, _) -> isRecordType g n
+      | _ -> false
+    let lt = llty g t
+    if isStruct then
+      let at (i: int) (ft: Ty) = if heap g ft then [ (ft, instr em $"getelementptr {lt}, ptr %slot, i32 0, i32 {i}") ] else []
+      fields (List.concat (List.mapi at (structFields g t)))
+    else if lt <> "ptr" then
+      never ()
+    else
+      match repOfUnion g t with
+      | Some(Niche(_, payload)) ->
+        // the payload itself, or the static @zs.none
+        let callee = copyFn g payload
+        emit em $"{tail callee}call void {callee}(ptr %slot)"
+        emit em "ret void"
+      | _ ->
+        emit em "%p = load ptr, ptr %slot"
+        // the job's, or from outside it
+        let mine () =
+          let fp = instr em "getelementptr i8, ptr %p, i_W 6"
+          let from = instr em $"load i8, ptr {fp}"
+          let k = instr em $"add i8 {from}, 3"
+          let m = instr em $"icmp ult i8 {k}, 2"
+          emit em $"br i1 {m}, label %mine, label %outside"
+          enter em "outside"
+          emit em "call void @zs.dup(ptr %p)"
+          emit em "ret void"
+          enter em "mine"
+        match t with
+        | TCon("Atomic", _)
+        | TCon("Mutex", _)
+        | TCon("Channel", _)
+        | TCon("Spsc", _) ->
+          // never in a job's memory (zs_job_made): others may keep it
+          emit em "call void @zs.dup(ptr %p)"
+          emit em "ret void"
+        | TFun _
+        | TCon("share", _) ->
+          // what the closure captured: its description's copy
+          mine ()
+          let ip = instr em "getelementptr { i_W, ptr, ptr }, ptr %p, i32 0, i32 2"
+          let inf = instr em $"load ptr, ptr {ip}"
+          let cp = instr em $"getelementptr {{ ptr, i32, ptr, ptr, ptr }}, ptr {inf}, i32 0, i32 4"
+          let f = instr em $"load ptr, ptr {cp}"
+          emit em $"{tail f}call void {f}(ptr %slot)"
+          emit em "ret void"
+        | TCon("string", _) ->
+          mine ()
+          let lp = instr em "getelementptr { i_W, i_W }, ptr %p, i32 0, i32 1"
+          let len = instr em $"load i_W, ptr {lp}"
+          let size () =
+            let withNul = instr em $"add i_W {len}, 1"
+            instr em $"add i_W HDR2, {withNul}"
+          cloneAt g em size |> ignore
+          emit em "ret void"
+        | TCon("array", [ el ]) ->
+          mine ()
+          let lp = instr em "getelementptr { i_W, i_W }, ptr %p, i32 0, i32 1"
+          let len = instr em $"load i_W, ptr {lp}"
+          let size () =
+            let data = instr em $"mul i_W {len}, {sizeOf em (llty g el)}"
+            instr em $"add i_W HDR2, {data}"
+          let c = cloneAt g em size
+          if heap g el then
+            let from = current em
+            emit em "br label %loop"
+            enter em "loop"
+            let i = tmp em
+            emit em $"{i} = phi i_W [ 0, %{from} ], [ %next, %body ]"
+            let more = instr em $"icmp slt i_W {i}, {len}"
+            emit em $"br i1 {more}, label %body, label %end"
+            enter em "body"
+            copyAt g em el (instr em $"getelementptr {{ i_W, i_W, [0 x {llty g el}] }}, ptr {c}, i32 0, i32 2, i_W {i}")
+            emit em $"%next = add i_W {i}, 1"
+            emit em "br label %loop"
+            enter em "end"
+          emit em "ret void"
+        | TCon(n, _) when isUnionType g n ->
+          // a case with fields (one without is a static cell, never a job's)
+          mine ()
+          let (_, cases) = union g t
+          let withFields = List.filter (fun (_, (_, fs)) -> not (List.isEmpty fs)) (List.indexed cases)
+          if tagged g t then
+            let tag = loadTag g em "%p" None
+            let targets = String.join " " (List.map (fun (i, _) -> $"i32 {i}, label %case{i}") withFields)
+            emit em $"switch i32 {tag}, label %none [ {targets} ]"
+          else
+            match withFields with
+            | (i, _) :: _ -> emit em $"br label %case{i}"
+            | [] -> emit em "br label %none"
+          for (i, (_, fs)) in withFields do
+            enter em $"case{i}"
+            let cell = cellTy g t i
+            let c = cloneAt g em (fun () -> sizeOf em cell)
+            let at (jf: int * Ty) =
+              let (j, ft) = jf
+              if heap g ft then [ (ft, instr em $"getelementptr {cell}, ptr {c}, i32 0, i32 {cellField g t j}") ] else []
+            fields (List.collect at (List.indexed fs))
+          enter em "none"
+          emit em "unreachable"
+        | _ -> never ()
+    helper g $"define private void {name}(ptr %slot) {{\n{bodyOf em}}}\n\n"
   name
 
 /// A Buffer's functions that change its length, per element type (Core's bufferDef): push,
@@ -492,6 +683,13 @@ and dropFn (g: G) (t: Ty) : string =
   match t with
   | TFun _ -> "@zs.drop.clo"
   | TCon(n, _) when isDynName n -> "@zs.drop.dyn"
+  | TCon("eff.resumption", _) ->
+    // a kept resumption (Evidence): its cell holds the continuation chain it would resume and the
+    // chain's disposal, composed as the yield unwound. Dropped without being called, that disposal
+    // runs; called, the chain was taken out and only the memory goes
+    if firstTime g "@zs.drop.resumption" then
+      helper g "define private void @zs.drop.resumption(ptr %p) {\nentry:\n  %last = call i1 @zs.release(ptr %p)\n  br i1 %last, label %free, label %done\nfree:\n  %takenp = getelementptr { i_W, i_W, ptr, ptr }, ptr %p, i32 0, i32 1\n  %taken = load i_W, ptr %takenp\n  %chainp = getelementptr { i_W, i_W, ptr, ptr }, ptr %p, i32 0, i32 2\n  %chain = load ptr, ptr %chainp\n  %dispp = getelementptr { i_W, i_W, ptr, ptr }, ptr %p, i32 0, i32 3\n  %disp = load ptr, ptr %dispp\n  %kept = icmp ne ptr %disp, null\n  %untaken = icmp eq i_W %taken, 0\n  %run = and i1 %kept, %untaken\n  br i1 %run, label %dispose, label %plain\ndispose:\n  %codep = getelementptr { i_W, ptr }, ptr %disp, i32 0, i32 1\n  %code = load ptr, ptr %codep\n  call {} %code(ptr %disp, ptr null)\n  br label %plain\nplain:\n  call void @zs.drop.clo(ptr %chain)\n  br i1 %kept, label %release, label %freed\nrelease:\n  call void @zs.drop.clo(ptr %disp)\n  br label %freed\nfreed:\n  call void @zs_free(ptr %p)\n  ret void\ndone:\n  ret void\n}\n\n"
+    "@zs.drop.resumption"
   | TCon("weak", _) ->
     // a weak reference's cell: the runtime frees it (and forgets its object)
     if firstTime g "@zs.drop.weak" then
@@ -650,17 +848,18 @@ and stub (g: G) (f: string) (k: int) : string =
   name
 
 /// What a closure of f holding k parameters is, for its users: its drop function, the number of
-/// parameters it still takes, code taking all of them at once, and (with threads) the walk of
-/// what it captured; the last slot is unused.
+/// parameters it still takes, code taking all of them at once, (with threads) the walk of what
+/// it captured, and (with contained jobs) its copy out of one.
 and info (g: G) (f: string) (k: int) : string =
   let name = $"@\"cloinfo.{f}.{k}\""
   if firstTime g name then
     let n = List.length (Map.find f g.fnTable).pars
     let env = List.take k (List.map snd (Map.find f g.fnTable).pars)
     let walk = if g.opts.threaded then captureWalk g env else "null"
+    let copy = if g.opts.contained then captureCopy g env else "null"
     let drop = dropStub g env
     let all = full g f k
-    topLine g $"{name} = private unnamed_addr constant {{ ptr, i32, ptr, ptr, ptr }} {{ ptr {drop}, i32 {n - k}, ptr {all}, ptr {walk}, ptr null }}"
+    topLine g $"{name} = private unnamed_addr constant {{ ptr, i32, ptr, ptr, ptr }} {{ ptr {drop}, i32 {n - k}, ptr {all}, ptr {walk}, ptr {copy} }}"
   name
 
 // a closure environment's types, as its helpers are named: a helper of one serves every closure
@@ -677,6 +876,24 @@ and captureWalk (g: G) (env: list<Ty>) : string =
       walkIn g em t x "%move"
     emit em "ret void"
     helper g $"define private void {name}(ptr %clo, i1 %move) {{\n{bodyOf em}}}\n\n"
+  name
+
+/// The closure in a slot copied out of a contained job (copyFn found it to be the job's): the
+/// closure cloned, then what it captured copied in the clone. One function for every closure
+/// whose captures have these types.
+and captureCopy (g: G) (env: list<Ty>) : string =
+  let name = $"@\"clocopy.{envName g env}\""
+  if firstTime g name then
+    let em = emitter ()
+    let cell = cloTy g env
+    emit em "%p = load ptr, ptr %slot"
+    let c = cloneAt g em (fun () -> sizeOf em cell)
+    let one (i: int) (t: Ty) =
+      if heap g t then
+        copyAt g em t (instr em $"getelementptr {cell}, ptr {c}, i32 0, i32 {i + 3}")
+    List.iteri one env
+    emit em "ret void"
+    helper g $"define private void {name}(ptr %slot) {{\n{bodyOf em}}}\n\n"
   name
 
 /// Code for a closure of f holding its first k parameters that takes all the others at once.
@@ -749,6 +966,90 @@ let parRunner (g: G) (rt: Ty) : string =
     helper g $"define private void {name}(ptr %clo, ptr %out) {{\n{bodyOf em}}}\n\n"
   name
 
+// ------------------------------------------------------------ contained jobs (0035)
+
+/// out.T(slot): in a contained job, the slot's value copied out of the job's memory into no
+/// job's, and the job's reference to the original given up. Outside a job, nothing.
+let outFn (g: G) (t: Ty) : string =
+  let name = $"@\"out.{showF g t}\""
+  if firstTime g name then
+    let em = emitter ()
+    emit em "%j = call ptr @zs_job_out()"
+    emit em "%in = icmp ne ptr %j, null"
+    emit em "br i1 %in, label %copy, label %done"
+    enter em "copy"
+    let old = instr em $"load {llty g t}, ptr %slot"
+    copyAt g em t "%slot"
+    emit em "call void @zs_copy_done()"
+    emit em "call void @zs_job_back(ptr %j)"
+    dropValue g em t old
+    emit em "ret void"
+    enter em "done"
+    emit em "ret void"
+    helper g $"define private void {name}(ptr %slot) {{\n{bodyOf em}}}\n\n"
+  name
+
+/// A value about to leave its thread (a crossing of DESIGN §7.1): in a program with contained
+/// jobs, the copy of it made outside the job when the thread is in one; else the value itself.
+let outValue (g: G) (em: Emitter) (t: Ty) (v: string) : string =
+  if g.opts.contained && heap g t then
+    let slot = "%" + fresh em "out"
+    alloca em $"{slot} = alloca {llty g t}"
+    emit em $"store {llty g t} {v}, ptr {slot}"
+    emit em $"call void {outFn g t}(ptr {slot})"
+    instr em $"load {llty g t}, ptr {slot}"
+  else
+    v
+
+/// A value that came to the thread from outside (a channel's message, a pool job's result): in
+/// a contained job, marked shared and held by the job until it ends. Outside a job, and in a
+/// program without them, nothing.
+let arriveValue (g: G) (em: Emitter) (t: Ty) (v: string) =
+  if g.opts.contained && heap g t then
+    let name = $"@\"arrive.{showF g t}\""
+    if firstTime g name then
+      let fe = emitter ()
+      emit fe "%in = call zeroext i1 @zs_job_in()"
+      emit fe "br i1 %in, label %hold, label %done"
+      enter fe "hold"
+      shareValue g fe t "%v"
+      holdValue g fe t "%v"
+      emit fe "ret void"
+      enter fe "done"
+      emit fe "ret void"
+      helper g $"define private void {name}({llty g t} %v) {{\n{bodyOf fe}}}\n\n"
+    emit em $"call void {name}({llty g t} {v})"
+
+/// What `body` emits runs outside the thread's contained job (a count taken or given up for a
+/// value no job owns: what a mutex holds, a copy that went nowhere), where a shared object's
+/// count changes as it does without jobs.
+let outside (g: G) (em: Emitter) (body: unit -> unit) =
+  if g.opts.contained then
+    let j = instr em "call ptr @zs_job_out()"
+    body ()
+    emit em $"call void @zs_job_back(ptr {j})"
+  else
+    body ()
+
+/// In a contained job only: the reference to v given up, outside the job (the one a mutex had
+/// to the value Mutex.update's function was given, which a job's code doesn't count).
+let dropInJob (g: G) (em: Emitter) (t: Ty) (v: string) =
+  if g.opts.contained && heap g t then
+    let name = $"@\"jobdrop.{showF g t}\""
+    if firstTime g name then
+      let fe = emitter ()
+      emit fe "%j = call ptr @zs_job_out()"
+      emit fe "%in = icmp ne ptr %j, null"
+      emit fe "br i1 %in, label %drop, label %done"
+      enter fe "drop"
+      dropValue g fe t "%v"
+      emit fe "call void @zs_job_back(ptr %j)"
+      emit fe "ret void"
+      enter fe "done"
+      emit fe "ret void"
+      helper g $"define private void {name}({llty g t} %v) {{\n{bodyOf fe}}}\n\n"
+    emit em $"call void {name}({llty g t} {v})"
+
 /// A function dropping the T a channel's slot holds (what's left in one when it's freed), or null
 /// when a T holds no reference counts.
 let slotDrop (g: G) (t: Ty) : string =
@@ -762,6 +1063,51 @@ let slotDrop (g: G) (t: Ty) : string =
       emit em "ret void"
       helper g $"define private void {name}(ptr %slot) {{\n{bodyOf em}}}\n\n"
     name
+
+/// A contained job's result r (a T) given to what started the job: copied out of the job's
+/// memory into the starter's, where the runtime has the thread between zs_job_finish and
+/// zs_job_finished, and stored in the job's outcome.
+let finishJob (g: G) (em: Emitter) (t: Ty) (r: string) =
+  let lt = llty g t
+  let slot = "%" + fresh em "result"
+  alloca em $"{slot} = alloca {lt}"
+  emit em $"store {lt} {r}, ptr {slot}"
+  let out = instr em $"call ptr @zs_job_finish(i_W {sizeOf em lt}, ptr {slotDrop g t})"
+  copyAt g em t slot
+  emit em "call void @zs_copy_done()"
+  let v = instr em $"load {lt}, ptr {slot}"
+  emit em $"store {lt} {v}, ptr {out}"
+  emit em "call void @zs_job_finished()"
+
+/// A contained job's runner for a closure that gives a T (runtime/rt.c, zs_job_run): calls it,
+/// in the job, and gives its result to what started the job. The closure is the job's to keep.
+let jobRunner (g: G) (rt: Ty) : string =
+  let name = $"@\"jobrun.{showF g rt}\""
+  if firstTime g name then
+    let em = emitter ()
+    let cp = instr em "getelementptr { i_W, ptr }, ptr %clo, i32 0, i32 1"
+    let code = instr em $"load ptr, ptr {cp}"
+    let r = instr em $"call {llty g rt} {code}(ptr %clo, {{}} zeroinitializer)"
+    finishJob g em rt r
+    emit em "ret void"
+    helper g $"define private void {name}(ptr %clo) {{\n{bodyOf em}}}\n\n"
+  name
+
+/// The effect handlers' yield state (Evidence), defined by the modules that use it and merged by
+/// the linker: zs_yield { state, the marker yielded to, the clause, the continuation so far, the
+/// disposal of the scopes the continuation would pass through },
+/// and the last marker made. One per thread on an OS.
+let yieldGlobals (g: G) =
+  if firstTime g "zs_yield" then
+    let tls = if String.contains "-none-" g.opts.target || isWasm g then "" else "thread_local "
+    helper g $"@zs_yield = linkonce_odr hidden {tls}global {{ i_W, i_W, ptr, ptr, ptr }} zeroinitializer\n"
+    helper g $"@zs_yield_marker = linkonce_odr hidden {tls}global i_W 0\n"
+    // the disposal chain's initial value: a static closure (count 0, so never dup'd, released or
+    // freed) doing nothing, so a composed chain never holds null as a closure value
+    let nodropFn =
+      "define linkonce_odr hidden {} @zs.nodrop.fn(ptr %clo, ptr %arg) {\nentry:\n  ret {} zeroinitializer\n}\n"
+    helper g nodropFn
+    helper g "@zs.nodrop = linkonce_odr hidden constant { i_W, ptr } { i_W 0, ptr @zs.nodrop.fn }\n"
 
 /// A closure of f holding nothing: a static one.
 let staticClosure (g: G) (f: string) : string =
@@ -777,10 +1123,12 @@ let staticClosure (g: G) (f: string) : string =
 /// this thread, and a use on another panics, naming its type.
 let handleOf (g: G) (em: Emitter) (t: Ty) (v: string) : string =
   let shared = g.opts.threaded && Option.isNone (shareBlocker g.v (fun _ -> ()) g.types Set.empty t)
+  // any thread may use a Share value's handle: a crossing, so out of a contained job
+  let v1 = if shared then outValue g em t v else v
   if shared then
-    shareValue g em t v
+    shareValue g em t v1
   let drop = dropFn g t
-  instr em $"call ptr @zs_handle_new(ptr {v}, ptr {drop}, i1 {(if shared then "true" else "false")}, ptr {cstrConst g (showT g t)})"
+  instr em $"call ptr @zs_handle_new(ptr {v1}, ptr {drop}, i1 {(if shared then "true" else "false")}, ptr {cstrConst g (showT g t)})"
 
 /// C's entry point for a callback<A -> R>: R thunk(void* user, A) calls the closure. Shared
 /// (callback<share<A -> R>>), user is the closure, which may be called from any thread; else user

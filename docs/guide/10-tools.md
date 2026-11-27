@@ -279,7 +279,7 @@ lldb shows the same, with its commands (`breakpoint set -n square`, `breakpoint 
 
 A list, an array, a tree (a boxed union), a `ref` or a `Buffer` is a pointer to its object, and `print *xs` shows the object: a list cell's count, head and tail (`print *xs->tail` the next), an array's count, length and elements, a node's case where the cells carry one and each case's fields over the cell, a ref's value. An `option` over a string is the string's pointer (`None` the runtime's static), and a closure is an address.
 
-**Memory checking:** `--sanitize` builds with AddressSanitizer and UndefinedBehaviorSanitizer, and valgrind works on any build. `--sanitize=thread` builds with ThreadSanitizer instead, which finds data races (in C code: code without `unsafe` has none).
+**Memory checking:** `--sanitize` builds with AddressSanitizer and UndefinedBehaviorSanitizer, and valgrind works on any build. `--sanitize=thread` builds with ThreadSanitizer instead, which finds data races (in `unsafe` code and C: code without `unsafe` has none). Both check the program's own code as well as the runtime's.
 
 ## Editors
 

@@ -30,7 +30,9 @@ let main () =
 
 **Panics:** a panic on any thread stops the whole program, with one report even when several
 threads panic at once. On Linux and macOS, a stack overflow on one of the pool's threads, or on
-a task's loop, is such a panic: `panic: stack overflow (recursion too deep)`.
+a task's loop, is such a panic: `panic: stack overflow (recursion too deep)`. A panic in a
+[contained job](07-errors.md#containing-a-panic) ends that job only, on whichever thread it runs;
+the work a job forks onto the pool isn't in the job.
 
 ## What can cross to another thread
 
@@ -166,7 +168,7 @@ let main () =
 ## Checking for races
 
 `zs build --sanitize=thread` builds with ThreadSanitizer, which reports two threads touching the
-same memory without synchronizing. Code without `unsafe` can't race; C code, and C callbacks
-called from other threads, can. `zs test --stress 10m` ([Tools](10-tools.md#the-zs-command))
+same memory without synchronizing. Code without `unsafe` can't race; code in `unsafe`, C code,
+and C callbacks called from other threads, can. `zs test --stress 10m` ([Tools](10-tools.md#the-zs-command))
 runs a file's tests at random on every core, over and over for that long, each run its own
 process, so a failure that one run hides (a race in C code, a timeout under load) shows.

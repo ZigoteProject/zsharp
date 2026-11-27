@@ -93,7 +93,7 @@ let private timedOn (lines: Buffer<string * float>) (name: string) (f: 'a -> 'b 
 /// What the split build left: its parts (in order: each program module's own functions, then its
 /// copies; or the one module of a program of one file), the settings its code was made with (for
 /// the runtime) and the lines --time shows.
-type Built = { parts: list<Part>; checkedHeap: bool; wideVectors: bool; threaded: bool; lines: list<string * float> }
+type Built = { parts: list<Part>; checkedHeap: bool; wideVectors: bool; threaded: bool; contained: bool; lines: list<string * float> }
 
 /// The program's modules: each one's object from the module cache (`cached`, by key), or its LLVM
 /// IR, made for the modules a change reached. A program of one file is one module.
@@ -282,7 +282,7 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
       // by name: the order the run made them in depends on what else it made
       let funs = List.map (fun (n: string) -> Map.find n byName) (Set.toList funsHere)
       let facts =
-        List.filter (fun x -> x <> "") [ (if Compile.usesPrim Compile.heapPrims funs then "weak" else ""); (if Compile.wideVectors types.Value funs then "wide" else ""); (if Compile.threaded prog.externs funs || List.exists (fun (e: Core.Ir.Export) -> e.interrupt) prog.exports then "threads" else "") ]
+        List.filter (fun x -> x <> "") [ (if Compile.usesPrim Compile.heapPrims funs then "weak" else ""); (if Compile.wideVectors types.Value funs then "wide" else ""); (if Compile.threaded prog.externs funs || List.exists (fun (e: Core.Ir.Export) -> e.interrupt) prog.exports then "threads" else ""); (if Compile.usesPrim Compile.containedPrims funs then "contained" else "") ]
       let deps = List.append (List.map (fun d -> (d, "check", Map.find d keyOf)) (List.sort checks)) (List.map (fun d -> (d, "abi", "")) (List.sort calls))
       let w : World = { deps = deps; abi = abi; facts = facts }
       made.Value <- Map.add u.file { mfuns = funs; calls = [] } made.Value
@@ -323,9 +323,10 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
       Opt.Rc.lower typesNow all mfuns
     let counted = timedOn timedLines "reference counting" (Array.Parallel.map count) inputs
     for k in 0 .. Buffer.length counting - 1 do
-      let (u, externals, _) = counting.[k]
+      let (u, externals, all) = counting.[k]
       let mine = check "reference counting" counted.[k]
       Compile.dumpAt "rc" mine
+      Compile.ownedAfter o.checkIr typesNow all mine
       made.Value <- Map.add u.file { mfuns = mine; calls = List.map (fun g -> Map.find g abiFun.Value) externals } made.Value
   // a module's code is current when what it was made from is: its checked result's key and the
   // library's (in its key), the generic functions it copied, and the ABIs of the modules it calls;
@@ -335,10 +336,20 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
   while not (List.isEmpty pending) do
     let todo = Buffer.empty
     let later = Buffer.empty
-    let inRound (f: string) = Array.exists (fun (t: Check.Unit) -> t.file = f) (Buffer.toArray todo) || Array.exists (fun (t: Check.Unit) -> t.file = f) (Buffer.toArray later)
+    // the files queued so far in this round, kept as each goes in: a copy of the whole buffer
+    // for every module waiting on one is quadratic
+    let todoFiles = ref Set.empty
+    let laterFiles = ref Set.empty
+    let inRound (f: string) = Set.contains f todoFiles.Value || Set.contains f laterFiles.Value
     // made now, unless a module before it waits: it may call that one, whose ABI isn't known
     // until the next round
-    let remake (u: Check.Unit) = if Buffer.length later > 0 then Buffer.push u later else Buffer.push u todo
+    let remake (u: Check.Unit) =
+      if Buffer.length later > 0 then
+        laterFiles.Value <- Set.add u.file laterFiles.Value
+        Buffer.push u later
+      else
+        todoFiles.Value <- Set.add u.file todoFiles.Value
+        Buffer.push u todo
     for u in pending do
       match loadWorld (pre u) with
       | Some w ->
@@ -352,7 +363,9 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
             | None -> if inRound d then 2 else 0
         let states = List.map state w.deps
         if List.contains 0 states then remake u
-        else if List.contains 2 states then Buffer.push u later
+        else if List.contains 2 states then
+          laterFiles.Value <- Set.add u.file laterFiles.Value
+          Buffer.push u later
         else accept u w
       | None -> remake u
     if Buffer.length todo > 0 then
@@ -362,12 +375,14 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
   let allFacts = List.collect (fun (p: string * World) -> (snd p).facts) (Map.toList worlds.Value)
   let checkedHeap = List.contains "weak" allFacts
   let wideVectors = List.contains "wide" allFacts
-  let threaded = List.contains "threads" allFacts
+  // a contained job's outside is marked shared, as another thread's data is
+  let contained = List.contains "contained" allFacts
+  let threaded = contained || List.contains "threads" allFacts
   let level = Options.optLevel o
   // a module's object: under a key of its world, and of what code generation adds
   let objectKey (u: Check.Unit) =
     let w = Map.find u.file worlds.Value
-    let settled = $"{level = "-Os"} {checkedHeap} {wideVectors} {threaded} {o.target} {o.cpu} {Array.length mods}"
+    let settled = $"{level = "-Os"} {checkedHeap} {wideVectors} {threaded} {contained} {o.target} {o.cpu} {Array.length mods}"
     Tools.hashOf (List.append [ "module"; pre u; settled ] (List.map (fun (d, kind, h) -> d + " " + kind + " " + h) w.deps))
   // a module of a program of several files is two LLVM modules: its own functions, and its copies
   // of library functions and generic instances, which change only when the copies it needs do
@@ -406,7 +421,10 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
       targets = prog.targets
       cpu = o.cpu
       wideVectors = wideVectors
-      threaded = threaded }
+      threaded = threaded
+      contained = contained
+      // a sanitized build is one module (Make.build), never this
+      sanitizer = "" }
   let stub (a: AbiFun) : MFun / <> =
     { name = a.aname
       pars = List.mapi (fun i t -> ($"a{i}", t)) a.apars
@@ -498,7 +516,7 @@ let parts (o: Options.Options) (c: Check.Checked) (testBuild: bool) (cached: str
   Buffer.push ("LLVM IR", float (int sw.ElapsedNanoseconds) / 1000000.0) timedLines
   match result with
   | Error e -> Error e
-  | Ok ps -> Ok { parts = ps; checkedHeap = checkedHeap; wideVectors = wideVectors; threaded = threaded; lines = Array.toList (Buffer.toArray timedLines) }
+  | Ok ps -> Ok { parts = ps; checkedHeap = checkedHeap; wideVectors = wideVectors; threaded = threaded; contained = contained; lines = Array.toList (Buffer.toArray timedLines) }
 
 // ---- objects and the link
 
@@ -651,7 +669,7 @@ let link (o: Options.Options) (built: Built) (linked: Modules.Linked) : result<l
   // the runtime optimized in a debug build too (a program debugs its own code)
   let rt = Options.runtimeDir ()
   let rtFile = Path.combine rt "rt.c"
-  let defines = List.append (if built.threaded then [ "-DZS_THREADS" ] else []) (if Option.isSome (Environment.getVariable "ZS_NO_POOL") then [ "-DZS_NO_POOL" ] else [])
+  let defines = List.concat [ (if built.threaded then [ "-DZS_THREADS" ] else []); (if built.contained then [ "-DZS_CONTAINED" ] else []); (if Option.isSome (Environment.getVariable "ZS_NO_POOL") then [ "-DZS_NO_POOL" ] else []) ]
   let rtFlags = List.append (if useLto o then flags else List.concat [ [ "-O2" ]; Compile.cpuFlags o; profile; Options.sectionFlags o ]) defines
   let runtime = job (Result.defaultValue "" (File.readAllText rtFile)) (Some rtFile) rtFlags None
   let ofPart (p: Part) : option<Job> =
@@ -722,6 +740,6 @@ let link (o: Options.Options) (built: Built) (linked: Modules.Linked) : result<l
       else if lld () then [ "-fuse-ld=lld" ]
       else []
     let linkSw = Diagnostics.Stopwatch.startNew ()
-    match Tools.run "clang" (List.concat [ flags; ltoLink; Options.unusedLinkFlags o; files; libs; [ "-o"; o.out; "-lm" ] ]) with
+    match Tools.run "clang" (List.concat [ flags; ltoLink; Options.unusedLinkFlags o; files; libs; [ "-o"; o.out; "-lm" ]; Options.systemLibs o ]) with
     | Error e -> Error e
     | Ok () -> Ok [ clangLine; ("link", float (int linkSw.ElapsedNanoseconds) / 1000000.0) ]

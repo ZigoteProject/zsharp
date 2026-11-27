@@ -190,6 +190,10 @@ and CxData =
     /// trait methods called with an ambient row (0025): the value's type, the row, the trait, the
     /// method and the place; through dyn the row must be empty
     dynCalls: Buffer<Ty * Ty * string * string * int>
+    /// trait methods called: the type each is at, the method as written, the trait, the place and
+    /// whether only its result gives the type (ColumnBuffer.empty); one left unknown at the
+    /// declaration's end, with no impl for what it would default to, is an error there
+    resultCalls: Buffer<Ty * string * string * int * bool>
     /// the [<Tests>] values of the module being checked, and whether each is a list (0009)
     testValues: Buffer<string * bool>
     /// the statement being checked (its token: assert's message, expect's place)
@@ -448,6 +452,9 @@ type Cx with
   member c.dynCalls =
     match c with
     | Cx { dynCalls = x } -> x
+  member c.resultCalls =
+    match c with
+    | Cx { resultCalls = x } -> x
   member c.testValues =
     match c with
     | Cx { testValues = x } -> x
@@ -603,6 +610,7 @@ let create (requireMain: bool) (collect: bool) (allModules: list<string>) (manua
       discarded = Buffer.empty
       literals = Buffer.empty
       dynCalls = Buffer.empty
+      resultCalls = Buffer.empty
       testValues = Buffer.empty
       currentStmt = ref -1
       ctxRow = ref rowEmpty
@@ -806,6 +814,7 @@ let recovered (cx: Cx) (fallback: unit -> Ty) (f: unit -> CExpr / <Fails | 'e>) 
     let discarded = Buffer.length cx.discarded
     let literals = Buffer.length cx.literals
     let dynCalls = Buffer.length cx.dynCalls
+    let resultCalls = Buffer.length cx.resultCalls
     let attempt () =
       let c = f ()
       commit cx.v trail
@@ -817,6 +826,7 @@ let recovered (cx: Cx) (fallback: unit -> Ty) (f: unit -> CExpr / <Fails | 'e>) 
       Buffer.truncate discarded cx.discarded
       Buffer.truncate literals cx.literals
       Buffer.truncate dynCalls cx.dynCalls
+      Buffer.truncate resultCalls cx.resultCalls
       Fails.report x
       mk CUnit (fallback ())
     | Fails.report x, k -> k (Fails.report x)
@@ -899,7 +909,9 @@ let visibleTo (cx: Cx) (owner: option<string>) : bool =
 
 /// Fails unless code here may use the record's fields: a private record's are for its module,
 /// even where one of its values is reached (through a public record's field, say).
-let fieldsVisible (cx: Cx) (rname: string) =
+let fieldsVisible (cx: Cx) (rname0: string) =
+  // a row type's columns and its ColumnBuffer (0037) hold its fields, private as its own are
+  let rname = if isColumns rname0 || isColumnBuffer rname0 then columnarRow rname0 else rname0
   match Map.tryFind rname cx.privates.Value with
   | Some owner when not (visibleTo cx owner) ->
     let o =
@@ -1183,6 +1195,10 @@ let expect (cx: Cx) (what: string) (expected: Ty) (actual: Ty) : unit / Fails =
           else
             ""
       fail $"{what}: expected {show cx expected}, got {show cx actual}{hint}"
+    | OtherDiffer(tr, t, given, implied) ->
+      let n = shortName tr
+      let a = if String.contains (String.sub n 0 1) "AEIOU" then "an" else "a"
+      fail $"{what}: {show cx t} is {a} {n} of {show cx implied}, not of {show cx given}"
     | NoImpl("Share", t) -> fail $"{what}: {show cx t} can't be shared between threads (it isn't Share)"
     | NoImpl(tr, t) ->
       let tuple =
@@ -1192,9 +1208,9 @@ let expect (cx: Cx) (what: string) (expected: Ty) (actual: Ty) : unit / Fails =
           $"; if '{f}' takes its {List.length xs} arguments one by one, write {f} a b, not {f} (a, b)"
         | TCon _ when tr = "Iter" ->
           $"; list, array, Buffer, span, string, option, Map, Set, HashMap, Seq and Range do, and impl Iter<{show cx t}, <element>> = let forEach c f = … adds yours"
-        | TCon _ when not (List.contains tr [ "Share"; "Eq"; "Ord"; "Hash"; "Show"; "Add"; "Num" ]) -> $"; write impl {tr}<{show cx t}> = …"
+        | TCon _ when not (List.contains tr [ "Share"; "Eq"; "Ord"; "Hash"; "Show"; "Add"; "Num" ]) -> $"; write impl {shortName tr}<{show cx t}> = …"
         | _ -> ""
-      fail $"{what}: {show cx t} does not implement {tr}{tuple}"
+      fail $"{what}: {show cx t} does not implement {shortName tr}{tuple}"
 
 /// The rule a function must keep where none of its effects can be handled (given to C, run on
 /// another thread): expected has none, actual is the function; an error says what it performs
@@ -1409,8 +1425,42 @@ let private isDigits (d: string) : bool =
 /// A written type as a type. tparams: Some names inside a type definition (they become TGen), None
 /// in a function. A function type's effects: in a function's annotations, inferred (a row
 /// variable); in a type definition, and in what crosses to C or another thread (pureArrows), none.
+// columns<R> or ColumnBuffer<R> (0037), `form`: the record of R's columns that
+// [<Derive(Columns)>] on R declared (`declared` names it), or why there's none
+let private columnar (cx: Cx) (form: string) (declared: string -> string) (row: Ty) : Ty / Fails =
+  match prune cx.v row with
+  | TCon(n, args) when Map.containsKey (declared n) cx.types.Value -> TCon(declared n, args)
+  | TCon(n, args) when isColumns n || isColumnBuffer n ->
+    let r = Types.Show.show cx.v (TCon(columnarRow n, args))
+    fail $"{form} holds a record's fields, a column each, and {Types.Show.show cx.v (TCon(n, args))} is already {r}'s columns: write {form}<{r}>"
+  // a type whose declaration failed: said as its consequence, which isn't shown
+  | TCon(n, _) when Set.contains n cx.failed.Value -> fail $"'{shortName n}' wasn't declared"
+  | TCon(n, args) when Map.containsKey n cx.types.Value ->
+    let info = Map.find n cx.types.Value
+    let row = Types.Show.show cx.v (TCon(n, args))
+    match info.def with
+    // a record of a group being declared (a record being declared is one of no fields)
+    | RecordDef _ when Set.contains n cx.ahead.Value ->
+      fail $"{form}<{row}> can't be named in the group that declares {shortName n}: a group's [<Derive(Columns)>] declares its columns after the group"
+    | RecordDef [] -> fail $"record '{shortName n}' cannot contain itself; use a union"
+    | RecordDef _ when Option.isSome info.bits ->
+      fail $"{form}<{row}>: {shortName n} is a [<Bits>] record, one integer: an array or a Buffer of it is already as dense as its columns would be"
+    | RecordDef _ when Set.contains n cx.libraryNames.Value -> fail $"{form}<{row}>: {shortName n} is the library's, which doesn't derive its columns"
+    | RecordDef _ -> fail $"{form}<{row}> needs {shortName n} to derive its columns: [<Derive(Columns)>] on the record"
+    | _ -> fail $"{form} holds a record's fields, a column each, and {shortName n} is a union"
+  | TVar _
+  | TGen _ -> fail $"{form}<'a> can't be written for a row type that isn't known: name the record, or leave the annotation out (a function over any {form} needs none)"
+  | t -> fail $"{form} holds a record's fields, a column each, and {Types.Show.show cx.v t} isn't a record"
+
 let rec toTyWith (cx: Cx) (pureArrows: bool) (tparams: option<list<string>>) (st: SType) : Ty / Fails =
   let toTy = toTyWith cx pureArrows
+  // columns<R> and ColumnBuffer<R> are the derive's unless the program has a type or an alias of
+  // that name where it's written (a file's own names come first, 0037)
+  let own =
+    match st with
+    | STName(n, [ _ ]) when n = "columns" || n = "ColumnBuffer" ->
+      Option.isSome (resolveWith cx (fun q -> Map.containsKey q cx.types.Value || Map.containsKey q cx.aliases.Value) n)
+    | _ -> false
   match st with
   | STVar x ->
     match tparams with
@@ -1438,6 +1488,9 @@ let rec toTyWith (cx: Cx) (pureArrows: bool) (tparams: option<list<string>>) (st
       | STVar _ when cx.currentModule.Value = Some "Collections.Fixed" -> toTy tparams len
       | _ -> fail "fixed needs a positive number of elements, written as a literal"
     TCon("fixed", [ toTy tparams el; n ])
+  // columns<Particle>: the record of Particle's columns; ColumnBuffer<Particle>: of its Buffers
+  | STName("columns", [ row ]) when not own -> columnar cx "columns" columnsOf (toTy tparams row)
+  | STName("ColumnBuffer", [ row ]) when not own -> columnar cx "ColumnBuffer" columnBufferOf (toTy tparams row)
   | STName(d, []) when String.length d > 0 && String.byte d 0 >= u8 48 && String.byte d 0 <= u8 57 ->
     fail "only fixed takes a number as a type argument"
   | STName(n, args) ->

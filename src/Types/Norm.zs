@@ -139,12 +139,13 @@ let rec substGen (v: Vars) (args: list<Ty>) (t: Ty) : Ty =
     | TTuple ts -> TTuple(List.map (substGen v args) ts)
     | x -> x
 
-// what an unconstrained variable of a kind becomes: int, f64, string, bool or unit, the first
-// the kind allows. A literal's kind lists only the types that have its traits, the library's
-// impls counted (Unify.meet keeps those), so one of them is as good as the built-in ones: a
-// literal Binary.toBytes takes is an int, where checking built-in impls alone made it the first
-// name left (i16, which held 70000 as 4464; an f32 for a float)
-let private defaultOf (k: Kind) : Ty =
+/// What an unconstrained variable of a kind becomes: int, f64, string, bool or unit, the first
+/// the kind allows. A literal's kind lists only the types that have its traits, the library's
+/// impls counted (Unify.meet keeps those), so one of them is as good as the built-in ones: a
+/// literal Binary.toBytes takes is an int, where checking built-in impls alone made it the first
+/// name left (i16, which held 70000 as 4464; an f32 for a float). Int when none fits, which
+/// the checker says where an impl it needs is missing (Decls.checkResultCalls).
+let defaultOf (k: Kind) : Ty =
   let fits (n: string) =
     match k.allowed with
     | Some s -> Set.contains n s

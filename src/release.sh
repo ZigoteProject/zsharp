@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# A release of the compiler for this machine (Linux or macOS): src/ built --release by the given
+# A release of the compiler for this machine (Linux, macOS or FreeBSD): src/ built --release by the given
 # compiler, then by that build, then by that one: the last two must be the same bytes (the
 # compiler builds itself to itself), and it's what's released, installed with its library and
 # runtime, and archived. Each target named after the version is a release for that platform too,
 # src/ built for it (--target) by that compiler:
 #   src/release.sh <zs> <version> [<target>...]   ->   dist/zs-<version>-<os>-<arch>.tar.gz
 #   (targets: aarch64-macos, x86_64-macos, x86_64-windows-gnu, aarch64-windows-gnu, aarch64-linux-gnu,
-#   x86_64-linux-gnu)
+#   x86_64-linux-gnu, x86_64-freebsd, aarch64-freebsd)
 set -eu
 cd "$(dirname "$0")/.."
 stage=$1; version=$2; shift 2

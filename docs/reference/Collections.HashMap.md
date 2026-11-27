@@ -2,6 +2,16 @@
 
 Hash maps, for keys with `Hash` and `Eq`.
 
+## Modules
+
+### `HashMap`
+
+```zsharp
+module HashMap
+```
+
+Functions on `HashMap`.
+
 ## Types
 
 ### `HashMap`

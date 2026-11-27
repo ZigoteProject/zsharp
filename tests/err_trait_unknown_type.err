@@ -1,0 +1,5 @@
+tests/err_trait_unknown_type.zs:12: error: the type ColumnBuffer.empty makes isn't known here: nothing it's used with gives it; annotate the value (it needs a type with ColumnBuffer.Buffered)
+tests/err_trait_unknown_type.zs:15: error: the type ColumnBuffer.ofArray is called at isn't known here: annotate what it's given (it needs a type with ColumnBuffer.BufferRow)
+tests/err_trait_unknown_type.zs:18: error: the type Columns.ofArray is called at isn't known here: annotate what it's given (it needs a type with Columns.Row)
+tests/err_trait_unknown_type.zs:22: error: the type Zero.zero makes isn't known here: nothing it's used with gives it; annotate the value (it needs a type with Zero)
+4 errors

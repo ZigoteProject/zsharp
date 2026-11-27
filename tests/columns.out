@@ -1,0 +1,9 @@
+4 { x = 2; age = 20; id = 2; name = p2 } p1 { x = 3; age = 30; id = 3; name = p3 } 30 6
+0:0 1:10 2:20 3:30 
+2 one [{ x = 1; age = 2; id = 3; name = one }; { x = 1; age = 2; id = 3; name = one }]
+[1; 11; 21; 31] [0; 10; 20; 30]
+{ first = 2; second = b } [1; 2] { first = 2; second = b } { first = 9; second = z } { first = 1; second = a }
+0 0
+3 { x = 0; age = 0; id = 0; name = p0 } 10
+30 <0, 1, 2, 3> [0; 20; 40; 60]
+panic: index out of bounds

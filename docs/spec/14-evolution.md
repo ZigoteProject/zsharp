@@ -40,7 +40,7 @@ awaiting a proposal.
 | **`[<Align n>]` on a type** | decided (decision 69, proposal 0014); built for values only | *Reserved:* `[<Align n>]` before a `type`. Every value of the type is aligned to `n` bytes. Extends [§4.4](04-declarations.md#44-representation-attributes), [§11.3](11-low-level.md#113-layout) |
 | **`[<Deprecated "use X">]`** and the `deprecated` warning | decided (decision 61, proposal 0021); built at the 1.0 freeze | *Reserved:* the attribute name on any declaration. A use of the declaration warns. Extends [§12.3](12-builtins.md#123-attributes), [§12.4](12-builtins.md#124-warnings) |
 | **Field attributes for derives** (renaming a JSON key, skipping a field) | wanted; not designed | The position exists: attributes before a record field ([§4.3](04-declarations.md#43-type-declarations)), used today only by `[<Bit>]` and `[<Width>]`. A design must say how a derive reads them (`f.attributes` in [§7.5](07-traits.md#75-derive)) |
-| **Disposal under every stop** | in part (roadmap S10) | No syntax. Removes the two exceptions of [§8.4](08-effects.md#84-handlers): a kept resumption never called, and a stop passing a `use` in a `task { }` body. Programs must not rely on the exceptions |
+| **Disposal under every stop** | built (roadmap S10) | No syntax. The two exceptions of [§8.4](08-effects.md#84-handlers) are removed: a kept resumption never called disposes when it is dropped, and a stop passing a `use` in a `task { }` body disposes as any stop. Programs must not rely on the exceptions |
 | **Multi-shot resumptions** | possible later, opt-in (decision 23, proposal 0002) | Not designed. Today a second call of a resumption panics ([§8.4](08-effects.md#84-handlers)); a future opt-in kind of effect or handler would allow it. One-shot stays the default, since in-place reuse depends on it |
 | **Named handlers, `mask`** | deferred until a program needs them (proposal 0002) | Not designed. Today an operation always goes to the innermost handler of its effect |
 | **Operations polymorphic in their parameters** | not built (proposal 0002) | Today an operation's own type variable may occur in its result only ([§8.1](08-effects.md#81-declaring-an-effect)) |
@@ -80,7 +80,7 @@ Where the reference implementation at 0.7 differs from this document or from
 
 | Area | This document | The implementation at 0.7 |
 |---|---|---|
-| `use` and stops ([§8.4](08-effects.md#84-handlers)) | every abandoned `use` is disposed | not for a kept resumption never called, nor for a `use` in a `task { }` body |
+| `use` and stops ([§8.4](08-effects.md#84-handlers)) | every abandoned `use` is disposed | at 0.7: not for a kept resumption never called, nor for a `use` in a `task { }` body; both since closed |
 | The `cycle` warning ([§10.4](10-execution.md#104-lifetime)) | best effort | cycles through closures and `dyn` values are not detected |
 | `[<Section>]` ([§11.4](11-low-level.md#114-bare-metal)) | places the storage in the named section | on macOS and Windows the name is dropped and the alignment kept |
 | Stack overflow ([§10.5](10-execution.md#105-panics)) | a panic where the platform reports it | reported on Linux, macOS and Cortex-M chips; a platform fault elsewhere |

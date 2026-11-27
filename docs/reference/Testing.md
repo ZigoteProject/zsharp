@@ -3,6 +3,32 @@
 Tests as values (0009): `test "name" (fun () -> …)` is a `Test`, `testList` groups them, and
 a top-level value marked `[<Tests>]` is what `zs test` runs, each test in its own process.
 
+## Modules
+
+### `Testing.Source`
+
+```zsharp
+module Source
+```
+
+Functions on `Source`.
+
+### `Testing.Gen`
+
+```zsharp
+module Gen
+```
+
+Functions on `Gen`, and the `gen { }` builder.
+
+### `Testing.Prop`
+
+```zsharp
+module Prop
+```
+
+Functions on `Prop`, and the `prop { }` builder.
+
 ## Traits
 
 ### `Testing.Outcome`

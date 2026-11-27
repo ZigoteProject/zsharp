@@ -1,0 +1,1 @@
+tests/err_record_unknown_field_type.zs:4: error: unknown type 'Nope'

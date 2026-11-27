@@ -135,9 +135,8 @@ Consequences:
 **Disposal.** When a clause finishes without resuming, every `use` binding in the abandoned
 evaluation is disposed, newest first, before the clause's body runs
 ([§5.8](05-expressions.md#58-blocks-and-bindings)). When a clause resumes, the scopes are
-intact and are disposed as they end. Two cases dispose nothing at 0.7
-([§14.3](14-evolution.md#143-known-deviations)): a resumption that is kept and never called,
-and a `use` in a `task { }` body.
+intact and are disposed as they end. A resumption that is kept and never called disposes them
+too, when it is dropped; so does a stop passing a `use` written inside a `task { }` body.
 
 **Loops and recursion.** Performing inside a loop or a recursion, and resuming, uses stack
 proportional to the program's own nesting, not to the number of operations performed.
