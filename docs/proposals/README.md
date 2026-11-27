@@ -48,6 +48,7 @@ proposal describes a change to it, and [ROADMAP.md](../../ROADMAP.md) says when 
 | 0037 | [Columns: an array of records stored field by field](0037-columns.md) | Implemented in part: `columns<'r>` and `ColumnBuffer<'r>` by `[<Derive(Columns)>]`, their rows, columns and writes; tuples as rows and the compiler's own tables wait | decision 88, built at the user's request; its open questions want a review |
 | 0038 | [The build graph, and `build.zs`](0038-build-graph.md) | Draft | a design review; it takes up the build script 0018 declined |
 | 0039 | [Verifying the runtime's concurrency](0039-verifying-the-runtime.md) | Draft: the pool's deque first, then the contained jobs' held values | a design review; the tool and the first target are its open questions |
+| 0041 | [Tasks and jobs on one runtime](0041-tasks-and-jobs-on-one-runtime.md) | Draft | a design review |
 
 **Status:**
 - **Draft:** written, with its open questions listed.
